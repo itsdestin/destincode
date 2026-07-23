@@ -32,15 +32,6 @@ describe('trackedArtifacts', () => {
     expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['seen']);
   });
 
-  it('shows external artifacts only when manually included', () => {
-    const arts = [
-      { kind: 'external', path: 'in.xlsx', absolutePath: 'c:/temp/in.xlsx', versions: [edit], id: 'in' },
-      { kind: 'external', path: 'out.xlsx', absolutePath: 'c:/temp/out.xlsx', versions: [edit], id: 'out' },
-    ];
-    const includes = [{ path: 'c:/temp/in.xlsx' }];
-    expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['in']);
-  });
-
   it('hides excluded internal files even with Claude work (Exclude is sticky)', () => {
     const arts = [
       { kind: 'internal', path: 'noisy.log.md', absolutePath: null, versions: [edit, edit], id: 'noisy' },
@@ -77,5 +68,44 @@ describe('trackedArtifacts', () => {
   it('treats missing versions arrays as viewed-only (hidden)', () => {
     const arts = [{ kind: 'internal', path: 'a.md', absolutePath: null, id: 'a' } as any];
     expect(trackedArtifacts(arts, [], [], ROOT)).toEqual([]);
+  });
+
+  // Rule 4 flipped (2026-07-23 file-merge spec): externals are visible on their
+  // own edit history, mirroring rule 3 for internals. Pins are no longer the
+  // gate — nothing writes manualIncludes once "+ Add file" becomes an import.
+  it('shows external artifacts with Claude work, without any pin', () => {
+    const arts = [
+      { kind: 'external', path: 'made.xlsx', absolutePath: 'c:/temp/made.xlsx', versions: [edit], id: 'made' },
+      { kind: 'external', path: 'new.md', absolutePath: 'c:/temp/new.md', versions: [{ type: 'create' }], id: 'new' },
+    ];
+    expect(trackedArtifacts(arts, [], [], ROOT).map((a: any) => a.id)).toEqual(['made', 'new']);
+  });
+
+  it('hides external files that were only VIEWED (read-only versions)', () => {
+    // Same bar as rule 3 — a pill click must not populate External Artifacts.
+    const arts = [
+      { kind: 'external', path: 'seen.pdf', absolutePath: 'c:/temp/seen.pdf', versions: [read], id: 'seen' },
+      { kind: 'external', path: 'made.pdf', absolutePath: 'c:/temp/made.pdf', versions: [edit], id: 'made' },
+    ];
+    expect(trackedArtifacts(arts, [], [], ROOT).map((a: any) => a.id)).toEqual(['made']);
+  });
+
+  it('still shows a legacy pinned external with only read versions (rule 1 survives)', () => {
+    // Upgrade safety: existing users pinned externals with the old "+ Add file".
+    // Rule 1 keeps those visible even though they would fail the new rule 4.
+    const arts = [
+      { kind: 'external', path: 'pinned.pdf', absolutePath: 'c:/temp/pinned.pdf', versions: [read], id: 'pinned' },
+    ];
+    const includes = [{ path: 'c:/temp/pinned.pdf' }];
+    expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['pinned']);
+  });
+
+  it('still hides an excluded external with Claude work (rule 2 survives)', () => {
+    const arts = [
+      { kind: 'external', path: 'noisy.md', absolutePath: 'c:/temp/noisy.md', versions: [edit], id: 'noisy' },
+      { kind: 'external', path: 'keep.md', absolutePath: 'c:/temp/keep.md', versions: [edit], id: 'keep' },
+    ];
+    const excludes = ['c:/temp/noisy.md'];
+    expect(trackedArtifacts(arts, [], excludes, ROOT).map((a: any) => a.id)).toEqual(['keep']);
   });
 });
