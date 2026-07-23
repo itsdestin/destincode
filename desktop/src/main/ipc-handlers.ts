@@ -504,7 +504,14 @@ export function registerIpcHandlers(
     if (info.provider === 'native') {
       try {
         if (opts.resumeSessionId) {
-          const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd);
+          // Task 6: the resume-time model selector's pick (opts.binding, when the
+          // renderer already made one — the ResumeBrowser/pre-resume modal ALWAYS
+          // offers the selector for native rows) overrides the persisted header
+          // binding. Passed straight into resume() so it's applied before the
+          // eager loadModel() below and noteModelUsed's resolvePortableModel() both
+          // read it — see native-session-host.ts's resume() doc comment for why a
+          // post-hoc setBinding here would race those reads.
+          const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
           // No stored file (e.g. resuming an id that was never persisted) → start
           // a fresh session under the same id so the renderer isn't left with a
           // SessionInfo backed by no live HarnessSession.

@@ -61,6 +61,8 @@ import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/Clos
 import PreferencesPopup from './components/PreferencesPopup';
 import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPickerPopup from './components/ModelPickerPopup';
+import NativeModelSelect from './components/NativeModelSelect';
+import type { ModelBinding } from '../shared/provider-types';
 import OpenTasksPopup from './components/OpenTasksPopup';
 import { useSessionTasks } from './hooks/useSessionTasks';
 import MarketplaceScreen from './components/marketplace/MarketplaceScreen';
@@ -298,6 +300,20 @@ function AppInner() {
     takeoverResolveRef.current = null;
     r?.(choice);
   }, []);
+  // Task 6 — the resume-time model selector's pre-resume modal. Destin's
+  // ruling: native resume ALWAYS offers the provider-scoped model selector and
+  // NEVER auto-launches a binding. handleResumeSession's native branch opens
+  // this instead of creating whenever it's called WITHOUT a nativeBinding
+  // already in hand — e.g. a call site that has no inline picker of its own
+  // (MovedGate's Resume button, ProjectView's resume path), as opposed to the
+  // Resume Browser's own expanded row, which always resolves a binding first
+  // (its Resume button is disabled until one exists) and so never lands here.
+  // Nothing below is MovedGate-specific — this is the shared surface Task 9
+  // reuses for that gate's resume affordance.
+  const [pendingNativeResume, setPendingNativeResume] = useState<{
+    claudeSessionId: string; projectSlug: string; projectPath: string; launchInNewWindow?: boolean;
+  } | null>(null);
+  const [pendingNativeBinding, setPendingNativeBinding] = useState<ModelBinding | null>(null);
   // Shown when the user closes an active session — offers to mark it complete
   // in one step so it's hidden from the resume menu by default.
   const [closePromptFor, setClosePromptFor] = useState<string | null>(null);
@@ -2178,7 +2194,7 @@ function AppInner() {
     clearMoved(id);
   }, [dispatch, clearMoved]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => {
     const cwd = projectPath;
 
     // Plan 2b Task 9 — conversation-lease takeover gate. Before resuming, ask the
@@ -2221,13 +2237,16 @@ function AppInner() {
       }
     } catch { /* never-block: a lease query/takeover failure must not stop the resume */ }
 
-    // Native-harness resume: the model binding lives in the session's stored
-    // header, so we send NO binding — SessionManager's native branch tolerates a
-    // missing binding when resumeSessionId is set (it only throws for a FRESH
-    // native session with no binding). The main-side create handler calls
-    // nativeHost.resume(), which wires the session live; we then request a
-    // transcript replay so the chat reducer hydrates from the persisted events
-    // (getHistory returns native events for a live native id).
+    // Native-harness resume. Task 6 / Destin's ruling: NEVER auto-launch a
+    // binding — the resume-time model selector is ALWAYS the source of the
+    // binding this resume launches on, on any device. Without one in hand yet,
+    // open the pre-resume picker modal instead of creating with the (possibly
+    // stale, possibly entirely absent on this device) header binding.
+    if (provider === 'native' && !nativeBinding) {
+      setPendingNativeBinding(null);
+      setPendingNativeResume({ claudeSessionId, projectSlug, projectPath, launchInNewWindow });
+      return;
+    }
     if (provider === 'native') {
       const nativeSession = await (window.claude.session.create as any)({
         name: 'Resuming…',
@@ -2235,6 +2254,7 @@ function AppInner() {
         skipPermissions: false, // native sessions have no PTY permission flow
         provider: 'native',
         resumeSessionId: claudeSessionId,
+        binding: nativeBinding, // the selector's pick — becomes the live binding (native-session-host.ts resume() override)
       });
       if (!nativeSession?.id) return;
       // I1 fix (resume path): same invoke-result patch as createSession — the
@@ -3216,6 +3236,52 @@ function AppInner() {
                 onClick={() => resolveTakeover(true)}
               >
                 Take over
+              </Button>
+            </div>
+          </OverlayPanel>
+        </>
+      )}
+      {/* Task 6 — pre-resume model picker for a native conversation resumed
+          from a call site with no inline picker of its own (the Resume
+          Browser's expanded row has one and never opens this — see
+          pendingNativeResume's doc comment above). Same NativeModelSelect as
+          the Resume Browser; Resume stays disabled until a binding exists —
+          Destin's ruling forbids auto-launching one. Cancel discards the
+          pending resume entirely (no partial/implicit resume). */}
+      {pendingNativeResume && (
+        <>
+          <Scrim layer={2} onClick={() => { setPendingNativeResume(null); setPendingNativeBinding(null); }} />
+          <OverlayPanel
+            layer={2}
+            role="dialog"
+            aria-modal
+            aria-label="Choose a model to resume with"
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+          >
+            <h3 className="text-sm font-semibold text-fg mb-3">Choose a model to resume with</h3>
+            <NativeModelSelect onSelect={(binding) => setPendingNativeBinding(binding)} />
+            <div className="flex justify-end gap-2 mt-4">
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={() => { setPendingNativeResume(null); setPendingNativeBinding(null); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="lg"
+                disabled={!pendingNativeBinding}
+                onClick={() => {
+                  const p = pendingNativeResume;
+                  const binding = pendingNativeBinding;
+                  if (!p || !binding) return;
+                  setPendingNativeResume(null);
+                  setPendingNativeBinding(null);
+                  void handleResumeSession(p.claudeSessionId, p.projectSlug, p.projectPath, undefined, undefined, p.launchInNewWindow, 'native', binding);
+                }}
+              >
+                Resume
               </Button>
             </div>
           </OverlayPanel>

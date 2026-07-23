@@ -127,6 +127,36 @@ describe('NativeSessionHost', () => {
     await host2.destroyAll();
   });
 
+  // Task 6: resume() takes an optional bindingOverride — the RESUME-TIME model
+  // selector's pick, which must win over the persisted header binding. Ordering
+  // matters: ipc-handlers.ts reads nativeHost.modelForSession() for the eager
+  // loadModel() call the instant resume() returns, so the override has to be
+  // applied INSIDE resume() (constructing the HarnessSession with it) rather
+  // than via a post-hoc setBinding, which would race that read and load the
+  // header's (possibly-absent) model instead.
+  it('resume applies a binding override before anything reads the model', async () => {
+    await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
+    await host.destroy('s-1');
+
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
+    expect(resumed).toBe(true);
+    expect(host2.modelForSession('s-1')).toBe('model-B');
+    expect(host2.getBinding('s-1')).toEqual({ providerId: 'local', modelId: 'model-B' });
+    await host2.destroyAll();
+  });
+
+  it('resume WITHOUT an override still uses the header binding (no local match ⇒ no substitution)', async () => {
+    await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
+    await host.destroy('s-2');
+
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const resumed = await host2.resume('s-2', root);
+    expect(resumed).toBe(true);
+    expect(host2.modelForSession('s-2')).toBe('header-model');
+    await host2.destroyAll();
+  });
+
   it('list() surfaces sessions for the Resume Browser with provider tag', async () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     const rows = host.list();

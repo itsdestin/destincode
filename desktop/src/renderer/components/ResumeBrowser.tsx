@@ -18,6 +18,8 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
+import NativeModelSelect from './NativeModelSelect';
+import type { ModelBinding } from '../../shared/provider-types';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -184,12 +186,16 @@ interface PastSession {
   // into ~/.claude/projects yet (sync in flight). Resume is disabled too —
   // distinct flag so the note can say so accurately.
   notSyncedYet?: boolean;
+  // Task 6: portable reference to the model this conversation last ran a turn
+  // with (Conversation Store, Task 4/5). Pre-fills the native resume selector
+  // below when it matches a model available on THIS device.
+  lastUsedModel?: import('../../shared/types').PortableModelRef;
 }
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string) => void;
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => void;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -214,6 +220,15 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [resumeModel, setResumeModel] = useState<string>(defaultModel || 'sonnet');
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
+  // Task 6 — native resume ALWAYS offers the provider-scoped model selector
+  // (Destin's ruling: never auto-launch a binding). null until the user picks
+  // a row OR NativeModelSelect auto-selects a prefill match; the Resume button
+  // stays disabled for a native row until this is set. Reset whenever a
+  // (possibly different) row expands/collapses — a fresh NativeModelSelect
+  // mount per expansion is what actually resets ITS internal state; this just
+  // keeps the Resume-button gate and the value threaded through onResume in
+  // sync with that same lifecycle.
+  const [nativeResumeBinding, setNativeResumeBinding] = useState<ModelBinding | null>(null);
   // Launch the resumed session in a new peer window (multi-window only).
   const [resumeLaunchInNewWindow, setResumeLaunchInNewWindow] = useState(false);
   const detachAvailable = typeof (window as any).claude?.detach?.openDetached === 'function';
@@ -250,6 +265,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setExpandedId(null);
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
+      setNativeResumeBinding(null);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
       // Reset filter pills each open — current spec: no persistence.
@@ -459,14 +475,19 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
+      setNativeResumeBinding(null);
     }
   };
 
   const handleConfirmResume = (s: PastSession) => {
-    // Native sessions reuse the binding stored in their header — the CC-only
-    // model / skip-permissions choices are irrelevant, so pass the current
-    // (default) values but tag the row's provider so App takes the native path.
-    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider);
+    // Native sessions: the CC-only model / skip-permissions choices are
+    // irrelevant (no PTY, no /model or /effort), so pass the current (default)
+    // values but tag the row's provider so App takes the native path, PLUS the
+    // binding the user just picked (or the prefill auto-selected) in the
+    // NativeModelSelect below — the Resume button is disabled until this is
+    // set (see the (s.provider === 'native' && !nativeResumeBinding) guard on
+    // the button), so it is always present here for a native row.
+    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider, nativeResumeBinding ?? undefined);
     onClose();
   };
 
@@ -527,7 +548,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             )}
           </>
         ) : (
-          <p className="text-[10px] text-fg-muted">Resumes with this conversation's saved model.</p>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+            {/* Task 6 — native resume ALWAYS offers this selector (never
+                auto-launches a binding). Prefilled from the conversation's
+                synced lastUsedModel when it matches a model available on
+                THIS device; no local match leaves it un-prefilled — never an
+                error, never a substitute. onSelect both handles a manual pick
+                AND the (only-once, first-load) prefill auto-select. */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <NativeModelSelect
+                prefill={s.lastUsedModel}
+                onSelect={(binding) => setNativeResumeBinding(binding)}
+              />
+            </div>
+          </div>
         )}
 
         {/* Launch in new window — hidden on remote/Android (single-window) */}
@@ -592,6 +627,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             native sessions have no PTY permission flow, so it never applies. */}
         {(() => {
           const dangerous = s.provider !== 'native' && resumeDangerous;
+          // Task 6 — Resume stays disabled for a native row until a model
+          // binding exists (manual pick or a prefill auto-select). Never lets
+          // resume proceed with no binding to launch — that would be exactly
+          // the auto-launch Destin's ruling forbids.
+          const nativeNeedsPick = s.provider === 'native' && !nativeResumeBinding;
           return (
             /* Filled danger for skip-permissions — same call as SessionStrip's
                Create button (spec §11, change 62). See the longer note there. */
@@ -599,6 +639,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               variant={dangerous ? 'danger' : 'primary'}
               size="lg"
               onClick={() => handleConfirmResume(s)}
+              disabled={nativeNeedsPick}
               className="w-full py-1.5"
             >
               {dangerous ? 'Resume (Dangerous)' : 'Resume Session'}

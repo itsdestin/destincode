@@ -323,8 +323,17 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   /** Rebuild a live session from its stored header + events. Returns false when
-   *  no native session file exists for this id (caller should fall through). */
-  async resume(sessionId: string, cwd: string): Promise<boolean> {
+   *  no native session file exists for this id (caller should fall through).
+   *  `bindingOverride` (Task 6 — resume-time model selector) wins over the
+   *  persisted header binding when present. The stored header is NEVER
+   *  rewritten (single-writer invariant, native-home.ts) — like the existing
+   *  mid-session setBinding(), this override is in-memory only for the live
+   *  session. It MUST be applied here, before returning, rather than via a
+   *  post-resume setBinding: ipc-handlers.ts reads modelForSession() for the
+   *  eager loadModel() the instant resume() resolves, and a later setBinding
+   *  would race that read and load the header's (possibly wrong/absent) model
+   *  first. */
+  async resume(sessionId: string, cwd: string, bindingOverride?: ModelBinding): Promise<boolean> {
     // SINGLE-WRITER GUARD (2026-07-18): tear down any session already live under
     // this id BEFORE wiring a new one. Without this, resuming an id that is still
     // live leaves the old HarnessSession's transcript-event listener attached —
@@ -345,12 +354,13 @@ export class NativeSessionHost extends EventEmitter {
     // resolves to Assistant. The stored header is NEVER rewritten (spec
     // decision 8) — the mapping lives only here + in presetIdFor.
     const preset = resolvePreset(header.harnessId);
-    const contextLength = await this.contextLengthFor(header.binding);
+    const binding = bindingOverride ?? header.binding;
+    const contextLength = await this.contextLengthFor(binding);
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId, cwd, harness: preset.manifest, binding: header.binding, contextLength,
+      { sessionId, cwd, harness: preset.manifest, binding, contextLength,
         ...this.toolWiring(sessionId, cwd, preset) },
       this.modelFactory,
     );
