@@ -178,15 +178,20 @@ export function GitReviewView({
             {uncommitted.binary ? (
               <div className="text-[11px] text-fg-muted py-1">Binary or oversized file — no line diff.</div>
             ) : (
-              // Cap the diff's own height and let IT scroll, not the card —
-              // a long diff used to render full-height, ballooning the card
-              // to the point it looked scrollable but wasn't. UnifiedDiff
-              // already frames itself (rounded-sm border-edge), so this outer
-              // box only adds the height cap, no second border. The action
-              // row below (staged checkbox / revert button) stays a
-              // sibling of this div, not a child, so it's always visible.
-              <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
-                <UnifiedDiff oldStr="" newStr="" structuredPatch={uncommitted.hunks} />
+              // This box is the SOLE scroll surface for the diff text: it caps
+              // at 45vh and scrolls, while UnifiedDiff renders full-height via
+              // `fill` (its own 15-line cap + "Expand" button would otherwise
+              // stack a second, redundant scrollbar inside this one). No
+              // `overscroll-contain` — trapping the wheel here created a
+              // dead-zone where hovering a diff blocked the outer timeline from
+              // scrolling; letting it chain lets a long list of expanded
+              // commits and each diff's own text both scroll naturally.
+              // UnifiedDiff frames itself (rounded-sm border-edge), so this box
+              // adds only the height cap, no second border. The action row
+              // below stays a sibling of this div, not a child, so it's always
+              // visible.
+              <div className="max-h-[45vh] overflow-y-auto">
+                <UnifiedDiff oldStr="" newStr="" structuredPatch={uncommitted.hunks} fill />
               </div>
             )}
             <div className="flex items-center gap-1.5 mt-2">
@@ -263,11 +268,11 @@ export function GitReviewView({
               {body && typeof body === 'object' && !Array.isArray(body) && (
                 <div className="text-[11px] text-fg-muted py-1 break-words">{body.error}</div>
               )}
-              {/* Same height-cap-with-inner-scroll wrapper as the uncommitted
-                  card above — see the WHY comment there. */}
+              {/* Same single-scroll-surface wrapper as the uncommitted card
+                  above — see the WHY comment there. */}
               {Array.isArray(body) && (
-                <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
-                  <UnifiedDiff oldStr="" newStr="" structuredPatch={body} />
+                <div className="max-h-[45vh] overflow-y-auto">
+                  <UnifiedDiff oldStr="" newStr="" structuredPatch={body} fill />
                 </div>
               )}
             </GitReviewCard>
