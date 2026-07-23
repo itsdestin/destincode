@@ -64,20 +64,15 @@ const ICON_PROPS = {
   'aria-hidden': true,
 } as const;
 
-export function BuddyBarApp() {
+/**
+ * The three action buttons alone, no wrapper/positioning — extracted (Task 6)
+ * so the Linux-Wayland overlay (BuddyOverlayApp, one shared window) can host
+ * the exact same buttons as the three-window model's own bar window,
+ * producing identical DOM on both platforms instead of a second hand-copied
+ * implementation drifting out of sync with this one.
+ */
+export function BuddyBarButtons() {
   const [capturing, setCapturing] = useState(false);
-  // CSS-driven reveal: main pushes buddy:bar-state; the window itself stays
-  // Electron-shown so opacity can animate (see buddy.css fade rules).
-  const [visible, setVisible] = useState(true);
-
-  useEffect(() => {
-    document.body.setAttribute('data-mode', 'buddy-bar');
-  }, []);
-
-  useEffect(() => {
-    const off = window.claude?.buddy?.onBarState?.((s: { visible: boolean }) => setVisible(!!s.visible));
-    return off;
-  }, []);
 
   const onCapture = useCallback(async () => {
     if (capturing) return;
@@ -99,6 +94,51 @@ export function BuddyBarApp() {
   }, []);
 
   return (
+    <>
+      <BarButton label="Screenshot desktop" onClick={onCapture} busy={capturing}>
+        {/* camera */}
+        <svg {...ICON_PROPS}>
+          <path d="M4 8h3l2-2h6l2 2h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+          <circle cx="12" cy="13" r="4" />
+        </svg>
+      </BarButton>
+      <BarButton label="Open YouCoded" onClick={onOpenMain}>
+        {/* expand / open-in-window */}
+        <svg {...ICON_PROPS}>
+          <polyline points="15 3 21 3 21 9" />
+          <polyline points="9 21 3 21 3 15" />
+          <line x1="21" y1="3" x2="14" y2="10" />
+          <line x1="3" y1="21" x2="10" y2="14" />
+        </svg>
+      </BarButton>
+      <BarButton label="Hide buddy until restart" onClick={onHide}>
+        {/* eye-off */}
+        <svg {...ICON_PROPS}>
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+          <line x1="1" y1="1" x2="23" y2="23" />
+        </svg>
+      </BarButton>
+    </>
+  );
+}
+
+export function BuddyBarApp() {
+  // CSS-driven reveal: main pushes buddy:bar-state; the window itself stays
+  // Electron-shown so opacity can animate (see buddy.css fade rules).
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    document.body.setAttribute('data-mode', 'buddy-bar');
+  }, []);
+
+  useEffect(() => {
+    const off = window.claude?.buddy?.onBarState?.((s: { visible: boolean }) => setVisible(!!s.visible));
+    return off;
+  }, []);
+
+  return (
     <ThemeProvider>
       <div
         className="buddy-bar-root"
@@ -113,31 +153,7 @@ export function BuddyBarApp() {
           background: 'transparent',
         }}
       >
-        <BarButton label="Screenshot desktop" onClick={onCapture} busy={capturing}>
-          {/* camera */}
-          <svg {...ICON_PROPS}>
-            <path d="M4 8h3l2-2h6l2 2h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
-            <circle cx="12" cy="13" r="4" />
-          </svg>
-        </BarButton>
-        <BarButton label="Open YouCoded" onClick={onOpenMain}>
-          {/* expand / open-in-window */}
-          <svg {...ICON_PROPS}>
-            <polyline points="15 3 21 3 21 9" />
-            <polyline points="9 21 3 21 3 15" />
-            <line x1="21" y1="3" x2="14" y2="10" />
-            <line x1="3" y1="21" x2="10" y2="14" />
-          </svg>
-        </BarButton>
-        <BarButton label="Hide buddy until restart" onClick={onHide}>
-          {/* eye-off */}
-          <svg {...ICON_PROPS}>
-            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-            <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-            <line x1="1" y1="1" x2="23" y2="23" />
-          </svg>
-        </BarButton>
+        <BuddyBarButtons />
       </div>
     </ThemeProvider>
   );

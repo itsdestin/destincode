@@ -92,6 +92,7 @@ import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
 import { BuddyBarApp } from './components/buddy/BuddyBarApp';
+import { BuddyOverlayApp } from './components/buddy/BuddyOverlayApp';
 
 // Dev-only ToolCard fixture sandbox wrapper. The React.lazy + dynamic
 // import() live inside a `import.meta.env.DEV` ternary so Vite statically
@@ -3329,6 +3330,12 @@ export default function App() {
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
   if (buddyMode === 'buddy-bar') return <BuddyBarApp />;
+  // Linux Wayland can't reposition BrowserWindows, so the whole floater
+  // (mascot + chat + bar) mounts as DOM inside one screen-sized overlay
+  // window instead of the three separate windows above — see
+  // BuddyOverlayManager (main) / chooseBuddyStrategy for how a platform ends
+  // up on this route. Other platforms never set ?mode=buddy-overlay.
+  if (buddyMode === 'buddy-overlay') return <BuddyOverlayApp />;
 
   // Main app wrapped in providers
   return (

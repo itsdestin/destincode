@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { isAndroid } from '../platform';
+import { useCurrentPlatform } from '../state/platform';
 import ThemeScreen from './ThemeScreen';
 import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
@@ -722,18 +723,69 @@ function BuddyButton() {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+  // Task 8: KDE-only "pin above other windows" toggle. Gated on the real OS
+  // platform (not the app-shell 'electron'/'android'/'browser' axis in
+  // ../platform) since it must not render on Windows/macOS desktop builds.
+  const platform = useCurrentPlatform();
+  const [keepAboveEnabled, setKeepAboveEnabled] = useState(false);
+  // Transient, non-persisted: set when a toggle action's setKeepAbove
+  // resolves false (KWin unreachable right now), cleared on the next
+  // successful apply or when the popup is reopened. Never a guessed cause —
+  // see toggleKeepAbove below for why this specific copy is accurate.
+  const [keepAboveHint, setKeepAboveHint] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktopShell()) return;
     let alive = true;
     window.claude.buddy?.getStatus?.()
-      .then((s: { dismissed: boolean }) => { if (alive) setDismissed(!!s?.dismissed); })
+      .then((s: { dismissed: boolean; keepAbove?: boolean }) => {
+        if (!alive) return;
+        setDismissed(!!s?.dismissed);
+        setKeepAboveEnabled(!!s?.keepAbove);
+      })
       .catch(() => {});
     const off = window.claude.buddy?.onStatusChanged?.(
       (s: { dismissed: boolean }) => setDismissed(!!s?.dismissed),
     );
     return () => { alive = false; off?.(); };
   }, []);
+
+  // Controller ruling (2026-07-22): the toggle is a saved PREFERENCE, not a
+  // live KWin-state indicator — the plan copy itself ("KDE only. No effect
+  // on other desktops.") already establishes that semantics, and it must
+  // display/persist the user's request in both directions, exactly like
+  // `toggle` below and like getStatus()'s mount re-hydration (which reads
+  // the persisted request, not a live probe).
+  //
+  // Reconciling the visual state against applyKwinKeepAbove's result was
+  // tried and rejected in two forms: symmetric revert makes the toggle
+  // permanently un-flippable on GNOME (every apply resolves false, so it
+  // would always snap back); asymmetric (enable-only) revert let a failed
+  // OFF silently display "off" while the window stayed pinned — a new,
+  // opposite contradiction, not a fix (see the WHY comment on
+  // BuddyOverlayManager's applyKeepAbove call site for why that stale-
+  // pinned edge is acceptable to just leave alone).
+  //
+  // So: flip and keep the local state unconditionally. The REAL result only
+  // drives a transient, honest inline hint — never a guessed cause (Destin's
+  // error-message rule): `false` means exactly "qdbus was missing or the
+  // DBus call failed", which is what the copy below says, nothing more.
+  const toggleKeepAbove = useCallback(() => {
+    const next = !keepAboveEnabled;
+    setKeepAboveEnabled(next);
+    const KWIN_UNREACHABLE_HINT =
+      "Couldn't reach KWin — the preference is saved; it's applied whenever the buddy window is (re)created on KDE Plasma.";
+    window.claude.buddy?.setKeepAbove?.(next)
+      .then((ok: boolean) => setKeepAboveHint(ok ? null : KWIN_UNREACHABLE_HINT))
+      .catch(() => setKeepAboveHint(KWIN_UNREACHABLE_HINT));
+  }, [keepAboveEnabled]);
+
+  // The hint describes the last toggle action, not persistent state —
+  // clear it whenever the popup is reopened so a stale failure from a
+  // previous session/click doesn't linger indefinitely.
+  useEffect(() => {
+    if (open) setKeepAboveHint(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -803,6 +855,24 @@ function BuddyButton() {
                   Hidden until restart{' · '}
                   <button onClick={showNow} className="text-accent hover:underline">Show now</button>
                 </p>
+              )}
+              {/* Task 8: Linux-only — Electron's setAlwaysOnTop is a no-op on
+                  Wayland; this opt-in runs a KWin scripting DBus call instead,
+                  which only does anything on KDE Plasma (see kwin-keep-above.ts). */}
+              {platform === 'linux' && (
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-edge">
+                  <div>
+                    <span className="text-xs text-fg font-medium block">Pin buddy above other windows (KDE only)</span>
+                    <p className="text-[10px] text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
+                    {/* Honest, non-committal per-action feedback — NOT the toggle's
+                        own state (that's the preference, above). Only appears right
+                        after a click that couldn't reach KWin; see toggleKeepAbove. */}
+                    {keepAboveHint && (
+                      <p className="text-[10px] text-fg-muted mt-1">{keepAboveHint}</p>
+                    )}
+                  </div>
+                  <Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />
+                </div>
               )}
             </div>
           </div>

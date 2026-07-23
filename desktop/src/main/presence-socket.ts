@@ -21,6 +21,15 @@ export type WebSocketCtor = ReconnectingWebSocketCtor;
 
 export interface PresenceSocket {
   setDesired(want: boolean): void;
+  // System sleep gate (powerMonitor suspend/resume). Kept SEPARATE from
+  // setDesired: desired is the RENDERER's intent (sign-in/incognito/leader)
+  // and must survive a sleep/wake cycle unchanged.
+  setSuspended(asleep: boolean): void;
+  // User-idle gate (no system OR remote input for the idle threshold — see the
+  // poller in social-handlers.ts). Same composition rule as setSuspended:
+  // presence means a HUMAN is around, so an app left running 24/7 on an awake
+  // machine (remote-access keep-awake) must not read "Online" forever.
+  setIdle(idle: boolean): void;
   send(message: Record<string, unknown>): void;
   isConnected(): boolean;
   destroy(): void;
@@ -91,8 +100,34 @@ export function createPresenceSocket(opts: {
     onTeardown: () => { lastPresence = null; },
   });
 
+  // Suspend gate (2026-07-22, "closed MacBook stays Online" follow-up to the
+  // ghost-socket fix): the engine's effective desire is rendererDesired AND
+  // awake. On OS suspend we close NOW, while the network is still up, so the
+  // close frame reaches the server and friends see "Last seen just now"
+  // immediately — instead of a silently-dead socket riding the server's
+  // staleness timeout. macOS dark wakes never fire powerMonitor 'resume', so a
+  // lid-closed laptop can't blip back online from a maintenance wake; a real
+  // wake restores whatever the renderer wanted.
+  let rendererDesired = false;
+  let suspended = false;
+  let idle = false;
+  const applyDesire = () => engine.setDesired(rendererDesired && !suspended && !idle);
+
   return {
-    setDesired(want) { engine.setDesired(want); },
+    setDesired(want) { rendererDesired = want; applyDesire(); },
+    setSuspended(asleep) {
+      if (suspended === asleep) return;
+      suspended = asleep;
+      applyDesire();
+    },
+    // Independent axis from suspend: a dark wake clears suspended but not
+    // idle, so a lid bumped open cannot flash a false "Online" — only real
+    // input (which clears idle via the poller) reconnects.
+    setIdle(nowIdle) {
+      if (idle === nowIdle) return;
+      idle = nowIdle;
+      applyDesire();
+    },
     send(message) { engine.send(JSON.stringify(message)); },
     // True only when a socket exists AND finished its handshake — lets the
     // presence-send handler return an honest failure instead of silently
