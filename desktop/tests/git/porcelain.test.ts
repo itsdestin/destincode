@@ -72,6 +72,13 @@ describe('parseRenamePath', () => {
     });
   });
 
+  it('collapses the doubled slash from an empty new-side brace rename', () => {
+    expect(parseRenamePath('dir/{sub => }/g.md')).toEqual({
+      path: 'dir/g.md',
+      renamedFrom: 'dir/sub/g.md',
+    });
+  });
+
   it('splits the plain "old => new" form when there is no common affix', () => {
     expect(parseRenamePath('old.md => new.md')).toEqual({
       path: 'new.md',

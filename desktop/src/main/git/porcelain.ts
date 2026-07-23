@@ -71,6 +71,13 @@ export function parseNumstat(text: string): Map<string, { added: number; removed
 //     collapse it back to one.
 //   - plain form, when there's no common affix: "old.md => new.md".
 // Extracted as its own pure function so each shape unit-tests directly.
+//
+// ACCEPTED LIMITATION: a real filename containing a literal " => " is
+// indistinguishable from a rename in git's human-readable numstat output and
+// will be misread as one. Consequence is display-only; the misread path still
+// passes the full path gate at fetch time. Proper fix is the planned
+// `--numstat -z` migration where rename paths arrive as separate
+// NUL-delimited fields.
 export function parseRenamePath(field: string): { path: string; renamedFrom?: string } {
   const brace = /^(.*?)\{(.*) => (.*)\}(.*)$/.exec(field);
   if (brace) {
