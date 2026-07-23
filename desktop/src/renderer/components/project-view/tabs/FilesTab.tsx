@@ -122,7 +122,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // Reveal button above.
 import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
 import { ChevronIcon } from '../../Icons';
-import { Button } from '../../ui';
+import { Button, EmptyState } from '../../ui';
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
 // fileTypeGroup, so the list rows read like a miniature file listing.
@@ -147,6 +147,7 @@ export function FilesTab({
   refreshKey,
   mode,
   onMutated,
+  onClearSearch,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
@@ -159,6 +160,9 @@ export function FilesTab({
   // the hero/segment counts without forcing this tab to reload (which would
   // reset the breadcrumb + selection).
   onMutated?: () => void;
+  // Clears the shared search box (owned by ProjectView) from the no-results
+  // empty state — without it that state would be a dead end.
+  onClearSearch?: () => void;
 }) {
   // Root breadcrumb label + empty-state wording follow the mode.
   const rootLabel = mode === 'allfiles' ? 'All files' : 'Artifacts';
@@ -281,6 +285,9 @@ export function FilesTab({
   // an empty hit list and the search stays names-only there).
   const [contentHits, setContentHits] = useState<RankableHit[]>([]);
   const [contentTruncated, setContentTruncated] = useState(false);
+  // True from the moment a content search is queued until it settles. Gates the
+  // no-results empty state so it never flashes mid-search.
+  const [contentSearching, setContentSearching] = useState(false);
   // Groups are collapsed by default (Destin, 2026-07-22) — a fresh query
   // collapses everything again so results always start as a scannable summary.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -302,17 +309,23 @@ export function FilesTab({
     if (!q || q.length < 2 || getPlatform() !== 'electron') {
       setContentHits([]);
       setContentTruncated(false);
+      setContentSearching(false);
       return;
     }
     let cancelled = false;
+    // Mark in-flight IMMEDIATELY (before the 300ms debounce), so the no-results
+    // empty state below can't flash during the debounce + IPC round trip on a
+    // query that is about to return hits.
+    setContentSearching(true);
     const t = setTimeout(() => {
       Promise.resolve((window.claude as any).artifacts.searchContent?.(project.path, q))
         .then((res: any) => {
           if (cancelled) return;
           setContentHits(res?.ok ? (res.hits ?? []) : []);
           setContentTruncated(!!res?.truncated);
+          setContentSearching(false);
         })
-        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); } });
+        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); setContentSearching(false); } });
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
   }, [search, project.path]);
@@ -345,6 +358,19 @@ export function FilesTab({
     () => (flat ? [...filtered].sort(fileComparator(sortBy)) : filtered),
     [filtered, flat, sortBy],
   );
+  // Content hits minus anything already shown as a name match. Hoisted out of the
+  // render below so the "no results" check and the content section agree on one
+  // number instead of deduping twice.
+  const contentRows = useMemo(
+    () => dedupeContentHits(contentHits, new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')))),
+    [contentHits, flatResults],
+  );
+  // A search that matched nothing, anywhere — and isn't still running. Destin
+  // originally ruled (2026-07-22) that the "(0)" section headers were enough,
+  // then hit it live and asked for the Resume-browser treatment instead
+  // (2026-07-23): a real empty state with a way out, since two "(0)" headers and
+  // no content read as a dead end.
+  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0 && !contentSearching;
   const segments = currentDir ? currentDir.split('/') : [];
 
   // One file card — reused by both the flat search results and the folder view.
@@ -455,9 +481,9 @@ export function FilesTab({
           </Button>
         </div>
       )}
-      {/* Search mode has NO prose empty state — the "(0)" in the section
-          headers below carries it (Destin, 2026-07-22). The line remains for
-          the type-filter flatten, which has no headers. */}
+      {/* Search mode's empty state is the EmptyState in the grid below (it
+          replaces the "(0)" headers). This line is for the type-filter flatten,
+          which has no headers and no search to clear. */}
       {!loading && !gated && flat && !searching && flatResults.length === 0 && (
         <p className="text-sm text-fg-muted">Nothing matches the current filters.</p>
       )}
@@ -488,15 +514,25 @@ export function FilesTab({
         {flat
           ? (
             <>
-              {searching && (
+              {/* Nothing matched anywhere: one empty state WITH a way out, instead
+                  of two bare "(0)" headers over blank space (Destin, 2026-07-23).
+                  Same EmptyState + action pattern as the Resume browser. */}
+              {noSearchResults && (
+                <div className="col-span-full">
+                  <EmptyState
+                    message={<>No {noun} match “{search.trim()}”.</>}
+                    action={onClearSearch ? { label: 'Clear search', onClick: onClearSearch } : undefined}
+                  />
+                </div>
+              )}
+              {searching && !noSearchResults && (
                 <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
                   Matches by file name ({flatResults.length})
                 </div>
               )}
               {flatResults.map(renderFileCard)}
-              {searching && (() => {
-                const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
-                const rows = dedupeContentHits(contentHits, namePaths);
+              {searching && !noSearchResults && (() => {
+                const rows = contentRows;
                 // Group + sort BEFORE capping, so the biggest groups survive the cut.
                 const all = groupContentHits(rows);
                 const { groups, shownRows, capped: displayCapped } = capGroups(all, MAX_CONTENT_ROWS);
