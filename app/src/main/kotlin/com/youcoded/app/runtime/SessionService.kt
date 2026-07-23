@@ -3771,17 +3771,29 @@ class SessionService : Service() {
      * Runs gh commands using the Termux runtime environment (linker64 routing).
      * Mirrors the desktop publish flow: verify auth, fork, branch, upload, PR.
      */
-    private suspend fun publishPluginViaGh(pluginId: String): JSONObject = withContext(Dispatchers.IO) {
+    /**
+     * Shared fork-and-PR publisher for community submissions (plugins →
+     * wecoded-marketplace, themes → wecoded-themes). Extracted from the former
+     * publishPluginViaGh/publishThemeViaGh, which were ~110 lines of byte-identical
+     * fork → create-branch → recursive-upload → open-PR logic. Desktop already factored
+     * the equivalent into github-fork-publish.ts (forkPublish); this brings Android to
+     * the same single-helper shape (dead/duplicative-code review, 2026-07-22).
+     *
+     * gh routes through /system/bin/linker64 for SELinux (see android-runtime.md).
+     * `noun` is the capitalized kind ("Plugin"/"Theme"); branch prefix, repo subdir, and
+     * PR text all derive from it. `resolveDir` runs on the IO dispatcher and returns the
+     * local directory to upload (letting each caller do its own existence check inline).
+     */
+    private suspend fun forkPublishViaGh(
+        upstreamRepo: String,
+        noun: String,
+        id: String,
+        resolveDir: () -> File,
+    ): JSONObject = withContext(Dispatchers.IO) {
         val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
         val env = bs.buildRuntimeEnv().toMutableMap()
-        // Look for the plugin in both the legacy toolkit root and the
-        // marketplace subtree — match whichever directory actually exists.
-        val pluginDir = com.youcoded.app.skills.ClaudeCodeRegistry
-            .listInstalledPluginDirs(bs.homeDir)
-            .firstOrNull { it.name == pluginId }
-            ?: throw IllegalStateException("Plugin directory not found: $pluginId")
-
         val ghBin = File(bs.usrDir, "bin/gh").absolutePath
+        val sourceDir = resolveDir()
 
         // Helper: run a gh command and return stdout
         fun runGh(vararg args: String): String {
@@ -3797,18 +3809,18 @@ class SessionService : Service() {
             return stdout.trim()
         }
 
-        // 1. Get GitHub username
         val username = runGh("api", "user", "--jq", ".login")
         if (username.isBlank()) throw IllegalStateException("GitHub CLI not authenticated")
 
-        val upstreamRepo = "itsdestin/wecoded-marketplace"
-        val forkRepo = "$username/wecoded-marketplace"
-        val branchName = "plugin/$pluginId"
+        val branchPrefix = noun.lowercase()          // "plugin" / "theme"
+        val repoSubdir = "${branchPrefix}s"          // "plugins" / "themes"
+        val forkRepo = "$username/${upstreamRepo.substringAfter('/')}"
+        val branchName = "$branchPrefix/$id"
 
-        // 2. Fork (idempotent)
+        // Fork (idempotent)
         try { runGh("repo", "fork", upstreamRepo, "--clone=false") } catch (_: Exception) {}
 
-        // 3. Get base SHA and create branch
+        // Get base SHA and create branch from upstream main
         val baseSha = runGh("api", "repos/$upstreamRepo/git/ref/heads/main", "--jq", ".object.sha")
         try {
             runGh("api", "repos/$forkRepo/git/refs", "-X", "POST",
@@ -3818,7 +3830,9 @@ class SessionService : Service() {
                 "-f", "sha=$baseSha", "-f", "force=true")
         }
 
-        // 4. Upload plugin files (skip sensitive files, .git, node_modules)
+        // Upload files (skip sensitive files, .git, node_modules). Superset of the two
+        // former lists — the plugin path already blocked credentials.json/secrets.*; a
+        // theme never contains those, so applying the same list to both is purely safer.
         val sensitivePatterns = listOf(
             Regex("\\.env$", RegexOption.IGNORE_CASE),
             Regex("\\.env\\..*", RegexOption.IGNORE_CASE),
@@ -3839,7 +3853,7 @@ class SessionService : Service() {
                     }
                 } else {
                     if (sensitivePatterns.any { it.containsMatchIn(relPath) }) return@forEach
-                    val repoPath = "plugins/$pluginId/$relPath"
+                    val repoPath = "$repoSubdir/$id/$relPath"
                     val content = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
                     try {
                         runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
@@ -3857,13 +3871,13 @@ class SessionService : Service() {
                 }
             }
         }
-        uploadRecursive(pluginDir, "")
+        uploadRecursive(sourceDir, "")
 
         if (uploadedFiles.isEmpty()) throw IllegalStateException("No files to upload")
 
-        // 5. Create PR
-        val prTitle = "[Plugin] $pluginId"
-        val prBody = "## New Plugin: $pluginId\n\nSubmitted via YouCoded (Android)\n\n" +
+        // Create PR
+        val prTitle = "[$noun] $id"
+        val prBody = "## New $noun: $id\n\nSubmitted via YouCoded (Android)\n\n" +
             "### Files\n" + uploadedFiles.joinToString("\n") { "- `$it`" }
 
         val prUrl = try {
@@ -3880,109 +3894,24 @@ class SessionService : Service() {
         JSONObject().put("prUrl", prUrl)
     }
 
-    /**
-     * Phase 5b: Publish a user-created theme to wecoded-themes registry via `gh` CLI.
-     * Mirrors publishPluginViaGh but targets the theme registry repo.
-     */
-    private suspend fun publishThemeViaGh(slug: String): JSONObject = withContext(Dispatchers.IO) {
-        val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
-        val env = bs.buildRuntimeEnv().toMutableMap()
-        val themeDir = File(themesDir, slug)
-        if (!themeDir.exists()) throw IllegalStateException("Theme directory not found: $slug")
-
-        val ghBin = File(bs.usrDir, "bin/gh").absolutePath
-
-        // Helper: run a gh command and return stdout (routes through linker64 for SELinux)
-        fun runGh(vararg args: String): String {
-            val envArray = env.map { "${it.key}=${it.value}" }.toTypedArray()
-            val cmd = arrayOf("/system/bin/linker64", ghBin, *args)
-            val process = Runtime.getRuntime().exec(cmd, envArray, bs.homeDir)
-            val stdout = process.inputStream.bufferedReader().readText()
-            val stderr = process.errorStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
-            if (exitCode != 0 && !stderr.contains("already exists")) {
-                throw RuntimeException("gh ${args.firstOrNull()} failed: $stderr")
-            }
-            return stdout.trim()
+    private suspend fun publishPluginViaGh(pluginId: String): JSONObject =
+        forkPublishViaGh("itsdestin/wecoded-marketplace", "Plugin", pluginId) {
+            val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
+            // Look for the plugin in both the legacy toolkit root and the
+            // marketplace subtree — match whichever directory actually exists.
+            com.youcoded.app.skills.ClaudeCodeRegistry
+                .listInstalledPluginDirs(bs.homeDir)
+                .firstOrNull { it.name == pluginId }
+                ?: throw IllegalStateException("Plugin directory not found: $pluginId")
         }
 
-        val username = runGh("api", "user", "--jq", ".login")
-        if (username.isBlank()) throw IllegalStateException("GitHub CLI not authenticated")
-
-        val upstreamRepo = "itsdestin/wecoded-themes"
-        val forkRepo = "$username/wecoded-themes"
-        val branchName = "theme/$slug"
-
-        // Fork (idempotent)
-        try { runGh("repo", "fork", upstreamRepo, "--clone=false") } catch (_: Exception) {}
-
-        // Create branch from upstream main
-        val baseSha = runGh("api", "repos/$upstreamRepo/git/ref/heads/main", "--jq", ".object.sha")
-        try {
-            runGh("api", "repos/$forkRepo/git/refs", "-X", "POST",
-                "-f", "ref=refs/heads/$branchName", "-f", "sha=$baseSha")
-        } catch (_: Exception) {
-            runGh("api", "repos/$forkRepo/git/refs/heads/$branchName", "-X", "PATCH",
-                "-f", "sha=$baseSha", "-f", "force=true")
-        }
-
-        // Upload theme files (skip sensitive files, .git, node_modules)
-        val sensitivePatterns = listOf(
-            Regex("\\.env$", RegexOption.IGNORE_CASE),
-            Regex("\\.env\\..*", RegexOption.IGNORE_CASE),
-            Regex("\\.pem$", RegexOption.IGNORE_CASE),
-            Regex("\\.key$", RegexOption.IGNORE_CASE),
-            Regex("tokens?\\.(json|txt)$", RegexOption.IGNORE_CASE),
-        )
-        val uploadedFiles = mutableListOf<String>()
-
-        fun uploadRecursive(dir: File, prefix: String) {
-            dir.listFiles()?.sortedBy { it.name }?.forEach { file ->
-                val relPath = if (prefix.isEmpty()) file.name else "$prefix/${file.name}"
-                if (file.isDirectory) {
-                    if (file.name != ".git" && file.name != "node_modules") {
-                        uploadRecursive(file, relPath)
-                    }
-                } else {
-                    if (sensitivePatterns.any { it.containsMatchIn(relPath) }) return@forEach
-                    val repoPath = "themes/$slug/$relPath"
-                    val content = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
-                    try {
-                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
-                            "-f", "message=Add $repoPath", "-f", "content=$content", "-f", "branch=$branchName")
-                    } catch (_: Exception) {
-                        val sha = runGh("api", "repos/$forkRepo/contents/$repoPath",
-                            "-q", ".sha", "-H", "Accept: application/vnd.github.v3+json",
-                            "--method", "GET", "-f", "ref=$branchName")
-                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
-                            "-f", "message=Update $repoPath", "-f", "content=$content",
-                            "-f", "sha=$sha", "-f", "branch=$branchName")
-                    }
-                    uploadedFiles.add(repoPath)
-                }
+    /** Phase 5b: Publish a user-created theme to the wecoded-themes registry. */
+    private suspend fun publishThemeViaGh(slug: String): JSONObject =
+        forkPublishViaGh("itsdestin/wecoded-themes", "Theme", slug) {
+            File(themesDir, slug).also {
+                if (!it.exists()) throw IllegalStateException("Theme directory not found: $slug")
             }
         }
-        uploadRecursive(themeDir, "")
-
-        if (uploadedFiles.isEmpty()) throw IllegalStateException("No files to upload")
-
-        // Create PR
-        val prTitle = "[Theme] $slug"
-        val prBody = "## New Theme: $slug\n\nSubmitted via YouCoded (Android)\n\n" +
-            "### Files\n" + uploadedFiles.joinToString("\n") { "- `$it`" }
-
-        val prUrl = try {
-            runGh("pr", "create", "--repo", upstreamRepo,
-                "--head", "$username:$branchName", "--title", prTitle, "--body", prBody)
-        } catch (e: Exception) {
-            val existing = runGh("pr", "list", "--repo", upstreamRepo,
-                "--head", "$username:$branchName", "--json", "url", "--jq", ".[0].url")
-            if (existing.isNotBlank()) existing
-            else throw RuntimeException("Failed to create PR: ${e.message}")
-        }
-
-        JSONObject().put("prUrl", prUrl)
-    }
 
     // ── Phase 5a: Theme marketplace helpers ────────────────────────
     // Registry URL matches desktop's theme-marketplace-provider.ts REGISTRY_URL
