@@ -86,10 +86,18 @@ export function UnifiedDiff({
   oldStr,
   newStr,
   structuredPatch,
+  fill,
 }: {
   oldStr: string;
   newStr: string;
   structuredPatch?: StructuredPatchHunk[];
+  /** When a host wraps this diff in its own scroll container (the git review
+   *  timeline caps each diff at 45vh), the internal 15-line preview cap and its
+   *  "Expand" button are redundant — they stack a second scrollbar inside the
+   *  host's and the "Expand" click barely moves anything. `fill` renders every
+   *  row at full height and drops the button so the HOST is the sole scroll
+   *  surface for the diff text. */
+  fill?: boolean;
 }) {
   // Prefer Claude Code's pre-computed hunks (absolute file line numbers).
   // Fall back to a jsdiff line diff when no structured result exists yet.
@@ -117,7 +125,8 @@ export function UnifiedDiff({
   const total = rows.length;
   const [open, setOpen] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
-  const overflow = total > DIFF_PREVIEW_LINES;
+  // `fill` hands height control to the host wrapper: no internal cap, no button.
+  const overflow = !fill && total > DIFF_PREVIEW_LINES;
   const containerStyle = open || !overflow
     ? undefined
     : { maxHeight: `${DIFF_PREVIEW_LINES * DIFF_ROW_PX}px` };

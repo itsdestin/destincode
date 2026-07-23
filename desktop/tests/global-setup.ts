@@ -17,4 +17,13 @@ export default function setup() {
   // whole sandbox exists to remove.
   fs.rmSync(testHome, { recursive: true, force: true });
   fs.mkdirSync(path.join(testHome, '.claude'), { recursive: true });
+  // git-service.ts's gitCommit shells out to real `git commit` with no author
+  // env vars (that's the production code path) — it needs SOME identity to
+  // resolve, and the redirected HOME above means it can no longer see the
+  // developer's real ~/.gitconfig. A throwaway identity here (never the real
+  // one) keeps git-service integration tests hermetic. See tests/git/git-service.test.ts.
+  fs.writeFileSync(
+    path.join(testHome, '.gitconfig'),
+    '[user]\n\tname = YouCoded Test\n\temail = test@youcoded.test\n',
+  );
 }

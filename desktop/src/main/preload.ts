@@ -1321,6 +1321,32 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener('artifacts:changed', handler);
     },
   },
+  git: {
+    fileStatus: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:file-status', projectRoot, relPath),
+    fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
+      ipcRenderer.invoke('git:file-review', projectRoot, relPath, opts),
+    // prevPath (project-root-relative old name) is passed for the rename
+    // commit itself so the main-process handler can pair the rename with -M
+    // instead of rendering the add-side full-file wall.
+    commitFileDiff: (projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
+      ipcRenderer.invoke('git:commit-file-diff', projectRoot, sha, relPath, prevPath),
+    stage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:stage', projectRoot, relPath),
+    unstage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:unstage', projectRoot, relPath),
+    commit: (projectRoot: string, message: string) =>
+      ipcRenderer.invoke('git:commit', projectRoot, message),
+    discard: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:discard', projectRoot, relPath),
+    watch: (projectRoot: string) => ipcRenderer.invoke('git:watch', projectRoot),
+    unwatch: (projectRoot: string) => ipcRenderer.invoke('git:unwatch', projectRoot),
+    onChanged: (cb: (event: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('git:changed', handler);
+      return () => ipcRenderer.removeListener('git:changed', handler);
+    },
+  },
   // Project View IPC — sibling to artifacts. Backs the project overlay's
   // conversations / repo / context tabs.
   project: {

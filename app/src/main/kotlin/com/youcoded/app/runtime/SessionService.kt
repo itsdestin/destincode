@@ -3644,6 +3644,14 @@ class SessionService : Service() {
             }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
+            "git:file-status", "git:file-review", "git:commit-file-diff", "git:stage",
+            "git:unstage", "git:commit", "git:discard", "git:watch", "git:unwatch" -> {
+                // Git surface is desktop-only for now (spec 2026-07-22); the shared
+                // renderer hides the footer entry when these reject.
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             // Project View hub (conversations, repo, context) is desktop-only in v1
             // (see docs/superpowers/specs/2026-06-14-project-view-redesign-design.md).
             // Reply not-implemented so the shared React UI can degrade to an
