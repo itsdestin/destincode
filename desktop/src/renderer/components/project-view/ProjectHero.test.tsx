@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 //
-// Pins the hero's action collapse. The management actions (rename, reveal,
-// open repo, the sync action, and the destructive one) moved off the card and
-// behind a cog menu; only "New Conversation" stays visible. These tests exist
-// so a later change can't quietly strand one of them with no entry point —
-// which is exactly how Connect 4 became unreachable on narrow viewports.
+// Pins the hero's action collapse. The management actions (rename, the sync
+// action, and the destructive one) moved off the card and behind a cog menu;
+// only "New Conversation" stays visible. These tests exist so a later change
+// can't quietly strand one of them with no entry point — which is exactly how
+// Connect 4 became unreachable on narrow viewports.
+//
+// "Open in File Explorer" and "Open <owner>/<name> on GitHub" are NOT part of
+// that collapse — they're inline links on the path/repo row instead, rendered
+// at every width (2026-07-23), so they're covered separately below rather
+// than through the cog-menu tests.
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
@@ -71,14 +76,8 @@ describe('ProjectHero on desktop', () => {
     renderHero();
     expect(screen.queryByLabelText('Project settings')).toBeNull();
     expect(screen.getByText('Rename')).toBeTruthy();
-    expect(screen.getByText('Open in File Explorer')).toBeTruthy();
     expect(screen.getByText('Remove from YouCoded')).toBeTruthy();
     expect(screen.getByText('New Conversation')).toBeTruthy();
-  });
-
-  it('keeps Open repo as a visible button', () => {
-    renderHero({ repo: { webUrl: 'https://github.com/a/b', owner: 'a', name: 'b' } });
-    expect(screen.getByText('Open repo')).toBeTruthy();
   });
 
   it('keeps the sync action inline in the status strip', () => {
@@ -96,28 +95,26 @@ describe('ProjectHero action collapse (narrow)', () => {
     expect(screen.getByText('New Conversation')).toBeTruthy();
     // The old always-visible management buttons are gone from the card body.
     expect(screen.queryByText('Rename')).toBeNull();
-    expect(screen.queryByText('Open in File Explorer')).toBeNull();
     expect(screen.queryByText('Remove from YouCoded')).toBeNull();
   });
 
-  it('collapses rename, reveal and remove into the cog menu', () => {
+  it('collapses rename and remove into the cog menu', () => {
     renderHero();
     openCog();
     const labels = menuLabels();
     expect(labels).toContain('Rename');
-    expect(labels).toContain('Open in File Explorer');
     expect(labels).toContain('Remove from YouCoded');
   });
 
-  it('offers Open repo only when the project has a web URL', () => {
-    renderHero();
-    openCog();
-    expect(menuLabels().some(l => /GitHub|repository/.test(l))).toBe(false);
-    cleanup();
-
+  // 'Open in File Explorer' / 'Open <owner>/<name> on GitHub' used to be cog
+  // rows too — they're gone from the menu because the path/repo row (below)
+  // covers the same actions at every width, cog included.
+  it('does not duplicate the path/repo links in the cog menu', () => {
     renderHero({ repo: { webUrl: 'https://github.com/a/b', owner: 'a', name: 'b' } });
     openCog();
-    expect(menuLabels().some(l => l.includes('a/b'))).toBe(true);
+    const labels = menuLabels();
+    expect(labels.some(l => /File Explorer/.test(l))).toBe(false);
+    expect(labels.some(l => /GitHub|repository/.test(l))).toBe(false);
   });
 
   // One sync ACTION per sync state — the strip itself is status-only now, so if
@@ -173,5 +170,33 @@ describe('ProjectHero action collapse (narrow)', () => {
     expect(screen.getByRole('menu')).toBeTruthy();
     fireEvent.click(screen.getByText('Rename'));
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+// The path/repo row is NOT gated by useNarrowViewport — unlike the old
+// "Open in File Explorer" / "Open repo" buttons (desktop-only / hidden below
+// 640px), these links must stay reachable at every width. Covered at both
+// widths on purpose; see the file-header note.
+describe.each([
+  ['desktop', false],
+  ['narrow', true],
+])('ProjectHero path/repo links (%s)', (_label, narrow) => {
+  beforeEach(() => setViewport(narrow));
+
+  it('opens the file explorer when the path is clicked', () => {
+    renderHero();
+    fireEvent.click(screen.getByTitle('Open in File Explorer'));
+    expect((window as any).claude.shell.openPath).toHaveBeenCalledWith('/home/d/proj');
+  });
+
+  it('renders no repo link when the project has no web URL', () => {
+    renderHero();
+    expect(screen.queryByTitle(/on GitHub$/)).toBeNull();
+  });
+
+  it('opens the repo on GitHub when the repo slug is clicked', () => {
+    renderHero({ repo: { webUrl: 'https://github.com/a/b', owner: 'a', name: 'b' } });
+    fireEvent.click(screen.getByTitle('Open a/b on GitHub'));
+    expect((window as any).claude.shell.openExternal).toHaveBeenCalledWith('https://github.com/a/b');
   });
 });
