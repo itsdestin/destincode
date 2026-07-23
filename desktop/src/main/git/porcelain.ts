@@ -61,13 +61,41 @@ export function parseNumstat(text: string): Map<string, { added: number; removed
   return out;
 }
 
-// git log --pretty=format:%x1e%H%x1f%s%x1f%aI --name-status — unit sep 0x1f
+// A `--numstat` pathfield for a renamed/moved file comes in one of two
+// shapes (plain paths with no " => " at all just pass through unchanged):
+//   - brace form, when old and new share a common prefix/suffix:
+//     "docs/{superpowers => archive}/plans/x.md" -> old "docs/superpowers/…",
+//     new "docs/archive/…". Either side of the brace may be empty (a segment
+//     was purely inserted/removed, e.g. "dir/{ => sub}/f.md") — concatenating
+//     prefix+mid+suffix then leaves a doubled '/' where the empty mid sat;
+//     collapse it back to one.
+//   - plain form, when there's no common affix: "old.md => new.md".
+// Extracted as its own pure function so each shape unit-tests directly.
+export function parseRenamePath(field: string): { path: string; renamedFrom?: string } {
+  const brace = /^(.*?)\{(.*) => (.*)\}(.*)$/.exec(field);
+  if (brace) {
+    const [, prefix, oldMid, newMid, suffix] = brace;
+    const collapse = (s: string) => s.replace(/\/{2,}/g, '/');
+    return {
+      path: collapse(prefix + newMid + suffix),
+      renamedFrom: collapse(prefix + oldMid + suffix),
+    };
+  }
+  const arrow = field.indexOf(' => ');
+  if (arrow !== -1) {
+    return { path: field.slice(arrow + 4), renamedFrom: field.slice(0, arrow) };
+  }
+  return { path: field };
+}
+
+// git log --pretty=format:%x1e%H%x1f%s%x1f%aI --numstat — unit sep 0x1f
 // between header fields, LEADING record sep 0x1e before each commit (so
 // splitting on it always drops an empty first chunk, never a trailing one).
 // Chosen over newline parsing so commit subjects can contain anything.
-// `--name-status` rides along, pathspec-limited to the followed file, so each
-// chunk after the header line carries at most one status line for it — that's
-// how per-commit diffs learn the file's HISTORICAL path (see GitLogEntry).
+// `--numstat` rides along, pathspec-limited to the followed file, so each
+// chunk after the header line carries at most one numstat line for it —
+// that's how per-commit diffs learn the file's HISTORICAL path (see
+// GitLogEntry) AND how the card headers learn this commit's +/- counts.
 export function parseLogRecords(text: string): GitLogEntry[] {
   return text
     .split('\x1e')
@@ -77,25 +105,28 @@ export function parseLogRecords(text: string): GitLogEntry[] {
       const [sha, subject, authorDate] = lines[0].split('\x1f');
       let pathAtCommit: string | undefined;
       let renamedFrom: string | undefined;
-      // First non-blank line after the header is the name-status entry for
-      // the followed file (pathspec-limited to one file, so there's at most
-      // one). No such line at all (e.g. a surfaced merge commit) -> both
-      // stay undefined, and the caller falls back to the file's current path.
+      let counts: GitFileCounts | null = null;
+      // First non-blank line after the header is the numstat entry for the
+      // followed file (pathspec-limited to one file, so there's at most
+      // one). No such line at all (e.g. a surfaced merge commit) -> path
+      // fields stay undefined and counts stays null; the caller falls back
+      // to the file's current path.
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
         if (!line.trim()) continue;
-        const fields = line.split('\t');
-        // Last tab field is always the path as of this commit: for M/A/D
-        // that's fields[1]; for R<score>/C<score> (old\tnew) it's the new
-        // name, which for THIS commit is correct — that's the name the file
-        // was renamed/copied TO.
-        pathAtCommit = fields[fields.length - 1];
-        if (fields[0][0] === 'R' || fields[0][0] === 'C') renamedFrom = fields[1];
+        const [addedStr, removedStr, ...rest] = line.split('\t');
+        const parsed = parseRenamePath(rest.join('\t'));
+        pathAtCommit = parsed.path;
+        renamedFrom = parsed.renamedFrom;
+        // Binary numstat rows are "-\t-\t<path>" — no line counts to show.
+        counts = addedStr === '-' || removedStr === '-'
+          ? null
+          : { added: parseInt(addedStr, 10) || 0, removed: parseInt(removedStr, 10) || 0 };
         break;
       }
       return {
         sha, shortSha: sha.slice(0, 7), subject: subject ?? '', authorDate: authorDate ?? '',
-        pathAtCommit, renamedFrom,
+        pathAtCommit, renamedFrom, counts,
       };
     });
 }

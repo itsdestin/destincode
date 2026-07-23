@@ -40,6 +40,10 @@ export interface GitLogEntry {
   /** Set only on the commit that renamed/moved the file TO its tracked path
    *  — the old (pre-move) path, so the diff fetch can pair the rename. */
   renamedFrom?: string;
+  /** Per-commit added/removed line counts for this file (from --numstat),
+   *  rendered in the card header. Null for a binary file or when the chunk
+   *  has no numstat line at all (e.g. a surfaced merge commit). */
+  counts: GitFileCounts | null;
 }
 
 export interface GitUncommitted {

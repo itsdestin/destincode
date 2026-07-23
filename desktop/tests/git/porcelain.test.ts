@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  parsePorcelainV2, parseNumstat, parseLogRecords,
+  parsePorcelainV2, parseNumstat, parseLogRecords, parseRenamePath,
   parseUnifiedDiff, countsFromHunks, synthesizeAddHunk,
 } from '../../src/main/git/porcelain';
 
@@ -50,19 +50,49 @@ describe('parseNumstat', () => {
   });
 });
 
+describe('parseRenamePath', () => {
+  // Pure helper for a `--numstat` pathfield: plain path (no rename), the
+  // brace form git emits when old/new share a common prefix/suffix, and the
+  // plain "old => new" form when they don't.
+  it('returns a plain path unchanged when there is no rename', () => {
+    expect(parseRenamePath('src/reducer.ts')).toEqual({ path: 'src/reducer.ts' });
+  });
+
+  it('splits the brace form with a common prefix/suffix into old/new', () => {
+    expect(parseRenamePath('docs/{superpowers => archive}/plans/x.md')).toEqual({
+      path: 'docs/archive/plans/x.md',
+      renamedFrom: 'docs/superpowers/plans/x.md',
+    });
+  });
+
+  it('collapses the doubled slash produced by an empty brace side', () => {
+    expect(parseRenamePath('dir/{ => sub}/f.md')).toEqual({
+      path: 'dir/sub/f.md',
+      renamedFrom: 'dir/f.md',
+    });
+  });
+
+  it('splits the plain "old => new" form when there is no common affix', () => {
+    expect(parseRenamePath('old.md => new.md')).toEqual({
+      path: 'new.md',
+      renamedFrom: 'old.md',
+    });
+  });
+});
+
 describe('parseLogRecords', () => {
-  // New format rides with `--name-status`: a LEADING record separator, so
-  // splitting on \x1e yields an empty first chunk, then one chunk per commit
-  // shaped "sha\x1fsubject\x1fauthorDate\n<name-status line>\n".
+  // Format rides with `--numstat`: a LEADING record separator, so splitting
+  // on \x1e yields an empty first chunk, then one chunk per commit shaped
+  // "sha\x1fsubject\x1fauthorDate\n<added>\t<removed>\t<pathfield>\n".
   const U = '\x1f'; // unit separator between header fields
   const R = '\x1e'; // record separator, LEADS each commit chunk
 
-  it('splits unit/record separators into entries and reads the name-status line', () => {
+  it('splits unit/record separators into entries and reads the numstat line', () => {
     const text =
       R + ['3f1c9a2deadbeef00000000000000000000000', 'fix(reducer): drop stale tool ids', '2026-07-22T14:03:11-05:00'].join(U) + '\n' +
-      'M\tsrc/reducer.ts\n' +
+      '12\t4\tsrc/reducer.ts\n' +
       R + ['c9718267cafebabe0000000000000000000000', 'fix(ws): consolidate duplicate clients', '2026-07-22T11:00:00-05:00'].join(U) + '\n' +
-      'M\tsrc/ws.ts\n';
+      '3\t0\tsrc/ws.ts\n';
     const log = parseLogRecords(text);
     expect(log).toHaveLength(2);
     expect(log[0]).toEqual({
@@ -72,26 +102,58 @@ describe('parseLogRecords', () => {
       authorDate: '2026-07-22T14:03:11-05:00',
       pathAtCommit: 'src/reducer.ts',
       renamedFrom: undefined,
+      counts: { added: 12, removed: 4 },
     });
     expect(log[1].pathAtCommit).toBe('src/ws.ts');
+    expect(log[1].counts).toEqual({ added: 3, removed: 0 });
   });
 
-  it('extracts renamedFrom + pathAtCommit (new name) from an R<score> name-status line', () => {
+  it('extracts renamedFrom + pathAtCommit (new name) from a brace-rename numstat pathfield', () => {
     const text =
       R + ['80e65644d13b133b901ef4274c1094b30f34246d', 'move to docs/new.md', '2026-07-23T10:35:16-07:00'].join(U) + '\n' +
-      'R100\told.md\tdocs/new.md\n';
+      '0\t0\tdocs/{superpowers => archive}/new.md\n';
     const log = parseLogRecords(text);
     expect(log).toHaveLength(1);
-    expect(log[0].pathAtCommit).toBe('docs/new.md');
-    expect(log[0].renamedFrom).toBe('old.md');
+    expect(log[0].pathAtCommit).toBe('docs/archive/new.md');
+    expect(log[0].renamedFrom).toBe('docs/superpowers/new.md');
+    expect(log[0].counts).toEqual({ added: 0, removed: 0 });
   });
 
-  it('leaves pathAtCommit undefined when a chunk has no name-status line', () => {
+  it('extracts renamedFrom + pathAtCommit from an empty-side brace rename, collapsing the doubled slash', () => {
+    const text =
+      R + ['deadbeefcafe0000000000000000000000000000', 'move into sub/', '2026-07-23T10:35:16-07:00'].join(U) + '\n' +
+      '0\t0\tdir/{ => sub}/f.md\n';
+    const log = parseLogRecords(text);
+    expect(log[0].pathAtCommit).toBe('dir/sub/f.md');
+    expect(log[0].renamedFrom).toBe('dir/f.md');
+  });
+
+  it('extracts renamedFrom + pathAtCommit from a plain "old => new" numstat pathfield (no common affix)', () => {
+    const text =
+      R + ['1111111111111111111111111111111111111', 'rename old to new', '2026-07-23T10:35:16-07:00'].join(U) + '\n' +
+      '1\t1\told.md => new.md\n';
+    const log = parseLogRecords(text);
+    expect(log[0].pathAtCommit).toBe('new.md');
+    expect(log[0].renamedFrom).toBe('old.md');
+    expect(log[0].counts).toEqual({ added: 1, removed: 1 });
+  });
+
+  it('reports counts as null for a binary file (numstat "-\\t-")', () => {
+    const text =
+      R + ['2222222222222222222222222222222222222', 'add logo', '2026-07-23T10:35:16-07:00'].join(U) + '\n' +
+      '-\t-\tassets/logo.png\n';
+    const log = parseLogRecords(text);
+    expect(log[0].pathAtCommit).toBe('assets/logo.png');
+    expect(log[0].counts).toBeNull();
+  });
+
+  it('leaves pathAtCommit/counts undefined+null when a chunk has no numstat line (e.g. a surfaced merge commit)', () => {
     const text = R + ['deadbeef', 'merge commit', '2026-07-22T00:00:00-05:00'].join(U) + '\n';
     const log = parseLogRecords(text);
     expect(log).toHaveLength(1);
     expect(log[0].pathAtCommit).toBeUndefined();
     expect(log[0].renamedFrom).toBeUndefined();
+    expect(log[0].counts).toBeNull();
   });
 
   it('returns [] for empty output', () => {

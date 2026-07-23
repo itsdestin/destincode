@@ -18,9 +18,10 @@ export const LOG_PAGE = 20;
 const MAX_UNTRACKED_BYTES = 1024 * 1024; // beyond this, show as binary-style stub
 
 // %H = sha, %s = subject, %aI = author date ISO; 0x1f separates header fields,
-// LEADING 0x1e separates commits — rides with `--name-status` in the actual
-// `git log` call so each chunk also carries the file's historical path
-// (parseLogRecords reads it). Newlines in subjects are impossible for %s.
+// LEADING 0x1e separates commits — rides with `--numstat` in the actual
+// `git log` call so each chunk also carries the file's historical path AND
+// its per-commit +/- counts (parseLogRecords reads both). Newlines in
+// subjects are impossible for %s.
 const LOG_FORMAT = '%x1e%H%x1f%s%x1f%aI';
 
 interface Located {
@@ -172,11 +173,12 @@ export async function gitFileReview(
 
   const skip = opts?.logSkip ?? 0;
   // Ask for one extra record purely to learn whether a next page exists.
-  // --name-status rides with the pathspec-limited log so parseLogRecords can
-  // read each commit's historical name for this file (see LOG_FORMAT WHY).
+  // --numstat rides with the pathspec-limited log so parseLogRecords can read
+  // each commit's historical name AND +/- counts for this file (see
+  // LOG_FORMAT WHY).
   const log = await execGit(repoRoot, [
     'log', '--follow', `--max-count=${LOG_PAGE + 1}`, `--skip=${skip}`,
-    `--pretty=format:${LOG_FORMAT}`, '--name-status', '--', rel,
+    `--pretty=format:${LOG_FORMAT}`, '--numstat', '--', rel,
   ]);
   // git log exits 0 with empty output for a path with no commits (e.g. untracked)
   const rawEntries = log.code === 0 ? parseLogRecords(log.stdout) : [];

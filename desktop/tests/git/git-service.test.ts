@@ -337,6 +337,11 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     expect(moveCommit).toMatchObject({ subject: 'move to docs/new.md', pathAtCommit: 'docs/new.md', renamedFrom: 'old.md' });
     expect(editOld).toMatchObject({ subject: 'edit old.md', pathAtCommit: 'old.md', renamedFrom: undefined });
     expect(addOld).toMatchObject({ subject: 'add old.md', pathAtCommit: 'old.md', renamedFrom: undefined });
+    // Per-commit counts (--numstat, replacing --name-status): the pre-move
+    // edit added one real line ('beta'); the pure-move commit changed no
+    // content, so numstat reports 0/0 for it despite the rename.
+    expect(editOld.counts).toEqual({ added: 1, removed: 0 });
+    expect(moveCommit.counts).toEqual({ added: 0, removed: 0 });
 
     // THE BUG, pinned: asking for the pre-move edit commit's diff with the
     // CURRENT path returns nothing — this is what shipped and read as "No

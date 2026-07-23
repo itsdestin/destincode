@@ -180,7 +180,16 @@ export function GitReviewView({
             {uncommitted.binary ? (
               <div className="text-[11px] text-fg-muted py-1">Binary or oversized file — no line diff.</div>
             ) : (
-              <UnifiedDiff oldStr="" newStr="" structuredPatch={uncommitted.hunks} />
+              // Cap the diff's own height and let IT scroll, not the card —
+              // a long diff used to render full-height, ballooning the card
+              // to the point it looked scrollable but wasn't. UnifiedDiff
+              // already frames itself (rounded-sm border-edge), so this outer
+              // box only adds the height cap, no second border. The action
+              // row below (staged checkbox / discard / open-file) stays a
+              // sibling of this div, not a child, so it's always visible.
+              <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
+                <UnifiedDiff oldStr="" newStr="" structuredPatch={uncommitted.hunks} />
+              </div>
             )}
             <div className="flex items-center gap-1.5 mt-2">
               {!uncommitted.untracked && (
@@ -236,7 +245,20 @@ export function GitReviewView({
                   <span className="text-xs text-fg-2 truncate flex-1">{entry.subject}</span>
                 </>
               }
-              headerRight={<span className="text-[11px] text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>}
+              headerRight={
+                <>
+                  {/* Same +N/−N glyphs as the uncommitted card's headerRight —
+                      null (binary, or a chunk with no numstat line) shows no
+                      count at all rather than a misleading +0/−0. */}
+                  {entry.counts && (
+                    <>
+                      <span className="text-[10px] font-mono text-green-400">+{entry.counts.added}</span>
+                      <span className="text-[10px] font-mono text-red-400">−{entry.counts.removed}</span>
+                    </>
+                  )}
+                  <span className="text-[11px] text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>
+                </>
+              }
             >
               {body === 'loading' && <div className="text-[11px] text-fg-muted py-1">Loading…</div>}
               {/* A rename-only commit (renamedFrom set) with no content change is an
@@ -251,7 +273,13 @@ export function GitReviewView({
               {body && typeof body === 'object' && !Array.isArray(body) && (
                 <div className="text-[11px] text-fg-muted py-1 break-words">{body.error}</div>
               )}
-              {Array.isArray(body) && <UnifiedDiff oldStr="" newStr="" structuredPatch={body} />}
+              {/* Same height-cap-with-inner-scroll wrapper as the uncommitted
+                  card above — see the WHY comment there. */}
+              {Array.isArray(body) && (
+                <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
+                  <UnifiedDiff oldStr="" newStr="" structuredPatch={body} />
+                </div>
+              )}
             </GitReviewCard>
           );
         })}

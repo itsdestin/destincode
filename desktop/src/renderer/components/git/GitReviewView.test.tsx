@@ -2,7 +2,7 @@
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { GitReviewView } from './GitReviewView';
 import type { GitFileReviewResult } from '../../../shared/git-types';
 
@@ -19,8 +19,10 @@ const review: GitFileReviewResult = {
   log: [
     // pathAtCommit deliberately differs from relPath ('src/f.ts') so the
     // "historical path, not current path" assertion below is meaningful.
-    { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'fix: first', authorDate: '2026-07-22T10:00:00Z', pathAtCommit: 'old-name.ts' },
-    { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'feat: second', authorDate: '2026-07-21T10:00:00Z', pathAtCommit: 'src/f.ts' },
+    // counts differ (a real value vs null) so the header-counts test below
+    // can assert both the "shows +/-" and "shows nothing" cases.
+    { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'fix: first', authorDate: '2026-07-22T10:00:00Z', pathAtCommit: 'old-name.ts', counts: { added: 3, removed: 1 } },
+    { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'feat: second', authorDate: '2026-07-21T10:00:00Z', pathAtCommit: 'src/f.ts', counts: null },
   ],
   hasMore: false, stagedCount: 0,
 };
@@ -61,6 +63,30 @@ describe('GitReviewView', () => {
     expect(screen.getByText('feat: second')).toBeInTheDocument();
   });
 
+  it('commit card header shows the same +/- counts as the uncommitted card; null counts show no count text', async () => {
+    mountWith();
+    // Scope to the specific commit card so the assertion isn't ambiguous
+    // with the uncommitted card's own +2/−1 counts.
+    const firstCard = (await waitFor(() => screen.getByText('fix: first'))).closest('button')!;
+    expect(within(firstCard).getByText('+3')).toBeInTheDocument();
+    expect(within(firstCard).getByText('−1')).toBeInTheDocument(); // U+2212 minus, same glyph as the uncommitted card
+    // 'feat: second' has counts: null -> no +/- text for it at all
+    const secondCard = screen.getByText('feat: second').closest('button')!;
+    expect(within(secondCard).queryByText('+', { exact: false })).not.toBeInTheDocument();
+  });
+
+  it('the expanded diff sits in a height-capped scroll container, separate from the uncommitted card action row', async () => {
+    mountWith();
+    await waitFor(() => expect(screen.getByText('Uncommitted changes')).toBeInTheDocument());
+    const diffText = screen.getByText('old line');
+    const scrollContainer = diffText.closest('.overflow-y-auto');
+    expect(scrollContainer).not.toBeNull();
+    expect(scrollContainer?.className).toContain('max-h-[45vh]');
+    // The action row (staged checkbox) must NOT be inside that scroll cap.
+    const actionRow = screen.getByText('Staged for commit');
+    expect(scrollContainer?.contains(actionRow)).toBe(false);
+  });
+
   it('no uncommitted card when the file is clean', async () => {
     mountWith({ uncommitted: null });
     await waitFor(() => expect(screen.getByText('fix: first')).toBeInTheDocument());
@@ -81,6 +107,7 @@ describe('GitReviewView', () => {
         {
           sha: 'c'.repeat(40), shortSha: 'ccccccc', subject: 'chore: move file',
           authorDate: '2026-07-20T10:00:00Z', pathAtCommit: 'src/f.ts', renamedFrom: 'old-name.ts',
+          counts: { added: 0, removed: 0 },
         },
       ],
     });
