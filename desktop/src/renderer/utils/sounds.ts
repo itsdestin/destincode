@@ -16,12 +16,12 @@
 
 export const SOUND_MUTED_KEY     = 'youcoded-sound-muted';
 export const SOUND_VOLUME_KEY    = 'youcoded-sound-volume';
-export const SOUND_ATTENTION_KEY = 'youcoded-sound-attention';    // red status preset
-export const SOUND_READY_KEY     = 'youcoded-sound-ready';        // blue status preset
-export const SOUND_ATTENTION_ENABLED_KEY = 'youcoded-sound-attention-enabled';
-export const SOUND_READY_ENABLED_KEY     = 'youcoded-sound-ready-enabled';
+const SOUND_ATTENTION_KEY = 'youcoded-sound-attention';    // red status preset
+const SOUND_READY_KEY     = 'youcoded-sound-ready';        // blue status preset
+const SOUND_ATTENTION_ENABLED_KEY = 'youcoded-sound-attention-enabled';
+const SOUND_READY_ENABLED_KEY     = 'youcoded-sound-ready-enabled';
 // Custom sound file paths per category
-export const SOUND_CUSTOM_PATH_PREFIX = 'youcoded-sound-custom-path-'; // + category
+const SOUND_CUSTOM_PATH_PREFIX = 'youcoded-sound-custom-path-'; // + category
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -372,11 +372,11 @@ export function setSelectedPresetId(cat: SoundCategory, id: string) {
 
 // ── Global getters ───────────────────────────────────────────────────────────
 
-export function isSoundMuted(): boolean {
+function isSoundMuted(): boolean {
   try { return localStorage.getItem(SOUND_MUTED_KEY) === '1'; } catch { return false; }
 }
 
-export function getSoundVolume(): number {
+function getSoundVolume(): number {
   try {
     const v = parseFloat(localStorage.getItem(SOUND_VOLUME_KEY) || '0.3');
     return isNaN(v) ? 0.3 : Math.max(0, Math.min(1, v));

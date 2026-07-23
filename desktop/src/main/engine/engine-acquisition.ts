@@ -197,7 +197,7 @@ export class EngineAcquisition {
 }
 
 /** Streaming SHA-256 — engine archives are tens of MB; never buffer whole. */
-export function sha256File(file: string): Promise<string> {
+function sha256File(file: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     fs.createReadStream(file)

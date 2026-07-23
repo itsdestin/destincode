@@ -4,7 +4,7 @@
 // without this a Total column would render blank. This is NOT a full engine;
 // anything unsupported throws FormulaError and the caller falls back gracefully.
 
-export class FormulaError extends Error {}
+class FormulaError extends Error {}
 
 export type CellValue = number | string | boolean | null;
 // Resolve a single cell reference (e.g. "B4") to its value.

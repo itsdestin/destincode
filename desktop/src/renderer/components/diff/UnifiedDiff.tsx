@@ -19,8 +19,8 @@ import { diffLines as jsdiffLines } from 'diff';
 import type { StructuredPatchHunk } from '../../../shared/types';
 import { useExpandAllToggle, getInitialExpanded } from '../../hooks/useExpandAllToggle';
 
-export const DIFF_ROW_PX = 20;
-export const DIFF_PREVIEW_LINES = 15;
+const DIFF_ROW_PX = 20;
+const DIFF_PREVIEW_LINES = 15;
 
 // Unified-diff row: del = removed line (old side only), add = inserted line
 // (new side only), ctx = unchanged (shown on both sides, dimmed). Line numbers

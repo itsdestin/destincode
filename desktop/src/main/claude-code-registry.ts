@@ -39,8 +39,8 @@ import os from 'os';
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PLUGIN_CACHE_DIR = path.join(CLAUDE_DIR, 'plugins'); // tW() in the CLI
 
-export const YOUCODED_MARKETPLACE_ID = 'youcoded';
-export const YOUCODED_MARKETPLACE_ROOT = path.join(PLUGIN_CACHE_DIR, 'marketplaces', YOUCODED_MARKETPLACE_ID);
+const YOUCODED_MARKETPLACE_ID = 'youcoded';
+const YOUCODED_MARKETPLACE_ROOT = path.join(PLUGIN_CACHE_DIR, 'marketplaces', YOUCODED_MARKETPLACE_ID);
 export const YOUCODED_PLUGINS_DIR = path.join(YOUCODED_MARKETPLACE_ROOT, 'plugins');
 
 /**
@@ -95,7 +95,7 @@ const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 // --- Key helpers ---
 
 /** The @-qualified key Claude Code uses in enabledPlugins & installed_plugins.json. */
-export function pluginKey(id: string): string {
+function pluginKey(id: string): string {
   return `${id}@${YOUCODED_MARKETPLACE_ID}`;
 }
 

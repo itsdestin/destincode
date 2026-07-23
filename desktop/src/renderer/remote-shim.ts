@@ -566,7 +566,7 @@ export function retryLocalBridge(): void {
   }, delay);
 }
 
-export function disconnect(): void {
+function disconnect(): void {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (ws) { ws.close(); ws = null; }
   setConnectionState('disconnected');

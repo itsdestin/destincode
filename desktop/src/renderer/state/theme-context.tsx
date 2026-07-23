@@ -24,7 +24,7 @@ const BUILTIN_THEMES: LoadedTheme[] = [
   { ...(cremeJson as unknown as ThemeDefinition), source: 'youcoded-core' },
 ];
 
-export const DEFAULT_FONT_FAMILY = "'Cascadia Mono', 'Cascadia Code', 'Fira Code', monospace";
+const DEFAULT_FONT_FAMILY = "'Cascadia Mono', 'Cascadia Code', 'Fira Code', monospace";
 
 const STORAGE_KEY = 'youcoded-theme';
 const CYCLE_KEY = 'youcoded-theme-cycle';

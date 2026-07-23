@@ -12,7 +12,7 @@
 export const DRAWER_WIDTH_KEY = 'youcoded-drawer-width';
 export const DEFAULT_DRAWER_WIDTH = 480; // matches the pre-resize fixed width
 export const MIN_DRAWER_WIDTH = 320;     // thinner is unreadable
-export const MAX_DRAWER_FRACTION = 0.6;  // leave the chat pane usable
+const MAX_DRAWER_FRACTION = 0.6;  // leave the chat pane usable
 
 /** Clamp a candidate width to [320, 60% of window], defaulting to 480 for
  *  non-finite input (e.g. corrupt localStorage). Always returns an integer. */

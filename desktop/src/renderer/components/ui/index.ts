@@ -10,7 +10,7 @@
  * docs/active/specs/2026-07-16-ui-consistency-design-spec.md
  */
 
-export { Button, buttonClasses, BUTTON_BASE, BUTTON_VARIANT, BUTTON_SIZE, FOCUS_RING } from './Button';
+export { Button, buttonClasses, FOCUS_RING } from './Button';
 export type { ButtonProps, ButtonVariant, ButtonSize } from './Button';
 
 export { CloseButton } from './CloseButton';

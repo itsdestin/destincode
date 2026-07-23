@@ -152,6 +152,8 @@ export function noteSessionStarted(claudeSessionId: string, cwd: string): void {
  * Idempotent (a second run finds nothing) and best-effort — a failure here must
  * never block store startup.
  */
+// Exported for tests (conversations-service.test.ts imports the module namespace
+// and calls this directly); production callers use the in-scope reference above.
 export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string }): Promise<number> {
   const s = store;
   if (!s) return 0;

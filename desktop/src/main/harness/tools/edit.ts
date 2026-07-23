@@ -17,7 +17,7 @@ export function toHunks(oldText: string, newText: string, filePath: string): Str
 }
 
 /** Detect and preserve line endings + BOM (Windows repos — spec §2.3). */
-export function preserveFormat(original: string, edited: string): string {
+function preserveFormat(original: string, edited: string): string {
   const hasBom = original.charCodeAt(0) === 0xfeff;
   const crlf = original.includes('\r\n');
   let out = edited;

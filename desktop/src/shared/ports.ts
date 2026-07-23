@@ -5,7 +5,7 @@
 const env = typeof process !== 'undefined' && process.env ? process.env : ({} as Record<string, string | undefined>);
 const raw = Number(env.YOUCODED_PORT_OFFSET ?? 0);
 
-export const PORT_OFFSET = Number.isFinite(raw) ? raw : 0;
+const PORT_OFFSET = Number.isFinite(raw) ? raw : 0;
 export const VITE_DEV_PORT = 5173 + PORT_OFFSET;
 export const REMOTE_SERVER_DEFAULT_PORT = 9900 + PORT_OFFSET;
 // llama-server (native local engine, Plan B). 9920 built / 9970 dev — clear of

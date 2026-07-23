@@ -69,7 +69,7 @@ function parseAnnouncement(text: string): { message: string; expires?: string } 
  * or all-expired remote file writes a cleared cache so the status bar
  * pill disappears within the refresh interval.
  */
-export async function fetchAnnouncement(): Promise<void> {
+async function fetchAnnouncement(): Promise<void> {
   let response: Response;
   try {
     response = await fetch(ANNOUNCEMENTS_URL);
@@ -125,7 +125,7 @@ export function startAnnouncementService(): void {
   refreshTimer.unref?.();
 }
 
-export function stopAnnouncementService(): void {
+function stopAnnouncementService(): void {
   if (refreshTimer) {
     clearInterval(refreshTimer);
     refreshTimer = null;

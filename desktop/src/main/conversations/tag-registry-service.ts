@@ -19,6 +19,6 @@ export function startTagRegistry(opts?: { tagsRoot?: string }): void {
   registry = createTagRegistry(root);
 }
 
-export function stopTagRegistry(): void {
+function stopTagRegistry(): void {
   registry = null;
 }

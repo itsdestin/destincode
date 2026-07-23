@@ -13,7 +13,7 @@ export interface SavedFolder {
   addedAt: number;
 }
 
-export function foldersFilePath(): string {
+function foldersFilePath(): string {
   return path.join(os.homedir(), '.claude', 'youcoded-folders.json');
 }
 

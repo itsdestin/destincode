@@ -219,7 +219,7 @@ async function atomicWrite(target: string, content: string): Promise<void> {
  * Generate a URL-safe slug from a backend type and user-assigned label.
  * Used as the stable ID for a backend instance.
  */
-export function generateBackendId(type: string, label: string): string {
+function generateBackendId(type: string, label: string): string {
   const slug = label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')   // Replace non-alphanumeric with dashes

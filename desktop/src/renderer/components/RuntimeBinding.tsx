@@ -10,7 +10,7 @@ export type PresetId = 'assistant' | 'coder';
 
 /** Spec §3.4 heuristic: a project folder set at form-open → Coder, else Assistant.
  *  Both new-session forms seed the preset from this until the user picks one. */
-export function defaultPresetFor(cwd: string): PresetId { return cwd.trim() ? 'coder' : 'assistant'; }
+function defaultPresetFor(cwd: string): PresetId { return cwd.trim() ? 'coder' : 'assistant'; }
 
 // Preset lifecycle (spec §3.4): follow the folder heuristic (folder set → Coder,
 // empty → Assistant) UNTIL the user explicitly picks a card, then latch. Lifted
@@ -98,7 +98,7 @@ export function persistLastBinding(binding: Binding): void {
 
 // Native runtime is desktop-only AND gated on the capability flag — with a single
 // runtime there's nothing to select, so the whole selector hides.
-export function isNativeSupported(): boolean {
+function isNativeSupported(): boolean {
   return !isAndroid() && !isRemoteMode() && (window as any).claude?.native?.supported === true;
 }
 
