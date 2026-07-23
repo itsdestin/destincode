@@ -15,7 +15,14 @@ export function GitReviewCard({
   children?: React.ReactNode;
 }) {
   return (
-    <div className={`rounded-lg border ${accent ? 'border-accent' : 'border-edge'} bg-well overflow-hidden`}>
+    // shrink-0 is load-bearing: the timeline is a `flex flex-col` scroll
+    // container, so without it these cards (default flex-shrink:1) COMPRESS to
+    // fit the panel instead of overflowing. That squeezed the diff (clipped by
+    // this card's overflow-hidden) AND left the timeline with nothing to scroll
+    // — scrollHeight collapsed to clientHeight. Holding natural height lets the
+    // diff show fully (or hit its own 45vh inner scroll) and lets the timeline
+    // overflow and scroll.
+    <div className={`shrink-0 rounded-lg border ${accent ? 'border-accent' : 'border-edge'} bg-well overflow-hidden`}>
       <button
         type="button"
         onClick={onToggle}
