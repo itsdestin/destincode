@@ -74,14 +74,14 @@ jobs:
         run: ./gradlew assembleReleaseTest
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: youcoded-debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
 
       - name: Upload releaseTest APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: youcoded-releasetest
           path: app/build/outputs/apk/releaseTest/*.apk
