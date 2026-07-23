@@ -3011,10 +3011,16 @@ export function registerIpcHandlers(
     };
   });
 
-  // LIST_ALL_FILES → ALL FILES. The project folder's real documents on disk (the
-  // full-browser view). Pure discovery — bounded, deterministic (stops at nested
-  // git repos), cached. Independent of the sidecar / what Claude touched, so a
-  // Claude-authored doc legitimately appears in BOTH Artifacts and All files.
+  // LIST_ALL_FILES → the Project Files section. The project folder as it exists on
+  // disk: bounded, deterministic discovery (stops at nested git repos), cached.
+  //
+  // NOT pure discovery, despite what this comment said until 2026-07-23 — the
+  // callee projectAllFiles() UNIONS in any tracked INTERNAL artifact that exists on
+  // disk but discovery did not reach (e.g. one inside a skipped nested sub-repo).
+  // That union is load-bearing: it guarantees this list is a superset of the
+  // in-folder tracked files, so a code-heavy project cannot report fewer files than
+  // artifacts. Externals are NEVER unioned, which is exactly why they need their
+  // own section in the UI.
   // Gated roots (home dir / drive root) return { gated: true } with no scan
   // unless opts.force — the tab renders a "Browse anyway?" gate (see
   // isGatedRoot above for WHY).
