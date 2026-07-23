@@ -139,6 +139,17 @@ export class BuddyOverlayManager implements BuddyManager {
     // that briefly swallows clicks the instant it appears.
     win.setIgnoreMouseEvents(true, { forward: true });
     const persisted = this.deps.getPersisted();
+    // WHY it's fine that a toggle-time apply can fail transiently and leave
+    // the CURRENT window's KWin keepAbove state stale (e.g. Settings' toggle
+    // flips to "off" but a momentary DBus hiccup means the compositor never
+    // got the unpin — see SettingsPanel.tsx's toggleKeepAbove for the fuller
+    // reasoning on why the toggle doesn't try to detect/revert that): KWin's
+    // keepAbove is a property of THIS window instance, not something that
+    // persists across recreation. Every recreate constructs a brand-new
+    // window that starts unpinned, and this guard is the only place
+    // keepAbove ever gets (re)applied — so any stale pin/unpin state is
+    // wiped the next time the overlay is torn down and rebuilt (display
+    // change, or the next show() after a hide()), not accumulated forever.
     if (persisted.keepAbove) this.deps.applyKeepAbove(win);
     win.showInactive();
     win.webContents.on('did-finish-load', () => {

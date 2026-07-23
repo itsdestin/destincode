@@ -618,10 +618,16 @@ export interface BuddyApi {
   overlayPersist(state: { mascot: { x: number; y: number }; dock: string | null }): void;
   // ── Task 8: opt-in KDE keep-above (Settings toggle, Linux only) ──
   /** Persists `enabled` to the buddy positions file and applies it live via
-   *  a KWin scripting DBus call (see kwin-keep-above.ts). Resolves to
-   *  whatever applyKwinKeepAbove returned: true on KDE Plasma where the
-   *  script ran, false everywhere else (GNOME/wlroots/no qdbus) — never
-   *  rejects, so the caller doesn't need a .catch just to render the toggle. */
+   *  a KWin scripting DBus call (see kwin-keep-above.ts). The toggle itself
+   *  is a saved PREFERENCE, not a live-state indicator — it displays and
+   *  persists the user's request in both directions regardless of this
+   *  result (controller ruling 2026-07-22: a symmetric OR asymmetric
+   *  reconcile against this boolean both produced contradictions — see
+   *  SettingsPanel.tsx's toggleKeepAbove WHY comment). The resolved boolean
+   *  reports only whether the KWin apply actually ran just now — true on
+   *  KDE Plasma where the script ran, false everywhere else (GNOME/wlroots/
+   *  no qdbus, or a transient DBus failure) — and is used solely to drive
+   *  Settings' inline "couldn't reach KWin" hint. Never rejects. */
   setKeepAbove(enabled: boolean): Promise<boolean>;
 }
 

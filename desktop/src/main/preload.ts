@@ -1112,9 +1112,11 @@ contextBridge.exposeInMainWorld('claude', {
     overlayPersist: (state: { mascot: { x: number; y: number }; dock: string | null }) =>
       ipcRenderer.send(IPC.BUDDY_OVERLAY_PERSIST, state),
     // Task 8: Settings' KDE keep-above toggle. invoke/handle (not send) —
-    // this is a rare, user-driven click, not a hover-hot path, and the
-    // caller needs to know whether the KWin script actually ran to render
-    // an honest toggle state.
+    // this is a rare, user-driven click, not a hover-hot path. The toggle
+    // itself is a saved preference (see BuddyApi.setKeepAbove's WHY comment
+    // in shared/types.ts) — the resolved boolean here reports only whether
+    // the KWin apply actually ran just now, used by Settings for an inline
+    // "couldn't reach KWin" hint, not to render the toggle's own state.
     setKeepAbove: (enabled: boolean): Promise<boolean> =>
       ipcRenderer.invoke(IPC.BUDDY_OVERLAY_KEEP_ABOVE, enabled),
   },
