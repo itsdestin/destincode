@@ -71,6 +71,13 @@ interface LiveEntry {
   // True from dispatch until runTurns finishes the last queued turn. Host-owned
   // (HarnessSession's in-flight state is private); safe because Node is single-threaded.
   inFlight: boolean;
+  // Awaitable handle on the CURRENT drain (the dispatched turn + any queued
+  // follow-ups it drains). Set by send() at dispatch; resolves when runTurns
+  // exits (runTurns try/catches its send() so this never rejects). undefined
+  // when no turn has ever been dispatched, or resolved after the last one ended.
+  // quiesce()/teardown await this to know the in-flight turn has actually settled
+  // — the host has no other awaitable handle on the fire-and-forget runTurns.
+  running?: Promise<void>;
 }
 
 export class NativeSessionHost extends EventEmitter {
@@ -417,7 +424,14 @@ export class NativeSessionHost extends EventEmitter {
     // synchronously above, so queueing semantics are unchanged. Edge: an interrupt
     // arriving inside this one-tick gap no-ops (abort doesn't exist yet) and the
     // turn still starts — same outcome as stopping a millisecond before sending.
-    setImmediate(() => { void this.runTurns(sessionId, entry, text); });
+    // Capture an awaitable handle on this turn's whole drain (current turn +
+    // queued follow-ups) so quiesce()/teardown can await it settling. The
+    // setImmediate defer is unchanged (see the WHY above); runTurns try/catches
+    // its send() so this promise never rejects — .then(resolve, resolve) is
+    // belt-and-suspenders against a future throw path.
+    entry.running = new Promise<void>((resolve) => {
+      setImmediate(() => { void this.runTurns(sessionId, entry, text).then(resolve, resolve); });
+    });
     return { status: 'sent' };
   }
 
@@ -469,6 +483,45 @@ export class NativeSessionHost extends EventEmitter {
     this.broker.cancelSession(sessionId);
     entry?.session.interrupt();
     return !!entry;
+  }
+
+  /** Takeover/teardown quiesce (Task 9). STRONGER than interrupt() and ONLY for
+   *  takeover/teardown — never the user-facing Stop button (that's interrupt()).
+   *
+   *  WHY stronger: interrupt() aborts only the CURRENT turn and lets the M1 FIFO
+   *  queue keep draining (pinned by native-session-host.test.ts "interrupt aborts
+   *  the current turn only"). For a takeover that is WRONG — a queued message
+   *  would start a NEW turn AFTER the flush and append PAST it, corrupting the
+   *  transcript the requester is about to pull. quiesce guarantees the opposite:
+   *  after it resolves, NO further appends happen for this session until a new send.
+   *
+   *  Order is load-bearing:
+   *   1. Clear the queue SYNCHRONOUSLY so no queued message can start a post-flush
+   *      turn. The queue-remove surface (removeQueued) tracks no promises — a
+   *      queued send returned 'queued' synchronously with nothing awaiting it — so
+   *      dropping the array IS the whole cancel; there is nothing to resolve/refuse.
+   *   2. Await one macrotask so a send() issued in the SAME tick as this quiesce
+   *      has run its setImmediate dispatch (send() defers runTurns one macrotask —
+   *      see send()). Interrupting before that dispatch would MISS the turn: the
+   *      AbortController doesn't exist until runTurns actually starts it.
+   *   3. cancelSession (resolve a paused permission ask 'canceled', expire its
+   *      card) + session.interrupt() (abort the in-flight stream) — same pair as
+   *      interrupt(), so a loop paused on an ask unwinds before the stream aborts.
+   *   4. Await the in-flight turn chain settling (entry.running): runTurns exits
+   *      after the interrupted turn emits user-interrupt and the (now-empty) queue
+   *      drains. This is the step interrupt() does NOT do — it is what makes the
+   *      "no appends after quiesce" invariant hold.
+   *   5. Await the append chain (drain) so every already-enqueued append lands on
+   *      disk before the caller flushes the transcript to the space. */
+  async quiesce(sessionId: string): Promise<void> {
+    const entry = this.live.get(sessionId);
+    if (!entry) return;
+    entry.queue.length = 0;                        // (1) no post-flush turn can start
+    await new Promise((r) => setImmediate(r));      // (2) let a same-tick send dispatch
+    this.broker.cancelSession(sessionId);           // (3) unwind a paused permission ask
+    entry.session.interrupt();                      //     abort the in-flight turn
+    try { await entry.running; } catch { /* runTurns never rejects; belt-and-suspenders */ } // (4)
+    await this.drain(sessionId);                    // (5) flush already-enqueued appends
   }
 
   /** Mid-session model swap (next turn uses the new binding). */
