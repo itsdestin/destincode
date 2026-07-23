@@ -236,9 +236,10 @@ export class BuddyWindowManager {
       for (const leg of legs) {
         if (leg.win.isDestroyed()) continue;
         alive = true;
-        leg.win.setPosition(
-          Math.round(leg.from.x + (leg.to.x - leg.from.x) * ease),
-          Math.round(leg.from.y + (leg.to.y - leg.from.y) * ease),
+        this.place(
+          leg.win,
+          leg.from.x + (leg.to.x - leg.from.x) * ease,
+          leg.from.y + (leg.to.y - leg.from.y) * ease,
         );
       }
       if (t >= 1 || !alive) {
@@ -321,7 +322,7 @@ export class BuddyWindowManager {
       const mb = this.mascot.getBounds();
       const d = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
       const flush = dockPosition(savedEdge, { x: mb.x, y: mb.y }, MASCOT_SIZE, d.workArea);
-      this.mascot.setPosition(Math.round(flush.x), Math.round(flush.y));
+      this.place(this.mascot, flush.x, flush.y);
       // A buddy put away on an edge comes back put away — peeking is the
       // resting state at an edge now, not a timer's eventual destination.
       this.dockState = { mode: 'peeking', edge: savedEdge };
@@ -411,7 +412,7 @@ export class BuddyWindowManager {
       // position.
       this.chatOpenIntent = true;
       const layout = this.layoutFor();
-      this.chat.setPosition(Math.round(layout.chat.x), Math.round(layout.chat.y));
+      this.place(this.chat, layout.chat.x, layout.chat.y);
       this.chat.show();
       this.chat.webContents.send(IPC_CHAT_STATE, { visible: true });
       this.barVisibility.setChatOpen(true);
@@ -476,6 +477,37 @@ export class BuddyWindowManager {
   getBarWindow(): BrowserWindow | null { return this.bar; }
 
   /**
+   * Move a buddy window, re-asserting its fixed size on Linux.
+   *
+   * WHY: on XWayland with fractional display scaling (e.g. KDE at 1.5×),
+   * Electron's setPosition() inflates a frameless window's size by a
+   * DIP↔physical rounding error on EVERY call. Probe-confirmed: a 334×490
+   * window grew to 373×529 after 40 setPosition calls (setBounds with the fixed
+   * size pins it; setMinimumSize/setMaximumSize do NOT). moveMascot fires one
+   * setPosition per pointermove, so across a real drag the chat ballooned past
+   * the whole screen (measured 1851×1526) and the three windows drifted apart —
+   * this is the "chat keeps getting bigger / doesn't stay together" jank.
+   * Re-asserting the size via setBounds every move stops the accumulation. We
+   * only do this on Linux so Windows/macOS keep the cheaper setPosition path
+   * (its DWM cost is noted in moveMascot) where no inflation occurs. The size
+   * comes from the same constants main.ts builds the windows with, so
+   * re-asserting it is always exact.
+   */
+  private place(win: BrowserWindow, x: number, y: number): void {
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+    const size =
+      win === this.mascot ? MASCOT_SIZE :
+      win === this.chat ? CHAT_SIZE :
+      win === this.bar ? BAR_SIZE : null;
+    if (process.platform === 'linux' && size) {
+      win.setBounds({ x: rx, y: ry, width: size.width, height: size.height });
+    } else {
+      win.setPosition(rx, ry);
+    }
+  }
+
+  /**
    * Place the mascot at an anchor-based target position from the renderer
    * (cursor screenX/Y minus the grab offset captured on pointerdown). Clamps
    * to the visible workArea. Replaces CSS -webkit-app-region: drag, which on
@@ -518,7 +550,7 @@ export class BuddyWindowManager {
         this.closeChat(); // fades chat + bar out; chatOpenIntent flips false now
         this.dispatchDock({ type: 'drag-peek', edge: shove });
         const pos = dockPosition(shove, clamped, MASCOT_SIZE, wa);
-        this.mascot.setPosition(Math.round(pos.x), Math.round(pos.y));
+        this.place(this.mascot, pos.x, pos.y);
         return;
       }
       if (this.dockState.mode !== 'free') this.dispatchDock({ type: 'drag-start' });
@@ -540,7 +572,7 @@ export class BuddyWindowManager {
       if (edge) {
         this.dispatchDock({ type: 'drag-peek', edge });
         const pos = dockPosition(edge, clamped, MASCOT_SIZE, wa);
-        this.mascot.setPosition(Math.round(pos.x), Math.round(pos.y));
+        this.place(this.mascot, pos.x, pos.y);
         return; // flush against the edge; chat closed → no satellites to follow
       }
       this.dispatchDock({ type: 'drag-start' }); // in open space → free/idle
@@ -551,7 +583,7 @@ export class BuddyWindowManager {
     // conversion failure" from Electron's native bridge.
     const newX = Math.round(clamped.x);
     const newY = Math.round(clamped.y);
-    this.mascot.setPosition(newX, newY);
+    this.place(this.mascot, newX, newY);
     // Move the chat by the SAME delta the mascot actually moved (not the
     // requested delta, which may have been clamped). Clamp the follow-
     // position to the chat's own display's workArea — the mascot may be
@@ -571,7 +603,7 @@ export class BuddyWindowManager {
       const chatRaw = { x: cb.x + actualDx, y: cb.y + actualDy };
       const chatDisplay = screen.getDisplayMatching({ ...chatRaw, ...CHAT_SIZE }) ?? screen.getPrimaryDisplay();
       const chatClamped = clampToWorkArea(chatRaw, CHAT_SIZE, chatDisplay.workArea);
-      this.chat.setPosition(Math.round(chatClamped.x), Math.round(chatClamped.y));
+      this.place(this.chat, chatClamped.x, chatClamped.y);
     }
     // Bar follows its own CSS visibility (not Electron isVisible() — the
     // window stays Electron-shown once created; reveals are CSS fades).
@@ -579,7 +611,7 @@ export class BuddyWindowManager {
     // edge the bar needs to flip above automatically.
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       const pos = this.currentBarPosition();
-      this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
+      this.place(this.bar, pos.x, pos.y);
     }
   }
 
@@ -601,7 +633,7 @@ export class BuddyWindowManager {
         }
       });
     } else {
-      this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
+      this.place(this.bar, pos.x, pos.y);
     }
     if (!this.bar.isVisible()) this.bar.showInactive();
   }
