@@ -1008,6 +1008,29 @@ body[data-mode="buddy-chat"] #theme-bg {
   }
 }
 
+/* Interactive feedback for cards that ARE a .layer-surface (the drawer's skill /
+   command / Add-Skills tiles). This MUST be unlayered CSS, not a Tailwind
+   `hover:bg-inset` utility: `.layer-surface` sets `background-color: var(--panel)`
+   unlayered, Tailwind emits every utility inside `@layer utilities`, and unlayered
+   beats layered no matter the specificity — so the utility silently does nothing.
+   Exactly the trap documented on the protection cascade below; it ate these cards'
+   hover when they moved onto .layer-surface in change 22 (reported 2026-07-23:
+   "no click/hover effects at all. too flat"). `.card-interactive:hover` (0,2,0)
+   outranks `.layer-surface` (0,1,0) and both are unlayered, so this wins cleanly.
+   Hover fill matches the SettingsRow family; :active goes one step deeper so a
+   click reads as a press. */
+.card-interactive {
+  transition: background-color 120ms ease;
+}
+@media (hover: hover) {
+  .card-interactive:hover {
+    background-color: var(--inset);
+  }
+}
+.card-interactive:active {
+  background-color: var(--edge);
+}
+
 /* Scroll strip without a visible scrollbar — for horizontal overflow rows
    (segmented controls, tab strips) where the bar itself would be chrome
    noise on a 4px-tall row. The row is still swipeable/wheel-scrollable. */

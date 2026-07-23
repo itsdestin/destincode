@@ -114,7 +114,7 @@ function SkillCardImpl({ skill, onClick, favorite, pluginBadge }: Props) {
       // --radius-xl with a `0 8px 32px` shadow, and this grid is flat by
       // decision (mixed elevation in one grid read as inconsistent, user
       // feedback 2026-07-08). Same pair FilesTab's doc cards use.
-      className="relative layer-surface !rounded-lg p-3 text-left hover:bg-inset transition-colors flex flex-col cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="relative layer-surface !rounded-lg card-interactive p-3 text-left flex flex-col cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       style={{ boxShadow: 'none' }}
     >
       {favorite && (
