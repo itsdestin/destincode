@@ -36,6 +36,10 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-git-svc-')));
     invalidateRepoRootCache();
     sh(root, ['init', '-b', 'main']);
+    // WHY: GitHub Windows runners default core.autocrlf=true globally, so
+    // `git checkout HEAD` writes back CRLF and breaks byte-exact fixture
+    // assertions (and can produce phantom eol-only diffs). Pin it off per-repo.
+    sh(root, ['config', 'core.autocrlf', 'false']);
     await fs.promises.writeFile(path.join(root, 'a.txt'), 'one\ntwo\n');
     sh(root, ['add', '.']);
     sh(root, ['commit', '-m', 'initial']);
@@ -222,6 +226,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
+      sh(fresh, ['config', 'core.autocrlf', 'false']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
       sh(fresh, ['add', 'f.txt']);
       const r = await gitFileReview(fresh, 'f.txt');
@@ -236,6 +241,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
+      sh(fresh, ['config', 'core.autocrlf', 'false']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
       sh(fresh, ['add', 'f.txt']);
       const r = await gitDiscard(fresh, 'f.txt');
@@ -251,6 +257,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
+      sh(fresh, ['config', 'core.autocrlf', 'false']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
       sh(fresh, ['add', 'f.txt']);
       const r = await gitUnstage(fresh, 'f.txt');
@@ -295,7 +302,9 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     expect(r.hasMore).toBe(true);
     const page2 = await gitFileReview(root, 'a.txt', { logSkip: LOG_PAGE });
     expect(page2.log.length).toBeGreaterThan(0);
-  });
+    // WHY 60000: this fixture spawns 2 git processes per commit (LOG_PAGE + 2
+    // commits) — Windows process-spawn latency blows past vitest's 5000ms default.
+  }, 60000);
 
   // Regression for the macOS/Windows CI failure: locate() computed
   // `path.relative(repoRoot, abs)` from the CALLER's projectRoot while
@@ -316,6 +325,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       await fs.promises.symlink(real, alias);
 
       sh(real, ['init', '-b', 'main']);
+      sh(real, ['config', 'core.autocrlf', 'false']);
       await fs.promises.writeFile(path.join(real, 'a.txt'), 'one\ntwo\n');
       sh(real, ['add', '.']);
       sh(real, ['commit', '-m', 'initial']);
