@@ -43,6 +43,29 @@ vi.mock('http', async () => {
   return { default: { createServer }, createServer };
 });
 
+// Task 5 M2 coverage — session:get-meta / set-tag / set-note route through
+// conversations/service (the Conversation Store) and session:browse routes
+// through session-browser's listPastSessions. Both are mocked so these tests
+// exercise remote-server.ts's OWN resolve/canWrite/provider-derivation wiring
+// (sessionMetaWiring, sessionProviderFor) rather than the real on-disk store
+// or Claude project directories. Declared at module scope (not inside a
+// describe) — vi.mock is hoisted above imports, and remote-server.ts loads
+// these modules via dynamic `await import(...)` at case-handler time, well
+// after this file's top-level `const` initializers have run — same pattern
+// the 'http' mock above already relies on for `listenBehavior`.
+const mockConversationsService = {
+  getConversationStore: vi.fn<any>(),
+  noteFlagChanged: vi.fn(async () => ({ ok: true })),
+  noteSessionNote: vi.fn(async () => ({ ok: true })),
+};
+vi.mock('../src/main/conversations/service', () => mockConversationsService);
+
+const mockSessionBrowser = {
+  listPastSessions: vi.fn(async () => [] as any[]),
+  loadHistory: vi.fn(async () => ({ events: [] })),
+};
+vi.mock('../src/main/session-browser', () => mockSessionBrowser);
+
 describe('RemoteServer', () => {
   let mockSessionManager: any;
   let mockHookRelay: any;
@@ -318,6 +341,286 @@ describe('RemoteServer unhandled channels', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// Task 5 review finding: session:get-meta / set-tag / set-note / browse had
+// ZERO test coverage even though M2 extended all four — get-meta now resolves
+// the id through sessionMetaWiring and derives provider via
+// nativeHost.isNativeSessionId; set-tag/set-note gate the write via
+// sessionMetaWiring.canWrite and only answer once the service write settles;
+// browse feeds nativeHost.list() into listPastSessions. None of that had a
+// single pinning test before this suite.
+describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConversationsService.getConversationStore.mockReset().mockReturnValue(null);
+    mockConversationsService.noteFlagChanged.mockReset().mockResolvedValue({ ok: true });
+    mockConversationsService.noteSessionNote.mockReset().mockResolvedValue({ ok: true });
+    mockSessionBrowser.listPastSessions.mockReset().mockResolvedValue([]);
+    mockSessionBrowser.loadHistory.mockReset().mockResolvedValue({ events: [] });
+
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  /** Minimal native runtime stub — only isNativeSessionId/list matter for these
+   *  cases; the rest of the setNativeRuntime shape is asserted by other tests
+   *  (native:* / provider:* suites), not this one. */
+  function fakeNativeRuntime(nativeIds: Set<string>, listEntries: any[] = []) {
+    return {
+      nativeHost: {
+        isNativeSessionId: (id: string) => nativeIds.has(id),
+        list: () => listEntries,
+      },
+    } as any;
+  }
+
+  describe('session:get-meta', () => {
+    it('resolves a native id through sessionMetaWiring and reads the store with provider "native"', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set(['native-1'])));
+      server.setSessionMetaWiring({
+        resolve: (id: string) => (id === 'desktop-1' ? 'native-1' : id),
+        canWrite: () => true,
+      });
+      const storeGet = vi.fn(async (_provider: string, _id: string) => ({
+        flags: { 'tag:tag_a': { value: true, updatedAt: 'x' } },
+        note: 'hi',
+      }));
+      mockConversationsService.getConversationStore.mockReturnValue({ get: storeGet });
+
+      const sent = await sendAndCollect(server, {
+        type: 'session:get-meta', id: 'r1', payload: { sessionId: 'desktop-1' },
+      });
+
+      // The wiring's resolve() output — not the raw payload id — is what must
+      // reach the store, on the 'native' bucket derived from isNativeSessionId.
+      expect(storeGet).toHaveBeenCalledWith('native', 'native-1');
+      expect(sent[0].payload).toEqual({ tags: ['tag_a'], note: 'hi', supported: true });
+    });
+
+    it('resolves a non-native id and reads the store with provider "claude"', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set())); // nothing is native
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      const storeGet = vi.fn(async () => null);
+      mockConversationsService.getConversationStore.mockReturnValue({ get: storeGet });
+
+      await sendAndCollect(server, {
+        type: 'session:get-meta', id: 'r2', payload: { sessionId: 'cc-session-abc' },
+      });
+
+      expect(storeGet).toHaveBeenCalledWith('claude', 'cc-session-abc');
+    });
+
+    it('falls back to an empty-but-supported result when no Conversation Store is up', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      mockConversationsService.getConversationStore.mockReturnValue(null);
+
+      const sent = await sendAndCollect(server, {
+        type: 'session:get-meta', id: 'r3', payload: { sessionId: 'x' },
+      });
+
+      expect(sent[0].payload).toEqual({ tags: [], note: '', supported: true });
+    });
+  });
+
+  describe('session:set-tag', () => {
+    const msg = (overrides: any = {}) => ({
+      type: 'session:set-tag', id: 'st', payload: { sessionId: 'desktop-1', tagId: 'tag_abc', value: true, ...overrides },
+    });
+
+    it('rejects a malformed tag id without ever calling the store write', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+
+      const sent = await sendAndCollect(server, msg({ tagId: 'not-a-tag' }));
+
+      expect(sent[0].payload).toEqual({ ok: false, error: 'invalid tag id' });
+      expect(mockConversationsService.noteFlagChanged).not.toHaveBeenCalled();
+    });
+
+    // This is the phantom-record gate (ipc-handlers.ts canWriteStoreRecord),
+    // mirrored here via sessionMetaWiring.canWrite. A refusal means "don't
+    // seed a mis-provider'd record for a live session whose id mapping hasn't
+    // landed yet" — the write is skipped, NOT an error: the same gate's
+    // ipcMain twin (SESSION_SET_TAG) unconditionally returns `{ok:true}` after
+    // the gated block regardless of whether canWrite passed, and the code
+    // comment there says the flag simply re-applies once the mapping lands.
+    // So this pins "skip the write" — not "answer ok:false" — as the correct,
+    // parity-preserving shape.
+    it('skips the write but still answers ok:true when canWrite refuses (mirrors ipc-handlers SESSION_SET_TAG parity)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => false });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.noteFlagChanged).not.toHaveBeenCalled();
+      expect(sent[0].payload).toEqual({ ok: true });
+    });
+
+    it('answers ok:true once the service write resolves ok', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteFlagChanged.mockResolvedValue({ ok: true });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.noteFlagChanged).toHaveBeenCalledTimes(1);
+      expect(sent[0].payload).toEqual({ ok: true });
+    });
+
+    // Honesty invariant (Item 6): a write that actually reports failure must
+    // not be smoothed over into ok:true the way the old fire-and-forget did.
+    it('honesty invariant: a service write resolving ok:false produces an ok:false response', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteFlagChanged.mockResolvedValue({ ok: false });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(sent[0].payload.ok).toBe(false);
+    });
+
+    it('derives the write provider via nativeHost.isNativeSessionId on the RESOLVED id', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set(['native-1'])));
+      server.setSessionMetaWiring({ resolve: () => 'native-1', canWrite: () => true });
+
+      await sendAndCollect(server, msg({ sessionId: 'desktop-1' }));
+
+      expect(mockConversationsService.noteFlagChanged).toHaveBeenCalledWith('native-1', 'tag:tag_abc', true, 'native');
+    });
+
+    // conversations/service's real noteFlagChanged (metaWrite) always catches
+    // internally and resolves {ok:false} rather than rejecting — so this can't
+    // happen through the real contract. It documents what happens to THIS
+    // case block if that contract were ever violated: there's no local
+    // try/catch around the await here (unlike ipcMain's SESSION_SET_TAG,
+    // which wraps the whole handler), so a rejection propagates out of
+    // handleMessage uncaught rather than answering the request. Not treated
+    // as a bug to fix — flagged in the fix report for visibility instead,
+    // since changing it would be a behavior change outside this task's scope.
+    it('propagates a rejected write instead of answering the request (documents current behavior — see comment)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteFlagChanged.mockRejectedValue(new Error('store exploded'));
+
+      await expect(sendAndCollect(server, msg())).rejects.toThrow('store exploded');
+    });
+  });
+
+  describe('session:set-note', () => {
+    const msg = (overrides: any = {}) => ({
+      type: 'session:set-note', id: 'sn', payload: { sessionId: 'desktop-1', note: 'hello', ...overrides },
+    });
+
+    it('rejects a note over 8000 characters without ever calling the store write', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+
+      const sent = await sendAndCollect(server, msg({ note: 'x'.repeat(8001) }));
+
+      expect(sent[0].payload).toEqual({ ok: false, error: 'note too long' });
+      expect(mockConversationsService.noteSessionNote).not.toHaveBeenCalled();
+    });
+
+    it('skips the write but still answers ok:true when canWrite refuses (same gate shape as set-tag)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => false });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.noteSessionNote).not.toHaveBeenCalled();
+      expect(sent[0].payload).toEqual({ ok: true });
+    });
+
+    it('answers ok:true once the service write resolves ok', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteSessionNote.mockResolvedValue({ ok: true });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.noteSessionNote).toHaveBeenCalledTimes(1);
+      expect(sent[0].payload).toEqual({ ok: true });
+    });
+
+    it('honesty invariant: a service write resolving ok:false produces an ok:false response', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteSessionNote.mockResolvedValue({ ok: false });
+
+      const sent = await sendAndCollect(server, msg());
+
+      expect(sent[0].payload.ok).toBe(false);
+    });
+
+    it('derives the write provider via nativeHost.isNativeSessionId on the RESOLVED id', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set(['native-1'])));
+      server.setSessionMetaWiring({ resolve: () => 'native-1', canWrite: () => true });
+
+      await sendAndCollect(server, msg({ sessionId: 'desktop-1', note: 'note text' }));
+
+      expect(mockConversationsService.noteSessionNote).toHaveBeenCalledWith('native-1', 'note text', 'native');
+    });
+  });
+
+  describe('session:browse', () => {
+    it('passes nativeHost.list() entries into listPastSessions alongside the live session ids', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      mockSessionManager.listSessions = vi.fn(() => [{ id: 'live-1' }]);
+      const nativeEntries = [{ id: 'native-9', provider: 'native' as const, slug: 'foo' }];
+      server.setNativeRuntime(fakeNativeRuntime(new Set(), nativeEntries));
+      const pastRows = [{ id: 'past-1' }];
+      mockSessionBrowser.listPastSessions.mockResolvedValue(pastRows);
+
+      const sent = await sendAndCollect(server, { type: 'session:browse', id: 'b1', payload: {} });
+
+      expect(mockSessionBrowser.listPastSessions).toHaveBeenCalledTimes(1);
+      const [activeIdsArg, nativeEntriesArg] = mockSessionBrowser.listPastSessions.mock.calls[0];
+      expect(activeIdsArg).toBeInstanceOf(Set);
+      expect(activeIdsArg.has('live-1')).toBe(true);
+      expect(nativeEntriesArg).toBe(nativeEntries); // same reference — the list() result flows straight through
+      expect(sent[0].payload).toEqual(pastRows); // round-tripped through JSON via ws.send — deep, not reference, equality
+    });
+
+    it('passes undefined native entries when no native runtime is wired (pre-M2 / not-yet-wired parity)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+
+      await sendAndCollect(server, { type: 'session:browse', id: 'b2', payload: {} });
+
+      const [, nativeEntriesArg] = mockSessionBrowser.listPastSessions.mock.calls[0];
+      expect(nativeEntriesArg).toBeUndefined();
+    });
   });
 });
 
