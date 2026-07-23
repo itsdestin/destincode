@@ -64,6 +64,21 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     expect(r.error).toBe('path-outside-project');
   });
 
+  it('mutation op in a non-repo dir reports not-a-git-repository, not path-outside-project', async () => {
+    const bare = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-norepo-'));
+    try {
+      const r = await gitStage(bare, 'x.txt');
+      expect(r.ok).toBe(false);
+      expect(r.error).toBe('not-a-git-repository');
+    } finally { await fs.promises.rm(bare, { recursive: true, force: true }); }
+  });
+
+  it('mutation op with an escaping relPath still reports path-outside-project', async () => {
+    const r = await gitStage(root, '../outside.txt');
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('path-outside-project');
+  });
+
   it('fileReview: modified file -> uncommitted hunks + log + stagedCount', async () => {
     await fs.promises.writeFile(path.join(root, 'a.txt'), 'one\nTWO\n');
     const r = await gitFileReview(root, 'a.txt');
@@ -87,6 +102,12 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       { oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+alpha', '+beta'] },
     ]);
     expect(r.log).toEqual([]);
+  });
+
+  it('fileReview: oversize untracked file renders as a binary stub, not synthesized hunks', async () => {
+    await fs.promises.writeFile(path.join(root, 'huge.txt'), 'x'.repeat(1024 * 1024 + 1));
+    const r = await gitFileReview(root, 'huge.txt');
+    expect(r.uncommitted).toMatchObject({ untracked: true, binary: true, hunks: [] });
   });
 
   it('stage/unstage flip index state and stagedCount', async () => {
@@ -121,6 +142,11 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     const d = await gitCommitFileDiff(root, sha, 'a.txt');
     expect(d.ok).toBe(true);
     expect(d.hunks[0].lines).toContain('+three');
+  });
+
+  it('commitFileDiff rejects a malformed sha before touching git', async () => {
+    const d = await gitCommitFileDiff(root, 'not-a-sha!', 'a.txt');
+    expect(d).toMatchObject({ ok: false, error: 'invalid-sha' });
   });
 
   it('discard tracked restores HEAD content', async () => {
@@ -165,6 +191,33 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(r.uncommitted?.inHead).toBe(false);
       expect(r.uncommitted?.hunks[0].lines).toEqual(['+hello']);
       expect(r.log).toEqual([]);
+    } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+  });
+
+  it('discard on unborn HEAD unstages (rm --cached) then trashes, leaving the file untracked', async () => {
+    const fresh = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-'));
+    try {
+      sh(fresh, ['init']);
+      await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
+      sh(fresh, ['add', 'f.txt']);
+      const r = await gitDiscard(fresh, 'f.txt');
+      expect(r.ok).toBe(true);
+      expect(shell.trashItem).toHaveBeenCalledWith(path.join(fresh, 'f.txt'));
+      // The mocked trash leaves the file on disk, so git now sees it as plain
+      // untracked — proving rm --cached ran against the unresolvable HEAD.
+      expect(sh(fresh, ['status', '--porcelain']).trim()).toBe('?? f.txt');
+    } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+  });
+
+  it('unstage on unborn HEAD falls back to rm --cached, leaving the file untracked', async () => {
+    const fresh = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-'));
+    try {
+      sh(fresh, ['init']);
+      await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
+      sh(fresh, ['add', 'f.txt']);
+      const r = await gitUnstage(fresh, 'f.txt');
+      expect(r.ok).toBe(true);
+      expect(sh(fresh, ['status', '--porcelain']).trim()).toBe('?? f.txt');
     } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
   });
 

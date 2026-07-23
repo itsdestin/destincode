@@ -160,7 +160,11 @@ export async function gitCommitFileDiff(
   projectRoot: string, sha: string, relPath: string,
 ): Promise<GitCommitFileDiffResult> {
   const loc = await locate(projectRoot, relPath);
-  if (loc === 'outside' || !loc) return { ok: false, error: 'path-outside-project', hunks: [], binary: false };
+  // 'outside' (path escaped the project root) and null (no repo found here) are
+  // distinct, real states — collapsing them into one error would misreport a
+  // plain non-repo dir as a path-safety violation.
+  if (loc === 'outside') return { ok: false, error: 'path-outside-project', hunks: [], binary: false };
+  if (!loc) return { ok: false, error: 'not-a-git-repository', hunks: [], binary: false };
   if (!/^[0-9a-f]{4,40}$/i.test(sha)) return { ok: false, error: 'invalid-sha', hunks: [], binary: false };
   // --format= suppresses the commit header so output is pure diff.
   const r = await execGit(loc.repoRoot, ['show', sha, '--format=', '--', loc.rel]);
@@ -173,7 +177,11 @@ export async function gitCommitFileDiff(
 
 async function simpleOp(projectRoot: string, relPath: string, args: (rel: string) => string[]): Promise<GitOpResult> {
   const loc = await locate(projectRoot, relPath);
-  if (loc === 'outside' || !loc) return { ok: false, error: 'path-outside-project' };
+  // 'outside' (path escaped the project root) and null (no repo found here) are
+  // distinct, real states — collapsing them into one error would misreport a
+  // plain non-repo dir as a path-safety violation.
+  if (loc === 'outside') return { ok: false, error: 'path-outside-project' };
+  if (!loc) return { ok: false, error: 'not-a-git-repository' };
   const r = await execGit(loc.repoRoot, args(loc.rel));
   return r.code === 0 ? { ok: true } : { ok: false, error: errText(r) };
 }
@@ -210,7 +218,11 @@ export async function gitCommit(projectRoot: string, message: string): Promise<G
 
 export async function gitDiscard(projectRoot: string, relPath: string): Promise<GitOpResult> {
   const loc = await locate(projectRoot, relPath);
-  if (loc === 'outside' || !loc) return { ok: false, error: 'path-outside-project' };
+  // 'outside' (path escaped the project root) and null (no repo found here) are
+  // distinct, real states — collapsing them into one error would misreport a
+  // plain non-repo dir as a path-safety violation.
+  if (loc === 'outside') return { ok: false, error: 'path-outside-project' };
+  if (!loc) return { ok: false, error: 'not-a-git-repository' };
   const status = await execGit(loc.repoRoot, ['status', '--porcelain=v2', '--untracked-files=all', '--', loc.rel]);
   if (status.code !== 0) return { ok: false, error: errText(status) };
   const entry = parsePorcelainV2(status.stdout).files.find((f) => f.path === loc.rel);
