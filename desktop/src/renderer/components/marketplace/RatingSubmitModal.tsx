@@ -31,6 +31,7 @@ import { useMarketplaceStats } from '../../state/marketplace-stats-context';
 // Single source for the review character limit — this modal used to hardcode
 // its own 500, leaving marketplace-constants' REVIEW_TEXT_MAX drift-prone.
 import { REVIEW_TEXT_MAX as MAX_REVIEW_CHARS } from '../../state/marketplace-constants';
+import { STAR_GOLD_CLASS } from './StarRating';
 
 // ── Interactive star picker ───────────────────────────────────────────────────
 // Distinct from the read-only StarRating component — these stars are clickable buttons.
@@ -61,9 +62,12 @@ function StarPicker({ value, onChange }: StarPickerProps) {
             onClick={() => onChange(n)}
             onMouseEnter={() => setHovered(n)}
             onMouseLeave={() => setHovered(null)}
-            // Star colors: filled = amber, empty = faint — theme-driven via text-* tokens
+            // Filled = star gold (a raw hex by ruling — see STAR_GOLD_CLASS for
+            // why it isn't a token), empty = the fg-faint token. The previous
+            // comment here claimed both were "theme-driven via text-* tokens",
+            // which was never true of the filled star.
             className={`text-2xl leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-sm ${
-              active ? 'text-[#f0ad4e]' : 'text-fg-faint'
+              active ? STAR_GOLD_CLASS : 'text-fg-faint'
             }`}
           >
             {active ? '\u2605' : '\u2606'}

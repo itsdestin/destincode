@@ -126,7 +126,13 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
         <div className="border-t border-edge-dim pt-4">
           {prUrl ? (
             <div className="text-center">
-              <p className="text-xs text-[#4CAF50] font-medium mb-1">Published successfully!</p>
+              {/* Neutral, not green. The state family's rule is that errors are
+                  neutral cards rather than red boxes (design rule 6) — success
+                  gets the same treatment for the same reason. The word
+                  "successfully" carries the meaning, and the accent PR link
+                  below already draws the eye. Also retires a raw #4CAF50 that
+                  no contrast audit could see, and that was weak on Crème. */}
+              <p className="text-xs text-fg font-medium mb-1">Published successfully!</p>
               <a
                 href={prUrl}
                 target="_blank"

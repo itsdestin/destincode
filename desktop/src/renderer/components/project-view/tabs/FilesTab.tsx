@@ -359,7 +359,10 @@ export function FilesTab({
       <button
         key={a.id}
         type="button"
-        className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left transition-transform duration-200 hover:scale-[1.02] ${
+        // hover-lift replaces `transition-transform duration-200 hover:scale-[1.02]`:
+        // same lift on desktop, guarded by @media (hover: hover) so a tap on the
+        // Android WebView can't leave the card stuck at 1.02 (spec §9.E).
+        className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left hover-lift ${
           isActive ? 'border-accent' : ''
         } ${isDeleted ? 'opacity-60' : ''}`}
         // No shadow: folder cards are flat, and mixed elevation in one grid read
@@ -563,7 +566,9 @@ export function FilesTab({
                   <button
                     key={'dir:' + f.path}
                     type="button"
-                    className="group relative flex flex-col h-44 text-left transition-transform duration-200 hover:scale-[1.02]"
+                    // hover-lift: see the doc-card comment above — the scale is
+                    // guarded by @media (hover: hover) for the Android WebView.
+                    className="group relative flex flex-col h-44 text-left hover-lift"
                     onClick={() => setCurrentDir(f.path)}
                     title={f.path}
                   >

@@ -52,15 +52,17 @@ interface Props {
 // keep their status-pill colors after the IntegrationCard → MarketplaceCard
 // consolidation. Status colors are intentionally hardcoded (not theme tokens)
 // since green/amber/red carry semantic meaning independent of the active theme.
-const STATUS_TONE_CLASS: Record<'ok' | 'warn' | 'err' | 'neutral' | 'locked', string> = {
+export const STATUS_TONE_CLASS: Record<'ok' | 'warn' | 'err' | 'neutral' | 'locked', string> = {
   ok: 'bg-green-500/15 text-green-400 border border-green-500/30',
   warn: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
   err: 'bg-red-500/15 text-red-400 border border-red-500/30',
   neutral: 'bg-inset text-fg-2 border border-edge',
-  // Platform-blocked — muted slate reading as "not for this platform" without
-  // the alarm of err/warn. Distinct from neutral so "macOS Only" doesn't blur
-  // into "Coming soon".
-  locked: 'bg-slate-500/10 text-fg-dim border border-slate-500/30',
+  // Platform-blocked — reads as "not for this platform" without the alarm of
+  // err/warn. Change 24: was `bg-slate-500/10 border-slate-500/30`, a stock
+  // Tailwind hue that ignored the theme; the inset/edge tokens give the same
+  // recessed reading on all 11 themes. Still distinct from `neutral` (which is
+  // solid bg-inset + fg-2) so "macOS Only" doesn't blur into "Coming soon".
+  locked: 'bg-inset/50 text-fg-dim border border-edge',
 };
 
 function componentSummary(c: SkillComponents | null | undefined): string | null {
@@ -238,7 +240,10 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           onOpen();
         }
       }}
-      className="relative layer-surface text-left flex flex-col overflow-hidden transition-transform duration-200 hover:scale-[1.02] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      // hover-lift replaces `transition-transform duration-200 hover:scale-[1.02]`:
+      // same lift on desktop, but guarded by @media (hover: hover) so a tap on
+      // Android doesn't leave the card stuck at 1.02 (spec §9.E).
+      className="relative layer-surface text-left flex flex-col overflow-hidden hover-lift focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       data-marketplace-card={id}
       style={accentColor ? { borderColor: accentColor } : undefined}
     >

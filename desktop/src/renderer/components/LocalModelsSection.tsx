@@ -5,8 +5,10 @@
 // the whole section is gated on window.claude.native.supported so production
 // builds (native.supported false until Phase 2) render nothing.
 //
-// Styling mirrors ProvidersSection: bg-well / bg-inset cards, border-edge-dim,
-// plain-word status (never ●◐○ glyphs), consequence-gated destructive actions.
+// Styling mirrors ProvidersSection: the panel's row cards are the shared
+// in-panel row surface (bg-inset/50, borderless — change 25; they were
+// bg-well + border-edge-dim), plain-word status (never ●◐○ glyphs),
+// consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
 import { Button, InputGroup } from './ui';
@@ -192,7 +194,9 @@ function ModelBrowser({
   const toggle = (repo: string) => setExpandedRepo((cur) => (cur === repo ? null : repo));
 
   return (
-    <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
+    // Change 25: in-panel row surface, matching EngineCard and "Other local
+    // apps" — the three are siblings in this panel and shared one class string.
+    <div className="rounded-lg bg-inset/50 px-3 py-2.5">
       <p className="text-xs text-fg font-medium mb-2.5">Models</p>
 
       {/* Search — filters recommended/installed locally, searches Hugging Face. */}
@@ -667,7 +671,8 @@ function OtherLocalApps() {
   };
 
   return (
-    <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
+    // Change 25: in-panel row surface — see the "Models" card above.
+    <div className="rounded-lg bg-inset/50 px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-fg font-medium">Other local apps</p>
         <Button

@@ -2530,13 +2530,15 @@ function AppInner() {
 
   // Still loading first-run check
   if (isFirstRun === null) {
-    return <div className="flex-1 flex items-center justify-center bg-gray-950" />;
+    // Change 24: bg-canvas, not a stock near-black. This paints before the app
+    // chrome mounts, so on Light/Crème the old bg-gray-950 was a black flash.
+    return <div className="flex-1 flex items-center justify-center bg-canvas" />;
   }
 
   // First-run mode — show setup UI instead of normal app
   if (isFirstRun) {
     return (
-      <div className="h-screen flex flex-col bg-gray-950">
+      <div className="h-screen flex flex-col bg-canvas">
         <FirstRunView onComplete={handleFirstRunComplete} />
       </div>
     );

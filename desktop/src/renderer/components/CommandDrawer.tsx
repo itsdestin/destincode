@@ -126,10 +126,14 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
         onClick={clickable ? () => onSelectCommand(entry) : undefined}
         disabled={!clickable}
         title={!clickable ? entry.disabledReason : undefined}
-        className={`rounded-lg p-3 text-left border border-edge-dim flex flex-col ${
+        // Change 22: command cards share the drawer grid with SkillCard, so they
+        // move to the same surface — migrating one and not the other splits the
+        // grid into two card species. Same !rounded-lg + flat-shadow overrides.
+        style={{ boxShadow: 'none' }}
+        className={`layer-surface !rounded-lg p-3 text-left flex flex-col focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           clickable
-            ? 'bg-panel/80 hover:bg-inset hover:border-edge transition-colors cursor-pointer'
-            : 'bg-panel/40 opacity-50 cursor-not-allowed'
+            ? 'hover:bg-inset transition-colors cursor-pointer'
+            : 'opacity-50 cursor-not-allowed'
         }`}
       >
         <span className="font-mono text-sm text-fg">{entry.name}</span>
@@ -345,7 +349,12 @@ function AddSkillsCard({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="bg-panel/40 border border-dashed border-edge rounded-lg p-3 text-left hover:bg-inset hover:border-accent transition-colors flex flex-col items-center justify-center text-accent"
+      // Change 22: same surface as the skill/command cards it sits beside, but
+      // it KEEPS the dashed border — that's the action affordance ("add
+      // something here"), not card chrome. .layer-surface's solid border is
+      // overridden rather than inherited for exactly that reason.
+      style={{ boxShadow: 'none' }}
+      className="layer-surface !rounded-lg !border-dashed !border-edge p-3 text-left hover:bg-inset hover:!border-accent transition-colors flex flex-col items-center justify-center text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <span className="text-lg font-medium leading-none">+</span>
       <span className="text-sm font-medium mt-1">Add Skills</span>

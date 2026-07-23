@@ -168,7 +168,13 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                   tabIndex={0}
                   onClick={() => setTheme(t.slug)}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTheme(t.slug); } }}
-                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  // Change 22 reaches these tiles ONLY as a focus ring. They are
+                  // deliberately NOT .layer-surface: the tile paints the
+                  // *previewed* theme's own tokens inline, so painting the
+                  // active theme's panel over it would defeat the preview.
+                  // They were the only keyboard-reachable control in this file
+                  // with no focus indication at all.
+                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
                 >
                   <div style={{ height: 6, background: `linear-gradient(90deg, ${t.tokens.canvas}, ${t.tokens.accent})` }} />
                   <div className="px-2 py-1.5" style={{ background: t.tokens.canvas }}>
