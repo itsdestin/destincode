@@ -205,6 +205,59 @@ describe('presence-socket state machine', () => {
     sock.destroy();
   });
 
+  it('system suspend closes the socket cleanly and resume reconnects (renderer intent preserved)', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    expect(sock.isConnected()).toBe(true);
+
+    // Lid close / OS sleep → powerMonitor 'suspend'. The close frame must go
+    // out NOW (while the network is still up) so friends see "Last seen just
+    // now" immediately instead of waiting out the server's staleness timeout.
+    sock.setSuspended(true);
+    expect(inst.closeCalls).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'disconnected', reason: 'local' });
+    expect(sock.isConnected()).toBe(false);
+
+    // macOS dark wake: the process may briefly run while still "asleep" —
+    // no reconnect and no pings may fire ('resume' never fired).
+    vi.advanceTimersByTime(300_000);
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(inst.sent).toEqual([]);
+
+    // Real wake → powerMonitor 'resume': reconnect because the renderer still
+    // wants presence on.
+    sock.setSuspended(false);
+    expect(FakeSocket.instances).toHaveLength(2);
+    sock.destroy();
+  });
+
+  it('suspend respects renderer intent: off stays off across resume, and intent changes made while asleep win', () => {
+    const { sock } = makeSocket(() => 'tok');
+    // Renderer never asked for presence (signed out / incognito): suspend and
+    // resume must not conjure a connection.
+    sock.setSuspended(true);
+    sock.setSuspended(false);
+    expect(FakeSocket.instances).toHaveLength(0);
+
+    // Renderer turns presence ON while suspended (e.g. sign-in completes just
+    // as the lid closes): remembered, but no socket until resume.
+    sock.setSuspended(true);
+    sock.setDesired(true);
+    expect(FakeSocket.instances).toHaveLength(0);
+    sock.setSuspended(false);
+    expect(FakeSocket.instances).toHaveLength(1);
+
+    // Renderer turns presence OFF while suspended (incognito toggle mid-sleep):
+    // resume must NOT reconnect.
+    sock.setSuspended(true);
+    sock.setDesired(false);
+    sock.setSuspended(false);
+    expect(FakeSocket.instances).toHaveLength(1); // no new socket
+    sock.destroy();
+  });
+
   it('send is a silent no-op when disconnected; isConnected gates the honest handler receipt', () => {
     const { sock } = makeSocket(() => 'tok');
     // The manager itself no-ops; the HANDLER (social-handlers.ts) consults
