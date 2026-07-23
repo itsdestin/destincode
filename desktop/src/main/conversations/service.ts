@@ -438,18 +438,25 @@ export function buildLocalProjectResolver(): (rec: { projectName: string; origin
   return (rec) => resolveLocalProject(rec, managed, saved);
 }
 
+// Task 8: list BOTH provider buckets so the sweep covers native/ records too.
+// Per-provider try/catch (not one try around both calls) so a hiccup listing
+// one bucket (e.g. a corrupt file in claude/) can't starve the other — same
+// per-record isolation philosophy as the materializeOut try/catch below, one
+// level up.
+async function listAllProviders(s: ConversationStore): Promise<ConversationRecord[]> {
+  const out: ConversationRecord[] = [];
+  for (const p of ['claude', 'native'] as const) {
+    try { out.push(...(await s.list(p))); } catch { /* isolated per bucket */ }
+  }
+  return out;
+}
+
 async function materializeSweep(): Promise<void> {
   // Capture the store (review fix 3): stop() mid-sweep nulls the module field,
   // and every use below an await would otherwise become a swallowed TypeError.
   const s = store;
   if (!s) return;
-  let records;
-  // WHY still 'claude'-only here: widening this sweep to also list('native')
-  // records is Task 8's job (it needs the native live-guard rationale + a
-  // native containment test first). Task 3 only makes the PATH BUILDING
-  // provider-aware (via rec.provider below) so that widening becomes a pure
-  // list-call change, not a path-building rewrite too.
-  try { records = await s.list('claude'); } catch { return; }
+  const records = await listAllProviders(s);
   // Hoist the project lookups once per sweep (review fix 2) — see
   // resolveLocalProject's comment for why per-record IO was a real cost.
   const managed = new Map<string, string>(
@@ -459,29 +466,49 @@ async function materializeSweep(): Promise<void> {
   try { saved = readFolders(); } catch { /* saved folders unreadable */ }
   for (const rec of records) {
     if (!rec.transcriptRef) continue; // no durable copy to materialize from
+    // The record IS the truth for provider (not a param) — see
+    // asSessionProvider's comment.
+    const sessionProvider = asSessionProvider(rec.provider);
+    // Lane assertion (D5, never cross-materialize): a record's transcriptRef
+    // must live under ITS OWN provider's lane. Checked before the containment
+    // guard below — it's a pure string check on the record's own fields (no
+    // IO either way), so a mislabeled-but-otherwise-well-formed ref is caught
+    // here first; containment still runs unconditionally after for whatever
+    // survives, since matching the lane prefix alone doesn't rule out
+    // traversal inside it.
+    if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+      console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
+      continue;
+    }
     // SECURITY: refuse before any other work — see containedTranscriptPath.
     const src = containedTranscriptPath(s.root(), rec.transcriptRef);
     if (!src) { console.warn('[conversations] refused transcriptRef escaping space root', rec.id); continue; }
-    // Review fix 1: NEVER materialize over a LIVE session's transcript. Without
-    // leases (Plan 2b), a same-conversation-on-two-devices pull would replace
-    // the JSONL Claude Code is actively appending to — Windows EPERM containment
-    // is unreliable (libuv opens with FILE_SHARE_DELETE), and on POSIX the
-    // rename always succeeds: CC keeps appending to the unlinked inode, the
-    // TranscriptWatcher's path-read never grows, chat view freezes, and local
-    // turns are lost when the handle closes. Accepted caveat: nothing removes
-    // entries from `sessions` on session exit, so an ended session stays
-    // guarded until restart — fine for 2a because mirrorIn keeps the space
-    // current from the fresher local side; a noteSessionEnded refinement lands
-    // with leases in 2b.
+    // Review fix 1: NEVER materialize over a LIVE session's transcript.
+    // For CLAUDE, without leases (Plan 2b) a same-conversation-on-two-devices
+    // pull would replace the JSONL Claude Code is actively appending to —
+    // Windows EPERM containment is unreliable (libuv opens with
+    // FILE_SHARE_DELETE), and on POSIX the rename always succeeds: CC keeps
+    // appending to the unlinked inode, the TranscriptWatcher's path-read never
+    // grows, chat view freezes, and local turns are lost when the handle
+    // closes.
+    // For NATIVE, the SAME guard is kept for a DIFFERENT reason (design §5):
+    // there is no long-lived fd — appendSessionLine (native-home.ts) opens the
+    // file by path on every call — so the CC inode-detach failure mode above
+    // does not apply. Instead, a mid-session materializeOut here would
+    // silently REDIRECT the native session's subsequent appends onto the
+    // freshly-materialized (space) file, interleaving space content with live
+    // local appends. Same guard, different failure mode.
+    // Accepted caveat: nothing removes entries from `sessions` on session
+    // exit, so an ended session stays guarded until restart — fine for 2a
+    // because mirrorIn keeps the space current from the fresher local side; a
+    // noteSessionEnded refinement lands with leases in 2b.
     if (sessions.has(rec.id)) continue;
     const local = resolveLocalProject(rec, managed, saved);
     if (!local) continue;
     try {
       materializeOut({
         spaceTranscriptPath: src,
-        // The record IS the truth for provider (not a param) — see
-        // asSessionProvider's comment.
-        localJsonlPath: localJsonlPath(local, rec.id, asSessionProvider(rec.provider)),
+        localJsonlPath: localJsonlPath(local, rec.id, sessionProvider),
       });
     } catch { /* per-record isolation — one bad copy must not abort the sweep */ }
   }
@@ -514,15 +541,26 @@ export function noteSessionEnded(claudeSessionId: string): void {
 // so it resolves the project via resolveLocalProject.
 export async function materializeOne(id: string, cwd?: string): Promise<void> {
   const s = store; if (!s) return;
-  // WHY still 'claude'-only here: checking BOTH provider buckets (so a native
-  // id resolves too) is Task 8's job ("requester materializeOne provider-aware
-  // end-to-end") — Task 3 lands the shape (provider read off the record below)
-  // so that widening is a pure lookup change.
-  let rec; try { rec = await s.get('claude', id); } catch { return; }
+  // Task 8: try 'claude' first, then 'native' — a UUID can't legitimately
+  // exist in both buckets, so the first hit IS the record (no need to read
+  // both on the common path). Each lookup is isolated: a rejecting get() on
+  // one bucket doesn't stop us from trying the other.
+  let rec: ConversationRecord | null = null;
+  try { rec = await s.get('claude', id); } catch { rec = null; }
+  if (!rec) {
+    try { rec = await s.get('native', id); } catch { rec = null; }
+  }
   if (!rec?.transcriptRef) return;
   // The record IS the truth for provider (not a param) — see
   // asSessionProvider's comment.
   const sessionProvider = asSessionProvider(rec.provider);
+  // Lane assertion (D5, never cross-materialize) — see the identical check +
+  // WHY in materializeSweep. Runs before the containment guard for the same
+  // reason: pure field check, no IO, catches a mislabeled ref first.
+  if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+    console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
+    return;
+  }
   // SECURITY: refuse before any other work (quiescence wait, local resolution)
   // — see containedTranscriptPath.
   const src = containedTranscriptPath(s.root(), rec.transcriptRef);

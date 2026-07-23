@@ -11,6 +11,9 @@ import path from 'node:path';
 // Real (pure) — used to compute the exact on-disk transcript path the service
 // derives, so the quiescence tests can grow the same file the loop stats.
 import { ccProjectSlug } from '../src/main/project-conversations';
+// Real (pure) — mirrors localJsonlPath's native branch so Task 8 tests can
+// compute the exact ~/.youcoded/sessions/<slug>/<id>.jsonl path the service derives.
+import { cwdToProjectSlug } from '../src/main/transcript-watcher';
 
 // vi.mock factories are hoisted above imports, so shared fake state must be
 // created via vi.hoisted for the factories to close over it.
@@ -209,7 +212,10 @@ describe('conversations service composition root', () => {
     // calls store.list synchronously during startConversationStore, before this
     // line) sees an empty list — this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
-    h.store.list.mockResolvedValue([recA, recB] as any);
+    // Task 8: the sweep now lists BOTH provider buckets — gate the fake on the
+    // provider arg so these claude-only records aren't double-counted under
+    // the native bucket too.
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [recA, recB] : []));
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -231,7 +237,7 @@ describe('conversations service composition root', () => {
       projectName: 'startup-proj', originalPath: dir,
       transcriptRef: 'claude/transcripts/startup-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
-    h.store.list.mockResolvedValue([rec] as any);
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [rec] : []));
     await freshService(startOpts()); // startup sweep fires — no fireSync
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
@@ -261,7 +267,7 @@ describe('conversations service composition root', () => {
     // Records set AFTER start (as in the previous test) so the startup catch-up
     // sweep sees an empty list and this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
-    h.store.list.mockResolvedValue([liveRec, idleRec] as any);
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [liveRec, idleRec] : []));
     svc.noteSessionStarted(liveRec.id, liveDir, 'claude'); // liveRec is a LIVE session here
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
@@ -287,7 +293,7 @@ describe('conversations service composition root', () => {
     // Records set AFTER start + guard (as in the sweep tests above) so the
     // startup catch-up sweep sees an empty list — this test isolates the
     // SYNCED-event sweep and the guard-release path.
-    h.store.list.mockResolvedValue([rec] as any);
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [rec] : []));
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.materializeOut).not.toHaveBeenCalled(); // skipped while live
@@ -491,11 +497,14 @@ describe('conversations service composition root', () => {
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
     await svc.startConversationStore(startOpts()); // double start — no stop between
-    // Exactly one sweep per synced event ⇒ store.list called once.
+    // Exactly one sweep per synced event ⇒ store.list called once PER PROVIDER
+    // bucket (Task 8 widened the sweep to list both 'claude' and 'native').
     h.store.list.mockClear();
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.store.list).toHaveBeenCalled());
-    expect(h.store.list).toHaveBeenCalledTimes(1);
+    expect(h.store.list).toHaveBeenCalledTimes(2);
+    expect(h.store.list).toHaveBeenCalledWith('claude');
+    expect(h.store.list).toHaveBeenCalledWith('native');
     // Exactly one periodic interval ⇒ one reconcile per 30-min tick.
     h.reconcile.mockClear();
     await vi.advanceTimersByTimeAsync(30 * 60_000);
@@ -566,7 +575,7 @@ describe('conversations service composition root', () => {
         id: 'good-rec', provider: 'claude', projectName: 'good-proj', originalPath: goodDir,
         transcriptRef: 'claude/transcripts/good-proj/good-rec.jsonl',
       };
-      h.store.list.mockResolvedValue([badRec, goodRec] as any);
+      h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [badRec, goodRec] : []));
       fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
       await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
       expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -680,6 +689,140 @@ describe('conversations service composition root', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(h.store.upsert).toHaveBeenCalledTimes(1);
       vi.useRealTimers();
+    });
+  });
+
+  // --- Native flush / materialize (Task 8) -----------------------------------
+  // flushSessionToSpace/materializeOne/materializeSweep go fully provider-aware:
+  // native sessions mirror their ~/.youcoded/sessions/ transcript into the
+  // native/ space lane, and the materialize direction respects the SAME lane
+  // (D5, never cross-materialize) plus the live-session guard, kept for native
+  // for a different reason than CC's (see the WHY comments in service.ts).
+  describe('native flush / materialize (Task 8)', () => {
+    it('flushes a native session from ~/.youcoded/sessions into the native/ space lane', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const nativeHomeRoot = path.join(tmpRoot, 'native-home');
+      await svc.startConversationStore({ ...startOpts(), nativeHomeRoot });
+      const dir = path.join(tmpRoot, 'native-flush-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const id = '44444444-4444-4444-4444-444444444444';
+      // Seed the local NATIVE transcript at the exact path localJsonlPath derives
+      // for provider:'native' — ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl.
+      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', cwdToProjectSlug(dir), `${id}.jsonl`);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, 'native-final-turn');
+
+      svc.noteSessionStarted(id, dir, 'native'); // learn the cwd + NATIVE provider
+      const p = svc.flushSessionToSpace(id);
+      await vi.advanceTimersByTimeAsync(0);   // first stat → arm the probe sleep
+      await vi.advanceTimersByTimeAsync(750); // probe 2: size stable → quiescent → mirror + push
+      await p;
+      expect(h.mirrorIn).toHaveBeenCalledTimes(1);
+      const arg = h.mirrorIn.mock.calls[0][0];
+      // Source: the NATIVE local path, not a claude/ projectsDir path.
+      expect(arg.localJsonlPath).toBe(localPath);
+      // Dest: the native/ space lane, not claude/.
+      expect(arg.spaceTranscriptPath).toContain(`native${path.sep}transcripts`);
+      expect(arg.spaceTranscriptPath).toContain(`${id}.jsonl`);
+      expect(h.syncSpacesSyncNowAwaited).toHaveBeenCalledWith('personal', expect.any(Number));
+      svc.stopConversationStore();
+      vi.useRealTimers();
+    });
+
+    // Honest no-op: a missing local source must never throw and must never
+    // block the handoff barrier — flushSessionToSpace doesn't inspect mirrorIn's
+    // return value at all, it always proceeds to the awaited sync push. This
+    // pins that "copied:false" (the real mirrorIn's answer for a missing local
+    // file — see transcript-mirror.test.ts) is a legitimate, silent outcome here.
+    it('flush against a MISSING local source discards {copied:false} and pushes nothing, but still syncs (honest no-op, no throw)', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      const dir = path.join(tmpRoot, 'missing-source-proj');
+      fs.mkdirSync(dir, { recursive: true }); // project dir exists; the TRANSCRIPT file does not
+      const id = 'missing-source-1';
+      h.mirrorIn.mockReturnValueOnce({ copied: false }); // what the real mirrorIn returns for an absent local file
+      svc.noteSessionStarted(id, dir, 'native');
+      const p = svc.flushSessionToSpace(id);
+      // Absent local file reads size 0 on every probe → quiescent immediately
+      // (waitForQuiescence's own "absent local is quiescent" branch).
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(750);
+      await expect(p).resolves.toBeUndefined(); // never throws
+      expect(h.mirrorIn).toHaveBeenCalledTimes(1);
+      // The push still runs regardless of mirrorIn's result — no early return.
+      expect(h.syncSpacesSyncNowAwaited).toHaveBeenCalledWith('personal', expect.any(Number));
+      svc.stopConversationStore();
+      vi.useRealTimers();
+    });
+
+    // Lane assertion (D5): a record's transcriptRef must live under ITS OWN
+    // provider's lane. A native record carrying a claude/ ref is mislabeled —
+    // refuse rather than materialize it as if it were a CC transcript.
+    it('materializeOne refuses a claude/ transcriptRef on a native record (lane mismatch)', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'lane-mismatch-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'lane-mismatch-1', provider: 'native', projectName: 'lane-mismatch-proj', originalPath: dir,
+        // WRONG lane: a native record must be 'native/transcripts/...', not 'claude/...'.
+        transcriptRef: 'claude/transcripts/lane-mismatch-proj/lane-mismatch-1.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('lane-mismatch-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lane mismatch'), 'lane-mismatch-1');
+      warnSpy.mockRestore();
+    });
+
+    // materializeOne falls back to the 'native' bucket when 'claude' has no hit,
+    // so a native-only id still resolves (proves the try-claude-then-native
+    // fallback, not just the shared-mock path the lane-mismatch test rides).
+    it('materializeOne finds a native-only id via the claude→native fallback', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'native-fallback-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'native-fallback-1', provider: 'native', projectName: 'native-fallback-proj', originalPath: dir,
+        transcriptRef: 'native/transcripts/native-fallback-proj/native-fallback-1.jsonl',
+      };
+      h.store.get.mockImplementation(async (p: string, gid: string) => (p === 'native' && gid === rec.id ? rec : null) as any);
+      await svc.materializeOne(rec.id, dir);
+      expect(h.store.get).toHaveBeenCalledWith('claude', rec.id);
+      expect(h.store.get).toHaveBeenCalledWith('native', rec.id);
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
+    });
+
+    // Live-session guard, kept for native for a DIFFERENT reason than CC (no
+    // long-lived fd; a mid-session materializeOut would redirect subsequent
+    // native appends onto the freshly-materialized file instead of losing an
+    // inode) — see the WHY comment in materializeSweep. This proves the sweep
+    // actually widens to list('native') AND still honors the guard there.
+    it('materialize sweep skips a LIVE native session; an idle native record still materializes', async () => {
+      const liveDir = path.join(tmpRoot, 'native-live-proj');
+      const idleDir = path.join(tmpRoot, 'native-idle-proj');
+      fs.mkdirSync(liveDir, { recursive: true });
+      fs.mkdirSync(idleDir, { recursive: true });
+      const liveRec = {
+        id: 'native-live-1', provider: 'native', projectName: 'native-live-proj', originalPath: liveDir,
+        transcriptRef: 'native/transcripts/native-live-proj/native-live-1.jsonl',
+      };
+      const idleRec = {
+        id: 'native-idle-1', provider: 'native', projectName: 'native-idle-proj', originalPath: idleDir,
+        transcriptRef: 'native/transcripts/native-idle-proj/native-idle-1.jsonl',
+      };
+      const svc = await freshService(startOpts());
+      h.store.list.mockImplementation(async (p: string) => (p === 'native' ? [liveRec, idleRec] : []));
+      svc.noteSessionStarted(liveRec.id, liveDir, 'native'); // liveRec is a LIVE native session
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${idleRec.id}.jsonl`);
     });
   });
 
@@ -897,11 +1040,19 @@ describe('conversations service composition root', () => {
     it('never lists or touches the native bucket — a legit native/ record survives untouched', async () => {
       const homeRoot = path.join(tmpRoot, 'nh-native-safe');
       seedNativeSession(homeRoot, 'native-4');
+      // Start with a benign list() so startup's own materializeSweep — which
+      // Task 8 legitimately widened to list BOTH provider buckets — doesn't
+      // trip the throwing impl below. That widening is a DIFFERENT function's
+      // job; this test only asserts about pruneNativePhantomRecords's own
+      // list() call, so the throwing mock is swapped in AFTER start, isolating
+      // it to the explicit prune call made below.
+      h.store.list.mockResolvedValue([]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      h.store.list.mockReset();
       h.store.list.mockImplementation(async (provider: string) => {
         if (provider === 'native') throw new Error('pruneNativePhantomRecords must never list the native bucket');
         return [];
       });
-      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
       expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
       expect(h.store.list).toHaveBeenCalledWith('claude');
       expect(h.store.list).not.toHaveBeenCalledWith('native');
