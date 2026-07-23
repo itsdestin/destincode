@@ -440,19 +440,32 @@ const debouncedBroadcastAttention = (() => {
  *  - render-process-gone: the renderer process died outright;
  *  - blank-mount watchdog: the document loaded but its module scripts were
  *    aborted mid-boot, so React never mounted and NO failure event fires —
- *    this is the network-service-crash signature.
+ *    this is the network-service-crash signature. Also fires after a WiFi
+ *    disconnect/reconnect (ERR_NETWORK_CHANGED aborts loopback fetches too),
+ *    which can outlast any fixed retry budget — hence unbounded retries with
+ *    capped backoff (see retry()'s WHY comment).
  * Prod loads local files and is deliberately untouched (callers gate on
  * !app.isPackaged).
  */
 function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
   let attempts = 0;
   const retry = (why: string) => {
-    if (win.isDestroyed() || attempts >= 5) return;
+    if (win.isDestroyed()) return;
     attempts += 1;
-    console.warn(`[dev-recovery] renderer load failed (${why}) — retry ${attempts}/5 in ${attempts}s`);
+    // WHY unbounded (2026-07-23 network-flap lesson): a WiFi
+    // disconnect/reconnect makes Chromium abort EVERY in-flight request
+    // (ERR_NETWORK_CHANGED) — loopback Vite fetches included. The old fixed
+    // 5-attempt budget could be entirely spent while the network was still
+    // flapping, and with the budget gone the window sat on the pre-React
+    // spinner forever. Retrying forever is safe here: the blank-mount
+    // watchdog fires at most once per ~(delay + 8s) cycle, the -3 guard
+    // below already excludes the reload-storm case the cap was protecting
+    // against, and this whole function is dev-only (prod loads local files).
+    const delaySeconds = Math.min(attempts, 5);
+    console.warn(`[dev-recovery] renderer load failed (${why}) — retry ${attempts} in ${delaySeconds}s`);
     setTimeout(() => {
       if (!win.isDestroyed()) win.loadURL(devUrl);
-    }, attempts * 1000);
+    }, delaySeconds * 1000);
   };
   win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, _validatedURL, isMainFrame) => {
     // -3 = ERR_ABORTED: fired by Vite's own full-reloads and by a loadURL
