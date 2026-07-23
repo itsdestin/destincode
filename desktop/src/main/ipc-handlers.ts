@@ -3178,11 +3178,13 @@ export function registerIpcHandlers(
   // when "+ Add file" became a real Move/Copy import — which is what makes this
   // call able to feed Project View's External Artifacts section.
   //
-  // Deleted records (tombstones) ARE returned. The session drawer's "Show
-  // deleted" toggle is the reason — it is the only surviving consumer that wants
-  // them, now that the Artifacts tab and its own toggle are gone. Callers that
-  // don't want tombstones must filter: Project View's FilesTab does exactly that
-  // (see externalSectionRecords there).
+  // Deleted records (tombstones) ARE returned — not because anything here wants
+  // them, but because trackedArtifacts() does not filter on `status`. NO current
+  // consumer of THIS channel wants them: FilesTab drops them
+  // (externalSectionRecords) and FilepathToken does not want them either. The
+  // session drawer's "Show deleted" toggle reads a DIFFERENT handler
+  // (LIST_SESSION), which returns tombstones on its own — do not assume the
+  // drawer depends on this one. Callers that don't want tombstones must filter.
   //
   // visibleCount (withCount) is a separate, independently-computed count from
   // countArtifacts — non-deleted and on-disk — shared with the hero + switcher.
@@ -3643,10 +3645,17 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // Exclude = HIDE a file from the Artifacts tab: un-pin it (remove from
-  // manualIncludes) AND add a sticky manualExcludes entry so Claude re-editing
-  // the file doesn't resurface it. Recovery: "+ Add file" (see above). Never
-  // touches the file on disk or the session drawer's activity log.
+  // Exclude = HIDE an EXTERNAL artifact from Project View's External Artifacts
+  // section: un-pin it (remove from manualIncludes) AND add a sticky
+  // manualExcludes entry so Claude re-editing the file doesn't resurface it.
+  // Never touches the file on disk or the session drawer's activity log.
+  //
+  // There is NO in-app recovery as of 2026-07-23. "+ Add file" used to un-pin it
+  // back (includes win over excludes), but that button became a Move/Copy import
+  // and no longer writes manualIncludes — so this is one-way, which is why the
+  // button's tooltip says so out loud. The Artifacts tab it used to hide things
+  // from is gone; in-folder files cannot be excluded at all now, because hiding a
+  // file the user can see in their file manager would be a lie.
   ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
     _e, projectRoot: string, canonicalPath: string
   ) => {

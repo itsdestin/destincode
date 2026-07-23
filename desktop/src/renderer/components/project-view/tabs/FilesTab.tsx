@@ -64,10 +64,12 @@ function fileComparator(sortBy: FileSortKey) {
 }
 
 // Which tracked records belong in the External Artifacts section. LIST_PROJECT
-// returns tombstones (status 'deleted') too, because the session drawer's "Show
-// deleted" toggle still wants them — Project View does not. A tombstone has no
-// content, the tab that used to host it is gone, and nothing here filters it, so
-// a deleted external would sit in the section FOREVER with the irreversible
+// returns tombstones (status 'deleted') too — not because anyone wants them, but
+// because trackedArtifacts() does not filter on `status`. (The session drawer's
+// "Show deleted" toggle reads LIST_SESSION, a different handler — it does not
+// depend on this one.) A tombstone has no content, the tab that used to host it
+// is gone, and nothing upstream filters it, so a deleted external would sit in
+// the section FOREVER with the irreversible
 // Exclude as the only way to remove it. Genuine ORPHANS (tracked, active, file
 // missing from disk) are a different thing and DO stay — they render as orphan
 // rows so a moved/deleted file is visible rather than silently absent (see

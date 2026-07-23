@@ -100,4 +100,25 @@ describe('discoverProjectFiles', () => {
     const c = await discoverProjectFiles(root);
     expect(c).not.toBe(a); // fresh scan after invalidation
   });
+
+  // artifacts/import-file.ts copies to a `.youcoded-import-<pid>-<ts>-<name>.part`
+  // temp in the DESTINATION folder and renames over the target, so a killed or
+  // crashed import strands one inside the project. The dot-prefix skip only
+  // covers DIRECTORIES, so without an explicit rule the debris renders as a real
+  // card in Project Files and counts toward the badge forever.
+  it('skips abandoned import temp files (.youcoded-import-*.part)', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'disco-part-'));
+    try {
+      fs.writeFileSync(path.join(tmpRoot, 'keep.md'), 'real');
+      fs.writeFileSync(path.join(tmpRoot, '.youcoded-import-123-456-budget.xlsx.part'), 'debris');
+      // A user file that merely ENDS in .part is not ours and must survive.
+      fs.writeFileSync(path.join(tmpRoot, 'chapter.part'), 'user file');
+      invalidateDiscoveryCache(tmpRoot);
+      const { files } = await discoverProjectFiles(tmpRoot);
+      const rels = files.map((f) => f.path).sort();
+      expect(rels).toEqual(['chapter.part', 'keep.md']);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
