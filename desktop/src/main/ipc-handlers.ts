@@ -3263,7 +3263,7 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // ── Git surface (spec docs/active/specs/2026-07-22-git-surface.md) ──
+  // ── Git surface (spec docs/archive/specs/2026-07-22-git-surface.md) ──
   // Known-roots gate: a git operation may only target a saved folder or an
   // indexed project root — same allow-list the read-binary guard builds.
   const knownGitRoot = async (projectRoot: unknown): Promise<boolean> => {

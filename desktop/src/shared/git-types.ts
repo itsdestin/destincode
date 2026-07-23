@@ -1,4 +1,4 @@
-// Git surface IPC payload types (spec docs/active/specs/2026-07-22-git-surface.md).
+// Git surface IPC payload types (spec docs/archive/specs/2026-07-22-git-surface.md).
 // Shared main <-> renderer; keep JSON-serializable.
 import type { StructuredPatchHunk } from './types';
 

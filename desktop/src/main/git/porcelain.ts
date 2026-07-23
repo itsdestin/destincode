@@ -1,6 +1,6 @@
 // Pure parsers for git plumbing output. No I/O, no electron imports — every
 // function takes strings so the whole module unit-tests with fixtures.
-// Spec: docs/active/specs/2026-07-22-git-surface.md section 3.
+// Spec: docs/archive/specs/2026-07-22-git-surface.md section 3.
 import type { StructuredPatchHunk } from '../../shared/types';
 import type { GitFileCounts, GitLogEntry } from '../../shared/git-types';
 
