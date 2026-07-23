@@ -9,12 +9,15 @@ interface TrackableArtifact {
 
 /**
  * Single predicate for which sidecar artifacts are TRACKED-visible — i.e. what
- * the Artifacts tab and its counts show. The rules:
+ * LIST_PROJECT returns and what the tracked counts total. The rules:
  *
- *   1. Manually INCLUDED ("+ Add file") → always visible, any kind. Includes
- *      WIN over excludes, so "+ Add file" is also the recovery path for a
- *      mistaken Exclude.
- *   2. Manually EXCLUDED → hidden, any kind.
+ *   1. Manually INCLUDED (a manualIncludes pin) → always visible, any kind.
+ *      Includes WIN over excludes. Nothing WRITES pins any more: "+ Add file"
+ *      became a Move/Copy import on 2026-07-23 (see rule 4), so this rule now
+ *      exists to keep pins written by the old flow visible after an upgrade —
+ *      it is NOT a recovery path for a mistaken Exclude, because no UI can
+ *      create a pin. (The INCLUDE_EXTERNAL handler still can; nothing calls it.)
+ *   2. Manually EXCLUDED → hidden, any kind. One-way in-app, per rule 1.
  *   3. Internal files → visible only with at least one NON-READ version
  *      (create/edit/delete = Claude's actual work, or a user save). A file
  *      that was merely VIEWED via a pill click ('read' versions only) does NOT

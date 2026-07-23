@@ -3168,12 +3168,24 @@ export function registerIpcHandlers(
   // have written one without duplicating all of this. See that module for the
   // full doc comments on what each count means.
 
-  // LIST_PROJECT → ARTIFACTS ONLY. Returns the tracked sidecar artifacts (internal
-  // always; external only if manually included). Deleted ones are INCLUDED so the
-  // Artifacts tab's "Show deleted" toggle works; the renderer filters them. NO
-  // on-disk discovery is merged in — that is LIST_ALL_FILES's job (the split is the
-  // core principle). visibleCount (withCount) is the authoritative non-deleted,
-  // on-disk artifact count shared with the hero + switcher.
+  // LIST_PROJECT → TRACKED SIDECAR ARTIFACTS ONLY. No on-disk discovery is merged
+  // in — that is LIST_ALL_FILES's job.
+  //
+  // What comes back is whatever trackedArtifacts() admits (visible-artifacts.ts
+  // owns the rules): internal AND external records that carry at least one
+  // non-read version, plus anything legacy-pinned in manualIncludes, minus
+  // anything in manualExcludes. Externals stopped needing a pin on 2026-07-23,
+  // when "+ Add file" became a real Move/Copy import — which is what makes this
+  // call able to feed Project View's External Artifacts section.
+  //
+  // Deleted records (tombstones) ARE returned. The session drawer's "Show
+  // deleted" toggle is the reason — it is the only surviving consumer that wants
+  // them, now that the Artifacts tab and its own toggle are gone. Callers that
+  // don't want tombstones must filter: Project View's FilesTab does exactly that
+  // (see externalSectionRecords there).
+  //
+  // visibleCount (withCount) is a separate, independently-computed count from
+  // countArtifacts — non-deleted and on-disk — shared with the hero + switcher.
   ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string, opts?: { withCount?: boolean }) => {
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
@@ -3572,15 +3584,24 @@ export function registerIpcHandlers(
     disclosedCollisions: opts.disclosedCollisions,
   }));
 
-  // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
-  // files or in-project files Claude never edited). Three steps:
+  // INCLUDE_EXTERNAL = PIN a file into the tracked set (any kind — a file
+  // outside the project folder, or an in-project file Claude never edited).
+  // Writes a manualIncludes entry, which trackedArtifacts treats as rule 1:
+  // visible regardless of whether the file has any Claude work on it.
+  //
+  // NOTHING IN THE APP CALLS THIS TODAY. It used to be "+ Add file", but on
+  // 2026-07-23 that button became a real Move/Copy import (ARTIFACT_IPC.
+  // IMPORT_FILE) and stopped writing pins — so this is no longer the recovery
+  // path for a mistaken Exclude, and Exclude currently has no in-app undo (the
+  // Exclude button says so). The handler and the manualIncludes rule stay
+  // because existing sidecars still carry pins written by the old flow, and
+  // dropping the channel would break the pinned IPC surface. Three steps:
   //   1. Ensure an artifact RECORD exists (appendVersion dedups by path+kind and
   //      creates the sidecar if missing) — a pin with no record would show
   //      nothing, which was a real bug on fresh projects.
   //   2. Add to manualIncludes (idempotent).
-  //   3. Remove from manualExcludes — re-adding is the RECOVERY path for a
-  //      mistaken Exclude (includes also win over excludes in trackedArtifacts,
-  //      so this is belt-and-suspenders).
+  //   3. Remove from manualExcludes (includes also win over excludes in
+  //      trackedArtifacts, so this is belt-and-suspenders).
   ipcMain.handle(ARTIFACT_IPC.INCLUDE_EXTERNAL, async (
     _e, projectRoot: string, absolutePath: string
   ) => {
