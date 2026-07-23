@@ -1,12 +1,17 @@
 name: Desktop CI
 
 on:
+  # Every PR is checked via `pull_request`, regardless of branch name. This
+  # replaces the branch-name allowlist that caused the incident below: that
+  # list was a proxy for "is this a PR", and the proxy failed when 'feat/**'
+  # was listed but 'feature/**' matched nothing — so those branches and their
+  # PRs got NO checks and master stayed red from 2026-07-14 to 07-16 (18
+  # failing pushes) without anyone noticing. `pull_request` also lets
+  # Dependabot's `dependabot/**` PRs run checks; they matched none of the old
+  # push patterns. `push: [master]` keeps the post-merge run on master.
   push:
-    # 'feat/**' is the name this repo actually uses (feat/mascot-rig-core,
-    # feat/beta-build-channel); only 'feature/**' was listed, so those branches
-    # and their PRs got NO checks at all. That's how master stayed red from
-    # 2026-07-14 to 07-16 — 18 failing pushes — without anyone noticing.
-    branches: [master, 'feat/**', 'feature/**', 'fix/**']
+    branches: [master]
+  pull_request:
   workflow_dispatch:
 
 jobs:
