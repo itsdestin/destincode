@@ -45,7 +45,8 @@ describe('searchProjectContent (real ripgrep)', () => {
     await fs.promises.writeFile(path.join(root, '.youcoded/artifacts.json'), '{"note":"port 5223"}\n');
   });
   afterEach(async () => {
-    await fs.promises.rm(root, { recursive: true, force: true });
+    // Fix: retry on Windows EBUSY race with spawned ripgrep
+    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('finds matches with 1-indexed lines, case-insensitively, skipping node_modules and .youcoded', async () => {
