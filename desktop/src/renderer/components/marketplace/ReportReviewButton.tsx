@@ -206,7 +206,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
 
             {/* Inline error message */}
             {dialogState.phase === 'error' && (
-              <p role="alert" className="text-xs text-red-400 -mt-1">
+              <p role="alert" className="text-xs text-destructive-fg -mt-1">
                 {dialogState.message}
               </p>
             )}

@@ -1100,9 +1100,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${dot}`} />
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-fg">{title}</div>
-                          <div className={`text-[11px] mt-0.5 leading-relaxed ${subWarn ? 'text-red-500' : 'text-fg-muted'}`}>{sub}</div>
+                          <div className={`text-[11px] mt-0.5 leading-relaxed ${subWarn ? 'text-destructive-fg' : 'text-fg-muted'}`}>{sub}</div>
                           {/* Off-but-errored: keep the normal off sub AND show why the last attempt failed. */}
-                          {offError && <div className="text-[11px] mt-0.5 leading-relaxed text-red-500">{offError}</div>}
+                          {offError && <div className="text-[11px] mt-0.5 leading-relaxed text-destructive-fg">{offError}</div>}
                         </div>
                       </div>
                       {/* Enable toggle — migrated to the shared Toggle (spec changes
@@ -1310,7 +1310,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                               )}
                               {actionFeedback[b.id] && (
                                 <span className={`text-[9px] font-medium ${
-                                  actionFeedback[b.id] === 'error' ? 'text-red-400' :
+                                  actionFeedback[b.id] === 'error' ? 'text-destructive-fg' :
                                   actionFeedback[b.id]?.includes('ing') ? 'text-blue-400' :
                                   'text-green-400'
                                 }`}>
@@ -1793,7 +1793,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
             {/* Why the remove didn't take. Never invents a cause: the handler's own
                 reason when it gave one, otherwise non-committal. */}
             {removeNote?.id === d.id && (
-              <p className="text-[10px] text-red-500 mt-1">{removeNote.text}</p>
+              <p className="text-[10px] text-destructive-fg mt-1">{removeNote.text}</p>
             )}
           </li>
         );

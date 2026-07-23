@@ -251,7 +251,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
               </div>
             )}
             {installNote?.kind === 'error' && (
-              <div role="alert" className="text-xs text-red-500">{installNote.text}</div>
+              <div role="alert" className="text-xs text-destructive-fg">{installNote.text}</div>
             )}
 
             {/* "Never mind" removed: it called the same handleClose as the ✕ in

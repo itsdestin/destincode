@@ -153,7 +153,7 @@ export default function ReviewList({ pluginId, refreshKey = 0 }: ReviewListProps
       )}
 
       {state.status === 'error' && (
-        <p className="text-xs text-red-400">Couldn't load reviews.</p>
+        <p className="text-xs text-destructive-fg">Couldn't load reviews.</p>
       )}
 
       {state.status === 'loaded' && (

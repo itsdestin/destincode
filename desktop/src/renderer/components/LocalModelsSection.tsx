@@ -275,7 +275,7 @@ function ModelBrowser({
             <div className="space-y-2">
               <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">More on Hugging Face</p>
               {hfState === 'loading' && <p className="text-[11px] text-fg-muted px-1">Searching Hugging Face…</p>}
-              {hfState === 'error' && <p className="text-[11px] text-red-500 px-1">Couldn't reach Hugging Face.</p>}
+              {hfState === 'error' && <p className="text-[11px] text-destructive-fg px-1">Couldn't reach Hugging Face.</p>}
               {hfState === 'idle' && hfFiltered.length === 0 && (
                 <p className="text-[11px] text-fg-muted px-1">No other models found.</p>
               )}
@@ -399,7 +399,7 @@ function RepoCard({
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-[10px] text-red-500 mt-1">{dlError}</p>}
+      {dlError && <p className="text-[10px] text-destructive-fg mt-1">{dlError}</p>}
 
       {/* Expanded: the full quant list. */}
       {expanded && (
@@ -489,7 +489,7 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
               {busy ? 'Deleting…' : 'Delete model'}
             </Button>
           </div>
-          {delError && <p className="text-[10px] text-red-500">{delError}</p>}
+          {delError && <p className="text-[10px] text-destructive-fg">{delError}</p>}
         </div>
       )}
     </div>
@@ -627,7 +627,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-[10px] text-red-500 mt-1">{dlError}</p>}
+      {dlError && <p className="text-[10px] text-destructive-fg mt-1">{dlError}</p>}
     </div>
   );
 }
@@ -705,7 +705,7 @@ function OtherLocalApps() {
                         <p className="text-[10px] text-fg-muted mt-0.5">Added — manage it in Providers above.</p>
                       )}
                       {addError[hit.baseUrl] && (
-                        <p className="text-[10px] text-red-500 mt-0.5">{addError[hit.baseUrl]}</p>
+                        <p className="text-[10px] text-destructive-fg mt-0.5">{addError[hit.baseUrl]}</p>
                       )}
                     </div>
                     {!isAdded && (

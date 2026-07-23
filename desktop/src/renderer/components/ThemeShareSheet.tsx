@@ -159,7 +159,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
             onPublish: handlePublish,
           })}
           {publishError && (
-            <p className="text-xs text-red-400 text-center mt-2">{publishError}</p>
+            <p className="text-xs text-destructive-fg text-center mt-2">{publishError}</p>
           )}
         </div>
       </OverlayPanel>

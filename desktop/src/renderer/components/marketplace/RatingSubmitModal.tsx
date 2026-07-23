@@ -267,7 +267,7 @@ export default function RatingSubmitModal({
             </Button>
             {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
             {signInError && (
-              <p className="text-xs text-red-400 text-center">Sign-in failed: {signInError}. Try again.</p>
+              <p className="text-xs text-destructive-fg text-center">Sign-in failed: {signInError}. Try again.</p>
             )}
           </div>
         ) : (
@@ -316,7 +316,7 @@ export default function RatingSubmitModal({
             {/* Inline error message — offline errors get a Retry button */}
             {error && (
               <div className="-mt-1">
-                <p role="alert" className="text-xs text-red-400">
+                <p role="alert" className="text-xs text-destructive-fg">
                   {error}
                 </p>
                 {/* Retry button — only shown for offline errors; replays the last submit */}

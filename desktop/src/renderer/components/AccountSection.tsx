@@ -253,7 +253,7 @@ function SignedOutBody({
       <p className="text-[10px] text-fg-muted leading-relaxed">
         Uses your GitHub profile to sign in — GitHub only shares your public info.
       </p>
-      {signInError && <p className="text-[10px] text-red-500">{signInError}</p>}
+      {signInError && <p className="text-[10px] text-destructive-fg">{signInError}</p>}
     </div>
   );
 }
@@ -422,7 +422,7 @@ function SignedInBody({
                   {unblockingId === b.id ? 'Unblocking…' : 'Unblock'}
                 </Button>
               </div>
-              {unblockErrors[b.id] && <p className="text-[10px] text-red-500">{unblockErrors[b.id]}</p>}
+              {unblockErrors[b.id] && <p className="text-[10px] text-destructive-fg">{unblockErrors[b.id]}</p>}
             </div>
           ))}
         </section>
@@ -473,7 +473,7 @@ function SignedInBody({
           Downloads a file containing everything YouCoded's server stores about your account.
         </p>
         {exportSavedPath && <p className="text-[10px] text-fg-muted">Saved to {exportSavedPath}</p>}
-        {exportError && <p className="text-[10px] text-red-500">{exportError}</p>}
+        {exportError && <p className="text-[10px] text-destructive-fg">{exportError}</p>}
       </section>
     </>
   ) : (
@@ -623,7 +623,7 @@ function EditAccountBody({
             {nameSaving ? 'Saving…' : 'Save'}
           </Button>
         </InputGroup>
-        {nameError && <p className="text-[10px] text-red-500">{nameError}</p>}
+        {nameError && <p className="text-[10px] text-destructive-fg">{nameError}</p>}
         {nameSaved && !nameError && <p className="text-[10px] text-fg-muted">Saved</p>}
       </section>
 
@@ -697,7 +697,7 @@ function EditAccountBody({
         )}
 
         {/* Plain words for status, never glyphs. */}
-        {handleError && <p className="text-[10px] text-red-500">{handleError}</p>}
+        {handleError && <p className="text-[10px] text-destructive-fg">{handleError}</p>}
         {handleSaved && !handleError && <p className="text-[10px] text-fg-muted">Saved</p>}
       </section>
 
@@ -765,7 +765,7 @@ function EditAccountBody({
                 {deleting ? 'Deleting…' : 'Delete my account'}
               </Button>
             </div>
-            {deleteError && <p className="text-[10px] text-red-500">{deleteError}</p>}
+            {deleteError && <p className="text-[10px] text-destructive-fg">{deleteError}</p>}
           </div>
         )}
       </section>

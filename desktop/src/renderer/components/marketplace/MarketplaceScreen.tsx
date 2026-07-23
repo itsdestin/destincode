@@ -668,7 +668,7 @@ function IntegrationDetailOverlay({
                       {statusBadge.text}
                     </span>
                     {item.state.error && (
-                      <span className="text-xs text-red-400 truncate max-w-[40ch]" title={item.state.error}>{item.state.error}</span>
+                      <span className="text-xs text-destructive-fg truncate max-w-[40ch]" title={item.state.error}>{item.state.error}</span>
                     )}
                   </div>
                 </div>

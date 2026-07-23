@@ -566,7 +566,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             </span>
             {/* Inline failure note — keeps the field open so the user can correct it. */}
             {renameError && (
-              <span className="absolute left-1 top-full mt-1 text-[11px] text-red-400 whitespace-nowrap z-10">
+              <span className="absolute left-1 top-full mt-1 text-[11px] text-destructive-fg whitespace-nowrap z-10">
                 {renameError}
               </span>
             )}

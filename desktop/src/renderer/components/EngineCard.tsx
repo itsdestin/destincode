@@ -126,7 +126,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       {busy && (progress?.kind === 'verify' || progress?.kind === 'unpack') && (
         <p className="mt-2 text-[10px] text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
-      {error && <p className="mt-2 text-[10px] text-red-500">{error}</p>}
+      {error && <p className="mt-2 text-[10px] text-destructive-fg">{error}</p>}
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
           engine is installed — nothing to configure before that. */}

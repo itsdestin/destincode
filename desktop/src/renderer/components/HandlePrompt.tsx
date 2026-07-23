@@ -137,7 +137,7 @@ function HandlePromptPopup({
             </Button>
           </InputGroup>
           {/* Plain words for status, never glyphs. */}
-          {error && <p className="text-[10px] text-red-500">{error}</p>}
+          {error && <p className="text-[10px] text-destructive-fg">{error}</p>}
 
           <Button variant="secondary" onClick={skip} className="w-full py-2">
             Skip for now

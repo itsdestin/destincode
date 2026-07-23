@@ -74,7 +74,7 @@ export default function SignInPromptModal({ open, onClose, title, message }: Pro
           )}
           {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
           {signInError && !signInPending && (
-            <p className="text-xs text-red-400 text-center">Sign-in failed: {signInError}. Try again.</p>
+            <p className="text-xs text-destructive-fg text-center">Sign-in failed: {signInError}. Try again.</p>
           )}
         </div>
       </OverlayPanel>

@@ -1007,7 +1007,7 @@ function RemoteButton({
                           <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
                         ) : setupStatus === 'error' ? (
                           <div className="space-y-2">
-                            <p className="text-xs text-red-400 text-center">{setupError || 'Setup failed'}</p>
+                            <p className="text-xs text-destructive-fg text-center">{setupError || 'Setup failed'}</p>
                             <Button onClick={onRunSetup} className="w-full">Retry</Button>
                           </div>
                         ) : tailscale?.installed && !tailscale.connected ? (
@@ -1042,7 +1042,7 @@ function RemoteButton({
                           (port already bound, permission denied). Show the real
                           reason here — the toggle has already snapped back off. */}
                       {enableError && (
-                        <p className="text-[11px] text-red-400 pb-2">{enableError}</p>
+                        <p className="text-[11px] text-destructive-fg pb-2">{enableError}</p>
                       )}
 
                       <div className="py-2">
@@ -1868,7 +1868,7 @@ function ConnectToDesktopButton() {
               {/* Error */}
               {connectError && (
                 <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2">
-                  <p className="text-[10px] text-red-400">{connectError}</p>
+                  <p className="text-[10px] text-destructive-fg">{connectError}</p>
                 </div>
               )}
 
