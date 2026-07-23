@@ -57,6 +57,26 @@ export async function importFile(args: {
     return { ok: false, error: e.code ?? 'ENOENT', detail: sourcePath };
   }
 
+  // Authorize CONTAINMENT of destDir BEFORE the collision probe below.
+  // Ordering matters: exists(path.join(destDir, name)) is a filesystem probe,
+  // and onCollision: 'skip' used to return { ok: true, skipped: true }
+  // straight off that probe's result — reporting success for a destDir that
+  // was never checked against projectRoot. That turned this function into an
+  // existence-oracle for arbitrary paths (no write happened, but a caller
+  // could learn whether some file outside the project exists by watching
+  // whether the import gets reported "skipped"). Checking containment here,
+  // before any probe, closes that oracle for every onCollision value — a
+  // destDir outside projectRoot is refused before we ever look at what's in
+  // it. We don't yet know the FINAL filename (keep-both can rename it to
+  // avoid a collision), so this call only proves destDir itself resolves
+  // inside projectRoot; the final resolved file path is re-authorized
+  // (containment + D5 tier) right before the write, below — that second call
+  // is what actually gates the write, this one only gates the probe.
+  const dirAuth = await authorizeArtifactWrite({
+    projectRoot, fullPath: destDir, mustStayInRoot: true,
+  });
+  if (!dirAuth.ok) return { ok: false, error: dirAuth.error, detail: (dirAuth as any).path };
+
   let name = path.basename(sourcePath);
   const collided = await exists(path.join(destDir, name));
   if (collided) {
@@ -68,7 +88,9 @@ export async function importFile(args: {
   const destPath = path.join(destDir, name);
 
   // Traversal + protected-path policy on the RESOLVED destination. mustStayInRoot
-  // is true: an import always lands inside the project by definition.
+  // is true: an import always lands inside the project by definition. This is
+  // the authorization that actually gates the write (the dirAuth call above
+  // only gated the collision probe, before the final name was known).
   //
   // confirmed is NOT passed. The flag means "the caller already showed the
   // protected-path confirm dialog", and the Move/Copy dialog is not that dialog

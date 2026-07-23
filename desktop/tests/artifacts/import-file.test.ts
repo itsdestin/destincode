@@ -135,6 +135,25 @@ describe('importFile', () => {
     expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('SECRET=1');
   });
 
+  it('regression: refuses (does not report skipped) for an outside-root destDir even when a same-named file already exists there', async () => {
+    // Before the fix, exists(path.join(destDir, name)) ran BEFORE
+    // authorizeArtifactWrite, and onCollision: 'skip' returned success
+    // straight off that probe — reporting { ok: true, skipped: true } for a
+    // destDir that was never checked against projectRoot. That turned the
+    // function into an existence-oracle for arbitrary paths.
+    const destOutside = path.join(tmp, 'outside-dest');
+    fs.mkdirSync(destOutside, { recursive: true });
+    fs.writeFileSync(path.join(destOutside, 'evil.md'), 'PRE-EXISTING OUTSIDE');
+    const s = src('evil.md', 'NEW');
+    const r = await importFile({
+      projectRoot: root, sourcePath: s, destDir: destOutside,
+      mode: 'copy', onCollision: 'skip',
+    });
+    expect(r.ok).toBe(false);
+    expect((r as any).skipped).not.toBe(true);
+    expect(fs.readFileSync(path.join(destOutside, 'evil.md'), 'utf8')).toBe('PRE-EXISTING OUTSIDE');
+  });
+
   it('reports the real error code when the source does not exist', async () => {
     const r = await importFile({
       projectRoot: root, sourcePath: path.join(outside, 'ghost.md'), destDir: root,
