@@ -61,9 +61,10 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
-import { BuddyOverlayManager } from './buddy-overlay-manager';
+import { BuddyOverlayManager, OVERLAY_TITLE } from './buddy-overlay-manager';
 import { chooseBuddyStrategy } from './buddy-manager';
 import type { BuddyManager } from './buddy-manager';
+import { applyKwinKeepAbove } from './kwin-keep-above';
 import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
@@ -1462,10 +1463,12 @@ app.whenReady().then(async () => {
             if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
           }
         },
-        // Task 8 injects the real KWin "keep above fullscreen" script
-        // runner; a no-op until then so this branch compiles and runs today
-        // without that script existing yet.
-        applyKeepAbove: () => {},
+        // Task 8: real KWin "keep above" script runner. Fire-and-forget —
+        // BuddyOverlayDeps.applyKeepAbove is `void`, and the overlay's own
+        // construction/recreate path shouldn't block on a DBus round-trip;
+        // a slow or failed call just means the window briefly isn't pinned,
+        // not a functional break (applyKwinKeepAbove never throws).
+        applyKeepAbove: (_win) => { void applyKwinKeepAbove(OVERLAY_TITLE, true); },
       })
     : new BuddyWindowManager({
         createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
@@ -1538,8 +1541,28 @@ app.whenReady().then(async () => {
       buddyManager.persistFromRenderer(state);
     }
   });
+  // Task 8: Settings' KDE keep-above toggle. Persists to BUDDY_POS_FILE (so
+  // the next overlay show()/recreate reads it via getPersisted() and
+  // reapplies — KWin state doesn't survive window recreation) AND applies
+  // it live immediately against the overlay's current window, since a
+  // toggle flip mid-session doesn't otherwise trigger a recreate. Not
+  // gated on buddyManager's type: applyKwinKeepAbove filters by caption, and
+  // only the overlay window is ever titled OVERLAY_TITLE (buddy-overlay-
+  // manager.ts), so this is naturally a no-op on the three-window model.
+  ipcMain.handle(IPC.BUDDY_OVERLAY_KEEP_ABOVE, async (_evt, enabled: boolean) => {
+    buddyPositions.keepAbove = enabled;
+    saveBuddyPositions(buddyPositions);
+    return applyKwinKeepAbove(OVERLAY_TITLE, enabled);
+  });
   ipcMain.handle(IPC.BUDDY_DISMISS, () => buddyManager.dismiss());
-  ipcMain.handle(IPC.BUDDY_GET_STATUS, () => buddyManager.getStatus());
+  // keepAbove rides along on getStatus() (see BuddyApi.getStatus WHY comment
+  // in shared/types.ts) — merged in from the persisted positions file here
+  // rather than through buddyManager.getStatus(), since keepAbove isn't part
+  // of the BuddyManager interface (Windows/macOS/Linux-X11 never touch it).
+  ipcMain.handle(IPC.BUDDY_GET_STATUS, () => ({
+    ...buddyManager.getStatus(),
+    keepAbove: !!buddyPositions.keepAbove,
+  }));
   // Restore + focus the main window, then ask it to switch to the buddy's
   // viewed session so the user lands in the same conversation (spec §4.2).
   ipcMain.handle(IPC.BUDDY_OPEN_MAIN, () => {

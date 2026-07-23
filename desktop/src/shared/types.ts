@@ -586,7 +586,13 @@ export interface BuddyApi {
   openMain(): Promise<void>;
   /** Hide the buddy for this app run only (preference stays enabled). */
   dismiss(): Promise<void>;
-  getStatus(): Promise<{ dismissed: boolean; visible: boolean }>;
+  // WHY keepAbove rides on getStatus() rather than a dedicated getter: Task
+  // 8 only adds one new channel (setKeepAbove, for the write); reusing the
+  // existing getStatus() round-trip for the read keeps that true instead of
+  // growing a second buddy:* channel just to answer "what's it set to now".
+  // Optional (not just boolean) because the remote-shim stub throws before
+  // ever constructing a payload, so no caller can assume the field exists.
+  getStatus(): Promise<{ dismissed: boolean; visible: boolean; keepAbove?: boolean }>;
   onStatusChanged(cb: (s: { dismissed: boolean; visible: boolean }) => void): () => void;
   onBarState(cb: (s: { visible: boolean }) => void): () => void;
   onMascotState(cb: (s: { mode: 'free' | 'docked' | 'peeking'; edge: string | null }) => void): () => void;
@@ -610,6 +616,13 @@ export interface BuddyApi {
   /** Fire-and-forget: overlay renderer's own drag/dock logic (DOM-side)
    *  reports the final mascot position + dock edge to persist. */
   overlayPersist(state: { mascot: { x: number; y: number }; dock: string | null }): void;
+  // ── Task 8: opt-in KDE keep-above (Settings toggle, Linux only) ──
+  /** Persists `enabled` to the buddy positions file and applies it live via
+   *  a KWin scripting DBus call (see kwin-keep-above.ts). Resolves to
+   *  whatever applyKwinKeepAbove returned: true on KDE Plasma where the
+   *  script ran, false everywhere else (GNOME/wlroots/no qdbus) — never
+   *  rejects, so the caller doesn't need a .catch just to render the toggle. */
+  setKeepAbove(enabled: boolean): Promise<boolean>;
 }
 
 // Marketplace redesign Phase 1 — per-entry component inventory for the
@@ -1025,6 +1038,11 @@ export const IPC = {
   // (DOM-side for the overlay model) and pushes the final position here to
   // persist — main never computes it, just writes it to BUDDY_POS_FILE.
   BUDDY_OVERLAY_PERSIST: 'buddy:overlay-persist',
+  // Task 8: renderer → main, invoke/handle (unlike the fire-and-forget
+  // overlay channels above — this one returns a result, and toggling is
+  // rare/user-driven, not a hover-hot path). Settings' keep-above toggle:
+  // persists to BUDDY_POS_FILE and runs the KWin script live.
+  BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',

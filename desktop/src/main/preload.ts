@@ -287,6 +287,9 @@ const IPC = {
   BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
   BUDDY_OVERLAY_SET_INTERACTIVE: 'buddy:overlay-set-interactive',
   BUDDY_OVERLAY_PERSIST: 'buddy:overlay-persist',
+  // Task 8: Settings' KDE keep-above toggle — invoke/handle, not fire-and-
+  // forget, since it returns whether the KWin script actually ran.
+  BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
@@ -1057,7 +1060,10 @@ contextBridge.exposeInMainWorld('claude', {
     dragEnded: () => ipcRenderer.send(IPC.BUDDY_DRAG_ENDED),
     openMain: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_OPEN_MAIN),
     dismiss: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_DISMISS),
-    getStatus: (): Promise<{ dismissed: boolean; visible: boolean }> =>
+    // Fix: keepAbove rides along on getStatus() (Task 8) rather than a new
+    // getter channel — main's BUDDY_GET_STATUS handler merges it in from
+    // the persisted positions file, so this type just widens to match.
+    getStatus: (): Promise<{ dismissed: boolean; visible: boolean; keepAbove?: boolean }> =>
       ipcRenderer.invoke(IPC.BUDDY_GET_STATUS),
     onStatusChanged: (cb: (s: { dismissed: boolean; visible: boolean }) => void) => {
       const listener = (_: unknown, s: { dismissed: boolean; visible: boolean }) => cb(s);
@@ -1105,6 +1111,12 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.send(IPC.BUDDY_OVERLAY_SET_INTERACTIVE, { interactive }),
     overlayPersist: (state: { mascot: { x: number; y: number }; dock: string | null }) =>
       ipcRenderer.send(IPC.BUDDY_OVERLAY_PERSIST, state),
+    // Task 8: Settings' KDE keep-above toggle. invoke/handle (not send) —
+    // this is a rare, user-driven click, not a hover-hot path, and the
+    // caller needs to know whether the KWin script actually ran to render
+    // an honest toggle state.
+    setKeepAbove: (enabled: boolean): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.BUDDY_OVERLAY_KEEP_ABOVE, enabled),
   },
   // Renderer pushes per-session attention state to main whenever the chat
   // reducer's ATTENTION_STATE_CHANGED fires. Main aggregates across all windows

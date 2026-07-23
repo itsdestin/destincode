@@ -21,8 +21,10 @@ export interface BuddyOverlayDeps {
   registry: WindowRegistry;
   mainWindow: () => BrowserWindow | null;
   onStatusChanged(status: { dismissed: boolean; visible: boolean }): void;
-  /** Task 8 injects the KWin script runner that keeps the overlay above
-   *  fullscreen windows; no-op until then (see main.ts construction site). */
+  /** Task 8: wired at main.ts's construction site to a fire-and-forget call
+   *  into kwin-keep-above.ts's applyKwinKeepAbove(OVERLAY_TITLE, true) —
+   *  the real KWin scripting DBus runner. Silently does nothing on
+   *  GNOME/wlroots/anywhere qdbus or the KWin scripting service is absent. */
   applyKeepAbove(win: BrowserWindow): void;
 }
 

@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { isAndroid } from '../platform';
+import { useCurrentPlatform } from '../state/platform';
 import ThemeScreen from './ThemeScreen';
 import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
@@ -722,18 +723,37 @@ function BuddyButton() {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+  // Task 8: KDE-only "pin above other windows" toggle. Gated on the real OS
+  // platform (not the app-shell 'electron'/'android'/'browser' axis in
+  // ../platform) since it must not render on Windows/macOS desktop builds.
+  const platform = useCurrentPlatform();
+  const [keepAboveEnabled, setKeepAboveEnabled] = useState(false);
 
   useEffect(() => {
     if (!isDesktopShell()) return;
     let alive = true;
     window.claude.buddy?.getStatus?.()
-      .then((s: { dismissed: boolean }) => { if (alive) setDismissed(!!s?.dismissed); })
+      .then((s: { dismissed: boolean; keepAbove?: boolean }) => {
+        if (!alive) return;
+        setDismissed(!!s?.dismissed);
+        setKeepAboveEnabled(!!s?.keepAbove);
+      })
       .catch(() => {});
     const off = window.claude.buddy?.onStatusChanged?.(
       (s: { dismissed: boolean }) => setDismissed(!!s?.dismissed),
     );
     return () => { alive = false; off?.(); };
   }, []);
+
+  // Optimistic like `toggle` below: flip local state immediately, let main
+  // persist + apply the KWin script in the background. setKeepAbove never
+  // rejects (see BuddyApi WHY comment) but .catch is defensive belt-and-
+  // braces in case a future remote-shim path throws instead of no-oping.
+  const toggleKeepAbove = useCallback(() => {
+    const next = !keepAboveEnabled;
+    setKeepAboveEnabled(next);
+    window.claude.buddy?.setKeepAbove?.(next).catch(() => {});
+  }, [keepAboveEnabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -803,6 +823,18 @@ function BuddyButton() {
                   Hidden until restart{' · '}
                   <button onClick={showNow} className="text-accent hover:underline">Show now</button>
                 </p>
+              )}
+              {/* Task 8: Linux-only — Electron's setAlwaysOnTop is a no-op on
+                  Wayland; this opt-in runs a KWin scripting DBus call instead,
+                  which only does anything on KDE Plasma (see kwin-keep-above.ts). */}
+              {platform === 'linux' && (
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-edge">
+                  <div>
+                    <span className="text-xs text-fg font-medium block">Pin buddy above other windows (KDE only)</span>
+                    <p className="text-[10px] text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
+                  </div>
+                  <Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />
+                </div>
               )}
             </div>
           </div>

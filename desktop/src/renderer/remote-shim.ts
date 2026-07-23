@@ -1440,6 +1440,10 @@ export function installShim(): void {
       onOverlayToggleChat: () => () => { /* no-op unsubscribe */ },
       overlaySetInteractive: (_i: boolean) => { /* desktop-only */ },
       overlayPersist: (_s: { mascot: { x: number; y: number }; dock: string | null }) => { /* desktop-only */ },
+      // Task 8 — KDE keep-above is Electron-only (KWin DBus scripting has
+      // no browser/Android equivalent); same desktop-only-throw contract as
+      // openMain/dismiss/getStatus above.
+      setKeepAbove: () => { throw new Error('Buddy is desktop-only in this version'); },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.
