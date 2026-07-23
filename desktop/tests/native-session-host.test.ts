@@ -127,6 +127,36 @@ describe('NativeSessionHost', () => {
     await host2.destroyAll();
   });
 
+  // Task 6: resume() takes an optional bindingOverride — the RESUME-TIME model
+  // selector's pick, which must win over the persisted header binding. Ordering
+  // matters: ipc-handlers.ts reads nativeHost.modelForSession() for the eager
+  // loadModel() call the instant resume() returns, so the override has to be
+  // applied INSIDE resume() (constructing the HarnessSession with it) rather
+  // than via a post-hoc setBinding, which would race that read and load the
+  // header's (possibly-absent) model instead.
+  it('resume applies a binding override before anything reads the model', async () => {
+    await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
+    await host.destroy('s-1');
+
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
+    expect(resumed).toBe(true);
+    expect(host2.modelForSession('s-1')).toBe('model-B');
+    expect(host2.getBinding('s-1')).toEqual({ providerId: 'local', modelId: 'model-B' });
+    await host2.destroyAll();
+  });
+
+  it('resume WITHOUT an override still uses the header binding (no local match ⇒ no substitution)', async () => {
+    await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
+    await host.destroy('s-2');
+
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const resumed = await host2.resume('s-2', root);
+    expect(resumed).toBe(true);
+    expect(host2.modelForSession('s-2')).toBe('header-model');
+    await host2.destroyAll();
+  });
+
   it('list() surfaces sessions for the Resume Browser with provider tag', async () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     const rows = host.list();
@@ -595,6 +625,58 @@ describe('NativeSessionHost', () => {
       // silent (destroy() already tore down the session's listeners).
       await new Promise((r) => setTimeout(r, 150));
       expect(events.some((e) => e.type === 'user-message' && e.data.text === 'same-tick')).toBe(false);
+    });
+  });
+
+  // ---- Task 9: quiesce (takeover/teardown) ----
+  // quiesce is deliberately STRONGER than interrupt(): interrupt aborts only the
+  // current turn and lets the M1 FIFO queue keep draining (pinned above:
+  // "interrupt aborts the current turn only"). For a takeover that is WRONG — a
+  // queued message would start a NEW turn AFTER the flush and append past it,
+  // corrupting the transcript the requester is about to pull. quiesce guarantees
+  // the opposite: after it resolves, NO further appends happen until a new send.
+  describe('quiesce (Task 9 — takeover/teardown)', () => {
+    it('quiesce clears the queue, aborts mid-stream, and no appends occur after it resolves', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const appendSpy = vi.spyOn(store, 'append');
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null);
+      await qHost.create({ sessionId: 'qz', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      qHost.send('qz', 'long');              // slow (delayedFactory) turn in flight
+      qHost.send('qz', 'queued-survivor');   // FIFO'd behind it — must NEVER run
+      await new Promise((r) => setImmediate(r)); // let the first turn genuinely start
+
+      await qHost.quiesce('qz');
+      const appendsAtQuiesce = appendSpy.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 80)); // the queue would have drained by now
+      expect(appendSpy.mock.calls.length).toBe(appendsAtQuiesce); // queued-survivor never ran
+
+      // The survivor's user-message never reached disk (its turn was cut before it started).
+      const survivorMsgs = store.readEvents('qz', root)
+        .filter((e) => e.type === 'user-message' && e.data.text === 'queued-survivor');
+      expect(survivorMsgs).toHaveLength(0);
+      await qHost.destroyAll();
+    });
+
+    it('quiesce catches a same-tick send (setImmediate defer) — the turn is aborted, never completed', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const appendSpy = vi.spyOn(store, 'append');
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null);
+      await qHost.create({ sessionId: 'qz2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      // send() and quiesce() in the SAME synchronous tick. send() defers its
+      // runTurns dispatch one macrotask (setImmediate), so an interrupt that ran
+      // in this same tick would MISS the turn (the AbortController doesn't exist
+      // until runTurns actually starts it). quiesce awaits one macrotask FIRST, so
+      // it catches the just-dispatched turn and aborts it.
+      qHost.send('qz2', 'same-tick');
+      await qHost.quiesce('qz2');
+
+      const appendsAtQuiesce = appendSpy.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 80));
+      expect(appendSpy.mock.calls.length).toBe(appendsAtQuiesce); // no post-quiesce appends
+      // Aborted mid-stream: the turn must NOT have reached turn-complete.
+      const types = store.readEvents('qz2', root).map((e) => e.type);
+      expect(types).not.toContain('turn-complete');
+      await qHost.destroyAll();
     });
   });
 });

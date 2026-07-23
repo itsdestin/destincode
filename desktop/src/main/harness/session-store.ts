@@ -7,8 +7,14 @@
 // assistant-thinking) are display-only for the same reason.
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
-// WHY imported from transcript-watcher: the slug MUST match CC's project-dir
-// encoding exactly (one function, one convention — see cwdToProjectSlug docs).
+// WHY imported from transcript-watcher: native sessions use the RAW
+// cwdToProjectSlug — NOT ccProjectSlug (project-conversations.ts), which
+// additionally uppercases a lowercase Windows drive letter before slugifying.
+// This is a DELIBERATE divergence, not a bug: the two encodings disagree on a
+// cwd like 'c:\Users\d\proj' (see session-store.test.ts's slug-divergence
+// pin), and unifying them would orphan every native session file already
+// written on disk under the raw slug. conversations/service.ts's
+// localJsonlPath mirrors this same raw-slug convention for native paths.
 import { cwdToProjectSlug } from '../transcript-watcher';
 import { NativeHome } from '../native-home';
 

@@ -7,11 +7,29 @@ import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
 // lazily inside listPastSessions, so the session-browser ↔ project-conversations
 // import cycle is harmless (neither uses the other at module-eval time).
 import { ccProjectSlug } from './project-conversations';
+// Task 5: native rows need the SAME raw-slug encoding NativeSessionHost writes
+// under (deliberately NOT ccProjectSlug — see harness/session-store.ts's
+// slug-divergence comment). cwdToProjectSlug already lives on transcript-watcher
+// and ipc-handlers.ts imports it from here too, so this isn't a new dependency
+// direction.
+import { cwdToProjectSlug } from './transcript-watcher';
+import type { NativeSessionListEntry } from './harness/session-store';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const TOPICS_DIR = path.join(CLAUDE_DIR, 'topics');
 const CONVERSATION_INDEX_PATH = path.join(CLAUDE_DIR, 'conversation-index.json');
+// Mirrors NativeHome's private sessionPath() convention (~/.youcoded/sessions/
+// <slug>/<id>.jsonl) — captured at module load like CLAUDE_DIR above, which is
+// why tests reset modules + re-stub os.homedir() before each listPastSessions
+// call (see session-browser.test.ts).
+const NATIVE_SESSIONS_DIR = path.join(os.homedir(), '.youcoded', 'sessions');
+
+/** The on-disk path for a native session's transcript on THIS device — the
+ *  probe listPastSessions uses to decide notSyncedYet for a native row. */
+function nativeJsonlPath(cwd: string, sessionId: string): string {
+  return path.join(NATIVE_SESSIONS_DIR, cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+}
 
 /** Read per-session metadata from conversation-index.json: the user-set flag
  *  map AND the topic (display name). Lifts v1 legacy `complete` into the flags
@@ -262,8 +280,19 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
  * Returns sessions sorted by last modified (most recent first).
  * Excludes sessions that are currently active (matching activeSessionIds).
  * Uses async I/O with Promise.all for parallelism.
+ *
+ * `nativeEntries` (Task 5) is NativeSessionHost.list()'s output — passed in
+ * rather than read from disk here so NativeSessionHost stays the one source of
+ * truth for what native sessions exist. Native rows join the SAME store-overlay
+ * enrichment pass CC rows get below (title/flags/tags/note/device precedence,
+ * lastUsedModel), instead of being bare-concatenated by the caller afterward
+ * (the pre-Task-5 shape, which meant a native session's tags/note/flags never
+ * showed up in the Resume Browser even after Task 4 started persisting them).
  */
-export async function listPastSessions(activeSessionIds?: Set<string>): Promise<PastSession[]> {
+export async function listPastSessions(
+  activeSessionIds?: Set<string>,
+  nativeEntries?: (NativeSessionListEntry & { provider: 'native' })[],
+): Promise<PastSession[]> {
   let slugs: string[];
   try {
     const entries = await withRetry(() => fs.promises.readdir(PROJECTS_DIR));
@@ -357,6 +386,36 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     }
   }
 
+  // Task 5: fold native rows into the SAME index, BEFORE the store-union pass
+  // below, so that pass's per-record enrichment (title/flags/tags/note/device
+  // precedence) applies to native rows exactly the way it applies to CC rows —
+  // one enrichment pass, not a second bolted-on copy. Native ids are
+  // NativeSessionHost-minted UUIDs, a disjoint generator from CC's, so they
+  // never collide with a legacy sessionId already in `deduped`. Live native
+  // sessions are excluded the same way CC ones are (Bug 1 parity, 2026-07-13):
+  // every live session gains a store record within seconds, and listing one
+  // here too would offer resume on a transcript its own writer is still
+  // appending to.
+  for (const entry of nativeEntries ?? []) {
+    if (activeSessionIds?.has(entry.sessionId)) continue;
+    deduped.set(entry.sessionId, {
+      sessionId: entry.sessionId,
+      // Native sessions have no CC auto-title hook, so NativeSessionHost
+      // already derived a title from the first user message when the header
+      // itself had none; fall back to 'Untitled' when even that is absent.
+      name: entry.title ?? 'Untitled',
+      projectSlug: entry.slug,
+      projectPath: entry.cwd,
+      lastModified: entry.mtimeMs,
+      size: entry.sizeBytes,
+      provider: 'native',
+      // Stored (raw) harness id from the header — drives the Resume Browser's
+      // preset label. Not legacy-mapped here (a 'chat' header shows as
+      // Assistant via the label's fallback), which is fine for a display badge.
+      harnessId: entry.harnessId,
+    });
+  }
+
   const result = Array.from(deduped.values());
 
   // Store union (Phase 2a): the Conversation Store is the canonical record;
@@ -370,11 +429,17 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
   // (folder here, transcript not materialized yet) — resume disabled either way.
   // `deduped` is already keyed by sessionId, so it doubles as the merge index;
   // mutating a legacy value mutates the same object already in `result`.
+  //
+  // Task 5: this pass now reads BOTH provider buckets (`claude` AND `native`)
+  // instead of just `claude` — native records are real Conversation Store
+  // entries as of Task 4, so leaving them out here would mean a native
+  // session's tags/note/flags never actually reached the Resume Browser even
+  // though they're durably persisted and readable via session:get-meta.
   try {
     const { getConversationStore, buildLocalProjectResolver } = await import('./conversations/service');
     const store = getConversationStore();
     if (store) {
-      const records = await store.list('claude');
+      const records = [...await store.list('claude'), ...await store.list('native')];
       // Resolve a store record's project the SAME way the materialize sweep does
       // (originalPath → managed-by-name → saved-by-basename). Built ONCE per
       // browse. Load-bearing for CROSS-DEVICE / CROSS-OS resume: a session made
@@ -384,15 +449,18 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
       // nonexistent dir (silently downgraded to $HOME → wrong slug), and the
       // session spawned blank and exited. Resolving to THIS device's copy of the
       // folder makes resume launch in the right cwd where the transcript
-      // materialized. Fix 2026-07-12 (two-device dogfood).
+      // materialized. Fix 2026-07-12 (two-device dogfood). Provider-agnostic —
+      // it only reads projectName/originalPath, common to both buckets.
       const resolveLocal = buildLocalProjectResolver();
       for (const rec of records) {
         // LIVE sessions are excluded for the same reason the legacy scan
         // excludes them: every live session gains a store record within
         // seconds (live intake upserts on transcript events), and offering
-        // resume on one would spawn a SECOND `claude --resume` against the
-        // transcript the live session is actively appending to.
+        // resume on one would spawn a SECOND `claude --resume` (or a second
+        // native turn loop) against the transcript the live session is
+        // actively appending to.
         if (activeSessionIds?.has(rec.id)) continue;
+        const isNative = rec.provider === 'native';
         const legacy = deduped.get(rec.id);
         // Store flags are { value, updatedAt }; extractStoreMeta keeps the ON
         // reserved flags, turns `tag:<id>` keys into tags[], and passes the note.
@@ -407,7 +475,9 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           // store title is a PLACEHOLDER, not a name — older clients synced such
           // topic files (see docs/PITFALLS.md → Resume Browser) — so it must never
           // clobber a real derived name; it falls through to legacy.name instead.
-          // (Legacy, non-store rows below keep the pure topic>index>derived chain.)
+          // (Legacy, non-store rows below keep the pure topic>index>derived chain.
+          // For a native row, "legacy.name" is nativeEntries' title/'Untitled'
+          // fallback — same precedence, same reasoning.)
           legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
           legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
           if (Object.keys(flags).length) legacy.flags = flags;
@@ -415,6 +485,7 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           if (note) legacy.note = note;
           legacy.device = rec.device || undefined;
           legacy.provider = rec.provider;
+          if (rec.lastUsedModel) legacy.lastUsedModel = rec.lastUsedModel;
           // Prefer the store's UNAMBIGUOUS project resolution for the resume cwd.
           // The legacy projectPath came from resolveSlugToPath, a filesystem walk
           // that can misfire when a folder's name contains hyphens AND a shorter
@@ -423,25 +494,38 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           // $HOME). The store knows the exact projectName, so resolveLocal maps
           // it by basename with no ambiguity. Only override when that folder
           // actually holds THIS transcript, so we never point resume elsewhere.
+          // Native uses cwdToProjectSlug + ~/.youcoded/sessions (its own raw-slug
+          // convention, deliberately diverging from ccProjectSlug — see
+          // harness/session-store.ts).
           const storeLocal = resolveLocal(rec);
-          if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
+          if (isNative) {
+            if (storeLocal && fs.existsSync(nativeJsonlPath(storeLocal, rec.id))) {
+              legacy.projectPath = storeLocal;
+              legacy.projectSlug = cwdToProjectSlug(storeLocal);
+            }
+          } else if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
             legacy.projectPath = storeLocal;
             legacy.projectSlug = ccProjectSlug(storeLocal);
           }
         } else {
           // Store-only conversation: resolve its project locally. Resume needs
-          // BOTH the project folder AND a materialized transcript in
-          // ~/.claude/projects — a store-only row has no legacy-scanned
-          // transcript by construction, so check the JSONL explicitly;
-          // `claude --resume` on a missing transcript just errors out.
+          // BOTH the project folder AND a materialized transcript on this
+          // device — a store-only row has no locally-scanned transcript by
+          // construction, so check the JSONL explicitly; resuming (CC's
+          // `--resume`, or the native host's persisted-session resume) on a
+          // missing transcript just errors out. The probe path is
+          // provider-specific: ~/.claude/projects for CC, ~/.youcoded/sessions
+          // for native (see nativeJsonlPath).
           const localPath = resolveLocal(rec);
           const transcriptHere = localPath
-            ? fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`))
+            ? (isNative
+                ? fs.existsSync(nativeJsonlPath(localPath, rec.id))
+                : fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`)))
             : false;
           result.push({
             sessionId: rec.id,
             name: rec.title || 'Untitled',
-            projectSlug: localPath ? ccProjectSlug(localPath) : '',
+            projectSlug: localPath ? (isNative ? cwdToProjectSlug(localPath) : ccProjectSlug(localPath)) : '',
             projectPath: localPath ?? rec.originalPath,
             lastModified: Date.parse(rec.lastActive) || 0,
             size: 0,
@@ -450,6 +534,7 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
             ...(note ? { note } : {}),
             device: rec.device || undefined,
             provider: rec.provider,
+            ...(rec.lastUsedModel ? { lastUsedModel: rec.lastUsedModel } : {}),
             // Two distinct resume-blocked sub-cases so the renderer can word
             // the note accurately: folder absent vs. transcript not synced yet.
             ...(localPath ? {} : { missingProject: true }),

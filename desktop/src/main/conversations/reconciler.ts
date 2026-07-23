@@ -111,6 +111,10 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
   // degrades to create-everything upserts, which the store's merge absorbs
   // safely (newest data wins).
   const existingById = new Map<string, ConversationRecord>();
+  // WHY hardcoded 'claude' (not a sessionProvider param, unlike service.ts's
+  // per-session write path): this reconciler ONLY ever scans opts.projectsDir
+  // (~/.claude/projects) — it is CC-only by definition, so there is no other
+  // provider it could ever need to thread here.
   try {
     for (const r of await opts.store.list('claude')) existingById.set(r.id, r);
   } catch { /* degraded: treat everything as new; upsert merges safely */ }
@@ -179,6 +183,9 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
         }
         const upserted = await opts.store.upsert({
           id: sessionId,
+          // WHY hardcoded (same as the list() call above): every id this loop
+          // sees came from opts.projectsDir — a CC-only directory — so
+          // 'provider'/'transcriptRef' below can never be anything but 'claude'.
           provider: 'claude',
           projectName,
           title: title || undefined,

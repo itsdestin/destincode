@@ -1,6 +1,6 @@
 // src/renderer/hooks/useSessionMeta.ts
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { NATIVE_META_UNSUPPORTED, type SessionMetaResult } from '../../shared/types';
+import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 
 export interface SessionMetaApi {
   tags: Set<string>;   // applied tag ids
@@ -10,7 +10,7 @@ export interface SessionMetaApi {
    *  controls disabled. */
   supported: boolean;
   /** Host-supplied explanation for `supported: false`, for the disabled tooltip.
-   *  Falls back to NATIVE_META_UNSUPPORTED when the host didn't say. */
+   *  Falls back to META_UNSUPPORTED_FALLBACK when the host didn't say. */
   unsupportedReason: string;
   setTag: (tagId: string, next: boolean) => void;
   setNote: (text: string) => void;
@@ -24,7 +24,7 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
   // Last value we believe the backend accepted — the rollback target for a
   // refused write. Kept in a ref so back-to-back setNote calls chain correctly.
   const savedNote = useRef('');
-  const [unsupportedReason, setUnsupportedReason] = useState(NATIVE_META_UNSUPPORTED);
+  const [unsupportedReason, setUnsupportedReason] = useState(META_UNSUPPORTED_FALLBACK);
 
   // Only a refusal that explicitly says `unsupported` may flip `supported`.
   // Ordinary failures (invalid tag id, note too long) must NOT touch it — and
@@ -50,7 +50,7 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
         // Older backends (remote peer on a previous build) omit the field entirely
         // — treat missing as supported so we never disable against an unknown host.
         setSupported(m?.supported !== false);
-        setUnsupportedReason(m?.unsupportedReason || NATIVE_META_UNSUPPORTED);
+        setUnsupportedReason(m?.unsupportedReason || META_UNSUPPORTED_FALLBACK);
       })
       .catch(() => { setTags(new Set()); setNoteState(''); savedNote.current = ''; setSupported(true); });
   }, [sessionId]);

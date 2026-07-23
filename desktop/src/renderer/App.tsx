@@ -23,7 +23,8 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { Button, Toggle } from './components/ui';
+import { AnchorTip, Button, Toggle } from './components/ui';
+import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
@@ -61,6 +62,8 @@ import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/Clos
 import PreferencesPopup from './components/PreferencesPopup';
 import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPickerPopup from './components/ModelPickerPopup';
+import NativeModelSelect from './components/NativeModelSelect';
+import type { ModelBinding } from '../shared/provider-types';
 import OpenTasksPopup from './components/OpenTasksPopup';
 import { useSessionTasks } from './hooks/useSessionTasks';
 import MarketplaceScreen from './components/marketplace/MarketplaceScreen';
@@ -260,7 +263,10 @@ function AppInner() {
   // `movedSessionsRef.current` instead. recordMoved/clearMoved keep the state and
   // the ref in lockstep, the ref updated synchronously so the destroy handler
   // (which fires ms after the moved push) reliably sees the entry.
-  type MovedInfo = { device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string };
+  // provider: which runtime the moved session ran as. Threaded so MovedGate's
+  // Resume takes the native path (pre-resume model picker) for a native session
+  // rather than launching it as CC (which would find no JSONL and spawn blank).
+  type MovedInfo = { device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string };
   const [movedSessions, setMovedSessions] = useState<Map<string, MovedInfo>>(new Map());
   const movedSessionsRef = useRef(movedSessions);
   const recordMoved = useCallback((sessionId: string, info: MovedInfo) => {
@@ -276,15 +282,19 @@ function AppInner() {
     movedSessionsRef.current = next;
     setMovedSessions(next);
   }, []);
-  // Conversation-lease takeover dialog (Plan 2b Task 9). When resuming a
-  // conversation held live on another device, we ask before yanking it here.
-  // The resume flow AWAITS the user's choice via a promise resolved by the
-  // dialog buttons (takeoverResolveRef), so handleResumeSession stays one linear
-  // async function instead of splitting across callbacks. phase 'confirm' is the
-  // first ask; 'force' is the "holder isn't responding — take over anyway?" ask.
-  const [takeoverPrompt, setTakeoverPrompt] = useState<{ device: string; phase: 'confirm' | 'force' } | null>(null);
+  // Conversation-lease takeover dialog (Plan 2b Task 9; 3-state redesign
+  // Destin sign-off 2026-07-23). When resuming a conversation held live on
+  // another device, we ask before yanking it here. The resume flow AWAITS the
+  // user's choice via a promise resolved by the dialog buttons
+  // (takeoverResolveRef), so handleResumeSession stays one linear async
+  // function instead of splitting across callbacks. phase 'confirm' is the
+  // first ask; 'force' is the "asked, but no answer" ask (a request WAS
+  // delivered to the holder); 'undeliverable' is the honest third state — the
+  // hub had no delivery path at all, so the holder was never asked (distinct
+  // from 'force': never claim a device ignored a request it never received).
+  const [takeoverPrompt, setTakeoverPrompt] = useState<{ device: string; phase: 'confirm' | 'force' | 'undeliverable' } | null>(null);
   const takeoverResolveRef = useRef<((choice: boolean) => void) | null>(null);
-  const askTakeover = useCallback((device: string, phase: 'confirm' | 'force') =>
+  const askTakeover = useCallback((device: string, phase: 'confirm' | 'force' | 'undeliverable') =>
     new Promise<boolean>((resolve) => {
       // Reentrancy guard: only one resolver slot exists. If a second resume opens
       // a dialog while one is pending, resolve the prior one as "declined" so its
@@ -299,6 +309,24 @@ function AppInner() {
     takeoverResolveRef.current = null;
     r?.(choice);
   }, []);
+  // Task 6 — the resume-time model selector's pre-resume modal. Destin's
+  // ruling: native resume ALWAYS offers the provider-scoped model selector and
+  // NEVER auto-launches a binding. handleResumeSession's native branch opens
+  // this instead of creating whenever it's called WITHOUT a nativeBinding
+  // already in hand — e.g. a call site that has no inline picker of its own
+  // (MovedGate's Resume button, ProjectView's resume path), as opposed to the
+  // Resume Browser's own expanded row, which always resolves a binding first
+  // (its Resume button is disabled until one exists) and so never lands here.
+  // Nothing below is MovedGate-specific — this is the shared surface Task 9
+  // reuses for that gate's resume affordance.
+  const [pendingNativeResume, setPendingNativeResume] = useState<{
+    claudeSessionId: string; projectSlug: string; projectPath: string; launchInNewWindow?: boolean;
+  } | null>(null);
+  const [pendingNativeBinding, setPendingNativeBinding] = useState<ModelBinding | null>(null);
+  // True while the pre-resume picker's create is in flight — keeps the modal open
+  // (and its Resume button busy) until the create acks, so a failure doesn't close
+  // the modal over a silent nothing (Task 6 review ack-gap).
+  const [pendingNativeResuming, setPendingNativeResuming] = useState(false);
   // Shown when the user closes an active session — offers to mark it complete
   // in one step so it's hidden from the resume menu by default.
   const [closePromptFor, setClosePromptFor] = useState<string | null>(null);
@@ -1212,13 +1240,14 @@ function AppInner() {
     // <MovedGate>. Still dispatch SESSION_MOVED for its endTurn effect (cleanly
     // stops any 'thinking' state on the now-dead session). The push carries the
     // resume params so the gate's "Resume on this device" needs no extra lookup.
-    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string }) => {
+    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string }) => {
       if (!payload?.sessionId) return;
       recordMoved(payload.sessionId, {
         device: payload.device,
         claudeSessionId: payload.claudeSessionId,
         projectSlug: payload.projectSlug,
         projectPath: payload.projectPath,
+        provider: payload.provider,
       });
       dispatch({ type: 'SESSION_MOVED', sessionId: payload.sessionId, device: payload.device });
     });
@@ -2179,7 +2208,13 @@ function AppInner() {
     clearMoved(id);
   }, [dispatch, clearMoved]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
+  // Returns whether a resume was actually launched (true), or was aborted / failed
+  // / deferred to the pre-resume picker (false). Callers that own a modal or row
+  // spinner (the pendingNativeResume modal, ResumeBrowser) await this and keep
+  // their UI open on false instead of closing over a silent failure (Task 6 review
+  // — the create ack-gap: a create that never returned an id used to be a silent
+  // `return`, leaving the user staring at nothing).
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding): Promise<boolean> => {
     const cwd = projectPath;
 
     // Plan 2b Task 9 — conversation-lease takeover gate. Before resuming, ask the
@@ -2198,11 +2233,16 @@ function AppInner() {
       if (q?.held && !q.self) {
         const device = q.device || 'another device';
         const confirmed = await askTakeover(device, 'confirm');
-        if (!confirmed) return; // "Never mind" — abort the resume
+        if (!confirmed) return false; // "Never mind" — abort the resume
         const r = await window.claude.syncSpaces?.leaseTakeover?.(claudeSessionId);
-        if (r?.outcome === 'timeout') {
-          const forced = await askTakeover(device, 'force');
-          if (!forced) return; // "Never mind" — abort
+        // 'timeout' (asked, no answer) and 'undeliverable' (never asked — hub had
+        // no delivery path) both offer the SAME force path, just with different
+        // dialog copy — see takeoverDialogCopy. Never collapse them into one
+        // phase: that's exactly the dishonest "isn't responding" framing this
+        // 3-state redesign replaced.
+        if (r?.outcome === 'timeout' || r?.outcome === 'undeliverable') {
+          const forced = await askTakeover(device, r.outcome === 'undeliverable' ? 'undeliverable' : 'force');
+          if (!forced) return false; // "Never mind" — abort
           const fr = await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
           // A failed force means the lease was never overwritten — the other device
           // may STILL be live and holding it. Never-block (proceed with the resume),
@@ -2222,13 +2262,16 @@ function AppInner() {
       }
     } catch { /* never-block: a lease query/takeover failure must not stop the resume */ }
 
-    // Native-harness resume: the model binding lives in the session's stored
-    // header, so we send NO binding — SessionManager's native branch tolerates a
-    // missing binding when resumeSessionId is set (it only throws for a FRESH
-    // native session with no binding). The main-side create handler calls
-    // nativeHost.resume(), which wires the session live; we then request a
-    // transcript replay so the chat reducer hydrates from the persisted events
-    // (getHistory returns native events for a live native id).
+    // Native-harness resume. Task 6 / Destin's ruling: NEVER auto-launch a
+    // binding — the resume-time model selector is ALWAYS the source of the
+    // binding this resume launches on, on any device. Without one in hand yet,
+    // open the pre-resume picker modal instead of creating with the (possibly
+    // stale, possibly entirely absent on this device) header binding.
+    if (provider === 'native' && !nativeBinding) {
+      setPendingNativeBinding(null);
+      setPendingNativeResume({ claudeSessionId, projectSlug, projectPath, launchInNewWindow });
+      return false; // deferred to the pre-resume picker — not launched yet
+    }
     if (provider === 'native') {
       const nativeSession = await (window.claude.session.create as any)({
         name: 'Resuming…',
@@ -2236,8 +2279,18 @@ function AppInner() {
         skipPermissions: false, // native sessions have no PTY permission flow
         provider: 'native',
         resumeSessionId: claudeSessionId,
+        binding: nativeBinding, // the selector's pick — becomes the live binding (native-session-host.ts resume() override)
       });
-      if (!nativeSession?.id) return;
+      if (!nativeSession?.id) {
+        // The create never acked (Task 6 review — was a silent return). Main also
+        // emits a session-error for the split not-synced / folder-missing / data-
+        // missing REFUSAL cases (those DO return an id, so they don't land here);
+        // this covers a create that returned nothing at all. Non-committal per
+        // error standards — the exact cause isn't known on this side.
+        setToast("Couldn't resume this conversation.");
+        setTimeout(() => setToast(null), 6000);
+        return false;
+      }
       // I1 fix (resume path): same invoke-result patch as createSession — the
       // session:created event seeded this entry with harnessId=undefined (resume
       // can't seed it synchronously), so the live pill would read "Assistant" for
@@ -2251,7 +2304,7 @@ function AppInner() {
       // Hydrate the chat view from disk. Main streams every historical
       // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
       (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
-      return;
+      return true;
     }
 
     // Use explicitly chosen resume model; fall back to the current session's model.
@@ -2266,7 +2319,12 @@ function AppInner() {
       resumeSessionId: claudeSessionId,
       model: m,
     });
-    if (!newSession?.id) return;
+    if (!newSession?.id) {
+      // Honest failure instead of a silent return (Task 6 review — the CC ack-gap).
+      setToast("Couldn't resume this conversation.");
+      setTimeout(() => setToast(null), 6000);
+      return false;
+    }
 
     // Launch-in-new-window for resumed sessions — same peer-window spawn path.
     if (launchInNewWindow) {
@@ -2289,6 +2347,7 @@ function AppInner() {
     } catch (err) {
       console.error('Failed to load history:', err);
     }
+    return true;
   }, [dispatch, currentModel, askTakeover]);
 
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
@@ -2757,7 +2816,11 @@ function AppInner() {
                     // Drop the dead pill first so resume creates a fresh one (no duplicate).
                     removeSessionLocally(sessionId);
                     if (info?.claudeSessionId && info.projectSlug && info.projectPath) {
-                      void handleResumeSession(info.claudeSessionId, info.projectSlug, info.projectPath);
+                      // Thread the provider so a native moved session lands in the
+                      // pre-resume model picker (Task 6's pendingNativeResume path)
+                      // instead of auto-launching — handleResumeSession's native
+                      // branch opens the modal when called without a binding.
+                      void handleResumeSession(info.claudeSessionId, info.projectSlug, info.projectPath, undefined, undefined, undefined, info.provider);
                     } else {
                       // Main couldn't resolve the resume params (no cwd) — fall back
                       // to the Resume Browser so the user isn't stranded.
@@ -3185,40 +3248,130 @@ function AppInner() {
           )}
         </div>
       )}
-      {/* Plan 2b Task 9 — conversation-lease takeover confirm dialog. L2 popup via
-          the shared Scrim/OverlayPanel primitives (theme-driven scrim/blur/shadow;
-          PITFALLS → Overlays). Plain words, no status glyphs. 'confirm' asks to
-          take a live session over; 'force' asks after the holder didn't respond. */}
-      {takeoverPrompt && (
+      {/* Plan 2b Task 9 — conversation-lease takeover dialog (3-state redesign,
+          Destin sign-off 2026-07-23). L2 popup via the shared Scrim/OverlayPanel
+          primitives (theme-driven scrim/blur/shadow; PITFALLS → Overlays). Plain
+          words, no status glyphs. 'confirm' asks to take a live session over;
+          'force' asks after a DELIVERED request went unanswered; 'undeliverable'
+          is the honest state where the hub never reached the holder at all — see
+          takeover-dialog-copy.ts for why these are worded differently (never
+          blame a device for "not responding" to a request it never received). */}
+      {takeoverPrompt && (() => {
+        const copy = takeoverDialogCopy(takeoverPrompt.phase, takeoverPrompt.device);
+        // Bold just the device name within `lead` for the two richer phases —
+        // the copy module returns plain interpolated strings (no JSX
+        // dependency, so its output stays pinnable); splitting here is the only
+        // place that needs to know about the `font-medium` span.
+        const boldDevice = (text: string) => {
+          const idx = text.indexOf(takeoverPrompt.device);
+          if (idx === -1) return text;
+          return (
+            <>
+              {text.slice(0, idx)}
+              <span className="font-medium">{takeoverPrompt.device}</span>
+              {text.slice(idx + takeoverPrompt.device.length)}
+            </>
+          );
+        };
+        const infoTip = (
+          <AnchorTip label="How taking over works" title="Taking over a conversation" className="ml-1 -mb-px align-middle">
+            <p>A conversation runs on one device at a time.</p>
+            <p>Taking over asks the current device to stop, save everything, and hand off — nothing is lost.</p>
+            <p>Taking over <em>without</em> a confirmed handoff doesn&apos;t wait. When the other device reconnects, it stops and saves on its own — but anything it wrote in the meantime is kept as a separate copy, not added to this conversation.</p>
+          </AnchorTip>
+        );
+        return (
+          <>
+            <Scrim layer={2} onClick={() => resolveTakeover(false)} />
+            <OverlayPanel
+              layer={2}
+              role="dialog"
+              aria-modal
+              aria-label="Take over conversation"
+              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+            >
+              {takeoverPrompt.phase === 'confirm' ? (
+                <p className="text-sm text-fg mb-4">
+                  {copy.lead}
+                  {infoTip}
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm text-fg mb-2">
+                    {boldDevice(copy.lead)}
+                    {infoTip}
+                  </p>
+                  <p className="text-xs text-fg-2 mb-4">{copy.consequence}</p>
+                </>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  onClick={() => resolveTakeover(false)}
+                >
+                  Never mind
+                </Button>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="px-3 py-1.5"
+                  onClick={() => resolveTakeover(true)}
+                >
+                  Take over
+                </Button>
+              </div>
+            </OverlayPanel>
+          </>
+        );
+      })()}
+      {/* Task 6 — pre-resume model picker for a native conversation resumed
+          from a call site with no inline picker of its own (the Resume
+          Browser's expanded row has one and never opens this — see
+          pendingNativeResume's doc comment above). Same NativeModelSelect as
+          the Resume Browser; Resume stays disabled until a binding exists —
+          Destin's ruling forbids auto-launching one. Cancel discards the
+          pending resume entirely (no partial/implicit resume). */}
+      {pendingNativeResume && (
         <>
-          <Scrim layer={2} onClick={() => resolveTakeover(false)} />
+          <Scrim layer={2} onClick={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }} />
           <OverlayPanel
             layer={2}
             role="dialog"
             aria-modal
-            aria-label="Take over conversation"
+            aria-label="Choose a model to resume with"
             className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
           >
-            <p className="text-sm text-fg mb-4">
-              {takeoverPrompt.phase === 'confirm'
-                ? `This session is active on ${takeoverPrompt.device} — take over here?`
-                : `${takeoverPrompt.device} isn't responding — take over anyway?`}
-            </p>
-            <div className="flex justify-end gap-2">
+            <h3 className="text-sm font-semibold text-fg mb-3">Choose a model to resume with</h3>
+            <NativeModelSelect onSelect={(binding) => setPendingNativeBinding(binding)} />
+            <div className="flex justify-end gap-2 mt-4">
               <Button
                 variant="secondary"
                 size="lg"
-                onClick={() => resolveTakeover(false)}
+                disabled={pendingNativeResuming}
+                onClick={() => { setPendingNativeResume(null); setPendingNativeBinding(null); }}
               >
-                Never mind
+                Cancel
               </Button>
               <Button
                 variant="primary"
                 size="lg"
-                className="px-3 py-1.5"
-                onClick={() => resolveTakeover(true)}
+                disabled={!pendingNativeBinding || pendingNativeResuming}
+                onClick={async () => {
+                  const p = pendingNativeResume;
+                  const binding = pendingNativeBinding;
+                  if (!p || !binding) return;
+                  // Keep the modal open until the create acks (Task 6 review ack-gap).
+                  // On success it closes; on failure it stays open — handleResumeSession
+                  // has already surfaced the honest reason via a toast — so the user
+                  // can retry or pick a different model instead of facing a blank pill.
+                  setPendingNativeResuming(true);
+                  const ok = await handleResumeSession(p.claudeSessionId, p.projectSlug, p.projectPath, undefined, undefined, p.launchInNewWindow, 'native', binding);
+                  setPendingNativeResuming(false);
+                  if (ok) { setPendingNativeResume(null); setPendingNativeBinding(null); }
+                }}
               >
-                Take over
+                {pendingNativeResuming ? 'Resuming…' : 'Resume'}
               </Button>
             </div>
           </OverlayPanel>
@@ -3237,7 +3390,7 @@ function AppInner() {
           L1–L4 overlays, the same tier used by similar full-screen views. */}
       <ProjectView
         onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
-        onResumeConversation={(sid, slug, path) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path); }}
+        onResumeConversation={(sid, slug, path, provider) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path, undefined, undefined, undefined, provider); }}
       />
     </div>
     </ArtifactProvider>

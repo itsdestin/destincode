@@ -270,6 +270,37 @@ describe('mergeRecords', () => {
     // ('t' > 'f'), so the true-valued FlagState deterministically wins this tie.
     expect(ab).toEqual(flag(true, same));
   });
+
+  // Task 3 (M2 plan): lastUsedModel is portable and merges like a normal
+  // activity-coupled field — a real value never loses to an absent one, but
+  // between two real values the side with the later turn wins.
+  it('lastUsedModel survives parse and travels with the newer side on merge', () => {
+    const older = rec({ lastActive: '2026-07-01T00:00:00Z', lastUsedModel: { modelId: 'a', providerType: 'openrouter', providerLabel: 'OpenRouter' } });
+    const newer = rec({ lastActive: '2026-07-02T00:00:00Z' });          // no model → keeps older's
+    expect(mergeRecords(older, newer).lastUsedModel?.modelId).toBe('a');
+    const newer2 = rec({ lastActive: '2026-07-02T00:00:00Z', lastUsedModel: { modelId: 'b', providerType: 'local-engine', providerLabel: 'Local' } });
+    expect(mergeRecords(older, newer2).lastUsedModel?.modelId).toBe('b'); // newer side wins
+    expect(parseRecord(JSON.stringify(newer2))?.lastUsedModel?.modelId).toBe('b'); // whitelist parse keeps it
+  });
+
+  it('parseRecord drops a malformed lastUsedModel (missing/empty field) instead of the whole record', () => {
+    const withEmptyField = rec({ lastUsedModel: { modelId: '', providerType: 'openrouter', providerLabel: 'OpenRouter' } as any });
+    const parsed = parseRecord(JSON.stringify(withEmptyField));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.lastUsedModel).toBeUndefined();
+    expect(parsed?.id).toBe(withEmptyField.id); // the rest of the record survives
+
+    const withWrongShape = { ...rec(), lastUsedModel: 'not-an-object' };
+    const parsed2 = parseRecord(JSON.stringify(withWrongShape));
+    expect(parsed2).not.toBeNull();
+    expect(parsed2?.lastUsedModel).toBeUndefined();
+  });
+
+  it('parseRecord round-trips a record with NO lastUsedModel without inventing the key', () => {
+    const parsed = parseRecord(JSON.stringify(rec()));
+    expect(parsed).not.toBeNull();
+    expect('lastUsedModel' in (parsed as object)).toBe(false);
+  });
 });
 
 describe('isConflictCopyName / extractConflictBase', () => {

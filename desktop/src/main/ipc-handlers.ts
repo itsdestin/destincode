@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, NATIVE_META_UNSUPPORTED, type SessionFlagName, type TranscriptEvent, type HookEvent, type PastSession } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -21,6 +21,12 @@ import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
 import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
+// Task 7: native auto-title generation over the AI SDK — the SAME `ai`
+// package harness-session.ts already depends on (never through
+// HarnessSession.send(), which hard-throws on re-entrancy).
+import { generateText } from 'ai';
+import type { ModelBinding } from '../shared/provider-types';
+import { createNativeTitleFeeder } from './native-title-feeder';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
@@ -102,7 +108,12 @@ import { listProjectConversations, projectConversationHistory, ccProjectSlug } f
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore, flushSessionToSpace } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver } from './conversations/service';
+// Task 4: resolves a native session's live model binding into the store's
+// portable {modelId, providerType, providerLabel} shape — see
+// portable-model.ts's WHY comment for why the lookup itself is split out.
+import { bindingToPortableModel } from './conversations/portable-model';
+import type { PortableModelRef } from './conversations/store-core';
 // Plan 2b Task 8: holder-side takeover — when another device requests a session
 // this device holds, cleanly interrupt/flush/release/move/destroy it.
 import { createHolderTakeover } from './conversations/takeover';
@@ -116,6 +127,16 @@ const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 
 // Root of ~/.claude — used by artifact handlers to locate the central index.
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
+// Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
+// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
+// cwdToProjectSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// note). Used by the native RESUME path to validate a cwd BEFORE handing it to
+// nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
+// send a resume into the wrong (empty) directory (Task 9).
+function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
+  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`));
+}
 
 
 export function registerIpcHandlers(
@@ -504,33 +525,83 @@ export function registerIpcHandlers(
     // branch of createSession uses resumeSessionId AS the id, so info.id already
     // equals the resumed id and the host rebuilds the matching session.
     if (info.provider === 'native') {
+      // Surface a native-runtime failure as a session-error transcript event on the
+      // SAME pipe the host uses (drives NATIVE_SESSION_ERROR → the error banner).
+      // Deferred via nextTick so it lands AFTER SESSION_CREATED + assignSession,
+      // matching the ordering guarantee the session-created forward relies on.
+      const emitNativeSessionError = (text: string) => {
+        const errEvent: TranscriptEvent = {
+          type: 'session-error', sessionId: info.id, uuid: randomUUID(), timestamp: Date.now(), data: { text },
+        };
+        process.nextTick(() => {
+          sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
+          remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
+        });
+      };
       try {
         if (opts.resumeSessionId) {
-          const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd);
-          // No stored file (e.g. resuming an id that was never persisted) → start
-          // a fresh session under the same id so the renderer isn't left with a
-          // SessionInfo backed by no live HarnessSession.
-          if (!resumed && opts.binding) {
-            await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
-          } else if (!resumed && !opts.binding) {
-            // Resume asked for a session whose saved data is gone, and we have no
-            // binding to start a fresh one under this id — the renderer already
-            // holds a live SessionInfo with an empty chat and no way to know why.
-            // Surface a session-error transcript event on the SAME pipe the host
-            // uses (drives NATIVE_SESSION_ERROR → the error banner). Deferred via
-            // nextTick so it lands AFTER SESSION_CREATED + assignSession, matching
-            // the ordering guarantee the session-created forward relies on.
-            const errEvent: TranscriptEvent = {
-              type: 'session-error',
-              sessionId: info.id,
-              uuid: randomUUID(),
-              timestamp: Date.now(),
-              data: { text: 'This conversation could not be resumed — its saved data is missing.' },
-            };
-            process.nextTick(() => {
-              sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
-              remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
-            });
+          // Task 6: the resume-time model selector's pick (opts.binding, when the
+          // renderer already made one — the ResumeBrowser/pre-resume modal ALWAYS
+          // offers the selector for native rows) overrides the persisted header
+          // binding. Passed straight into resume() so it's applied before the
+          // eager loadModel() below and noteModelUsed's resolvePortableModel() both
+          // read it — see native-session-host.ts's resume() doc comment for why a
+          // post-hoc setBinding here would race those reads.
+          //
+          // Task 9 — resolve the transcript's REAL cwd BEFORE resume(). session-
+          // manager silently rewrites a nonexistent cwd to $HOME (session-manager.ts
+          // cwd→homedir); handing that to resume() reads a header from the wrong
+          // (empty) slug and the session spawns blank — the native twin of the CC
+          // greedy-slug/$HOME bugs (bea0de3e/57be5e14). So NEVER pass an unvalidated
+          // cwd: probe the transcript's existence, and on a genuine miss REFUSE with
+          // an accurate, split message rather than resolve to $HOME.
+          let resolvedCwd: string | undefined;
+          let refusal: string | undefined;
+          if (opts.cwd && fs.existsSync(opts.cwd) && nativeTranscriptExists(opts.cwd, opts.resumeSessionId)) {
+            // Happy path: the transcript is exactly where the caller said (same device).
+            resolvedCwd = opts.cwd;
+          } else {
+            // opts.cwd is absent/foreign or holds no transcript for this id. Consult
+            // the synced conversation record and resolve its project folder on THIS
+            // device (the SAME resolver the materialize sweep + Resume Browser use).
+            const rec = await getConversationStore()?.get('native', opts.resumeSessionId);
+            if (rec) {
+              const folder = buildLocalProjectResolver()(rec);
+              if (folder && nativeTranscriptExists(folder, opts.resumeSessionId)) {
+                resolvedCwd = folder;                       // located locally under a resolved folder
+              } else if (folder) {
+                // Folder is here but its transcript isn't — the record synced ahead
+                // of the bytes (a peer created it; this device hasn't pulled it yet).
+                refusal = "This conversation hasn't synced to this device yet — its transcript isn't here.";
+              } else {
+                // The project folder itself isn't present on this device.
+                refusal = `This conversation's project folder ('${rec.projectName}') isn't on this device.`;
+              }
+            }
+            // No record AND no local transcript → resolvedCwd/refusal both unset;
+            // fall through to the create-fresh-if-binding / 'saved data missing'
+            // branch below (an id never persisted ANYWHERE is genuinely-missing
+            // data, not a sync/folder gap — keep the original wording).
+          }
+
+          if (refusal) {
+            emitNativeSessionError(refusal);
+          } else if (resolvedCwd) {
+            info.cwd = resolvedCwd; // fix the SessionInfo so downstream (noteSessionStarted, eager model, renderer) reads the validated cwd
+            await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
+          } else {
+            const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
+            // No stored file (e.g. resuming an id that was never persisted) → start
+            // a fresh session under the same id so the renderer isn't left with a
+            // SessionInfo backed by no live HarnessSession.
+            if (!resumed && opts.binding) {
+              await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
+            } else if (!resumed && !opts.binding) {
+              // Resume asked for a session whose saved data is gone, and we have no
+              // binding to start a fresh one under this id — the renderer already
+              // holds a live SessionInfo with an empty chat and no way to know why.
+              emitNativeSessionError('This conversation could not be resumed — its saved data is missing.');
+            }
           }
         } else {
           await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
@@ -554,32 +625,45 @@ export function registerIpcHandlers(
         // host create/resume succeeded) so a FAILED start doesn't take a lease on a
         // dead session.
         sessionIdMap.set(info.id, info.id);
-        noteSessionStarted(info.id, info.cwd);
-        // NO LEASE FOR NATIVE SESSIONS (2026-07-18 — reverts the acquire added by
-        // PR #176; the sessionIdMap + noteSessionStarted lines above deliberately
-        // STAY, see below).
+        noteSessionStarted(info.id, info.cwd, 'native');
+        // Task 4: seed lastUsedModel the moment a native session comes up (fresh
+        // create OR resume) — rides AFTER noteSessionStarted (noteModelUsed is a
+        // no-op with no ctx) and AFTER create/resume above (resolvePortableModel
+        // needs the binding nativeHost just set up). Fire-and-forget: the missing
+        // binding on the "resumed data missing, no fallback binding" error branch
+        // above resolves to null here too, so this is naturally a no-op for it.
+        void resolvePortableModel(info.id)
+          .then((ref) => { if (ref) noteModelUsed(info.id, ref); })
+          .catch(() => { /* best-effort — the first turn-complete catches up */ });
+        // LEASE FOR NATIVE SESSIONS — re-enabled in M2 (Task 9). It was reverted on
+        // 2026-07-18 (PR #176 fallout) with an explicit condition: "Re-enable this
+        // together with the parity work, NOT before — the lease only becomes
+        // meaningful at the same moment the transcript becomes shared." That moment
+        // is now. The native transcript is SHARED: it mirrors into the native/ space
+        // lane and materializes on peers (M2 Tasks 4/8), so the lease finally
+        // coordinates a REAL cross-device resource. Concretely, leaseQuery now
+        // answers held:true for a native conversation another device owns, and the
+        // resume gate offers the handoff (holder quiesce → flush → release; requester
+        // materialize → acquire) instead of two devices silently resuming two copies.
         //
-        // #176 correctly noticed native sessions had no takeover protection and
-        // enrolled them in the lease system. But native conversations do not
-        // participate in the conversation store or space sync at all, so every
-        // step the lease implies is a no-op for them: the holder's flush mirrors a
-        // file that isn't there, and the requester materializes a record that does
-        // not exist. The net effect was WORSE than the gap it closed — a takeover
-        // destroyed the holder's live session and transferred nothing, while the
-        // requester resumed its own unchanged local copy.
-        //
-        // A lease is a way to serialize access to a SHARED resource. Until native
-        // transcripts sync there is no shared resource: two devices "resuming the
-        // same native session" are resuming two unrelated local files. So not
-        // taking the lease is the honest state, not a stopgap — leaseQuery answers
-        // held:false, the resume gate never offers a handoff, and the holder keeps
-        // running. This is exactly pre-#176 behavior.
-        //
-        // Re-enable this together with the parity work, NOT before — the lease only
-        // becomes meaningful at the same moment the transcript becomes shared.
-        // Spec: docs/active/specs/2026-07-18-native-sync-parity-design.md (§3.3 for
-        // why the two lines above stay: the store writes they enable are gated at
-        // the write sites instead, which is the enforceable version of the rule).
+        // Never-block (spec §3): a failed or DENIED acquire only WARNS — it never
+        // prevents the session from running (the resume must not wait on the lease).
+        // The warn leaves a breadcrumb so a "takeover didn't respond" is diagnosable
+        // (the same gap that hid the 2026-07-18 handoff timeout). For native, info.id
+        // IS the claude session id, so the acquire keys off the identity mapping set
+        // above. Gated on sync being enabled, mirroring the CC acquire at the
+        // SessionStart listener: a lease coordinates cross-device writers, which only
+        // exist for a synced conversation — an unsynced native session has no shared
+        // resource and needs no lease.
+        if (isSyncSpacesEnabled()) {
+          void leaseWiring?.client.acquire(info.id)
+            .then((res) => {
+              if (res && res.ok === false) {
+                log('WARN', 'Lease', 'native session running without its lease (held by another device)', { claudeId: info.id, holder: res.holder });
+              }
+            })
+            .catch(() => { /* never-block */ });
+        }
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
@@ -621,6 +705,10 @@ export function registerIpcHandlers(
     // Idempotent + no-op for non-native ids: flushes/tears down the native
     // HarnessSession if this id is live, otherwise returns immediately.
     await nativeHost.destroy(sessionId);
+    // Task 7: drop the title feeder's per-session state too — a no-op for
+    // non-native ids (the feeder was never fed events for them) and cheap
+    // idempotent Map.delete for native ones.
+    nativeTitleFeeder.forget(sessionId);
     const result = sessionManager.destroySession(sessionId);
     if (result) {
       // Explicit user-initiated destroy → treat as clean exit (0). The
@@ -1414,28 +1502,14 @@ export function registerIpcHandlers(
     for (const [desktopId, claudeId] of sessionIdMap.entries()) {
       if (sessionManager.getSession(desktopId)) activeIds.add(claudeId);
     }
-    // CC (Claude Code) transcript rows.
-    const ccRows = await listPastSessions(activeIds);
-    // Native-harness rows — map NativeSessionHost.list() entries onto the
-    // PastSession shape (now that PastSession carries `provider`). Native
-    // sessions have no CC auto-title hook, so the store already derived a title
-    // from the first user message; fall back to 'Untitled' when even that is
-    // absent. mtimeMs/sizeBytes stand in for lastModified/size.
-    const nativeRows: PastSession[] = nativeHost.list().map((r) => ({
-      sessionId: r.sessionId,
-      name: r.title ?? 'Untitled',
-      projectSlug: r.slug,
-      projectPath: r.cwd,
-      lastModified: r.mtimeMs,
-      size: r.sizeBytes,
-      provider: 'native' as const,
-      // Stored (raw) harness id from the header — drives the Resume Browser's
-      // preset label. Note: not legacy-mapped here (a 'chat' header shows as
-      // Assistant via the label's fallback), which is fine for a display badge.
-      harnessId: r.harnessId,
-    }));
-    // ResumeBrowser re-sorts by lastModified, so a plain concat is fine here.
-    return [...ccRows, ...nativeRows];
+    // Task 5: native rows now join the SAME store-overlay enrichment pass CC
+    // rows get (flags/tags/note/device/title precedence, lastUsedModel) instead
+    // of being bare-concatenated after the fact — see listPastSessions's
+    // nativeEntries param. nativeHost.list() is the live/persisted session
+    // registry; passing it in (rather than session-browser.ts reading disk
+    // itself) keeps NativeSessionHost the one source of truth for what native
+    // sessions exist.
+    return listPastSessions(activeIds, nativeHost.list());
   });
 
   ipcMain.handle(IPC.SESSION_HISTORY, async (
@@ -1940,7 +2014,11 @@ export function registerIpcHandlers(
       const info = sessionManager.getSession(desktopId);
       const projectPath = info?.cwd;
       const projectSlug = projectPath ? ccProjectSlug(projectPath) : undefined;
-      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath };
+      // Carry the provider so the renderer's MovedGate resume takes the NATIVE path
+      // (the pre-resume model picker, never an auto-launch) for a native session —
+      // without it, a moved native conversation would resume as CC and find no JSONL.
+      const provider = info?.provider;
+      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath, provider };
       // Broadcast to ALL main windows, not sendForSession: at push time the holder
       // session still exists but may have no registered owner (e.g. it's shown in a
       // secondary window), and sendForSession's ownerless fallback hits only the
@@ -1953,6 +2031,13 @@ export function registerIpcHandlers(
     const holderTakeover = createHolderTakeover({
       sessionManager, sessionIdMap, leaseClient: leaseWiring.client,
       flushSessionToSpace, pushMoved,
+      // Provider of a live desktop id — drives the holder's step-3 branch (native
+      // sessions quiesce their HarnessSession; CC sessions get the ESC byte).
+      getProvider: (id) => sessionManager.getSession(id)?.provider,
+      // Native takeover quiesce (Task 9): clears the queue, aborts the in-flight
+      // turn, and awaits it settling so no append lands past the flush. A native
+      // session has no PTY, so the ESC byte can't interrupt it.
+      quiesceNative: (id) => nativeHost.quiesce(id),
       // Idempotent + no-op for non-native ids, so the holder flow calls it
       // unconditionally without needing to know the provider.
       destroyNative: (id) => nativeHost.destroy(id),
@@ -1988,7 +2073,9 @@ export function registerIpcHandlers(
     // via sessionIdMap and skip if we haven't seen the mapping yet (a hook event
     // establishes it — the reconciler backfills anything missed before then).
     const claudeId = sessionIdMap.get(event.sessionId);
-    if (claudeId) noteTranscriptEvent(claudeId, event);
+    // This listener is on the CC TranscriptWatcher only — native transcript
+    // events are routed separately (Task 4 wires the native listener's feed).
+    if (claudeId) noteTranscriptEvent(claudeId, event, 'claude');
   });
 
   // --- Native runtime stack (Phase 1 Plan A, Task 9) ---
@@ -2035,12 +2122,80 @@ export function registerIpcHandlers(
     { search: searchService },
   );
 
+  // Task 4: resolves sessionId's CURRENT model binding into the portable ref
+  // noteModelUsed persists — thin async wrapper around bindingToPortableModel
+  // (portable-model.ts) closed over the live nativeHost/providerRegistry.
+  // Returns null (write nothing) when the session has no live binding or its
+  // provider has vanished from the registry — never guess.
+  const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
+    bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
+
+  // Task 7: native auto-title feeder. CC sessions get titled by the topic
+  // watcher below (~/.claude/topics, fed by the Auto-Title hook); native
+  // sessions have no such feed, so this generates one from the bound model
+  // at first turn-complete. See native-title-feeder.ts's header for the full
+  // rationale (JSONL-never, ordering, M6 floor-gating hook).
+  const nativeTitleFeeder = createNativeTitleFeeder({
+    // Bounded with a 15s abort — a bare unbounded generateText await would
+    // hang the feeder (same hazard class as the compaction-hang rule).
+    // providerRegistry.languageModel() itself throws for an unconfigured/
+    // disabled/removed provider; that rejection propagates to the feeder's
+    // own try/catch around `generate`, which is exactly the "unresolvable =
+    // skip silently, never an error event" contract — no separate handling
+    // needed here.
+    generate: async (binding: ModelBinding, prompt: string) => {
+      const model = await providerRegistry.languageModel(binding);
+      const { text } = await generateText({ model, prompt, abortSignal: AbortSignal.timeout(15_000) });
+      return text;
+    },
+    getBinding: (sessionId: string) => nativeHost.getBinding(sessionId),
+    // Store title wins; falls back to the live session name for the boot
+    // window before the store's first upsert lands (mirrors the browse/store
+    // title-overlay precedence Task 3/5 established — store wins unless
+    // placeholder).
+    hasTitle: async (sessionId: string) => {
+      const rec = await getConversationStore()?.get('native', sessionId);
+      if (rec?.title && rec.title !== 'Untitled') return true;
+      const session = sessionManager.getSession(sessionId);
+      return !!session?.name && session.name !== 'New Session';
+    },
+    // Both halves, or the Resume Browser (store title) and the live pill
+    // (session.name) disagree. Native ids are identity-mapped (see the WHY
+    // comment on noteTranscriptEvent's native call just below), so
+    // sessionId doubles as both the desktop id and the store's record id.
+    onTitle: async (sessionId: string, title: string) => {
+      sendForSession(sessionId, IPC.SESSION_RENAMED, sessionId, title);
+      broadcastRename(sessionId, title);
+      await noteTitleChanged(sessionId, title, 'native');
+    },
+  });
+
   // Native transcript events ride the SAME channel as CC's — the reducer
   // consumes an identical event shape regardless of runtime.
   nativeHost.on('transcript-event', (event: TranscriptEvent) => {
     sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event);
     if (remoteServer) {
       remoteServer.broadcast({ type: 'transcript:event', payload: event });
+    }
+    // WHY: this is the single line that makes native conversations exist in
+    // the store (design §5); Task 3 made it correct rather than mislabeling.
+    // Native ids are identity-mapped (sessionIdMap.set(info.id, info.id) in
+    // the SESSION_CREATE native branch above), so — unlike the CC listener
+    // below, which resolves through sessionIdMap — event.sessionId IS already
+    // the store's record id; no lookup needed.
+    noteTranscriptEvent(event.sessionId, event, 'native');
+    // Task 7: feed the SAME event stream into the title feeder. Pure/injected
+    // logic — see native-title-feeder.ts — never throws synchronously.
+    nativeTitleFeeder.noteEvent(event);
+    if (event.type === 'turn-complete') {
+      // The model may have changed mid-session (NATIVE_SET_BINDING) — refresh
+      // the portable ref on every turn rather than trusting a stale snapshot
+      // from session-create. Fire-and-forget: a miss here just means this
+      // turn's upsert (already sent by noteTranscriptEvent above) is missing
+      // lastUsedModel until the NEXT turn resolves it.
+      void resolvePortableModel(event.sessionId)
+        .then((ref) => { if (ref) noteModelUsed(event.sessionId, ref); })
+        .catch(() => { /* best-effort — never block the transcript-event listener */ });
     }
   });
 
@@ -2100,7 +2255,17 @@ export function registerIpcHandlers(
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
   });
-  ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => nativeHost.setBinding(sessionId, binding));
+  ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => {
+    const ok = await nativeHost.setBinding(sessionId, binding);
+    // Task 4: a successful mid-session model swap is exactly the "model may
+    // have changed" case noteModelUsed exists for — write it through so the
+    // resume selector reflects the swap without waiting for the next turn.
+    if (ok) {
+      const ref = await resolvePortableModel(sessionId);
+      if (ref) noteModelUsed(sessionId, ref);
+    }
+    return ok;
+  });
   // Per-session permission mode (renderer chip). setPermissionMode throws on an
   // unknown mode string — the reject surfaces to the renderer invoke() so the
   // chip sees the failure instead of a false "applied"; on success it returns the
@@ -2245,7 +2410,9 @@ export function registerIpcHandlers(
       // Conversation Store (Phase 2a): mirror the auto-title into the record.
       // Keyed by claudeId (the store's record id). This is the only sanctioned
       // title writer (carry-forward 5) — no user-rename path exists yet.
-      noteTitleChanged(claudeId, initial);
+      // Result ignored (best-effort, no UI to revert here) — void per Item 6's
+      // Promise<MetaWriteResult> shape.
+      void noteTitleChanged(claudeId, initial, 'claude');
     }
 
     const topicFilePath = path.join(topicDir, `topic-${claudeId}`);
@@ -2259,7 +2426,7 @@ export function registerIpcHandlers(
           lastTopics.set(desktopId, topic);
           sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
           broadcastRename(desktopId, topic);
-          noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
+          void noteTitleChanged(claudeId, topic, 'claude'); // Conversation Store (Phase 2a) title write-through; result ignored
         }
       });
       watcher.on('error', () => {
@@ -2284,7 +2451,7 @@ export function registerIpcHandlers(
         lastTopics.set(desktopId, topic);
         sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
         broadcastRename(desktopId, topic);
-        noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
+        void noteTitleChanged(claudeId, topic, 'claude'); // Conversation Store (Phase 2a) title write-through; result ignored
       }
     }, 2000);
     topicWatchers.set(desktopId, interval);
@@ -2355,7 +2522,7 @@ export function registerIpcHandlers(
         transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
-        noteSessionStarted(claudeId, sessionInfo.cwd);
+        noteSessionStarted(claudeId, sessionInfo.cwd, 'claude');
         // 2b Task 8: this device now owns the session — take the lease.
         // Fire-and-forget: a denied (ok:false) result would only mean another
         // device holds it, but the sanctioned resume path already ran takeover
@@ -2401,6 +2568,11 @@ export function registerIpcHandlers(
     void nativeHost.destroy(sessionId).catch((e) => {
       log('ERROR', 'IPC', 'native teardown on session-exit failed', { sessionId, error: String(e) });
     });
+    // Task 7: same backstop reasoning as the destroy() call above — this
+    // path also covers crashes/takeovers that never went through
+    // SESSION_DESTROY, so the feeder's per-session state needs the same
+    // cleanup here too.
+    nativeTitleFeeder.forget(sessionId);
     // Clean up context + session stats cache files
     const claudeId = sessionIdMap.get(sessionId);
     if (claudeId) {
@@ -2442,48 +2614,51 @@ export function registerIpcHandlers(
   // transcriptRef and an EPOCH lastActive — synced to every device and never
   // pruned (flagged records are deliberately kept). Confirmed on disk 2026-07-18.
   //
-  // Native conversations do not participate in the store at all until the parity
-  // work lands (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md),
-  // so the correct answer today is to write nothing. Checked against BOTH live and
-  // persisted native ids: a past native session opened from the Resume Browser is
-  // not live, but must not seed a record either.
+  // Task 5: native conversations are real Conversation Store records now
+  // (Task 4 made native transcript events upsert 'native' records the same way
+  // CC turns upsert 'claude' ones), so the gate's job shrinks to its ORIGINAL
+  // purpose — the CC live-before-mapping race — and no longer needs a
+  // provider carve-out at all. A native id is always identity-mapped into
+  // sessionIdMap the moment it's created (SESSION_CREATE's native branch), so
+  // `sessionIdMap.has(sessionId)` is true for it from the start; this gate was
+  // never the thing keeping native writes out — nativeMetaRefusal below (now
+  // deleted) was. Retiring that refusal is only safe BECAUSE Task 4 landed
+  // real native writes first — see the design's Task 5 note.
   const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
-    // Kept as defence-in-depth for any FUTURE call site. The three handlers below
-    // now reject native ids outright before reaching here, so this branch is
-    // unreachable from them — see nativeMetaRefusal.
-    if (nativeHost.isNativeSessionId(resolved)) return false;
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
 
-  // Stopgap (2026-07-19). The 2026-07-18 gate above correctly stopped native
-  // sessions seeding phantom provider:'claude' records — but the handlers still
-  // returned { ok: true } and still broadcast SESSION_META_CHANGED, so the
-  // renderer's optimistic update stuck and the user believed the flag/tag/note
-  // had saved until the next browse. Silent data loss. Until native records are
-  // a real thing (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md)
-  // the honest answer is an explicit refusal: no write, NO broadcast (a broadcast
-  // would make listeners refetch and "confirm" a change that never happened), and
-  // an ok:false the renderer reverts on. session:get-meta reports supported:false
-  // so the UI can disable the controls up front rather than fail on click.
-  const nativeMetaRefusal = (resolved: string) =>
-    (nativeHost.isNativeSessionId(resolved)
-      ? {
-          ok: false as const,
-          error: NATIVE_META_UNSUPPORTED,
-          unsupported: true as const,
-          // Separate from `error` because the renderer SHOWS this one — other
-          // hosts put machine strings in `error`.
-          unsupportedReason: NATIVE_META_UNSUPPORTED,
-        }
-      : null);
+  // Parity wiring (Item 6, design §12 survivor 1): give remote WS clients the
+  // SAME sessionId resolution + phantom-record gate the ipcMain handlers above
+  // use for session:set-tag / session:set-note, so tagging/noting a session
+  // over remote can't bypass a gate that only ever covered the local path.
+  remoteServer?.setSessionMetaWiring({
+    resolve: (sessionId: string) => sessionIdMap.get(sessionId) || sessionId,
+    canWrite: canWriteStoreRecord,
+  });
+
+  // Provider bucket to READ a resolved session's meta from. 'native' when
+  // NativeSessionHost recognizes the id (live now, or a persisted
+  // ~/.youcoded/sessions file); otherwise probe the store's native bucket —
+  // a store-only native browse row (record synced, transcript not local yet;
+  // Task 5) is still native even though isNativeSessionId can't see it (C1).
+  // A null store (boot window) falls back to 'claude' exactly as before.
+  // WRITES do NOT use this: they pass isNativeSessionId(resolved) straight to
+  // noteFlagChanged/noteSessionNote, which defer the native-bucket probe to
+  // flush time so a boot-window buffered write re-derives once the store is up.
+  const sessionProviderFor = async (resolved: string): Promise<SessionProvider> => {
+    if (nativeHost.isNativeSessionId(resolved)) return 'native';
+    const store = getConversationStore();
+    if (!store) return 'claude';
+    try { return (await store.get('native', resolved)) ? 'native' : 'claude'; }
+    catch { return 'claude'; }
+  };
 
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       // Plan 2c: flags are STORE-ONLY now. The legacy conversation-index
       // dual-write (svc.setSessionFlag) was removed — the Conversation Store is
@@ -2503,7 +2678,17 @@ export function registerIpcHandlers(
       // the user (or a re-flag) drives it again — flags are store-only now,
       // so there's no legacy index still catching it in the meantime.
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteFlagChanged(resolved, flag, !!value);
+        // Item 6: await the real result and answer honestly — the write can
+        // now report ok:false (store not up yet / never came up / rejected)
+        // instead of the old fire-and-forget that always said ok:true even
+        // when the write silently evaporated (2026-07-19 incident class, for
+        // the store-availability dimension). Task 5: provider is now derived
+        // per-session instead of hardcoded 'claude' — the write lands in
+        // whichever bucket get-meta/browse will read it back from.
+        const res = await noteFlagChanged(resolved, flag, !!value, nativeHost.isNativeSessionId(resolved));
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { flag, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
@@ -2570,15 +2755,18 @@ export function registerIpcHandlers(
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const key = tagFlagKey(tagId);
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       // Same phantom-record gate as SESSION_SET_FLAG: only write the store when
-      // `resolved` is a known CLAUDE id or a non-live session, and never for a
-      // native session. (Tags are stored as `tag:<id>` flags, so this is the path
-      // that made "tag a native session" seed a phantom CC record.)
+      // `resolved` is a known CLAUDE id or a non-live session (regardless of
+      // provider — see canWriteStoreRecord's comment; Task 5 dropped the
+      // native carve-out). Tags are stored as `tag:<id>` flags.
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteFlagChanged(resolved, key, !!value);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
+        // derived, not hardcoded — see SESSION_SET_FLAG's comment.
+        const res = await noteFlagChanged(resolved, key, !!value, nativeHost.isNativeSessionId(resolved));
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { flag: key, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
@@ -2592,11 +2780,14 @@ export function registerIpcHandlers(
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const text = String(note ?? '');
     if (text.length > 8000) return { ok: false, error: 'note exceeds 8000 characters' };
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteSessionNote(resolved, text);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
+        // derived, not hardcoded — see SESSION_SET_FLAG's comment.
+        const res = await noteSessionNote(resolved, text, nativeHost.isNativeSessionId(resolved));
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { note: text };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
@@ -2610,17 +2801,12 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SESSION_GET_META, async (_e, sessionId: string) => {
     const store = getConversationStore();
     const resolved = sessionIdMap.get(sessionId) || sessionId;
-    // `supported` tells the renderer whether writes will actually persist, so the
-    // tags/note UI can render disabled instead of accepting edits that get refused.
-    // Deliberately keyed on native-ness ONLY, not on `store` being present: store
-    // is null transiently during startup, and flickering the controls off mid-boot
-    // would be worse than the brief window where an edit fails loudly.
-    if (nativeHost.isNativeSessionId(resolved)) {
-      return { tags: [], note: '', supported: false, unsupportedReason: NATIVE_META_UNSUPPORTED };
-    }
+    // Task 5: read from whichever provider bucket this session actually writes
+    // to — native records are real now, so there's no more up-front refusal.
+    // `supported` stays in the result shape (Android still answers false).
     if (!store) return { tags: [], note: '', supported: true };
     try {
-      const rec = await store.get('claude', resolved);
+      const rec = await store.get(await sessionProviderFor(resolved), resolved);
       if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
       for (const [k, v] of Object.entries(rec.flags)) {

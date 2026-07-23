@@ -27,8 +27,10 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
     <>
       <button
         onClick={() => setOpen(true)}
-        // Disabled for sessions the backend can't store meta for (native), so the
-        // popup never accepts an edit that would be refused. See NATIVE_META_UNSUPPORTED.
+        // Disabled for sessions the backend can't store meta for (Android, as
+        // of Task 5 — desktop native sessions are real store records now), so
+        // the popup never accepts an edit that would be refused. See
+        // META_UNSUPPORTED_FALLBACK.
         disabled={!sessionId || !meta.supported}
         className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-edge-dim enabled:hover:bg-inset transition-colors max-w-[220px] disabled:opacity-50 disabled:cursor-not-allowed"
         title={meta.supported ? 'Tags & note for this session' : meta.unsupportedReason}

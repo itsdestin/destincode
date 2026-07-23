@@ -74,7 +74,9 @@ function GridIcon({ size = 15 }: { size?: number }) {
 interface ProjectViewProps {
   // Threaded from App: starts a new conversation in the given cwd.
   onNewConversation: (cwd: string) => void;
-  onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string) => void;
+  // provider threads the row's runtime so App's resume takes the native path
+  // (pre-resume model picker) for a native conversation instead of the CC path.
+  onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string, provider?: string) => void;
 }
 
 export function ProjectView(props: ProjectViewProps) {
@@ -721,7 +723,7 @@ export function ProjectView(props: ProjectViewProps) {
                 onResume={(s) => {
                   // WHY: resume closes Project View and launches/resumes the session
                   // (handled by the App-threaded prop), then drops the preview.
-                  props.onResumeConversation(s.sessionId, s.projectSlug, s.projectPath);
+                  props.onResumeConversation(s.sessionId, s.projectSlug, s.projectPath, s.provider);
                   setPreviewSession(null);
                 }}
               />
