@@ -23,7 +23,8 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { Button, Toggle } from './components/ui';
+import { AnchorTip, Button, Toggle } from './components/ui';
+import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
@@ -280,15 +281,19 @@ function AppInner() {
     movedSessionsRef.current = next;
     setMovedSessions(next);
   }, []);
-  // Conversation-lease takeover dialog (Plan 2b Task 9). When resuming a
-  // conversation held live on another device, we ask before yanking it here.
-  // The resume flow AWAITS the user's choice via a promise resolved by the
-  // dialog buttons (takeoverResolveRef), so handleResumeSession stays one linear
-  // async function instead of splitting across callbacks. phase 'confirm' is the
-  // first ask; 'force' is the "holder isn't responding — take over anyway?" ask.
-  const [takeoverPrompt, setTakeoverPrompt] = useState<{ device: string; phase: 'confirm' | 'force' } | null>(null);
+  // Conversation-lease takeover dialog (Plan 2b Task 9; 3-state redesign
+  // Destin sign-off 2026-07-23). When resuming a conversation held live on
+  // another device, we ask before yanking it here. The resume flow AWAITS the
+  // user's choice via a promise resolved by the dialog buttons
+  // (takeoverResolveRef), so handleResumeSession stays one linear async
+  // function instead of splitting across callbacks. phase 'confirm' is the
+  // first ask; 'force' is the "asked, but no answer" ask (a request WAS
+  // delivered to the holder); 'undeliverable' is the honest third state — the
+  // hub had no delivery path at all, so the holder was never asked (distinct
+  // from 'force': never claim a device ignored a request it never received).
+  const [takeoverPrompt, setTakeoverPrompt] = useState<{ device: string; phase: 'confirm' | 'force' | 'undeliverable' } | null>(null);
   const takeoverResolveRef = useRef<((choice: boolean) => void) | null>(null);
-  const askTakeover = useCallback((device: string, phase: 'confirm' | 'force') =>
+  const askTakeover = useCallback((device: string, phase: 'confirm' | 'force' | 'undeliverable') =>
     new Promise<boolean>((resolve) => {
       // Reentrancy guard: only one resolver slot exists. If a second resume opens
       // a dialog while one is pending, resolve the prior one as "declined" so its
@@ -2229,8 +2234,13 @@ function AppInner() {
         const confirmed = await askTakeover(device, 'confirm');
         if (!confirmed) return false; // "Never mind" — abort the resume
         const r = await window.claude.syncSpaces?.leaseTakeover?.(claudeSessionId);
-        if (r?.outcome === 'timeout') {
-          const forced = await askTakeover(device, 'force');
+        // 'timeout' (asked, no answer) and 'undeliverable' (never asked — hub had
+        // no delivery path) both offer the SAME force path, just with different
+        // dialog copy — see takeoverDialogCopy. Never collapse them into one
+        // phase: that's exactly the dishonest "isn't responding" framing this
+        // 3-state redesign replaced.
+        if (r?.outcome === 'timeout' || r?.outcome === 'undeliverable') {
+          const forced = await askTakeover(device, r.outcome === 'undeliverable' ? 'undeliverable' : 'force');
           if (!forced) return false; // "Never mind" — abort
           const fr = await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
           // A failed force means the lease was never overwritten — the other device
@@ -3235,45 +3245,83 @@ function AppInner() {
           )}
         </div>
       )}
-      {/* Plan 2b Task 9 — conversation-lease takeover confirm dialog. L2 popup via
-          the shared Scrim/OverlayPanel primitives (theme-driven scrim/blur/shadow;
-          PITFALLS → Overlays). Plain words, no status glyphs. 'confirm' asks to
-          take a live session over; 'force' asks after the holder didn't respond. */}
-      {takeoverPrompt && (
-        <>
-          <Scrim layer={2} onClick={() => resolveTakeover(false)} />
-          <OverlayPanel
-            layer={2}
-            role="dialog"
-            aria-modal
-            aria-label="Take over conversation"
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
-          >
-            <p className="text-sm text-fg mb-4">
-              {takeoverPrompt.phase === 'confirm'
-                ? `This session is active on ${takeoverPrompt.device} — take over here?`
-                : `${takeoverPrompt.device} isn't responding — take over anyway?`}
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                size="lg"
-                onClick={() => resolveTakeover(false)}
-              >
-                Never mind
-              </Button>
-              <Button
-                variant="primary"
-                size="lg"
-                className="px-3 py-1.5"
-                onClick={() => resolveTakeover(true)}
-              >
-                Take over
-              </Button>
-            </div>
-          </OverlayPanel>
-        </>
-      )}
+      {/* Plan 2b Task 9 — conversation-lease takeover dialog (3-state redesign,
+          Destin sign-off 2026-07-23). L2 popup via the shared Scrim/OverlayPanel
+          primitives (theme-driven scrim/blur/shadow; PITFALLS → Overlays). Plain
+          words, no status glyphs. 'confirm' asks to take a live session over;
+          'force' asks after a DELIVERED request went unanswered; 'undeliverable'
+          is the honest state where the hub never reached the holder at all — see
+          takeover-dialog-copy.ts for why these are worded differently (never
+          blame a device for "not responding" to a request it never received). */}
+      {takeoverPrompt && (() => {
+        const copy = takeoverDialogCopy(takeoverPrompt.phase, takeoverPrompt.device);
+        // Bold just the device name within `lead` for the two richer phases —
+        // the copy module returns plain interpolated strings (no JSX
+        // dependency, so its output stays pinnable); splitting here is the only
+        // place that needs to know about the `font-medium` span.
+        const boldDevice = (text: string) => {
+          const idx = text.indexOf(takeoverPrompt.device);
+          if (idx === -1) return text;
+          return (
+            <>
+              {text.slice(0, idx)}
+              <span className="font-medium">{takeoverPrompt.device}</span>
+              {text.slice(idx + takeoverPrompt.device.length)}
+            </>
+          );
+        };
+        const infoTip = (
+          <AnchorTip label="How taking over works" title="Taking over a conversation" className="ml-1 -mb-px align-middle">
+            <p>A conversation runs on one device at a time.</p>
+            <p>Taking over asks the current device to stop, save everything, and hand off — nothing is lost.</p>
+            <p>Taking over <em>without</em> a confirmed handoff doesn&apos;t wait. When the other device reconnects, it stops and saves on its own — but anything it wrote in the meantime is kept as a separate copy, not added to this conversation.</p>
+          </AnchorTip>
+        );
+        return (
+          <>
+            <Scrim layer={2} onClick={() => resolveTakeover(false)} />
+            <OverlayPanel
+              layer={2}
+              role="dialog"
+              aria-modal
+              aria-label="Take over conversation"
+              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+            >
+              {takeoverPrompt.phase === 'confirm' ? (
+                <p className="text-sm text-fg mb-4">
+                  {copy.lead}
+                  {infoTip}
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm text-fg mb-2">
+                    {boldDevice(copy.lead)}
+                    {infoTip}
+                  </p>
+                  <p className="text-xs text-fg-2 mb-4">{copy.consequence}</p>
+                </>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  onClick={() => resolveTakeover(false)}
+                >
+                  Never mind
+                </Button>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="px-3 py-1.5"
+                  onClick={() => resolveTakeover(true)}
+                >
+                  Take over
+                </Button>
+              </div>
+            </OverlayPanel>
+          </>
+        );
+      })()}
       {/* Task 6 — pre-resume model picker for a native conversation resumed
           from a call site with no inline picker of its own (the Resume
           Browser's expanded row has one and never opens this — see

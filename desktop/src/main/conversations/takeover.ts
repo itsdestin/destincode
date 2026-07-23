@@ -141,7 +141,10 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
 // stop a user from opening their conversation.
 export interface RequesterTakeoverDeps {
   leaseClient: {
-    takeover(sessionId: string): Promise<unknown>;
+    // `| null` made explicit (was `Promise<unknown>`, which already admitted null
+    // structurally): the requester now branches on this exact value — see
+    // takeover() below — so the type should say so, not just tolerate it.
+    takeover(sessionId: string): Promise<unknown | null>;
     // `self` (deviceId-derived, from the lease client) is the correct "held by
     // US" signal — NOT `device`, which is the hostname label and collides when
     // two installs share a hostname (dev instance + built app is this plan's own
@@ -156,7 +159,13 @@ export interface RequesterTakeoverDeps {
   delay: (ms: number) => Promise<void>;                 // injectable so tests drive the poll with fake timers
 }
 
-export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
+// 'undeliverable' is distinct from 'timeout': the hub had NO delivery path at
+// all (offline/not connected to any device), so the holder was never asked —
+// as opposed to 'timeout', where the request WAS delivered and the holder
+// simply didn't answer within the poll budget. Blaming a device that was never
+// contacted ("<device> isn't responding") is dishonest; the renderer surfaces
+// each with its own copy (App.tsx takeoverPrompt phase).
+export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' | 'undeliverable' }
 
 // The requester object's type — referenced by ipc-handlers' leaseWiring param so
 // main.ts can build the flow and pass it through without a circular import.
@@ -181,7 +190,17 @@ export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
     async takeover(sessionId: string): Promise<RequesterOutcome> {
       try {
         // Broadcast the request; the holder answers by releasing its lease.
-        await deps.leaseClient.takeover(sessionId);
+        // `sent === null` means the hub had NO delivery path for this request —
+        // see lease-client.ts `takeover()` (thin passthrough to hubRequest) and
+        // sync-hub-socket.ts `request()`, which resolves null on timeout, when
+        // not connected, or when the socket drops mid-flight. In every one of
+        // those cases the holder was NEVER asked, so there is nothing to poll
+        // for: the file-fallback poll below exists to detect a delivered request
+        // going unanswered, and running it here would just delay an already-known
+        // answer for up to MAX_MS while implying a device ignored a request it
+        // never received. Return the honest outcome immediately instead.
+        const sent = await deps.leaseClient.takeover(sessionId);
+        if (sent === null) return { outcome: 'undeliverable' };
         const started = Date.now();
         // Poll until the lease frees (held:false, or the holder is now us) or we
         // hit the 10s budget. Checking free BEFORE the first sleep means an

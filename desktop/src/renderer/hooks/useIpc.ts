@@ -342,7 +342,9 @@ declare global {
         // `self` is derived in the main process from the per-install deviceId, so
         // the resume gate can skip the takeover dialog for OUR OWN held lease.
         leaseQuery?: (claudeSessionId: string) => Promise<{ held: boolean; device?: string; deviceId?: string; self?: boolean; source?: string }>;
-        leaseTakeover?: (claudeSessionId: string) => Promise<{ outcome: 'acquired' | 'timeout' | 'error' }>;
+        // 'undeliverable': the hub had no delivery path (holder never asked) —
+        // distinct from 'timeout' (asked, no answer within the poll budget).
+        leaseTakeover?: (claudeSessionId: string) => Promise<{ outcome: 'acquired' | 'timeout' | 'error' | 'undeliverable' }>;
         leaseForce?: (claudeSessionId: string) => Promise<{ ok: boolean }>;
         // Device registry (Plan 2b spec §10a): the "Your devices" list. Optional so
         // remote / older Android builds without the handler still typecheck — every
