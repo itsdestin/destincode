@@ -183,7 +183,7 @@ export function GitReviewView({
               // to the point it looked scrollable but wasn't. UnifiedDiff
               // already frames itself (rounded-sm border-edge), so this outer
               // box only adds the height cap, no second border. The action
-              // row below (staged checkbox / discard / open-file) stays a
+              // row below (staged checkbox / revert button) stays a
               // sibling of this div, not a child, so it's always visible.
               <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
                 <UnifiedDiff oldStr="" newStr="" structuredPatch={uncommitted.hunks} />
@@ -286,42 +286,46 @@ export function GitReviewView({
       </div>
 
       {/* composer (ledger 13): counts staged files REPO-WIDE — a commit always
-          commits the whole index, including files the agent staged meanwhile. */}
-      <div className="shrink-0 border-t border-edge px-2 py-2 bg-inset">
-        {(opError ?? externalError) && (
-          <div className="mb-1 px-2.5 py-1.5 text-[11px] text-fg rounded-md border border-edge bg-well break-all">
-            {opError ?? externalError}
-          </div>
-        )}
-        <Textarea
-          size="sm"
-          rows={2}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Commit message"
-          className="w-full"
-        />
-        <Button
-          size="md"
-          variant="primary"
-          disabled={!canCommit}
-          className="mt-1 w-full"
-          onClick={async () => {
-            const ok = await run(() => gitApi().commit(projectRoot, message));
-            if (ok) setMessage('');
-          }}
-        >
-          {`Commit ${stagedCount} staged file${stagedCount === 1 ? '' : 's'}`}
-        </Button>
-        {/* Empty-cart hint (owner decision 2026-07-23): the commit button is
-            disabled whenever nothing is staged, but that gave no clue WHY —
-            this line only shows up in that state. */}
-        {stagedCount === 0 && (
-          <div className="mt-1 text-[11px] text-fg-muted">
-            Tick “Include in commit” on a change above to choose what gets committed.
-          </div>
-        )}
-      </div>
+          commits the whole index, including files the agent staged meanwhile.
+          WHY conditional on uncommitted: a clean file's review is read-only, so
+          no commit affordance should appear. */}
+      {uncommitted && (
+        <div className="shrink-0 border-t border-edge px-2 py-2 bg-inset">
+          {(opError ?? externalError) && (
+            <div className="mb-1 px-2.5 py-1.5 text-[11px] text-fg rounded-md border border-edge bg-well break-all">
+              {opError ?? externalError}
+            </div>
+          )}
+          <Textarea
+            size="sm"
+            rows={2}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Commit message"
+            className="w-full"
+          />
+          <Button
+            size="md"
+            variant="primary"
+            disabled={!canCommit}
+            className="mt-1 w-full"
+            onClick={async () => {
+              const ok = await run(() => gitApi().commit(projectRoot, message));
+              if (ok) setMessage('');
+            }}
+          >
+            {`Commit ${stagedCount} staged file${stagedCount === 1 ? '' : 's'}`}
+          </Button>
+          {/* Empty-cart hint (owner decision 2026-07-23): the commit button is
+              disabled whenever nothing is staged, but that gave no clue WHY —
+              this line only shows up in that state. */}
+          {stagedCount === 0 && (
+            <div className="mt-1 text-[11px] text-fg-muted">
+              Tick “Include in commit” on a change above to choose what gets committed.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

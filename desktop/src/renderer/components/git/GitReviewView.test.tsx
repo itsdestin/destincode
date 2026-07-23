@@ -93,6 +93,14 @@ describe('GitReviewView', () => {
     expect(screen.queryByText('Uncommitted changes')).not.toBeInTheDocument();
   });
 
+  it('no composer block when the file is clean (uncommitted is null)', async () => {
+    mountWith({ uncommitted: null });
+    await waitFor(() => expect(screen.getByText('fix: first')).toBeInTheDocument());
+    // Entire composer should be hidden: no message textarea, no commit button
+    expect(screen.queryByPlaceholderText('Commit message')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Commit/ })).not.toBeInTheDocument();
+  });
+
   it('expanding a commit card lazily fetches its diff using the HISTORICAL path, not the current path', async () => {
     const git = mountWith();
     await waitFor(() => screen.getByText('fix: first'));
