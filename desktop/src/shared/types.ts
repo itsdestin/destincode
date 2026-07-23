@@ -991,6 +991,14 @@ export const IPC = {
   BUDDY_MASCOT_STATE: 'buddy:mascot-state',
   // Main → chat renderer: entrance/exit animation cue around show/hide.
   BUDDY_CHAT_STATE: 'buddy:chat-state',
+  // Linux Wayland overlay (Task 3+): main → overlay renderer, sent once on
+  // did-finish-load with window-local workArea/mascot/dock (BuddyOverlayManager's
+  // overlayInitPayload). External toggle-chat push for the same overlay
+  // window. The rest of the overlay IPC surface (renderer→main channels,
+  // BuddyApi, preload wiring) lands in the next commit (Task 4) — these two
+  // are added now only so this commit's manager code type-checks.
+  BUDDY_OVERLAY_INIT: 'buddy:overlay-init',
+  BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',

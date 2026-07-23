@@ -61,6 +61,8 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
+import { BuddyOverlayManager } from './buddy-overlay-manager';
+import { chooseBuddyStrategy } from './buddy-manager';
 import type { BuddyManager } from './buddy-manager';
 import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
@@ -473,7 +475,7 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
   });
 }
 
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' | 'overlay' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
@@ -1415,6 +1417,11 @@ app.whenReady().then(async () => {
   interface BuddyPositionsFile {
     mascot?: { x: number; y: number };
     dock?: 'left' | 'right' | 'top' | 'bottom';
+    // Linux Wayland overlay only (Task 3+): whether the overlay window
+    // should stay above fullscreen apps via Task 8's KWin script. Absent
+    // (undefined/falsy) is the correct default everywhere else — the
+    // three-window model never reads this field.
+    keepAbove?: boolean;
   }
   function loadBuddyPositions(): BuddyPositionsFile {
     try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
@@ -1424,29 +1431,65 @@ app.whenReady().then(async () => {
   }
   const buddyPositions = loadBuddyPositions();
 
-  const buddyManager = new BuddyWindowManager({
-    createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
-    getPersistedPosition: (key) => buddyPositions[key] ?? null,
-    setPersistedPosition: (key, pos) => {
-      buddyPositions[key] = pos;
-      saveBuddyPositions(buddyPositions);
-    },
-    getPersistedDock: () => buddyPositions.dock ?? null,
-    setPersistedDock: (edge) => {
-      if (edge) buddyPositions.dock = edge;
-      else delete buddyPositions.dock;
-      saveBuddyPositions(buddyPositions);
-    },
-    registry: windowRegistry,
-    mainWindow: () => mainWindow,
-    // Status pushes go to every window (main app Settings panels + buddy
-    // surfaces) so the "Hidden until restart" row state renders live.
-    onStatusChanged: (status) => {
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
-      }
-    },
-  });
+  // WHY branch here (not inside BuddyWindowManager/BuddyOverlayManager
+  // themselves): main.ts is the only place that knows both which strategy
+  // is active AND how to build a BrowserWindow (createAppWindow) — the two
+  // managers stay ignorant of each other. Windows/macOS/Linux-X11 get the
+  // EXACT SAME BuddyWindowManager construction as before this branch existed
+  // (same deps object, unchanged) — only Linux Wayland (or an explicit
+  // YOUCODED_BUDDY_STRATEGY override) takes the overlay path.
+  const buddyStrategy = chooseBuddyStrategy(process.platform, process.env);
+  const buddyManager: BuddyManager = buddyStrategy === 'overlay'
+    ? new BuddyOverlayManager({
+        createOverlayWindow: ({ width, height }) => createAppWindow({ width, height, buddy: 'overlay' }),
+        getPersisted: () => ({
+          mascot: buddyPositions.mascot ?? null,
+          dock: buddyPositions.dock ?? null,
+          keepAbove: !!buddyPositions.keepAbove,
+        }),
+        persist: (state) => {
+          buddyPositions.mascot = state.mascot;
+          if (state.dock) buddyPositions.dock = state.dock;
+          else delete buddyPositions.dock;
+          saveBuddyPositions(buddyPositions);
+        },
+        registry: windowRegistry,
+        mainWindow: () => mainWindow,
+        // Status pushes go to every window (main app Settings panels + buddy
+        // surfaces) so the "Hidden until restart" row state renders live.
+        onStatusChanged: (status) => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
+          }
+        },
+        // Task 8 injects the real KWin "keep above fullscreen" script
+        // runner; a no-op until then so this branch compiles and runs today
+        // without that script existing yet.
+        applyKeepAbove: () => {},
+      })
+    : new BuddyWindowManager({
+        createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
+        getPersistedPosition: (key) => buddyPositions[key] ?? null,
+        setPersistedPosition: (key, pos) => {
+          buddyPositions[key] = pos;
+          saveBuddyPositions(buddyPositions);
+        },
+        getPersistedDock: () => buddyPositions.dock ?? null,
+        setPersistedDock: (edge) => {
+          if (edge) buddyPositions.dock = edge;
+          else delete buddyPositions.dock;
+          saveBuddyPositions(buddyPositions);
+        },
+        registry: windowRegistry,
+        mainWindow: () => mainWindow,
+        // Status pushes go to every window (main app Settings panels + buddy
+        // surfaces) so the "Hidden until restart" row state renders live.
+        onStatusChanged: (status) => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
+          }
+        },
+      });
   // Publish to module scope so createAppWindow's 'closed' handler can see it.
   buddyManagerRef = buddyManager;
 
