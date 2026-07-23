@@ -23,7 +23,7 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton, TextInput } from './ui';
+import { CloseButton, TextInput, EmptyState } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
 
 type SortKey = 'recent' | 'name' | 'type';
@@ -417,13 +417,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const listInner = (
     <>
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge shrink-0">
-        {/* "Session artifacts" (Destin, 2026-07-20). This supersedes the older
-            rule that reserved the word "Artifacts" for the Project View tab —
-            the "Session" qualifier is what now carries the distinction: this
+        {/* "Session Files" (Destin, 2026-07-23) — was "Session artifacts"
+            (2026-07-20, which itself superseded reserving "Artifacts" for the
+            Project View tab). "Files" is the plain word for what this actually
+            lists; the "Session" qualifier still carries the distinction: this
             drawer is one session's activity log (created/edited/viewed all
-            appear), Project View's Artifacts tab is the project-wide set of
-            what Claude made plus pinned files. */}
-        <span className="font-semibold text-sm">Session artifacts ({listedArtifacts.length})</span>
+            appear), vs the project-wide set in Project View. */}
+        <span className="font-semibold text-sm">Session Files ({listedArtifacts.length})</span>
         {!active && (
           <CloseButton
             onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))}
@@ -497,15 +497,31 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           </div>
         )}
         {listedArtifacts.length === 0 ? (
-          <div className="p-3 text-xs text-fg-muted">
-            {searchQuery.trim()
-              ? <>No files match “{searchQuery.trim()}”.</>
-              : pillError
-                ? null /* the note above already explains the state */
-                : hideCodeAndConfigs && hiddenCount > 0
-                  ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Toggle off above to view all.</>
-                  : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>}
-          </div>
+          pillError ? null /* the note above already explains the state */ : (
+            /* Same EmptyState + way-out pattern as the Project View files tab and
+               the Resume browser (change 32). A search that matched nothing gets a
+               Clear search button; the filtered-empty case points at the filter
+               popover — NOT "toggle off above", which went stale when change 38
+               moved those toggles off the drawer body and behind the sliders icon. */
+            <EmptyState
+              variant="inline"
+              className="p-3"
+              message={
+                searchQuery.trim()
+                  ? <>No files match “{searchQuery.trim()}”.</>
+                  : hideCodeAndConfigs && hiddenCount > 0
+                    ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Use the filter menu to show them.</>
+                    : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>
+              }
+              action={
+                searchQuery.trim()
+                  ? { label: 'Clear search', onClick: () => setSearchQuery('') }
+                  : hideCodeAndConfigs && hiddenCount > 0
+                    ? { label: 'Show all files', onClick: () => setHideCodeAndConfigs(false) }
+                    : undefined
+              }
+            />
+          )
         ) : (
           listedArtifacts.map((a) => (
             <ArtifactListItem
