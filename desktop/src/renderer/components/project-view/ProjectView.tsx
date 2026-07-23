@@ -10,7 +10,6 @@
 // FilesTab (artifact-scoped) since it operates on the active project's artifacts.
 import React, { useEffect, useRef, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
-import { useTheme } from '../../state/theme-context';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { formatRelativeTime } from '../../utils/format-time';
@@ -36,14 +35,16 @@ import { FileFilterPopover } from './FileFilterPopover';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
 
-type TabId = 'artifacts' | 'allfiles' | 'conversations' | 'context';
+// 2026-07-23: the Artifacts tab merged into Files. Artifacts was not a subset of
+// All files, so the merge moved externals into their own section inside this tab
+// rather than deleting them — see the file-merge spec.
+type TabId = 'files' | 'conversations' | 'context';
 
 // Live hero stats, computed from the project:* / artifacts:* IPC (not the stale
 // stats.artifactCount). null repo means the project folder has no git remote.
-// CORE PRINCIPLE: `artifacts` (Claude-authored) and `files` (all on-disk docs)
-// are DISTINCT counts — never the same number.
+// 2026-07-23: the `artifacts` count was dropped when the Artifacts tab merged
+// into Files — there is no longer a separate Claude-authored count to show.
 interface HeroStats {
-  artifacts: number;
   // null = gated root (home dir / drive root — no scan runs, no number).
   files: number | null;
   // Discovery hit a cap — render "N+" so a sample never poses as exact.
@@ -56,20 +57,11 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 
 
 // Shared lucide-style glyphs live in ./icons.tsx (previously each file carried
-// its own copies of the same paths). GridIcon is the one glyph unique to this
-// file — the Artifacts segment icon.
-import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
+// its own copies of the same paths). GridIcon (the old Artifacts segment icon)
+// was removed here 2026-07-23 when the Artifacts tab merged into Files.
+import { ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
 import { Button } from '../ui';
 
-function GridIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
 // lucide-style sliders-horizontal — the standard "filters" icon (three lines
 // with knobs), the trigger for the FileFilterPopover.
 function SlidersGlyph({ size = 15 }: { size?: number }) {
@@ -93,14 +85,9 @@ interface ProjectViewProps {
 
 export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
-  // Artifact filter toggles live in the shared theme context (also read by the
-  // SessionDrawer). The seg-row chips here toggle them; FilesTab reads them.
-  const {
-    showDeletedArtifacts, setShowDeletedArtifacts,
-  } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
-  const [tab, setTab] = useState<TabId>('artifacts');
+  const [tab, setTab] = useState<TabId>('files');
   // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
   const [artifactSearch, setArtifactSearch] = useState('');
@@ -144,7 +131,7 @@ export function ProjectView(props: ProjectViewProps) {
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
-    artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
+    files: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
   });
   const [heroRepo, setHeroRepo] = useState<HeroRepo | null>(null);
 
@@ -236,7 +223,7 @@ export function ProjectView(props: ProjectViewProps) {
   // `cancelled` flag guards against the project switching mid-flight.
   useEffect(() => {
     if (!activeProject) {
-      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
+      setHeroStats({ files: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
       setHeroRepo(null);
       setConversations(null);
       setContext(null);
@@ -253,7 +240,7 @@ export function ProjectView(props: ProjectViewProps) {
       // Reset immediately so the PREVIOUS project's repo/stats don't linger while
       // the new project's data loads. Seed tab data from cache (instant) or null
       // (shows the tab's "Loading…" until the fetch resolves).
-      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
+      setHeroStats({ files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
       setHeroRepo(null);
       setConversations(convCache.current.get(id) ?? null);
       setContext(ctxCache.current.get(id) ?? null);
@@ -289,18 +276,12 @@ export function ProjectView(props: ProjectViewProps) {
         return groups;
       } catch { return []; }
     };
-    // Live artifact count — delegates to the main-process countVisibleArtifacts
-    // helper (via listProject withCount) so the hero, the segment badge, and the
-    // project-switcher row all show the SAME number. The helper returns exactly
-    // what the Artifacts tab shows with "Show deleted" OFF: non-deleted tracked
-    // files that still exist on disk (orphans excluded) plus on-disk discovered
-    // docs. No more renderer-side recomputation that could drift from the switcher.
-    const getArtifactCount = async (): Promise<number> => {
-      try {
-        const res = await (window.claude as any).artifacts.listProject(id, { withCount: true });
-        return typeof res?.visibleCount === 'number' ? res.visibleCount : 0;
-      } catch { return 0; }
-    };
+    // 2026-07-23: the hero's separate "N artifacts" stat was dropped when the
+    // Artifacts tab merged into Files, so the getArtifactCount() helper that fed
+    // it is gone too. Left alone, out of scope for this task: main's
+    // countVisibleArtifacts (still feeds ProjectSwitcher's row hint) and the
+    // persisted stats.artifactCount in the central index — neither is a
+    // renderer concern here.
     // ALL FILES count — the project folder's on-disk files (DISTINCT from the
     // artifact count). Shares main's discovery cache with the All files tab, so
     // this and the tab don't double-scan. Gated roots (home dir / drive root)
@@ -316,10 +297,9 @@ export function ProjectView(props: ProjectViewProps) {
     };
 
     (async () => {
-      const [convs, ctxGroups, artifactCount, fileCount, repoRes] = await Promise.all([
+      const [convs, ctxGroups, fileCount, repoRes] = await Promise.all([
         getConversations(),
         getContext(),
-        getArtifactCount(),
         getAllFilesCount(),
         (window.claude as any).project.repoInfo(path).catch(() => null),
       ]);
@@ -339,7 +319,6 @@ export function ProjectView(props: ProjectViewProps) {
         : null;
 
       setHeroStats({
-        artifacts: artifactCount,
         files: fileCount.count,
         filesTruncated: fileCount.truncated || undefined,
         conversations: conversationCount,
@@ -492,12 +471,11 @@ export function ProjectView(props: ProjectViewProps) {
   };
 
   // Unified segmented control: icon + label + live count per tab.
-  // CORE PRINCIPLE: Artifacts (Claude-authored) and All files (everything on disk)
-  // are separate sections with separate counts. All-files renders via
-  // formatFileCount: "N", "N+" (truncated sample), or "—" (gated root, no scan).
+  // Files renders via formatFileCount: "N", "N+" (truncated sample), or "—"
+  // (gated root, no scan) — the old separate Artifacts count is gone (2026-07-23
+  // merge; see the file-merge spec).
   const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: string }[] = [
-    { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: String(heroStats.artifacts) },
-    { id: 'allfiles', label: 'All files', icon: <FolderIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
+    { id: 'files', label: 'Files', icon: <FolderIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
     { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: String(heroStats.conversations) },
     { id: 'context', label: 'Context', icon: <DocIcon />, count: String(heroStats.contextFiles) },
   ];
@@ -614,7 +592,6 @@ export function ProjectView(props: ProjectViewProps) {
               >
                 {SEGMENTS.map((s) => {
                   const active = tab === s.id;
-                  const isFileTab = s.id === 'artifacts' || s.id === 'allfiles';
                   return (
                     <button
                       key={s.id}
@@ -641,57 +618,43 @@ export function ProjectView(props: ProjectViewProps) {
                       <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
                       </span>
-                      {/* (i) hover explainer for the Artifacts vs All files split —
-                          rendered INSIDE the active file-tab segment (next to the
-                          label + count, per the design) so the answer to "why is
-                          this file in both tabs?" lives right where the question
-                          arises. Hover icon per the app's (i) convention. */}
-                      {active && isFileTab && (
-                        <span
-                          className="opacity-75 hover:opacity-100 inline-flex items-center cursor-help transition-opacity"
-                          title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
-                          aria-label="What is the difference between Artifacts and All files?"
-                        >
-                          <InfoIcon size={13} />
-                        </span>
-                      )}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Right controls for the two file sections. ONE rounded-full search
+              {/* Right controls for the Files tab. ONE rounded-full search
                   pill (same shape language as the segmented control) with the
                   sliders icon inside its right edge — ALL filter/sort options
-                  (type, sort, Show deleted) live behind it in FileFilterPopover.
+                  (type, sort) live behind it in FileFilterPopover.
                   Only "+ Add file" (an action, not a filter) stays visible.
                   Conversations/Context have no toolbar in v1. */}
               {/* Narrow: search + Add file take their own full-width row under
                   the segments (the parent's flex-wrap does the rest). A hard
                   260px pill plus "+ Add file" was ~363px in a 358px content
                   box, so this row alone overflowed the viewport. */}
-              {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
+              {tab === 'files' && activeProject && (
                 <div className="w-full sm:w-auto flex items-center gap-2">
                   <div className="relative flex-1 sm:flex-none" ref={filterWrapRef}>
                     <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full sm:w-[260px] focus-within:border-edge-dim">
                       <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
                       <input
                         type="text"
-                        placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
+                        placeholder="Search files…"
                         value={artifactSearch}
                         onChange={(e) => setArtifactSearch(e.target.value)}
                         className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
                       />
                       {/* Filter trigger. Accent badge = number of filters active
-                          BEYOND the default view (type + Show deleted; sort is a
-                          preference; hideCode is ON by default so its default
-                          state isn't counted, and turning it OFF reveals more —
-                          also not counted) so a narrowed grid is never mistaken
-                          for the full list even with the popover closed. */}
+                          BEYOND the default view (type; sort is a preference;
+                          hideCode is ON by default so its default state isn't
+                          counted, and turning it OFF reveals more — also not
+                          counted) so a narrowed grid is never mistaken for the
+                          full list even with the popover closed. Show-deleted
+                          dropped out of this count with the tab merge — see
+                          Step 4 of the file-merge spec. */}
                       {(() => {
-                        const activeFilters =
-                          (typeFilter !== 'all' ? 1 : 0) +
-                          (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0);
+                        const activeFilters = typeFilter !== 'all' ? 1 : 0;
                         return (
                           <button
                             type="button"
@@ -723,9 +686,6 @@ export function ProjectView(props: ProjectViewProps) {
                         onSortBy={setFileSort}
                         hideCode={hideCode}
                         onHideCode={setHideCode}
-                        showDeleted={showDeletedArtifacts}
-                        onShowDeleted={setShowDeletedArtifacts}
-                        showDeletedAvailable={tab === 'artifacts'}
                         onClose={() => setFilterOpen(false)}
                       />
                     )}
@@ -733,7 +693,7 @@ export function ProjectView(props: ProjectViewProps) {
                   {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
                       for floating overlay affordances — this sits in a toolbar row,
                       so it takes the app's standard button radius. */}
-                  {tab === 'artifacts' && (
+                  {tab === 'files' && (
                     <Button
                       variant="secondary"
                       className="shrink-0"
@@ -753,11 +713,8 @@ export function ProjectView(props: ProjectViewProps) {
               model this must take its NATURAL height and let the page scroll,
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
-            {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
-            )}
-            {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
+            {activeProject && tab === 'files' && (
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />

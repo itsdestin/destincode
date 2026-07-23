@@ -1,8 +1,9 @@
 // FileFilterPopover — the anchored dropdown behind the sliders icon in the
 // Project View search pill. Hosts ALL file filter/sort controls (type filter,
-// sort, and — Artifacts tab only — the "Show deleted" toggle) so the seg-row
-// stays a single clean pill instead of a strip of mixed dropdowns and chips
-// (design feedback 2026-07-08).
+// sort) so the seg-row stays a single clean pill instead of a strip of mixed
+// dropdowns and chips (design feedback 2026-07-08). "Show deleted" moved out
+// 2026-07-23 with the Artifacts tab merge — it's a project-view-only removal,
+// SessionDrawer keeps its own toggle (see theme-context.tsx).
 //
 // Anchored popover, NOT a modal: styled with .layer-surface per the overlay
 // conventions (dropdowns/context menus skip the scrim), closed by ESC via the
@@ -62,8 +63,6 @@ export function FileFilterPopover({
   typeFilter, onTypeFilter,
   sortBy, onSortBy,
   hideCode, onHideCode,
-  showDeleted, onShowDeleted,
-  showDeletedAvailable,
   onClose,
 }: {
   typeFilter: 'all' | FileTypeGroup;
@@ -74,11 +73,6 @@ export function FileFilterPopover({
   // non-developers shouldn't wade through source files to find their docs).
   hideCode: boolean;
   onHideCode(v: boolean): void;
-  showDeleted: boolean;
-  onShowDeleted(v: boolean): void;
-  // "Show deleted" only makes sense for the tracked Artifacts tab (All files
-  // has nothing tracked to un-hide) — the parent gates it by active tab.
-  showDeletedAvailable: boolean;
   onClose(): void;
 }) {
   // ESC pops this popover ahead of the Project View's own close handler —
@@ -87,12 +81,10 @@ export function FileFilterPopover({
 
   // Sort is a preference, not a filter, so "Clear" only resets the filters —
   // back to their DEFAULTS, which for hideCode is ON.
-  const filtersActive =
-    typeFilter !== 'all' || !hideCode || (showDeletedAvailable && showDeleted);
+  const filtersActive = typeFilter !== 'all' || !hideCode;
   const clear = () => {
     onTypeFilter('all');
     onHideCode(true);
-    if (showDeletedAvailable) onShowDeleted(false);
   };
 
   return (
@@ -133,11 +125,6 @@ export function FileFilterPopover({
         <Chip active={hideCode} onClick={() => onHideCode(!hideCode)}>
           Hide code & configs
         </Chip>
-        {showDeletedAvailable && (
-          <Chip active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
-            Show deleted
-          </Chip>
-        )}
       </Group>
     </div>
   );

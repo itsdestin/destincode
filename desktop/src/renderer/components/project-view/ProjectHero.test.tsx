@@ -25,8 +25,10 @@ function setViewport(narrow: boolean) {
 }
 
 const baseProject = { path: '/home/d/proj', name: 'proj' } as any;
+// 2026-07-23: `artifacts` dropped from HeroStats when the Artifacts tab merged
+// into Files — this fixture no longer carries it (see ProjectHero.tsx).
 const baseStats = {
-  artifacts: 1, files: 2, conversations: 3, contextFiles: 4, activeLabel: 'today',
+  files: 2, conversations: 3, contextFiles: 4, activeLabel: 'today',
 };
 
 function renderHero(over: Record<string, any> = {}) {
