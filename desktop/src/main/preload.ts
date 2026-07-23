@@ -1296,6 +1296,11 @@ contextBridge.exposeInMainWorld('claude', {
     // transcript events so the central index is populated automatically.
     appendVersion: (projectRoot: string, sessionId: string, args: any) =>
       ipcRenderer.invoke('artifacts:append-version', projectRoot, sessionId, args),
+    // Copy or move a picked file INTO the project folder — see
+    // artifacts/import-file.ts for the traversal/collision/protected-path policy.
+    importFile: (projectRoot: string, sourcePath: string, destDir: string,
+                 opts: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' }) =>
+      ipcRenderer.invoke('artifacts:import-file', projectRoot, sourcePath, destDir, opts),
     includeExternal: (projectRoot: string, absolutePath: string) =>
       ipcRenderer.invoke('artifacts:include-external', projectRoot, absolutePath),
     exclude: (projectRoot: string, canonicalPath: string) =>

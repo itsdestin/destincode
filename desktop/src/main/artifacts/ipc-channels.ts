@@ -19,6 +19,12 @@ export const ARTIFACT_IPC = {
   // Write/Edit/MultiEdit tool-use event so the central index and sidecar are
   // populated even when the user never manually opens the artifact drawer.
   APPEND_VERSION: 'artifacts:append-version',
+  // Copy or move a picked file INTO the project folder (see artifacts/import-file.ts).
+  // Powers the + Add file button, which no longer pins externals.
+  IMPORT_FILE: 'artifacts:import-file',
+  // DEPRECATED 2026-07-23 — no caller since + Add file became an import. The
+  // handler stays so existing sidecar manualIncludes entries keep round-tripping
+  // and rule 1 keeps legacy pins visible. See the file-merge spec.
   INCLUDE_EXTERNAL: 'artifacts:include-external',
   EXCLUDE: 'artifacts:exclude',
   CHANGED: 'artifacts:changed', // push event

@@ -90,6 +90,7 @@ import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
 import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
+import { importFile } from './artifacts/import-file';
 import { GIT_IPC } from './git/ipc-channels';
 import {
   gitFileStatus, gitFileReview, gitCommitFileDiff,
@@ -3356,6 +3357,16 @@ export function registerIpcHandlers(
     const isAbs = /^[a-zA-Z]:\//.test(fwd) || fwd.startsWith('/');
     return canonicalize(isAbs ? fwd : `${projectRoot.replace(/\\/g, '/')}/${fwd}`, null);
   };
+
+  // IMPORT_FILE → copy/move a picked file into the project. All policy lives in
+  // artifacts/import-file.ts (traversal, collisions, verify-before-unlink).
+  ipcMain.handle(ARTIFACT_IPC.IMPORT_FILE, async (
+    _e,
+    projectRoot: string,
+    sourcePath: string,
+    destDir: string,
+    opts: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' },
+  ) => importFile({ projectRoot, sourcePath, destDir, mode: opts.mode, onCollision: opts.onCollision }));
 
   // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
   // files or in-project files Claude never edited). Three steps:
