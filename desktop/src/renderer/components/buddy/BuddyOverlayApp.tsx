@@ -104,7 +104,15 @@ export function BuddyOverlayApp() {
   // overlayPersist({mascot, dock: dock.edge}) on drag-end and on dock change,
   // 300ms debounced (brief step 2) — mirrors the three-window save debounce.
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // WHY the initializedRef gate (2026-07-23, found live): buddy-positions.json
+  // kept regenerating with the INIT_PLACEHOLDER's {0,0} mascot — a persist
+  // was firing before the overlayReady() pull resolved, poisoning the file so
+  // every subsequent boot docked the mascot bottom-left BEHIND the KDE panel.
+  // No persist may ever leave this component until real geometry arrived.
+  const initializedRef = useRef(false);
+  useEffect(() => { initializedRef.current = initialized; }, [initialized]);
   const schedulePersist = useCallback((mascot: Point, dockEdge: DockEdge | null) => {
+    if (!initializedRef.current) return;
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     persistTimerRef.current = setTimeout(() => {
       window.claude?.buddy?.overlayPersist?.({ mascot, dock: dockEdge });
