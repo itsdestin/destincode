@@ -360,6 +360,13 @@ const IPC = {
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
+  // Dev-instance descriptor from `run-dev.sh --label` (YOUCODED_DEV_LABEL). The
+  // StatusBar version pill shows it so concurrent dev instances are tellable
+  // apart FROM INSIDE the window: the OS window title is set too, but KDE/Wayland
+  // taskbars group by app id and render the app name, not the per-window caption,
+  // so the title alone isn't reliably visible. null in the built app (env unset).
+  // Same sandboxed process.env read the `native.supported` kill switch uses.
+  devLabel: process.env.YOUCODED_DEV_LABEL?.trim() || null,
   session: {
     create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; resumeSessionId?: string; provider?: 'claude' | 'native'; model?: string }) =>
       ipcRenderer.invoke(IPC.SESSION_CREATE, opts),

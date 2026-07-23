@@ -769,6 +769,10 @@ export function installShim(): void {
   }
 
   (window as any).claude = {
+    // Parity with preload's devLabel. Always null here: a remote/Android client
+    // has no process env, and the label describes the DEV INSTANCE you're sitting
+    // in front of, not the host it happens to be talking to.
+    devLabel: null,
     session: {
       create: (opts: any) => invoke('session:create', opts),
       destroy: (sessionId: string) => invoke('session:destroy', { sessionId }),
