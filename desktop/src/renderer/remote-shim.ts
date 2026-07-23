@@ -1433,6 +1433,13 @@ export function installShim(): void {
       onMascotState: () => () => { /* no-op unsubscribe */ },
       onChatState: () => () => { /* no-op unsubscribe */ },
       onFocusSession: () => () => { /* no-op unsubscribe */ },
+      // ── Linux Wayland overlay (Task 3+4) — same desktop-only contract:
+      // listeners return no-op unsubscribers, senders are no-ops (not
+      // throws) since overlaySetInteractive is a hover-hot path.
+      onOverlayInit: () => () => { /* no-op unsubscribe */ },
+      onOverlayToggleChat: () => () => { /* no-op unsubscribe */ },
+      overlaySetInteractive: (_i: boolean) => { /* desktop-only */ },
+      overlayPersist: (_s: { mascot: { x: number; y: number }; dock: string | null }) => { /* desktop-only */ },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.

@@ -251,6 +251,15 @@ export class BuddyOverlayManager implements BuddyManager {
     return this.win && !this.win.isDestroyed() ? this.win.webContents : null;
   }
 
+  // WHY a public method rather than exposing `deps.persist` directly: `deps`
+  // is a private constructor param, so main.ts's IPC handler (which only
+  // holds a `BuddyManager` reference, not this class's internals) has no
+  // other way to reach it. This just forwards to the same persist function
+  // the class already uses internally — no second storage location.
+  persistFromRenderer(state: { mascot: Point; dock: DockEdge | null }): void {
+    this.deps.persist(state);
+  }
+
   setInteractive(interactive: boolean): void {
     if (!this.win || this.win.isDestroyed()) return;
     if (interactive) {

@@ -1522,6 +1522,22 @@ app.whenReady().then(async () => {
   });
   // Drag release → edge-snap detection against the window's final bounds.
   ipcMain.on(IPC.BUDDY_DRAG_ENDED, () => buddyManager.dragEnded());
+  // Linux Wayland overlay only (Task 4). Both handlers verify the sender is
+  // the overlay's own webContents before acting — guarding on sender identity
+  // keeps a compromised main window from puppeting the overlay's input mode
+  // (set-interactive) or writing bogus positions (persist). No-op everywhere
+  // else: buddyManager is a BuddyWindowManager on Windows/macOS/Linux-X11,
+  // so the `instanceof` check alone already short-circuits these to nothing.
+  ipcMain.on(IPC.BUDDY_OVERLAY_SET_INTERACTIVE, (evt, { interactive }: { interactive: boolean }) => {
+    if (buddyManager instanceof BuddyOverlayManager && buddyManager.isBuddyWindow(BrowserWindow.fromWebContents(evt.sender)!)) {
+      buddyManager.setInteractive(interactive);
+    }
+  });
+  ipcMain.on(IPC.BUDDY_OVERLAY_PERSIST, (evt, state: { mascot: { x: number; y: number }; dock: 'left' | 'right' | 'top' | 'bottom' | null }) => {
+    if (buddyManager instanceof BuddyOverlayManager && buddyManager.isBuddyWindow(BrowserWindow.fromWebContents(evt.sender)!)) {
+      buddyManager.persistFromRenderer(state);
+    }
+  });
   ipcMain.handle(IPC.BUDDY_DISMISS, () => buddyManager.dismiss());
   ipcMain.handle(IPC.BUDDY_GET_STATUS, () => buddyManager.getStatus());
   // Restore + focus the main window, then ask it to switch to the buddy's

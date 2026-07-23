@@ -281,6 +281,12 @@ const IPC = {
   BUDDY_BAR_STATE: 'buddy:bar-state',
   BUDDY_MASCOT_STATE: 'buddy:mascot-state',
   BUDDY_CHAT_STATE: 'buddy:chat-state',
+  // Linux Wayland overlay (Task 3+4). Inlined here like every other buddy
+  // channel above — preload cannot import shared/types.ts.
+  BUDDY_OVERLAY_INIT: 'buddy:overlay-init',
+  BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
+  BUDDY_OVERLAY_SET_INTERACTIVE: 'buddy:overlay-set-interactive',
+  BUDDY_OVERLAY_PERSIST: 'buddy:overlay-persist',
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
@@ -1078,6 +1084,27 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.SESSION_FOCUS_REQUEST, listener);
       return () => ipcRenderer.removeListener(IPC.SESSION_FOCUS_REQUEST, listener);
     },
+    // ── Linux Wayland overlay (Task 3+4) ──
+    onOverlayInit: (cb: (init: {
+      workArea: { x: number; y: number; width: number; height: number };
+      mascot: { x: number; y: number } | null;
+      dock: string | null;
+    }) => void) => {
+      const listener = (_: unknown, init: any) => cb(init);
+      ipcRenderer.on(IPC.BUDDY_OVERLAY_INIT, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_OVERLAY_INIT, listener);
+    },
+    onOverlayToggleChat: (cb: () => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.BUDDY_OVERLAY_TOGGLE_CHAT, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_OVERLAY_TOGGLE_CHAT, listener);
+    },
+    // Fire-and-forget, hover-hot path (mousemove-driven hit testing) — same
+    // reasoning as moveMascot above: an invoke() round-trip would starve it.
+    overlaySetInteractive: (interactive: boolean) =>
+      ipcRenderer.send(IPC.BUDDY_OVERLAY_SET_INTERACTIVE, { interactive }),
+    overlayPersist: (state: { mascot: { x: number; y: number }; dock: string | null }) =>
+      ipcRenderer.send(IPC.BUDDY_OVERLAY_PERSIST, state),
   },
   // Renderer pushes per-session attention state to main whenever the chat
   // reducer's ATTENTION_STATE_CHANGED fires. Main aggregates across all windows

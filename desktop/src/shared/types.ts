@@ -592,6 +592,24 @@ export interface BuddyApi {
   onMascotState(cb: (s: { mode: 'free' | 'docked' | 'peeking'; edge: string | null }) => void): () => void;
   onChatState(cb: (s: { visible: boolean }) => void): () => void;
   onFocusSession(cb: (sessionId: string) => void): () => void;
+  // ── Linux Wayland overlay (Task 3+4) — only the overlay renderer calls
+  // these; other buddy surfaces (three-window model) never mount them.
+  /** Main → overlay push, sent once on did-finish-load: window-local
+   *  workArea/mascot/dock so the overlay's DOM mascot knows where to sit. */
+  onOverlayInit(cb: (init: {
+    workArea: { x: number; y: number; width: number; height: number };
+    mascot: { x: number; y: number } | null;
+    dock: string | null;
+  }) => void): () => void;
+  /** Main → overlay push: external (tray/menu) chat toggle request. */
+  onOverlayToggleChat(cb: () => void): () => void;
+  /** Fire-and-forget, hover-hot path: overlay renderer reports whether the
+   *  pointer is over an interactive element (mascot/bar/chat) so main can
+   *  flip the click-through window between ignore/accept mouse events. */
+  overlaySetInteractive(interactive: boolean): void;
+  /** Fire-and-forget: overlay renderer's own drag/dock logic (DOM-side)
+   *  reports the final mascot position + dock edge to persist. */
+  overlayPersist(state: { mascot: { x: number; y: number }; dock: string | null }): void;
 }
 
 // Marketplace redesign Phase 1 — per-entry component inventory for the
@@ -999,6 +1017,14 @@ export const IPC = {
   // are added now only so this commit's manager code type-checks.
   BUDDY_OVERLAY_INIT: 'buddy:overlay-init',
   BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
+  // Task 4: renderer → main, fire-and-forget. Hover-hot path (mousemove over
+  // the mascot/bar/chat toggles hit-testing many times/sec) so this is `send`,
+  // not `invoke` — same reasoning as BUDDY_MOVE_MASCOT above.
+  BUDDY_OVERLAY_SET_INTERACTIVE: 'buddy:overlay-set-interactive',
+  // Task 4: renderer → main, fire-and-forget. Renderer owns drag/dock state
+  // (DOM-side for the overlay model) and pushes the final position here to
+  // persist — main never computes it, just writes it to BUDDY_POS_FILE.
+  BUDDY_OVERLAY_PERSIST: 'buddy:overlay-persist',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
