@@ -1,10 +1,14 @@
 name: Android CI
 
 on:
+  # See desktop-ci.yml for the full rationale: `pull_request` checks every PR
+  # regardless of branch name, replacing the branch-name allowlist whose
+  # 'feat/**' vs 'feature/**' gap left pushes unchecked, and letting
+  # Dependabot's `dependabot/**` PRs run. `push: [master]` keeps the
+  # post-merge run on master.
   push:
-    # Same gap as desktop-ci.yml: this repo names branches 'feat/**', which
-    # 'feature/**' does not match, so those pushes ran no Android checks either.
-    branches: [master, 'feat/**', 'feature/**', 'fix/**']
+    branches: [master]
+  pull_request:
   workflow_dispatch:
 
 jobs:
