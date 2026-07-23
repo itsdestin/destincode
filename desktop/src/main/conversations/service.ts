@@ -38,6 +38,37 @@ export const HANDOFF_SYNC_TIMEOUT_MS = 15_000;
 interface SessionCtx { cwd: string }
 
 let store: ConversationStore | null = null;
+// WHY: IPC meta handlers go live (main.ts:745) before the store starts
+// (main.ts:1701, fire-and-forget), so a tag/flag/note set in that boot window
+// used to vanish while the store?. chains silently no-op'd — the IPC handler
+// still answered ok:true (the 2026-07-19 incident class, for the
+// store-availability dimension). metaWrite buffers a write made while
+// 'starting', flushes buffered writes in arrival order once the store settles
+// into 'ready' or 'unavailable', and answers honestly either way.
+export type MetaWriteResult = { ok: boolean };
+let storePhase: 'starting' | 'ready' | 'unavailable' = 'starting';
+const pendingMetaWrites: Array<{ run: () => Promise<void>; resolve: (r: MetaWriteResult) => void }> = [];
+
+async function metaWrite(run: () => Promise<void>): Promise<MetaWriteResult> {
+  if (storePhase === 'ready') {
+    try { await run(); return { ok: true }; } catch { return { ok: false }; }
+  }
+  if (storePhase === 'unavailable') return { ok: false };
+  return new Promise((resolve) => pendingMetaWrites.push({ run, resolve }));
+}
+
+// Drains whatever is currently queued, resolving each in ARRIVAL order. Called
+// once the store settles (ready or unavailable) so boot-window writes get an
+// honest answer instead of hanging forever. Items that arrive AFTER this call
+// starts (rare — nothing awaits mid-drain except the store call itself) simply
+// queue for the next settle.
+async function settlePendingMetaWrites(): Promise<void> {
+  const drained = pendingMetaWrites.splice(0);
+  for (const w of drained) {
+    if (storePhase !== 'ready') { w.resolve({ ok: false }); continue; }
+    try { await w.run(); w.resolve({ ok: true }); } catch { w.resolve({ ok: false }); }
+  }
+}
 let projectsDir = '';
 let topicsDir = '';
 let device = '';
@@ -64,11 +95,20 @@ export async function startConversationStore(opts?: {
   const personalRoot = getManagedRoots()?.personalRoot;
   const root = opts?.conversationsRoot
     ?? (personalRoot ? path.join(personalRoot, 'Conversations') : null);
-  if (!root) return; // managed roots unavailable — the store stays off this launch
+  if (!root) {
+    // Managed roots unavailable — the store stays off this launch. Any writes
+    // buffered while phase was 'starting' get an honest ok:false rather than
+    // hanging forever waiting for a store that will never come up.
+    storePhase = 'unavailable';
+    await settlePendingMetaWrites();
+    return;
+  }
   projectsDir = opts?.projectsDir ?? path.join(os.homedir(), '.claude', 'projects');
   topicsDir = opts?.topicsDir ?? path.join(os.homedir(), '.claude', 'topics');
   device = opts?.device ?? os.hostname();
   store = createConversationStore(root);
+  storePhase = 'ready';
+  await settlePendingMetaWrites();
 
   // Carry-forward 3: subscribe ONCE and hold the unsubscribe. The listener Set
   // dedups identical fn refs, but a fresh closure each start would still leak.
@@ -120,7 +160,18 @@ export function stopConversationStore(): void {
   for (const t of pendingActivity.values()) clearTimeout(t);
   pendingActivity.clear();
   sessions.clear();
+  // WHY: only settle pending meta writes when a store was ACTUALLY running.
+  // startConversationStore calls this unconditionally first (idempotent
+  // teardown) even on the very first-ever start, when writes may already be
+  // buffered waiting for THAT SAME call to bring the store up — settling them
+  // ok:false here would fail them moments before they'd have succeeded. A real
+  // stop of a RUNNING store (app quit, or an explicit restart) is different:
+  // nothing is coming to flush the queue on its own, so anything still pending
+  // must not hang its caller forever.
+  const hadStore = store !== null;
   store = null;
+  storePhase = 'starting';
+  if (hadStore) void settlePendingMetaWrites();
 }
 
 export function noteSessionStarted(claudeSessionId: string, cwd: string): void {
@@ -270,16 +321,16 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
 // Carry-forward 5: only the auto-title flow (topic-watcher) calls this. setTitle
 // is timestamp-less — it never fabricates activity. No user-rename path exists
 // for conversations yet (Plan 2b/2c scope).
-export function noteTitleChanged(claudeSessionId: string, title: string): void {
-  store?.setTitle('claude', claudeSessionId, title).catch(() => { /* carry-forward 1 */ });
+export function noteTitleChanged(claudeSessionId: string, title: string): Promise<MetaWriteResult> {
+  return metaWrite(() => store!.setTitle('claude', claudeSessionId, title));
 }
 
-export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean): void {
-  store?.setFlag('claude', claudeSessionId, flag, value).catch(() => { /* carry-forward 1 */ });
+export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean): Promise<MetaWriteResult> {
+  return metaWrite(() => store!.setFlag('claude', claudeSessionId, flag, value));
 }
 
-export function noteSessionNote(claudeSessionId: string, note: string): void {
-  store?.setNote('claude', claudeSessionId, note).catch(() => { /* carry-forward 1 */ });
+export function noteSessionNote(claudeSessionId: string, note: string): Promise<MetaWriteResult> {
+  return metaWrite(() => store!.setNote('claude', claudeSessionId, note));
 }
 
 // resolveLocalProject (originalPath → managed-by-name → saved-by-basename) lives

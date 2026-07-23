@@ -164,6 +164,26 @@ export class RemoteServer {
     this.leaseWiring = w;
   }
 
+  /** Injected by ipc-handlers right after it builds sessionIdMap + the
+   *  phantom-record gate (canWriteStoreRecord), so remote WS clients
+   *  (session:set-tag / session:set-note) get the IDENTICAL desktop→claude id
+   *  resolution and writability gate the ipcMain handlers use. Before this,
+   *  the remote path had neither — the exact "gate covers one surface but not
+   *  the other" shape the 2026-07-19 native-refusal incident was about, just
+   *  for a different gate. Undefined until wired (or in tests that never call
+   *  registerIpcHandlers's full setup): falls back to no resolution / no gate,
+   *  i.e. the pre-parity behavior. */
+  setSessionMetaWiring(w: {
+    resolve: (sessionId: string) => string;
+    canWrite: (sessionId: string, resolved: string) => boolean;
+  }): void {
+    this.sessionMetaWiring = w;
+  }
+  private sessionMetaWiring?: {
+    resolve: (sessionId: string) => string;
+    canWrite: (sessionId: string, resolved: string) => boolean;
+  };
+
   private loadTokens(): void {
     try {
       const data = JSON.parse(fs.readFileSync(this.tokensPath, 'utf8'));
@@ -918,14 +938,30 @@ export class RemoteServer {
         const { tagFlagKey } = await import('../shared/tags');
         const tagId = String(payload?.tagId ?? '');
         if (!tagId.startsWith('tag_')) { this.respond(client.ws, type, id, { ok: false, error: 'invalid tag id' }); break; }
+        // Parity with the ipcMain path: resolve the raw (possibly desktop) id
+        // through the SAME map before checking nativeness/writability — see
+        // setSessionMetaWiring. Falls back to identity/unconditional-write when
+        // unwired (pre-parity behavior), so this never regresses if the setter
+        // hasn't been called yet.
+        const rawId = String(payload?.sessionId ?? '');
+        const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
         // Same native refusal as the ipcMain handler. Without this the remote path
         // still seeds the phantom provider:'claude' record the 2026-07-18 gate was
         // written to prevent — a phone tagging a native session bypassed it entirely.
-        if (this.isNativeMetaTarget(payload?.sessionId)) {
+        if (this.isNativeMetaTarget(resolved)) {
           this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
           break;
         }
-        noteFlagChanged(String(payload?.sessionId), tagFlagKey(tagId), !!payload?.value);
+        if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
+          // Item 6: await the real result and answer honestly instead of the old
+          // fire-and-forget that always said ok:true even when the write
+          // silently evaporated (store not up yet / never came up / rejected).
+          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value);
+          if (!res.ok) {
+            this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
+            break;
+          }
+        }
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
@@ -933,11 +969,19 @@ export class RemoteServer {
         const { noteSessionNote } = await import('./conversations/service');
         const text = String(payload?.note ?? '');
         if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
-        if (this.isNativeMetaTarget(payload?.sessionId)) {
+        const rawId = String(payload?.sessionId ?? '');
+        const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
+        if (this.isNativeMetaTarget(resolved)) {
           this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
           break;
         }
-        noteSessionNote(String(payload?.sessionId), text);
+        if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
+          const res = await noteSessionNote(resolved, text);
+          if (!res.ok) {
+            this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
+            break;
+          }
+        }
         this.respond(client.ws, type, id, { ok: true });
         break;
       }

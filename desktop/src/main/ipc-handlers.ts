@@ -2238,7 +2238,9 @@ export function registerIpcHandlers(
       // Conversation Store (Phase 2a): mirror the auto-title into the record.
       // Keyed by claudeId (the store's record id). This is the only sanctioned
       // title writer (carry-forward 5) — no user-rename path exists yet.
-      noteTitleChanged(claudeId, initial);
+      // Result ignored (best-effort, no UI to revert here) — void per Item 6's
+      // Promise<MetaWriteResult> shape.
+      void noteTitleChanged(claudeId, initial);
     }
 
     const topicFilePath = path.join(topicDir, `topic-${claudeId}`);
@@ -2252,7 +2254,7 @@ export function registerIpcHandlers(
           lastTopics.set(desktopId, topic);
           sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
           broadcastRename(desktopId, topic);
-          noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
+          void noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through; result ignored
         }
       });
       watcher.on('error', () => {
@@ -2277,7 +2279,7 @@ export function registerIpcHandlers(
         lastTopics.set(desktopId, topic);
         sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
         broadcastRename(desktopId, topic);
-        noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
+        void noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through; result ignored
       }
     }, 2000);
     topicWatchers.set(desktopId, interval);
@@ -2448,6 +2450,15 @@ export function registerIpcHandlers(
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
 
+  // Parity wiring (Item 6, design §12 survivor 1): give remote WS clients the
+  // SAME sessionId resolution + phantom-record gate the ipcMain handlers above
+  // use for session:set-tag / session:set-note, so tagging/noting a session
+  // over remote can't bypass a gate that only ever covered the local path.
+  remoteServer?.setSessionMetaWiring({
+    resolve: (sessionId: string) => sessionIdMap.get(sessionId) || sessionId,
+    canWrite: canWriteStoreRecord,
+  });
+
   // Stopgap (2026-07-19). The 2026-07-18 gate above correctly stopped native
   // sessions seeding phantom provider:'claude' records — but the handlers still
   // returned { ok: true } and still broadcast SESSION_META_CHANGED, so the
@@ -2496,7 +2507,17 @@ export function registerIpcHandlers(
       // the user (or a re-flag) drives it again — flags are store-only now,
       // so there's no legacy index still catching it in the meantime.
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteFlagChanged(resolved, flag, !!value);
+        // Item 6: await the real result and answer honestly — the write can
+        // now report ok:false (store not up yet / never came up / rejected)
+        // instead of the old fire-and-forget that always said ok:true even
+        // when the write silently evaporated (2026-07-19 incident class, for
+        // the store-availability dimension — native refusal above is separate
+        // and unchanged). No broadcast on a dropped write: the renderer would
+        // otherwise refetch and "confirm" a change that never landed.
+        const res = await noteFlagChanged(resolved, flag, !!value);
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { flag, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
@@ -2571,7 +2592,11 @@ export function registerIpcHandlers(
       // native session. (Tags are stored as `tag:<id>` flags, so this is the path
       // that made "tag a native session" seed a phantom CC record.)
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteFlagChanged(resolved, key, !!value);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG.
+        const res = await noteFlagChanged(resolved, key, !!value);
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { flag: key, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
@@ -2589,7 +2614,11 @@ export function registerIpcHandlers(
     if (refusal) return refusal;
     try {
       if (canWriteStoreRecord(sessionId, resolved)) {
-        noteSessionNote(resolved, text);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG.
+        const res = await noteSessionNote(resolved, text);
+        if (!res.ok) {
+          return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
+        }
       }
       const payload = { note: text };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);

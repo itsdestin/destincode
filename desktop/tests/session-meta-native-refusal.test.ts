@@ -22,6 +22,28 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Item 6 (2026-07-2x): noteFlagChanged/noteSessionNote now BUFFER until the
+// store settles into 'ready' or 'unavailable' (see conversations/service.ts),
+// and the ipcMain handlers under test now AWAIT that result before answering.
+// This file never called startConversationStore, so without a real store the
+// store-availability write on a live CC id (below) would buffer forever and
+// time the test out. Mock only the IO shell (conversation-store.ts) — the real
+// engine has its own coverage in conversation-store.test.ts — and start the
+// REAL service.ts singleton against a mocked, in-memory store per test so
+// noteFlagChanged/noteSessionNote resolve promptly via the 'ready' fast path.
+vi.mock('../src/main/conversations/conversation-store', () => ({
+  createConversationStore: (root: string) => ({
+    upsert: vi.fn(async (input: any) => input),
+    get: vi.fn(async () => null),
+    list: vi.fn(async () => []),
+    setFlag: vi.fn(async () => {}),
+    setTitle: vi.fn(async () => {}),
+    setNote: vi.fn(async () => {}),
+    remove: vi.fn(async () => true),
+    root: () => root,
+  }),
+}));
+
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: vi.fn(() => '/tmp'), getVersion: vi.fn(() => '0.0.0-test'), whenReady: vi.fn(() => new Promise(() => {})), on: vi.fn(), quit: vi.fn(), setAppUserModelId: vi.fn(), commandLine: { appendSwitch: vi.fn() }, getGPUInfo: vi.fn(() => new Promise(() => {})) },
   ipcMain: { handle: vi.fn(), on: vi.fn() },
@@ -36,6 +58,7 @@ vi.mock('electron', () => ({
 }));
 
 import { registerIpcHandlers } from '../src/main/ipc-handlers';
+import { startConversationStore, stopConversationStore } from '../src/main/conversations/service';
 
 // A persisted native session is one with a file at
 // <home>/.youcoded/sessions/<slug>/<sessionId>.jsonl — that's exactly what
@@ -111,7 +134,7 @@ afterAll(() => {
   // run in the OS temp area is the deterministic trade.
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   const slugDir = path.join(tmpHome, '.youcoded', 'sessions', 'test-project');
   fs.mkdirSync(slugDir, { recursive: true });
   // Only the FILENAME matters for has() — it never reads contents (deliberately,
@@ -121,9 +144,19 @@ beforeEach(() => {
     path.join(slugDir, `${NATIVE_ID}.jsonl`),
     JSON.stringify({ v: 1, sessionId: NATIVE_ID, cwd: '/tmp/test-project' }) + '\n',
   );
+  // Bring the (mocked-store) conversation service up so noteFlagChanged/
+  // noteSessionNote resolve immediately instead of buffering — see the mock
+  // comment above.
+  await startConversationStore({
+    conversationsRoot: path.join(tmpHome, 'conv-store'),
+    projectsDir: path.join(tmpHome, '.claude', 'projects'),
+    topicsDir: path.join(tmpHome, '.claude', 'topics'),
+    device: 'test-device',
+  });
 });
 
 afterEach(() => {
+  stopConversationStore();
   vi.restoreAllMocks();
 });
 

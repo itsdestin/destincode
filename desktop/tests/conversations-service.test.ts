@@ -599,6 +599,67 @@ describe('conversations service composition root', () => {
     expect(h.store.setFlag).toHaveBeenCalledWith('claude', 'claude-f', 'complete', true);
   });
 
+  // --- Meta-write honesty (Item 6) ------------------------------------------
+  // IPC meta handlers go live (main.ts:745) before the store starts
+  // (main.ts:1701, fire-and-forget) — a tag/flag/note set in that boot window
+  // used to silently vanish while the store?. chains no-op'd and the IPC
+  // handler still answered ok:true (the 2026-07-19 incident class, for the
+  // store-availability dimension). These pin the buffer-until-ready /
+  // honest-ok:false behavior at the composition root.
+  describe('meta-write buffering (Item 6)', () => {
+    it('buffers a flag write made before the store starts, flushes it in order, resolves ok:true', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const p1 = svc.noteFlagChanged('id1', 'complete', true);   // store not started yet
+      const p2 = svc.noteSessionNote('id1', 'note-2');
+      await svc.startConversationStore(startOpts());
+      expect(await p1).toEqual({ ok: true });
+      expect(await p2).toEqual({ ok: true });
+      const flagOrder = h.store.setFlag.mock.invocationCallOrder[0];
+      const noteOrder = h.store.setNote.mock.invocationCallOrder[0];
+      expect(flagOrder).toBeLessThan(noteOrder);             // arrival order preserved
+      svc.stopConversationStore();
+    });
+
+    it('resolves buffered writes ok:false when the store never comes up', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const p = svc.noteFlagChanged('id1', 'complete', true);
+      h.managedRoots = null;                                  // no personal root
+      await svc.startConversationStore();
+      expect(await p).toEqual({ ok: false });
+    });
+
+    it('a rejecting store write resolves ok:false, not ok:true', async () => {
+      const svc = await freshService(startOpts());
+      h.store.setFlag.mockRejectedValue(new Error('lock timeout'));
+      expect(await svc.noteFlagChanged('id1', 'complete', true)).toEqual({ ok: false });
+    });
+
+    it('a ready store resolves a flag write ok:true immediately (no buffering)', async () => {
+      const svc = await freshService(startOpts());
+      expect(await svc.noteFlagChanged('id1', 'complete', true)).toEqual({ ok: true });
+    });
+
+    // stopConversationStore's idempotent-teardown call (fired at the top of
+    // EVERY startConversationStore, including the very first) must NOT settle
+    // writes that arrived before the store ever got a chance to come up — only
+    // a stop of an ALREADY-RUNNING store (app quit / explicit restart) does.
+    it('after stopConversationStore on a running store, a NEW write re-buffers instead of resolving', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      svc.stopConversationStore();
+      let settled = false;
+      const p = svc.noteFlagChanged('id2', 'complete', true).then((r) => { settled = true; return r; });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(settled).toBe(false);          // still buffered, not resolved yet
+      await svc.startConversationStore(startOpts());
+      expect(await p).toEqual({ ok: true }); // the restart flushes it
+      svc.stopConversationStore();
+    });
+  });
+
   // 7 — stop() unsubscribes, clears the periodic timer AND pending debounce timers.
   it('stopConversationStore unsubscribes, stops the periodic reconciler and pending debounces', async () => {
     vi.useFakeTimers();
