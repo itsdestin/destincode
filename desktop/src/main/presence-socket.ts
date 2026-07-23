@@ -21,6 +21,10 @@ export type WebSocketCtor = ReconnectingWebSocketCtor;
 
 export interface PresenceSocket {
   setDesired(want: boolean): void;
+  // System sleep gate (powerMonitor suspend/resume). Kept SEPARATE from
+  // setDesired: desired is the RENDERER's intent (sign-in/incognito/leader)
+  // and must survive a sleep/wake cycle unchanged.
+  setSuspended(asleep: boolean): void;
   send(message: Record<string, unknown>): void;
   isConnected(): boolean;
   destroy(): void;
@@ -91,8 +95,25 @@ export function createPresenceSocket(opts: {
     onTeardown: () => { lastPresence = null; },
   });
 
+  // Suspend gate (2026-07-22, "closed MacBook stays Online" follow-up to the
+  // ghost-socket fix): the engine's effective desire is rendererDesired AND
+  // awake. On OS suspend we close NOW, while the network is still up, so the
+  // close frame reaches the server and friends see "Last seen just now"
+  // immediately — instead of a silently-dead socket riding the server's
+  // staleness timeout. macOS dark wakes never fire powerMonitor 'resume', so a
+  // lid-closed laptop can't blip back online from a maintenance wake; a real
+  // wake restores whatever the renderer wanted.
+  let rendererDesired = false;
+  let suspended = false;
+  const applyDesire = () => engine.setDesired(rendererDesired && !suspended);
+
   return {
-    setDesired(want) { engine.setDesired(want); },
+    setDesired(want) { rendererDesired = want; applyDesire(); },
+    setSuspended(asleep) {
+      if (suspended === asleep) return;
+      suspended = asleep;
+      applyDesire();
+    },
     send(message) { engine.send(JSON.stringify(message)); },
     // True only when a socket exists AND finished its handshake — lets the
     // presence-send handler return an honest failure instead of silently

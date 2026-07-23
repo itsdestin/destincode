@@ -4,7 +4,7 @@
 // every call needs the bearer token, so all logic lives in the main process —
 // the token never crosses the contextBridge into the renderer bundle.
 
-import { ipcMain, webContents } from "electron";
+import { ipcMain, webContents, powerMonitor } from "electron";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type {
@@ -29,6 +29,12 @@ import type { RemoteServer } from "./remote-server";
 // app-quit teardown can destroy it — without threading the instance through the
 // account module. Only the most recent registration's socket is retained.
 let presenceSocket: PresenceSocket | null = null;
+
+// Named refs so hot-reload re-registration swaps the powerMonitor listeners
+// instead of stacking a new pair per reload (a stale pair would setSuspended
+// on a destroyed socket and could resurrect it via the engine).
+let onSuspend: (() => void) | null = null;
+let onResume: (() => void) | null = null;
 
 // ── Channel list for double-registration guard ───────────────────────────────
 // Byte-identical to the strings in preload.ts (IPC.SOCIAL_*), remote-shim.ts,
@@ -95,6 +101,20 @@ export function registerSocialHandlers(
     onEvent: broadcastPresenceEvent,
   });
   presenceSocket = presence;
+
+  // Sleep gate (see presence-socket.ts): close the presence socket the moment
+  // the OS suspends — the close frame gets out while the network is still up,
+  // so friends see "Last seen just now" instead of a ghost riding the server's
+  // staleness timeout — and reconnect on real wake. macOS dark wakes don't fire
+  // 'resume', so a lid-closed MacBook can't blip back online from maintenance
+  // wakes. Renderer intent (sign-in/incognito/leader) is preserved across the
+  // sleep cycle by the setDesired/setSuspended split.
+  if (onSuspend) powerMonitor.removeListener("suspend", onSuspend);
+  if (onResume) powerMonitor.removeListener("resume", onResume);
+  onSuspend = () => presence.setSuspended(true);
+  onResume = () => presence.setSuspended(false);
+  powerMonitor.on("suspend", onSuspend);
+  powerMonitor.on("resume", onResume);
 
   // One client instance shared across all handlers. getToken() is read lazily
   // per-request so sign-out takes effect immediately.
