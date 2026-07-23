@@ -1627,6 +1627,15 @@ app.whenReady().then(async () => {
     // display as fallback. Theoretical "mascot gone but chat/bar alive" state
     // would pick the surviving window's display instead — but hide() clears all
     // three windows together, so behavior is unchanged in practice.
+    // WHY getBounds() here is safe even for the overlay (coordinator review
+    // finding 4 — this branch otherwise never reads getBounds()/getPosition()
+    // on the overlay window, since Wayland echoes stale/construction values
+    // for it): the overlay is always constructed AT the primary display's
+    // bounds and never moved (buddy-overlay-manager.ts's createWindow), so
+    // the echoed construction bounds still resolve to the correct (primary)
+    // display via getDisplayMatching — there's no live-position read being
+    // relied on here, just a display lookup that happens to land right by
+    // construction.
     const targetDisplay = mascotWin
       ? screen.getDisplayMatching(mascotWin.getBounds())
       : screen.getPrimaryDisplay();

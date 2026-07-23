@@ -73,6 +73,29 @@ export function overlayInitPayload(
 }
 
 /**
+ * Translate a WINDOW-LOCAL point (the frame the overlay renderer works in —
+ * see OverlayInit's doc comment above) to SCREEN-ABSOLUTE, the frame
+ * buddy-positions.json is contracted to hold. Inverse of overlayInitPayload's
+ * mascot conversion above.
+ *
+ * WHY this exists (coordinator review finding 2): the renderer only ever
+ * knows window-local coordinates, but persistFromRenderer writes straight to
+ * disk without converting — and overlayInitPayload's LOAD path (above)
+ * unconditionally subtracts displayBounds.x/y, i.e. it assumes whatever it
+ * reads back is screen-absolute. On any display whose bounds don't start at
+ * (0,0) — a secondary monitor, or a primary monitor offset in a multi-monitor
+ * layout — that mismatch drifted the mascot by the display's offset on every
+ * restart, and corrupted the file's frame contract shared with the
+ * three-window model (BuddyWindowManager), which persists screen-absolute
+ * positions. Exported as a small pure function (not inlined at the
+ * persistFromRenderer call site) so the translation is unit-testable without
+ * spinning up a display server.
+ */
+export function localToScreenPoint(local: Point, displayBounds: Rect): Point {
+  return { x: local.x + displayBounds.x, y: local.y + displayBounds.y };
+}
+
+/**
  * One screen-sized, click-through-by-default BrowserWindow hosting the whole
  * buddy floater (mascot + chat + bar) as DOM, for platforms where Electron
  * cannot reposition windows (Linux Wayland — see chooseBuddyStrategy).
@@ -270,7 +293,17 @@ export class BuddyOverlayManager implements BuddyManager {
   // other way to reach it. This just forwards to the same persist function
   // the class already uses internally — no second storage location.
   persistFromRenderer(state: { mascot: Point; dock: DockEdge | null }): void {
-    this.deps.persist(state);
+    // WHY translate here (coordinator review finding 2): `state.mascot` comes
+    // from the renderer, which only ever knows window-local coordinates (see
+    // OverlayInit's doc comment) — but buddy-positions.json must stay
+    // screen-absolute, the one frame contract shared with the three-window
+    // model. The overlay is always constructed at the CURRENT primary
+    // display's bounds (createWindow above), so that's the same display to
+    // translate against here; overlayInitPayload's did-finish-load call site
+    // likewise re-reads screen.getPrimaryDisplay() rather than trusting a
+    // stale snapshot, for the same reason.
+    const bounds = screen.getPrimaryDisplay().bounds;
+    this.deps.persist({ mascot: localToScreenPoint(state.mascot, bounds), dock: state.dock });
   }
 
   setInteractive(interactive: boolean): void {
