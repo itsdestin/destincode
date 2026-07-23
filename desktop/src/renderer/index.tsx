@@ -22,7 +22,12 @@ document.documentElement.setAttribute('data-theme', storedTheme);
 // Setting on <html> also means the selector doesn't need :has(), which has
 // had subtle ordering bugs with color-scheme in some Chromium versions.
 const __buddyMode = new URLSearchParams(location.search).get('mode');
-if (__buddyMode === 'buddy-mascot' || __buddyMode === 'buddy-chat' || __buddyMode === 'buddy-bar') {
+if (
+  __buddyMode === 'buddy-mascot' || __buddyMode === 'buddy-chat' || __buddyMode === 'buddy-bar' ||
+  // Linux-Wayland single-window overlay (Task 6) — same anti-FOUC reasoning
+  // as the three modes above, one more mode string to allow through.
+  __buddyMode === 'buddy-overlay'
+) {
   document.documentElement.setAttribute('data-mode', __buddyMode);
 }
 
