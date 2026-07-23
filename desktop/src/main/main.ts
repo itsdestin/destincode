@@ -1549,6 +1549,18 @@ app.whenReady().then(async () => {
   // gated on buddyManager's type: applyKwinKeepAbove filters by caption, and
   // only the overlay window is ever titled OVERLAY_TITLE (buddy-overlay-
   // manager.ts), so this is naturally a no-op on the three-window model.
+  //
+  // WHY persist the REQUEST, not the outcome (deliberate split from the
+  // renderer's honest-toggle behavior): a failed apply here (GNOME/wlroots,
+  // or KWin just not answering DBus yet at login) doesn't mean the user's
+  // intent changed. Persisting `enabled && ok` instead would silently
+  // downgrade a real "yes, pin me" request to off and stop retrying on
+  // every future recreate — including a later session where KWin has since
+  // become available. So: persisted state = "what the user asked for",
+  // always retried on next show()/recreate; SettingsPanel.tsx's
+  // toggleKeepAbove is where the *displayed* state gets reconciled against
+  // the real `ok` result instead — that split keeps the UI honest without
+  // making the persisted setting forgetful.
   ipcMain.handle(IPC.BUDDY_OVERLAY_KEEP_ABOVE, async (_evt, enabled: boolean) => {
     buddyPositions.keepAbove = enabled;
     saveBuddyPositions(buddyPositions);

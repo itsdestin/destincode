@@ -61,6 +61,12 @@ export async function applyKwinKeepAbove(title: string, keepAbove: boolean): Pro
   try {
     await writeFile(scriptPath, buildKeepAboveScript(title, keepAbove), 'utf8');
     for (const qdbus of QDBUS_CANDIDATES) {
+      // Tracks whether loadScript actually succeeded THIS iteration, so the
+      // finally block below knows whether there's anything to unload —
+      // covers both the success path AND run() rejecting after a
+      // successful load (fix: previously only the success path unloaded,
+      // leaking the script under PLUGIN_NAME on a partial failure).
+      let loaded = false;
       try {
         const { stdout } = await execFileAsync(qdbus, [
           'org.kde.KWin',
@@ -75,25 +81,35 @@ export async function applyKwinKeepAbove(title: string, keepAbove: boolean): Pro
         // sanely — treat as failure and don't try running a bogus id.
         const id = stdout.trim();
         if (!id || Number.isNaN(Number(id))) continue;
+        loaded = true;
         await execFileAsync(qdbus, [
           'org.kde.KWin',
           `/Scripting/Script${id}`,
           'org.kde.kwin.Script.run',
         ]);
-        // Best-effort cleanup: the keepAbove write already happened via
-        // run() above, so a failed unload doesn't affect correctness —
-        // just leaves the plugin name loaded for the next call to replace.
-        await execFileAsync(qdbus, [
-          'org.kde.KWin',
-          '/Scripting',
-          'org.kde.kwin.Scripting.unloadScript',
-          PLUGIN_NAME,
-        ]).catch(() => {});
         return true;
       } catch {
-        // This qdbus binary is missing, or the DBus call failed (no KWin
-        // service, wrong session type, etc). Try the next candidate name.
+        // Either this qdbus binary is missing / the loadScript DBus call
+        // failed (no KWin service, wrong session type, etc) — nothing was
+        // loaded, `loaded` stays false — or loadScript succeeded but run()
+        // rejected, in which case `loaded` is true and the finally below
+        // unloads it. Either way, try the next candidate name.
         continue;
+      } finally {
+        if (loaded) {
+          // Best-effort cleanup on this path too: run() may have partially
+          // applied (or thrown after applying — KWin scripts execute
+          // synchronously so a reject here means run() itself errored, not
+          // that keepAbove was left half-set), but leaving the plugin name
+          // loaded either way just wastes a slot until the next call
+          // replaces it, so don't let a failed unload block the retry loop.
+          await execFileAsync(qdbus, [
+            'org.kde.KWin',
+            '/Scripting',
+            'org.kde.kwin.Scripting.unloadScript',
+            PLUGIN_NAME,
+          ]).catch(() => {});
+        }
       }
     }
     return false;

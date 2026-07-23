@@ -745,14 +745,22 @@ function BuddyButton() {
     return () => { alive = false; off?.(); };
   }, []);
 
-  // Optimistic like `toggle` below: flip local state immediately, let main
-  // persist + apply the KWin script in the background. setKeepAbove never
-  // rejects (see BuddyApi WHY comment) but .catch is defensive belt-and-
-  // braces in case a future remote-shim path throws instead of no-oping.
+  // Optimistic like `toggle` below, but reconciled: flip local state
+  // immediately, then correct it against the REAL result. main persists the
+  // request regardless of outcome (see the WHY comment on the
+  // BUDDY_OVERLAY_KEEP_ABOVE handler in main.ts), but this toggle must not
+  // lie — on GNOME/wlroots/no-qdbus, applyKwinKeepAbove resolves false and
+  // nothing was actually pinned, so showing "on" would contradict the
+  // preload/types WHY comments that this boolean exists to render an honest
+  // state. Only the ENABLING path reverts: turning off is honest either way
+  // (nothing pinned = nothing to unpin, regardless of whether the DBus call
+  // itself succeeded), so a false result there doesn't need a re-flip.
   const toggleKeepAbove = useCallback(() => {
     const next = !keepAboveEnabled;
     setKeepAboveEnabled(next);
-    window.claude.buddy?.setKeepAbove?.(next).catch(() => {});
+    window.claude.buddy?.setKeepAbove?.(next)
+      .then((ok: boolean) => { if (next && !ok) setKeepAboveEnabled(false); })
+      .catch(() => { if (next) setKeepAboveEnabled(false); });
   }, [keepAboveEnabled]);
 
   useEffect(() => {
