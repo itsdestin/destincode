@@ -60,7 +60,7 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // its own copies of the same paths). GridIcon (the old Artifacts segment icon)
 // was removed here 2026-07-23 when the Artifacts tab merged into Files.
 import { ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
-import { Button, Toast } from '../ui';
+import { Button } from '../ui';
 import { ImportFileDialog } from './ImportFileDialog';
 
 // lucide-style sliders-horizontal — the standard "filters" icon (three lines
@@ -162,9 +162,15 @@ export function ProjectView(props: ProjectViewProps) {
   // dialog. collisions = basenames among sources that already exist in the
   // destination folder, computed BEFORE the dialog opens (see importFiles).
   const [pendingImport, setPendingImport] = useState<{ sources: string[]; collisions: string[] } | null>(null);
-  // Import failures, surfaced as a Toast — describeImportFailure above gives
-  // the two special-cased codes human wording; everything else is the real
-  // error code + detail.
+  // Import failures, surfaced as a non-transient modal (Scrim + OverlayPanel,
+  // same pattern as the project-deletion modal below) rather than a Toast —
+  // describeImportFailure above gives the two special-cased codes human
+  // wording; everything else is the real error code + detail. A Toast auto-
+  // dismisses on a timer with NO manual dismiss control (see Toast.tsx), and
+  // these two failure codes name a specific protected path that was not
+  // imported, or report a partial move the user needs to notice and may need
+  // to act on — a multi-file batch can read as several lines, which an 8s
+  // timer doesn't give enough time to read, let alone re-read.
   const [importError, setImportError] = useState<string | null>(null);
 
   // Hero data (recomputed when the active project changes).
@@ -216,6 +222,9 @@ export function ProjectView(props: ProjectViewProps) {
   // The delete-confirm modal takes Esc priority while open (registered after
   // the browser's own handler because it mounts later — LIFO).
   useEscClose(!!deletingProject, () => { setDeletingProject(null); setAlsoDeleteSidecar(false); });
+  // The import-failure modal likewise needs its own Esc handler now that it's
+  // a real dialog instead of a Toast (a Toast never listened for Esc at all).
+  useEscClose(!!importError, () => setImportError(null));
 
   // Load the projects index whenever the view is opened. Hooks MUST run before
   // any early return — Rules of Hooks. Don't move below the projectViewOpen guard
@@ -513,7 +522,14 @@ export function ProjectView(props: ProjectViewProps) {
   // and it keeps this component from depending on FilesTab's internals.
   const computeImportCollisions = async (paths: string[]): Promise<string[]> => {
     if (!activeProject) return [];
-    const res = await (window.claude as any).artifacts.listAllFiles(activeProject.id);
+    // force: true — collision detection must see the REAL listing even on a
+    // gated root (home dir / drive root). Without it, a user who clicked
+    // "Browse anyway" in FilesTab sees the true file list there while this
+    // call silently gets back { files: [] } from the gate, so every collision
+    // would go undetected and the Replace/Keep both/Skip choice would never
+    // be offered. listAllFiles is cache-backed (project-file-discovery.ts),
+    // so this doesn't add a redundant scan when FilesTab already forced one.
+    const res = await (window.claude as any).artifacts.listAllFiles(activeProject.id, { force: true });
     if (!res?.ok || !Array.isArray(res.files)) return [];
     const prefix = currentRelDir ? currentRelDir.replace(/\\/g, '/') + '/' : '';
     const existing = new Set<string>();
@@ -941,23 +957,34 @@ export function ProjectView(props: ProjectViewProps) {
         />
       )}
       {/* Import failures — real code + path, never a guessed cause (see
-          describeImportFailure). 8s (vs. Toast's 3s default): this can be a
-          multi-line, multi-file report (a needs-confirm path name, a
-          MOVE_SOURCE_NOT_REMOVED partial-outcome sentence), and Toast's own
-          dismiss timer is the only way this ever closes — it has no button. */}
+          describeImportFailure). A non-transient modal, not a Toast: these two
+          failure codes name a protected path that was NOT imported, or report
+          a partial move (copy succeeded, original couldn't be removed) — the
+          user needs to read and may need to act on this, and Toast has no
+          manual dismiss (only its own timer). Same Scrim + OverlayPanel +
+          Button pattern as the project-deletion modal above. */}
       {importError && (
-        <Toast
-          message={
-            // One line per failed file — a plain string here would collapse
-            // the '\n' join in runImport into a single run-on line of HTML.
-            <div className="flex flex-col gap-0.5">
+        <>
+          <Scrim layer={2} onClick={() => setImportError(null)} />
+          <OverlayPanel
+            layer={2}
+            role="alertdialog"
+            aria-modal={true}
+            aria-label="Import errors"
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-6 max-w-md w-[calc(100%-2rem)]"
+          >
+            <h3 className="text-lg font-semibold mb-2 text-fg">Import failed</h3>
+            {/* One line per failed file — the '\n' join from runImport. */}
+            <div className="flex flex-col gap-1 mb-4 text-sm text-fg">
               {importError.split('\n').map((line, i) => <span key={i}>{line}</span>)}
             </div>
-          }
-          tone="error"
-          durationMs={8000}
-          onDismiss={() => setImportError(null)}
-        />
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" size="lg" onClick={() => setImportError(null)}>
+                Dismiss
+              </Button>
+            </div>
+          </OverlayPanel>
+        </>
       )}
     </div>
   );

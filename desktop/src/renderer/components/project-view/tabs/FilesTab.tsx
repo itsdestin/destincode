@@ -184,9 +184,11 @@ export function FilesTab({
   const [currentDir, setCurrentDir] = useState('');
   // Report the browsed folder up to ProjectView, which needs it as the "+ Add
   // file" import destination — see the prop comment above. Deliberately keyed
-  // on currentDir ONLY: onCurrentDirChange gets a fresh identity on every
-  // ProjectView render, and re-firing on that would just re-report the same
-  // value (harmless, but noisy) instead of only on real navigation.
+  // on currentDir ONLY, not on onCurrentDirChange: ProjectView passes its raw
+  // setCurrentRelDir state setter, which React guarantees is referentially
+  // stable, so adding it to the deps wouldn't change how often this fires —
+  // it's omitted to keep the array honest about the one thing that actually
+  // varies (the browsed folder), not because the callback is unstable.
   useEffect(() => {
     onCurrentDirChange?.(currentDir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
