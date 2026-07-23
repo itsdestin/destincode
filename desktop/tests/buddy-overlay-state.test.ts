@@ -46,3 +46,53 @@ describe('defaultMascotPosition', () => {
     expect(p.y + MASCOT_SIZE.height).toBeLessThanOrEqual(wa.height);
   });
 });
+
+// Fix pass (coordinator finding 2): chat-open drag must honor the rigid-group
+// invariant — ported from BuddyWindowManager.moveMascot/dragEnded's
+// `chatOpen` branches (src/main/buddy-window-manager.ts). These are ADDED
+// tests; the brief's tests above are untouched.
+describe('overlayReducer — chat-open drag (rigid-group)', () => {
+  const openBase = { ...base, chatVisible: true, barVisible: true };
+
+  it('drag with chat open x-pins the mascot to keep the chat on screen, not the raw workArea clamp', () => {
+    // x=1500 is inside the plain workArea clamp (needs no clamping, and is
+    // more than PEEK_PAST_EDGE_PX from the true edge, so no shove fires) but
+    // outside mascotXRangeForChat's max (1404) — isolates the x-pin from both
+    // the ordinary clamp and the shove-to-close path.
+    const s = overlayReducer(openBase, { type: 'drag-move', to: { x: 1500, y: 500 } });
+    expect(s.mascot.x).toBe(1404);
+    expect(s.mascot.x).toBeLessThan(wa.width - MASCOT_SIZE.width);
+    expect(s.mascot.y).toBe(500);
+    expect(s.dock.mode).toBe('free'); // never snaps/docks while the chat is open
+  });
+
+  it('drag past the edge while chat is open shoves it away — closes chat, peeks (PEEK_PAST_EDGE_PX)', () => {
+    const s = overlayReducer(openBase, { type: 'drag-move', to: { x: wa.width - MASCOT_SIZE.width - 3, y: 500 } });
+    expect(s.chatVisible).toBe(false);
+    expect(s.barVisible).toBe(false);
+    expect(s.dock).toEqual({ mode: 'peeking', edge: 'right' });
+    expect(s.mascot.x).toBe(wa.width - MASCOT_SIZE.width);
+  });
+
+  it('drag-end never docks while the chat is open — settles onto computeGroupLayout instead', () => {
+    const near = { ...openBase, mascot: { x: wa.width - MASCOT_SIZE.width, y: 500 } };
+    const s = overlayReducer(near, { type: 'drag-end' });
+    expect(s.dock.mode).toBe('free');
+    expect(s.mascot.x).toBe(1404); // the chat-open x-pin range, not the edge
+  });
+});
+
+// Fix pass (coordinator finding 3): the toggle-chat rigid-group adoption
+// branch had zero coverage — assert the ADOPTED position lands in STATE, not
+// just in overlayLayout's derived output.
+describe('overlayReducer — toggle-chat rigid-group adoption', () => {
+  it('toggle-chat adopts a squashed mascot position into state (rigid-group rule)', () => {
+    // y=450 sits in the tier-3 "neither above nor below fits" band for this
+    // workArea (computeGroupLayout, buddy-geometry.ts) — opening the chat
+    // here forces a vertical squash.
+    const squeeze = { ...base, mascot: { x: 700, y: 450 } };
+    const opened = overlayReducer(squeeze, { type: 'toggle-chat' });
+    expect(opened.mascot).toEqual({ x: 700, y: 420 });
+    expect(opened.mascot).not.toEqual(squeeze.mascot); // proves adoption actually moved it
+  });
+});

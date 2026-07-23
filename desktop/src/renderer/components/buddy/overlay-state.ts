@@ -7,13 +7,21 @@
 // RENDERER code: may import only from src/shared/, never src/main/ (which
 // pulls in electron and can't load in the browser sandbox).
 import {
-  MASCOT_SIZE, computeGroupLayout, computeBarPosition, clampToWorkArea,
+  MASCOT_SIZE, computeGroupLayout, computeBarPosition, clampToWorkArea, mascotXRangeForChat,
   type Rect, type Point,
 } from '../../../shared/buddy-geometry';
 import {
   dockReducer, detectSnapEdge, dockPosition, FREE_DOCK,
   type DockState, type DockEdge,
 } from '../../../shared/buddy-dock';
+
+// How close (px) a raw drag target must get to a screen edge, WITH the chat
+// open, to read as "put him away" — close the chat and peek. Deliberately
+// much smaller than SNAP_THRESHOLD_PX: the chat-open x-pin below already
+// parks the mascot ~17px off the left edge, so a 24px test would false-fire
+// on ordinary positioning. Ported verbatim from
+// BuddyWindowManager.moveMascot's PEEK_PAST_EDGE_PX (src/main/buddy-window-manager.ts).
+const PEEK_PAST_EDGE_PX = 6;
 
 export interface OverlayState {
   workArea: Rect;                          // window-local
@@ -70,6 +78,38 @@ export function overlayReducer(s: OverlayState, a: OverlayAction): OverlayState 
 
     case 'drag-move': {
       const clamped = clampToWorkArea(a.to, MASCOT_SIZE, s.workArea);
+
+      if (s.chatVisible) {
+        // Chat-open drag branch, ported from moveMascot's `chatOpen` branch
+        // (src/main/buddy-window-manager.ts:509-534). Ordinary edge-snap/peek
+        // is disabled here — the pair is horizontally rigid while the chat is
+        // open, so the mascot is x-pinned instead (below). Shoving the cursor
+        // hard past an edge is the one way to "put him away": it reads as
+        // intent to dock, so it closes the chat/bar and hands off to peek.
+        const shove = detectSnapEdge(clamped, MASCOT_SIZE, s.workArea, PEEK_PAST_EDGE_PX);
+        if (shove) {
+          const dock = dockReducer(s.dock, { type: 'drag-peek', edge: shove });
+          const mascot = dockPosition(shove, clamped, MASCOT_SIZE, s.workArea);
+          return { ...s, mascot, dock, chatVisible: false, barVisible: false };
+        }
+        // No shove: dragging with the chat open never enters peek/dock — it
+        // only ever resets to free (mirrors moveMascot's unconditional
+        // `dispatchDock({type:'drag-start'})` in this branch).
+        const dock = dockReducer(s.dock, { type: 'drag-start' });
+        // Horizontal pin (mascotXRangeForChat) keeps the chat fully on
+        // screen — "keep the chat on screen" is a constraint on the MASCOT,
+        // not the chat, because the pair are rigidly offset (buddy-geometry.ts).
+        const range = mascotXRangeForChat({ ...clamped, ...MASCOT_SIZE }, s.workArea);
+        const pinned: Point = { x: Math.max(range.min, Math.min(clamped.x, range.max)), y: clamped.y };
+        // Rigid-group rule: adopt computeGroupLayout's mascot into state
+        // immediately, the same call toggle-chat makes — this reducer has no
+        // separate "glide to rest" step (unlike BuddyWindowManager), so state
+        // must always hold the position actually rendered, including any
+        // tier-3 vertical squash the chat forces mid-drag, not defer it.
+        const layout = computeGroupLayout({ ...pinned, ...MASCOT_SIZE }, s.workArea);
+        return { ...s, mascot: layout.mascot, dock };
+      }
+
       const edge = detectSnapEdge(clamped, MASCOT_SIZE, s.workArea);
       // Live peek while still dragging (buddy-dock.ts's `drag-peek`); pulling
       // back into open space frees him again (`drag-start` resets to free).
@@ -80,6 +120,19 @@ export function overlayReducer(s: OverlayState, a: OverlayAction): OverlayState 
     }
 
     case 'drag-end': {
+      if (s.chatVisible) {
+        // Chat-open release never snaps/docks, ported from dragEnded's
+        // `chatOpen ? null : detectSnapEdge(...)` (buddy-window-manager.ts:161)
+        // — drag-release with a null edge always resolves to FREE_DOCK
+        // (buddy-dock.ts), so this collapses to that. glideGroup's real
+        // counterpart also always settles onto computeGroupLayout's mascot
+        // while the chat is visible, regardless of dock outcome — adopt it
+        // here for the same "state must hold what's rendered" reason as
+        // drag-move above.
+        const dock = dockReducer(s.dock, { type: 'drag-release', snapEdge: null });
+        const layout = computeGroupLayout({ ...s.mascot, ...MASCOT_SIZE }, s.workArea);
+        return { ...s, dock, mascot: layout.mascot };
+      }
       const edge = detectSnapEdge(s.mascot, MASCOT_SIZE, s.workArea);
       let dock = dockReducer(s.dock, { type: 'drag-release', snapEdge: edge });
       // WHY chain engage here: dockReducer's drag-release contract only ever
