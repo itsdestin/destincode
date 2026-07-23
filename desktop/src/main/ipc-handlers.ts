@@ -3296,9 +3296,9 @@ export function registerIpcHandlers(
     gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, uncommitted: null, log: [], hasMore: false, stagedCount: 0 },
       () => gitFileReview(projectRoot, relPath, opts)));
 
-  ipcMain.handle(GIT_IPC.COMMIT_FILE_DIFF, (_e, projectRoot: string, sha: string, relPath: string) =>
+  ipcMain.handle(GIT_IPC.COMMIT_FILE_DIFF, (_e, projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
     gitGate(projectRoot, { ok: false, error: 'unknown-project-root', hunks: [], binary: false },
-      () => gitCommitFileDiff(projectRoot, sha, relPath)));
+      () => gitCommitFileDiff(projectRoot, sha, relPath, prevPath)));
 
   const mutating = async (projectRoot: string, run: () => Promise<{ ok: boolean; error?: string }>) =>
     gitGate(projectRoot, { ok: false, error: 'unknown-project-root' }, async () => {

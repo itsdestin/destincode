@@ -28,6 +28,18 @@ export interface GitLogEntry {
   subject: string;
   /** ISO-8601 author date; relative time is rendered client-side. */
   authorDate: string;
+  // WHY these two: `git log --follow` tracks a file across renames/moves, but
+  // a per-commit diff fetch (`git show`) needs the name the file had AT THAT
+  // COMMIT, not its current name — asking with the current name returns an
+  // empty diff for every commit before the rename. PROJECT-ROOT-relative
+  // (converted from git's repo-relative name-status output by the service).
+  /** The file's path as of this commit. Undefined only for the rare chunk
+   *  with no name-status line (e.g. a surfaced merge commit) — callers fall
+   *  back to the file's current project-relative path. */
+  pathAtCommit?: string;
+  /** Set only on the commit that renamed/moved the file TO its tracked path
+   *  — the old (pre-move) path, so the diff fetch can pair the rename. */
+  renamedFrom?: string;
 }
 
 export interface GitUncommitted {

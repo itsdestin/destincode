@@ -1286,8 +1286,11 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('git:file-status', projectRoot, relPath),
     fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
       ipcRenderer.invoke('git:file-review', projectRoot, relPath, opts),
-    commitFileDiff: (projectRoot: string, sha: string, relPath: string) =>
-      ipcRenderer.invoke('git:commit-file-diff', projectRoot, sha, relPath),
+    // prevPath (project-root-relative old name) is passed for the rename
+    // commit itself so the main-process handler can pair the rename with -M
+    // instead of rendering the add-side full-file wall.
+    commitFileDiff: (projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
+      ipcRenderer.invoke('git:commit-file-diff', projectRoot, sha, relPath, prevPath),
     stage: (projectRoot: string, relPath: string) =>
       ipcRenderer.invoke('git:stage', projectRoot, relPath),
     unstage: (projectRoot: string, relPath: string) =>

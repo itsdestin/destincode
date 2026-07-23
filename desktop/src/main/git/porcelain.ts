@@ -61,16 +61,42 @@ export function parseNumstat(text: string): Map<string, { added: number; removed
   return out;
 }
 
-// git log --pretty=format:%H%x1f%s%x1f%aI%x1e — unit sep 0x1f, record sep 0x1e.
+// git log --pretty=format:%x1e%H%x1f%s%x1f%aI --name-status — unit sep 0x1f
+// between header fields, LEADING record sep 0x1e before each commit (so
+// splitting on it always drops an empty first chunk, never a trailing one).
 // Chosen over newline parsing so commit subjects can contain anything.
+// `--name-status` rides along, pathspec-limited to the followed file, so each
+// chunk after the header line carries at most one status line for it — that's
+// how per-commit diffs learn the file's HISTORICAL path (see GitLogEntry).
 export function parseLogRecords(text: string): GitLogEntry[] {
   return text
     .split('\x1e')
-    .map((rec) => rec.replace(/^\n/, ''))
     .filter((rec) => rec.trim().length > 0)
     .map((rec) => {
-      const [sha, subject, authorDate] = rec.split('\x1f');
-      return { sha, shortSha: sha.slice(0, 7), subject: subject ?? '', authorDate: authorDate ?? '' };
+      const lines = rec.split('\n');
+      const [sha, subject, authorDate] = lines[0].split('\x1f');
+      let pathAtCommit: string | undefined;
+      let renamedFrom: string | undefined;
+      // First non-blank line after the header is the name-status entry for
+      // the followed file (pathspec-limited to one file, so there's at most
+      // one). No such line at all (e.g. a surfaced merge commit) -> both
+      // stay undefined, and the caller falls back to the file's current path.
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue;
+        const fields = line.split('\t');
+        // Last tab field is always the path as of this commit: for M/A/D
+        // that's fields[1]; for R<score>/C<score> (old\tnew) it's the new
+        // name, which for THIS commit is correct — that's the name the file
+        // was renamed/copied TO.
+        pathAtCommit = fields[fields.length - 1];
+        if (fields[0][0] === 'R' || fields[0][0] === 'C') renamedFrom = fields[1];
+        break;
+      }
+      return {
+        sha, shortSha: sha.slice(0, 7), subject: subject ?? '', authorDate: authorDate ?? '',
+        pathAtCommit, renamedFrom,
+      };
     });
 }
 

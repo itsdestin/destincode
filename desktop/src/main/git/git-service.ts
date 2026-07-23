@@ -17,14 +17,21 @@ import type {
 export const LOG_PAGE = 20;
 const MAX_UNTRACKED_BYTES = 1024 * 1024; // beyond this, show as binary-style stub
 
-// %H = sha, %s = subject, %aI = author date ISO; 0x1f/0x1e separators survive
-// any subject content (newlines in subjects are impossible for %s).
-const LOG_FORMAT = '%H%x1f%s%x1f%aI%x1e';
+// %H = sha, %s = subject, %aI = author date ISO; 0x1f separates header fields,
+// LEADING 0x1e separates commits — rides with `--name-status` in the actual
+// `git log` call so each chunk also carries the file's historical path
+// (parseLogRecords reads it). Newlines in subjects are impossible for %s.
+const LOG_FORMAT = '%x1e%H%x1f%s%x1f%aI';
 
 interface Located {
   repoRoot: string;
   abs: string;
   rel: string; // repo-relative, posix separators
+  // Canonicalized project root (see the realpath WHY comment in locate()) —
+  // exposed so gitFileReview can convert each log entry's repo-relative
+  // pathAtCommit/renamedFrom into the project-root-relative form the
+  // renderer already works in, the same way `rel` does for the current path.
+  realProject: string;
 }
 
 function fail<T extends { ok: boolean; error?: string }>(base: Omit<T, 'ok' | 'error'>, error: string): T {
@@ -56,7 +63,7 @@ async function locate(projectRoot: string, relPath: string): Promise<Located | '
   const repoRoot = await resolveRepoRoot(realProject);
   if (!repoRoot) return null;
   const rel = path.relative(repoRoot, abs).split(path.sep).join('/');
-  return { repoRoot, abs, rel };
+  return { repoRoot, abs, rel, realProject };
 }
 
 const NOT_REPO: Omit<GitFileStatusResult, 'ok' | 'error'> = {
@@ -124,7 +131,7 @@ export async function gitFileReview(
   const loc = await locate(projectRoot, relPath);
   if (loc === 'outside') return fail<GitFileReviewResult>(base, 'path-outside-project');
   if (!loc) return { ok: true, ...base };
-  const { repoRoot, abs, rel } = loc;
+  const { repoRoot, abs, rel, realProject } = loc;
 
   // Whole-repo status: branch + this file's entry + the repo-wide staged count
   // (the commit button label counts everything a commit would include).
@@ -165,12 +172,26 @@ export async function gitFileReview(
 
   const skip = opts?.logSkip ?? 0;
   // Ask for one extra record purely to learn whether a next page exists.
+  // --name-status rides with the pathspec-limited log so parseLogRecords can
+  // read each commit's historical name for this file (see LOG_FORMAT WHY).
   const log = await execGit(repoRoot, [
     'log', '--follow', `--max-count=${LOG_PAGE + 1}`, `--skip=${skip}`,
-    `--pretty=format:${LOG_FORMAT}`, '--', rel,
+    `--pretty=format:${LOG_FORMAT}`, '--name-status', '--', rel,
   ]);
   // git log exits 0 with empty output for a path with no commits (e.g. untracked)
-  const entries = log.code === 0 ? parseLogRecords(log.stdout) : [];
+  const rawEntries = log.code === 0 ? parseLogRecords(log.stdout) : [];
+  // pathAtCommit/renamedFrom come back REPO-relative (git's own coordinate
+  // system); convert to project-root-relative so the renderer's calls stay
+  // consistent with `relPath`/`rel` everywhere else. No pathAtCommit (rare —
+  // a chunk with no name-status line) falls back to the file's current
+  // project-relative path. Deliberately NOT filtered for escaping the
+  // project root — see WHY at the fetch-time escape check in gitCommitFileDiff.
+  const toProjectRel = (p: string) => path.relative(realProject, path.resolve(repoRoot, p)).split(path.sep).join('/');
+  const entries = rawEntries.map((e) => ({
+    ...e,
+    pathAtCommit: e.pathAtCommit !== undefined ? toProjectRel(e.pathAtCommit) : relPath,
+    renamedFrom: e.renamedFrom !== undefined ? toProjectRel(e.renamedFrom) : undefined,
+  }));
   const hasMore = entries.length > LOG_PAGE;
 
   return {
@@ -180,7 +201,7 @@ export async function gitFileReview(
 }
 
 export async function gitCommitFileDiff(
-  projectRoot: string, sha: string, relPath: string,
+  projectRoot: string, sha: string, relPath: string, prevPath?: string,
 ): Promise<GitCommitFileDiffResult> {
   const loc = await locate(projectRoot, relPath);
   // 'outside' (path escaped the project root) and null (no repo found here) are
@@ -189,8 +210,26 @@ export async function gitCommitFileDiff(
   if (loc === 'outside') return { ok: false, error: 'path-outside-project', hunks: [], binary: false };
   if (!loc) return { ok: false, error: 'not-a-git-repository', hunks: [], binary: false };
   if (!/^[0-9a-f]{4,40}$/i.test(sha)) return { ok: false, error: 'invalid-sha', hunks: [], binary: false };
+  const args = ['show', sha, '--format='];
+  // WHY -M + the old pathspec: without pairing, `git show` on the commit that
+  // renamed/moved the file only shows the ADD side of the rename — the whole
+  // file rendered as a `+` wall, which reads like a rewrite. Passing both the
+  // old and new (repo-relative) paths with -M lets git detect the rename and
+  // answer with an honest rename-only diff (empty hunks when content didn't
+  // also change). If prevPath doesn't locate cleanly (escaped the project
+  // root, or resolves to no repo), degrade to the plain add-side view instead
+  // of erroring — pairing is a nicety, never a hard requirement to fetch.
+  let paired = false;
+  if (prevPath !== undefined) {
+    const prevLoc = await locate(projectRoot, prevPath);
+    if (prevLoc !== 'outside' && prevLoc !== null) {
+      args.push('-M', '--', loc.rel, prevLoc.rel);
+      paired = true;
+    }
+  }
   // --format= suppresses the commit header so output is pure diff.
-  const r = await execGit(loc.repoRoot, ['show', sha, '--format=', '--', loc.rel]);
+  if (!paired) args.push('--', loc.rel);
+  const r = await execGit(loc.repoRoot, args);
   if (r.code !== 0) return { ok: false, error: errText(r), hunks: [], binary: false };
   const { hunks, binary } = parseUnifiedDiff(r.stdout);
   // Empty hunks is a real state (merge commit / rename-only) — the card body

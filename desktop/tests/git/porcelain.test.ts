@@ -51,12 +51,18 @@ describe('parseNumstat', () => {
 });
 
 describe('parseLogRecords', () => {
-  it('splits unit/record separators into entries', () => {
-    const U = '\x1f'; // unit separator between fields
-    const R = '\x1e'; // record separator between commits
+  // New format rides with `--name-status`: a LEADING record separator, so
+  // splitting on \x1e yields an empty first chunk, then one chunk per commit
+  // shaped "sha\x1fsubject\x1fauthorDate\n<name-status line>\n".
+  const U = '\x1f'; // unit separator between header fields
+  const R = '\x1e'; // record separator, LEADS each commit chunk
+
+  it('splits unit/record separators into entries and reads the name-status line', () => {
     const text =
-      ['3f1c9a2deadbeef00000000000000000000000', 'fix(reducer): drop stale tool ids', '2026-07-22T14:03:11-05:00'].join(U) + R +
-      ['c9718267cafebabe0000000000000000000000', 'fix(ws): consolidate duplicate clients', '2026-07-22T11:00:00-05:00'].join(U) + R;
+      R + ['3f1c9a2deadbeef00000000000000000000000', 'fix(reducer): drop stale tool ids', '2026-07-22T14:03:11-05:00'].join(U) + '\n' +
+      'M\tsrc/reducer.ts\n' +
+      R + ['c9718267cafebabe0000000000000000000000', 'fix(ws): consolidate duplicate clients', '2026-07-22T11:00:00-05:00'].join(U) + '\n' +
+      'M\tsrc/ws.ts\n';
     const log = parseLogRecords(text);
     expect(log).toHaveLength(2);
     expect(log[0]).toEqual({
@@ -64,8 +70,30 @@ describe('parseLogRecords', () => {
       shortSha: '3f1c9a2',
       subject: 'fix(reducer): drop stale tool ids',
       authorDate: '2026-07-22T14:03:11-05:00',
+      pathAtCommit: 'src/reducer.ts',
+      renamedFrom: undefined,
     });
+    expect(log[1].pathAtCommit).toBe('src/ws.ts');
   });
+
+  it('extracts renamedFrom + pathAtCommit (new name) from an R<score> name-status line', () => {
+    const text =
+      R + ['80e65644d13b133b901ef4274c1094b30f34246d', 'move to docs/new.md', '2026-07-23T10:35:16-07:00'].join(U) + '\n' +
+      'R100\told.md\tdocs/new.md\n';
+    const log = parseLogRecords(text);
+    expect(log).toHaveLength(1);
+    expect(log[0].pathAtCommit).toBe('docs/new.md');
+    expect(log[0].renamedFrom).toBe('old.md');
+  });
+
+  it('leaves pathAtCommit undefined when a chunk has no name-status line', () => {
+    const text = R + ['deadbeef', 'merge commit', '2026-07-22T00:00:00-05:00'].join(U) + '\n';
+    const log = parseLogRecords(text);
+    expect(log).toHaveLength(1);
+    expect(log[0].pathAtCommit).toBeUndefined();
+    expect(log[0].renamedFrom).toBeUndefined();
+  });
+
   it('returns [] for empty output', () => {
     expect(parseLogRecords('')).toEqual([]);
   });

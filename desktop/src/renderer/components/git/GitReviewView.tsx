@@ -72,11 +72,19 @@ export function GitReviewView({
     return next;
   });
 
-  const expandCommit = (sha: string) => {
+  const expandCommit = (entry: GitLogEntry) => {
+    const sha = entry.sha;
     toggle(sha);
     if (!commitDiffs.has(sha)) {
       setCommitDiffs((m) => new Map(m).set(sha, 'loading'));
-      gitApi()?.commitFileDiff?.(projectRoot, sha, relPath)
+      // WHY entry.pathAtCommit not relPath: git log --follow tracks renames,
+      // so a commit before the file's rename lived at a different path —
+      // asking git show with the CURRENT path returns an empty diff for
+      // those commits (the bug this fixes). Pass the historical name, and
+      // for the rename commit itself also pass renamedFrom so the main
+      // process can pair the rename with -M instead of rendering the
+      // add-side full-file wall.
+      gitApi()?.commitFileDiff?.(projectRoot, sha, entry.pathAtCommit ?? relPath, entry.renamedFrom)
         .then((d: { ok: boolean; hunks: StructuredPatchHunk[]; error?: string }) => {
           if (!aliveRef.current) return;
           // ok:false is a real backend failure, not "no changes" — surface it.
@@ -221,7 +229,7 @@ export function GitReviewView({
             <GitReviewCard
               key={entry.sha}
               expanded={expanded.has(entry.sha)}
-              onToggle={() => expandCommit(entry.sha)}
+              onToggle={() => expandCommit(entry)}
               headerLeft={
                 <>
                   <span className="font-mono text-[11px] text-fg-faint">{entry.shortSha}</span>
@@ -231,7 +239,15 @@ export function GitReviewView({
               headerRight={<span className="text-[11px] text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>}
             >
               {body === 'loading' && <div className="text-[11px] text-fg-muted py-1">Loading…</div>}
-              {body === 'empty' && <div className="text-[11px] text-fg-muted py-1">No direct changes to this file in this commit.</div>}
+              {/* A rename-only commit (renamedFrom set) with no content change is an
+                  honest "moved" state, not the generic "no changes" line — that
+                  copy stays reserved for the merge-commit case (no name-status
+                  line at all, entry.renamedFrom undefined). */}
+              {body === 'empty' && (
+                entry.renamedFrom
+                  ? <div className="text-[11px] text-fg-muted py-1">Moved from “{entry.renamedFrom}” — no content changes in this commit.</div>
+                  : <div className="text-[11px] text-fg-muted py-1">No direct changes to this file in this commit.</div>
+              )}
               {body && typeof body === 'object' && !Array.isArray(body) && (
                 <div className="text-[11px] text-fg-muted py-1 break-words">{body.error}</div>
               )}

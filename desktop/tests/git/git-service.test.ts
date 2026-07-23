@@ -306,6 +306,59 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     // commits) — Windows process-spawn latency blows past vitest's 5000ms default.
   }, 60000);
 
+  // Rename-tracking regression: `git log --follow` lists a file's commits
+  // across a rename, but per-commit diffs must ask `git show` with the
+  // HISTORICAL path (the name the file had AT that commit), not its current
+  // path — otherwise every pre-rename commit's diff comes back empty even
+  // though the timeline lists it as touching the file.
+  it('gitFileReview + gitCommitFileDiff follow a rename: historical paths, empty rename-only diff', async () => {
+    // WHY this exact content: --follow's rename detection is CONTENT-based
+    // (-M), not name-based — if old.md's content ever became byte-identical
+    // to a.txt's ('one\ntwo\n', committed in beforeEach), git would spuriously
+    // attach a.txt's unrelated "initial" commit to this file's history too.
+    // Keep old.md's content disjoint from a.txt's at every step.
+    await fs.promises.writeFile(path.join(root, 'old.md'), 'alpha\n');
+    sh(root, ['add', '.']); sh(root, ['commit', '-m', 'add old.md']);
+    await fs.promises.writeFile(path.join(root, 'old.md'), 'alpha\nbeta\n');
+    sh(root, ['add', '.']); sh(root, ['commit', '-m', 'edit old.md']);
+    await fs.promises.mkdir(path.join(root, 'docs'));
+    sh(root, ['mv', 'old.md', 'docs/new.md']);
+    sh(root, ['commit', '-m', 'move to docs/new.md']);
+    await fs.promises.writeFile(path.join(root, 'docs', 'new.md'), 'alpha\nbeta\ngamma\n');
+    sh(root, ['add', '.']); sh(root, ['commit', '-m', 'edit docs/new.md']);
+
+    const r = await gitFileReview(root, 'docs/new.md');
+    expect(r.ok).toBe(true);
+    // 4 of ours + the fixture's own "initial" commit for a.txt is NOT in this
+    // file's history (--follow is pathspec-scoped) — exactly our 4 commits.
+    expect(r.log).toHaveLength(4);
+    const [editNew, moveCommit, editOld, addOld] = r.log;
+    expect(editNew).toMatchObject({ subject: 'edit docs/new.md', pathAtCommit: 'docs/new.md', renamedFrom: undefined });
+    expect(moveCommit).toMatchObject({ subject: 'move to docs/new.md', pathAtCommit: 'docs/new.md', renamedFrom: 'old.md' });
+    expect(editOld).toMatchObject({ subject: 'edit old.md', pathAtCommit: 'old.md', renamedFrom: undefined });
+    expect(addOld).toMatchObject({ subject: 'add old.md', pathAtCommit: 'old.md', renamedFrom: undefined });
+
+    // THE BUG, pinned: asking for the pre-move edit commit's diff with the
+    // CURRENT path returns nothing — this is what shipped and read as "No
+    // direct changes to this file in this commit." despite the timeline
+    // listing the commit.
+    const buggy = await gitCommitFileDiff(root, editOld.sha, 'docs/new.md');
+    expect(buggy.ok).toBe(true);
+    expect(buggy.hunks).toEqual([]);
+
+    // THE FIX: asking with the HISTORICAL path (what the timeline now hands
+    // back as pathAtCommit) returns the real content diff.
+    const fixed = await gitCommitFileDiff(root, editOld.sha, editOld.pathAtCommit!);
+    expect(fixed.ok).toBe(true);
+    expect(fixed.hunks[0].lines).toContain('+beta');
+
+    // The move commit itself, paired with prevPath (-M), is rename-only —
+    // empty hunks, not a full-file `+` wall.
+    const moveDiff = await gitCommitFileDiff(root, moveCommit.sha, moveCommit.pathAtCommit!, moveCommit.renamedFrom);
+    expect(moveDiff.ok).toBe(true);
+    expect(moveDiff.hunks).toEqual([]);
+  });
+
   // Regression for the macOS/Windows CI failure: locate() computed
   // `path.relative(repoRoot, abs)` from the CALLER's projectRoot while
   // repoRoot came from `git rev-parse --show-toplevel`, which git resolves to

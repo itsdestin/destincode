@@ -17,8 +17,10 @@ const review: GitFileReviewResult = {
     counts: { added: 2, removed: 1 }, staged: false, untracked: false, inHead: true, binary: false,
   },
   log: [
-    { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'fix: first', authorDate: '2026-07-22T10:00:00Z' },
-    { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'feat: second', authorDate: '2026-07-21T10:00:00Z' },
+    // pathAtCommit deliberately differs from relPath ('src/f.ts') so the
+    // "historical path, not current path" assertion below is meaningful.
+    { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'fix: first', authorDate: '2026-07-22T10:00:00Z', pathAtCommit: 'old-name.ts' },
+    { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'feat: second', authorDate: '2026-07-21T10:00:00Z', pathAtCommit: 'src/f.ts' },
   ],
   hasMore: false, stagedCount: 0,
 };
@@ -65,12 +67,30 @@ describe('GitReviewView', () => {
     expect(screen.queryByText('Uncommitted changes')).not.toBeInTheDocument();
   });
 
-  it('expanding a commit card lazily fetches its diff', async () => {
+  it('expanding a commit card lazily fetches its diff using the HISTORICAL path, not the current path', async () => {
     const git = mountWith();
     await waitFor(() => screen.getByText('fix: first'));
     fireEvent.click(screen.getByText('fix: first'));
     await waitFor(() =>
-      expect(git.commitFileDiff).toHaveBeenCalledWith('/proj', 'a'.repeat(40), 'src/f.ts'));
+      expect(git.commitFileDiff).toHaveBeenCalledWith('/proj', 'a'.repeat(40), 'old-name.ts', undefined));
+  });
+
+  it('renders "Moved from" copy instead of the generic empty state for a renamedFrom commit with no content changes', async () => {
+    const git = mountWith({
+      log: [
+        {
+          sha: 'c'.repeat(40), shortSha: 'ccccccc', subject: 'chore: move file',
+          authorDate: '2026-07-20T10:00:00Z', pathAtCommit: 'src/f.ts', renamedFrom: 'old-name.ts',
+        },
+      ],
+    });
+    await waitFor(() => screen.getByText('chore: move file'));
+    fireEvent.click(screen.getByText('chore: move file'));
+    await waitFor(() =>
+      expect(git.commitFileDiff).toHaveBeenCalledWith('/proj', 'c'.repeat(40), 'src/f.ts', 'old-name.ts'));
+    await waitFor(() =>
+      expect(screen.getByText('Moved from “old-name.ts” — no content changes in this commit.')).toBeInTheDocument());
+    expect(screen.queryByText('No direct changes to this file in this commit.')).not.toBeInTheDocument();
   });
 
   it('Show more appears when hasMore and fetches the next page', async () => {

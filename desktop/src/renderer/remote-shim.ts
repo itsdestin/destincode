@@ -1252,8 +1252,10 @@ export function installShim(): void {
         invoke('git:file-status', { projectRoot, relPath }),
       fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
         invoke('git:file-review', { projectRoot, relPath, ...opts }),
-      commitFileDiff: (projectRoot: string, sha: string, relPath: string) =>
-        invoke('git:commit-file-diff', { projectRoot, sha, relPath }),
+      // prevPath (project-root-relative old name) is passed for the rename
+      // commit itself so pairing with -M can happen, same as preload.ts.
+      commitFileDiff: (projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
+        invoke('git:commit-file-diff', { projectRoot, sha, relPath, prevPath }),
       stage: (projectRoot: string, relPath: string) => invoke('git:stage', { projectRoot, relPath }),
       unstage: (projectRoot: string, relPath: string) => invoke('git:unstage', { projectRoot, relPath }),
       commit: (projectRoot: string, message: string) => invoke('git:commit', { projectRoot, message }),
