@@ -37,6 +37,27 @@ describe('overlayLayout', () => {
     expect(l.chat.x + CHAT_SIZE.width).toBeLessThanOrEqual(wa.width);
     expect(l.chat.x).toBeGreaterThanOrEqual(0);
   });
+
+  // Coordinator review finding 1: overlayLayout was deriving the rendered
+  // mascot from computeGroupLayout unconditionally, so the chat-fit x-pin
+  // applied even with the chat CLOSED — a free mascot dragged flush to the
+  // right edge rendered ~191px off the edge (PITFALLS "hanging off nothing").
+  it('chat-closed: rendered mascot is state.mascot, flush to the edge — not chat-fit pinned', () => {
+    const dragged = overlayReducer(base, { type: 'drag-move', to: { x: 99999, y: 500 } });
+    expect(dragged.chatVisible).toBe(false);
+    const flush = wa.width - MASCOT_SIZE.width;
+    expect(dragged.mascot.x).toBe(flush); // sanity: reducer clamped flush, not chat-fit pinned
+    const l = overlayLayout(dragged);
+    expect(l.mascot).toEqual(dragged.mascot);
+    expect(l.mascot.x).toBe(flush);
+  });
+
+  it('chat-open: rendered mascot still matches state (adoption keeps them equal)', () => {
+    const opened = overlayReducer({ ...base, mascot: { x: wa.width - MASCOT_SIZE.width, y: 300 } }, { type: 'toggle-chat' });
+    expect(opened.chatVisible).toBe(true);
+    const l = overlayLayout(opened);
+    expect(l.mascot).toEqual(opened.mascot);
+  });
 });
 
 describe('defaultMascotPosition', () => {

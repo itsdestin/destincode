@@ -33,7 +33,7 @@ export interface OverlayState {
 
 /**
  * Mirrors the `OverlayInit` payload built by
- * src/main/buddy-overlay-manager.ts's `buildOverlayInit`. Duplicated (not
+ * src/main/buddy-overlay-manager.ts's `overlayInitPayload`. Duplicated (not
  * imported) rather than shared, because that file lives under src/main/ and
  * this one — renderer code — can never import from there.
  */
@@ -188,6 +188,18 @@ export function overlayReducer(s: OverlayState, a: OverlayAction): OverlayState 
 export function overlayLayout(s: OverlayState): { mascot: Point; chat: Point; bar: Point } {
   const mascotBounds: Rect = { ...s.mascot, ...MASCOT_SIZE };
   const group = computeGroupLayout(mascotBounds, s.workArea);
-  const bar = computeBarPosition({ ...group.mascot, ...MASCOT_SIZE }, s.workArea);
-  return { mascot: group.mascot, chat: group.chat, bar };
+  // WHY the rendered mascot is `s.mascot`, NOT `group.mascot` (coordinator
+  // review finding 1): computeGroupLayout's chat-fit x-pin and tier-3 vertical
+  // squash only make sense while the chat is actually open and needs room.
+  // Every chat-open transition path above (toggle-chat, and the chat-open
+  // drag-move/drag-end branches) already adopts computeGroupLayout's mascot
+  // INTO state before returning, so state is already the fixed point whenever
+  // the chat is open — recomputing it here was redundant there and actively
+  // wrong while the chat is CLOSED, where nothing constrains the mascot: a
+  // free mascot dragged flush to an edge was rendering ~191px off that edge,
+  // and peek poses played in mid-air (PITFALLS "hanging off nothing"). The
+  // chat/bar positions still come from the group calc — those two are always
+  // DERIVED from wherever the mascot actually is, never adopted into state.
+  const bar = computeBarPosition(mascotBounds, s.workArea);
+  return { mascot: s.mascot, chat: group.chat, bar };
 }
