@@ -95,7 +95,12 @@ import { listProjectConversations, projectConversationHistory, ccProjectSlug } f
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore, flushSessionToSpace } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace } from './conversations/service';
+// Task 4: resolves a native session's live model binding into the store's
+// portable {modelId, providerType, providerLabel} shape — see
+// portable-model.ts's WHY comment for why the lookup itself is split out.
+import { bindingToPortableModel } from './conversations/portable-model';
+import type { PortableModelRef } from './conversations/store-core';
 // Plan 2b Task 8: holder-side takeover — when another device requests a session
 // this device holds, cleanly interrupt/flush/release/move/destroy it.
 import { createHolderTakeover } from './conversations/takeover';
@@ -548,6 +553,15 @@ export function registerIpcHandlers(
         // dead session.
         sessionIdMap.set(info.id, info.id);
         noteSessionStarted(info.id, info.cwd, 'native');
+        // Task 4: seed lastUsedModel the moment a native session comes up (fresh
+        // create OR resume) — rides AFTER noteSessionStarted (noteModelUsed is a
+        // no-op with no ctx) and AFTER create/resume above (resolvePortableModel
+        // needs the binding nativeHost just set up). Fire-and-forget: the missing
+        // binding on the "resumed data missing, no fallback binding" error branch
+        // above resolves to null here too, so this is naturally a no-op for it.
+        void resolvePortableModel(info.id)
+          .then((ref) => { if (ref) noteModelUsed(info.id, ref); })
+          .catch(() => { /* best-effort — the first turn-complete catches up */ });
         // NO LEASE FOR NATIVE SESSIONS (2026-07-18 — reverts the acquire added by
         // PR #176; the sessionIdMap + noteSessionStarted lines above deliberately
         // STAY, see below).
@@ -2030,12 +2044,37 @@ export function registerIpcHandlers(
     { search: searchService },
   );
 
+  // Task 4: resolves sessionId's CURRENT model binding into the portable ref
+  // noteModelUsed persists — thin async wrapper around bindingToPortableModel
+  // (portable-model.ts) closed over the live nativeHost/providerRegistry.
+  // Returns null (write nothing) when the session has no live binding or its
+  // provider has vanished from the registry — never guess.
+  const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
+    bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
+
   // Native transcript events ride the SAME channel as CC's — the reducer
   // consumes an identical event shape regardless of runtime.
   nativeHost.on('transcript-event', (event: TranscriptEvent) => {
     sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event);
     if (remoteServer) {
       remoteServer.broadcast({ type: 'transcript:event', payload: event });
+    }
+    // WHY: this is the single line that makes native conversations exist in
+    // the store (design §5); Task 3 made it correct rather than mislabeling.
+    // Native ids are identity-mapped (sessionIdMap.set(info.id, info.id) in
+    // the SESSION_CREATE native branch above), so — unlike the CC listener
+    // below, which resolves through sessionIdMap — event.sessionId IS already
+    // the store's record id; no lookup needed.
+    noteTranscriptEvent(event.sessionId, event, 'native');
+    if (event.type === 'turn-complete') {
+      // The model may have changed mid-session (NATIVE_SET_BINDING) — refresh
+      // the portable ref on every turn rather than trusting a stale snapshot
+      // from session-create. Fire-and-forget: a miss here just means this
+      // turn's upsert (already sent by noteTranscriptEvent above) is missing
+      // lastUsedModel until the NEXT turn resolves it.
+      void resolvePortableModel(event.sessionId)
+        .then((ref) => { if (ref) noteModelUsed(event.sessionId, ref); })
+        .catch(() => { /* best-effort — never block the transcript-event listener */ });
     }
   });
 
@@ -2095,7 +2134,17 @@ export function registerIpcHandlers(
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
   });
-  ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => nativeHost.setBinding(sessionId, binding));
+  ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => {
+    const ok = await nativeHost.setBinding(sessionId, binding);
+    // Task 4: a successful mid-session model swap is exactly the "model may
+    // have changed" case noteModelUsed exists for — write it through so the
+    // resume selector reflects the swap without waiting for the next turn.
+    if (ok) {
+      const ref = await resolvePortableModel(sessionId);
+      if (ref) noteModelUsed(sessionId, ref);
+    }
+    return ok;
+  });
   // Per-session permission mode (renderer chip). setPermissionMode throws on an
   // unknown mode string — the reject surfaces to the renderer invoke() so the
   // chip sees the failure instead of a false "applied"; on success it returns the

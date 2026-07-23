@@ -640,6 +640,49 @@ describe('conversations service composition root', () => {
     });
   });
 
+  // --- Native transcript events (Task 4) -------------------------------------
+  // Native sessions ride the SAME noteTranscriptEvent/noteModelUsed entry points
+  // as CC, just keyed by sessionProvider:'native' — ipc-handlers.ts's native
+  // listener calls noteTranscriptEvent(event.sessionId, event, 'native') directly
+  // (native ids are identity-mapped in sessionIdMap, no lookup needed). This pins
+  // that the native lane upserts provider:'native' with the native transcriptRef
+  // shape and folds in a stashed lastUsedModel — exactly like the CC lane, just
+  // parameterized by the threaded provider (Task 3), not a separate code path.
+  describe('native transcript events (Task 4)', () => {
+    it('native turn-complete upserts a native-lane record carrying lastUsedModel', async () => {
+      const svc = await freshService(startOpts());
+      svc.noteSessionStarted('nat-1', path.join('/home/d', 'proj'), 'native');
+      svc.noteModelUsed('nat-1', { modelId: 'qwen-3', providerType: 'local-engine', providerLabel: 'Local models (llama.cpp)' });
+      svc.noteTranscriptEvent('nat-1', ev({ type: 'turn-complete', sessionId: 'nat-1' }), 'native');
+      await Promise.resolve();
+      const up = h.store.upsert.mock.calls.at(-1)![0];
+      expect(up.provider).toBe('native');
+      expect(up.transcriptRef).toBe('native/transcripts/proj/nat-1.jsonl');
+      expect(up.lastUsedModel?.modelId).toBe('qwen-3');
+    });
+
+    // Ordering hazard the plan pins explicitly: the SAME debounce-clear rule the
+    // CC path relies on (test above, "turn-complete cancels a pending debounce
+    // timer") must also hold for a native-keyed session — it's the same code
+    // path keyed by session id, not a provider-specific branch, but the plan
+    // asks to confirm rather than assume.
+    it('native: turn-complete cancels a pending debounce timer (same ordering rule as CC)', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      svc.noteSessionStarted('nat-2', path.join(tmpRoot, 'np'), 'native');
+      svc.noteTranscriptEvent('nat-2', ev({ type: 'assistant-text', sessionId: 'nat-2' }), 'native'); // arms debounce
+      svc.noteTranscriptEvent('nat-2', ev({ type: 'turn-complete', sessionId: 'nat-2' }), 'native');   // immediate upsert + cancel
+      await Promise.resolve();
+      expect(h.store.upsert).toHaveBeenCalledTimes(1);
+      // The stale debounce timer must NOT fire a second (stale) upsert 5s later.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.store.upsert).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+  });
+
   // --- Meta-write honesty (Item 6) ------------------------------------------
   // IPC meta handlers go live (main.ts:745) before the store starts
   // (main.ts:1701, fire-and-forget) — a tag/flag/note set in that boot window
@@ -845,6 +888,24 @@ describe('conversations service composition root', () => {
       expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(1);
       h.store.list.mockResolvedValue([]);   // the record is gone now
       expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+    });
+
+    // Task 4 regression: now that Task 4 wires real native/ records into the
+    // store (provider:'native'), this MUST never list or remove from that
+    // bucket — a legit native/ record is never even candidate-listed because
+    // the cleanup lists ONLY 'claude' (see the WHY comment at its list() call).
+    it('never lists or touches the native bucket — a legit native/ record survives untouched', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-native-safe');
+      seedNativeSession(homeRoot, 'native-4');
+      h.store.list.mockImplementation(async (provider: string) => {
+        if (provider === 'native') throw new Error('pruneNativePhantomRecords must never list the native bucket');
+        return [];
+      });
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+      expect(h.store.list).toHaveBeenCalledWith('claude');
+      expect(h.store.list).not.toHaveBeenCalledWith('native');
+      expect(h.store.remove).not.toHaveBeenCalled();
     });
   });
 
