@@ -58,8 +58,8 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // Shared lucide-style glyphs live in ./icons.tsx (previously each file carried
 // its own copies of the same paths). GridIcon is the one glyph unique to this
 // file — the Artifacts segment icon.
-import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
-import { Button, Checkbox } from '../ui';
+import { InfoIcon, ChatIcon, FolderIcon, DocIcon } from './icons';
+import { Button, Checkbox, SearchFilterPill } from '../ui';
 
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -67,20 +67,6 @@ function GridIcon({ size = 15 }: { size?: number }) {
       strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
       <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-// lucide-style sliders-horizontal — the standard "filters" icon (three lines
-// with knobs), the trigger for the FileFilterPopover.
-function SlidersGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <line x1="21" y1="4" x2="14" y2="4" /><line x1="10" y1="4" x2="3" y2="4" />
-      <line x1="21" y1="12" x2="12" y2="12" /><line x1="8" y1="12" x2="3" y2="12" />
-      <line x1="21" y1="20" x2="16" y2="20" /><line x1="12" y1="20" x2="3" y2="20" />
-      <line x1="14" y1="2" x2="14" y2="6" /><line x1="8" y1="10" x2="8" y2="14" />
-      <line x1="16" y1="18" x2="16" y2="22" />
     </svg>
   );
 }
@@ -672,49 +658,21 @@ export function ProjectView(props: ProjectViewProps) {
                   box, so this row alone overflowed the viewport. */}
               {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
                 <div className="w-full sm:w-auto flex items-center gap-2">
-                  <div className="relative flex-1 sm:flex-none" ref={filterWrapRef}>
-                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full sm:w-[260px] focus-within:border-edge-dim">
-                      <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
-                      <input
-                        type="text"
-                        placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
-                        value={artifactSearch}
-                        onChange={(e) => setArtifactSearch(e.target.value)}
-                        className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
-                      />
-                      {/* Filter trigger. Accent badge = number of filters active
-                          BEYOND the default view (type + Show deleted; sort is a
-                          preference; hideCode is ON by default so its default
-                          state isn't counted, and turning it OFF reveals more —
-                          also not counted) so a narrowed grid is never mistaken
-                          for the full list even with the popover closed. */}
-                      {(() => {
-                        const activeFilters =
-                          (typeFilter !== 'all' ? 1 : 0) +
-                          (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0);
-                        return (
-                          <button
-                            type="button"
-                            className={`shrink-0 relative w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors ${
-                              filterOpen || activeFilters > 0
-                                ? 'text-fg bg-well'
-                                : 'text-fg-muted hover:text-fg hover:bg-well'
-                            }`}
-                            onClick={() => setFilterOpen((o) => !o)}
-                            aria-expanded={filterOpen}
-                            aria-label={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filters'}
-                            title={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort'}
-                          >
-                            <SlidersGlyph size={15} />
-                            {activeFilters > 0 && (
-                              <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-accent text-on-accent text-[9.5px] font-medium leading-[15px] text-center">
-                                {activeFilters}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })()}
-                    </div>
+                  <SearchFilterPill
+                    ref={filterWrapRef}
+                    className="flex-1 sm:flex-none sm:w-[260px]"
+                    value={artifactSearch}
+                    onChange={setArtifactSearch}
+                    placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
+                    inputAriaLabel={tab === 'allfiles' ? 'Search files' : 'Search artifacts'}
+                    /* Filters active BEYOND the default view (type + Show deleted).
+                       Sort is a preference; hideCode is default-ON and turning it
+                       OFF reveals more — neither is counted, so a narrowed grid is
+                       never mistaken for the full list with the popover shut. */
+                    activeFilters={(typeFilter !== 'all' ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
+                    filterOpen={filterOpen}
+                    onToggleFilter={() => setFilterOpen((o) => !o)}
+                  >
                     {filterOpen && (
                       <FileFilterPopover
                         typeFilter={typeFilter}
@@ -729,7 +687,7 @@ export function ProjectView(props: ProjectViewProps) {
                         onClose={() => setFilterOpen(false)}
                       />
                     )}
-                  </div>
+                  </SearchFilterPill>
                   {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
                       for floating overlay affordances — this sits in a toolbar row,
                       so it takes the app's standard button radius. */}

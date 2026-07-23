@@ -23,7 +23,7 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton, TextInput, EmptyState } from './ui';
+import { CloseButton, EmptyState, SearchFilterPill } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
 
 type SortKey = 'recent' | 'name' | 'type';
@@ -67,8 +67,6 @@ const PATHS: Record<string, string> = {
   editdoc: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z',
   check: 'M20 6 9 17l-5-5',
   close: 'M18 6 6 18M6 6l12 12',
-  // Sliders — the filter/sort trigger (change 38, matching Project View).
-  sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4',
   forward: 'M5 12h14M13 6l6 6-6 6',
 };
 function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -432,48 +430,26 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           />
         )}
       </div>
-      {/* Search + filter (change 38). Shared TextInput (change 20) + ONE sliders
-          trigger opening FileFilterPopover (Sort + Visibility; no Type group in
-          the drawer). The native sort <select> and the two CheckboxGlyph rows
-          are gone — their state now lives behind the popover. */}
-      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-edge-dim shrink-0">
-        <TextInput
-          size="sm"
+      {/* Search + filter. Uses the SHARED SearchFilterPill so this row and the
+          Project View files toolbar are the same control (Destin, 2026-07-23:
+          "if the goal is consistency, we should try to better match"). The
+          click-outside listener stays here — the popover requires one ref around
+          both trigger and popover, which the pill forwards. */}
+      <div className="px-2 py-1.5 border-b border-edge-dim shrink-0">
+        <SearchFilterPill
+          ref={filterWrapRef}
+          className="w-full"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search files"
-          aria-label="Search files"
-          className="flex-1 min-w-0"
-        />
-        <div className="relative shrink-0" ref={filterWrapRef}>
-          {/* Accent badge counts filters active BEYOND the default view. Only
-              "Show deleted" narrows/alters from the default here (hideCode is
-              default-ON and toggling it OFF reveals more, so it isn't counted —
-              same convention as Project View). */}
-          {(() => {
-            const activeFilters = showDeletedArtifacts ? 1 : 0;
-            return (
-              <button
-                type="button"
-                onClick={() => setFilterOpen((o) => !o)}
-                aria-expanded={filterOpen}
-                aria-label={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort'}
-                title="Filter and sort"
-                className={`relative w-7 h-7 rounded-md inline-flex items-center justify-center border transition-colors ${
-                  filterOpen || activeFilters > 0
-                    ? 'text-fg bg-well border-edge'
-                    : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
-                }`}
-              >
-                <Ic name="sliders" size={15} />
-                {activeFilters > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-accent text-on-accent text-[9px] font-medium leading-[15px] text-center">
-                    {activeFilters}
-                  </span>
-                )}
-              </button>
-            );
-          })()}
+          onChange={setSearchQuery}
+          placeholder="Search files…"
+          inputAriaLabel="Search files"
+          /* Only "Show deleted" alters the default view here; hide-code is
+             default-ON and turning it OFF reveals more, so neither is counted —
+             same convention as Project View. */
+          activeFilters={showDeletedArtifacts ? 1 : 0}
+          filterOpen={filterOpen}
+          onToggleFilter={() => setFilterOpen((o) => !o)}
+        >
           {filterOpen && (
             <FileFilterPopover
               sortBy={sortBy}
@@ -486,7 +462,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onClose={() => setFilterOpen(false)}
             />
           )}
-        </div>
+        </SearchFilterPill>
       </div>
       <div className="flex-1 overflow-y-auto">
         {/* A pill click that couldn't resolve — shown INSTEAD of letting the
