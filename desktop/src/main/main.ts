@@ -1528,6 +1528,10 @@ app.whenReady().then(async () => {
     // Pick the display the mascot lives on — multi-monitor users expect
     // "screenshot my desktop" to mean the one their buddy is sitting on,
     // not every monitor merged into one long strip.
+    // WHY (targetDisplay): picks mascot's display when present, or primary
+    // display as fallback. Theoretical "mascot gone but chat/bar alive" state
+    // would pick the surviving window's display instead — but hide() clears all
+    // three windows together, so behavior is unchanged in practice.
     const targetDisplay = mascotWin
       ? screen.getDisplayMatching(mascotWin.getBounds())
       : screen.getPrimaryDisplay();
