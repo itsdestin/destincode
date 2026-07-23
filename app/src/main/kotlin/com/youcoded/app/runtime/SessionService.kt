@@ -92,12 +92,6 @@ class SessionService : Service() {
     }
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    /** View mode requested by React UI — ChatScreen observes this.
-     *  SharedFlow (not StateFlow) because these are events, not state:
-     *  "switch to terminal" must fire even if the last request was also "terminal". */
-    private val _viewModeRequest = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
-    val viewModeRequest: kotlinx.coroutines.flow.SharedFlow<String> = _viewModeRequest
-
     /** Layout insets reported by React UI (header and bottom bar pixel heights). */
     data class LayoutInsets(val headerPx: Int, val bottomPx: Int)
     private val _layoutInsets = kotlinx.coroutines.flow.MutableSharedFlow<LayoutInsets>(replay = 1)
@@ -1564,11 +1558,13 @@ class SessionService : Service() {
             }
             "ui:action" -> {
                 val action = msg.payload.optString("action", "")
+                // No "switch-view" branch on purpose: since Tier 2 the React UI owns
+                // chat↔terminal switching entirely (xterm.js in the WebView is the only
+                // terminal renderer — see ChatScreen.kt). The old native viewModeRequest
+                // flow existed solely to drive the deleted Compose TerminalView block, and
+                // desktop's relay of this action only exists to fan it out to OTHER remote
+                // clients, which Android doesn't host. So switch-view needs no native work.
                 when (action) {
-                    "switch-view" -> {
-                        val mode = msg.payload.optString("mode", "chat")
-                        _viewModeRequest.tryEmit(mode)
-                    }
                     "layout-update" -> {
                         val headerPx = msg.payload.optInt("headerHeight", 0)
                         val bottomPx = msg.payload.optInt("bottomHeight", 0)

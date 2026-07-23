@@ -14,10 +14,13 @@ import com.youcoded.app.runtime.SessionService
 // layoutInsets / screenMode plumbing they fed. xterm.js inside the React
 // WebView is the sole terminal renderer now (see TerminalView.tsx). The
 // React side toggles chat↔terminal entirely via viewModes; Compose only
-// hosts the WebView. screenMode + viewModeRequest collector were removed
+// hosts the WebView. screenMode + the viewModeRequest collector were removed
 // because their only consumer was the deleted render block. shellMode auto-
 // switch is also gone for the same reason — if shell auto-switch needs to
 // drive the React UI later, it should fire a viewMode message instead.
+// 2026-07-22: the viewModeRequest SharedFlow itself (and the switch-view
+// branch that fed it in SessionService) is now gone too — it had sat here
+// emitting into nothing since this Tier 2 change removed its only collector.
 
 @Composable
 fun ChatScreen(service: SessionService) {
