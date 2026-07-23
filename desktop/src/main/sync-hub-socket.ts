@@ -1,37 +1,30 @@
-// SyncHub client (spec §6, Plan 1b). Mirrors presence-socket.ts: a node `ws`
-// client held by the Electron MAIN process with capped-backoff reconnect, so a
-// Worker deploy or network blip never silently ends cross-device signalling for
-// the rest of the app session.
+// SyncHub client (spec §6, Plan 1b). Shares the reconnect/backoff/ping/supersede
+// engine with presence-socket.ts (see reconnecting-ws.ts) — a node `ws` client
+// held by the Electron MAIN process, so a Worker deploy or network blip never
+// silently ends cross-device signalling for the rest of the app session.
 //
-// Differences from presence-socket.ts (all deliberate):
+// Differences from presence-socket.ts (all deliberate, expressed as engine hooks):
 //   (1) Owned by the sync-spaces SERVICE, not renderer-driven — sync must work
-//       with zero windows open, so there is no renderer to re-invoke us.
-//   (2) No-token is retried on a timer (presence waits for the renderer to
-//       reconnect after sign-in; we have no renderer to wait for, so we poll at
-//       the max backoff and connect the moment a token appears — no restart).
+//       with zero windows open, so no-token policy is 'poll' (presence 'wait'):
+//       we re-check at the max backoff and connect the moment a token appears.
+//   (2) In-flight lease requests are failed (resolved null) on every teardown so
+//       a request never hangs across a reconnect — the onTeardown hook.
 //   (3) hello.replay entries are flattened into ordinary signal events — the
 //       engine's single-flight syncSpace makes duplicate signals free, so the
 //       consumer never has to distinguish replay from live.
-import WebSocket from 'ws';
+import {
+  createReconnectingWs,
+  type ReconnectingWebSocketLike,
+  type ReconnectingWebSocketCtor,
+} from './reconnecting-ws';
 
 const SYNC_HUB_URL = 'wss://wecoded-marketplace-api.destinj101.workers.dev/sync/hub';
-const PING_INTERVAL_MS = 30_000;
-const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000]; // capped exponential
 
-// Injectable constructor so the state-machine test (tests/sync-hub-socket.test.ts)
-// can substitute a fake socket without touching the network. Production always
-// uses the real 'ws' default. Structurally typed to the surface we consume
-// (on/send/close/readyState) rather than the full ws class.
-export interface SyncHubWebSocketLike {
-  on(event: string, listener: (...args: any[]) => void): unknown;
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  readyState: number;
-}
-export type WebSocketCtor = new (
-  url: string,
-  opts: { headers: Record<string, string> },
-) => SyncHubWebSocketLike;
+// Structural socket surface + injectable constructor. Named exports so the
+// state-machine test (tests/sync-hub-socket.test.ts) can substitute a fake
+// socket. Both alias the shared engine's types (identical shape).
+export type SyncHubWebSocketLike = ReconnectingWebSocketLike;
+export type WebSocketCtor = ReconnectingWebSocketCtor;
 
 // Who currently holds a session lease (returned on lease-result, and carried in
 // takeover-request events as `from`). expiresAt is an epoch-ms deadline.
@@ -81,7 +74,6 @@ export interface SyncHubSocket {
 }
 
 export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
-  const Ctor: WebSocketCtor = opts.WebSocketCtor ?? (WebSocket as unknown as WebSocketCtor);
   // device= identifies this client to the room so the server can fan a signal
   // out to the account's OTHER devices (never echo it back to the sender).
   // deviceId= (when present) is the durable machineId the DO records into its
@@ -90,59 +82,31 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
   const url = `${SYNC_HUB_URL}?device=${encodeURIComponent(opts.deviceName)}`
     + (opts.deviceId ? `&deviceId=${encodeURIComponent(opts.deviceId)}` : '');
 
-  let desired = false;
-  let ws: SyncHubWebSocketLike | null = null;
-  let attempts = 0;
-  let pingTimer: NodeJS.Timeout | null = null;
-  let retryTimer: NodeJS.Timeout | null = null;
-
   // In-flight lease requests, keyed by the client-generated reqId. A matching
   // server `lease-result` (or the 5s timeout) removes the entry and resolves it.
   let reqCounter = 0;
   const pending = new Map<string, { resolve: (r: LeaseResult | null) => void; timer: NodeJS.Timeout }>();
 
   // Resolve EVERY in-flight request to null and clear the map. Called from all
-  // teardown paths (handleDown / setDesired(false) / destroy) so a request that
-  // was awaiting a reply when the socket died never hangs forever across a
-  // reconnect — the never-block guarantee. The caller sees null (treat as "no
-  // answer"), same as a timeout.
+  // teardown paths (engine handleDown / setDesired(false) / destroy, via the
+  // onTeardown hook) so a request that was awaiting a reply when the socket died
+  // never hangs forever across a reconnect — the never-block guarantee. The
+  // caller sees null (treat as "no answer"), same as a timeout.
   function failAllPending() {
     for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); }
     pending.clear();
   }
 
-  function clearTimers() {
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-  }
-
-  function connect() {
-    if (!desired || ws) return;
-    const token = opts.getToken();
-    if (!token) {
-      // No token yet (not signed in). Unlike presence — which relies on the
-      // renderer to re-invoke on sign-in — the sync service has no renderer to
-      // wait for, so poll at the max backoff so a mid-session sign-in connects
-      // on the next tick without an app restart. Clear-then-reschedule (not a
-      // `!retryTimer` guard): when THIS callback is itself the fired retry, the
-      // timer variable still holds the elapsed id, so `!retryTimer` would be
-      // false and the poll would stop dead after one attempt. clearTimeout on an
-      // already-fired timer is a harmless no-op, and it guarantees exactly one
-      // pending no-token retry.
-      if (retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(connect, BACKOFF_MS[BACKOFF_MS.length - 1]);
-      return;
-    }
-    const sock = new Ctor(url, { headers: { Authorization: `Bearer ${token}` } });
-    ws = sock;
-    sock.on('open', () => {
-      if (ws !== sock) return; // superseded before handshake completed — don't start a ping timer on a dead socket
-      attempts = 0;
-      opts.onEvent({ type: 'connected' });
-      // Liveness ping — the DO answers pong; also keeps intermediaries from idling us out.
-      pingTimer = setInterval(() => { try { sock.send(JSON.stringify({ type: 'ping' })); } catch { /* mid-close */ } }, PING_INTERVAL_MS);
-    });
-    sock.on('message', (data) => {
+  const engine = createReconnectingWs({
+    Ctor: opts.WebSocketCtor,
+    getUrl: () => url,
+    getToken: opts.getToken,
+    noToken: 'poll',
+    closeReason: 'sync disabled or sign-out',
+    onConnected: () => opts.onEvent({ type: 'connected' }),
+    onDisconnected: () => opts.onEvent({ type: 'disconnected' }),
+    onTeardown: failAllPending,
+    onMessage: (data) => {
       try {
         const msg = JSON.parse(String(data));
         if (msg && msg.type === 'hello') {
@@ -185,68 +149,16 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
         }
         // pong (or any other frame): ignore — pings are fire-and-forget liveness.
       } catch { /* non-JSON frame: ignore */ }
-    });
-    sock.on('close', () => {
-      if (ws !== sock) return; // superseded socket — its lifecycle no longer drives state
-      handleDown();
-    });
-    sock.on('error', () => {
-      // Don't surface errors as events — the consumer only cares about
-      // connected/disconnected/signal. Close to let 'close' schedule the retry.
-      try { sock.close(); } catch { /* already closing */ }
-    });
-  }
-
-  function handleDown() {
-    clearTimers();
-    failAllPending(); // socket died — a request awaiting a reply must resolve null, not hang across the reconnect
-    ws = null;
-    opts.onEvent({ type: 'disconnected' });
-    if (desired) {
-      // Reconnect with capped backoff. A dead-token loop (persistent handshake
-      // reject) is bounded upstream by the service dropping `desired` on
-      // sign-out; revisit a close-code-based stop once the worker's close-code
-      // contract is pinned.
-      const delay = BACKOFF_MS[Math.min(attempts, BACKOFF_MS.length - 1)];
-      attempts += 1;
-      retryTimer = setTimeout(connect, delay);
-    }
-  }
+    },
+  });
 
   return {
-    setDesired(want) {
-      // Idempotent by intent. Short-circuit only when the request matches the
-      // current state AND there's nothing to do: either we already want-off, or
-      // we want-on WITH a live socket. The case we must NOT short-circuit is
-      // want===true while desired-but-disconnected (e.g. the token finally
-      // appeared after sign-in, or a retry is pending) — that has to fall
-      // through and (re)trigger connect().
-      if (want === desired && (!want || ws !== null)) return;
-      desired = want;
-      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-      if (want) { connect(); return; }
-      failAllPending(); // intentional teardown — resolve any in-flight request to null so the caller never blocks on a socket we're closing
-      const s = ws;
-      ws = null;
-      clearTimers();
-      if (s) {
-        try { s.close(1000, 'sync disabled or sign-out'); } catch { /* already closed */ }
-        // Emit the disconnect synchronously; the socket's own async close event
-        // is ignored via the supersede guard (ws was nulled above, so
-        // `ws !== sock` in the close handler) — that's what prevents a reconnect
-        // after an INTENTIONAL teardown.
-        opts.onEvent({ type: 'disconnected' });
-      }
-    },
+    setDesired(want) { engine.setDesired(want); },
     // Send a change signal to the room. Returns true only when actually written
     // on an OPEN socket; a closed/connecting socket is a silent no-op (the 120s
     // poll fallback covers the miss — no queueing, YAGNI).
     sendSignal(kind, spaceKey) {
-      if (ws !== null && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: 'signal', kind, spaceKey })); return true; }
-        catch { return false; }
-      }
-      return false;
+      return engine.send(JSON.stringify({ type: 'signal', kind, spaceKey }));
     },
     // Request/response lease op. Sends a {type:'lease', op, sessionId, deviceId,
     // reqId} frame and resolves the matching server `lease-result` by reqId.
@@ -254,18 +166,19 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
     // 5s timeout, if the send throws, or if the socket goes down mid-flight
     // (failAllPending). The consumer treats null as "no answer / fall back".
     request(op, sessionId, deviceId) {
-      if (ws === null || ws.readyState !== WebSocket.OPEN) return Promise.resolve(null); // never-block
+      if (!engine.isOpen()) return Promise.resolve(null); // never-block
       const reqId = `r${++reqCounter}`;
       return new Promise<LeaseResult | null>((resolve) => {
         const timer = setTimeout(() => { pending.delete(reqId); resolve(null); }, 5_000);
         timer.unref?.(); // don't keep the Electron main process alive just for a lease timeout
         pending.set(reqId, { resolve, timer });
-        try { ws!.send(JSON.stringify({ type: 'lease', op, sessionId, deviceId, reqId })); }
-        catch { pending.delete(reqId); clearTimeout(timer); resolve(null); }
+        if (!engine.send(JSON.stringify({ type: 'lease', op, sessionId, deviceId, reqId }))) {
+          pending.delete(reqId); clearTimeout(timer); resolve(null);
+        }
       });
     },
     // True only when a socket exists AND finished its handshake.
-    isConnected() { return ws !== null && ws.readyState === WebSocket.OPEN; },
-    destroy() { desired = false; clearTimers(); failAllPending(); try { ws?.close(); } catch { /* noop */ } ws = null; },
+    isConnected() { return engine.isOpen(); },
+    destroy() { engine.destroy(); },
   };
 }
