@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
 import { useMarketplace } from '../state/marketplace-context';
 import FavoriteStar from './marketplace/FavoriteStar';
@@ -331,6 +331,15 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
     }, 150);
   }, [theme, isUserTheme]);
 
+  // Change 40 (§9.D): the roundness slider is CONTROLLED, but its source of
+  // truth (currentRoundness, below) is derived from the theme FILE via an async
+  // writeFile — it does not update within a drag. A bare `value={currentRoundness}`
+  // would therefore freeze the thumb mid-drag. So we keep a local draft the drag
+  // updates instantly, and re-sync it whenever currentRoundness changes for an
+  // EXTERNAL reason (switching which theme is being edited) — the exact staleness
+  // §9.D flagged. Same draft+resync shape as EngineCard's context knob.
+  const [roundnessDraft, setRoundnessDraft] = useState(0.5);
+
   const updateRoundness = useCallback((value: number) => {
     if (!isUserTheme) return;
     const shape = roundnessToShape(value);
@@ -362,6 +371,10 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
     if (!md) return 0.5;
     return Math.min(parseInt(md) / 16, 1);
   })();
+
+  // Re-sync the draft when the underlying theme's roundness changes for a reason
+  // other than this slider (e.g. the editor is pointed at a different theme).
+  useEffect(() => { setRoundnessDraft(currentRoundness); }, [currentRoundness]);
 
   return (
     <div className="flex flex-col h-full">
@@ -414,8 +427,8 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
                 <span className="text-[10px] text-fg-faint">□</span>
                 <input
                   type="range" min="0" max="1" step="0.05"
-                  defaultValue={currentRoundness}
-                  onChange={e => updateRoundness(parseFloat(e.target.value))}
+                  value={roundnessDraft}
+                  onChange={e => { const v = parseFloat(e.target.value); setRoundnessDraft(v); updateRoundness(v); }}
                   className="flex-1 accent-accent"
                 />
                 <span className="text-[10px] text-fg-faint">◯</span>

@@ -59,7 +59,7 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // its own copies of the same paths). GridIcon is the one glyph unique to this
 // file — the Artifacts segment icon.
 import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
-import { Button } from '../ui';
+import { Button, Checkbox } from '../ui';
 
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -841,14 +841,24 @@ export function ProjectView(props: ProjectViewProps) {
               YouCoded folders, so it also disappears from the new-session folder picker.
               You can add it back anytime with "Add a project" in the project switcher.
             </p>
-            <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg">
-              <input
-                type="checkbox"
-                checked={alsoDeleteSidecar}
-                onChange={(e) => setAlsoDeleteSidecar(e.target.checked)}
-              />
+            {/* Change 39/§1.4: the consent Checkbox primitive (its one intended
+                site). Row is a clickable div (a <label> can't associate with a
+                button), so the whole row toggles like the old label did. The
+                Checkbox is wrapped in a stopPropagation span so its OWN click
+                fires exactly one toggle instead of double-firing via the row. */}
+            <div
+              className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg"
+              onClick={() => setAlsoDeleteSidecar((v) => !v)}
+            >
+              <span onClick={(e) => e.stopPropagation()}>
+                <Checkbox
+                  checked={alsoDeleteSidecar}
+                  onChange={setAlsoDeleteSidecar}
+                  aria-label="Also delete .youcoded/artifacts.json (artifact history)"
+                />
+              </span>
               Also delete <code className="font-mono text-xs bg-inset px-1 rounded">.youcoded/artifacts.json</code> (artifact history)
-            </label>
+            </div>
             <div className="flex gap-2 justify-end">
               <Button
                 variant="secondary"

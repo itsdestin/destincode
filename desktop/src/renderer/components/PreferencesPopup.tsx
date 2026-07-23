@@ -4,7 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState } from './ui';
+import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -145,23 +145,36 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
               <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Default Permission Mode
               </label>
-              <div className="space-y-1.5">
+              {/* Change 39: native radios → the Radio primitive inside a
+                  RadioGroup (one tab stop + arrow-key nav via roving tabindex).
+                  The row stays fully clickable; the Radio is the visual mark. */}
+              <RadioGroup
+                options={Object.keys(PERMISSION_LABELS) as PermissionDefault[]}
+                value={prefs.defaultMode}
+                onChange={(m) => save('defaultMode', m as PermissionDefault)}
+                aria-label="Default Permission Mode"
+                className="space-y-1.5"
+              >
                 {(Object.keys(PERMISSION_LABELS) as PermissionDefault[]).map((mode) => (
-                  <label key={mode} className="flex items-start gap-3 p-2 rounded hover:bg-inset cursor-pointer">
-                    <input
-                      type="radio"
-                      name="defaultMode"
-                      className="mt-0.5"
+                  <div
+                    key={mode}
+                    onClick={() => save('defaultMode', mode)}
+                    className="flex items-start gap-3 p-2 rounded hover:bg-inset cursor-pointer"
+                  >
+                    <Radio
                       checked={prefs.defaultMode === mode}
                       onChange={() => save('defaultMode', mode)}
+                      tabIndex={prefs.defaultMode === mode ? 0 : -1}
+                      aria-label={PERMISSION_LABELS[mode].label}
+                      className="mt-0.5"
                     />
                     <div>
                       <div className="text-sm text-fg">{PERMISSION_LABELS[mode].label}</div>
                       <div className="text-xs text-fg-muted">{PERMISSION_LABELS[mode].desc}</div>
                     </div>
-                  </label>
+                  </div>
                 ))}
-              </div>
+              </RadioGroup>
             </section>
 
             {/* Editor mode */}
