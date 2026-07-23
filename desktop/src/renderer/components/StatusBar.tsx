@@ -705,6 +705,12 @@ export default function StatusBar({
   openTasksCounts, onOpenOpenTasks,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
+
+  // Dev-instance label (run-dev.sh --label → preload's devLabel). Read here rather
+  // than at module scope because the remote shim assigns window.claude during
+  // bootstrap, which can run after this module is imported. null in the built app
+  // and on remote/Android, so this renders nothing there.
+  const devLabel = window.claude?.devLabel ?? null;
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
   const [popupOpen, setPopupOpen] = useState(false);
@@ -1056,7 +1062,12 @@ export default function StatusBar({
               ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_ease-in-out_infinite]'
               : 'bg-panel border-edge-dim hover:bg-inset'
           }`}
-          title={updateStatus.update_available ? `Update available: v${updateStatus.latest} — click to download` : `YouCoded v${updateStatus.current}`}
+          title={
+            (devLabel ? `Dev instance: ${devLabel} — ` : '') +
+            (updateStatus.update_available
+              ? `Update available: v${updateStatus.latest} — click to download`
+              : `YouCoded v${updateStatus.current}`)
+          }
         >
           {updateStatus.update_available ? (
             <span className="text-[#EAB308] font-medium">
@@ -1064,6 +1075,12 @@ export default function StatusBar({
             </span>
           ) : (
             <span>v{updateStatus.current}</span>
+          )}
+          {/* Dev-instance label rides the version pill: it's the one always-visible
+              chip that already identifies "which build am I looking at". Accent so
+              it reads at a glance across a row of otherwise-muted chips. Dev only. */}
+          {devLabel && (
+            <span className="text-accent font-medium ml-1">· {devLabel}</span>
           )}
         </button>
       )}

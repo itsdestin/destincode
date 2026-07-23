@@ -359,6 +359,9 @@ function handleMessage(data: string): void {
       // modified, or excluded. The payload contains change metadata.
       dispatchEvent('artifacts:changed', payload);
       break;
+    case 'git:changed':
+      dispatchEvent('git:changed', payload);
+      break;
     case 'social:presence-event':
       // Presence relay (Task 6). The host forwards one presence event (server
       // protocol frame or synthetic connection-state event). window.claude.social
@@ -766,6 +769,10 @@ export function installShim(): void {
   }
 
   (window as any).claude = {
+    // Parity with preload's devLabel. Always null here: a remote/Android client
+    // has no process env, and the label describes the DEV INSTANCE you're sitting
+    // in front of, not the host it happens to be talking to.
+    devLabel: null,
     session: {
       create: (opts: any) => invoke('session:create', opts),
       destroy: (sessionId: string) => invoke('session:destroy', { sessionId }),
@@ -1242,6 +1249,27 @@ export function installShim(): void {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);
         return () => removeListener('artifacts:changed', handler);
+      },
+    },
+    git: {
+      fileStatus: (projectRoot: string, relPath: string) =>
+        invoke('git:file-status', { projectRoot, relPath }),
+      fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
+        invoke('git:file-review', { projectRoot, relPath, ...opts }),
+      // prevPath (project-root-relative old name) is passed for the rename
+      // commit itself so pairing with -M can happen, same as preload.ts.
+      commitFileDiff: (projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
+        invoke('git:commit-file-diff', { projectRoot, sha, relPath, prevPath }),
+      stage: (projectRoot: string, relPath: string) => invoke('git:stage', { projectRoot, relPath }),
+      unstage: (projectRoot: string, relPath: string) => invoke('git:unstage', { projectRoot, relPath }),
+      commit: (projectRoot: string, message: string) => invoke('git:commit', { projectRoot, message }),
+      discard: (projectRoot: string, relPath: string) => invoke('git:discard', { projectRoot, relPath }),
+      watch: (projectRoot: string) => invoke('git:watch', { projectRoot }),
+      unwatch: (projectRoot: string) => invoke('git:unwatch', { projectRoot }),
+      onChanged: (cb: (event: any) => void) => {
+        const handler: Callback = (evt: any) => cb(evt);
+        addListener('git:changed', handler);
+        return () => removeListener('git:changed', handler);
       },
     },
     // Project View IPC — sibling to artifacts. Object-payload invoke style

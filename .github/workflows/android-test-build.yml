@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -24,7 +24,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # build-web-ui.sh runs `npm run build` in desktop/, which invokes
       # electron-builder for all configured Linux targets. Pacman needs
@@ -55,14 +55,14 @@ jobs:
         run: ./gradlew assembleReleaseTest
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: youcoded-test-apk
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 7
 
       - name: Upload releaseTest APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: youcoded-test-apk-releasetest
           path: app/build/outputs/apk/releaseTest/*.apk

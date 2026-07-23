@@ -360,6 +360,13 @@ const IPC = {
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
+  // Dev-instance descriptor from `run-dev.sh --label` (YOUCODED_DEV_LABEL). The
+  // StatusBar version pill shows it so concurrent dev instances are tellable
+  // apart FROM INSIDE the window: the OS window title is set too, but KDE/Wayland
+  // taskbars group by app id and render the app name, not the per-window caption,
+  // so the title alone isn't reliably visible. null in the built app (env unset).
+  // Same sandboxed process.env read the `native.supported` kill switch uses.
+  devLabel: process.env.YOUCODED_DEV_LABEL?.trim() || null,
   session: {
     create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; resumeSessionId?: string; provider?: 'claude' | 'native'; model?: string }) =>
       ipcRenderer.invoke(IPC.SESSION_CREATE, opts),
@@ -1319,6 +1326,32 @@ contextBridge.exposeInMainWorld('claude', {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);
       return () => ipcRenderer.removeListener('artifacts:changed', handler);
+    },
+  },
+  git: {
+    fileStatus: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:file-status', projectRoot, relPath),
+    fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
+      ipcRenderer.invoke('git:file-review', projectRoot, relPath, opts),
+    // prevPath (project-root-relative old name) is passed for the rename
+    // commit itself so the main-process handler can pair the rename with -M
+    // instead of rendering the add-side full-file wall.
+    commitFileDiff: (projectRoot: string, sha: string, relPath: string, prevPath?: string) =>
+      ipcRenderer.invoke('git:commit-file-diff', projectRoot, sha, relPath, prevPath),
+    stage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:stage', projectRoot, relPath),
+    unstage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:unstage', projectRoot, relPath),
+    commit: (projectRoot: string, message: string) =>
+      ipcRenderer.invoke('git:commit', projectRoot, message),
+    discard: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:discard', projectRoot, relPath),
+    watch: (projectRoot: string) => ipcRenderer.invoke('git:watch', projectRoot),
+    unwatch: (projectRoot: string) => ipcRenderer.invoke('git:unwatch', projectRoot),
+    onChanged: (cb: (event: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('git:changed', handler);
+      return () => ipcRenderer.removeListener('git:changed', handler);
     },
   },
   // Project View IPC — sibling to artifacts. Backs the project overlay's

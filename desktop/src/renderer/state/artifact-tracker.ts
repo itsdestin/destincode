@@ -19,6 +19,8 @@ export interface ArtifactState {
   // session's drawer remembers which file was open across session switches.
   // ProjectView uses the literal 'project-view' key for its own selection.
   activeArtifactBySession: Record<string, string | null>;
+  /** Per-session: the drawer is showing the git review sub-view for the active file. */
+  gitReviewBySession: Record<string, boolean>;
 }
 
 export const initialArtifactState: ArtifactState = {
@@ -30,6 +32,7 @@ export const initialArtifactState: ArtifactState = {
   drawerExpanded: false,
   projectViewOpen: false,
   activeArtifactBySession: {},
+  gitReviewBySession: {},
 };
 
 export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactState {
@@ -54,13 +57,16 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
       return { ...s, drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true } };
     case 'DRAWER_CLOSED':
       // Reset expand + clear this session's selection (and any pill-error note)
-      // so a re-opened drawer starts at its normal width on the list.
+      // so a re-opened drawer starts at its normal width on the list. Also
+      // resets the git-review flag so a re-opened drawer lands on the file
+      // view, not back inside a stale review sub-view.
       return {
         ...s,
         drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: false },
         drawerExpanded: false,
         activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null },
         pillError: { ...s.pillError, [a.sessionId]: null },
+        gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false },
       };
     case 'DRAWER_EXPAND_TOGGLED':
       return { ...s, drawerExpanded: !s.drawerExpanded };
@@ -70,6 +76,9 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
         activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: a.artifactId },
         // A successful open supersedes any earlier failure note.
         pillError: { ...s.pillError, [a.sessionId]: null },
+        // Clicking a file in the list always lands on the file view — the review
+        // view belongs to the file it was opened from, not the newly selected one.
+        gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false },
       };
     // Back gesture in detail view: return to list without closing the drawer.
     case 'ACTIVE_ARTIFACT_CLEARED':
@@ -78,6 +87,10 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
       return { ...s, projectViewOpen: true };
     case 'PROJECT_VIEW_CLOSED':
       return { ...s, projectViewOpen: false };
+    case 'GIT_REVIEW_OPENED':
+      return { ...s, gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: true } };
+    case 'GIT_REVIEW_CLOSED':
+      return { ...s, gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false } };
     default:
       return s;
   }

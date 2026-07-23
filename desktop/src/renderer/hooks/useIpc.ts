@@ -17,6 +17,8 @@ type ApiResult<T> =
 declare global {
   interface Window {
     claude: {
+      /** Dev-instance label (run-dev.sh --label). null in the built app and on remote. */
+      devLabel?: string | null;
       session: {
         create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; model?: string; provider?: 'claude' | 'native'; resumeSessionId?: string; binding?: { providerId: string; modelId: string } }) => Promise<any>;
         destroy: (sessionId: string) => Promise<boolean>;

@@ -12,9 +12,13 @@ import { useTheme } from '../state/theme-context';
 import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useProjectWatch } from '../hooks/useProjectWatch';
+import { useGitFileStatus } from '../hooks/useGitFileStatus';
+import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
+import { GitReviewView } from './git/GitReviewView';
+import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
@@ -65,6 +69,7 @@ const PATHS: Record<string, string> = {
   close: 'M18 6 6 18M6 6l12 12',
   // Sliders — the filter/sort trigger (change 38, matching Project View).
   sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4',
+  forward: 'M5 12h14M13 6l6 6-6 6',
 };
 function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: number }) {
   return (
@@ -232,6 +237,20 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return () => document.removeEventListener('mousedown', onDown);
   }, [filterOpen]);
   const isElectron = getPlatform() === 'electron';
+  const gitReviewOpen = state.gitReviewBySession?.[sessionId] ?? false;
+  // Footer git status only for the open file, only while the drawer is visible.
+  const gitStatus = useGitFileStatus(projectRoot, active && isElectron ? active.path : null, drawerOpen);
+  const gitFooter = gitFooterState(gitStatus);
+  // L3 discard confirm (Task 9). discardError is the ONE error surface for the
+  // review view — rendered via GitReviewView's externalError prop, cleared (a)
+  // whenever a new git op runs inside the view and (b) whenever review closes,
+  // so a stale discard failure can never linger into a reopened review.
+  const [discardAsk, setDiscardAsk] = useState<{ willTrash: boolean } | null>(null);
+  const [discardError, setDiscardError] = useState<string | null>(null);
+  const closeGitReview = useCallback(() => {
+    setDiscardError(null);
+    dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
+  }, [dispatch, sessionId]);
 
   // No selection → force the list visible so the user can pick something.
   const showList = !active ? true : listOpen;
@@ -378,16 +397,17 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     }
   }, [projectRoot, sessionId, activeArtifactId, dispatch]);
 
-  // ── ESC / back: rename → find → edit → expand → list → active → drawer ──
+  // ── ESC / back: rename → find → edit → expand → gitReview → list → active → drawer ──
   const handleBack = useCallback(() => {
     if (renameActiveRef.current) { cancelRename(); return; }
     if (findOpen) { setFindOpen(false); return; }
     if (editState.editing) { guardUnsaved(() => editRef.current?.cancelEdit()); return; }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
+    if (gitReviewOpen) { closeGitReview(); return; }
     if (listOpen) { setListOpen(false); return; }
     if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved]);
+  }, [findOpen, editState.editing, expanded, gitReviewOpen, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved, closeGitReview]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -588,6 +608,20 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     <aside ref={asideRef} className={asideClass}>
       {resizeHandle}
       {unsavedDialog}
+      {discardAsk && active && (
+        <DiscardConfirmDialog
+          fileName={fileName}
+          willTrash={discardAsk.willTrash}
+          onConfirm={async () => {
+            setDiscardAsk(null);
+            const r = await (window as any).claude?.git?.discard?.(projectRoot, active.path).catch(
+              (e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+            // Real stderr or nothing — the review view refreshes itself via git:changed.
+            setDiscardError(r?.ok ? null : (r?.error ?? 'git discard failed'));
+          }}
+          onCancel={() => setDiscardAsk(null)}
+        />
+      )}
       {/* top bar */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
@@ -654,85 +688,139 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {/* Positioning parent for the find bar. contentRef is the INNER div so
             the find bar (a sibling) isn't itself walked by the search. */}
         <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
-          {findOpen && (
-            <ContentFindBar
-              containerRef={contentRef}
-              resetKey={active.id}
-              onClose={() => setFindOpen(false)}
-            />
-          )}
-          <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
-            <ActiveArtifactView
-              ref={editRef}
-              artifact={active}
-              content={content}
-              contentInfo={contentInfo}
+          {gitReviewOpen && active ? (
+            // Standard top bar (above) stays; find bar, content, edit cluster, and
+            // the metadata strip below are all swapped out while review is open
+            // (locked decision, ledger 10).
+            <GitReviewView
               projectRoot={projectRoot}
-              projectId={projectId}
-              projectName={projectName}
-              sessionId={sessionId}
-              onContentChange={setContent}
-              controlsInHeader
-              onEditStateChange={setEditState}
+              relPath={active.path}
+              fileName={fileName}
+              onBack={closeGitReview}
+              onRequestDiscard={(willTrash) => setDiscardAsk({ willTrash })}
+              externalError={discardError}
+              onExternalErrorClear={() => setDiscardError(null)}
             />
-          </div>
-          {/* Floating Edit ↔ Save cluster, bottom-right of the doc pane.
-              Pops IN when the artifact list collapses (doc goes full-width)
-              and back OUT when the list reopens — kept mounted so both
-              directions animate. While EDITING it stays visible regardless,
-              so Save can never be hidden by opening the list. */}
-          {active && (editState.editing || editState.isEditable) && (
-            <div
-              className={`absolute bottom-9 right-4 z-20 flex items-center gap-2 transition-all duration-200 ${
-                editState.editing || !showList
-                  ? 'opacity-100 scale-100'
-                  : 'opacity-0 scale-90 pointer-events-none'
-              }`}
-            >
-              {editState.editing ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => editRef.current?.cancelEdit()}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-panel text-fg-2 border border-edge shadow-lg hover:text-fg hover:bg-well transition-colors"
-                  >
-                    <Ic name="close" size={15} />
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => editRef.current?.saveEdit()}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
-                  >
-                    <Ic name="check" size={15} />
-                    Save
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
-                >
-                  <Ic name="editdoc" size={15} />
-                  Edit
-                </button>
+          ) : (
+            <>
+              {findOpen && (
+                <ContentFindBar
+                  containerRef={contentRef}
+                  resetKey={active.id}
+                  onClose={() => setFindOpen(false)}
+                />
               )}
-            </div>
+              <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
+                <ActiveArtifactView
+                  ref={editRef}
+                  artifact={active}
+                  content={content}
+                  contentInfo={contentInfo}
+                  projectRoot={projectRoot}
+                  projectId={projectId}
+                  projectName={projectName}
+                  sessionId={sessionId}
+                  onContentChange={setContent}
+                  controlsInHeader
+                  onEditStateChange={setEditState}
+                />
+              </div>
+              {/* Floating Edit ↔ Save cluster, bottom-right of the doc pane.
+                  Pops IN when the artifact list collapses (doc goes full-width)
+                  and back OUT when the list reopens — kept mounted so both
+                  directions animate. While EDITING it stays visible regardless,
+                  so Save can never be hidden by opening the list. */}
+              {active && (editState.editing || editState.isEditable) && (
+                <div
+                  className={`absolute bottom-9 right-4 z-20 flex items-center gap-2 transition-all duration-200 ${
+                    editState.editing || !showList
+                      ? 'opacity-100 scale-100'
+                      : 'opacity-0 scale-90 pointer-events-none'
+                  }`}
+                >
+                  {editState.editing ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => editRef.current?.cancelEdit()}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-panel text-fg-2 border border-edge shadow-lg hover:text-fg hover:bg-well transition-colors"
+                      >
+                        <Ic name="close" size={15} />
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => editRef.current?.saveEdit()}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
+                      >
+                        <Ic name="check" size={15} />
+                        Save
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
+                    >
+                      <Ic name="editdoc" size={15} />
+                      Edit
+                    </button>
+                  )}
+                </div>
+              )}
+              {/* metadata strip — bottom of the DOC column (not a full-width row up
+                  top), so it shares the document's width and expands/shrinks with
+                  the artifact list (Destin, 2026-07-22). */}
+              <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-t border-edge-dim bg-well shrink-0">
+                {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+                <span>{statusWord}</span>
+                <span className="text-fg-faint">·</span>
+                <span>{formatRelativeTime(active.lastModified)}</span>
+                {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
+                <div className="flex-1" />
+                <GitFooterEntry
+                  counts={gitFooter.counts}
+                  show={gitFooter.show}
+                  onOpenReview={() => dispatch({ type: 'GIT_REVIEW_OPENED', sessionId })}
+                />
+              </div>
+            </>
           )}
-          {/* metadata strip — bottom of the DOC column (not a full-width row up
-              top), so it shares the document's width and expands/shrinks with
-              the artifact list (Destin, 2026-07-22). */}
-          <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-t border-edge-dim bg-well shrink-0">
-            {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
-            <span>{statusWord}</span>
-            <span className="text-fg-faint">·</span>
-            <span>{formatRelativeTime(active.lastModified)}</span>
-            {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
-          </div>
         </div>
       </div>
     </aside>
+  );
+}
+
+// Footer entry for the git surface (mockup ledger 9). Rendered inside the
+// metadata strip; absent entirely when show=false so the strip reads exactly
+// as it did before the git surface existed.
+export function GitFooterEntry({
+  counts, show, onOpenReview,
+}: {
+  counts: { added: number; removed: number } | null;
+  show: boolean;
+  onOpenReview: () => void;
+}) {
+  if (!show) return null;
+  return (
+    <>
+      {counts && (
+        <>
+          <span className="font-mono text-green-400">+{counts.added}</span>
+          <span className="font-mono text-red-400">−{counts.removed}</span>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onOpenReview}
+        title="Review this file's changes"
+        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] text-fg-dim hover:text-fg hover:bg-inset transition-colors"
+      >
+        Review Changes <Ic name="forward" size={11} />
+      </button>
+    </>
   );
 }
 

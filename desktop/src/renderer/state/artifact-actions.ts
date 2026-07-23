@@ -34,4 +34,7 @@ export type ArtifactAction =
   // Clears the session's selection back to null (back gesture goes to the list).
   | { type: 'ACTIVE_ARTIFACT_CLEARED'; sessionId: string }
   | { type: 'PROJECT_VIEW_OPENED' }
-  | { type: 'PROJECT_VIEW_CLOSED' };
+  | { type: 'PROJECT_VIEW_CLOSED' }
+  // Git review sub-view within the drawer, per session (see DRAWER_* above).
+  | { type: 'GIT_REVIEW_OPENED'; sessionId: string }
+  | { type: 'GIT_REVIEW_CLOSED'; sessionId: string };
