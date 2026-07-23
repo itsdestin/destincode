@@ -27,6 +27,15 @@ export interface HolderTakeoverDeps {
   leaseClient: { release(sessionId: string): Promise<void> };
   flushSessionToSpace: (claudeSessionId: string) => Promise<void>;
   pushMoved: (desktopId: string, device?: string) => void;  // dual-path push (renderer + remote)
+  // Which runtime a live desktop id is (wired to sessionManager.getSession(id)?.provider).
+  // Drives step 3's branch: a native holder has NO PTY, so the ESC byte is a no-op —
+  // it must be quiesced through its HarnessSession instead. Undefined reads as CC/PTY.
+  getProvider: (desktopId: string) => string | undefined;
+  // Native takeover quiesce (wired to nativeHost.quiesce): clears the send queue,
+  // aborts the in-flight turn, and awaits it settling so no append lands past the
+  // flush — the native analogue of the ESC-then-flush wait CC gets for free. In the
+  // deps (not imported) to keep this module's fake-collaborator test style.
+  quiesceNative: (desktopId: string) => Promise<void>;
   // Native teardown, injected rather than imported so this module keeps its
   // fake-collaborator test style. Idempotent + a no-op for non-native ids, so
   // step 8 can call it unconditionally (same contract as nativeHost.destroy).
@@ -60,14 +69,30 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
         try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
         return;
       }
-      // 3. Interrupt EVERY live holder, not just the first. A create+resume pair can
-      //    leave two desktop ids mapped to one claude id; the old pick-first behavior
-      //    interrupted only one and left the OTHER running as a silent second writer
-      //    on the same transcript (never interrupted, flushed, or told it moved). The
-      //    single ESC byte is safe to write directly per PITFALLS "Keyboard Routing"
-      //    (single-byte writes reach Ink as a fresh keystroke regardless of timing).
+      // 3. Interrupt/quiesce EVERY live holder, not just the first. A create+resume
+      //    pair can leave two desktop ids mapped to one claude id; the old pick-first
+      //    behavior handled only one and left the OTHER running as a silent second
+      //    writer on the same transcript (never interrupted, flushed, or told it
+      //    moved). BRANCH PER HOLDER by runtime:
+      //     - native: quiesce the HarnessSession (clear queue + abort + await the
+      //       turn settling). A native session has no PTY, so the ESC byte below
+      //       would be a no-op — quiesce is its only real interrupt, and awaiting it
+      //       is what guarantees no append lands past the flush (Task 9).
+      //     - CC/PTY: a single ESC byte, safe to write directly per PITFALLS
+      //       "Keyboard Routing" (single-byte writes reach Ink as a fresh keystroke
+      //       regardless of timing).
+      //    ALL holders quiesce/interrupt BEFORE the single flush below — a still-live
+      //    turn appending after the flush is exactly the corruption this ordering
+      //    prevents. Each holder is independently try/caught (a stuck quiesce on one
+      //    must not abort the handoff of its siblings).
       for (const desktopId of liveDesktopIds) {
-        try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
+        try {
+          if (deps.getProvider(desktopId) === 'native') {
+            await deps.quiesceNative(desktopId);
+          } else {
+            deps.sessionManager.sendInput(desktopId, '\x1b');
+          }
+        } catch { /* best-effort */ }
       }
 
       // 4-5. Wait for CC to finish flushing the interrupted turn(s), mirror

@@ -6,21 +6,66 @@
 // RELEASE-BEFORE-DESTROY (release must land before the local session ends). All
 // collaborators are injected fakes — this tests ONLY the sequence, not the IO.
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
 import { createHolderTakeover } from '../src/main/conversations/takeover';
+import { NativeHome } from '../src/main/native-home';
+import { SessionStore } from '../src/main/harness/session-store';
+import { NativeSessionHost } from '../src/main/harness/native-session-host';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
+
+// A slow trickling stream so a native turn is genuinely mid-flight when the
+// takeover lands — the exact window quiesce() has to close (mirrors the
+// delayedFactory in native-session-host.test.ts).
+const CHUNKS = [
+  { type: 'stream-start', warnings: [] },
+  { type: 'text-start', id: 'p1' },
+  { type: 'text-delta', id: 'p1', delta: 'Working' },
+  { type: 'text-end', id: 'p1' },
+  { type: 'finish', finishReason: { unified: 'stop' }, usage: { inputTokens: { total: 3 }, outputTokens: { total: 2 } } },
+];
+function delayedStream(chunks: any[], delayMs: number): ReadableStream {
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        for (const c of chunks) { await new Promise((r) => setTimeout(r, delayMs)); controller.enqueue(c); }
+        controller.close();
+      } catch { /* cancelled mid-emit — expected on abort */ }
+    },
+  });
+}
+const delayedFactory = async () => new MockLanguageModelV4({ doStream: async () => ({ stream: delayedStream(CHUNKS, 15) }) }) as any;
 
 // Build a deps bundle whose every fake pushes a label into a shared order log, so
 // tests can assert both WHICH steps ran and in WHAT order.
-function makeDeps(opts?: { liveDesktopIds?: string[]; flushRejects?: boolean }) {
+function makeDeps(opts?: { liveDesktopIds?: string[]; flushRejects?: boolean; providers?: Record<string, string> }) {
   const order: string[] = [];
   const live = new Set(opts?.liveDesktopIds ?? []);
+  const providers = new Map<string, string>(Object.entries(opts?.providers ?? {}));
   const sessionIdMap = new Map<string, string>();
   const deps = {
     order,
     sessionIdMap,
+    // Provider lookup wired in production to sessionManager.getSession(id)?.provider.
+    // Drives step 3's branch: native holders quiesce the HarnessSession, CC holders
+    // get the ESC byte. Undefined (unmapped) reads as a CC/PTY holder — the default.
+    getProvider: (id: string) => providers.get(id),
+    // Native quiesce (nativeHost.quiesce) — clears the queue, aborts, and waits the
+    // in-flight turn out, so no append lands past the flush. In the fake bundle so
+    // its absence can't go green on a native holder that was never quiesced (#177).
+    quiesceNative: vi.fn(async (id: string) => { order.push(`quiesce:${id}`); }),
     sessionManager: {
       // A desktop id is "live" only if it's in the live set.
       getSession: (id: string) => (live.has(id) ? { id } : undefined),
-      sendInput: vi.fn((id: string, text: string) => { order.push(`interrupt:${id}:${JSON.stringify(text)}`); return true; }),
+      // Provider-aware, mirroring production: a native session has NO PTY, so an ESC
+      // byte write is a no-op there (returns false, records nothing). This is what
+      // forces step 3 to BRANCH — the old unconditional ESC path certified a no-op
+      // for native holders (2026-07-18 #177 trap). CC/undefined holders record the
+      // ESC interrupt as before.
+      sendInput: vi.fn((id: string, text: string) => {
+        if (providers.get(id) === 'native') return false;
+        order.push(`interrupt:${id}:${JSON.stringify(text)}`);
+        return true;
+      }),
       destroySession: vi.fn((id: string) => { order.push(`destroy:${id}`); return true; }),
     },
     leaseClient: {
@@ -63,6 +108,60 @@ describe('createHolderTakeover', () => {
     // The reverse-map picked the correct desktop id, not desktop-2.
     expect(deps.sessionManager.sendInput).toHaveBeenCalledWith('desktop-1', '\x1b');
     expect(deps.pushMoved).toHaveBeenCalledWith('desktop-1', 'Laptop-B');
+  });
+
+  // Task 9: a NATIVE holder has no PTY, so the ESC byte is a no-op. Step 3 must
+  // BRANCH — quiesce the HarnessSession instead. Without the branch, the old code
+  // called sendInput('\x1b') (which the provider-aware fake refuses for native,
+  // recording nothing), so nothing quiesced the turn before the flush — the exact
+  // #177 no-op the fake now exposes. This test FAILS against the pre-branch code.
+  it('quiesces a NATIVE holder (no ESC byte) before the flush, then moves + tears it down', async () => {
+    const deps = makeDeps({ liveDesktopIds: ['native-1'], providers: { 'native-1': 'native' } });
+    deps.sessionIdMap.set('native-1', 'claude-nat');
+    const handler = createHolderTakeover(deps as any);
+
+    await handler('claude-nat', { deviceId: 'dev-b', device: 'Laptop-B' });
+
+    expect(deps.order).toEqual([
+      'quiesce:native-1',        // native quiesce replaces the ESC byte
+      'flush:claude-nat',        // ...and lands BEFORE the flush (turn already settled)
+      'release:claude-nat',
+      'push:native-1:Laptop-B',
+      'destroyNative:native-1',
+      'destroy:native-1',
+    ]);
+    expect(deps.quiesceNative).toHaveBeenCalledWith('native-1');
+    // No ESC byte was written to a PTY-less native session.
+    expect(deps.sessionManager.sendInput).not.toHaveBeenCalled();
+  });
+
+  it('branches per holder: quiesces the native one, ESCs the CC one, ALL before the single flush', async () => {
+    // A native + a CC holder both mapped to one claude id (a create+resume pair
+    // across runtimes). Each must be quiesced/interrupted by its OWN mechanism,
+    // and every one before the claude-id-keyed flush.
+    const deps = makeDeps({ liveDesktopIds: ['nat', 'cc'], providers: { nat: 'native' } });
+    deps.sessionIdMap.set('nat', 'c1');
+    deps.sessionIdMap.set('cc', 'c1');
+    const handler = createHolderTakeover(deps as any);
+    await handler('c1', { deviceId: 'x', device: 'X' });
+
+    expect(deps.quiesceNative).toHaveBeenCalledWith('nat');
+    expect(deps.sessionManager.sendInput).toHaveBeenCalledWith('cc', '\x1b');
+    expect(deps.sessionManager.sendInput).not.toHaveBeenCalledWith('nat', '\x1b');
+    const iFlush = deps.order.indexOf('flush:c1');
+    expect(deps.order.indexOf('quiesce:nat')).toBeLessThan(iFlush);
+    expect(deps.order.indexOf('interrupt:cc:"\\u001b"')).toBeLessThan(iFlush);
+  });
+
+  it('still flushes + tears down even when the native quiesce rejects', async () => {
+    const deps = makeDeps({ liveDesktopIds: ['native-1'], providers: { 'native-1': 'native' } });
+    deps.sessionIdMap.set('native-1', 'claude-nat');
+    (deps.quiesceNative as any) = vi.fn(async () => { throw new Error('quiesce blew up'); });
+    const handler = createHolderTakeover(deps as any);
+    await expect(handler('claude-nat', { deviceId: 'x', device: 'X' })).resolves.toBeUndefined();
+    // A failed quiesce must not abort the handoff — flush/release/destroy still run.
+    expect(deps.flushSessionToSpace).toHaveBeenCalledWith('claude-nat');
+    expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('native-1');
   });
 
   it('mirror-before-release AND release-before-destroy hold', async () => {
@@ -204,5 +303,66 @@ describe('createHolderTakeover', () => {
     const iFlush = deps.order.indexOf('flush:c1');
     expect(deps.order.indexOf('interrupt:d1:"\\u001b"')).toBeLessThan(iFlush);
     expect(deps.order.indexOf('interrupt:d2:"\\u001b"')).toBeLessThan(iFlush);
+  });
+
+  // Task 9 — the REAL native holder path end-to-end: a live NativeSessionHost over
+  // a real on-disk store, a genuinely mid-stream turn with a SECOND message queued
+  // behind it, and quiesceNative wired to host.quiesce. Pins the invariant the fake
+  // tests can only approximate: appends STOP before the flush is invoked, the
+  // queued message NEVER runs, and nothing appends after the handoff.
+  it('real native holder: appends stop before flush, the queued turn never runs, nothing appends after', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-holder-'));
+    const store = new SessionStore(new NativeHome(root));
+    const appends: string[] = [];
+    const realAppend = store.append.bind(store);
+    vi.spyOn(store, 'append').mockImplementation(async (cwd, event) => {
+      appends.push(event.type);
+      return realAppend(cwd, event);
+    });
+    const host = new NativeSessionHost(store, delayedFactory, async () => null);
+    const nativeId = 'nat-real';
+    await host.create({ sessionId: nativeId, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    // Turn 1 in flight (delayedFactory trickles), turn 2 FIFO'd behind it.
+    const gotDelta = new Promise<void>((res) => {
+      host.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
+    });
+    host.send(nativeId, 'first');
+    host.send(nativeId, 'queued-survivor');
+    await gotDelta; // genuinely mid-stream now
+
+    let typesAtFlush: string[] = [];
+    const deps = makeDeps({ liveDesktopIds: [nativeId], providers: { [nativeId]: 'native' } });
+    deps.sessionIdMap.set(nativeId, nativeId); // native identity mapping (production)
+    (deps.quiesceNative as any) = (id: string) => host.quiesce(id);
+    (deps.destroyNative as any) = (id: string) => host.destroy(id);
+    // Capture the on-disk transcript AT FLUSH TIME — this is the load-bearing check:
+    // quiesce must have fully settled the interrupted turn (user-interrupt on disk)
+    // BEFORE the flush runs, so the space receives the final bytes. Without quiesce
+    // the turn is still mid-stream here and user-interrupt is absent → this fails.
+    (deps.flushSessionToSpace as any) = vi.fn(async () => {
+      typesAtFlush = store.readEvents(nativeId, root).map((e) => e.type);
+    });
+
+    const handler = createHolderTakeover(deps as any);
+    await handler(nativeId, { deviceId: 'dev-b', device: 'Laptop-B' });
+
+    // The turn was quiesced (interrupted + drained) before the flush was invoked.
+    expect(typesAtFlush).toContain('user-message');
+    expect(typesAtFlush).toContain('user-interrupt');
+    expect(typesAtFlush).not.toContain('turn-complete'); // aborted mid-turn, not completed
+
+    // Nothing appends after the handoff (the queue was cleared, the stream aborted).
+    const afterHandoff = appends.length;
+    await new Promise((r) => setTimeout(r, 120)); // room for any stray stream chunk
+    expect(appends.length).toBe(afterHandoff);
+
+    // The queued survivor never produced a turn — no second user-message on disk.
+    const survivor = store.readEvents(nativeId, root)
+      .filter((e) => e.type === 'user-message' && e.data.text === 'queued-survivor');
+    expect(survivor).toHaveLength(0);
+
+    await host.destroyAll();
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

@@ -1963,6 +1963,13 @@ export function registerIpcHandlers(
     const holderTakeover = createHolderTakeover({
       sessionManager, sessionIdMap, leaseClient: leaseWiring.client,
       flushSessionToSpace, pushMoved,
+      // Provider of a live desktop id — drives the holder's step-3 branch (native
+      // sessions quiesce their HarnessSession; CC sessions get the ESC byte).
+      getProvider: (id) => sessionManager.getSession(id)?.provider,
+      // Native takeover quiesce (Task 9): clears the queue, aborts the in-flight
+      // turn, and awaits it settling so no append lands past the flush. A native
+      // session has no PTY, so the ESC byte can't interrupt it.
+      quiesceNative: (id) => nativeHost.quiesce(id),
       // Idempotent + no-op for non-native ids, so the holder flow calls it
       // unconditionally without needing to know the provider.
       destroyNative: (id) => nativeHost.destroy(id),
