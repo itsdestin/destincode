@@ -56,17 +56,13 @@ const kindLabel = fileTypeLabel;
 
 // Sort order for the file cards (folders always sort by name). Shared with the
 // seg-row sort <select> in ProjectView via this exported key type.
-export type FileSortKey = 'name' | 'recent' | 'type';
+// 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
+export type FileSortKey = 'name' | 'recent';
 const fileNameOf = (a: ArtifactRecord) => a.path.split('/').pop() ?? a.path;
-const extOf = (n: string) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
 function fileComparator(sortBy: FileSortKey) {
   return (a: ArtifactRecord, b: ArtifactRecord): number => {
     // lastModified is an ISO string — lexicographic compare IS chronological.
     if (sortBy === 'recent') return (b.lastModified || '').localeCompare(a.lastModified || '');
-    if (sortBy === 'type') {
-      return extOf(fileNameOf(a)).localeCompare(extOf(fileNameOf(b)))
-        || fileNameOf(a).localeCompare(fileNameOf(b));
-    }
     return fileNameOf(a).localeCompare(fileNameOf(b));
   };
 }
@@ -141,7 +137,7 @@ function MiniTypeIcon({ path }: { path: string }) {
 export function FilesTab({
   project,
   search,
-  typeFilter,
+  types,
   sortBy,
   hideCode,
   refreshKey,
@@ -151,7 +147,8 @@ export function FilesTab({
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
-  typeFilter: 'all' | FileTypeGroup; // filter popover: type (both file tabs)
+  // Multi-select type filter; EMPTY set = all types (filter popover).
+  types: ReadonlySet<FileTypeGroup>;
   sortBy: FileSortKey;               // filter popover: sort (files only)
   hideCode: boolean;                 // filter popover: hide code & configs (default ON)
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
@@ -236,18 +233,21 @@ export function FilesTab({
   // not surface every file inside that folder. Hide-code is suspended while the
   // "Code & configs" TYPE filter is selected (the two together would always
   // show nothing — an explicit type pick wins over the default hide).
-  const effectiveHideCode = hideCode && typeFilter !== 'code';
+  // An explicit type pick beats the default hide — otherwise "Hide code" plus a
+  // type selection can combine into a guaranteed-empty list. One rule for both
+  // file browsers (the drawer's hide-code is broader, so it needs this too).
+  const effectiveHideCode = hideCode && types.size === 0;
   const filtered = useMemo(
     () => artifacts.filter((a) => {
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       const filename = a.path.split('/').pop() ?? a.path;
       if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
-      if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
+      if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
       if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
       return true;
     }),
-    [artifacts, showDeletedArtifacts, orphanIds, search, typeFilter, effectiveHideCode],
+    [artifacts, showDeletedArtifacts, orphanIds, search, types, effectiveHideCode],
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
@@ -351,7 +351,7 @@ export function FilesTab({
   // (no search, no type filter) keeps the navigable folder tree; the visibility
   // toggles (hide-code, show-deleted) don't flatten — they only prune it.
   const searching = !!search.trim();
-  const flat = searching || typeFilter !== 'all';
+  const flat = searching || types.size > 0;
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
   // Flat results honor the same sort as the folder view.
   const flatResults = useMemo(

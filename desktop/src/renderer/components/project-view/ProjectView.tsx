@@ -94,7 +94,8 @@ export function ProjectView(props: ProjectViewProps) {
   // live on the seg-row and survive Artifacts ↔ All files toggles. These are
   // EXPLICIT, visible controls the user sets — the badge counts stay folder
   // totals, so a filtered grid never silently redefines what "N files" means.
-  const [typeFilter, setTypeFilter] = useState<'all' | FileTypeGroup>('all');
+  // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
+  const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
   // Hide code & configs — ON by default (documents-first default view), local
   // to the Project View so the default always wins on a fresh look. Resets to
@@ -247,7 +248,7 @@ export function ProjectView(props: ProjectViewProps) {
       // project silently hiding the new project's files is a confusion trap.
       // Sort is a preference, not a filter, so it persists.
       setArtifactSearch('');
-      setTypeFilter('all');
+      setTypes(new Set());
       setHideCode(true); // default ON — see the state declaration
       setFilterOpen(false);
     }
@@ -669,14 +670,14 @@ export function ProjectView(props: ProjectViewProps) {
                        Sort is a preference; hideCode is default-ON and turning it
                        OFF reveals more — neither is counted, so a narrowed grid is
                        never mistaken for the full list with the popover shut. */
-                    activeFilters={(typeFilter !== 'all' ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
+                    activeFilters={(types.size > 0 ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
                     filterOpen={filterOpen}
                     onToggleFilter={() => setFilterOpen((o) => !o)}
                   >
                     {filterOpen && (
                       <FileFilterPopover
-                        typeFilter={typeFilter}
-                        onTypeFilter={setTypeFilter}
+                        types={types}
+                        onTypesChange={setTypes}
                         sortBy={fileSort}
                         onSortBy={setFileSort}
                         hideCode={hideCode}
@@ -712,10 +713,10 @@ export function ProjectView(props: ProjectViewProps) {
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />

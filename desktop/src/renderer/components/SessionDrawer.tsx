@@ -20,13 +20,15 @@ import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
-import { categorizeArtifact } from '../../shared/artifacts/categorization';
+import { categorizeArtifact, fileTypeGroup } from '../../shared/artifacts/categorization';
+import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
 import { CloseButton, EmptyState, SearchFilterPill } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
 
-type SortKey = 'recent' | 'name' | 'type';
+// 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
+type SortKey = 'recent' | 'name';
 
 // Maps the rename IPC's error codes to user-facing copy. Falls back to a
 // generic message so an unexpected code still surfaces *something* rather than
@@ -124,6 +126,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
   const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
+  // Multi-select type filter; EMPTY set = all types. Matches Project View
+  // (Destin, 2026-07-23 — the drawer gained the Type group).
+  const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   useEffect(() => {
     if (!drawerOpen || allArtifacts.length === 0 || !projectRoot) {
       setOrphanIds(new Set());
@@ -148,12 +153,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
-      if (hideCodeAndConfigs && categorizeArtifact(a.path) !== 'document') return false;
+      if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
+      // This drawer's hide-code keeps ONLY documents (broader than the Project
+      // View's, which drops just code), so an explicit type pick must suspend it
+      // or e.g. Type=Images would always come back empty. Same rule both places.
+      if (hideCodeAndConfigs && types.size === 0 && categorizeArtifact(a.path) !== 'document') return false;
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       return true;
     });
-  }, [allArtifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds]);
+  }, [allArtifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds, types]);
   const hiddenCount = allArtifacts.length - artifacts.length;
   // Look up the open document in the UNFILTERED list — toggling "Hide code" /
   // "Show deleted" while viewing a now-filtered-out file must not blank the
@@ -336,7 +345,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       : artifacts.slice();
     arr.sort((a, b) => {
       if (sortBy === 'name') return fileNameOf(a).localeCompare(fileNameOf(b));
-      if (sortBy === 'type') return (extOf(fileNameOf(a)).localeCompare(extOf(fileNameOf(b))) || fileNameOf(a).localeCompare(fileNameOf(b)));
       return (b.lastModified || '').localeCompare(a.lastModified || ''); // recent first
     });
     return arr;
@@ -446,12 +454,14 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           /* Only "Show deleted" alters the default view here; hide-code is
              default-ON and turning it OFF reveals more, so neither is counted —
              same convention as Project View. */
-          activeFilters={showDeletedArtifacts ? 1 : 0}
+          activeFilters={(types.size > 0 ? 1 : 0) + (showDeletedArtifacts ? 1 : 0)}
           filterOpen={filterOpen}
           onToggleFilter={() => setFilterOpen((o) => !o)}
         >
           {filterOpen && (
             <FileFilterPopover
+              types={types}
+              onTypesChange={setTypes}
               sortBy={sortBy}
               onSortBy={setSortBy}
               hideCode={hideCodeAndConfigs}
