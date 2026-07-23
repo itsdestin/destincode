@@ -3551,14 +3551,26 @@ export function registerIpcHandlers(
   };
 
   // IMPORT_FILE → copy/move a picked file into the project. All policy lives in
-  // artifacts/import-file.ts (traversal, collisions, verify-before-unlink).
+  // artifacts/import-file.ts (traversal, self-import, collisions, temp+rename,
+  // verify-before-unlink). disclosedCollisions is the list of colliding
+  // basenames the renderer's dialog actually NAMED to the user — forwarded so
+  // 'replace' can only overwrite files the user was shown (see that module).
   ipcMain.handle(ARTIFACT_IPC.IMPORT_FILE, async (
     _e,
     projectRoot: string,
     sourcePath: string,
     destDir: string,
-    opts: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' },
-  ) => importFile({ projectRoot, sourcePath, destDir, mode: opts.mode, onCollision: opts.onCollision }));
+    opts: {
+      mode: 'move' | 'copy';
+      onCollision: 'replace' | 'keep-both' | 'skip';
+      disclosedCollisions?: string[];
+    },
+  ) => importFile({
+    projectRoot, sourcePath, destDir,
+    mode: opts.mode,
+    onCollision: opts.onCollision,
+    disclosedCollisions: opts.disclosedCollisions,
+  }));
 
   // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
   // files or in-project files Claude never edited). Three steps:

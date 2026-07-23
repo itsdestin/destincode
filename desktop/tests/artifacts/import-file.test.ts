@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -13,7 +13,10 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   fs.mkdirSync(outside, { recursive: true });
 });
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 const src = (name: string, body = 'hello') => {
   const p = path.join(outside, name);
@@ -160,5 +163,166 @@ describe('importFile', () => {
       mode: 'copy', onCollision: 'replace',
     });
     expect(r).toMatchObject({ ok: false, error: 'ENOENT' });
+  });
+
+  // ── C1: importing a file ONTO ITSELF ────────────────────────────────────
+  // Reachable from the UI: browse to docs/ in Project Files → "+ Add file" →
+  // pick docs/notes.md. The collision is detected correctly; the question is
+  // what happens next. fs.copyFile short-circuits when both sides are the same
+  // inode, so the size verification stats one file twice and passes, and the
+  // move then unlinked the only copy — reporting { ok: true } over a deletion.
+  describe('self-import (source IS the destination file)', () => {
+    it('move + replace onto itself leaves the file intact', async () => {
+      const self = path.join(root, 'docs', 'notes.md');
+      fs.writeFileSync(self, 'MINE');
+      const r = await importFile({
+        projectRoot: root, sourcePath: self, destDir: path.join(root, 'docs'),
+        mode: 'move', onCollision: 'replace',
+      });
+      expect(fs.existsSync(self)).toBe(true);
+      expect(fs.readFileSync(self, 'utf8')).toBe('MINE');
+      expect(r).toMatchObject({ ok: true, skipped: true, reason: 'already-in-place' });
+    });
+
+    it('move + keep both onto itself does not rename the user\'s file', async () => {
+      const self = path.join(root, 'docs', 'notes.md');
+      fs.writeFileSync(self, 'MINE');
+      const r = await importFile({
+        projectRoot: root, sourcePath: self, destDir: path.join(root, 'docs'),
+        mode: 'move', onCollision: 'keep-both',
+      });
+      expect(fs.existsSync(self)).toBe(true);
+      expect(fs.existsSync(path.join(root, 'docs', 'notes (2).md'))).toBe(false);
+      expect(r).toMatchObject({ ok: true, skipped: true, reason: 'already-in-place' });
+    });
+
+    it('copy onto itself is a no-op that reports where the file already is', async () => {
+      const self = path.join(root, 'docs', 'notes.md');
+      fs.writeFileSync(self, 'MINE');
+      const r = await importFile({
+        projectRoot: root, sourcePath: self, destDir: path.join(root, 'docs'),
+        mode: 'copy', onCollision: 'replace',
+      });
+      expect(r).toMatchObject({ ok: true, skipped: true, reason: 'already-in-place' });
+      expect((r as any).relPath.replace(/\\/g, '/')).toBe('docs/notes.md');
+      expect(fs.readdirSync(path.join(root, 'docs'))).toEqual(['notes.md']);
+    });
+
+    it('reaches the same file through a symlinked destination folder', async () => {
+      // The picker can hand back a path that walks through a symlink, so a
+      // plain string compare would miss it. Skipped where symlinks need
+      // elevation (Windows without developer mode).
+      const link = path.join(root, 'linked');
+      try { fs.symlinkSync(path.join(root, 'docs'), link, 'dir'); }
+      catch { return; }
+      const self = path.join(root, 'docs', 'notes.md');
+      fs.writeFileSync(self, 'MINE');
+      const r = await importFile({
+        projectRoot: root, sourcePath: path.join(link, 'notes.md'), destDir: path.join(root, 'docs'),
+        mode: 'move', onCollision: 'replace',
+      });
+      expect(fs.existsSync(self)).toBe(true);
+      expect(r).toMatchObject({ ok: true, skipped: true, reason: 'already-in-place' });
+    });
+  });
+
+  // ── I2: 'replace' only applies to collisions the user was SHOWN ─────────
+  describe('disclosedCollisions gates replace', () => {
+    it('falls back to keep-both for a collision the dialog never named', async () => {
+      // The renderer builds its collision list from on-disk discovery, which
+      // skips noise files (package-lock.json, *.map, …) and truncates at its
+      // caps. A user who picked Replace to handle notes.md never consented to
+      // overwriting a package-lock.json they were not told about.
+      fs.writeFileSync(path.join(root, 'package-lock.json'), 'ORIGINAL');
+      const s = src('package-lock.json', 'NEW');
+      const r = await importFile({
+        projectRoot: root, sourcePath: s, destDir: root,
+        mode: 'copy', onCollision: 'replace', disclosedCollisions: ['notes.md'],
+      });
+      expect(r).toMatchObject({ ok: true, relPath: 'package-lock (2).json' });
+      expect(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).toBe('ORIGINAL');
+    });
+
+    it('still replaces a collision that WAS disclosed', async () => {
+      fs.writeFileSync(path.join(root, 'notes.md'), 'ORIGINAL');
+      const s = src('notes.md', 'NEW');
+      const r = await importFile({
+        projectRoot: root, sourcePath: s, destDir: root,
+        mode: 'copy', onCollision: 'replace', disclosedCollisions: ['notes.md'],
+      });
+      expect(r).toMatchObject({ ok: true, relPath: 'notes.md' });
+      expect(fs.readFileSync(path.join(root, 'notes.md'), 'utf8')).toBe('NEW');
+    });
+
+    it('never deletes an undisclosed collision in move mode either', async () => {
+      fs.writeFileSync(path.join(root, 'package-lock.json'), 'ORIGINAL');
+      const s = src('package-lock.json', 'NEW');
+      await importFile({
+        projectRoot: root, sourcePath: s, destDir: root,
+        mode: 'move', onCollision: 'replace', disclosedCollisions: [],
+      });
+      expect(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).toBe('ORIGINAL');
+      expect(fs.readFileSync(path.join(root, 'package-lock (2).json'), 'utf8')).toBe('NEW');
+    });
+  });
+
+  // ── I3: a failed copy must not destroy the destination ─────────────────
+  describe('failed copy rollback', () => {
+    // Stand in for a real mid-write failure. fs.copyFile opens the destination
+    // with O_TRUNC and streams into it, so an ENOSPC/EIO partway through leaves
+    // a PARTIAL file behind — that half-written state is the whole point, and a
+    // plain mockRejectedValue would not reproduce it.
+    const failMidWrite = (code: string) =>
+      vi.spyOn(fs.promises, 'copyFile').mockImplementationOnce(async (_s: any, dest: any) => {
+        fs.writeFileSync(dest as string, 'PART');
+        throw Object.assign(new Error(`simulated ${code}`), { code });
+      });
+
+    it('leaves the pre-existing destination intact when the copy fails', async () => {
+      // Writing straight onto destPath left the user's file as a truncated stub
+      // and returned COPY_FAILED over the wreckage. Copying into a temp and
+      // renaming means the failure never touches the real destination.
+      fs.writeFileSync(path.join(root, 'notes.md'), 'ORIGINAL');
+      const s = src('notes.md', 'NEW');
+      failMidWrite('ENOSPC');
+      const r = await importFile({
+        projectRoot: root, sourcePath: s, destDir: root,
+        mode: 'copy', onCollision: 'replace', disclosedCollisions: ['notes.md'],
+      });
+      expect(r).toMatchObject({ ok: false, error: 'ENOSPC' });
+      expect(fs.readFileSync(path.join(root, 'notes.md'), 'utf8')).toBe('ORIGINAL');
+      // …and no temp debris left behind in the project folder.
+      expect(fs.readdirSync(root).filter((f) => f.endsWith('.part'))).toEqual([]);
+    });
+
+    it('leaves no partial file at all when a move\'s copy fails', async () => {
+      const s = src('notes.md', 'NEW');
+      failMidWrite('EIO');
+      const r = await importFile({
+        projectRoot: root, sourcePath: s, destDir: root, mode: 'move', onCollision: 'skip',
+      });
+      expect(r).toMatchObject({ ok: false, error: 'EIO' });
+      expect(fs.existsSync(s)).toBe(true);                          // source untouched
+      expect(fs.existsSync(path.join(root, 'notes.md'))).toBe(false); // no stub
+      expect(fs.readdirSync(root).filter((f) => f.endsWith('.part'))).toEqual([]);
+    });
+
+    it('leaves the destination intact when the copy comes up short', async () => {
+      // COPY_INCOMPLETE (a short write that did not throw) is the other path
+      // that used to return over an already-clobbered destination.
+      fs.writeFileSync(path.join(root, 'notes.md'), 'ORIGINAL');
+      const s = src('notes.md', 'A MUCH LONGER BODY');
+      vi.spyOn(fs.promises, 'copyFile').mockImplementationOnce(async (_s: any, dest: any) => {
+        fs.writeFileSync(dest as string, 'SHORT');
+      });
+      const r = await importFile({
+        projectRoot: root, sourcePath: s, destDir: root,
+        mode: 'move', onCollision: 'replace', disclosedCollisions: ['notes.md'],
+      });
+      expect(r).toMatchObject({ ok: false, error: 'COPY_INCOMPLETE' });
+      expect(fs.readFileSync(path.join(root, 'notes.md'), 'utf8')).toBe('ORIGINAL');
+      expect(fs.existsSync(s)).toBe(true);
+      expect(fs.readdirSync(root).filter((f) => f.endsWith('.part'))).toEqual([]);
+    });
   });
 });
