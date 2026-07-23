@@ -21,6 +21,12 @@ export interface GitReviewViewProps {
   /** open the L3 discard confirm; willTrash = HEAD has no copy, so discard
    *  trashes the file instead of restoring (Task 9 wires the dialog) */
   onRequestDiscard: (willTrash: boolean) => void;
+  /** Surfaced by the caller (e.g. a failed discard) in the same error slot as
+   *  opError — ONE error surface, not two competing banners (Task 9). */
+  externalError?: string | null;
+  /** Called at the top of run() so a new git op supersedes a stale external
+   *  error (e.g. discardError) instead of leaving it displayed forever. */
+  onExternalErrorClear?: () => void;
 }
 
 function gitApi(): any {
@@ -29,6 +35,7 @@ function gitApi(): any {
 
 export function GitReviewView({
   projectRoot, relPath, fileName, onBack, onOpenAtLine, onRequestDiscard,
+  externalError, onExternalErrorClear,
 }: GitReviewViewProps) {
   const [review, setReview] = useState<GitFileReviewResult | null>(null);
   const [extraLog, setExtraLog] = useState<GitLogEntry[]>([]);
@@ -99,6 +106,9 @@ export function GitReviewView({
     if (busy) return false;
     setBusy(true);
     setOpError(null);
+    // A new op (stage/unstage/commit) supersedes any stale externally-surfaced
+    // error (e.g. a prior failed discard) — one error surface, not a leftover.
+    onExternalErrorClear?.();
     try {
       const r = await op();
       // Real stderr passthrough (error-message standard) — never a guessed cause.
@@ -237,9 +247,9 @@ export function GitReviewView({
       {/* composer (ledger 13): counts staged files REPO-WIDE — a commit always
           commits the whole index, including files the agent staged meanwhile. */}
       <div className="shrink-0 border-t border-edge px-2 py-2 bg-inset">
-        {opError && (
+        {(opError ?? externalError) && (
           <div className="mb-1 px-2.5 py-1.5 text-[11px] text-fg rounded-md border border-edge bg-well break-all">
-            {opError}
+            {opError ?? externalError}
           </div>
         )}
         <Textarea

@@ -127,6 +127,35 @@ describe('GitReviewView', () => {
     expect(screen.queryByText('No direct changes to this file in this commit.')).not.toBeInTheDocument();
   });
 
+  it('renders externalError in the same slot as opError when there is no opError', async () => {
+    mountWith({}, { externalError: 'fatal: could not restore f.ts' });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    expect(screen.getByText('fatal: could not restore f.ts')).toBeInTheDocument();
+  });
+
+  it('calls onExternalErrorClear at the top of a new run() (stage/unstage)', async () => {
+    const onExternalErrorClear = vi.fn();
+    const git = mountWith({}, { onExternalErrorClear });
+    await waitFor(() => screen.getByText('Staged for commit'));
+    fireEvent.click(screen.getByText('Staged for commit'));
+    await waitFor(() => expect(git.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
+    expect(onExternalErrorClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('a blocked run() (busy guard) does not call onExternalErrorClear', async () => {
+    const onExternalErrorClear = vi.fn();
+    const git = mountWith({}, { onExternalErrorClear });
+    await waitFor(() => screen.getByText('Staged for commit'));
+    let resolveStage: (v: { ok: boolean }) => void = () => {};
+    git.stage.mockReturnValueOnce(new Promise((resolve) => { resolveStage = resolve; }));
+    const btn = screen.getByText('Staged for commit');
+    fireEvent.click(btn); // first call clears
+    fireEvent.click(btn); // second call is blocked by the busy guard — no additional clear
+    expect(onExternalErrorClear).toHaveBeenCalledTimes(1);
+    resolveStage({ ok: true });
+    await waitFor(() => expect(git.stage).toHaveBeenCalledTimes(1));
+  });
+
   it('serializes overlapping stage/unstage clicks through run()', async () => {
     const git = mountWith();
     await waitFor(() => screen.getByText('Staged for commit'));

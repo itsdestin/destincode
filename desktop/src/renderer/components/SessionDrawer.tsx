@@ -18,6 +18,7 @@ import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
+import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
@@ -225,6 +226,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Footer git status only for the open file, only while the drawer is visible.
   const gitStatus = useGitFileStatus(projectRoot, active && isElectron ? active.path : null, drawerOpen);
   const gitFooter = gitFooterState(gitStatus);
+  // L3 discard confirm (Task 9). discardError is the ONE error surface for the
+  // review view — rendered via GitReviewView's externalError prop, cleared (a)
+  // whenever a new git op runs inside the view and (b) whenever review closes,
+  // so a stale discard failure can never linger into a reopened review.
+  const [discardAsk, setDiscardAsk] = useState<{ willTrash: boolean } | null>(null);
+  const [discardError, setDiscardError] = useState<string | null>(null);
+  const closeGitReview = useCallback(() => {
+    setDiscardError(null);
+    dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
+  }, [dispatch, sessionId]);
 
   // No selection → force the list visible so the user can pick something.
   const showList = !active ? true : listOpen;
@@ -377,11 +388,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     if (findOpen) { setFindOpen(false); return; }
     if (editState.editing) { guardUnsaved(() => editRef.current?.cancelEdit()); return; }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
-    if (gitReviewOpen) { dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId }); return; }
+    if (gitReviewOpen) { closeGitReview(); return; }
     if (listOpen) { setListOpen(false); return; }
     if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, gitReviewOpen, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved]);
+  }, [findOpen, editState.editing, expanded, gitReviewOpen, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved, closeGitReview]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -558,6 +569,20 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     <aside ref={asideRef} className={asideClass}>
       {resizeHandle}
       {unsavedDialog}
+      {discardAsk && active && (
+        <DiscardConfirmDialog
+          fileName={fileName}
+          willTrash={discardAsk.willTrash}
+          onConfirm={async () => {
+            setDiscardAsk(null);
+            const r = await (window as any).claude?.git?.discard?.(projectRoot, active.path).catch(
+              (e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+            // Real stderr or nothing — the review view refreshes itself via git:changed.
+            setDiscardError(r?.ok ? null : (r?.error ?? 'git discard failed'));
+          }}
+          onCancel={() => setDiscardAsk(null)}
+        />
+      )}
       {/* top bar */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
@@ -632,16 +657,18 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               projectRoot={projectRoot}
               relPath={active.path}
               fileName={fileName}
-              onBack={() => dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId })}
+              onBack={closeGitReview}
               onOpenAtLine={(line) => {
                 // Close review, then land the editor on the line. revealLine
                 // internally retries while the lazy CM6 chunk mounts, but the
                 // handle itself is null until ActiveArtifactView remounts —
                 // defer one frame so the ref is populated.
-                dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
+                closeGitReview();
                 requestAnimationFrame(() => editRef.current?.revealLine(line));
               }}
-              onRequestDiscard={() => { /* wired in Task 9 */ }}
+              onRequestDiscard={(willTrash) => setDiscardAsk({ willTrash })}
+              externalError={discardError}
+              onExternalErrorClear={() => setDiscardError(null)}
             />
           ) : (
             <>
