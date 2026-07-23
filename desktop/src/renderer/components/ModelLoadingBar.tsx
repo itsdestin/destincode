@@ -100,9 +100,15 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
     hasProgress && lastGrowthAtRef.current > 0 && Date.now() - lastGrowthAtRef.current > PLATEAU_MS;
   const finalizing = hasProgress && (pct >= FINALIZE_PCT || plateaued);
 
+  // NOT an L4 overlay, despite what change 29 reads like. This strip is
+  // positioned INSIDE the chat column (absolute, z-10) — converting it to a
+  // fixed L4 panel would relocate a correctly-placed element. It was already on
+  // .layer-surface; change 29's real work here was dropping the rounded-xl and
+  // shadow-lg that .layer-surface already supplies (globals.css:861-862), so the
+  // surface recipe stays in exactly one place.
   return (
     <div className="model-status-strip absolute left-1/2 -translate-x-1/2 z-10 w-[min(88%,26rem)]">
-      <div className="layer-surface rounded-xl px-4 py-3 shadow-lg">
+      <div className="layer-surface px-4 py-3">
         {loading ? (
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline justify-center gap-1.5 text-sm text-fg-2">
