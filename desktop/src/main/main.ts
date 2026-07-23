@@ -1173,6 +1173,30 @@ function registerDetachIpc() {
   setAppliedAtLaunch(perf.preferPowerSaving);
 }
 
+// Dev-only debugging aid: YOUCODED_DEVTOOLS_PORT=9223 opens Chromium's
+// remote-debugging port so scripts/cdp-eval.mjs can inspect live renderers
+// (localhost-only; never enabled in packaged builds — the double gate below).
+// Added 2026-07-23 while diagnosing the dead buddy overlay on Wayland.
+if (!app.isPackaged && process.env.YOUCODED_DEVTOOLS_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.YOUCODED_DEVTOOLS_PORT);
+}
+
+// WHY (2026-07-23, probe-proven on the target machine): on KWin Wayland,
+// Chromium's EvictionThrottlesDraw feature evicts the buddy overlay's
+// buffers when the compositor withholds frame callbacks from it (a
+// click-through window that maps EMPTY, unfocused, and initially covered is
+// exactly the surface KWin throttles). Result: the overlay's presentation
+// freezes on its first — blank — commit forever: DOM/rAF run fine inside,
+// but no pixel painted after load ever reaches the screen. A/B probe:
+// content injected 4s after load presents 0 pixels without this switch,
+// 201,601 with it. Only set when the overlay strategy is active; costs a
+// little memory (occluded windows keep their buffers) and nothing else.
+// NOTE appendSwitch('disable-features') REPLACES, not merges — if another
+// disable-features is ever added, merge the values here.
+if (chooseBuddyStrategy(process.platform, process.env) === 'overlay') {
+  app.commandLine.appendSwitch('disable-features', 'EvictionThrottlesDraw');
+}
+
 app.whenReady().then(async () => {
   await rotateLog();
 

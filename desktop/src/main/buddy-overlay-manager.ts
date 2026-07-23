@@ -149,6 +149,9 @@ export class BuddyOverlayManager implements BuddyManager {
   // Geometry the current window was built for — the rebuild guard's baseline
   // (see displayGeometryChanged's WHY comment). Set by createWindow.
   private builtFor: DisplayGeometry | null = null;
+  // Current input-region state — re-asserted on restore/show because Wayland
+  // remaps drop it (see applyInputRegion's WHY comment).
+  private interactive = false;
 
   constructor(private readonly deps: BuddyOverlayDeps) {
     // WHY these three (not the brief's literal 'display-metrics-changed' |
@@ -197,12 +200,23 @@ export class BuddyOverlayManager implements BuddyManager {
     this.builtFor = { bounds: primary.bounds, workArea: primary.workArea, scaleFactor: primary.scaleFactor };
     const win = this.deps.createOverlayWindow({ width: primary.bounds.width, height: primary.bounds.height });
     this.win = win;
+    // WHY preventDefault BEFORE setTitle (2026-07-23, found live): Electron
+    // windows adopt the page's document.title on load, which CLOBBERED
+    // OVERLAY_TITLE with the app's generic "YouCoded" — silently breaking
+    // every caption-matched KWin integration (Task 8 keep-above matches
+    // the exact caption 'YouCoded Buddy' and matched nothing).
+    win.on('page-title-updated', (e) => e.preventDefault());
     win.setTitle(OVERLAY_TITLE);
     win.setAlwaysOnTop(true, 'screen-saver'); // harmless request; Task 8's applyKeepAbove does the real work
     // WHY immediately, before showInactive(): the overlay must NEVER eat
     // clicks by default. Setting this after showing would leave a window
     // that briefly swallows clicks the instant it appears.
+    this.interactive = false;
     win.setIgnoreMouseEvents(true, { forward: true });
+    // Wayland remaps (minimize→restore) get a fresh surface with NO input
+    // region — re-assert ours or the overlay eats every desktop click.
+    win.on('restore', () => this.applyInputRegion());
+    win.on('show', () => this.applyInputRegion());
     const persisted = this.deps.getPersisted();
     // WHY it's fine that a toggle-time apply can fail transiently and leave
     // the CURRENT window's KWin keepAbove state stale (e.g. Settings' toggle
@@ -361,8 +375,19 @@ export class BuddyOverlayManager implements BuddyManager {
   }
 
   setInteractive(interactive: boolean): void {
+    this.interactive = interactive;
+    this.applyInputRegion();
+  }
+
+  // WHY a separate re-appliable method (2026-07-23, found live): on Wayland,
+  // minimize→restore gives the window a NEW wl_surface, and Chromium does
+  // not re-apply the empty input region to it — a restored overlay silently
+  // becomes a full-screen click-eater (the overlay has a taskbar entry on
+  // Wayland because skipTaskbar is a no-op there, so users CAN minimize it).
+  // Re-asserting on 'restore'/'show' keeps the failure direction safe.
+  private applyInputRegion(): void {
     if (!this.win || this.win.isDestroyed()) return;
-    if (interactive) {
+    if (this.interactive) {
       this.win.setIgnoreMouseEvents(false);
     } else {
       this.win.setIgnoreMouseEvents(true, { forward: true });
