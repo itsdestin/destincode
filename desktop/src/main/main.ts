@@ -67,6 +67,63 @@ import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
 import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-config';
 
+// Route Linux Wayland sessions through XWayland.  *** EXPERIMENTAL — NOT
+// PRODUCTION-READY *** (see the PR / investigation doc; shelved 2026-07-23).
+//
+// WHY: native Wayland forbids a client from positioning its own windows, and
+// the buddy floater's entire model is main-process setPosition per drag frame.
+// On Wayland every one of those calls is silently dropped — worse, getPosition()
+// echoes back the value you asked for, so the app cannot even detect the
+// failure. Probed against KWin 6.7.3 / Electron 41.0.3 on 2026-07-22
+// (docs/active/prototypes/2026-07-22-buddy-wayland-workbench/FINDINGS.md):
+//
+//                        native Wayland          XWayland
+//   setPosition()        no-op (reports success) works
+//   getCursorScreenPoint {0,0}                   real coords
+//   always-on-top        KWin keepAbove=false    KWin keepAbove=true
+//   transparency         froze opaque 0/10       stable 10/10
+//
+// The 2026-07-17 rejection of XWayland assumed it renders blurry at fractional
+// scaling. That was wrong on THIS setup: KDE's [Xwayland] Scale makes KWin hand
+// X11 clients native resolution, so Electron reports devicePixelRatio 1.5 and
+// renders at full 2560x1600. (Sharpness is compositor-specific — it can still
+// be blurry on GNOME / other fractional-scale setups. One of several reasons
+// this stays experimental.)
+//
+// *** KNOWN GAP (verified 2026-07-23) — this appendSwitch DOES NOT WORK. ***
+// app.commandLine.appendSwitch('ozone-platform', 'x11') is silently ineffective
+// on Electron 41: the process still comes up on the native Wayland ozone
+// backend (confirmed by the ui/ozone/platform/wayland/* init logs and KWin
+// reporting the windows as native, surface!=null). ELECTRON_OZONE_PLATFORM_HINT
+// was also ineffective. The ONLY mechanism that actually forced XWayland was a
+// real argv flag on the electron binary: `electron . --ozone-platform=x11`.
+// For dev that flag is injected by the `dev:main` npm script on this branch;
+// production enablement would need the app to re-exec itself with the flag (or a
+// launcher/.desktop entry that carries it) — NOT YET IMPLEMENTED. The block
+// below is kept as intent + kill switch, but on its own it changes nothing.
+//
+// Kill switch: YOUCODED_OZONE=wayland forces the native backend back on.
+if (process.platform === 'linux' && !app.isReady()) {
+  const ozoneOverride = process.env.YOUCODED_OZONE;
+  const isWaylandSession =
+    process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+  if (ozoneOverride) {
+    app.commandLine.appendSwitch('ozone-platform', ozoneOverride);
+  } else if (isWaylandSession) {
+    app.commandLine.appendSwitch('ozone-platform', 'x11'); // see KNOWN GAP above
+  }
+  // GPU-crash workaround (verified 2026-07-23): under XWayland the GPU process
+  // SIGSEGVs (exit_code=139) inside bundled ANGLE at EGL_CreateWindowSurface on
+  // this machine's AMD/mesa stack — the default GL backend crashed 3× on every
+  // launch. YOUCODED_ANGLE=vulkan routed ANGLE through Vulkan (RADV) and
+  // eliminated the crash entirely (0 vs 3). This is machine-specific: other GPUs
+  // (Nvidia/Intel/older mesa) may need a different backend, so we do NOT default
+  // it — it must be passed explicitly (YOUCODED_ANGLE=vulkan|swiftshader|gl).
+  if (process.env.YOUCODED_ANGLE) {
+    app.commandLine.appendSwitch('use-angle', process.env.YOUCODED_ANGLE);
+  }
+}
+
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
 // only provides /usr/bin:/bin:/usr/sbin:/sbin. Linux Snap/Flatpak/some DEs may
