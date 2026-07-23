@@ -21,16 +21,26 @@ export interface BuddyManager {
   dragEnded(): void;
 }
 
-// WHY: one decision point, pure and testable. The overlay exists because
+// WHY: one decision point, pure and testable. The overlay was built because
 // Wayland forbids window positioning; everywhere else keeps three windows.
+//
+// WHY 'windows' is now the default EVERYWHERE, including Linux Wayland
+// (2026-07-23): Electron's setIgnoreMouseEvents is a TOTAL no-op on native
+// Wayland — probe-verified with live clicks, both with and without
+// {forward:true} — so the screen-sized overlay cannot pass clicks through
+// and becomes an invisible full-screen click-eater. The overlay code stays
+// dormant behind the YOUCODED_BUDDY_STRATEGY=overlay override until the
+// platform grows the primitive. On Wayland this means NO buddy (same as
+// before this feature — not a regression). Full evidence and next steps:
+// youcoded-dev/docs/active/investigations/
+// 2026-07-23-buddy-overlay-wayland-presentation.md
 export function chooseBuddyStrategy(
   platform: NodeJS.Platform,
   env: Record<string, string | undefined>
 ): 'overlay' | 'windows' {
   if (platform !== 'linux') return 'windows';
-  const wayland = env.XDG_SESSION_TYPE === 'wayland' || !!env.WAYLAND_DISPLAY;
   if (env.YOUCODED_BUDDY_STRATEGY === 'windows' || env.YOUCODED_BUDDY_STRATEGY === 'overlay') {
-    return env.YOUCODED_BUDDY_STRATEGY; // dev/test override + user escape hatch
+    return env.YOUCODED_BUDDY_STRATEGY; // dev/test override + future re-enable path
   }
-  return wayland ? 'overlay' : 'windows';
+  return 'windows';
 }
