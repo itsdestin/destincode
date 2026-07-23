@@ -68,6 +68,14 @@ interface SessionState {
   firstUserText?: string;
   attempts: number;
   done: boolean;
+  // Synchronous re-entrancy guard (Task 7 review): true from the moment attempt()
+  // begins until it settles. Two turn-complete events can arrive back-to-back
+  // during a TAKEOVER or RESUME transition — the holder's final turn plus the
+  // requester's replayed one, or a rapid interrupt→resume — and without this both
+  // would pass the hasTitle/getBinding checks and each call generate + onTitle,
+  // double-titling the session (and burning two of the three attempts at once).
+  // Set BEFORE the first await so the second overlapping attempt short-circuits.
+  inFlight: boolean;
 }
 
 export interface NativeTitleFeeder {
@@ -104,48 +112,58 @@ export function createNativeTitleFeeder(deps: NativeTitleFeederDeps): NativeTitl
   function stateFor(sessionId: string): SessionState {
     let s = sessions.get(sessionId);
     if (!s) {
-      s = { attempts: 0, done: false };
+      s = { attempts: 0, done: false, inFlight: false };
       sessions.set(sessionId, s);
     }
     return s;
   }
 
   async function attempt(sessionId: string, state: SessionState): Promise<void> {
-    // Re-check freshly rather than trusting a stale in-memory flag — see the
-    // deps.hasTitle doc comment above for why.
-    if (await deps.hasTitle(sessionId).catch(() => false)) {
-      state.done = true;
-      return;
-    }
-
-    const binding = deps.getBinding(sessionId);
-    if (!binding) {
-      // Honest skip: no binding to ask, so this isn't a "failed attempt" —
-      // don't consume the attempts budget on a case the model was never
-      // actually invoked for. Retried next turn-complete once a binding
-      // exists (e.g. the user picks a model on a session that started
-      // without one).
-      return;
-    }
-
-    const firstMessage = (state.firstUserText ?? '').slice(0, FIRST_MESSAGE_CHARS);
-    const prompt = `Reply with only a short 3-6 word title for this conversation. No quotes, no punctuation at the end.\n\nFirst message: ${firstMessage}`;
-
-    state.attempts += 1;
-    let raw: string;
+    // Re-entrancy guard (see SessionState.inFlight): a second turn-complete during
+    // a takeover/resume transition must not run a concurrent generate + double-title.
+    // Set synchronously BEFORE the first await; cleared in the finally so a failed
+    // attempt still retries on the next turn-complete.
+    if (state.inFlight) return;
+    state.inFlight = true;
     try {
-      raw = await deps.generate(binding, prompt);
-    } catch {
-      // Provider/timeout failure — stay silent, retry on the NEXT
-      // turn-complete (bounded by MAX_ATTEMPTS above).
-      return;
+      // Re-check freshly rather than trusting a stale in-memory flag — see the
+      // deps.hasTitle doc comment above for why.
+      if (await deps.hasTitle(sessionId).catch(() => false)) {
+        state.done = true;
+        return;
+      }
+
+      const binding = deps.getBinding(sessionId);
+      if (!binding) {
+        // Honest skip: no binding to ask, so this isn't a "failed attempt" —
+        // don't consume the attempts budget on a case the model was never
+        // actually invoked for. Retried next turn-complete once a binding
+        // exists (e.g. the user picks a model on a session that started
+        // without one).
+        return;
+      }
+
+      const firstMessage = (state.firstUserText ?? '').slice(0, FIRST_MESSAGE_CHARS);
+      const prompt = `Reply with only a short 3-6 word title for this conversation. No quotes, no punctuation at the end.\n\nFirst message: ${firstMessage}`;
+
+      state.attempts += 1;
+      let raw: string;
+      try {
+        raw = await deps.generate(binding, prompt);
+      } catch {
+        // Provider/timeout failure — stay silent, retry on the NEXT
+        // turn-complete (bounded by MAX_ATTEMPTS above).
+        return;
+      }
+
+      const title = sanitizeTitle(raw);
+      if (!title) return; // empty/whitespace-only reply — treat as a failed attempt, retry later
+
+      state.done = true;
+      await deps.onTitle(sessionId, title);
+    } finally {
+      state.inFlight = false;
     }
-
-    const title = sanitizeTitle(raw);
-    if (!title) return; // empty/whitespace-only reply — treat as a failed attempt, retry later
-
-    state.done = true;
-    await deps.onTitle(sessionId, title);
   }
 
   return {

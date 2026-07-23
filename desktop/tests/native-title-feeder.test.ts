@@ -133,6 +133,29 @@ describe('createNativeTitleFeeder', () => {
     expect(deps.onTitle).not.toHaveBeenCalled();
   });
 
+  it('two overlapping turn-completes (takeover/resume transition) title only ONCE', async () => {
+    // A slow generate that parks until we resolve it — so the second turn-complete
+    // fires WHILE the first attempt is still awaiting generate. Without the
+    // synchronous in-flight guard, both would pass hasTitle/getBinding and each call
+    // generate + onTitle, double-titling the session during a takeover/resume race.
+    let resolveGen!: (t: string) => void;
+    const gen = vi.fn(() => new Promise<string>((r) => { resolveGen = r; }));
+    deps = mkDeps({ generate: gen });
+    const feeder = createNativeTitleFeeder(deps);
+    feeder.noteEvent(mkEvent({ type: 'user-message', sessionId: 's1', data: { text: 'hi' } }));
+
+    feeder.noteEvent(mkEvent({ type: 'turn-complete', sessionId: 's1' }));
+    await flush(); // attempt #1 is now parked inside generate (inFlight = true)
+    feeder.noteEvent(mkEvent({ type: 'turn-complete', sessionId: 's1' }));
+    await flush();
+    expect(gen).toHaveBeenCalledTimes(1); // the second attempt short-circuited
+
+    resolveGen('A Fine Title');
+    await flush();
+    expect(deps.onTitle).toHaveBeenCalledTimes(1);
+    expect(deps.onTitle).toHaveBeenCalledWith('s1', 'A Fine Title');
+  });
+
   it('forget() drops per-session state so a re-created session starts clean', async () => {
     const feeder = createNativeTitleFeeder(deps);
     feeder.noteEvent(mkEvent({ type: 'user-message', sessionId: 's1', data: { text: 'hi' } }));
