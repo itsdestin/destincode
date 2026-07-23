@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button, CloseButton, TextInput, Toggle } from './ui';
+import { Button, CloseButton, TextInput, Toggle, Radio, RadioGroup } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -386,17 +386,26 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
             </div>
           )}
 
-          {/* GitHub: create or existing */}
+          {/* GitHub: create or existing. Change 39: native radios → the Radio
+              primitive in a RadioGroup. Each option's body holds its own
+              TextInput, so selecting is a row click and the group only
+              arrow-navigates when a Radio is focused (guarded in RadioGroup). */}
           {backendType === 'github' && (
-            <div className="space-y-3">
+            <RadioGroup
+              options={['create', 'existing']}
+              value={repoMode}
+              onChange={(m) => setRepoMode(m as 'create' | 'existing')}
+              aria-label="Repository mode"
+              className="space-y-3"
+            >
               {/* Create new repo option */}
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="repoMode"
+              <div className="flex items-start gap-2 cursor-pointer" onClick={() => setRepoMode('create')}>
+                <Radio
                   checked={repoMode === 'create'}
                   onChange={() => setRepoMode('create')}
-                  className="mt-0.5 accent-accent"
+                  tabIndex={repoMode === 'create' ? 0 : -1}
+                  aria-label="Create a new private repository"
+                  className="mt-0.5"
                 />
                 <div>
                   <div className="text-xs text-fg font-medium">Create a new private repository</div>
@@ -420,16 +429,16 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                     </div>
                   )}
                 </div>
-              </label>
+              </div>
 
               {/* Use existing repo option */}
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="repoMode"
+              <div className="flex items-start gap-2 cursor-pointer" onClick={() => setRepoMode('existing')}>
+                <Radio
                   checked={repoMode === 'existing'}
                   onChange={() => setRepoMode('existing')}
-                  className="mt-0.5 accent-accent"
+                  tabIndex={repoMode === 'existing' ? 0 : -1}
+                  aria-label="Use an existing repository"
+                  className="mt-0.5"
                 />
                 <div>
                   <div className="text-xs text-fg font-medium">Use an existing repository</div>
@@ -448,8 +457,8 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                     </div>
                   )}
                 </div>
-              </label>
-            </div>
+              </div>
+            </RadioGroup>
           )}
 
           {/* iCloud: show detected path */}

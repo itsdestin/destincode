@@ -344,7 +344,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
           {state?.lastError && (
             <div className="flex flex-col items-center gap-2 mt-2">
               {/* Status colors stay theme-independent per CLAUDE.md. */}
-              <p className="text-xs text-red-500 text-center max-w-md">
+              <p className="text-xs text-destructive-fg text-center max-w-md">
                 {state.lastError}
               </p>
               <button

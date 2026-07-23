@@ -52,22 +52,26 @@ describe('OverflowMenu', () => {
     // The reachability regression this file guards.
     expect(labels.some((l) => l.includes('Connect 4'))).toBe(true);
     // Joined the menu when the toggle took over the right cluster.
-    expect(labels.some((l) => l.includes('Session artifacts'))).toBe(true);
+    expect(labels.some((l) => l.includes('Session Files'))).toBe(true);
   });
 
   it('toggles the session-artifacts drawer for the active session', () => {
     const dispatch = vi.fn();
     renderMenu({ activeSessionId: 's1' }, dispatch);
     openMenu();
-    fireEvent.click(screen.getByText(/Session artifacts/).closest('button')!);
+    fireEvent.click(screen.getByText(/Session Files/).closest('button')!);
     expect(dispatch).toHaveBeenCalledWith({ type: 'DRAWER_OPENED', sessionId: 's1' });
   });
 
-  it('says "Session artifacts", never the old "Files" wording', () => {
+  // Inverted 2026-07-23: this used to pin "Session artifacts" and forbid the
+  // word "Files". Destin renamed it to "Session Files", so the guard now runs
+  // the other way — the rename shouldn't silently drift back.
+  it('says "Session Files", not the older "Session artifacts" wording', () => {
     renderMenu();
     openMenu();
     const labels = screen.getAllByRole('menuitem').map((b) => b.textContent ?? '');
-    expect(labels.some((l) => /\bFiles\b/.test(l))).toBe(false);
+    expect(labels.some((l) => /Session Files/.test(l))).toBe(true);
+    expect(labels.some((l) => /artifacts/i.test(l))).toBe(false);
   });
 
   it('reaches the game panel — the toggle that had no other caller on narrow', () => {

@@ -141,7 +141,7 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
               className="mt-1 w-full"
               autoFocus
             />
-            {error && <div role="alert" className="mt-2 text-xs text-red-500">{error}</div>}
+            {error && <div role="alert" className="mt-2 text-xs text-destructive-fg">{error}</div>}
             {syncOffNote}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" size="lg" className="py-1" onClick={onClose} disabled={busy}>Cancel</Button>

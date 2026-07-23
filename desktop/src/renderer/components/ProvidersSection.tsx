@@ -165,7 +165,7 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
               still renders, and Retry re-runs list(). */}
           {listError && (
             <div className="flex items-center gap-2 px-1">
-              <p className="text-[11px] text-red-500 flex-1">
+              <p className="text-[11px] text-destructive-fg flex-1">
                 {visibleRows.length === 0
                   ? `Couldn't load providers — ${listError}`
                   : `Couldn't refresh — ${listError}`}
@@ -478,7 +478,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
         />
       </div>
 
-      {error && <p className="text-[10px] text-red-500">{error}</p>}
+      {error && <p className="text-[10px] text-destructive-fg">{error}</p>}
 
       <div className="flex gap-2 pt-1">
         <Button variant="secondary" onClick={onCancel} className="flex-1 py-2">

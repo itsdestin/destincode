@@ -43,8 +43,9 @@ export default function OverflowMenu({
   onToggleGamePanel, gamePanelOpen, gameConnected, challengePending,
 }: Props) {
   const { state, dispatch } = useArtifact();
-  // Session artifacts joined this menu on narrow (Destin, 2026-07-20) — the
-  // header's right cluster is now the chat/terminal toggle's home.
+  // Session Files joined this menu on narrow (Destin, 2026-07-20; renamed from
+  // "Session artifacts" 2026-07-23) — the header's right cluster is now the
+  // chat/terminal toggle's home.
   const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
   const artifactCount = useArtifactCount(activeSessionId, projectRoot);
   // Positioning + outside/Escape dismissal live in the shared hook, which the
@@ -90,7 +91,7 @@ export default function OverflowMenu({
     },
     {
       key: 'artifacts',
-      label: artifactCount > 0 ? `Session artifacts (${artifactCount})` : 'Session artifacts',
+      label: artifactCount > 0 ? `Session Files (${artifactCount})` : 'Session Files',
       onClick: choose(() => {
         if (!activeSessionId) return;
         // Same D3 guard as the HeaderBar toggle — closing can discard a draft.

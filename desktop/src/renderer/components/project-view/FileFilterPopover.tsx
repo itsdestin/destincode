@@ -14,29 +14,32 @@ import { useEscClose } from '../../hooks/use-esc-close';
 import type { FileTypeGroup } from '../../../shared/artifacts/categorization';
 import type { FileSortKey } from './tabs/FilesTab';
 
-const TYPE_OPTIONS: { value: 'all' | FileTypeGroup; label: string }[] = [
-  { value: 'all', label: 'All types' },
+const TYPE_OPTIONS: { value: FileTypeGroup; label: string }[] = [
   { value: 'document', label: 'Documents' },
   { value: 'image', label: 'Images' },
   { value: 'sheet', label: 'Spreadsheets' },
   { value: 'code', label: 'Code & configs' },
 ];
+// Sort-by-Type was removed 2026-07-23 (Destin): the TYPE group below filters by
+// type, so sorting by it too was a second, weaker way to do the same thing.
 const SORT_OPTIONS: { value: FileSortKey; label: string }[] = [
   { value: 'name', label: 'Name' },
   { value: 'recent', label: 'Recent' },
-  { value: 'type', label: 'Type' },
 ];
 
-// Single-select chip — same rounded-full language as the seg control and the
-// marketplace filter chips.
-function Chip({ active, onClick, children }: {
-  active: boolean; onClick(): void; children: React.ReactNode;
+// Filter chip — same rounded-full language as the seg control and the
+// marketplace filter chips. `multi` switches the semantics from one-of-many
+// (radio) to an independent toggle (aria-pressed), which is what the Type and
+// Visibility groups actually are; only Sort is genuinely single-select.
+function Chip({ active, onClick, multi, children }: {
+  active: boolean; onClick(): void; multi?: boolean; children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      role="radio"
-      aria-checked={active}
+      role={multi ? undefined : 'radio'}
+      aria-checked={multi ? undefined : active}
+      aria-pressed={multi ? active : undefined}
       onClick={onClick}
       className={`px-2.5 py-1 rounded-full text-[12px] transition-colors ${
         active
@@ -49,31 +52,28 @@ function Chip({ active, onClick, children }: {
   );
 }
 
-function Group({ label, children }: { label: string; children: React.ReactNode }) {
+function Group({ label, multi, children }: { label: string; multi?: boolean; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-[10px] tracking-wider text-fg-muted uppercase">{label}</span>
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={label}>{children}</div>
+      <div className="flex flex-wrap gap-1.5" role={multi ? 'group' : 'radiogroup'} aria-label={label}>{children}</div>
     </div>
   );
 }
 
 export function FileFilterPopover({
-  typeFilter, onTypeFilter,
+  types, onTypesChange,
   sortBy, onSortBy,
-  hideCode, onHideCode,
   showDeleted, onShowDeleted,
   showDeletedAvailable,
   onClose,
 }: {
-  typeFilter: 'all' | FileTypeGroup;
-  onTypeFilter(v: 'all' | FileTypeGroup): void;
+  // MULTI-SELECT as of 2026-07-23 (Destin: "so i can filter to Docs AND images").
+  // An EMPTY set means "all types" — there is no 'all' sentinel member.
+  types: ReadonlySet<FileTypeGroup>;
+  onTypesChange(next: Set<FileTypeGroup>): void;
   sortBy: FileSortKey;
   onSortBy(v: FileSortKey): void;
-  // Hide code & configs — ON by default (the default view is documents-first;
-  // non-developers shouldn't wade through source files to find their docs).
-  hideCode: boolean;
-  onHideCode(v: boolean): void;
   showDeleted: boolean;
   onShowDeleted(v: boolean): void;
   // "Show deleted" only makes sense for the tracked Artifacts tab (All files
@@ -85,13 +85,10 @@ export function FileFilterPopover({
   // registered later, so the shared LIFO stack handles the ordering.
   useEscClose(true, onClose);
 
-  // Sort is a preference, not a filter, so "Clear" only resets the filters —
-  // back to their DEFAULTS, which for hideCode is ON.
-  const filtersActive =
-    typeFilter !== 'all' || !hideCode || (showDeletedAvailable && showDeleted);
+  // Sort is a preference, not a filter, so "Clear" only resets the filters.
+  const filtersActive = types.size > 0 || (showDeletedAvailable && showDeleted);
   const clear = () => {
-    onTypeFilter('all');
-    onHideCode(true);
+    onTypesChange(new Set());
     if (showDeletedAvailable) onShowDeleted(false);
   };
 
@@ -113,9 +110,23 @@ export function FileFilterPopover({
           </button>
         )}
       </div>
-      <Group label="Type">
+      <Group label="Type" multi>
+        {/* "All types" is the CLEARED state, not a member of the selection —
+            picking it empties the set. The rest toggle independently. */}
+        <Chip multi active={types.size === 0} onClick={() => onTypesChange(new Set())}>
+          All types
+        </Chip>
         {TYPE_OPTIONS.map((o) => (
-          <Chip key={o.value} active={typeFilter === o.value} onClick={() => onTypeFilter(o.value)}>
+          <Chip
+            key={o.value}
+            multi
+            active={types.has(o.value)}
+            onClick={() => {
+              const next = new Set(types);
+              if (next.has(o.value)) next.delete(o.value); else next.add(o.value);
+              onTypesChange(next);
+            }}
+          >
             {o.label}
           </Chip>
         ))}
@@ -127,18 +138,16 @@ export function FileFilterPopover({
           </Chip>
         ))}
       </Group>
-      <Group label="Visibility">
-        {/* Default-ON. When the "Code & configs" TYPE filter is selected the
-            parent suspends this (the two together would always show nothing). */}
-        <Chip active={hideCode} onClick={() => onHideCode(!hideCode)}>
-          Hide code & configs
-        </Chip>
-        {showDeletedAvailable && (
-          <Chip active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
+      {/* "Hide code & configs" was retired 2026-07-23 (Destin): "Code & configs"
+          is a TYPE, so hiding it was a second, overlapping way to filter by type.
+          Only render Visibility when it still has a control to show. */}
+      {showDeletedAvailable && (
+        <Group label="Visibility" multi>
+          <Chip multi active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
             Show deleted
           </Chip>
-        )}
-      </Group>
+        </Group>
+      )}
     </div>
   );
 }

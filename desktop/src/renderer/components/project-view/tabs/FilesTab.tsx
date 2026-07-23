@@ -56,17 +56,13 @@ const kindLabel = fileTypeLabel;
 
 // Sort order for the file cards (folders always sort by name). Shared with the
 // seg-row sort <select> in ProjectView via this exported key type.
-export type FileSortKey = 'name' | 'recent' | 'type';
+// 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
+export type FileSortKey = 'name' | 'recent';
 const fileNameOf = (a: ArtifactRecord) => a.path.split('/').pop() ?? a.path;
-const extOf = (n: string) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
 function fileComparator(sortBy: FileSortKey) {
   return (a: ArtifactRecord, b: ArtifactRecord): number => {
     // lastModified is an ISO string — lexicographic compare IS chronological.
     if (sortBy === 'recent') return (b.lastModified || '').localeCompare(a.lastModified || '');
-    if (sortBy === 'type') {
-      return extOf(fileNameOf(a)).localeCompare(extOf(fileNameOf(b)))
-        || fileNameOf(a).localeCompare(fileNameOf(b));
-    }
     return fileNameOf(a).localeCompare(fileNameOf(b));
   };
 }
@@ -122,7 +118,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // Reveal button above.
 import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
 import { ChevronIcon } from '../../Icons';
-import { Button } from '../../ui';
+import { Button, EmptyState } from '../../ui';
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
 // fileTypeGroup, so the list rows read like a miniature file listing.
@@ -141,24 +137,27 @@ function MiniTypeIcon({ path }: { path: string }) {
 export function FilesTab({
   project,
   search,
-  typeFilter,
+  types,
   sortBy,
-  hideCode,
   refreshKey,
   mode,
   onMutated,
+  onClearSearch,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
-  typeFilter: 'all' | FileTypeGroup; // filter popover: type (both file tabs)
+  // Multi-select type filter; EMPTY set = all types (filter popover).
+  types: ReadonlySet<FileTypeGroup>;
   sortBy: FileSortKey;               // filter popover: sort (files only)
-  hideCode: boolean;                 // filter popover: hide code & configs (default ON)
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   mode: 'artifacts' | 'allfiles';
   // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
   // the hero/segment counts without forcing this tab to reload (which would
   // reset the breadcrumb + selection).
   onMutated?: () => void;
+  // Clears the shared search box (owned by ProjectView) from the no-results
+  // empty state — without it that state would be a dead end.
+  onClearSearch?: () => void;
 }) {
   // Root breadcrumb label + empty-state wording follow the mode.
   const rootLabel = mode === 'allfiles' ? 'All files' : 'Artifacts';
@@ -227,23 +226,21 @@ export function FilesTab({
     return () => { cancelled = true; };
   }, [project.path, artifacts]);
 
-  // Filter the artifact grid (deleted-state, search, type filter, hide-code).
+  // Filter the artifact grid (deleted-state, search, type filter).
   // Search matches the FILE NAME only — a query matching a folder name should
   // not surface every file inside that folder. Hide-code is suspended while the
   // "Code & configs" TYPE filter is selected (the two together would always
   // show nothing — an explicit type pick wins over the default hide).
-  const effectiveHideCode = hideCode && typeFilter !== 'code';
   const filtered = useMemo(
     () => artifacts.filter((a) => {
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       const filename = a.path.split('/').pop() ?? a.path;
       if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
-      if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
-      if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
+      if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
       return true;
     }),
-    [artifacts, showDeletedArtifacts, orphanIds, search, typeFilter, effectiveHideCode],
+    [artifacts, showDeletedArtifacts, orphanIds, search, types],
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
@@ -281,6 +278,9 @@ export function FilesTab({
   // an empty hit list and the search stays names-only there).
   const [contentHits, setContentHits] = useState<RankableHit[]>([]);
   const [contentTruncated, setContentTruncated] = useState(false);
+  // True from the moment a content search is queued until it settles. Gates the
+  // no-results empty state so it never flashes mid-search.
+  const [contentSearching, setContentSearching] = useState(false);
   // Groups are collapsed by default (Destin, 2026-07-22) — a fresh query
   // collapses everything again so results always start as a scannable summary.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -302,17 +302,23 @@ export function FilesTab({
     if (!q || q.length < 2 || getPlatform() !== 'electron') {
       setContentHits([]);
       setContentTruncated(false);
+      setContentSearching(false);
       return;
     }
     let cancelled = false;
+    // Mark in-flight IMMEDIATELY (before the 300ms debounce), so the no-results
+    // empty state below can't flash during the debounce + IPC round trip on a
+    // query that is about to return hits.
+    setContentSearching(true);
     const t = setTimeout(() => {
       Promise.resolve((window.claude as any).artifacts.searchContent?.(project.path, q))
         .then((res: any) => {
           if (cancelled) return;
           setContentHits(res?.ok ? (res.hits ?? []) : []);
           setContentTruncated(!!res?.truncated);
+          setContentSearching(false);
         })
-        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); } });
+        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); setContentSearching(false); } });
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
   }, [search, project.path]);
@@ -336,15 +342,28 @@ export function FilesTab({
   // — no folder cards. When you're looking for something, folders are noise;
   // each flat card shows its parent folder for context instead. Plain browsing
   // (no search, no type filter) keeps the navigable folder tree; the visibility
-  // toggles (hide-code, show-deleted) don't flatten — they only prune it.
+  // toggles (show-deleted) don't flatten — they only prune it.
   const searching = !!search.trim();
-  const flat = searching || typeFilter !== 'all';
+  const flat = searching || types.size > 0;
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
   // Flat results honor the same sort as the folder view.
   const flatResults = useMemo(
     () => (flat ? [...filtered].sort(fileComparator(sortBy)) : filtered),
     [filtered, flat, sortBy],
   );
+  // Content hits minus anything already shown as a name match. Hoisted out of the
+  // render below so the "no results" check and the content section agree on one
+  // number instead of deduping twice.
+  const contentRows = useMemo(
+    () => dedupeContentHits(contentHits, new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')))),
+    [contentHits, flatResults],
+  );
+  // A search that matched nothing, anywhere — and isn't still running. Destin
+  // originally ruled (2026-07-22) that the "(0)" section headers were enough,
+  // then hit it live and asked for the Resume-browser treatment instead
+  // (2026-07-23): a real empty state with a way out, since two "(0)" headers and
+  // no content read as a dead end.
+  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0 && !contentSearching;
   const segments = currentDir ? currentDir.split('/') : [];
 
   // One file card — reused by both the flat search results and the folder view.
@@ -359,7 +378,10 @@ export function FilesTab({
       <button
         key={a.id}
         type="button"
-        className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left transition-transform duration-200 hover:scale-[1.02] ${
+        // hover-lift replaces `transition-transform duration-200 hover:scale-[1.02]`:
+        // same lift on desktop, guarded by @media (hover: hover) so a tap on the
+        // Android WebView can't leave the card stuck at 1.02 (spec §9.E).
+        className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left hover-lift ${
           isActive ? 'border-accent' : ''
         } ${isDeleted ? 'opacity-60' : ''}`}
         // No shadow: folder cards are flat, and mixed elevation in one grid read
@@ -452,15 +474,15 @@ export function FilesTab({
           </Button>
         </div>
       )}
-      {/* Search mode has NO prose empty state — the "(0)" in the section
-          headers below carries it (Destin, 2026-07-22). The line remains for
-          the type-filter flatten, which has no headers. */}
+      {/* Search mode's empty state is the EmptyState in the grid below (it
+          replaces the "(0)" headers). This line is for the type-filter flatten,
+          which has no headers and no search to clear. */}
       {!loading && !gated && flat && !searching && flatResults.length === 0 && (
         <p className="text-sm text-fg-muted">Nothing matches the current filters.</p>
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
-          {/* When files EXIST but the visibility filters (hide-code / deleted)
+          {/* When files EXIST but the filters (type / deleted)
               hid them all, say so — the bare "no artifacts yet" empty state
               would lie about the project. */}
           {artifacts.length > 0
@@ -485,15 +507,25 @@ export function FilesTab({
         {flat
           ? (
             <>
-              {searching && (
+              {/* Nothing matched anywhere: one empty state WITH a way out, instead
+                  of two bare "(0)" headers over blank space (Destin, 2026-07-23).
+                  Same EmptyState + action pattern as the Resume browser. */}
+              {noSearchResults && (
+                <div className="col-span-full">
+                  <EmptyState
+                    message={<>No {noun} match “{search.trim()}”.</>}
+                    action={onClearSearch ? { label: 'Clear search', onClick: onClearSearch } : undefined}
+                  />
+                </div>
+              )}
+              {searching && !noSearchResults && (
                 <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
                   Matches by file name ({flatResults.length})
                 </div>
               )}
               {flatResults.map(renderFileCard)}
-              {searching && (() => {
-                const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
-                const rows = dedupeContentHits(contentHits, namePaths);
+              {searching && !noSearchResults && (() => {
+                const rows = contentRows;
                 // Group + sort BEFORE capping, so the biggest groups survive the cut.
                 const all = groupContentHits(rows);
                 const { groups, shownRows, capped: displayCapped } = capGroups(all, MAX_CONTENT_ROWS);
@@ -563,7 +595,9 @@ export function FilesTab({
                   <button
                     key={'dir:' + f.path}
                     type="button"
-                    className="group relative flex flex-col h-44 text-left transition-transform duration-200 hover:scale-[1.02]"
+                    // hover-lift: see the doc-card comment above — the scale is
+                    // guarded by @media (hover: hover) for the Android WebView.
+                    className="group relative flex flex-col h-44 text-left hover-lift"
                     onClick={() => setCurrentDir(f.path)}
                     title={f.path}
                   >

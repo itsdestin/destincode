@@ -112,7 +112,7 @@ export default function MarketplaceAuthChip() {
           className="layer-surface absolute left-0 top-full mt-2 min-w-[200px] max-w-[260px] rounded-md p-2 text-xs shadow-md"
           style={{ zIndex: 62 }}
         >
-          <span className="text-red-400">Sign-in failed: {signInError}. Click the icon to try again.</span>
+          <span className="text-destructive-fg">Sign-in failed: {signInError}. Click the icon to try again.</span>
         </div>
       )}
 

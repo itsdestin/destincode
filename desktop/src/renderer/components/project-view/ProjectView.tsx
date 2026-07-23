@@ -58,8 +58,8 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // Shared lucide-style glyphs live in ./icons.tsx (previously each file carried
 // its own copies of the same paths). GridIcon is the one glyph unique to this
 // file — the Artifacts segment icon.
-import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
-import { Button } from '../ui';
+import { InfoIcon, ChatIcon, FolderIcon, DocIcon } from './icons';
+import { Button, Checkbox, SearchFilterPill } from '../ui';
 
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -67,20 +67,6 @@ function GridIcon({ size = 15 }: { size?: number }) {
       strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
       <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-// lucide-style sliders-horizontal — the standard "filters" icon (three lines
-// with knobs), the trigger for the FileFilterPopover.
-function SlidersGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <line x1="21" y1="4" x2="14" y2="4" /><line x1="10" y1="4" x2="3" y2="4" />
-      <line x1="21" y1="12" x2="12" y2="12" /><line x1="8" y1="12" x2="3" y2="12" />
-      <line x1="21" y1="20" x2="16" y2="20" /><line x1="12" y1="20" x2="3" y2="20" />
-      <line x1="14" y1="2" x2="14" y2="6" /><line x1="8" y1="10" x2="8" y2="14" />
-      <line x1="16" y1="18" x2="16" y2="22" />
     </svg>
   );
 }
@@ -108,12 +94,9 @@ export function ProjectView(props: ProjectViewProps) {
   // live on the seg-row and survive Artifacts ↔ All files toggles. These are
   // EXPLICIT, visible controls the user sets — the badge counts stay folder
   // totals, so a filtered grid never silently redefines what "N files" means.
-  const [typeFilter, setTypeFilter] = useState<'all' | FileTypeGroup>('all');
+  // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
+  const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
-  // Hide code & configs — ON by default (documents-first default view), local
-  // to the Project View so the default always wins on a fresh look. Resets to
-  // ON on project switch alongside the other filters.
-  const [hideCode, setHideCode] = useState(true);
   // Filter popover (behind the sliders icon in the search pill). Click-outside
   // is handled HERE with a wrapper ref that contains both the trigger and the
   // popover — putting it inside the popover would race the trigger's own click
@@ -261,8 +244,7 @@ export function ProjectView(props: ProjectViewProps) {
       // project silently hiding the new project's files is a confusion trap.
       // Sort is a preference, not a filter, so it persists.
       setArtifactSearch('');
-      setTypeFilter('all');
-      setHideCode(true); // default ON — see the state declaration
+      setTypes(new Set());
       setFilterOpen(false);
     }
 
@@ -672,64 +654,33 @@ export function ProjectView(props: ProjectViewProps) {
                   box, so this row alone overflowed the viewport. */}
               {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
                 <div className="w-full sm:w-auto flex items-center gap-2">
-                  <div className="relative flex-1 sm:flex-none" ref={filterWrapRef}>
-                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full sm:w-[260px] focus-within:border-edge-dim">
-                      <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
-                      <input
-                        type="text"
-                        placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
-                        value={artifactSearch}
-                        onChange={(e) => setArtifactSearch(e.target.value)}
-                        className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
-                      />
-                      {/* Filter trigger. Accent badge = number of filters active
-                          BEYOND the default view (type + Show deleted; sort is a
-                          preference; hideCode is ON by default so its default
-                          state isn't counted, and turning it OFF reveals more —
-                          also not counted) so a narrowed grid is never mistaken
-                          for the full list even with the popover closed. */}
-                      {(() => {
-                        const activeFilters =
-                          (typeFilter !== 'all' ? 1 : 0) +
-                          (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0);
-                        return (
-                          <button
-                            type="button"
-                            className={`shrink-0 relative w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors ${
-                              filterOpen || activeFilters > 0
-                                ? 'text-fg bg-well'
-                                : 'text-fg-muted hover:text-fg hover:bg-well'
-                            }`}
-                            onClick={() => setFilterOpen((o) => !o)}
-                            aria-expanded={filterOpen}
-                            aria-label={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filters'}
-                            title={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort'}
-                          >
-                            <SlidersGlyph size={15} />
-                            {activeFilters > 0 && (
-                              <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-accent text-on-accent text-[9.5px] font-medium leading-[15px] text-center">
-                                {activeFilters}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })()}
-                    </div>
+                  <SearchFilterPill
+                    ref={filterWrapRef}
+                    className="flex-1 sm:flex-none sm:w-[260px]"
+                    value={artifactSearch}
+                    onChange={setArtifactSearch}
+                    placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
+                    inputAriaLabel={tab === 'allfiles' ? 'Search files' : 'Search artifacts'}
+                    /* Filters active BEYOND the default view (type + Show deleted).
+                       Sort is a preference, so it isn't counted — the badge only
+                       signals "filters narrowed this" while the popover is shut. */
+                    activeFilters={(types.size > 0 ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
+                    filterOpen={filterOpen}
+                    onToggleFilter={() => setFilterOpen((o) => !o)}
+                  >
                     {filterOpen && (
                       <FileFilterPopover
-                        typeFilter={typeFilter}
-                        onTypeFilter={setTypeFilter}
+                        types={types}
+                        onTypesChange={setTypes}
                         sortBy={fileSort}
                         onSortBy={setFileSort}
-                        hideCode={hideCode}
-                        onHideCode={setHideCode}
                         showDeleted={showDeletedArtifacts}
                         onShowDeleted={setShowDeletedArtifacts}
                         showDeletedAvailable={tab === 'artifacts'}
                         onClose={() => setFilterOpen(false)}
                       />
                     )}
-                  </div>
+                  </SearchFilterPill>
                   {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
                       for floating overlay affordances — this sits in a toolbar row,
                       so it takes the app's standard button radius. */}
@@ -754,10 +705,10 @@ export function ProjectView(props: ProjectViewProps) {
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
@@ -841,14 +792,24 @@ export function ProjectView(props: ProjectViewProps) {
               YouCoded folders, so it also disappears from the new-session folder picker.
               You can add it back anytime with "Add a project" in the project switcher.
             </p>
-            <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg">
-              <input
-                type="checkbox"
-                checked={alsoDeleteSidecar}
-                onChange={(e) => setAlsoDeleteSidecar(e.target.checked)}
-              />
+            {/* Change 39/§1.4: the consent Checkbox primitive (its one intended
+                site). Row is a clickable div (a <label> can't associate with a
+                button), so the whole row toggles like the old label did. The
+                Checkbox is wrapped in a stopPropagation span so its OWN click
+                fires exactly one toggle instead of double-firing via the row. */}
+            <div
+              className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg"
+              onClick={() => setAlsoDeleteSidecar((v) => !v)}
+            >
+              <span onClick={(e) => e.stopPropagation()}>
+                <Checkbox
+                  checked={alsoDeleteSidecar}
+                  onChange={setAlsoDeleteSidecar}
+                  aria-label="Also delete .youcoded/artifacts.json (artifact history)"
+                />
+              </span>
               Also delete <code className="font-mono text-xs bg-inset px-1 rounded">.youcoded/artifacts.json</code> (artifact history)
-            </label>
+            </div>
             <div className="flex gap-2 justify-end">
               <Button
                 variant="secondary"

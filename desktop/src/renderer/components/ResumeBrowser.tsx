@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, Toggle } from './ui';
+import { Button, Toggle, LoadingState, EmptyState } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
@@ -885,11 +885,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <div ref={listRef} className="scroll-fade">
             <div className="py-2">
               {loading ? (
-                <p className="text-sm text-fg-muted text-center py-8">Loading sessions...</p>
+                <LoadingState what="sessions" />
               ) : filtered.length === 0 ? (
-                <p className="text-sm text-fg-muted text-center py-8">
-                  {search.trim() ? 'No matching sessions' : 'No previous sessions found'}
-                </p>
+                <EmptyState
+                  message={search.trim() ? 'No matching sessions' : 'No previous sessions found'}
+                  action={search.trim() ? { label: 'Clear search', onClick: () => setSearch('') } : undefined}
+                />
               ) : grouped ? (
                 // Grouped by project — only when the Projects filter is active
                 [...grouped.entries()].map(([projectPath, items]) => (

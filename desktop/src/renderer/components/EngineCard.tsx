@@ -1,8 +1,9 @@
 // Local engine install/status card (Plan B). Lives under the 'local' provider
 // row in ProvidersSection; Plan C moves it into the Local Models panel.
 // Status language is plain words — never status glyphs (standing UX rule).
-// Class idioms (text sizes, bg-well surface, accent buttons, border-edge-dim)
-// mirror ProvidersSection's own rows so the card reads as part of the section.
+// Class idioms (text sizes, accent buttons) mirror ProvidersSection's own rows
+// so the card reads as part of the section. As of change 25 the surface IS that
+// row surface (bg-inset/50, borderless), not a lookalike.
 import React, { useEffect, useState } from 'react';
 import { Button, TextInput } from './ui';
 
@@ -85,7 +86,10 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     : `Installed ${status.installedVersion} · ${status.backend} · stopped (starts on first message)`;
 
   return (
-    <div className="mt-2 rounded-lg border border-edge-dim bg-well px-3 py-2.5">
+    // Change 25: the in-panel row surface — bg-inset/50, borderless. Was
+    // `border border-edge-dim bg-well`. Same idiom as ProvidersSection's rows
+    // and SettingsRow, which is what the header comment above always intended.
+    <div className="mt-2 rounded-lg bg-inset/50 px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs text-fg font-medium">Local engine (llama.cpp)</p>
@@ -122,7 +126,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       {busy && (progress?.kind === 'verify' || progress?.kind === 'unpack') && (
         <p className="mt-2 text-[10px] text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
-      {error && <p className="mt-2 text-[10px] text-red-500">{error}</p>}
+      {error && <p className="mt-2 text-[10px] text-destructive-fg">{error}</p>}
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
           engine is installed — nothing to configure before that. */}

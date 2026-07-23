@@ -988,6 +988,49 @@ body[data-mode="buddy-chat"] #theme-bg {
   }
 }
 
+/* Grid-card hover lift. The scale MUST sit behind @media (hover: hover): this
+   bundle is also the Android WebView, where a tap leaves :hover stuck on the
+   tapped element — and a stuck 1.02 scale is far more visible than a stuck tint
+   (spec §9.E). Until 2026-07-22 three cards (MarketplaceCard, FilesTab's doc and
+   folder cards) shipped a bare `hover:scale-[1.02]` with no guard, so a tapped
+   card stayed enlarged on Android until something else was tapped.
+   A named class rather than the arbitrary utility, so the guard can't be lost by
+   copy-pasting the old string into a fourth card.
+   `transform: scale()` and not the `scale:` property — `scale` is an independent
+   property that `transition: transform` does NOT animate, which would make the
+   lift snap instead of ease. */
+.hover-lift {
+  transition: transform 200ms ease;
+}
+@media (hover: hover) {
+  .hover-lift:hover {
+    transform: scale(1.02);
+  }
+}
+
+/* Interactive feedback for cards that ARE a .layer-surface (the drawer's skill /
+   command / Add-Skills tiles). This MUST be unlayered CSS, not a Tailwind
+   `hover:bg-inset` utility: `.layer-surface` sets `background-color: var(--panel)`
+   unlayered, Tailwind emits every utility inside `@layer utilities`, and unlayered
+   beats layered no matter the specificity — so the utility silently does nothing.
+   Exactly the trap documented on the protection cascade below; it ate these cards'
+   hover when they moved onto .layer-surface in change 22 (reported 2026-07-23:
+   "no click/hover effects at all. too flat"). `.card-interactive:hover` (0,2,0)
+   outranks `.layer-surface` (0,1,0) and both are unlayered, so this wins cleanly.
+   Hover fill matches the SettingsRow family; :active goes one step deeper so a
+   click reads as a press. */
+.card-interactive {
+  transition: background-color 120ms ease;
+}
+@media (hover: hover) {
+  .card-interactive:hover {
+    background-color: var(--inset);
+  }
+}
+.card-interactive:active {
+  background-color: var(--edge);
+}
+
 /* Scroll strip without a visible scrollbar — for horizontal overflow rows
    (segmented controls, tab strips) where the bar itself would be chrome
    noise on a 4px-tall row. The row is still swipeable/wheel-scrollable. */
