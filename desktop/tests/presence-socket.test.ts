@@ -170,6 +170,31 @@ describe('presence-socket state machine', () => {
     sock.destroy();
   });
 
+  it('renderer-reload replay folds deltas into the cached snapshot — departed friends are not resurrected', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    const bob = { id: 'github:2', display_name: 'Bob', handle: 'bob', status: 'idle' };
+    inst.emit('message', JSON.stringify({ type: 'presence', users: [bob] }));
+
+    // Live deltas after the snapshot: Carol joins and goes in-game; Bob leaves.
+    const carol = { id: 'github:3', display_name: 'Carol', handle: 'carol', status: 'idle' };
+    inst.emit('message', JSON.stringify({ type: 'user-joined', user: carol }));
+    inst.emit('message', JSON.stringify({ type: 'user-status', id: 'github:3', status: 'in-game' }));
+    inst.emit('message', JSON.stringify({ type: 'user-left', id: 'github:2' }));
+
+    // A renderer reload must see the CURRENT roster, not the connect-time one —
+    // replaying stale users is the client-side twin of the server ghost bug
+    // (a departed friend pinned "Online" until the next full snapshot).
+    const before = events.length;
+    sock.setDesired(true);
+    const replayed = events.slice(before);
+    expect(types(replayed)).toEqual(['connected', 'presence']);
+    expect((replayed[1] as any).users).toEqual([{ ...carol, status: 'in-game' }]);
+    sock.destroy();
+  });
+
   it('renderer-reload replay does NOT fire while the handshake is still in flight', () => {
     const { sock, events } = makeSocket(() => 'tok');
     sock.setDesired(true); // socket exists, still CONNECTING

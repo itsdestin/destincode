@@ -49,7 +49,25 @@ export function createPresenceSocket(opts: {
         const ev = JSON.parse(String(data));
         // Cache the latest full presence snapshot for renderer-reload replay
         // (see lastPresence above).
-        if (ev && ev.type === 'presence') lastPresence = ev;
+        if (ev && ev.type === 'presence') {
+          lastPresence = ev;
+        } else if (lastPresence) {
+          // Fold the roster deltas into the cached snapshot (same semantics as
+          // the game-reducer's USER_JOINED/LEFT/STATUS). Without this, a
+          // renderer reload replayed the CONNECT-TIME roster and resurrected
+          // friends who had since left — the client-side twin of the server's
+          // ghost-socket stuck-"Online" bug (2026-07-22 investigation).
+          // A delta arriving before any snapshot is skipped: a roster can't be
+          // synthesized from deltas, and the server always snapshots first.
+          const users = Array.isArray(lastPresence.users) ? (lastPresence.users as Array<{ id: string }>) : [];
+          if (ev?.type === 'user-joined' && ev.user) {
+            lastPresence = { ...lastPresence, users: [...users.filter((u) => u.id !== ev.user.id), ev.user] };
+          } else if (ev?.type === 'user-left') {
+            lastPresence = { ...lastPresence, users: users.filter((u) => u.id !== ev.id) };
+          } else if (ev?.type === 'user-status') {
+            lastPresence = { ...lastPresence, users: users.map((u) => (u.id === ev.id ? { ...u, status: ev.status } : u)) };
+          }
+        }
         opts.onEvent(ev);
       } catch { /* non-JSON frame: ignore */ }
     },

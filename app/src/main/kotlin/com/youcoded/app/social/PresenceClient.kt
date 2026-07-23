@@ -25,6 +25,10 @@ class PresenceClient(
     private var desired = false
     private var attempts = 0
     private val backoffMs = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)
+    // Desktop parity: reconnecting-ws.ts PING_INTERVAL_MS — the app-level ping
+    // both platforms must send (see schedulePing below for why OkHttp's
+    // protocol-level ping is not enough).
+    private val pingIntervalMs = 30_000L
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // Read by isConnected() from the SessionService bridge thread (the honest
@@ -80,6 +84,7 @@ class PresenceClient(
                     attempts = 0
                     connected = true
                     onEvent(JSONObject().put("type", "connected"))
+                    schedulePing(webSocket)
                 }
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -97,6 +102,27 @@ class PresenceClient(
                 handler.post { retry(webSocket, 1006, t.message ?: "failure") }
             }
         })
+    }
+
+    // App-level liveness ping — REQUIRED, not redundant with OkHttp's
+    // pingInterval. OkHttp sends WebSocket *protocol* pings, which Cloudflare's
+    // edge answers without the presence room ever observing them; the server's
+    // liveness model (PresenceRoom stale-socket eviction, 2026-07-22) counts
+    // only application frames and its auto-response JSON ping pair. Without
+    // this loop, every Android socket looks permanently silent server-side and
+    // gets evicted on the staleness timer. The string must stay byte-exact:
+    // the server's WebSocketRequestResponsePair matches {"type":"ping"}
+    // (identical to desktop's JSON.stringify({type:'ping'})).
+    // OkHttp's protocol ping stays enabled too — it is what detects a dead
+    // connection CLIENT-side and triggers the reconnect backoff.
+    private fun schedulePing(socket: WebSocket) {
+        handler.postDelayed({
+            // Superseded or torn down — stop silently; a new socket's onOpen
+            // starts its own loop. Same identity guard as retry().
+            if (ws !== socket) return@postDelayed
+            socket.send("""{"type":"ping"}""")
+            schedulePing(socket)
+        }, pingIntervalMs)
     }
 
     private fun retry(source: WebSocket, code: Int, reason: String) {
