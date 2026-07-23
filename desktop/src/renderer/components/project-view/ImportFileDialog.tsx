@@ -29,11 +29,18 @@ export interface ImportFileDialogProps {
   destLabel: string;
   /** Basenames among `sources` that already exist in destDir, computed by the
    *  caller from the current folder listing BEFORE this dialog opens. Empty
-   *  (default) means no collisions and no Replace/Keep both/Skip choice. */
+   *  (default) means no collisions and no Replace/Keep both/Skip choice.
+   *  This list is DISCLOSED to the user by name below and forwarded to main,
+   *  which will only ever apply 'replace' to a name that appears in it — the
+   *  listing it is derived from can miss files (noise-file skips, discovery
+   *  caps), and an overwrite the user was never shown is data loss. */
   collisions?: string[];
   onConfirm: (args: { mode: ImportMode; onCollision: CollisionMode }) => void;
   onCancel: () => void;
 }
+
+// How many colliding filenames to spell out before the "…and N more" line.
+const MAX_NAMED_COLLISIONS = 8;
 
 const COLLISION_LABEL: Record<CollisionMode, string> = {
   replace: 'Replace',
@@ -87,10 +94,27 @@ export function ImportFileDialog({
 
         {hasCollisions && (
           <div className="mb-4">
-            <p className="text-sm text-fg-muted mb-2">
+            <p className="text-sm text-fg-muted mb-1.5">
               {collisions.length} file{collisions.length === 1 ? '' : 's'} already
-              exist{collisions.length === 1 ? 's' : ''} in this folder.
+              exist{collisions.length === 1 ? 's' : ''} in this folder:
             </p>
+            {/* NAME them. Replace is one choice applied to the whole batch, so a
+                bare count ("2 files already exist") asks the user to approve an
+                overwrite of files they cannot see — and the caller's collision
+                list can be incomplete, which is why main refuses to replace
+                anything not listed here (see import-file.ts). Capped list with
+                an overflow line so a 50-file batch can't push the buttons off
+                screen. */}
+            <ul className="mb-2 max-h-24 overflow-y-auto text-[12px] font-mono text-fg-2 flex flex-col gap-0.5">
+              {collisions.slice(0, MAX_NAMED_COLLISIONS).map((name) => (
+                <li key={name} className="truncate">{name}</li>
+              ))}
+              {collisions.length > MAX_NAMED_COLLISIONS && (
+                <li className="text-fg-muted font-sans">
+                  …and {collisions.length - MAX_NAMED_COLLISIONS} more
+                </li>
+              )}
+            </ul>
             <div className="flex gap-2">
               {(['replace', 'keep-both', 'skip'] as const).map((m) => (
                 <Button

@@ -73,26 +73,47 @@ interface ProjectViewProps {
   onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string, provider?: string) => void;
 }
 
+// Basename of a picked path, for naming the file a failure is ABOUT.
+const baseName = (p: string): string => p.replace(/\\/g, '/').split('/').pop() || p;
+
 // Task 6: human wording for the two importFile failure codes that need it —
 // see artifacts/import-file.ts. Every other code falls through to
-// `${error}: ${detail}` in the caller (runImport) — a real code beats a
-// friendly guess, and NEVER guess at a cause we haven't verified.
+// `${error}: ${detail}` — a real code beats a friendly guess, and NEVER guess
+// at a cause we haven't verified.
 //   needs-confirm  → the destination is a .claude/ path or a dotenv, which
 //                    main refuses without a protected-path confirm (the
 //                    Move/Copy dialog only asks copy-vs-move, not "you're
-//                    about to overwrite your .env"). Say the file was NOT
-//                    imported and name the path.
+//                    about to overwrite your .env").
 //   MOVE_SOURCE_NOT_REMOVED → the copy SUCCEEDED and the original is still in
 //                    place. Report the partial outcome truthfully — the move
 //                    did not fail, only half of it did.
-function describeImportFailure(r: { error: string; detail?: string }): string {
+// `source` is the file the user picked, and every line names it. WHY: for
+// needs-confirm main's `detail` is the refused DESTINATION — which for a
+// destination-folder refusal is the folder, so a 3-file batch used to print the
+// same "/home/d/proj/.claude was NOT imported" three times, naming a directory
+// nobody tried to import. The destination is still reported (it's the real,
+// verified detail), it just isn't the subject of the sentence.
+export function describeImportFailure(r: { error: string; detail?: string }, source?: string): string {
+  const who = source ? baseName(source) : 'That file';
   if (r.error === 'needs-confirm') {
-    return `${r.detail ?? 'That file'} was NOT imported — it's a protected path (inside .claude/ or a dotenv) that needs explicit confirmation this dialog doesn't ask for.`;
+    return `${who} was NOT imported${r.detail ? ` — ${r.detail} is a protected path` : ' — the destination is a protected path'} (inside .claude/ or a dotenv) that needs explicit confirmation this dialog doesn't ask for.`;
   }
   if (r.error === 'MOVE_SOURCE_NOT_REMOVED') {
-    return `Copied into the project, but the original could not be removed${r.detail ? ` (${r.detail})` : ''} — both copies exist now.`;
+    return `${who} was copied into the project, but the original could not be removed${r.detail ? ` (${r.detail})` : ''} — both copies exist now.`;
   }
-  return r.detail ? `${r.error}: ${r.detail}` : r.error;
+  const code = r.detail ? `${r.error}: ${r.detail}` : r.error;
+  return source ? `${who} — ${code}` : code;
+}
+
+// Title for the import-result modal. It is NOT always a failure: a move whose
+// copy landed but whose original couldn't be removed is a partial success, and
+// "already in place" (the file is the one you picked it from) isn't an error at
+// all. Titling all three "Import failed" over those bodies was a lie.
+export function importResultTitle(r: { hardFailures: number; partial: number; alreadyInPlace: number }): string {
+  if (r.hardFailures > 0) return 'Import failed';
+  if (r.partial > 0) return 'Import partly finished';
+  if (r.alreadyInPlace > 0) return 'Nothing to import';
+  return 'Import finished';
 }
 
 export function ProjectView(props: ProjectViewProps) {
@@ -103,10 +124,10 @@ export function ProjectView(props: ProjectViewProps) {
   // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
   const [artifactSearch, setArtifactSearch] = useState('');
-  // Type filter + sort for the two file tabs — lifted here (like search) so they
-  // live on the seg-row and survive Artifacts ↔ All files toggles. These are
-  // EXPLICIT, visible controls the user sets — the badge counts stay folder
-  // totals, so a filtered grid never silently redefines what "N files" means.
+  // Type filter + sort for the Files tab — lifted here (like search) so they
+  // live on the seg-row next to the segmented control. These are EXPLICIT,
+  // visible controls the user sets — the badge counts stay folder totals, so a
+  // filtered grid never silently redefines what "N files" means.
   // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
   const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
@@ -148,16 +169,18 @@ export function ProjectView(props: ProjectViewProps) {
   // dialog. collisions = basenames among sources that already exist in the
   // destination folder, computed BEFORE the dialog opens (see importFiles).
   const [pendingImport, setPendingImport] = useState<{ sources: string[]; collisions: string[] } | null>(null);
-  // Import failures, surfaced as a non-transient modal (Scrim + OverlayPanel,
-  // same pattern as the project-deletion modal below) rather than a Toast —
-  // describeImportFailure above gives the two special-cased codes human
-  // wording; everything else is the real error code + detail. A Toast auto-
-  // dismisses on a timer with NO manual dismiss control (see Toast.tsx), and
-  // these two failure codes name a specific protected path that was not
-  // imported, or report a partial move the user needs to notice and may need
-  // to act on — a multi-file batch can read as several lines, which an 8s
-  // timer doesn't give enough time to read, let alone re-read.
-  const [importError, setImportError] = useState<string | null>(null);
+  // Import outcomes worth reading, surfaced as a non-transient modal (Scrim +
+  // OverlayPanel, same pattern as the project-deletion modal below) rather than
+  // a Toast — describeImportFailure above gives the two special-cased codes
+  // human wording; everything else is the real error code + detail. A Toast
+  // auto-dismisses on a timer with NO manual dismiss control (see Toast.tsx),
+  // and these lines name a specific protected path that was not imported,
+  // report a partial move, or say a file was already where it was headed — the
+  // user needs to notice and may need to act, and a multi-file batch reads as
+  // several lines, which an 8s timer doesn't give enough time to re-read.
+  // `title` is computed per batch (importResultTitle) because not every one of
+  // these outcomes is a failure.
+  const [importResult, setImportResult] = useState<{ title: string; lines: string[] } | null>(null);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
@@ -208,9 +231,9 @@ export function ProjectView(props: ProjectViewProps) {
   // The delete-confirm modal takes Esc priority while open (registered after
   // the browser's own handler because it mounts later — LIFO).
   useEscClose(!!deletingProject, () => { setDeletingProject(null); setAlsoDeleteSidecar(false); });
-  // The import-failure modal likewise needs its own Esc handler now that it's
+  // The import-result modal likewise needs its own Esc handler now that it's
   // a real dialog instead of a Toast (a Toast never listened for Esc at all).
-  useEscClose(!!importError, () => setImportError(null));
+  useEscClose(!!importResult, () => setImportResult(null));
 
   // Load the projects index whenever the view is opened. Hooks MUST run before
   // any early return — Rules of Hooks. Don't move below the projectViewOpen guard
@@ -315,8 +338,9 @@ export function ProjectView(props: ProjectViewProps) {
     // persisted stats.artifactCount in the central index — neither is a
     // renderer concern here.
     // ALL FILES count — the project folder's on-disk files (DISTINCT from the
-    // artifact count). Shares main's discovery cache with the All files tab, so
-    // this and the tab don't double-scan. Gated roots (home dir / drive root)
+    // artifact count). Shares main's discovery cache with the Files tab's
+    // Project Files section, so this and the tab don't double-scan. Gated roots
+    // (home dir / drive root)
     // return { gated } with NO scan → null here → the stat renders "—".
     const getAllFilesCount = async (): Promise<{ count: number | null; truncated: boolean }> => {
       try {
@@ -505,6 +529,13 @@ export function ProjectView(props: ProjectViewProps) {
   // extra IPC round trip rather than reaching into FilesTab's internal state,
   // but that call is cache-backed (project-file-discovery.ts), so it's cheap,
   // and it keeps this component from depending on FilesTab's internals.
+  //
+  // This list is BEST EFFORT and deliberately treated as such downstream:
+  // discovery skips noise files (package-lock.json, *.map, *.min.js,
+  // .DS_Store), truncates at its caps, and this function returns [] if the call
+  // fails at all. Everything it returns is NAMED in the dialog and forwarded as
+  // disclosedCollisions, and main refuses to 'replace' anything absent from it —
+  // so an omission here costs a keep-both rename, never an unseen overwrite.
   const computeImportCollisions = async (paths: string[]): Promise<string[]> => {
     if (!activeProject) return [];
     // force: true — collision detection must see the REAL listing even on a
@@ -546,12 +577,39 @@ export function ProjectView(props: ProjectViewProps) {
   const runImport = async ({ mode, onCollision }: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' }) => {
     if (!activeProject || !pendingImport) return;
     const destDir = importDestDir();
-    const results = await Promise.all(pendingImport.sources.map((p) =>
-      (window.claude as any).artifacts.importFile(activeProject.path, p, destDir, { mode, onCollision })));
+    const sources = pendingImport.sources;
+    const results = await Promise.all(sources.map((p) =>
+      (window.claude as any).artifacts.importFile(activeProject.path, p, destDir, {
+        mode,
+        onCollision,
+        // Forward the EXACT collision list the dialog named. Main applies
+        // 'replace' only to these, so a collision that never made it into the
+        // list (discovery skips noise files and truncates at its caps) falls
+        // back to keep-both instead of silently overwriting a file the user was
+        // never shown. See artifacts/import-file.ts.
+        disclosedCollisions: pendingImport.collisions,
+      })));
     // Surface the REAL failure (code + path) — never a guessed cause. See
     // describeImportFailure above for the two codes that need human wording.
-    const failed = results.filter((r: any) => r && r.ok === false);
-    if (failed.length > 0) setImportError(failed.map(describeImportFailure).join('\n'));
+    // Results are index-aligned with `sources` (Promise.all preserves order),
+    // so each line can name the file it is about.
+    const lines: string[] = [];
+    let hardFailures = 0, partial = 0, alreadyInPlace = 0;
+    results.forEach((r: any, i: number) => {
+      if (r && r.ok === false) {
+        if (r.error === 'MOVE_SOURCE_NOT_REMOVED') partial++; else hardFailures++;
+        lines.push(describeImportFailure(r, sources[i]));
+      } else if (r && r.ok === true && r.reason === 'already-in-place') {
+        // Not a failure: the picked file IS the file already sitting in this
+        // folder, so there was nothing to copy or move. Saying so is the only
+        // honest outcome — the alternative used to be deleting it.
+        alreadyInPlace++;
+        lines.push(`${baseName(sources[i])} is already in this folder — nothing to import.`);
+      }
+    });
+    if (lines.length > 0) {
+      setImportResult({ title: importResultTitle({ hardFailures, partial, alreadyInPlace }), lines });
+    }
     setPendingImport(null);
     setRefreshKey((k) => k + 1);
   };
@@ -664,12 +722,12 @@ export function ProjectView(props: ProjectViewProps) {
             <div className="flex items-center justify-between gap-3 flex-wrap max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:bg-canvas max-sm:py-2">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
-              {/* All four segments at full width, no scrolling: below 640px the
+              {/* All three segments at full width, no scrolling: below 640px the
                   INACTIVE segments drop to icon-only and the active one keeps
-                  its label + count. Labelled, the four total ~500px
-                  ("Conversations" alone is ~168px), which overflowed a phone
-                  and put Context out of reach entirely. Three ~35px icons plus
-                  one labelled segment fits inside ~374px with room to spare.
+                  its label + count. Fully labelled they overflow a phone
+                  ("Conversations" alone is ~168px), which used to put the last
+                  segment out of reach entirely. Two ~35px icons plus one
+                  labelled segment fits inside ~374px with room to spare.
                   overflow-x-auto stays as a backstop for a very long label at a
                   very small width; it should not normally engage. */}
               <div
@@ -699,7 +757,7 @@ export function ProjectView(props: ProjectViewProps) {
                       <span className="shrink-0 inline-flex">{s.icon}</span>
                       {/* Label + count collapse to nothing on an inactive
                           segment below 640px — that's what buys the room for
-                          all four to fit without scrolling. */}
+                          all three to fit without scrolling. */}
                       <span className={`truncate ${active ? '' : 'max-sm:hidden'}`}>{s.label}</span>
                       <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
@@ -756,16 +814,16 @@ export function ProjectView(props: ProjectViewProps) {
                   {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
                       for floating overlay affordances — this sits in a toolbar row,
                       so it takes the app's standard button radius. */}
-                  {tab === 'files' && (
-                    <Button
-                      variant="secondary"
-                      className="shrink-0"
-                      onClick={importFiles}
-                      title="Copy or move a file into this project folder"
-                    >
-                      + Add file
-                    </Button>
-                  )}
+                  {/* No tab check here: the whole block is already gated on
+                      tab === 'files' above. */}
+                  <Button
+                    variant="secondary"
+                    className="shrink-0"
+                    onClick={importFiles}
+                    title="Copy or move a file into this project folder"
+                  >
+                    + Add file
+                  </Button>
                 </div>
               )}
             </div>
@@ -928,30 +986,32 @@ export function ProjectView(props: ProjectViewProps) {
           onCancel={() => setPendingImport(null)}
         />
       )}
-      {/* Import failures — real code + path, never a guessed cause (see
-          describeImportFailure). A non-transient modal, not a Toast: these two
-          failure codes name a protected path that was NOT imported, or report
-          a partial move (copy succeeded, original couldn't be removed) — the
-          user needs to read and may need to act on this, and Toast has no
-          manual dismiss (only its own timer). Same Scrim + OverlayPanel +
+      {/* Import outcomes — real code + path, never a guessed cause (see
+          describeImportFailure). A non-transient modal, not a Toast: these
+          lines name a protected path that was NOT imported, report a partial
+          move (copy succeeded, original couldn't be removed), or say a file was
+          already where it was headed — the user needs to read and may need to
+          act on this, and Toast has no manual dismiss (only its own timer).
+          The title comes from importResultTitle because a partial move and an
+          "already there" no-op are not failures. Same Scrim + OverlayPanel +
           Button pattern as the project-deletion modal above. */}
-      {importError && (
+      {importResult && (
         <>
-          <Scrim layer={2} onClick={() => setImportError(null)} />
+          <Scrim layer={2} onClick={() => setImportResult(null)} />
           <OverlayPanel
             layer={2}
             role="alertdialog"
             aria-modal={true}
-            aria-label="Import errors"
+            aria-label={importResult.title}
             className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-6 max-w-md w-[calc(100%-2rem)]"
           >
-            <h3 className="text-lg font-semibold mb-2 text-fg">Import failed</h3>
-            {/* One line per failed file — the '\n' join from runImport. */}
+            <h3 className="text-lg font-semibold mb-2 text-fg">{importResult.title}</h3>
+            {/* One line per file the user needs to know about. */}
             <div className="flex flex-col gap-1 mb-4 text-sm text-fg">
-              {importError.split('\n').map((line, i) => <span key={i}>{line}</span>)}
+              {importResult.lines.map((line, i) => <span key={i}>{line}</span>)}
             </div>
             <div className="flex gap-2 justify-end">
-              <Button variant="secondary" size="lg" onClick={() => setImportError(null)}>
+              <Button variant="secondary" size="lg" onClick={() => setImportResult(null)}>
                 Dismiss
               </Button>
             </div>

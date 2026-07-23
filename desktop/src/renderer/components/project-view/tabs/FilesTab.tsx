@@ -63,6 +63,20 @@ function fileComparator(sortBy: FileSortKey) {
   };
 }
 
+// Which tracked records belong in the External Artifacts section. LIST_PROJECT
+// returns tombstones (status 'deleted') too, because the session drawer's "Show
+// deleted" toggle still wants them — Project View does not. A tombstone has no
+// content, the tab that used to host it is gone, and nothing here filters it, so
+// a deleted external would sit in the section FOREVER with the irreversible
+// Exclude as the only way to remove it. Genuine ORPHANS (tracked, active, file
+// missing from disk) are a different thing and DO stay — they render as orphan
+// rows so a moved/deleted file is visible rather than silently absent (see
+// orphanIds below). Internals are dropped because the disk walk already shows
+// every in-folder file, undifferentiated.
+function externalSectionRecords(tracked: ArtifactRecord[]): ArtifactRecord[] {
+  return tracked.filter((a) => a.kind !== 'internal' && a.status !== 'deleted');
+}
+
 // One level of a virtual folder tree built from the flat artifact paths.
 // `samples` holds the first few files found beneath the folder, used to render
 // the filename-list contents preview on the folder card.
@@ -208,12 +222,23 @@ export function FilesTab({
       if (res && res.ok) { setArtifacts(res.files ?? res.artifacts ?? []); setTruncated(!!res.truncated); }
       else { setArtifacts([]); setTruncated(false); }
     });
-    // Clear the active artifact when the project switches so the detail pane
-    // doesn't carry stale content from the previous project.
-    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
-    setCurrentDir(''); // back to the project root on switch
     return () => { cancelled = true; };
   }, [project.id, refreshKey, forceScan]);
+
+  // Back to the project root — on a PROJECT SWITCH only. Deliberately its own
+  // effect: the loader above also runs on refreshKey (every "+ Add file") and on
+  // forceScan, and resetting here threw the user back to the root after every
+  // import. Worse, the reset propagated up through onCurrentDirChange, so
+  // ProjectView's currentRelDir went stale too and a SECOND consecutive import
+  // landed at the root instead of the folder being browsed — defeating the
+  // whole point of that plumbing. Clearing the active artifact belongs here for
+  // the same reason: it exists so the detail pane can't carry the PREVIOUS
+  // project's content, which an import never causes.
+  useEffect(() => {
+    setCurrentDir('');
+    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   // External artifacts — sidecar records that live OUTSIDE the project folder.
   // The disk walk above (LIST_ALL_FILES) only ever covers the project root, so
@@ -229,7 +254,7 @@ export function FilesTab({
   const refreshExternals = () => {
     (window.claude as any).artifacts.listProject(project.id).then((r: any) => {
       const tracked: ArtifactRecord[] = (r?.ok && r.artifacts) ? r.artifacts : [];
-      setExternals(tracked.filter((a) => a.kind !== 'internal'));
+      setExternals(externalSectionRecords(tracked));
     }).catch(() => setExternals([]));
   };
   useEffect(() => {
@@ -237,7 +262,7 @@ export function FilesTab({
     (window.claude as any).artifacts.listProject(project.id).then((r: any) => {
       if (cancelled) return;
       const tracked: ArtifactRecord[] = (r?.ok && r.artifacts) ? r.artifacts : [];
-      setExternals(tracked.filter((a) => a.kind !== 'internal'));
+      setExternals(externalSectionRecords(tracked));
     }).catch(() => { if (!cancelled) setExternals([]); });
     return () => { cancelled = true; };
     // No separate "counts" refresh counter reaches this file (only refreshKey
@@ -268,14 +293,13 @@ export function FilesTab({
   // Filter the file grid (search + multi-select type). 2026-07-23: the
   // deleted-state / "Show deleted" branch was dropped along with the Artifacts
   // tab — listAllFiles is a live disk scan, so a "deleted" record (a tombstone
-  // with no content, per VersionEvent) can never appear in its results anyway.
+  // with no content, per VersionEvent) can never appear in its results anyway,
+  // and externals are filtered before they get here (externalSectionRecords).
   // "Hide code & configs" also went away the same day: code is just one of the
   // types, so an empty `types` set means all types and selecting the other three
   // expresses the old hide-code view without a second overlapping control.
   // Search matches the FILE NAME only — a query matching a folder name should
-  // not surface every file inside that folder. Hide-code is suspended while the
-  // "Code & configs" TYPE filter is selected (the two together would always
-  // show nothing — an explicit type pick wins over the default hide).
+  // not surface every file inside that folder.
   // Shared predicate — search + type filter apply identically to Project Files
   // AND External Artifacts (Task 5), so both sections filter through this one
   // function rather than duplicating the checks.
@@ -296,6 +320,11 @@ export function FilesTab({
     () => externals.filter(matchesFilters).sort(fileComparator(sortBy)),
     [externals, search, types, sortBy],
   );
+  // Is the External Artifacts section actually on screen? Every empty state
+  // below has to know: that section renders independently of the file grid, so
+  // "nothing matched" printed above a visible matching external card is a lie.
+  // Root-only, matching the section's own render condition further down.
+  const externalsShown = !currentDir && visibleExternals.length > 0;
   const refreshArtifacts = () => {
     const load = (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined);
     load.then((r: any) => {
@@ -398,8 +427,7 @@ export function FilesTab({
   // Searching OR an active type filter flattens the tree to matching FILES only
   // — no folder cards. When you're looking for something, folders are noise;
   // each flat card shows its parent folder for context instead. Plain browsing
-  // (no search, no type filter) keeps the navigable folder tree; the visibility
-  // toggles (show-deleted) don't flatten — they only prune it.
+  // (no search, no type filter) keeps the navigable folder tree.
   const searching = !!search.trim();
   const flat = searching || types.size > 0;
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
@@ -420,7 +448,13 @@ export function FilesTab({
   // then hit it live and asked for the Resume-browser treatment instead
   // (2026-07-23): a real empty state with a way out, since two "(0)" headers and
   // no content read as a dead end.
-  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0 && !contentSearching;
+  // visibleExternals is part of the check because the External Artifacts section
+  // renders INDEPENDENTLY of flatResults/contentRows, right below this empty
+  // state. Without it, searching "budget" when only an external budget.xlsx
+  // matched printed "No files match “budget”." directly above a card for
+  // budget.xlsx.
+  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0
+    && !externalsShown && !contentSearching;
   const segments = currentDir ? currentDir.split('/') : [];
 
   // One file card — reused by both the flat search results and the folder view.
@@ -533,8 +567,10 @@ export function FilesTab({
       )}
       {/* Search mode's empty state is the EmptyState in the grid below (it
           replaces the "(0)" headers). This line is for the type-filter flatten,
-          which has no headers and no search to clear. */}
-      {!loading && !gated && flat && !searching && flatResults.length === 0 && (
+          which has no headers and no search to clear. !externalsShown for the
+          same reason as noSearchResults: a matching external renders below this
+          line, so claiming nothing matched would contradict it on screen. */}
+      {!loading && !gated && flat && !searching && flatResults.length === 0 && !externalsShown && (
         <p className="text-sm text-fg-muted">Nothing matches the current filters.</p>
       )}
       {!loading && !gated && emptyHere && (
@@ -719,7 +755,7 @@ export function FilesTab({
           renders on a gated root (below): the gate covers the disk walk only,
           not this sidecar read, so a home-dir project still shows what Claude
           touched outside it. */}
-      {!currentDir && visibleExternals.length > 0 && (
+      {externalsShown && (
         <>
           <h3 className="text-sm font-medium text-fg mt-6 mb-2 shrink-0">External Artifacts</h3>
           <div className="grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 shrink-0">

@@ -64,6 +64,32 @@ describe('ImportFileDialog', () => {
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ mode: 'copy' }));
   });
 
+  it('NAMES the colliding files, not just a count', () => {
+    // Replace is one choice applied to the whole batch. A bare "2 files already
+    // exist" asks the user to approve overwriting files they cannot see — and
+    // main now refuses to replace anything absent from this list, so what is
+    // shown here is exactly what can be overwritten.
+    render(
+      <ImportFileDialog
+        {...base}
+        sources={['/a/notes.md', '/a/todo.md']}
+        collisions={['notes.md', 'todo.md']}
+      />,
+    );
+    expect(screen.getByText('notes.md')).toBeTruthy();
+    expect(screen.getByText('todo.md')).toBeTruthy();
+  });
+
+  it('caps the named list so a huge batch cannot push the buttons off screen', () => {
+    const many = Array.from({ length: 12 }, (_, i) => `f${i}.md`);
+    render(<ImportFileDialog {...base} sources={many.map((n) => `/a/${n}`)} collisions={many} />);
+    expect(screen.getByText('f0.md')).toBeTruthy();
+    expect(screen.getByText(/and 4 more/)).toBeTruthy();
+    expect(screen.queryByText('f11.md')).toBeNull();
+    // The choice itself must still be reachable.
+    expect(screen.getByRole('button', { name: /Replace/i })).toBeTruthy();
+  });
+
   it('asks about collisions once for a batch, with apply-to-all', async () => {
     const onConfirm = vi.fn();
     render(
