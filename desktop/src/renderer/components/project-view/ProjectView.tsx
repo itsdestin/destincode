@@ -13,7 +13,7 @@ import { useArtifact } from '../../state/ArtifactContext';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { formatRelativeTime } from '../../utils/format-time';
-import type { CentralIndexProject } from '../../../shared/artifacts/types';
+import type { CentralIndexProject, ArtifactRecord } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
 import type { FileTypeGroup } from '../../../shared/artifacts/categorization';
@@ -60,7 +60,8 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // its own copies of the same paths). GridIcon (the old Artifacts segment icon)
 // was removed here 2026-07-23 when the Artifacts tab merged into Files.
 import { ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
-import { Button } from '../ui';
+import { Button, Toast } from '../ui';
+import { ImportFileDialog } from './ImportFileDialog';
 
 // lucide-style sliders-horizontal — the standard "filters" icon (three lines
 // with knobs), the trigger for the FileFilterPopover.
@@ -81,6 +82,28 @@ interface ProjectViewProps {
   // Threaded from App: starts a new conversation in the given cwd.
   onNewConversation: (cwd: string) => void;
   onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string) => void;
+}
+
+// Task 6: human wording for the two importFile failure codes that need it —
+// see artifacts/import-file.ts. Every other code falls through to
+// `${error}: ${detail}` in the caller (runImport) — a real code beats a
+// friendly guess, and NEVER guess at a cause we haven't verified.
+//   needs-confirm  → the destination is a .claude/ path or a dotenv, which
+//                    main refuses without a protected-path confirm (the
+//                    Move/Copy dialog only asks copy-vs-move, not "you're
+//                    about to overwrite your .env"). Say the file was NOT
+//                    imported and name the path.
+//   MOVE_SOURCE_NOT_REMOVED → the copy SUCCEEDED and the original is still in
+//                    place. Report the partial outcome truthfully — the move
+//                    did not fail, only half of it did.
+function describeImportFailure(r: { error: string; detail?: string }): string {
+  if (r.error === 'needs-confirm') {
+    return `${r.detail ?? 'That file'} was NOT imported — it's a protected path (inside .claude/ or a dotenv) that needs explicit confirmation this dialog doesn't ask for.`;
+  }
+  if (r.error === 'MOVE_SOURCE_NOT_REMOVED') {
+    return `Copied into the project, but the original could not be removed${r.detail ? ` (${r.detail})` : ''} — both copies exist now.`;
+  }
+  return r.detail ? `${r.error}: ${r.detail}` : r.error;
 }
 
 export function ProjectView(props: ProjectViewProps) {
@@ -128,6 +151,21 @@ export function ProjectView(props: ProjectViewProps) {
   // breadcrumb + selection). refreshKey and countsKey both feed the hero
   // effect; only refreshKey feeds FilesTab.
   const [countsKey, setCountsKey] = useState(0);
+  // Task 6: "+ Add file" Move/Copy flow. currentRelDir mirrors FilesTab's own
+  // currentDir (reported up via onCurrentDirChange) so ProjectView knows WHERE
+  // to import into — FilesTab is a breadcrumb tree, so landing everything at
+  // the project root would be surprising once the user has navigated in.
+  // FilesTab resets its currentDir to '' on every project switch, and that
+  // reset flows through the same callback, so this needs no separate reset.
+  const [currentRelDir, setCurrentRelDir] = useState('');
+  // Files picked from the native dialog, staged for the Move/Copy confirm
+  // dialog. collisions = basenames among sources that already exist in the
+  // destination folder, computed BEFORE the dialog opens (see importFiles).
+  const [pendingImport, setPendingImport] = useState<{ sources: string[]; collisions: string[] } | null>(null);
+  // Import failures, surfaced as a Toast — describeImportFailure above gives
+  // the two special-cased codes human wording; everything else is the real
+  // error code + detail.
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
@@ -458,15 +496,62 @@ export function ProjectView(props: ProjectViewProps) {
     setAlsoDeleteSidecar(false);
   };
 
-  // Add an external file to the active project, then trigger an FilesTab
-  // reload. window.claude.dialog.openFile() returns a string[] of paths.
-  const addExternal = async () => {
+  // Join the project root with the folder FilesTab is currently showing.
+  // currentRelDir is '' at the tree root, so this is just the project path there.
+  const importDestDir = (): string => {
+    const root = activeProject!.path.replace(/[\\/]+$/, '');
+    if (!currentRelDir) return root;
+    const sep = root.includes('\\') ? '\\' : '/';
+    return `${root}${sep}${currentRelDir.replace(/^[\\/]+/, '')}`;
+  };
+
+  // Collisions: basenames among the picked paths that already exist directly
+  // in the destination folder. Compared against the SAME on-disk listing
+  // FilesTab's Project Files section reads (artifacts:list-all-files) — an
+  // extra IPC round trip rather than reaching into FilesTab's internal state,
+  // but that call is cache-backed (project-file-discovery.ts), so it's cheap,
+  // and it keeps this component from depending on FilesTab's internals.
+  const computeImportCollisions = async (paths: string[]): Promise<string[]> => {
+    if (!activeProject) return [];
+    const res = await (window.claude as any).artifacts.listAllFiles(activeProject.id);
+    if (!res?.ok || !Array.isArray(res.files)) return [];
+    const prefix = currentRelDir ? currentRelDir.replace(/\\/g, '/') + '/' : '';
+    const existing = new Set<string>();
+    for (const a of res.files as ArtifactRecord[]) {
+      const p = a.path.replace(/\\/g, '/');
+      if (prefix && !p.startsWith(prefix)) continue;
+      const rest = p.slice(prefix.length);
+      if (!rest || rest.includes('/')) continue; // lives in a deeper subfolder, not this one
+      existing.add(rest);
+    }
+    return paths
+      .map((p) => p.replace(/\\/g, '/').split('/').pop() ?? p)
+      .filter((name) => existing.has(name));
+  };
+
+  // + Add file — was a manualIncludes pin (a "fake" tracked entry pointing at a
+  // file elsewhere on disk); now it actually brings the file INTO the project.
+  // Destination is the folder currently being browsed, not the project root:
+  // FilesTab is a breadcrumb tree, so landing everything at the root would be
+  // surprising once you have navigated in.
+  const importFiles = async () => {
     if (!activeProject) return;
     const paths: string[] = await (window.claude as any).dialog.openFile();
     if (!paths || paths.length === 0) return;
-    await Promise.all(
-      paths.map((p) => (window.claude as any).artifacts.includeExternal(activeProject.path, p)),
-    );
+    const collisions = await computeImportCollisions(paths);
+    setPendingImport({ sources: paths, collisions });
+  };
+
+  const runImport = async ({ mode, onCollision }: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' }) => {
+    if (!activeProject || !pendingImport) return;
+    const destDir = importDestDir();
+    const results = await Promise.all(pendingImport.sources.map((p) =>
+      (window.claude as any).artifacts.importFile(activeProject.path, p, destDir, { mode, onCollision })));
+    // Surface the REAL failure (code + path) — never a guessed cause. See
+    // describeImportFailure above for the two codes that need human wording.
+    const failed = results.filter((r: any) => r && r.ok === false);
+    if (failed.length > 0) setImportError(failed.map(describeImportFailure).join('\n'));
+    setPendingImport(null);
     setRefreshKey((k) => k + 1);
   };
 
@@ -697,8 +782,8 @@ export function ProjectView(props: ProjectViewProps) {
                     <Button
                       variant="secondary"
                       className="shrink-0"
-                      onClick={addExternal}
-                      title="Add an external file to this project"
+                      onClick={importFiles}
+                      title="Copy or move a file into this project folder"
                     >
                       + Add file
                     </Button>
@@ -714,7 +799,7 @@ export function ProjectView(props: ProjectViewProps) {
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'files' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} onCurrentDirChange={setCurrentRelDir} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
@@ -838,6 +923,40 @@ export function ProjectView(props: ProjectViewProps) {
           defaultName={turnOnSyncFor.name}
           onClose={() => setTurnOnSyncFor(null)}
           onDone={(p) => void handleAdded(p)}
+        />
+      )}
+
+      {/* Task 6: "+ Add file" Move/Copy confirm — destLabel names the folder
+          being browsed (or the project name at the root) so the target is
+          never a guess; collisions were computed against the current Project
+          Files listing before this opened (see computeImportCollisions). */}
+      {pendingImport && activeProject && (
+        <ImportFileDialog
+          sources={pendingImport.sources}
+          destDir={importDestDir()}
+          destLabel={currentRelDir ? `${currentRelDir}/` : activeProject.name}
+          collisions={pendingImport.collisions}
+          onConfirm={(args) => void runImport(args)}
+          onCancel={() => setPendingImport(null)}
+        />
+      )}
+      {/* Import failures — real code + path, never a guessed cause (see
+          describeImportFailure). 8s (vs. Toast's 3s default): this can be a
+          multi-line, multi-file report (a needs-confirm path name, a
+          MOVE_SOURCE_NOT_REMOVED partial-outcome sentence), and Toast's own
+          dismiss timer is the only way this ever closes — it has no button. */}
+      {importError && (
+        <Toast
+          message={
+            // One line per failed file — a plain string here would collapse
+            // the '\n' join in runImport into a single run-on line of HTML.
+            <div className="flex flex-col gap-0.5">
+              {importError.split('\n').map((line, i) => <span key={i}>{line}</span>)}
+            </div>
+          }
+          tone="error"
+          durationMs={8000}
+          onDismiss={() => setImportError(null)}
         />
       )}
     </div>

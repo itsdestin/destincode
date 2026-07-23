@@ -141,6 +141,7 @@ export function FilesTab({
   hideCode,
   refreshKey,
   onMutated,
+  onCurrentDirChange,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
@@ -152,6 +153,11 @@ export function FilesTab({
   // the hero/segment counts without forcing this tab to reload (which would
   // reset the breadcrumb + selection).
   onMutated?: () => void;
+  // Task 6: FilesTab owns currentDir (the breadcrumb tree), but "+ Add file"'s
+  // destination lives in ProjectView (its dialog + IPC call). Reporting the
+  // browsed folder up is cheaper than lifting the whole tree-navigation state,
+  // and keeps this component the sole owner of currentDir's setState calls.
+  onCurrentDirChange?: (relDir: string) => void;
 }) {
   // Root breadcrumb label + empty-state wording — constant now that there's
   // only one section (Task 5 adds "External Artifacts" as its own section, not
@@ -176,6 +182,15 @@ export function FilesTab({
   // Current folder being browsed ('' = project root). Files are organized into a
   // virtual tree from their relative paths so a 1000-file project is navigable.
   const [currentDir, setCurrentDir] = useState('');
+  // Report the browsed folder up to ProjectView, which needs it as the "+ Add
+  // file" import destination — see the prop comment above. Deliberately keyed
+  // on currentDir ONLY: onCurrentDirChange gets a fresh identity on every
+  // ProjectView render, and re-firing on that would just re-report the same
+  // value (harmless, but noisy) instead of only on real navigation.
+  useEffect(() => {
+    onCurrentDirChange?.(currentDir);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDir]);
 
   // Load artifacts whenever the active project changes, or after an add-external
   // (refreshKey bump from ProjectView).
