@@ -63,7 +63,17 @@ export function setSyncSpacesAuthStore(store: { getToken(): string | null } | nu
 // Route a lease op to the hub socket. Returns null when the hub is down (the
 // lease client treats null as "no answer" and falls back to its file / never-block).
 export function hubLeaseRequest(op: string, sessionId: string, deviceId: string): Promise<LeaseResult | null> {
-  return hubSocket?.request(op, sessionId, deviceId) ?? Promise.resolve(null);
+  // Debug: takeover/lease failures are silent by design (never-block), which made
+  // "takeover didn't happen" undiagnosable from logs (2026-07-23). Log every op +
+  // whether the hub could answer — `null` here means the op had NO delivery path.
+  if (!hubSocket) {
+    console.warn(`[lease] ${op} ${sessionId.slice(0, 8)}: hub socket absent (status=${hubStatus}) — no delivery path, answering null`);
+    return Promise.resolve(null);
+  }
+  return hubSocket.request(op, sessionId, deviceId).then(
+    (r) => { console.log(`[lease] ${op} ${sessionId.slice(0, 8)}: ${r ? `ok=${r.ok} holder=${r.holder?.deviceId?.slice(0, 8) ?? 'none'}` : 'null (hub gave no answer)'}`); return r; },
+    (e) => { console.warn(`[lease] ${op} ${sessionId.slice(0, 8)}: hub request failed: ${e?.message ?? e}`); throw e; },
+  );
 }
 
 type LeaseEvent = Extract<SyncHubEvent, { type: 'lease-event' }>;
@@ -356,16 +366,19 @@ async function startEngine(log: (m: string) => void): Promise<void> {
         lastSyncByDevice = ev.map;
       } else if (ev.type === 'connected') {
         hubStatus = 'connected';
+        console.log('[lease] hub connected');
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'connected' });
         // Reconcile-on-connect: pull anything missed while we were offline.
         if (engine && roots) for (const s of activeSpaces()) void engine.syncSpace(s);
         void runDiscovery(); // retry any project a prior materialize missed; apply stop tombstones
       } else if (ev.type === 'disconnected') {
         hubStatus = 'disconnected';
+        console.log('[lease] hub disconnected');
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'disconnected' });
       } else if (ev.type === 'lease-event') {
         // DO-pushed lease notification (released/taken/takeover-request). Forward
         // to main.ts's listener (the lease client filters by held session).
+        console.log(`[lease] hub event received: ${JSON.stringify({ ...ev, type: undefined })}`);
         leaseEventListener?.(ev);
       }
     },

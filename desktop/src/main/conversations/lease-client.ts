@@ -279,6 +279,7 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
       // The lease file stores the holder's deviceId too, so self keys on it here as well.
       const file = readLeaseFile(sessionId);
       if (file && file.expiresAt > Date.now()) {
+        console.log(`[lease] query ${sessionId.slice(0, 8)}: hub down — FILE fallback says held by ${file.deviceId.slice(0, 8)} (a takeover request cannot be delivered in this state)`);
         return {
           held: true,
           device: file.device,
@@ -302,7 +303,11 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
     handleTakeoverRequest(sessionId, from) {
       // Only act if THIS device currently holds the session — otherwise the
       // request isn't for us (the hub broadcasts to the whole account).
-      if (!held.has(sessionId)) return;
+      if (!held.has(sessionId)) {
+        console.log(`[lease] takeover-request for ${sessionId.slice(0, 8)} ignored — not held here (held: ${held.size})`);
+        return;
+      }
+      console.log(`[lease] takeover-request for ${sessionId.slice(0, 8)} accepted — starting holder teardown (from ${from?.deviceId?.slice(0, 8) ?? 'unknown'})`);
       // The callback is caller-supplied (untrusted) and dispatched synchronously
       // from the service's hub-event handler — a throw here would propagate to
       // Electron main. Swallow so a bad handler can never crash the process.

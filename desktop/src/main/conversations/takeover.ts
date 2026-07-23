@@ -66,9 +66,11 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
       // 2. We don't actually hold it live — just release the lease (idempotent) and
       //    stop. Nothing to interrupt / flush / move.
       if (liveDesktopIds.length === 0) {
+        console.log(`[takeover] holder ${claudeId.slice(0, 8)}: no live session — releasing lease only`);
         try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
         return;
       }
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: quiescing ${liveDesktopIds.length} live holder(s)`);
       // 3. Interrupt/quiesce EVERY live holder, not just the first. A create+resume
       //    pair can leave two desktop ids mapped to one claude id; the old pick-first
       //    behavior handled only one and left the OTHER running as a silent second
@@ -92,7 +94,7 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
           } else {
             deps.sessionManager.sendInput(desktopId, '\x1b');
           }
-        } catch { /* best-effort */ }
+        } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: quiesce/interrupt of ${desktopId.slice(0, 8)} failed:`, e); }
       }
 
       // 4-5. Wait for CC to finish flushing the interrupted turn(s), mirror
@@ -100,9 +102,11 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
       //      so one flush covers every live holder. MIRROR-BEFORE-RELEASE is
       //      load-bearing: the requester pulls the moment it sees the release, so the
       //      final turn must already be in the space.
-      try { await deps.flushSessionToSpace(claudeId); } catch { /* best-effort */ }
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: flushing to space`);
+      try { await deps.flushSessionToSpace(claudeId); } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: flush failed:`, e); }
 
       // 6. Release the lease so the requester can acquire. Idempotent + best-effort.
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: releasing lease`);
       try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
 
       // 7-8. Tell the renderer + remote each moved session, then destroy it. pushMoved
@@ -121,7 +125,8 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
         try { await deps.destroyNative(desktopId); } catch { /* best-effort */ }
         try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
       }
-    } catch { /* never surface out of a fire-and-forget hub-event handler */ }
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: handoff complete`);
+    } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: unexpected escape:`, e); /* never surface out of a fire-and-forget hub-event handler */ }
   };
 }
 
