@@ -41,7 +41,8 @@ export interface OverlayInit {
 }
 
 /**
- * Pure payload builder for the `IPC.BUDDY_OVERLAY_INIT` push. Kept free of
+ * Pure payload builder for the overlay's boot geometry (served to the
+ * renderer's `overlayReady()` pull via initPayloadForSender). Kept free of
  * Electron/window state so it's unit-testable without a display server —
  * see tests/buddy-overlay-manager.test.ts.
  *
@@ -216,18 +217,14 @@ export class BuddyOverlayManager implements BuddyManager {
     // change, or the next show() after a hide()), not accumulated forever.
     if (persisted.keepAbove) this.deps.applyKeepAbove(win);
     win.showInactive();
-    win.webContents.on('did-finish-load', () => {
-      if (win.isDestroyed()) return;
-      // Recompute against the CURRENT primary display, not the snapshot
-      // `primary` was taken from at construction — a display change between
-      // creation and first paint should still hand the renderer fresh geometry.
-      const display = screen.getPrimaryDisplay();
-      const payload = overlayInitPayload(display.bounds, display.workArea, {
-        mascot: persisted.mascot,
-        dock: persisted.dock,
-      });
-      win.webContents.send(IPC.BUDDY_OVERLAY_INIT, payload);
-    });
+    // NOTE deliberately NO did-finish-load init push here (2026-07-23
+    // dead-floater lesson): did-finish-load fires before React mounts —
+    // in dev, before Vite even loads the module graph — so a one-shot push
+    // sent here was dropped before the renderer could subscribe, and the
+    // overlay rendered nothing forever. The renderer PULLS its init payload
+    // instead (initPayloadForSender below, via IPC.BUDDY_OVERLAY_READY)
+    // once it has actually mounted; a recreated window's fresh renderer
+    // pulls again on its own mount, so the recreate path needs nothing here.
     // Mirrors BuddyWindowManager's crash handling: non-clean renderer exits
     // (crash, OOM, force-kill) tear the buddy down; clean exits (dev hot
     // reload) must NOT, or the buddy would vanish on every HMR reload.
@@ -345,6 +342,22 @@ export class BuddyOverlayManager implements BuddyManager {
     // stale snapshot, for the same reason.
     const bounds = screen.getPrimaryDisplay().bounds;
     this.deps.persist({ mascot: localToScreenPoint(state.mascot, bounds), dock: state.dock });
+  }
+
+  /** Renderer pull for its boot geometry (IPC.BUDDY_OVERLAY_READY handler).
+   *  Sender-guarded like the other overlay channels: only the live overlay
+   *  window's own webContents gets a payload — anything else gets null. */
+  initPayloadForSender(sender: Electron.WebContents): OverlayInit | null {
+    if (!this.win || this.win.isDestroyed() || this.win.webContents !== sender) return null;
+    // Read the display and persisted state fresh at pull time — the renderer
+    // may mount well after window construction, and a display change or a
+    // persist could have happened in between.
+    const display = screen.getPrimaryDisplay();
+    const persisted = this.deps.getPersisted();
+    return overlayInitPayload(display.bounds, display.workArea, {
+      mascot: persisted.mascot,
+      dock: persisted.dock,
+    });
   }
 
   setInteractive(interactive: boolean): void {

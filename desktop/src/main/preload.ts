@@ -283,7 +283,7 @@ const IPC = {
   BUDDY_CHAT_STATE: 'buddy:chat-state',
   // Linux Wayland overlay (Task 3+4). Inlined here like every other buddy
   // channel above — preload cannot import shared/types.ts.
-  BUDDY_OVERLAY_INIT: 'buddy:overlay-init',
+  BUDDY_OVERLAY_READY: 'buddy:overlay-ready',
   BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
   BUDDY_OVERLAY_SET_INTERACTIVE: 'buddy:overlay-set-interactive',
   BUDDY_OVERLAY_PERSIST: 'buddy:overlay-persist',
@@ -1091,15 +1091,14 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener(IPC.SESSION_FOCUS_REQUEST, listener);
     },
     // ── Linux Wayland overlay (Task 3+4) ──
-    onOverlayInit: (cb: (init: {
+    // WHY invoke (pull), not an on() push: a did-finish-load push raced
+    // React's mount and got dropped — see BuddyApi.overlayReady's WHY in
+    // shared/types.ts. One-shot boot fetch, not a hot path.
+    overlayReady: (): Promise<{
       workArea: { x: number; y: number; width: number; height: number };
       mascot: { x: number; y: number } | null;
       dock: string | null;
-    }) => void) => {
-      const listener = (_: unknown, init: any) => cb(init);
-      ipcRenderer.on(IPC.BUDDY_OVERLAY_INIT, listener);
-      return () => ipcRenderer.removeListener(IPC.BUDDY_OVERLAY_INIT, listener);
-    },
+    } | null> => ipcRenderer.invoke(IPC.BUDDY_OVERLAY_READY),
     onOverlayToggleChat: (cb: () => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.BUDDY_OVERLAY_TOGGLE_CHAT, listener);

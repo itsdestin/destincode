@@ -11,7 +11,7 @@ import {
   overlayReducer, overlayLayout, type OverlayState, type OverlayInitLike,
 } from './overlay-state';
 
-// Placeholder state before the first onOverlayInit push lands — never
+// Placeholder state before the overlayReady() pull resolves — never
 // rendered (see `if (!initialized) return null` below), just something
 // valid for useReducer to start from. workArea 0×0 keeps clampToWorkArea
 // harmless if anything fires before init (e.g. a stray disengage dispatch).
@@ -59,15 +59,21 @@ export function BuddyOverlayApp() {
     document.body.setAttribute('data-mode', 'buddy-overlay');
   }, []);
 
-  // Main → overlay push, sent once on did-finish-load (Task 3/4): window-local
-  // workArea/mascot/dock so the reducer knows where to place him. The reducer
-  // itself picks a default position when `mascot` is null (fresh install).
+  // Pull the boot geometry (window-local workArea/mascot/dock) from main once
+  // mounted. WHY pull, not the original did-finish-load push (2026-07-23
+  // dead-floater lesson): the push fired before React mounted — before Vite
+  // even loaded the module graph in dev — so it was dropped before this
+  // component could subscribe, `initialized` stayed false, and the overlay
+  // rendered nothing forever. Pulling from the mounted component cannot lose
+  // that race. The reducer picks a default position when `mascot` is null.
   useEffect(() => {
-    const off = window.claude?.buddy?.onOverlayInit?.((init) => {
+    let cancelled = false;
+    window.claude?.buddy?.overlayReady?.().then((init) => {
+      if (cancelled || !init) return;
       dispatch({ type: 'init', init: init as OverlayInitLike });
       setInitialized(true);
     });
-    return off;
+    return () => { cancelled = true; };
   }, []);
 
   // External (tray/menu) chat toggle request — mascot-click toggles are

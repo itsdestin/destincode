@@ -1554,6 +1554,14 @@ app.whenReady().then(async () => {
       buddyManager.persistFromRenderer(state);
     }
   });
+  // Overlay renderer pulls its boot geometry once mounted (replaces the old
+  // did-finish-load push, which raced React's mount and got dropped — see
+  // BuddyOverlayManager.initPayloadForSender / BuddyApi.overlayReady WHYs).
+  // Sender guard lives inside initPayloadForSender; non-overlay senders and
+  // three-window platforms get null.
+  ipcMain.handle(IPC.BUDDY_OVERLAY_READY, (evt) =>
+    buddyManager instanceof BuddyOverlayManager ? buddyManager.initPayloadForSender(evt.sender) : null
+  );
   // Task 8: Settings' KDE keep-above toggle. Persists to BUDDY_POS_FILE (so
   // the next overlay show()/recreate reads it via getPersisted() and
   // reapplies — KWin state doesn't survive window recreation) AND applies

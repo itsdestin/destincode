@@ -1436,7 +1436,7 @@ export function installShim(): void {
       // ── Linux Wayland overlay (Task 3+4) — same desktop-only contract:
       // listeners return no-op unsubscribers, senders are no-ops (not
       // throws) since overlaySetInteractive is a hover-hot path.
-      onOverlayInit: () => () => { /* no-op unsubscribe */ },
+      overlayReady: async () => null, // remote has no overlay window to init
       onOverlayToggleChat: () => () => { /* no-op unsubscribe */ },
       overlaySetInteractive: (_i: boolean) => { /* desktop-only */ },
       overlayPersist: (_s: { mascot: { x: number; y: number }; dock: string | null }) => { /* desktop-only */ },

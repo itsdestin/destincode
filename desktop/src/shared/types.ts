@@ -600,13 +600,19 @@ export interface BuddyApi {
   onFocusSession(cb: (sessionId: string) => void): () => void;
   // ── Linux Wayland overlay (Task 3+4) — only the overlay renderer calls
   // these; other buddy surfaces (three-window model) never mount them.
-  /** Main → overlay push, sent once on did-finish-load: window-local
-   *  workArea/mascot/dock so the overlay's DOM mascot knows where to sit. */
-  onOverlayInit(cb: (init: {
+  /** Renderer → main pull, called once on overlay mount: returns the
+   *  window-local workArea/mascot/dock the overlay's DOM mascot needs, or
+   *  null when the caller isn't the live overlay window. WHY pull, not a
+   *  main→renderer push (2026-07-23 dead-floater lesson): a push sent at
+   *  did-finish-load races React's mount — in dev, Vite loads the module
+   *  graph AFTER did-finish-load, so the one-shot push was gone before the
+   *  subscription existed and the overlay rendered nothing forever. A pull
+   *  cannot lose that race by construction. */
+  overlayReady(): Promise<{
     workArea: { x: number; y: number; width: number; height: number };
     mascot: { x: number; y: number } | null;
     dock: string | null;
-  }) => void): () => void;
+  } | null>;
   /** Main → overlay push: external (tray/menu) chat toggle request. */
   onOverlayToggleChat(cb: () => void): () => void;
   /** Fire-and-forget, hover-hot path: overlay renderer reports whether the
@@ -1034,7 +1040,7 @@ export const IPC = {
   // window. The rest of the overlay IPC surface (renderer→main channels,
   // BuddyApi, preload wiring) lands in the next commit (Task 4) — these two
   // are added now only so this commit's manager code type-checks.
-  BUDDY_OVERLAY_INIT: 'buddy:overlay-init',
+  BUDDY_OVERLAY_READY: 'buddy:overlay-ready',
   BUDDY_OVERLAY_TOGGLE_CHAT: 'buddy:overlay-toggle-chat',
   // Task 4: renderer → main, fire-and-forget. Hover-hot path (mousemove over
   // the mascot/bar/chat toggles hit-testing many times/sec) so this is `send`,
