@@ -3,8 +3,8 @@
 // the TypeScript rootDir (src/), so we copy the essential exports here.
 // The server is authoritative for game state; these are used for optimistic UI.
 
-export const ROWS = 6;
-export const COLS = 7;
+const ROWS = 6;
+const COLS = 7;
 
 export type Board = number[][];
 
@@ -17,7 +17,7 @@ export function createBoard(): Board {
   return Array.from({ length: COLS }, () => Array(ROWS).fill(0));
 }
 
-export function cloneBoard(board: Board): Board {
+function cloneBoard(board: Board): Board {
   return board.map((col) => [...col]);
 }
 

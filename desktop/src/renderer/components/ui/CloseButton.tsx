@@ -38,5 +38,3 @@ export const CloseButton = React.forwardRef<HTMLButtonElement, CloseButtonProps>
     );
   },
 );
-
-export default CloseButton;

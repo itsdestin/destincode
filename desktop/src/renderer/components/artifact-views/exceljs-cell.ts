@@ -19,7 +19,7 @@ export function colLetter(n: number): string {
 // a CSS color. Theme/indexed colors aren't resolved here (no palette) — they
 // return undefined so the cell keeps the default look. openpyxl-generated files
 // (the common agent case) use explicit ARGB, so this covers them well.
-export function argbToCss(color: any): string | undefined {
+function argbToCss(color: any): string | undefined {
   const argb: string | undefined = color?.argb;
   if (!argb || typeof argb !== 'string' || argb.length < 6) return undefined;
   const hex = argb.length === 8 ? argb.slice(2) : argb;

@@ -88,5 +88,3 @@ export const Toggle = React.forwardRef<HTMLButtonElement, ToggleProps>(function 
     </button>
   );
 });
-
-export default Toggle;

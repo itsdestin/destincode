@@ -12,7 +12,7 @@ import { useArtifactBytes } from './useArtifactBytes';
 // switches files — no stale-content flash from the previous document.
 
 /** Map the read-binary error codes to a human message. */
-export function describeBytesError(error: string, noun: string): string {
+function describeBytesError(error: string, noun: string): string {
   switch (error) {
     case 'orphan':
       return `This ${noun} no longer exists on disk.`;

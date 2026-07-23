@@ -7,7 +7,7 @@ import type { ActiveArtifactHandle } from './ActiveArtifactView';
 import { registerDirtyEditorGuard, unregisterDirtyEditorGuard } from './dirty-editor-guard';
 import { Button } from '../ui';
 
-export function UnsavedChangesDialog({
+function UnsavedChangesDialog({
   fileName,
   onSave,
   onDiscard,

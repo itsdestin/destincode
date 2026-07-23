@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Textarea } from '../ui';
 
-export const NOTE_MAX = 8000;
+const NOTE_MAX = 8000;
 
 // Freeform per-session note. maxLength hard-caps at 8000 chars (design); a
 // remaining-count appears near the limit. Saves on blur (only when changed),

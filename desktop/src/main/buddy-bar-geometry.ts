@@ -34,8 +34,8 @@ export const CHAT_SIZE: Size = { width: 320, height: 480 };
  * (Destin 2026-07-17: "the mascot/buttons should be slightly closer to the chat
  * window when below it").
  */
-export const MASCOT_INK_TOP_INSET = 5 / 30;
-export const MASCOT_INK_BOTTOM_INSET = 2 / 30;
+const MASCOT_INK_TOP_INSET = 5 / 30;
+const MASCOT_INK_BOTTOM_INSET = 2 / 30;
 
 /**
  * Gap between the chat panel and the mascot's ARTWORK — NOT his window edge.
@@ -71,10 +71,10 @@ export function mascotInkRect(mascotBounds: Rect): Rect {
  * below the mascot's midline. Destin wants the action bar's row lined up with
  * the hands rather than the midline (2026-07-17).
  */
-export const HANDS_CENTER_FRACTION = 0.583;
+const HANDS_CENTER_FRACTION = 0.583;
 
 /** Chat's horizontal nudge off the group's true centre — Destin's eye, 2026-07-16. */
-export const CHAT_NUDGE_X = 10;
+const CHAT_NUDGE_X = 10;
 
 /**
  * The VISIBLE button row's rect — ALWAYS to the mascot's right, vertically

@@ -75,7 +75,7 @@ export const SYNTAX_MIN_CONTRAST = 4.5;
 /** Walk `color` toward `towards` (normally fg, which passes by construction)
  * until it clears the contrast floor against `bg`. 10% steps: coarse enough to
  * terminate fast, fine enough to keep the hue's character. */
-export function ensureContrast(color: string, bg: string, towards: string): string {
+function ensureContrast(color: string, bg: string, towards: string): string {
   let out = color;
   for (let i = 0; i < 10 && contrastRatio(out, bg) < SYNTAX_MIN_CONTRAST; i++) {
     out = mix(out, towards, 0.1 * (i + 1));

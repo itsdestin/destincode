@@ -109,5 +109,3 @@ const InputGroupField = React.forwardRef<HTMLInputElement, InputGroupFieldProps>
 );
 
 export const InputGroup = Object.assign(InputGroupRoot, { Field: InputGroupField });
-
-export default InputGroup;

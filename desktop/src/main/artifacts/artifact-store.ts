@@ -5,7 +5,7 @@ import { newArtifactId, newVersionId } from '../../shared/artifacts/ulid';
 import { SIDECAR_SCHEMA_VERSION } from '../../shared/artifacts/types';
 import { casWrite } from './cas-write';
 
-export const SIDECAR_RELATIVE = '.youcoded/artifacts.json';
+const SIDECAR_RELATIVE = '.youcoded/artifacts.json';
 
 export type ReadResult = ProjectSidecar | null | { corrupted: true };
 

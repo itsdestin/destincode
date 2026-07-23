@@ -110,7 +110,7 @@ function youcodedDataDir(): string {
 }
 
 /** Where we extract Node's tarball (macOS + Linux). */
-export function userLocalNodeDir(): string {
+function userLocalNodeDir(): string {
   return path.join(youcodedDataDir(), 'node');
 }
 
@@ -120,12 +120,12 @@ export function userLocalNodeDir(): string {
  * tarball extraction, which uses `--strip-components=1` into `userLocalNodeDir()`
  * and would clobber anything else living there on a Node reinstall.
  */
-export function userLocalToolsBinDir(): string {
+function userLocalToolsBinDir(): string {
   return path.join(youcodedDataDir(), 'bin');
 }
 
 /** Node's bin dir (contains node, npm, npx — and later, claude from `npm i -g`). */
-export function userLocalNodeBinDir(): string {
+function userLocalNodeBinDir(): string {
   return path.join(userLocalNodeDir(), 'bin');
 }
 
@@ -299,7 +299,7 @@ function cleanStaleClaudeDownloads(): void {
  * is interpolated. This is intentional; execFile cannot run reg queries that
  * need shell parsing of the output format.
  */
-export function refreshPath(): void {
+function refreshPath(): void {
   if (process.platform !== 'win32') return;
 
   try {
@@ -352,7 +352,7 @@ export function resolveCommand(cmd: string): string {
  * Download a file via HTTPS, following 301/302 redirects.
  * Returns a Promise that resolves when writing is complete.
  */
-export function downloadFile(url: string, dest: string): Promise<void> {
+function downloadFile(url: string, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = (targetUrl: string) => {
       https.get(targetUrl, (res) => {

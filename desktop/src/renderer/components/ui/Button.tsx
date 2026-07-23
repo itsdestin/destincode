@@ -34,7 +34,7 @@ export const FOCUS_RING =
  *  packs, since --radius-lg is a theme token). Rejected: sm, md, full-everywhere.
  *  Pills survive only as a documented exception (first-run hero CTAs), via
  *  className override. */
-export const BUTTON_BASE =
+const BUTTON_BASE =
   'inline-flex items-center justify-center gap-1.5 font-medium rounded-lg transition-colors ' +
   'disabled:opacity-50 disabled:cursor-not-allowed ' +
   FOCUS_RING;
@@ -53,7 +53,7 @@ export const BUTTON_BASE =
  *  panel as a fill, the label has to be readable text on that panel. On dark
  *  themes --destructive is too dark to read as text — no single red satisfies
  *  both roles at AA across our themes, which is why the token is split. */
-export const BUTTON_VARIANT: Record<ButtonVariant, string> = {
+const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-on-accent hover:bg-accent/90',
   secondary: 'border border-edge-dim text-fg-2 hover:bg-inset',
   ghost: 'text-fg-dim hover:text-fg hover:bg-inset',
@@ -65,7 +65,7 @@ export const BUTTON_VARIANT: Record<ButtonVariant, string> = {
  *  md  — forms, popup footers, most actions
  *  lg  — page-level CTAs (sign-in, marketplace hero)
  *  icon— icon-only square; aria-label is required by the type signature */
-export const BUTTON_SIZE: Record<ButtonSize, string> = {
+const BUTTON_SIZE: Record<ButtonSize, string> = {
   sm: 'text-2xs px-2.5 py-1',
   md: 'text-xs px-3 py-1.5',
   lg: 'text-sm px-4 py-2',
@@ -195,5 +195,3 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
     />
   );
 });
-
-export default Button;

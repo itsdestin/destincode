@@ -133,7 +133,7 @@ function withCwdProbe(command: string): string {
 /** Split the sentinel back off the combined stdout+stderr. Returns the text the
  *  model should see and the reported cwd (null when the command exited early,
  *  timed out, or was killed — all cases where cwd simply doesn't change). */
-export function extractCwd(out: string): { text: string; cwd: string | null } {
+function extractCwd(out: string): { text: string; cwd: string | null } {
   const at = out.lastIndexOf(`\n${CWD_SENTINEL}`);
   if (at === -1) return { text: out, cwd: null };
   const after = out.slice(at + 1 + CWD_SENTINEL.length);
@@ -173,7 +173,7 @@ function isInside(root: string, candidate: string): boolean {
 /** Built per-read so it reflects the LAZILY resolved shell (see getShell). A
  *  module-level string would bake in whatever was detected at import — i.e.
  *  "PowerShell" for a user whose git arrived during first-run. */
-export function bashDescription(): string {
+function bashDescription(): string {
   const s = getShell();
   return (
     `Run a shell command (${s.label} on this machine). ` +

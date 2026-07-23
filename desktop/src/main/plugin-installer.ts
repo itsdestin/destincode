@@ -53,7 +53,7 @@ function isContainedIn(child: string, parent: string): boolean {
  * YouCoded/YouCoded local entries live in the itsdestin/wecoded-marketplace
  * repo, while Anthropic upstream entries live in anthropics/claude-plugins-official.
  */
-export function getMarketplaceRepo(sourceMarketplace?: string): string {
+function getMarketplaceRepo(sourceMarketplace?: string): string {
   if (sourceMarketplace === 'youcoded' || sourceMarketplace === 'youcoded-core') {
     return 'https://github.com/itsdestin/wecoded-marketplace.git';
   }
@@ -164,7 +164,7 @@ function copyDirSync(src: string, dest: string): void {
  * Claude Code's plugin cache dir (`tW()` in the CLI) is `~/.claude/plugins/`,
  * so `installed_plugins.json` lives there — not at `~/.claude/`. Skip keys
  * ending in `@youcoded` since those are ours, not a foreign conflict. */
-export function hasConflict(id: string): boolean {
+function hasConflict(id: string): boolean {
   try {
     const installedPath = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
     if (!fs.existsSync(installedPath)) return false;

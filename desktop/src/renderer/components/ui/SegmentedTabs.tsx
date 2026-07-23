@@ -89,5 +89,3 @@ export function SegmentedTabs({
     </div>
   );
 }
-
-export default SegmentedTabs;

@@ -5,7 +5,7 @@ import {
 } from '../../shared/artifacts/types';
 import { mutateFileUnderLock } from './cas-write';
 
-export const INDEX_FILE = 'youcoded-projects-index.json';
+const INDEX_FILE = 'youcoded-projects-index.json';
 
 const MAX_RETRIES = 5;
 

@@ -192,8 +192,3 @@ export async function detectGpu(): Promise<GpuInfo> {
   }
   return cached;
 }
-
-/** Test-only: clear the module-level cache so platform behavior can be re-probed. */
-export function __resetGpuCacheForTests(): void {
-  cached = undefined;
-}

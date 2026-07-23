@@ -16,7 +16,7 @@ import os from 'os';
 // CC-coupled: `cleanupPeriodDays` is a Claude Code settings contract. See
 // youcoded/docs/cc-dependencies.md → "Transcript retention (cleanupPeriodDays)".
 
-export const DEFAULT_CLEANUP_PERIOD_DAYS = 365;
+const DEFAULT_CLEANUP_PERIOD_DAYS = 365;
 
 export interface SeedRetentionResult {
   /** True iff settings.json was rewritten (key was absent). */

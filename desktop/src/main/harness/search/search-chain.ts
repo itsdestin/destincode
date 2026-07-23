@@ -8,7 +8,7 @@ import * as path from 'path';
 
 export type SearchBackendId = 'exa' | 'ddg' | 'tavily';
 export interface SearchChainEntry { backend: SearchBackendId; requiresKey: boolean }
-export const SEARCH_CHAIN_SCHEMA_VERSION = 1;
+const SEARCH_CHAIN_SCHEMA_VERSION = 1;
 // Order rationale (plan decision 7): a user who added a Tavily key wants it
 // used; keyless users skip it (requiresKey) and land on Exa keyless, then DDG.
 export const SHIPPED_SEARCH_CHAIN: SearchChainEntry[] = [

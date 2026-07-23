@@ -37,7 +37,7 @@ export interface QuickChip {
 }
 
 // Fallback defaults if no config exists yet
-export const defaultChips: QuickChip[] = [
+const defaultChips: QuickChip[] = [
   { label: 'Journal', prompt: "let's journal" },
   { label: 'Inbox', prompt: 'check my inbox' },
   { label: 'Git Status', prompt: "run git status and summarize what's changed" },

@@ -1,7 +1,7 @@
 // desktop/src/main/sync-spaces/service.ts
 // Composition root: owns the singleton ManagedRoots/SpaceManager/Engine and
 // exposes the functions IPC + remote-server call. Mirrors the sync-state.ts
-// singleton pattern (setSyncService/getSyncService).
+// singleton pattern (setSyncService).
 import os from 'os';
 import { BrowserWindow } from 'electron';
 import { ManagedRoots } from './managed-roots';

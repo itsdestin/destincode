@@ -57,10 +57,6 @@ function setConnectionState(state: RemoteConnectionState) {
   stateChangeCallback?.(state);
 }
 
-export function getConnectionState(): RemoteConnectionState {
-  return connectionState;
-}
-
 export function onConnectionStateChange(cb: (state: RemoteConnectionState) => void) {
   stateChangeCallback = cb;
 }
@@ -570,7 +566,7 @@ export function retryLocalBridge(): void {
   }, delay);
 }
 
-export function disconnect(): void {
+function disconnect(): void {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (ws) { ws.close(); ws = null; }
   setConnectionState('disconnected');

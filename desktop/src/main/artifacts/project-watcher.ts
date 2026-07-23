@@ -42,7 +42,7 @@ export const WATCH_SKIP_DIRS = new Set([
 
 // Matches discovery MAX_DEPTH so a broad root (the seeded Home folder) cannot
 // point chokidar at an unbounded tree (plan ADDED 2026-07-22 — depth cap).
-export const WATCH_DEPTH = 6;
+const WATCH_DEPTH = 6;
 
 // How long a path written by the app itself stays suppressed. Must exceed
 // chokidar awaitWriteFinish stabilityThreshold (500ms) with margin, or every

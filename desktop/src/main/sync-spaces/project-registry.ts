@@ -84,7 +84,7 @@ export function mergeProjectEntries(a: ProjectRegistryEntry, b: ProjectRegistryE
   };
 }
 
-export function foldProjectEntries(entries: ProjectRegistryEntry[]): ProjectRegistryEntry {
+function foldProjectEntries(entries: ProjectRegistryEntry[]): ProjectRegistryEntry {
   return entries.reduce((acc, e) => mergeProjectEntries(acc, e));
 }
 

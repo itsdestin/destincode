@@ -4,7 +4,7 @@ import React from 'react';
 // input and in user bubbles. Longer alternatives come first so "ultraplan"
 // wins over "plan" at the same position. \b ensures we only match whole
 // words — "planner" and "subplan" are left alone.
-export const FLOWING_KEYWORD_RE = /\b(ultrathink|ultraplan|brainstorm|plan)\b/gi;
+const FLOWING_KEYWORD_RE = /\b(ultrathink|ultraplan|brainstorm|plan)\b/gi;
 
 export interface FlowingSegment {
   text: string;
