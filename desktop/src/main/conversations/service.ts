@@ -378,12 +378,41 @@ export function noteTitleChanged(claudeSessionId: string, title: string, session
   return metaWrite(() => store!.setTitle(sessionProvider, claudeSessionId, title));
 }
 
-export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean, sessionProvider: SessionProvider): Promise<MetaWriteResult> {
-  return metaWrite(() => store!.setFlag(sessionProvider, claudeSessionId, flag, value));
+// C1: resolve which store bucket a meta write lands in. `knownNative` is the
+// caller's SYNCHRONOUS isNativeSessionId(id) result — true only when the record
+// is live now or on-disk here. When false the bucket is decided by probing the
+// store's native bucket: a store-only native browse row (record synced, its
+// transcript not yet materialized on this device — Task 5) is STILL native, but
+// isNativeSessionId can't see it (session-store.ts has() is live/on-disk only).
+// Without this probe, tagging/noting such a row wrote provider 'claude', seeding
+// a phantom claude/<id>.json (blank transcriptRef, EPOCH lastActive) that syncs
+// out, gets pruned on the origin device (the user's tag silently lost), shadows
+// the real native record in materializeOne, and litters browse with a ghost row.
+//
+// Probed INSIDE the metaWrite thunk (which runs only once storePhase==='ready',
+// so `store` is non-null) rather than at handler entry. That closes the boot
+// window: a write made before startConversationStore finishes is buffered while
+// the store is still null; deriving the provider up front would default to
+// 'claude' and flush a native id into the wrong bucket at settle time. Deferring
+// the probe to flush time re-derives it correctly against the now-live store.
+async function providerForWrite(id: string, knownNative: boolean): Promise<SessionProvider> {
+  if (knownNative) return 'native';
+  try { return (await store!.get('native', id)) ? 'native' : 'claude'; }
+  catch { return 'claude'; }
 }
 
-export function noteSessionNote(claudeSessionId: string, note: string, sessionProvider: SessionProvider): Promise<MetaWriteResult> {
-  return metaWrite(() => store!.setNote(sessionProvider, claudeSessionId, note));
+export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean, knownNative: boolean): Promise<MetaWriteResult> {
+  return metaWrite(async () => {
+    const provider = await providerForWrite(claudeSessionId, knownNative);
+    await store!.setFlag(provider, claudeSessionId, flag, value);
+  });
+}
+
+export function noteSessionNote(claudeSessionId: string, note: string, knownNative: boolean): Promise<MetaWriteResult> {
+  return metaWrite(async () => {
+    const provider = await providerForWrite(claudeSessionId, knownNative);
+    await store!.setNote(provider, claudeSessionId, note);
+  });
 }
 
 /**
@@ -549,6 +578,20 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   try { rec = await s.get('claude', id); } catch { rec = null; }
   if (!rec) {
     try { rec = await s.get('native', id); } catch { rec = null; }
+  }
+  // C1: a claude-bucket record with an EMPTY transcriptRef for an id that ALSO
+  // exists in the native bucket is a phantom shadowing the real native record
+  // (the C1 misroute seeds exactly this shape). The claude-first lookup above
+  // would find the phantom, hit the `!rec.transcriptRef` early-return below, and
+  // silently no-op the requester's targeted pull. Prefer the native record when
+  // it's the one carrying a transcript.
+  if (rec && !rec.transcriptRef && asSessionProvider(rec.provider) === 'claude') {
+    let nativeRec: ConversationRecord | null = null;
+    try { nativeRec = await s.get('native', id); } catch { nativeRec = null; }
+    if (nativeRec?.transcriptRef) {
+      console.warn('[conversations] native record shadowed by empty claude phantom — using native', id);
+      rec = nativeRec;
+    }
   }
   if (!rec?.transcriptRef) return;
   // The record IS the truth for provider (not a param) — see

@@ -148,10 +148,26 @@ export class RemoteServer {
    *  sessionIdMap identity for native). Mirrors ipc-handlers' sessionProviderFor
    *  so a session's meta lands in — and reads back from — the same bucket
    *  regardless of which surface (Electron IPC or remote WS) touched it. */
-  private sessionProviderFor(sessionId: unknown): SessionProvider {
+  private isNativeId(sessionId: unknown): boolean {
     const rt = this.nativeRuntime;
-    if (!rt) return 'claude';
-    return rt.nativeHost.isNativeSessionId(String(sessionId ?? '')) ? 'native' : 'claude';
+    return rt ? rt.nativeHost.isNativeSessionId(String(sessionId ?? '')) : false;
+  }
+
+  // Provider bucket to READ a session's meta from — mirrors ipc-handlers'
+  // sessionProviderFor exactly (design §12 survivor 1: any gate covers BOTH
+  // surfaces). 'native' when the runtime recognizes the id (live/on-disk);
+  // otherwise probe the store's native bucket so a store-only native browse row
+  // (record synced, transcript not local; Task 5) reads back from native
+  // instead of seeding a claude phantom (C1). Null store → 'claude', as before.
+  // WRITES pass isNativeId() straight to noteFlagChanged/noteSessionNote, which
+  // defer the probe to flush time (boot-window correctness) — same as ipcMain.
+  private async sessionProviderFor(sessionId: unknown): Promise<SessionProvider> {
+    if (this.isNativeId(sessionId)) return 'native';
+    const { getConversationStore } = await import('./conversations/service');
+    const store = getConversationStore();
+    if (!store) return 'claude';
+    try { return (await store.get('native', String(sessionId ?? ''))) ? 'native' : 'claude'; }
+    catch { return 'claude'; }
   }
 
   /** Injected by ipc-handlers after main.ts builds the lease client/requester,
@@ -959,7 +975,7 @@ export class RemoteServer {
           // silently evaporated (store not up yet / never came up / rejected).
           // Task 5: provider is derived, not hardcoded — writes land in the
           // SAME bucket session:get-meta / session:browse will read back.
-          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value, this.sessionProviderFor(resolved));
+          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value, this.isNativeId(resolved));
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
@@ -976,7 +992,7 @@ export class RemoteServer {
         const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
         if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
           // Task 5: provider is derived, not hardcoded — see session:set-tag.
-          const res = await noteSessionNote(resolved, text, this.sessionProviderFor(resolved));
+          const res = await noteSessionNote(resolved, text, this.isNativeId(resolved));
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
@@ -998,7 +1014,7 @@ export class RemoteServer {
         const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
         if (store) {
           try {
-            const rec = await store.get(this.sessionProviderFor(resolved), resolved);
+            const rec = await store.get(await this.sessionProviderFor(resolved), resolved);
             if (rec) {
               const tags: string[] = [];
               for (const [k, v] of Object.entries(rec.flags)) {

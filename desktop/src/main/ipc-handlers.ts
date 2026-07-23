@@ -2630,13 +2630,22 @@ export function registerIpcHandlers(
     canWrite: canWriteStoreRecord,
   });
 
-  // Provider for a resolved session id — 'native' when NativeSessionHost
-  // recognizes it (live now, or a persisted ~/.youcoded/sessions file), else
-  // 'claude'. Shared by SET_FLAG/SET_TAG/SET_NOTE/GET_META so all four read
-  // and write the SAME store bucket for a given session (conversations/
-  // conversation-store.ts keys records by provider + id).
-  const sessionProviderFor = (resolved: string): SessionProvider =>
-    nativeHost.isNativeSessionId(resolved) ? 'native' : 'claude';
+  // Provider bucket to READ a resolved session's meta from. 'native' when
+  // NativeSessionHost recognizes the id (live now, or a persisted
+  // ~/.youcoded/sessions file); otherwise probe the store's native bucket —
+  // a store-only native browse row (record synced, transcript not local yet;
+  // Task 5) is still native even though isNativeSessionId can't see it (C1).
+  // A null store (boot window) falls back to 'claude' exactly as before.
+  // WRITES do NOT use this: they pass isNativeSessionId(resolved) straight to
+  // noteFlagChanged/noteSessionNote, which defer the native-bucket probe to
+  // flush time so a boot-window buffered write re-derives once the store is up.
+  const sessionProviderFor = async (resolved: string): Promise<SessionProvider> => {
+    if (nativeHost.isNativeSessionId(resolved)) return 'native';
+    const store = getConversationStore();
+    if (!store) return 'claude';
+    try { return (await store.get('native', resolved)) ? 'native' : 'claude'; }
+    catch { return 'claude'; }
+  };
 
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
@@ -2669,7 +2678,7 @@ export function registerIpcHandlers(
         // the store-availability dimension). Task 5: provider is now derived
         // per-session instead of hardcoded 'claude' — the write lands in
         // whichever bucket get-meta/browse will read it back from.
-        const res = await noteFlagChanged(resolved, flag, !!value, sessionProviderFor(resolved));
+        const res = await noteFlagChanged(resolved, flag, !!value, nativeHost.isNativeSessionId(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2747,7 +2756,7 @@ export function registerIpcHandlers(
       if (canWriteStoreRecord(sessionId, resolved)) {
         // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
         // derived, not hardcoded — see SESSION_SET_FLAG's comment.
-        const res = await noteFlagChanged(resolved, key, !!value, sessionProviderFor(resolved));
+        const res = await noteFlagChanged(resolved, key, !!value, nativeHost.isNativeSessionId(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2768,7 +2777,7 @@ export function registerIpcHandlers(
       if (canWriteStoreRecord(sessionId, resolved)) {
         // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
         // derived, not hardcoded — see SESSION_SET_FLAG's comment.
-        const res = await noteSessionNote(resolved, text, sessionProviderFor(resolved));
+        const res = await noteSessionNote(resolved, text, nativeHost.isNativeSessionId(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2790,7 +2799,7 @@ export function registerIpcHandlers(
     // `supported` stays in the result shape (Android still answers false).
     if (!store) return { tags: [], note: '', supported: true };
     try {
-      const rec = await store.get(sessionProviderFor(resolved), resolved);
+      const rec = await store.get(await sessionProviderFor(resolved), resolved);
       if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
       for (const [k, v] of Object.entries(rec.flags)) {

@@ -428,6 +428,34 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
       expect(storeGet).toHaveBeenCalledWith('claude', 'cc-session-abc');
     });
 
+    // C1: a store-only native id — NOT live/on-disk (isNativeSessionId false),
+    // but a native record exists in the store (synced from a peer, transcript
+    // not materialized here). sessionProviderFor must probe the native bucket
+    // and resolve 'native' rather than defaulting to 'claude' (which would read
+    // — and, on the write path, seed — the wrong bucket). Mirrors ipc-handlers.
+    it('resolves a store-only native id (not live/on-disk) to the "native" bucket by probing the store', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set())); // nothing is live/on-disk native
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      // A native record exists in the store for this id; the claude bucket is empty.
+      const storeGet = vi.fn(async (provider: string) =>
+        provider === 'native'
+          ? { flags: { 'tag:tag_n': { value: true, updatedAt: 'x' } }, note: 'from peer' }
+          : null,
+      );
+      mockConversationsService.getConversationStore.mockReturnValue({ get: storeGet });
+
+      const sent = await sendAndCollect(server, {
+        type: 'session:get-meta', id: 'r-native', payload: { sessionId: 'store-only-native' },
+      });
+
+      // The probe hit the native bucket, and the meta read used 'native' too.
+      expect(storeGet).toHaveBeenCalledWith('native', 'store-only-native');
+      expect(storeGet).not.toHaveBeenCalledWith('claude', 'store-only-native');
+      expect(sent[0].payload).toEqual({ tags: ['tag_n'], note: 'from peer', supported: true });
+    });
+
     it('falls back to an empty-but-supported result when no Conversation Store is up', async () => {
       const { RemoteServer } = await import('../src/main/remote-server');
       const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
@@ -501,6 +529,10 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
       expect(sent[0].payload.ok).toBe(false);
     });
 
+    // C1: the write passes the SYNCHRONOUS isNativeSessionId(resolved) result
+    // (a boolean) — not a resolved provider string — to noteFlagChanged, which
+    // defers the store's native-bucket probe to flush time (boot-window
+    // correctness). A live/on-disk native id → true.
     it('derives the write provider via nativeHost.isNativeSessionId on the RESOLVED id', async () => {
       const { RemoteServer } = await import('../src/main/remote-server');
       const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
@@ -509,7 +541,7 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       await sendAndCollect(server, msg({ sessionId: 'desktop-1' }));
 
-      expect(mockConversationsService.noteFlagChanged).toHaveBeenCalledWith('native-1', 'tag:tag_abc', true, 'native');
+      expect(mockConversationsService.noteFlagChanged).toHaveBeenCalledWith('native-1', 'tag:tag_abc', true, true);
     });
 
     // conversations/service's real noteFlagChanged (metaWrite) always catches
@@ -588,7 +620,8 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       await sendAndCollect(server, msg({ sessionId: 'desktop-1', note: 'note text' }));
 
-      expect(mockConversationsService.noteSessionNote).toHaveBeenCalledWith('native-1', 'note text', 'native');
+      // C1: passes the boolean isNativeSessionId result, not a provider string.
+      expect(mockConversationsService.noteSessionNote).toHaveBeenCalledWith('native-1', 'note text', true);
     });
   });
 

@@ -30,7 +30,7 @@ vi.mock('electron', () => ({
 }));
 
 import { registerIpcHandlers } from '../src/main/ipc-handlers';
-import { startConversationStore, stopConversationStore } from '../src/main/conversations/service';
+import { startConversationStore, stopConversationStore, getConversationStore, pruneNativePhantomRecords } from '../src/main/conversations/service';
 
 // A persisted native session is one with a file at
 // <home>/.youcoded/sessions/<slug>/<sessionId>.jsonl — that's exactly what
@@ -189,6 +189,76 @@ describe('native session meta — round trip (Task 5 unlock)', () => {
     const res = await handler('session:set-tag')({ sender: { id: 1 } }, NATIVE_ID, 'tag_physics', true);
     expect(res.ok).toBe(true);
     expect(sawTagAtBroadcastTime).toBe(true);
+  });
+});
+
+// C1 (final review): a native record can exist in the store WITHOUT a local
+// ~/.youcoded/sessions file — the record synced from a peer but its transcript
+// hasn't been materialized here yet (Task 5 exposes full meta controls on such
+// store-only browse rows). isNativeSessionId() returns FALSE for it (SessionStore
+// .has() is live/on-disk only), so the OLD sessionProviderFor(isNativeSessionId
+// ? 'native' : 'claude') tagged it 'claude' → SEEDED a claude/<id>.json phantom
+// (blank transcriptRef, EPOCH lastActive) that syncs out and shadows the real
+// native record. The fix probes the store's native bucket before defaulting.
+describe('store-only native record — meta routes to the native bucket (C1)', () => {
+  // UUID-shaped so it passes the store id guard; deliberately NOT the NATIVE_ID
+  // that beforeEach lays a sessions file down for — this id has a store record
+  // but NO ~/.youcoded/sessions file, so isNativeSessionId() answers false.
+  const STORE_ONLY_ID = '22222222-3333-4444-5555-666666666666';
+
+  async function seedStoreOnlyNative() {
+    const store = getConversationStore()!;
+    // A realistic synced-but-not-materialized native record: real activity, a
+    // native-lane transcriptRef pointing at the space copy that hasn't been
+    // pulled to ~/.youcoded/sessions on THIS device yet.
+    await store.upsert({
+      id: STORE_ONLY_ID,
+      provider: 'native',
+      lastActive: new Date().toISOString(),
+      title: 'synced native session',
+      transcriptRef: `native/transcripts/test-project/${STORE_ONLY_ID}.jsonl`,
+    });
+  }
+
+  it('set-tag writes native/, creates NO claude phantom, and survives phantom-prune', async () => {
+    const { handler } = setup();
+    await seedStoreOnlyNative();
+    // Precondition: no sessions file for this id, so it is NOT isNativeSessionId.
+    const sessionsFile = path.join(tmpHome, '.youcoded', 'sessions', 'test-project', `${STORE_ONLY_ID}.jsonl`);
+    expect(fs.existsSync(sessionsFile)).toBe(false);
+
+    const res = await handler('session:set-tag')({ sender: { id: 1 } }, STORE_ONLY_ID, 'tag_physics', true);
+    expect(res).toEqual({ ok: true });
+
+    // The tag landed in the NATIVE bucket...
+    const nativePath = path.join(tmpConvRoot, 'native', `${STORE_ONLY_ID}.json`);
+    const nativeRec = JSON.parse(fs.readFileSync(nativePath, 'utf8'));
+    expect(nativeRec.flags['tag:tag_physics']?.value).toBe(true);
+    // ...and NO claude phantom was seeded.
+    const claudePath = path.join(tmpConvRoot, 'claude', `${STORE_ONLY_ID}.json`);
+    expect(fs.existsSync(claudePath)).toBe(false);
+
+    // get-meta reads it back from the native bucket (same routing on the read).
+    const meta = await handler('session:get-meta')({ sender: { id: 1 } }, STORE_ONLY_ID);
+    expect(meta).toMatchObject({ tags: ['tag_physics'], supported: true });
+
+    // pruneNativePhantomRecords (which only ever touches the claude bucket)
+    // leaves the correctly-routed native record untouched.
+    const pruned = await pruneNativePhantomRecords({ nativeHomeRoot: tmpHome });
+    expect(pruned).toBe(0);
+    expect(fs.existsSync(nativePath)).toBe(true);
+    const stillTagged = JSON.parse(fs.readFileSync(nativePath, 'utf8'));
+    expect(stillTagged.flags['tag:tag_physics']?.value).toBe(true);
+  });
+
+  it('set-note routes to the native bucket too', async () => {
+    const { handler } = setup();
+    await seedStoreOnlyNative();
+    const res = await handler('session:set-note')({ sender: { id: 1 } }, STORE_ONLY_ID, 'peer-synced note');
+    expect(res).toEqual({ ok: true });
+    const nativeRec = JSON.parse(fs.readFileSync(path.join(tmpConvRoot, 'native', `${STORE_ONLY_ID}.json`), 'utf8'));
+    expect(nativeRec.note).toBe('peer-synced note');
+    expect(fs.existsSync(path.join(tmpConvRoot, 'claude', `${STORE_ONLY_ID}.json`))).toBe(false);
   });
 });
 

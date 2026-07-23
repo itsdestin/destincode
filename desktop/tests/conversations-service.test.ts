@@ -528,6 +528,49 @@ describe('conversations service composition root', () => {
       expect(svc.containedTranscriptPath(root, '')).toBeNull();
     });
 
+    // I1 (final review): pins the trailing `+ path.sep` in containedTranscriptPath.
+    // A SIBLING-PREFIX dir shares the root's string prefix but is a DIFFERENT
+    // directory — root `<p>/space`, ref resolving to `<p>/space-evil`. A bare
+    // `startsWith(resolvedRoot)` (dropping `+ path.sep`) would WRONGLY accept it;
+    // the sep-terminated boundary is what refuses it. Mutation-verified: without
+    // the `+ path.sep` this assertion goes red (the escape is accepted).
+    it('containedTranscriptPath refuses a sibling-prefix dir that shares the root name (pins the trailing path.sep)', async () => {
+      const svc = await freshService(startOpts());
+      const root = path.join(tmpRoot, 'x', 'space');
+      // Resolves to <p>/space-evil/t.jsonl — same string prefix as <p>/space,
+      // different dir. MUST be refused.
+      expect(svc.containedTranscriptPath(root, path.join('..', 'space-evil', 't.jsonl'))).toBeNull();
+      // Control: a subdir LITERALLY named the same is genuinely inside (under
+      // root + sep), so it must still be accepted — proves the guard refuses the
+      // sibling specifically, not everything containing 'space-evil'.
+      expect(svc.containedTranscriptPath(root, path.join('space-evil', 't.jsonl')))
+        .toBe(path.resolve(root, 'space-evil', 't.jsonl'));
+    });
+
+    // I1 integration twin: the same sibling-prefix escape refused at the
+    // materializeOne level. The ref keeps its `claude/` lane prefix (so it clears
+    // the lane assertion that runs FIRST) yet resolves to a sibling of the space
+    // root — proving the containment guard, not the lane check, is what stops the
+    // materialize. root here is <tmpRoot>/Conversations, so the sibling is
+    // <tmpRoot>/Conversations-evil. Mutation-verified alongside the unit case.
+    it('materializeOne refuses a sibling-prefix escape that still passes the lane check', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'sibling-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'sibling-escape-1', provider: 'claude', projectName: 'sibling-proj', originalPath: dir,
+        // Starts with 'claude/' (passes the lane assertion) but resolves to
+        // <tmpRoot>/Conversations-evil/... — a sibling-prefix of the space root.
+        transcriptRef: 'claude/../../Conversations-evil/sibling-escape-1.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('sibling-escape-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('escaping space root'), 'sibling-escape-1');
+      warnSpy.mockRestore();
+    });
+
     it('materializeOne refuses a transcriptRef that escapes the space root', async () => {
       const svc = await freshService(startOpts());
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -601,11 +644,34 @@ describe('conversations service composition root', () => {
     expect(h.store.setTitle).toHaveBeenCalledWith('claude', 'claude-t', 'My Title');
   });
 
-  // 6 — flag write-through.
-  it('noteFlagChanged writes through to store.setFlag', async () => {
+  // 6 — flag write-through. The 4th arg is now `knownNative` (boolean): false
+  // means "not live/on-disk native" → the write probes the store's native bucket
+  // and, finding nothing (default mock returns null), lands in the claude bucket.
+  it('noteFlagChanged writes through to store.setFlag (knownNative=false, no native record → claude)', async () => {
     const svc = await freshService(startOpts());
-    svc.noteFlagChanged('claude-f', 'complete', true, 'claude');
+    await svc.noteFlagChanged('claude-f', 'complete', true, false);
     expect(h.store.setFlag).toHaveBeenCalledWith('claude', 'claude-f', 'complete', true);
+  });
+
+  // C1: knownNative=true (live/on-disk native id) routes the write to native
+  // without probing the store.
+  it('noteFlagChanged routes to the native bucket when knownNative=true', async () => {
+    const svc = await freshService(startOpts());
+    await svc.noteFlagChanged('nat-f', 'complete', true, true);
+    expect(h.store.setFlag).toHaveBeenCalledWith('native', 'nat-f', 'complete', true);
+  });
+
+  // C1: the core misroute fix — knownNative=false, but a native record EXISTS in
+  // the store (a store-only native browse row: synced, transcript not local, so
+  // isNativeSessionId is false). The write must probe the native bucket and land
+  // there, NOT seed a claude phantom.
+  it('noteFlagChanged probes the store and routes to native when a store-only native record exists', async () => {
+    const svc = await freshService(startOpts());
+    h.store.get.mockResolvedValue({ id: 'store-only-nat', provider: 'native' } as any);
+    await svc.noteFlagChanged('store-only-nat', 'complete', true, false);
+    expect(h.store.get).toHaveBeenCalledWith('native', 'store-only-nat');
+    expect(h.store.setFlag).toHaveBeenCalledWith('native', 'store-only-nat', 'complete', true);
+    expect(h.store.setFlag).not.toHaveBeenCalledWith('claude', 'store-only-nat', 'complete', true);
   });
 
   // --- noteModelUsed (Task 3) ------------------------------------------------
@@ -870,8 +936,8 @@ describe('conversations service composition root', () => {
     it('buffers a flag write made before the store starts, flushes it in order, resolves ok:true', async () => {
       vi.resetModules();
       const svc = await import('../src/main/conversations/service');
-      const p1 = svc.noteFlagChanged('id1', 'complete', true, 'claude');   // store not started yet
-      const p2 = svc.noteSessionNote('id1', 'note-2', 'claude');
+      const p1 = svc.noteFlagChanged('id1', 'complete', true, false);   // store not started yet
+      const p2 = svc.noteSessionNote('id1', 'note-2', false);
       await svc.startConversationStore(startOpts());
       expect(await p1).toEqual({ ok: true });
       expect(await p2).toEqual({ ok: true });
@@ -884,7 +950,7 @@ describe('conversations service composition root', () => {
     it('resolves buffered writes ok:false when the store never comes up', async () => {
       vi.resetModules();
       const svc = await import('../src/main/conversations/service');
-      const p = svc.noteFlagChanged('id1', 'complete', true, 'claude');
+      const p = svc.noteFlagChanged('id1', 'complete', true, false);
       h.managedRoots = null;                                  // no personal root
       await svc.startConversationStore();
       expect(await p).toEqual({ ok: false });
@@ -893,12 +959,12 @@ describe('conversations service composition root', () => {
     it('a rejecting store write resolves ok:false, not ok:true', async () => {
       const svc = await freshService(startOpts());
       h.store.setFlag.mockRejectedValue(new Error('lock timeout'));
-      expect(await svc.noteFlagChanged('id1', 'complete', true, 'claude')).toEqual({ ok: false });
+      expect(await svc.noteFlagChanged('id1', 'complete', true, false)).toEqual({ ok: false });
     });
 
     it('a ready store resolves a flag write ok:true immediately (no buffering)', async () => {
       const svc = await freshService(startOpts());
-      expect(await svc.noteFlagChanged('id1', 'complete', true, 'claude')).toEqual({ ok: true });
+      expect(await svc.noteFlagChanged('id1', 'complete', true, false)).toEqual({ ok: true });
     });
 
     // stopConversationStore's idempotent-teardown call (fired at the top of
@@ -911,7 +977,7 @@ describe('conversations service composition root', () => {
       await svc.startConversationStore(startOpts());
       svc.stopConversationStore();
       let settled = false;
-      const p = svc.noteFlagChanged('id2', 'complete', true, 'claude').then((r) => { settled = true; return r; });
+      const p = svc.noteFlagChanged('id2', 'complete', true, false).then((r) => { settled = true; return r; });
       await new Promise((r) => setTimeout(r, 10));
       expect(settled).toBe(false);          // still buffered, not resolved yet
       await svc.startConversationStore(startOpts());
