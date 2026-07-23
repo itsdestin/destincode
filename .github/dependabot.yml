@@ -44,24 +44,20 @@ updates:
         update-types: ["minor", "patch"]
 
   # ---- Android (Gradle) ----
-  # Two entries: plugin versions (AGP, Kotlin) live in the ROOT build.gradle.kts;
-  # libraries (Compose BOM, okhttp, mlkit, camerax) live in app/build.gradle.kts.
-  # terminal-emulator-vendored/ is deliberately absent — it is vendored source.
+  # ONE entry at root. Dependabot resolves the whole multi-project build from "/"
+  # (root plugins in build.gradle.kts + app libraries in app/build.gradle.kts via
+  # settings.gradle), so a single entry covers both. A separate "/app" entry was
+  # REMOVED 2026-07-23 after the first run proved it duplicated every app
+  # dependency into a second PR (e.g. #235 == #222 — mockwebserver in the SAME
+  # app/build.gradle.kts, opened once by each entry). terminal-emulator-vendored/
+  # was not reached by the root resolution and stays out, as intended.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
-      gradle-root-minor-patch:
-        update-types: ["minor", "patch"]
-  - package-ecosystem: "gradle"
-    directory: "/app"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      gradle-app-minor-patch:
+      gradle-minor-patch:
         update-types: ["minor", "patch"]
 
   # ---- GitHub Actions ----
