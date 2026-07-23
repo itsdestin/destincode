@@ -90,6 +90,13 @@ import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
 import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
+import { GIT_IPC } from './git/ipc-channels';
+import {
+  gitFileStatus, gitFileReview, gitCommitFileDiff,
+  gitStage, gitUnstage, gitCommit, gitDiscard,
+} from './git/git-service';
+import { initGitWatchers, watchGit, unwatchGit, dropGitSubscriber } from './git/git-watcher';
+import { resolveRepoRoot, invalidateRepoRootCache } from './git/git-exec';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
@@ -3255,6 +3262,84 @@ export function registerIpcHandlers(
     unwatchProject(projectRoot, e.sender.id);
     return { ok: true };
   });
+
+  // ── Git surface (spec docs/active/specs/2026-07-22-git-surface.md) ──
+  // Known-roots gate: a git operation may only target a saved folder or an
+  // indexed project root — same allow-list the read-binary guard builds.
+  const knownGitRoot = async (projectRoot: unknown): Promise<boolean> => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) return false;
+    const canon = canonicalize(projectRoot, null);
+    const roots = [
+      ...readFolders().map((f) => canonicalize(f.path, null)),
+      ...(await listProjects(CLAUDE_DIR)).map((p) => canonicalize(p.path, null)),
+    ];
+    return roots.includes(canon);
+  };
+  const gitGate = async <T extends object>(projectRoot: unknown, blocked: T, run: () => Promise<T>): Promise<T> => {
+    if (!(await knownGitRoot(projectRoot))) return blocked;
+    return run();
+  };
+  const broadcastGitChanged = (repoRoot: string) => {
+    // Commits and checkouts can create or retarget repos — drop the cache so
+    // the next footer query re-resolves.
+    invalidateRepoRootCache();
+    webContents.getAllWebContents().forEach((wc) => wc.send(GIT_IPC.CHANGED, { repoRoot }));
+  };
+
+  initGitWatchers((evt) => broadcastGitChanged(evt.repoRoot));
+
+  ipcMain.handle(GIT_IPC.FILE_STATUS, (_e, projectRoot: string, relPath: string) =>
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false },
+      () => gitFileStatus(projectRoot, relPath)));
+
+  ipcMain.handle(GIT_IPC.FILE_REVIEW, (_e, projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, uncommitted: null, log: [], hasMore: false, stagedCount: 0 },
+      () => gitFileReview(projectRoot, relPath, opts)));
+
+  ipcMain.handle(GIT_IPC.COMMIT_FILE_DIFF, (_e, projectRoot: string, sha: string, relPath: string) =>
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', hunks: [], binary: false },
+      () => gitCommitFileDiff(projectRoot, sha, relPath)));
+
+  const mutating = async (projectRoot: string, run: () => Promise<{ ok: boolean; error?: string }>) =>
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root' }, async () => {
+      const result = await run();
+      if (result.ok) {
+        const repoRoot = await resolveRepoRoot(projectRoot);
+        if (repoRoot) broadcastGitChanged(repoRoot);
+      }
+      return result;
+    });
+
+  ipcMain.handle(GIT_IPC.STAGE, (_e, projectRoot: string, relPath: string) =>
+    mutating(projectRoot, () => gitStage(projectRoot, relPath)));
+  ipcMain.handle(GIT_IPC.UNSTAGE, (_e, projectRoot: string, relPath: string) =>
+    mutating(projectRoot, () => gitUnstage(projectRoot, relPath)));
+  ipcMain.handle(GIT_IPC.COMMIT, (_e, projectRoot: string, message: string) =>
+    mutating(projectRoot, () => gitCommit(projectRoot, message)));
+  ipcMain.handle(GIT_IPC.DISCARD, (_e, projectRoot: string, relPath: string) =>
+    mutating(projectRoot, () => gitDiscard(projectRoot, relPath)));
+
+  const gitWatchedSenders = new Set<number>();
+  ipcMain.handle(GIT_IPC.WATCH, (e, projectRoot: string) =>
+    gitGate(projectRoot, { ok: false }, async () => {
+      const repoRoot = await resolveRepoRoot(projectRoot);
+      if (!repoRoot) return { ok: false };
+      const senderId = e.sender.id;
+      if (!gitWatchedSenders.has(senderId)) {
+        gitWatchedSenders.add(senderId);
+        e.sender.once('destroyed', () => { gitWatchedSenders.delete(senderId); dropGitSubscriber(senderId); });
+      }
+      return watchGit(repoRoot, senderId);
+    }));
+  // Gated like every other git channel — unwatch shells rev-parse, and the
+  // known-roots gate should be uniform even for read-only paths.
+  ipcMain.handle(GIT_IPC.UNWATCH, (e, projectRoot: string) =>
+    gitGate(projectRoot, { ok: false }, async () => {
+      const repoRoot = await resolveRepoRoot(projectRoot);
+      if (repoRoot) unwatchGit(repoRoot, e.sender.id);
+      return { ok: true };
+    }));
+
   ipcMain.handle(ARTIFACT_IPC.SEARCH_CONTENT, async (_e, projectRoot: string, query: string) => {
     if (typeof projectRoot !== 'string' || projectRoot.length === 0 || typeof query !== 'string') {
       return { ok: false, hits: [], truncated: false, error: 'projectRoot and query are required' };

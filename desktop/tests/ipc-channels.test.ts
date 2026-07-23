@@ -900,3 +900,39 @@ describe('model memory lifecycle channel parity (2026-07-14)', () => {
     for (const [ch] of invokeChannels) expect(src).toContain(`"${ch}"`);
   });
 });
+
+describe('git:* IPC parity (git surface, spec 2026-07-22)', () => {
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const kotlinPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  const kotlin = fs.existsSync(kotlinPath) ? fs.readFileSync(kotlinPath, 'utf8') : null;
+
+  const channels: Array<[string, string]> = [
+    ['git:file-status', 'GIT_IPC.FILE_STATUS'],
+    ['git:file-review', 'GIT_IPC.FILE_REVIEW'],
+    ['git:commit-file-diff', 'GIT_IPC.COMMIT_FILE_DIFF'],
+    ['git:stage', 'GIT_IPC.STAGE'],
+    ['git:unstage', 'GIT_IPC.UNSTAGE'],
+    ['git:commit', 'GIT_IPC.COMMIT'],
+    ['git:discard', 'GIT_IPC.DISCARD'],
+    ['git:watch', 'GIT_IPC.WATCH'],
+    ['git:unwatch', 'GIT_IPC.UNWATCH'],
+  ];
+
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload + remote-shim + ipc-handlers`, () => {
+      expect(preload).toContain(`'${ch}'`);
+      expect(shim).toContain(`'${ch}'`);
+      expect(handlers.includes(`'${ch}'`) || handlers.includes(constant)).toBe(true);
+    });
+    it(`${ch} has an Android not-implemented-on-mobile stub`, () => {
+      if (kotlin) expect(kotlin).toContain(`"${ch}"`);
+    });
+  }
+
+  it('git:changed push channel present in preload + remote-shim', () => {
+    expect(preload).toContain(`'git:changed'`);
+    expect(shim).toContain(`'git:changed'`);
+  });
+});

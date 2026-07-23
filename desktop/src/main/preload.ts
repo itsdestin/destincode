@@ -1281,6 +1281,29 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener('artifacts:changed', handler);
     },
   },
+  git: {
+    fileStatus: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:file-status', projectRoot, relPath),
+    fileReview: (projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
+      ipcRenderer.invoke('git:file-review', projectRoot, relPath, opts),
+    commitFileDiff: (projectRoot: string, sha: string, relPath: string) =>
+      ipcRenderer.invoke('git:commit-file-diff', projectRoot, sha, relPath),
+    stage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:stage', projectRoot, relPath),
+    unstage: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:unstage', projectRoot, relPath),
+    commit: (projectRoot: string, message: string) =>
+      ipcRenderer.invoke('git:commit', projectRoot, message),
+    discard: (projectRoot: string, relPath: string) =>
+      ipcRenderer.invoke('git:discard', projectRoot, relPath),
+    watch: (projectRoot: string) => ipcRenderer.invoke('git:watch', projectRoot),
+    unwatch: (projectRoot: string) => ipcRenderer.invoke('git:unwatch', projectRoot),
+    onChanged: (cb: (event: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('git:changed', handler);
+      return () => ipcRenderer.removeListener('git:changed', handler);
+    },
+  },
   // Project View IPC — sibling to artifacts. Backs the project overlay's
   // conversations / repo / context tabs.
   project: {
