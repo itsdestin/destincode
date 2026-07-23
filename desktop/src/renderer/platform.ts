@@ -19,10 +19,6 @@ export type ConnectionMode = 'local' | 'remote'
 let _connectionMode: ConnectionMode = 'local';
 let _connectionModeListeners: ((mode: ConnectionMode) => void)[] = [];
 
-export function getConnectionMode(): ConnectionMode {
-  return _connectionMode;
-}
-
 export function isRemoteMode(): boolean {
   return _connectionMode === 'remote';
 }

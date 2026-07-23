@@ -173,5 +173,3 @@ export function AnchorTip({
     </>
   );
 }
-
-export default AnchorTip;

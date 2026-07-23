@@ -32,5 +32,3 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(fun
     />
   );
 });
-
-export default Textarea;

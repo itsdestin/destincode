@@ -195,5 +195,3 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
     />
   );
 });
-
-export default Button;

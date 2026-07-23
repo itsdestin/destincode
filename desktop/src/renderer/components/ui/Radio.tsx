@@ -88,5 +88,3 @@ export function RadioGroup({
     </div>
   );
 }
-
-export default Radio;

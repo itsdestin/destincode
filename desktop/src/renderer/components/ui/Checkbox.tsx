@@ -60,5 +60,3 @@ export const Checkbox = React.forwardRef<HTMLButtonElement, CheckboxProps>(funct
     </button>
   );
 });
-
-export default Checkbox;

@@ -70,5 +70,3 @@ export function Toast({
     </OverlayPanel>
   );
 }
-
-export default Toast;

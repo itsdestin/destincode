@@ -14,4 +14,3 @@ import { AskUserQuestionTool } from './ask-user-question';
  *  every preset/mode — see permission-types.rulesForMode); AskUserQuestion
  *  (interactive, driver-routed) comes last. */
 export const CORE_TOOLS: NativeTool[] = [ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, TodoWriteTool, WebFetchTool, WebSearchTool, AskUserQuestionTool];
-export const toolByName = new Map(CORE_TOOLS.map((t) => [t.name, t]));

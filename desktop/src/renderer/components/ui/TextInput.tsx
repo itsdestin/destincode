@@ -21,5 +21,3 @@ export const TextInput = React.forwardRef<HTMLInputElement, TextInputProps>(func
 ) {
   return <input ref={ref} type={type} className={fieldClasses(size, className)} {...rest} />;
 });
-
-export default TextInput;
