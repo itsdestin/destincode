@@ -504,6 +504,78 @@ describe('conversations service composition root', () => {
     vi.useRealTimers();
   });
 
+  // Security: transcriptRef arrives from synced peer records (and is reachable
+  // over remote WS). A crafted record must never let materialize join outside
+  // the space root — same refuse-on-escape stance as providerDir/recordPath in
+  // conversation-store.ts.
+  describe('transcriptRef containment guard', () => {
+    it('containedTranscriptPath accepts a normal relative ref and refuses traversal/absolute/empty refs', async () => {
+      const svc = await freshService(startOpts());
+      const root = path.join(tmpRoot, 'space-root');
+      expect(svc.containedTranscriptPath(root, 'claude/transcripts/a/b.jsonl'))
+        .toBe(path.resolve(root, 'claude/transcripts/a/b.jsonl'));
+      expect(svc.containedTranscriptPath(root, '../../outside/x.jsonl')).toBeNull();
+      expect(svc.containedTranscriptPath(root, path.resolve(tmpRoot, 'outside', 'y.jsonl'))).toBeNull();
+      expect(svc.containedTranscriptPath(root, '')).toBeNull();
+    });
+
+    it('materializeOne refuses a transcriptRef that escapes the space root', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'escape-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'escaping-1', provider: 'claude', projectName: 'escape-proj', originalPath: dir,
+        transcriptRef: '../../outside/x.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('escaping-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'escaping-1');
+      warnSpy.mockRestore();
+    });
+
+    it('materializeOne refuses an absolute transcriptRef', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'escape-proj-abs');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'escaping-2', provider: 'claude', projectName: 'escape-proj-abs', originalPath: dir,
+        transcriptRef: path.resolve(tmpRoot, 'outside', 'y.jsonl'),
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('escaping-2', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'escaping-2');
+      warnSpy.mockRestore();
+    });
+
+    it('materializeSweep refuses an escaping record but still materializes a valid one', async () => {
+      await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const goodDir = path.join(tmpRoot, 'good-proj');
+      const badDir = path.join(tmpRoot, 'bad-proj');
+      fs.mkdirSync(goodDir, { recursive: true });
+      fs.mkdirSync(badDir, { recursive: true });
+      const badRec = {
+        id: 'bad-rec', provider: 'claude', projectName: 'bad-proj', originalPath: badDir,
+        transcriptRef: '../../outside/z.jsonl',
+      };
+      const goodRec = {
+        id: 'good-rec', provider: 'claude', projectName: 'good-proj', originalPath: goodDir,
+        transcriptRef: 'claude/transcripts/good-proj/good-rec.jsonl',
+      };
+      h.store.list.mockResolvedValue([badRec, goodRec] as any);
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain('good-rec.jsonl');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'bad-rec');
+      warnSpy.mockRestore();
+    });
+  });
+
   it('a non-personal or non-updated synced event does NOT materialize', async () => {
     h.store.list.mockResolvedValue([{ id: 'x', provider: 'claude', projectName: 'a', originalPath: '/x', transcriptRef: 'claude/transcripts/a/x.jsonl' }] as any);
     await freshService(startOpts());

@@ -189,6 +189,16 @@ export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string
 function spaceTranscriptPath(projectKey: string, sessionId: string): string {
   return path.join(store!.root(), 'claude', 'transcripts', projectKey, `${sessionId}.jsonl`);
 }
+// SECURITY: transcriptRef arrives from synced peer records (and is reachable over
+// remote WS). Joining it unchecked would let a crafted record read/write outside
+// the space root. Same refuse-on-escape stance as providerDir/recordPath in
+// conversation-store.ts. Exported for tests.
+export function containedTranscriptPath(root: string, ref: string): string | null {
+  if (!ref || path.isAbsolute(ref)) return null;
+  const resolvedRoot = path.resolve(root);
+  const joined = path.resolve(resolvedRoot, ref);
+  return joined.startsWith(resolvedRoot + path.sep) ? joined : null;
+}
 // The CC on-disk transcript path for this session — projects dir + CC slug.
 function localJsonlPath(cwd: string, sessionId: string): string {
   return path.join(projectsDir, ccProjectSlug(cwd), `${sessionId}.jsonl`);
@@ -311,6 +321,9 @@ async function materializeSweep(): Promise<void> {
   try { saved = readFolders(); } catch { /* saved folders unreadable */ }
   for (const rec of records) {
     if (!rec.transcriptRef) continue; // no durable copy to materialize from
+    // SECURITY: refuse before any other work — see containedTranscriptPath.
+    const src = containedTranscriptPath(s.root(), rec.transcriptRef);
+    if (!src) { console.warn('[conversations] refused transcriptRef escaping space root', rec.id); continue; }
     // Review fix 1: NEVER materialize over a LIVE session's transcript. Without
     // leases (Plan 2b), a same-conversation-on-two-devices pull would replace
     // the JSONL Claude Code is actively appending to — Windows EPERM containment
@@ -327,7 +340,7 @@ async function materializeSweep(): Promise<void> {
     if (!local) continue;
     try {
       materializeOut({
-        spaceTranscriptPath: path.join(s.root(), rec.transcriptRef),
+        spaceTranscriptPath: src,
         localJsonlPath: localJsonlPath(local, rec.id),
       });
     } catch { /* per-record isolation — one bad copy must not abort the sweep */ }
@@ -363,6 +376,10 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   const s = store; if (!s) return;
   let rec; try { rec = await s.get('claude', id); } catch { return; }
   if (!rec?.transcriptRef) return;
+  // SECURITY: refuse before any other work (quiescence wait, local resolution)
+  // — see containedTranscriptPath.
+  const src = containedTranscriptPath(s.root(), rec.transcriptRef);
+  if (!src) { console.warn('[conversations] refused transcriptRef escaping space root', rec.id); return; }
   // Resolve the local project. On the common path cwd is known (learned via
   // noteSessionStarted), so only pay for the managed/saved-folder reads on the
   // cwd miss (a session that ended without ever being announced here).
@@ -384,7 +401,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   // CC is now appending to (the sweep's live-session invariant).
   if (sessions.has(id)) return;
   try {
-    materializeOut({ spaceTranscriptPath: path.join(s.root(), rec.transcriptRef), localJsonlPath: localPath });
+    materializeOut({ spaceTranscriptPath: src, localJsonlPath: localPath });
   } catch { /* grow-only copy failed — startup sweep catches up */ }
 }
 
