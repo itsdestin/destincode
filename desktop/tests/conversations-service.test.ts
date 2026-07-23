@@ -824,6 +824,39 @@ describe('conversations service composition root', () => {
       expect(h.materializeOut).toHaveBeenCalledTimes(1);
       expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${idleRec.id}.jsonl`);
     });
+
+    // Sweep-level counterpart to "materializeOne refuses a claude/ transcriptRef
+    // on a native record" above: the SAME lane assertion runs inside
+    // materializeSweep (service.ts ~:479), but until now that copy had ZERO
+    // test coverage — neutralizing it broke nothing, silently reopening
+    // cross-lane materialization on every 'synced' event AND at every startup
+    // sweep (unattended paths, not just the one-off materializeOne call).
+    // Proves SKIP-not-abort: the mismatched record is silently skipped while a
+    // well-formed sibling in the SAME sweep still materializes.
+    it('materializeSweep refuses a lane-mismatched native record but still materializes a valid native sibling', async () => {
+      const badDir = path.join(tmpRoot, 'native-lane-bad-proj');
+      const goodDir = path.join(tmpRoot, 'native-lane-good-proj');
+      fs.mkdirSync(badDir, { recursive: true });
+      fs.mkdirSync(goodDir, { recursive: true });
+      const badRec = {
+        id: 'native-lane-bad-1', provider: 'native', projectName: 'native-lane-bad-proj', originalPath: badDir,
+        // WRONG lane: a native record must be 'native/transcripts/...', not 'claude/...'.
+        transcriptRef: 'claude/transcripts/native-lane-bad-proj/native-lane-bad-1.jsonl',
+      };
+      const goodRec = {
+        id: 'native-lane-good-1', provider: 'native', projectName: 'native-lane-good-proj', originalPath: goodDir,
+        transcriptRef: 'native/transcripts/native-lane-good-proj/native-lane-good-1.jsonl',
+      };
+      await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.store.list.mockImplementation(async (p: string) => (p === 'native' ? [badRec, goodRec] : []));
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${goodRec.id}.jsonl`);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lane mismatch'), badRec.id);
+      warnSpy.mockRestore();
+    });
   });
 
   // --- Meta-write honesty (Item 6) ------------------------------------------
