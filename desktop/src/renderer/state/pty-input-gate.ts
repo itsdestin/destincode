@@ -74,3 +74,26 @@ export function canRetrySubmit(session: SessionChatState): boolean {
   }
   return !hasPendingInteraction(session);
 }
+
+/**
+ * M1: PTY sends must only reach Claude Code sessions that still exist — for a
+ * native or destroyed session, SessionManager.sendInput no-ops, so callers that
+ * trusted guardedPtySend's `true` wrote phantom bubbles (program doc §2.3).
+ *
+ * Pure predicate for session validity:
+ * - session must exist
+ * - provider must be 'claude' (native sessions have no PTY worker)
+ * - chat state must not indicate the session has died
+ *
+ * Returns true for sessions still attached to Claude Code (when chat state
+ * hasn't materialized yet on boot, we assume it's live and allow the send).
+ */
+export function canPtySend(
+  session: { provider?: string } | undefined,
+  chat: { attentionState?: string } | undefined,
+): boolean {
+  if (!session) return false;
+  if (session.provider === 'native') return false;
+  if (chat?.attentionState === 'session-died') return false;
+  return true;
+}

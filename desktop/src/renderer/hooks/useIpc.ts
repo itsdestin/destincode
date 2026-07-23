@@ -1,4 +1,9 @@
 import { useEffect, useRef } from 'react';
+// M1 Task 3: native.send's declared return type below was stale (`void`) from
+// before Task 2 switched the IPC channel to invoke/ack. shared/types.ts (not
+// main-only) is the existing exception to the "no cross-boundary import"
+// comment just below — native-send.ts already imports it the same way.
+import type { NativeSendResult } from '../../shared/types';
 
 // Discriminated union for IPC calls that can fail with a structured error.
 // Using a local type (not imported from main) keeps the renderer/main boundary
@@ -245,7 +250,14 @@ declare global {
       // builds launched with YOUCODED_NATIVE=1; the runtime selector gates on it.
       native: {
         supported: boolean;
-        send: (sessionId: string, text: string) => void;
+        // M1: acks sent/queued/failed (Task 2 switched the channel from
+        // fire-and-forget to invoke) — Task 3's InputBar awaits this to
+        // decide whether to show the bubble or a failure toast.
+        send: (sessionId: string, text: string) => Promise<NativeSendResult>;
+        // Task 11: cancel/edit a queued-but-not-yet-sent message. true = removed
+        // (caller may now safely refill the composer); false = too late (already
+        // draining/sent) or the session isn't live — never throws.
+        queueRemove: (sessionId: string, queueId: string) => Promise<boolean>;
         interrupt: (sessionId: string) => void;
         setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
         // Per-session native permission mode (StatusBar chip, Task 13). Returns

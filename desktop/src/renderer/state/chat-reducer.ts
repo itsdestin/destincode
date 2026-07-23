@@ -332,6 +332,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...(action.attachments?.length ? { attachments: action.attachments } : {}),
       };
 
+      // Task 12: the queued-send branch that used to live here (append a
+      // pending+queued bubble without touching turn state) is gone — a
+      // queued native send now dispatches QUEUED_MESSAGE_ADDED instead of
+      // USER_PROMPT (see InputBar.tsx), which never touches the timeline at
+      // all. USER_PROMPT is unconditionally the 'sent' path again.
       next.set(action.sessionId, {
         ...session,
         timeline: [...session.timeline, { kind: 'user', message, pending: true }],
@@ -344,6 +349,44 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         errorMessage: null,
         stallWarning: null,
       });
+      return next;
+    }
+
+    // Task 12: native send acked 'queued' — add to the docked-strip list.
+    // Deliberately does NOT touch the timeline or turn/group/isThinking state
+    // (that was the Task 3/11 bug: an enqueue-time timeline bubble froze
+    // above content the still-streaming prior turn hadn't emitted yet).
+    case 'QUEUED_MESSAGE_ADDED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, {
+        ...session,
+        queuedMessages: [
+          ...session.queuedMessages,
+          { queueId: action.queueId, content: action.content, timestamp: action.timestamp },
+        ],
+      });
+      return next;
+    }
+
+    // Task 12 (replaces QUEUED_PROMPT_CANCELED): removes a queuedMessages
+    // entry by queueId. Dispatched by the strip's Cancel/Edit handlers on
+    // BOTH native:queue-remove outcomes (see App.tsx) — success (the row is
+    // genuinely gone) and too-late (the row's counterpart is about to land,
+    // or already has landed, in the timeline via TRANSCRIPT_USER_MESSAGE's
+    // drain-side removal below, so removing it here too is a harmless
+    // possible-no-op that guarantees the strip row doesn't linger). No-op
+    // (not an error) when the id isn't found.
+    case 'QUEUED_MESSAGE_REMOVED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const idx = session.queuedMessages.findIndex((q) => q.queueId === action.queueId);
+      if (idx === -1) return state;
+      const queuedMessages = [
+        ...session.queuedMessages.slice(0, idx),
+        ...session.queuedMessages.slice(idx + 1),
+      ];
+      next.set(action.sessionId, { ...session, queuedMessages });
       return next;
     }
 
@@ -526,6 +569,49 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ? new Set(session.seenUuids).add(action.uuid)
         : session.seenUuids;
 
+      // Task 12 (drain-side removal): independent of whether a pending
+      // TIMELINE bubble matches below — clear the OLDEST queuedMessages entry
+      // with matching content, if any. WHY independent rather than gated on
+      // confirmedIdx: a `sent` message never wrote a queuedMessages entry (no
+      // QUEUED_MESSAGE_ADDED fired for it), so this scan simply finds nothing
+      // and is a no-op on that path — running it unconditionally is correct,
+      // not "unconditionally-but-harmless-because-usually-empty." A `queued`
+      // message, symmetrically, never has a pending bubble to match (Task 12
+      // stopped writing one), so it can ONLY be found here, never in the
+      // confirmedIdx scan — that's what makes the no-pending-match fallback
+      // below the sole place a queued message's timeline entry gets created,
+      // at its true (end-of-timeline) position. Oldest-content-match mirrors
+      // the pending-bubble dedup's own discipline (rapid-fire duplicates).
+      //
+      // Caveat (review finding, traced all orderings): "the two scans never
+      // collide" only holds when contents are DISTINCT across the pending
+      // bubble and the queued list. If the SAME text was both sent immediately
+      // (a pending bubble) AND separately queued (a list entry) — e.g. "hi"
+      // typed twice in a row, once while idle and once while a turn was
+      // in-flight — this dispatch's list scan runs unconditionally regardless
+      // of WHICH of the two "hi"s this particular transcript event confirms.
+      // If it confirms the sent one, the list scan still removes the oldest
+      // queued "hi" row from the STRIP even though that queued message's own
+      // drain event hasn't arrived on the host yet. The eventual TIMELINE
+      // outcome is still correct — that queued message still gets its own
+      // TRANSCRIPT_USER_MESSAGE later, finds no pending bubble (already
+      // consumed), and appends at the true end-of-timeline position via the
+      // fallback below, same as always. The only visible effect is a
+      // duplicate-content STRIP ROW disappearing one drain early (an
+      // under-count for the span between the two events, not a lost or
+      // mis-positioned message) — an acceptable renderer-local display quirk
+      // for a scenario the old bubble-badge design had no better answer for
+      // either (two identical bubbles were already visually indistinguishable
+      // there too).
+      let queuedMessages = session.queuedMessages;
+      const queuedIdx = queuedMessages.findIndex((q) => q.content === action.text);
+      if (queuedIdx !== -1) {
+        queuedMessages = [
+          ...queuedMessages.slice(0, queuedIdx),
+          ...queuedMessages.slice(queuedIdx + 1),
+        ];
+      }
+
       // Find the OLDEST pending entry with matching content and confirm it
       // (clear the `pending` flag). This replaces the old last-10-entries
       // content-match dedup, which suppressed legitimate rapid-fire repeats.
@@ -547,6 +633,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (confirmedIdx >= 0) {
         const entry = session.timeline[confirmedIdx];
         if (entry.kind !== 'user') return state; // type-narrowing safety
+        // Confirming clears `pending`. Rebuilt object (rather than spreading
+        // entry) so any stale extra field is dropped, not carried forward —
+        // this arm only ever matches a `sent`-path bubble (Task 12: a queued
+        // send no longer writes one at all), so in practice there's nothing
+        // stale to drop today, but the rebuild-not-spread discipline stays.
         const confirmed: TimelineEntry = {
           kind: 'user',
           message: entry.message,
@@ -561,6 +652,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           ...session,
           timeline,
           seenUuids,
+          queuedMessages,
           isThinking: true,
           currentGroupId: null,
           currentTurnId: null,
@@ -569,8 +661,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return next;
       }
 
-      // No pending match — remote/replay client, or user typed directly into
-      // the terminal. Append as a new confirmed entry.
+      // No pending match — a queued message being drained (Task 12's true-
+      // position confirm: this is the ONLY place its timeline entry gets
+      // created, at the end), a remote/replay client, or the user typed
+      // directly into the terminal. Append as a new confirmed entry.
       const message = {
         id: nextMessageId(),
         role: 'user' as const,
@@ -582,6 +676,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session,
         timeline: [...session.timeline, { kind: 'user', message, pending: false }],
         seenUuids,
+        queuedMessages,
         isThinking: true,
         currentGroupId: null,
         currentTurnId: null,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   hasPendingInteraction,
   canRetrySubmit,
+  canPtySend,
 } from '../src/renderer/state/pty-input-gate';
 import { createSessionChatState, SessionChatState, HISTORY_EXPAND_PROMPT_ID } from '../src/renderer/state/chat-types';
 import type { ToolCallState } from '../src/renderer/state/chat-types';
@@ -148,4 +149,16 @@ describe('canRetrySubmit', () => {
     session.isThinking = true;
     expect(canRetrySubmit(session)).toBe(true);
   });
+});
+
+describe('canPtySend (M1 honest guard)', () => {
+  it('refuses when the session does not exist', () => expect(canPtySend(undefined, undefined)).toBe(false));
+  it('refuses native sessions — they have no PTY worker', () =>
+    expect(canPtySend({ provider: 'native' }, { attentionState: 'ok' })).toBe(false));
+  it('refuses dead sessions', () =>
+    expect(canPtySend({ provider: 'claude' }, { attentionState: 'session-died' })).toBe(false));
+  it('allows a live claude session', () =>
+    expect(canPtySend({ provider: 'claude' }, { attentionState: 'ok' })).toBe(true));
+  it('allows when chat state has not materialized yet (boot window)', () =>
+    expect(canPtySend({ provider: 'claude' }, undefined)).toBe(true));
 });

@@ -6,6 +6,7 @@ import { Button } from './ui';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
+import StopButton from './StopButton';
 import { isTypingTarget } from '../utils/is-typing-target';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
@@ -14,11 +15,27 @@ import type { UsageSnapshot } from '../state/chat-types';
 import { hasPendingInteraction } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
 import { sendChatMessage } from './native-send';
+import type { NativeSendResult } from '../../shared/types';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 
 export interface InputBarHandle {
   clear: () => void;
+  // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
+  // existing "external surface reads/replaces InputBar's draft" mechanism —
+  // `initialInput` fills once per session id (already consumed for an ACTIVE
+  // session) and the `youcoded:compose-insert` CustomEvent only prepends
+  // fire-and-forget (no way to check emptiness first, which the brief's
+  // ordering — refuse BEFORE removing the queued entry — requires). Extending
+  // this existing ref (already used by App for `clear()`) with a synchronous
+  // read + an unconditional replace was the smallest addition that supports
+  // the required check-then-act sequence; see task-11-report.md.
+  /** True when the composer currently holds a non-empty (trimmed) draft. */
+  hasDraft: () => boolean;
+  /** Replace the composer's content with `text` and focus it. Caller must call
+   *  hasDraft() first — this does not check emptiness itself. */
+  fillDraft: (text: string) => void;
 }
 
 interface Props {
@@ -71,6 +88,20 @@ function fileNameFromPath(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
 
+// M1: copy for a refused/unknown native send ack, shown via onToast instead
+// of dispatching a phantom bubble. Each branch names the REAL cause reported
+// by the host (queue-full / not-live) rather than a guessed one — see
+// docs/error-message-standards.md ("never guess an unverified cause").
+function sendFailureCopy(result: NativeSendResult | undefined): string {
+  if (result?.status === 'failed' && result.reason === 'queue-full') {
+    return 'Send queue is full (10 messages waiting). Wait for the current turn to finish.';
+  }
+  if (result?.status === 'failed' && result.reason === 'not-live') {
+    return 'This session is no longer running. Start or resume it to send messages.';
+  }
+  return 'The message could not be sent — no response from the session host.';
+}
+
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -85,6 +116,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // browsers than setting scrollTop on a hidden-overflow element).
   const mirrorContentRef = useRef<HTMLDivElement>(null);
   const dispatch = useChatDispatch();
+  // Task 10 (Destin placement ruling): the stop control lives in the composer
+  // row now, not beside ChatView's ThinkingIndicator. Fix (review finding,
+  // 2026-07-22): useChatState(sessionId) here would re-render the composer —
+  // a controlled textarea — on EVERY dispatch for this session, i.e. every
+  // streaming token/tool delta, just to watch two booleans. useStreamingGate
+  // is a derived cached selector (useSessionAttention.ts idiom) whose
+  // getSnapshot returns a primitive, so useSyncExternalStore skips the
+  // re-render whenever the gate itself hasn't flipped. Same visibility
+  // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
+  const showStop = useStreamingGate(sessionId);
 
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
@@ -142,6 +183,21 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       setText('');
       setAttachments([]);
       if (inputRef.current) inputRef.current.style.height = 'auto';
+    },
+    // Task 11: read the LIVE DOM value (not the `text` state closure) — mirrors
+    // send()'s currentText read above, same stale-closure rationale.
+    hasDraft: () => (inputRef.current?.value ?? text).trim().length > 0,
+    // Mirrors the initialInput prefill effect above (setText + focus + caret
+    // at the end) so an edited queued message gets the same "ready to review/
+    // send" placement.
+    fillDraft: (draftText: string) => {
+      setText(draftText);
+      requestAnimationFrame(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+          inputRef.current.setSelectionRange(draftText.length, draftText.length);
+        }
+      });
     },
   }));
 
@@ -335,6 +391,79 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       if (!outgoing) return true; // nothing to send — treat as consumed
       if (disabled) return false;
 
+      // M1 (bubble-after-ack, BUG C): native has no PTY, so the OLD code
+      // dispatched the optimistic bubble unconditionally, same as the CC path
+      // below. But a native send can come back QUEUED (host FIFO'd it behind
+      // an in-flight turn) or FAILED (not-live / queue-full) — dispatching
+      // before knowing the ack produced a phantom bubble on a refused send,
+      // and a naive queued dispatch would fork the still-streaming prior turn
+      // (see the `queued` branch in chat-reducer.ts USER_PROMPT). So the
+      // native branch awaits the ack FIRST and dispatches (or toasts) after —
+      // it RETURNs before the CC/PTY dispatch and paste machinery below.
+      if (provider === 'native') {
+        void (async () => {
+          // Fix (final-review Important, 2026-07-22): the host's send() itself
+          // never rejects (NativeSessionHost.send() is documented SYNCHRONOUS
+          // and NEVER throws), but the invoke() HOP to get there can — version
+          // skew on the IPC channel, or (on remote access) the WebSocket
+          // dropping mid-round-trip. An unhandled rejection here would toast
+          // nothing and silently vanish the draft, so a rejection is routed
+          // through the EXACT same failure branch as a failed/undefined ack
+          // (same toast copy, same guarded draft restore) rather than treated
+          // as a distinct case — from the user's point of view a refused send
+          // and a lost send look identical: their message didn't go anywhere.
+          let result: NativeSendResult | undefined;
+          try {
+            result = await sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
+          } catch (err) {
+            console.error('native send invoke rejected:', err);
+          }
+          if (!result || result.status === 'failed') {
+            onToast?.(sendFailureCopy(result));
+            // Fix (reviewer Critical, post-de30b908): `send()` already ran
+            // setText('')/setAttachments([]) synchronously right after this
+            // function returned `true` — a failed ack must not silently lose
+            // the draft (the file's own invariant, documented at send()'s
+            // `if (!sendMessage(...)) return;`, says a refused send keeps the
+            // draft). Restore effectiveMessage (pre-sanitize, keeps newlines —
+            // what was actually in the textarea) and the original files.
+            // Guarded: only refill if the user hasn't typed/attached something
+            // new during the ack round-trip (a local IPC invoke, ~ms) — never
+            // clobber newer input.
+            setText((cur) => (cur.trim() ? cur : effectiveMessage));
+            setAttachments((cur) => (cur.length > 0 ? cur : files));
+            return;
+          }
+          // Task 12: a 'queued' ack dispatches QUEUED_MESSAGE_ADDED instead of
+          // USER_PROMPT — the docked strip renders it, NOT the timeline (the
+          // Task 3/11 bug this replaces: an enqueue-time timeline bubble
+          // froze above content the still-streaming prior turn hadn't
+          // emitted yet). A 'sent' ack is unchanged: nothing is streaming, so
+          // the optimistic bubble's position is already correct.
+          if (result.status === 'queued') {
+            dispatch({
+              type: 'QUEUED_MESSAGE_ADDED',
+              sessionId,
+              queueId: result.queueId,
+              content: outgoing.content,
+              timestamp: Date.now(),
+            });
+          } else {
+            dispatch({
+              type: 'USER_PROMPT',
+              sessionId,
+              content: outgoing.content,
+              timestamp: Date.now(),
+              attachments: files.map((f) => f.path),
+            });
+          }
+        })();
+        return true;
+      }
+
+      // CC/PTY path (unchanged): dispatch the optimistic bubble BEFORE
+      // sending — Claude Code's transcript watcher confirms it once the JSONL
+      // line lands (see TRANSCRIPT_USER_MESSAGE dedup).
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -345,16 +474,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         // content string can't be split back out of.
         attachments: files.map((f) => f.path),
       });
-
-      // Native runtime: no PTY. Send the plain string over native:send and
-      // RETURN before any of the PTY paste machinery below (56-byte chunking,
-      // FILE_GAP_MS scheduling, trailing `\r`). The optimistic bubble dedups
-      // because sendChatMessage's native join reproduces outgoing.content
-      // exactly (same filePaths + sanitized text). See native-send.ts.
-      if (provider === 'native') {
-        sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
-        return true;
-      }
 
       // Sending strategy:
       //
@@ -674,6 +793,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             className="input-bar-textarea scroll-fade relative block w-full bg-transparent text-sm text-transparent placeholder-fg-muted outline-none disabled:opacity-50 resize-none leading-snug p-0 m-0 align-middle break-words"
           />
           </div>
+          {/* Task 10: stop control moved here from ChatView (beside the
+              ThinkingIndicator) per Destin's placement ruling — immediately
+              left of send, same size="icon" scale, shrink-0 so it doesn't
+              squeeze the textarea. `visible` mirrors the exact gate Task 6
+              used: isThinking && attentionState === 'ok'. */}
+          <StopButton sessionId={sessionId} provider={provider} visible={showStop} />
           {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
               what size="icon" emits — and it keeps `bg-accent`, which matters:
               community packs style the send button through `.bg-accent` (Halftone's

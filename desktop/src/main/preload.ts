@@ -309,6 +309,8 @@ const IPC = {
   // `} as const;` terminator) and asserts value equality for every key the two
   // blocks share, so drift on these constants fails the test.
   NATIVE_SEND: 'native:send',
+  // Task 11: cancel/edit a queued-but-not-yet-sent message.
+  NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
@@ -1115,8 +1117,13 @@ contextBridge.exposeInMainWorld('claude', {
   // (e.g. YOUCODED_NATIVE=0 bash scripts/run-dev.sh) if a regression needs a fast revert.
   native: {
     supported: process.env.YOUCODED_NATIVE !== '0',
-    // Fire-and-forget: match ipcMain.on handlers that destructure { sessionId, text } / { sessionId }.
-    send: (sessionId: string, text: string) => ipcRenderer.send(IPC.NATIVE_SEND, { sessionId, text }),
+    // M1: invoke — matches the handle signature, returns {status,reason}
+    send: (sessionId: string, text: string) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text }),
+    // Task 11: cancel/edit a queued message before it sends. Request-response
+    // (unlike interrupt below) — the renderer needs the true/false result to
+    // decide between "removed, proceed" and a "too late" toast.
+    queueRemove: (sessionId: string, queueId: string) => ipcRenderer.invoke(IPC.NATIVE_QUEUE_REMOVE, { sessionId, queueId }),
+    // Fire-and-forget: match ipcMain.on handler that destructures { sessionId }.
     interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
     // Request-response: match the positional ipcMain.handle signatures.
     setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),

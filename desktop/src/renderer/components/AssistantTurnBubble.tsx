@@ -166,7 +166,9 @@ export function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[
  * Each bubble = one text segment + the tool-group segments that follow it.
  * Leading tool-groups (before any text) get their own tools-only bubble.
  */
-interface VisualBubble {
+// Exported for test: AssistantTurnBubble.test.tsx pins the BUG A mis-attribution
+// fix directly against this pure function rather than through full component render.
+export interface VisualBubble {
   key: string;
   // Reasoning segments accumulated since the last text/plan/tool-group are
   // attached to the next bubble as a collapsible disclosure (joined by
@@ -179,7 +181,8 @@ interface VisualBubble {
   toolGroupIds: string[];
 }
 
-function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
+// Exported for test (see VisualBubble comment above).
+export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
   const bubbles: VisualBubble[] = [];
   let current: VisualBubble | null = null;
   // Buffer of reasoning content seen since the last bubble boundary.
@@ -224,8 +227,17 @@ function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
       };
       pendingReasoning = null;
     } else {
-      // tool-group: attach to current bubble, or create a tools-only bubble
-      if (!current) {
+      // Tool-group segment. Fix (M1 BUG A): the native harness streams
+      // reasoning live but batches tool-use events after each step's stream,
+      // so a multi-step turn interleaves as [text₁, toolGroupA, reasoning₂,
+      // toolGroupB]. A tool group must start a NEW bubble not only when no
+      // bubble is open, but also when reasoning has streamed since the open
+      // bubble began — otherwise this tool group gets appended to the PRIOR
+      // (unrelated) bubble and its reasoning strands into a trailing
+      // reasoning-only bubble. This was the exact dogfood bug: tool cards
+      // attaching to the wrong chat bubble.
+      if (!current || pendingReasoning) {
+        if (current) bubbles.push(current);
         current = {
           key: `tools-${seg.groupId}`,
           reasoning: pendingReasoning ?? undefined,

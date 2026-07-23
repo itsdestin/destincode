@@ -2080,11 +2080,16 @@ export function registerIpcHandlers(
   });
 
   // --- Native runtime IPC (Phase 1 Plan A) ---
-  // Fire-and-forget I/O (no response): send + interrupt. The host serializes
-  // sends per session and never throws for unknown ids.
-  ipcMain.on(IPC.NATIVE_SEND, (_e, { sessionId, text }: { sessionId: string; text: string }) => {
-    void nativeHost.send(sessionId, text);
-  });
+  // M1: invoke — returns {status:'sent'|'queued'|'failed', reason?} so the renderer
+  // can render truthful bubbles. send() is sync and never throws (host contract).
+  ipcMain.handle(IPC.NATIVE_SEND, (_e, { sessionId, text }: { sessionId: string; text: string }) =>
+    nativeHost.send(sessionId, text));
+  // Task 11: cancel/edit a queued-but-not-yet-sent message. removeQueued is
+  // sync and never throws — the boolean IS the answer (true = removed, false =
+  // too late / unknown), so this is a thin pass-through like NATIVE_SEND above.
+  ipcMain.handle(IPC.NATIVE_QUEUE_REMOVE, (_e, { sessionId, queueId }: { sessionId: string; queueId: string }) =>
+    nativeHost.removeQueued(sessionId, queueId));
+  // Fire-and-forget I/O (no response): interrupt only. The host never throws for unknown ids.
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
   });

@@ -34,6 +34,16 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
 // OpenRouter or a direct Google key instead.
 export type SessionProvider = 'claude' | 'native';
 
+// M1: ack shape for native:send — 'sent' = turn dispatched now, 'queued' = FIFO'd
+// behind the in-flight turn, 'failed' = refused (reason says why, exactly).
+// Task 11 (cancel/edit queued messages): the 'queued' arm carries the host-
+// minted queueId (NativeSessionHost.send()'s randomUUID()) so the renderer can
+// target this exact entry later with native:queue-remove.
+export type NativeSendResult =
+  | { status: 'sent' }
+  | { status: 'queued'; queueId: string }
+  | { status: 'failed'; reason: 'not-live' | 'queue-full' };
+
 export interface SessionInfo {
   id: string;
   name: string;
@@ -1006,6 +1016,9 @@ export const IPC = {
   NATIVE_SUPPORTED: 'native:supported',
   // ---- Native runtime Plan A (Phase 1): session I/O + provider management ----
   NATIVE_SEND: 'native:send',
+  // Task 11: cancel/edit a queued-but-not-yet-sent message. invoke →
+  // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
+  NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',

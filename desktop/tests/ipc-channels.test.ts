@@ -686,6 +686,8 @@ describe('native:*/provider:* channel parity', () => {
     'native:send', 'native:interrupt', 'native:set-binding', 'native:set-permission-mode',
     // Task 14 — read-side mode fetch that seeds the chip on create/resume.
     'native:get-permission-mode', 'native:sessions-list',
+    // Task 11 — cancel/edit a queued-but-not-yet-sent message.
+    'native:queue-remove',
     'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
   ];
   const CHANNEL_TO_CONST: Record<string, string> = {
@@ -693,6 +695,7 @@ describe('native:*/provider:* channel parity', () => {
     'native:set-binding': 'IPC.NATIVE_SET_BINDING', 'native:set-permission-mode': 'IPC.NATIVE_SET_PERMISSION_MODE',
     'native:get-permission-mode': 'IPC.NATIVE_GET_PERMISSION_MODE',
     'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
+    'native:queue-remove': 'IPC.NATIVE_QUEUE_REMOVE',
     'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
     'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
     'provider:set-key': 'IPC.PROVIDER_SET_KEY', 'provider:catalog': 'IPC.PROVIDER_CATALOG',
@@ -719,6 +722,19 @@ describe('native:*/provider:* channel parity', () => {
   it('native:get-permission-mode handled by remote-server.ts (WS case)', () => {
     const src = read('src', 'main', 'remote-server.ts');
     expect(src, "native:get-permission-mode missing from remote-server.ts").toContain(`'native:get-permission-mode'`);
+  });
+  it('native:send is answered by remote-server (request/response, not fire-and-forget)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    const caseBlock = src.slice(src.indexOf(`case 'native:send'`));
+    expect(caseBlock.slice(0, 400)).toContain('this.respond(');
+  });
+  // Task 11's queue-remove is also request/response (the renderer needs the
+  // true/false result) — same fifth-surface + shape checks as native:send above.
+  it('native:queue-remove handled by remote-server.ts (WS case, request/response)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    expect(src, "native:queue-remove missing from remote-server.ts").toContain(`'native:queue-remove'`);
+    const caseBlock = src.slice(src.indexOf(`case 'native:queue-remove'`));
+    expect(caseBlock.slice(0, 400)).toContain('this.respond(');
   });
 });
 

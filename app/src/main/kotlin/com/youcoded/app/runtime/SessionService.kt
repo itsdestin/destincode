@@ -3690,6 +3690,10 @@ class SessionService : Service() {
             // native:send / native:interrupt are fire-and-forget (no msg.id) on
             // desktop; the msg.id?.let guard makes those a no-op here, correctly.
             "native:send",
+            // Task 11 (cancel/edit queued messages): request/response like
+            // native:set-binding below — has a msg.id, so this replies
+            // not-implemented-on-mobile rather than no-op'ing.
+            "native:queue-remove",
             "native:interrupt",
             "native:set-binding",
             "native:set-permission-mode",

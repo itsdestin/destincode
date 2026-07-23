@@ -4,8 +4,8 @@ import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { ChatProvider } from '../state/chat-context';
-import AssistantTurnBubble from './AssistantTurnBubble';
-import type { AssistantTurn } from '../state/chat-types';
+import AssistantTurnBubble, { splitIntoBubbles } from './AssistantTurnBubble';
+import type { AssistantTurn, AssistantTurnSegment } from '../state/chat-types';
 import type { ToolCallState, ToolGroupState } from '../../shared/types';
 
 // Mock MarkdownContent with a render-counting probe. AssistantTurnBubble renders
@@ -56,6 +56,38 @@ function makeTurn(opts: { id?: string; groupIds: string[] }): AssistantTurn {
       type: 'tool-group' as const,
       groupId,
     })),
+    timestamp: 0,
+    stopReason: null,
+    model: null,
+    usage: null,
+    anthropicRequestId: null,
+  };
+}
+
+// Fixture helpers for splitIntoBubbles — build segments matching the real
+// AssistantTurnSegment union (chat-types.ts) so the pure-function tests below
+// exercise the exact shapes the reducer produces.
+const seg = {
+  text: (messageId: string, content: string): AssistantTurnSegment => ({
+    type: 'text',
+    content,
+    messageId,
+  }),
+  reasoning: (messageId: string, content: string): AssistantTurnSegment => ({
+    type: 'reasoning',
+    content,
+    messageId,
+  }),
+  toolGroup: (groupId: string): AssistantTurnSegment => ({
+    type: 'tool-group',
+    groupId,
+  }),
+};
+
+function makeSegmentTurn(segments: AssistantTurnSegment[]): AssistantTurn {
+  return {
+    id: 'turn_split_test',
+    segments,
     timestamp: 0,
     stopReason: null,
     model: null,
@@ -271,5 +303,48 @@ describe('AssistantTurnBubble — memo comparator (streaming perf)', () => {
     );
 
     expect(mdRenders.length).toBeGreaterThan(rendersAfterMount);
+  });
+});
+
+describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleaved reasoning)', () => {
+  it('a tool group after interleaved reasoning starts a NEW bubble carrying that reasoning (BUG A pin)', () => {
+    // Native harness shape: reasoning streams live but tool-use events are
+    // batched after each step's stream, so a multi-step turn interleaves as
+    // [text₁, toolGroupA, reasoning₂, toolGroupB]. toolGroupB must NOT land
+    // on text₁'s bubble — it belongs to a new bubble with reasoning₂.
+    const segments = [
+      seg.text('t1', 'Let me look'),          // step 1 text
+      seg.toolGroup('A'),                      // step 1 tool (batched after stream)
+      seg.reasoning('r1', 'thinking about B'), // step 2 reasoning
+      seg.toolGroup('B'),                      // step 2 tool
+    ];
+    const turn = makeSegmentTurn(segments);
+
+    const bubbles = splitIntoBubbles(turn);
+
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0].toolGroupIds).toEqual(['A']);   // B must NOT land here
+    expect(bubbles[1].toolGroupIds).toEqual(['B']);
+    expect(bubbles[1].reasoning?.content).toBe('thinking about B'); // reasoning attached to ITS tool's bubble, not trailing
+  });
+
+  it('a single interleave [text, reasoning, toolGroup] splits into 2 bubbles: text alone, then reasoning+tool together', () => {
+    // Pins the single-step-reasoning-model shape (no batched tool group in
+    // between — reasoning simply follows the text bubble before its tool).
+    const segments = [
+      seg.text('t1', 'Let me look'),
+      seg.reasoning('r1', 'thinking'),
+      seg.toolGroup('A'),
+    ];
+    const turn = makeSegmentTurn(segments);
+
+    const bubbles = splitIntoBubbles(turn);
+
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0].text?.content).toBe('Let me look');
+    expect(bubbles[0].toolGroupIds).toEqual([]);
+    expect(bubbles[0].reasoning).toBeUndefined();
+    expect(bubbles[1].toolGroupIds).toEqual(['A']);
+    expect(bubbles[1].reasoning?.content).toBe('thinking');
   });
 });

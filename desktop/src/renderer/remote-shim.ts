@@ -1474,7 +1474,11 @@ export function installShim(): void {
       supported: false,
       // Object payloads match how remote-server.ts's WS cases read them
       // (payload.sessionId / payload.text / payload.binding).
-      send: (sessionId: string, text: string) => fire('native:send', { sessionId, text }),
+      // M1: invoke — returns {status,reason} so remote UI matches desktop
+      send: (sessionId: string, text: string) => invoke('native:send', { sessionId, text }),
+      // Task 11: cancel/edit a queued message — request/response (mirrors preload.ts).
+      queueRemove: (sessionId: string, queueId: string) => invoke('native:queue-remove', { sessionId, queueId }),
+      // Fire-and-forget: no response expected
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
       setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
+import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
 import PromptCard from './PromptCard';
@@ -39,6 +40,15 @@ interface Props {
    *  provider-config error bubble (missing/disabled key) can jump the user
    *  straight to the fix. App owns Settings open-state, so it passes this down. */
   onOpenProviderSettings?: () => void;
+  // Task 12 (docked strip, replaces Task 11's UserMessage-bubble affordances):
+  // App owns the native:queue-remove invoke, the QUEUED_MESSAGE_REMOVED
+  // dispatch, the toast state, and the input-bar ref the Edit flow refills —
+  // none of which ChatView/QueuedMessagesStrip have access to, so these are
+  // threaded straight through to the strip. sessionId is explicit (not
+  // closed over) because App wires ONE pair of handlers shared across every
+  // session's ChatView instance.
+  onCancelQueued?: (sessionId: string, queueId: string) => void;
+  onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -83,7 +93,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -134,6 +144,11 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
+  // Task 12 review fix: refs for the --queued-strip-height measurement effect
+  // below (chatRootRef = this component's OUTER root; queuedStripRef = the
+  // strip's own rendered element).
+  const chatRootRef = useRef<HTMLDivElement>(null);
+  const queuedStripRef = useRef<HTMLDivElement>(null);
   // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
   // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
   const [findOpen, setFindOpen] = useState(false);
@@ -533,6 +548,82 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     [sessionId, dispatch],
   );
 
+  // Task 12 review fix (Important — float collision): .model-status-strip and
+  // .jump-to-bottom float in THIS component's OUTER absolute root (see their
+  // render sites below) sharing the same --bottom-chrome-height offset band
+  // as .queued-messages-strip — with the strip visible, they'd sit at the
+  // exact same height and overlap it. .chat-pane (the strip's own DOM parent)
+  // is NOT an ancestor of those two floats, so a var set there wouldn't reach
+  // them; this measures the strip's OWN rendered height and publishes
+  // --queued-strip-height on chatRootRef (the true common ancestor of all
+  // three), and globals.css adds it into their bottom calc so they lift above
+  // the strip instead of overlapping it — offset coordination, not z-index.
+  //
+  // Task 12 dogfood fix (follow-up): the SAME var also gets folded into
+  // .chat-scroll's own padding-bottom (globals.css) — Destin found live/
+  // streaming timeline content settling BEHIND the strip, because nothing
+  // was reserving the strip's footprint inside the scrollable content area
+  // itself (only the OUTER floats were accounted for). One measured value,
+  // two consumers: the outer floats' bottom offset, and the scroll
+  // container's bottom padding — both need to clear the same strip, so both
+  // read the same var rather than duplicating the measurement.
+  //
+  // Measurement idiom: ResizeObserver + CSS var, mirroring
+  // useChromeMeasurements.ts's --bottom-chrome-height/--top-chrome-height
+  // (this file's own established precedent) rather than a fixed
+  // rows-times-row-height calc — the strip's row height isn't a constant
+  // (long content can wrap, font size varies per theme/user setting), so a
+  // real measurement is the only way to stay correct as those vary.
+  //
+  // Scoped to chatRootRef (per-ChatView-instance), NOT document.documentElement
+  // like useChromeMeasurements' vars: every session's ChatView is mounted
+  // simultaneously (only the active one is `visible`), so a root-scoped var
+  // would let a background session's queue count corrupt the visible
+  // session's float offset.
+  //
+  // Re-runs only when the list crosses the empty/non-empty boundary — a
+  // ResizeObserver on the already-attached element handles continuous height
+  // changes (wrapping, row count changes) without re-attaching.
+  //
+  // auto-scroll verified unaffected: scrollToBottom()/jumpToBottom() below
+  // both read the scroll container's REAL scrollTop/scrollHeight — neither
+  // hardcodes an offset — so once .chat-scroll's padding-bottom grows by
+  // this var, both naturally settle content above the strip. No JS change
+  // needed there.
+  const QUEUED_STRIP_GAP = '0.5rem'; // visual breathing room above the strip's top edge (Destin's ask)
+  const hasQueuedMessages = state.queuedMessages.length > 0;
+  useEffect(() => {
+    const root = chatRootRef.current;
+    if (!root) return;
+    if (!hasQueuedMessages) {
+      // No strip mounted (QueuedMessagesStrip returns null) — nothing to
+      // observe. Explicit 0px (not removeProperty) so the floats' calc reads
+      // a real value immediately rather than depending on their own fallback.
+      root.style.setProperty('--queued-strip-height', '0px');
+      return;
+    }
+    const el = queuedStripRef.current;
+    if (!el) return;
+    const update = () => {
+      // calc(...) keeps the gap in real rem units (respects root font-size /
+      // zoom) while the measured part is a real px value — string-concat
+      // into ONE var rather than adding a second var, so every consumer
+      // (.chat-scroll padding, the two floats' bottom offset) only has to
+      // read a single number instead of remembering to add the gap itself.
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      root.style.setProperty('--queued-strip-height', `calc(${h}px + ${QUEUED_STRIP_GAP})`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    update();
+    // No removeProperty on cleanup: unlike useChromeMeasurements' document-
+    // level vars (which must be cleaned up because the root persists across
+    // the app's lifetime), this var lives on chatRootRef — it disappears
+    // with the DOM node on unmount, and on a boundary re-run the branch
+    // above already overwrites it with a fresh value.
+    return () => observer.disconnect();
+  }, [hasQueuedMessages]);
+
   return (
     <div
       // Fix: previously toggled display:none/flex, which forced a full reflow of
@@ -540,6 +631,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       // reports). Using visibility+opacity+pointer-events keeps the layout box
       // stable across toggles — no reflow, no flash, and focus/IME survive.
       // `inert` removes hidden subtree from tab order + a11y tree.
+      ref={chatRootRef}
       inert={!visible}
       aria-hidden={visible ? undefined : true}
       style={{
@@ -618,7 +710,13 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               switch (entry.kind) {
                 case 'user':
                   key = entry.message.id;
-                  content = <UserMessage message={entry.message} sessionId={sessionId} showTimestamps={showTimestamps} />;
+                  content = (
+                    <UserMessage
+                      message={entry.message}
+                      sessionId={sessionId}
+                      showTimestamps={showTimestamps}
+                    />
+                  );
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
@@ -767,6 +865,25 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         <div ref={bottomRef} className="h-1" />
            </div>
           </div>
+          {/* Task 12: docked strip for queued messages — a sibling of
+              .chat-scroll (NOT inside it), so it neither scrolls with the
+              timeline nor lives in the outer absolute ChatView container
+              (unlike ModelLoadingBar/jump-to-bottom, which float above the
+              WHOLE framed-shell). .chat-pane is `position: relative`, so this
+              anchors to ITS bottom edge via the same --bottom-chrome-height
+              offset those two floating elements use to clear the real
+              InputBar (which lives outside ChatView — see App.tsx's
+              chrome-wrapper--bottom). DOM choice documented per the task
+              brief: ChatView's scroll container's PARENT. Review fix: ref
+              feeds the --queued-strip-height measurement effect above (that
+              var is published on chatRootRef, NOT .chat-pane — see the WHY
+              comment there for why .chat-pane doesn't work for this). */}
+          <QueuedMessagesStrip
+            ref={queuedStripRef}
+            queuedMessages={state.queuedMessages}
+            onCancel={onCancelQueued ? (queueId) => onCancelQueued(sessionId, queueId) : undefined}
+            onEdit={onEditQueued ? (queueId, text) => onEditQueued(sessionId, queueId, text) : undefined}
+          />
         </div>
         {/* Right frame edge / divider + Session Drawer — only shown when open.
             projectRoot/projectId/projectName are resolved from the session's

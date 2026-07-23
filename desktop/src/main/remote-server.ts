@@ -15,7 +15,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import { NATIVE_META_UNSUPPORTED } from '../shared/types';
+import { NATIVE_META_UNSUPPORTED, type NativeSendResult } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -764,6 +764,19 @@ export class RemoteServer {
         // (mirrors NativeSessionHost.getPermissionMode's default).
         const mode = this.nativeRuntime ? this.nativeRuntime.nativeHost.getPermissionMode(payload.sessionId) : 'ask';
         this.respond(client.ws, type, id, mode);
+        break;
+      }
+      case 'native:send': {
+        // M1: mirrors the desktop invoke — never throw (transport-parity rule).
+        const notLive = { status: 'failed', reason: 'not-live' } satisfies NativeSendResult;
+        const result = this.nativeRuntime ? this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text) : notLive;
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      // Task 11: removeQueued is sync + never throws — mirrors the desktop invoke.
+      case 'native:queue-remove': {
+        const removed = this.nativeRuntime ? this.nativeRuntime.nativeHost.removeQueued(payload.sessionId, payload.queueId) : false;
+        this.respond(client.ws, type, id, removed);
         break;
       }
       case 'native:sessions-list': {
@@ -1934,12 +1947,7 @@ export class RemoteServer {
         this.sessionManager.sendInput(payload.sessionId, payload.text);
         break;
       }
-      // Native runtime I/O — fire-and-forget (no response), mirrors NATIVE_SEND
-      // / NATIVE_INTERRUPT. The host serializes sends and no-ops unknown ids.
-      case 'native:send': {
-        if (this.nativeRuntime) void this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text);
-        break;
-      }
+      // Native runtime interrupt — fire-and-forget (no response). The host no-ops unknown ids.
       case 'native:interrupt': {
         this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
         break;

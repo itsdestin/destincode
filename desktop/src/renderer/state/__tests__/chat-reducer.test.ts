@@ -399,3 +399,219 @@ describe('chatReducer HYDRATE_CHAT_STATE', () => {
     expect(state.get('sess-2')!.timeline).toHaveLength(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 12: queued messages leave the timeline — docked strip + true-position
+// confirm. Replaces the Task 3/11 timeline-based queued mechanics (the
+// `queued`/`queueId` USER_PROMPT variant, QUEUED_PROMPT_CANCELED): a queued
+// native send now only touches SessionChatState.queuedMessages
+// (QUEUED_MESSAGE_ADDED/REMOVED) — NEVER the timeline or turn state — and
+// joins the timeline for the first time when TRANSCRIPT_USER_MESSAGE's
+// no-pending-match fallback appends it at the END, its true position,
+// instead of freezing an enqueue-time position above content the
+// still-streaming prior turn hadn't emitted yet ("assistant responding to
+// itself").
+// ─────────────────────────────────────────────────────────────────────────
+const SID = 'sess-1';
+
+function withStreamingTurn(sessionId = SID, turnId = 't1', groupId = 'g1'): ChatState {
+  // Mirrors stateWithInFlightTurn above — a turn mid-stream via
+  // TRANSCRIPT_ASSISTANT_TEXT leaves currentTurnId/currentGroupId set and
+  // isThinking true. Constructed directly rather than by dispatching the
+  // action, matching this file's existing helper convention.
+  const session = createSessionChatState();
+  session.currentTurnId = turnId;
+  session.currentGroupId = groupId;
+  session.isThinking = true;
+  return new Map([[sessionId, session]]);
+}
+
+describe('chatReducer QUEUED_MESSAGE_ADDED / QUEUED_MESSAGE_REMOVED (Task 12)', () => {
+  it('QUEUED_MESSAGE_ADDED appends to queuedMessages and touches NEITHER the timeline NOR turn state', () => {
+    let s = withStreamingTurn(); // currentTurnId 't1', currentGroupId 'g1', isThinking true
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'next msg', timestamp: 5 });
+    const sess = s.get(SID)!;
+    expect(sess.currentTurnId).toBe('t1');   // NOT nulled — later deltas keep merging into the live turn
+    expect(sess.currentGroupId).toBe('g1');  // NOT nulled — tool grouping unaffected
+    expect(sess.timeline).toHaveLength(0);   // NO timeline entry — the whole point of Task 12
+    expect(sess.queuedMessages).toEqual([{ queueId: 'q-1', content: 'next msg', timestamp: 5 }]);
+  });
+
+  it('QUEUED_MESSAGE_ADDED is a no-op for an unknown session id', () => {
+    const s = new Map<string, ReturnType<typeof createSessionChatState>>();
+    const before = s;
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_ADDED', sessionId: 'ghost', queueId: 'q-1', content: 'x', timestamp: 1 });
+    expect(after).toBe(before);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED removes only the matching entry by queueId', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'first', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-2', content: 'second', timestamp: 2 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: SID, queueId: 'q-1' });
+    expect(s.get(SID)!.queuedMessages).toEqual([{ queueId: 'q-2', content: 'second', timestamp: 2 }]);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED is a no-op when the queueId is not present', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'first', timestamp: 1 });
+    const before = s;
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: SID, queueId: 'ghost-id' });
+    expect(after).toBe(before);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED is a no-op for an unknown session id', () => {
+    const before: ChatState = new Map([[SID, createSessionChatState()]]);
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: 'ghost-session', queueId: 'q-1' });
+    expect(after).toBe(before);
+  });
+});
+
+describe('chatReducer TRANSCRIPT_USER_MESSAGE — true-position confirm for a drained queued message (Task 12)', () => {
+  it('a queued message with NO pending bubble appends at the END (true position), even mid-stream', () => {
+    // The prior turn is still streaming (currentTurnId/currentGroupId set,
+    // isThinking true) when the queued send drains — the bug this task
+    // fixes was freezing the queued bubble ABOVE this content because it
+    // rendered at enqueue time. With no timeline write on enqueue, the ONLY
+    // possible landing position is wherever TRANSCRIPT_USER_MESSAGE appends
+    // it: the end.
+    let s = withStreamingTurn();
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'queued text', timestamp: 1 });
+    s = chatReducer(s, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'queued text', timestamp: 2,
+    });
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1);
+    const entry = timeline[0];
+    expect(entry).toMatchObject({ kind: 'user', pending: false });
+    if (entry.kind === 'user') {
+      expect(entry.message.content).toBe('queued text');
+      expect('queued' in entry).toBe(false); // field is gone from the type entirely
+    }
+  });
+
+  it('drain-confirm removes the oldest queuedMessages entry with matching content', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'hi', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-2', content: 'hi', timestamp: 2 });
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'hi', timestamp: 3 });
+    // Oldest-content-match discipline (mirrors the pending-bubble dedup):
+    // q-1 (the OLDER entry) is removed, q-2 survives for the next drain.
+    expect(s.get(SID)!.queuedMessages).toEqual([{ queueId: 'q-2', content: 'hi', timestamp: 2 }]);
+  });
+
+  it('a sent-path pending bubble confirm is untouched: no queuedMessages entry exists, so nothing is removed', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'plain send', timestamp: 1 });
+    expect(s.get(SID)!.timeline).toHaveLength(1);
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'plain send', timestamp: 2 });
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1); // confirmed IN PLACE, not appended again
+    expect(timeline[0]).toMatchObject({ kind: 'user', pending: false });
+    expect(s.get(SID)!.queuedMessages).toEqual([]);
+  });
+
+  it('list removal runs independent of which branch confirms: a queuedMessages entry with content matching an unrelated sent bubble is still cleaned up', () => {
+    // Minimal-correct-rule pin: the list scan is NOT gated on confirmedIdx
+    // finding (or failing to find) a pending bubble — it is a separate,
+    // unconditional content-match attempt against queuedMessages. Construct
+    // the (edge-case) situation where a 'sent' pending bubble and a queued
+    // list entry share content; the sent bubble confirms via the
+    // pending-bubble branch, and the list entry is independently cleaned up
+    // by the same TRANSCRIPT_USER_MESSAGE dispatch.
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'same text', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'same text', timestamp: 2 });
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'same text', timestamp: 3 });
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1); // pending bubble confirmed in place, not double-appended
+    expect(s.get(SID)!.queuedMessages).toEqual([]); // list entry ALSO cleaned up by the same dispatch
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 8 / BUG B: tool-group collapse semantics. Collapse is per tool-group;
+// group membership is decided by currentGroupId — TRANSCRIPT_TOOL_USE joins
+// the current group if set, else opens a new one. TRANSCRIPT_ASSISTANT_TEXT
+// and TRANSCRIPT_ASSISTANT_REASONING deliberately reset currentGroupId to
+// null (a tool following its own text/reasoning renders under it in a new
+// bubble) — that reset is intended and NOT under test here. What IS pinned:
+// tools with nothing but heartbeats between them must stay in one group.
+// ─────────────────────────────────────────────────────────────────────────
+describe('chatReducer tool-group collapse semantics (Task 8 / BUG B)', () => {
+  function initState(sessionId = SID): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  function toolUse(toolUseId: string, uuid: string, sessionId = SID) {
+    return {
+      type: 'TRANSCRIPT_TOOL_USE' as const,
+      sessionId,
+      uuid,
+      toolUseId,
+      toolName: 'Bash',
+      toolInput: { command: `echo ${toolUseId}` },
+    };
+  }
+
+  /** Group id each tool currently belongs to, in group-insertion order. */
+  function groupIdsFor(state: ChatState, toolUseIds: string[], sessionId = SID): (string | undefined)[] {
+    const groups = [...state.get(sessionId)!.toolGroups.values()];
+    return toolUseIds.map((id) => groups.find((g) => g.toolIds.includes(id))?.id);
+  }
+
+  it('tools batched in one step share a group (collapse works)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    state = chatReducer(state, toolUse('tool-3', 'u-3'));
+    const [g1, g2, g3] = groupIdsFor(state, ['tool-1', 'tool-2', 'tool-3']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(g2).toBe(g3);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+
+  it('a reasoning delta between tools starts a new group (intended bubble semantics)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SID,
+      uuid: 'r-1', text: 'thinking about the next step', timestamp: 1000,
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g2).toBeDefined();
+    expect(g1).not.toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(2);
+  });
+
+  it('a thinking HEARTBEAT between tools does NOT split the group (spurious-split guard)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SID,
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+
+  it('a stall-warning HEARTBEAT between tools also does NOT split the group', () => {
+    // Stall warnings are still content-free liveness signals — same guard.
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SID,
+      stallWarning: { retryInMs: 5000, willRetry: true },
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+});

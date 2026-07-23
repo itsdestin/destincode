@@ -512,15 +512,29 @@ body[data-mode="buddy-chat"] #theme-bg {
 .chat-scroll {
   padding-top: var(--top-chrome-height, 3rem);
   /* --vvp-offset is the soft-keyboard height; added so the last message
-     clears BOTH the floating input bar AND the on-screen keyboard. */
-  padding-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
+     clears BOTH the floating input bar AND the on-screen keyboard.
+     Task 12 dogfood fix: + --queued-strip-height (same var the bottom
+     floats use — see .jump-to-bottom/.model-status-strip below) reserves
+     the strip's own footprint too, so the last timeline bubble / thinking
+     row scrolls to a resting position ABOVE the strip instead of behind
+     it — live/streaming content must never render underneath the strip.
+     0px when no messages are queued (unchanged default). The var itself
+     already bakes in a small extra gap (see ChatView.tsx's measurement
+     effect) so the bubble doesn't touch the strip's top edge. Because
+     scrollToBottom()/jumpToBottom() in ChatView.tsx read the container's
+     REAL scrollHeight/scrollTop (not a hardcoded offset), auto-scroll
+     picks this padding change up for free — verified, no JS change needed
+     there. */
+  padding-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + var(--vvp-offset, 0px));
 }
 
 /* Inset the scrollbar track so it stops below the header and above the
-   bottom chrome, matching the visible content area. */
+   bottom chrome, matching the visible content area. Mirrors .chat-scroll's
+   own padding-bottom (including --queued-strip-height) so the thumb's
+   travel range matches the content's actual scrollable area. */
 .chat-scroll::-webkit-scrollbar-track {
   margin-top: var(--top-chrome-height, 2.5rem);
-  margin-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
+  margin-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + var(--vvp-offset, 0px));
 }
 
 /* Bottom chrome (input + status bars) — mirrors header pattern.
@@ -541,16 +555,34 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 
 /* Jump-to-bottom button — chrome floats over the content area,
-   so push the button up above it */
+   so push the button up above it. Task 12 review fix: + --queued-strip-height
+   (published by ChatView.tsx's measurement effect, 0px when the queued strip
+   isn't showing) lifts this ABOVE the strip instead of overlapping it —
+   offset coordination, not z-index, since both this and the strip are
+   legitimately visible/interactive at once. */
 .jump-to-bottom {
   /* Includes --vvp-offset so the button stays above the soft keyboard
      when it's open (same treatment as .bottom-float). */
-  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
+  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
 }
 
 /* Native local-model loading / unloaded strip — floats centered just above the
-   input chrome (same offset math as .jump-to-bottom). 2026-07-14. */
+   input chrome (same offset math as .jump-to-bottom). 2026-07-14. Task 12
+   review fix: + --queued-strip-height, same reasoning as .jump-to-bottom above. */
 .model-status-strip {
+  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
+}
+
+/* Task 12: docked strip for queued (not-yet-sent) messages. Unlike
+   .model-status-strip / .jump-to-bottom (which float above the WHOLE
+   framed-shell, in ChatView's outer absolute container), this is a sibling of
+   .chat-scroll INSIDE .chat-pane (position: relative) — see the DOM-choice
+   comment at its render site in ChatView.tsx. Same --bottom-chrome-height
+   offset math so it clears the real InputBar (a sibling of ChatView,
+   positioned by App.tsx's chrome-wrapper--bottom) regardless of scroll.
+   Does NOT add --queued-strip-height to its own offset (that would push it
+   up above itself) — only the OTHER two floats that share this band do. */
+.queued-messages-strip {
   bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
 }
 /* Indeterminate progress bar (llama-server gives no load %). A highlight sweeps

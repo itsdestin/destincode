@@ -36,7 +36,7 @@ import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
-import { hasPendingInteraction } from './state/pty-input-gate';
+import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
@@ -520,10 +520,62 @@ function AppInner() {
   }, []);
 
   const guardedPtySend = useCallback((sid: string, text: string): boolean => {
+    // Honest guard (M1): refuse before sending, so callers' `if (!guardedPtySend)`
+    // bails actually fire for native/destroyed sessions and skip optimistic writes.
+    if (!canPtySend(sessionsRef.current.find((x) => x.id === sid), chatStateMapRef.current.get(sid))) return false;
     if (notifyIfPtyBlocked(sid)) return false;
     window.claude.session.sendInput(sid, text);
     return true;
   }, [notifyIfPtyBlocked]);
+
+  // Task 11 (cancel/edit queued messages), rewired for Task 12's docked strip
+  // (was UserMessage's Cancel/Edit affordances — now QueuedMessagesStrip's):
+  // Cancel — invoke removeQueued, then dispatch the reducer's removal either
+  // way. true: the id was found and removed on the host — the row is
+  // genuinely gone. false: the drain already won the race (same outcome as
+  // an interrupt landing a tick too late elsewhere in this file) — toast the
+  // honest reason, but ALSO dispatch QUEUED_MESSAGE_REMOVED (Task 12 addition:
+  // the strip row must not linger beside its just-confirmed timeline entry;
+  // TRANSCRIPT_USER_MESSAGE's own drain-side removal would eventually clear
+  // it too, but that races the transcript watcher — dispatching here removes
+  // it immediately, and QUEUED_MESSAGE_REMOVED is a safe no-op if the
+  // transcript event's removal already won).
+  const handleCancelQueued = useCallback(async (sid: string, queueId: string) => {
+    const removed = await window.claude.native.queueRemove(sid, queueId);
+    if (!removed) {
+      setToast('Already sending — too late to cancel.');
+      setTimeout(() => setToast(null), 3000);
+      dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
+      return;
+    }
+    dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
+  }, [dispatch]);
+
+  // Edit = cancel + refill (design ruling — no in-place editing). The draft
+  // check MUST happen BEFORE removeQueued runs — brief invariant: never
+  // destroy the queued message if the refill can't land. inputBarRef is the
+  // single ChatInputBar instance (mounted once, bound to the active session);
+  // see InputBarHandle's hasDraft/fillDraft for why this ref was extended
+  // instead of introducing new App state. Same too-late handling as Cancel
+  // above (dispatch QUEUED_MESSAGE_REMOVED either way) — but the draft is
+  // NOT refilled on the too-late path, since the message already reached the
+  // host and refilling would duplicate it if the user re-sent.
+  const handleEditQueued = useCallback(async (sid: string, queueId: string, text: string) => {
+    if (inputBarRef.current?.hasDraft()) {
+      setToast('Finish or clear your current draft first, then edit the queued message.');
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+    const removed = await window.claude.native.queueRemove(sid, queueId);
+    if (!removed) {
+      setToast('Already sending — too late to cancel.');
+      setTimeout(() => setToast(null), 3000);
+      dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
+      return;
+    }
+    dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
+    inputBarRef.current?.fillDraft(text);
+  }, [dispatch]);
 
   // Compaction watchdog: activity-aware — resets on any reducer update for a
   // session with compactionPending set. Any transcript event bumps the timer
@@ -2640,6 +2692,8 @@ function AppInner() {
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+                      onCancelQueued={handleCancelQueued}
+                      onEditQueued={handleEditQueued}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2751,9 +2805,10 @@ function AppInner() {
                     setSyncAutoOpen(true);
                     setSettingsOpen(true);
                   }}
-                  onRunSync={!trustGateActive && sessionId ? () => {
+                  onRunSync={!trustGateActive && sessionId && !isNativeSession ? () => {
                     // Send first, guarded — a refused send must not leave a
-                    // stale pending "/sync" bubble in the timeline.
+                    // stale pending "/sync" bubble in the timeline. Hide /sync for
+                    // native sessions — they have no PTY send capability.
                     if (!guardedPtySend(sessionId, '/sync\r')) return;
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
@@ -3030,6 +3085,7 @@ function AppInner() {
           // pending, "/config\r" would answer CC's live Ink menu instead.
           setTimeout(() => guardedPtySend(sessionId, '/config\r'), 50);
         }}
+        showAdvanced={currentSession?.provider !== 'native'}
       />
       <ModelPickerPopup
         open={modelPickerOpen}

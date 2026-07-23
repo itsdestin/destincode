@@ -113,6 +113,14 @@ export type TimelineEntry =
   // catches up, it consumes the oldest matching pending entry (clears the flag)
   // rather than dedup'ing via content-match against the last 10 entries (which
   // silently dropped legitimate rapid-fire duplicates like "yes yes yes").
+  // Task 12: a queued send NO LONGER writes a timeline entry at all (see
+  // SessionChatState.queuedMessages below) — a queued message only ever joins
+  // the timeline via TRANSCRIPT_USER_MESSAGE's no-pending-match fallback, which
+  // appends it at the true (end-of-timeline) position once the host actually
+  // drains it. This replaces the Task 3/11 `queued`/`queueId` fields, which
+  // let a queued bubble render mid-timeline at enqueue time — landing above
+  // content from the still-streaming prior turn ("assistant responding to
+  // itself"). See docs/active — Task 12 brief.
   | { kind: 'user'; message: ChatMessage; pending?: boolean }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
@@ -211,6 +219,21 @@ export interface SessionChatState {
    * — only a genuine replay/live overlap of the identical event.
    */
   seenUuids: Set<string>;
+  /**
+   * Task 12: messages the native host FIFO'd behind an in-flight turn
+   * (NativeSendResult status 'queued'), rendered by QueuedMessagesStrip
+   * docked at the bottom of the chat area — NOT in the timeline (see
+   * TimelineEntry's 'user' arm WHY comment for the bug this replaces).
+   * A queued message leaves this list one of two ways: (1) the host drains
+   * it and TRANSCRIPT_USER_MESSAGE's no-pending-match fallback removes the
+   * oldest content-matching entry as it appends the confirmed timeline entry
+   * (chat-reducer.ts), or (2) the strip's Cancel/Edit invokes
+   * native:queue-remove and dispatches QUEUED_MESSAGE_REMOVED directly (on
+   * both the success AND too-late paths — see App.tsx handleCancelQueued/
+   * handleEditQueued). content is the same display string the bubble would
+   * have shown, so the drain-side removal can content-match it.
+   */
+  queuedMessages: Array<{ queueId: string; content: string; timestamp: number }>;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -235,6 +258,7 @@ export function createSessionChatState(): SessionChatState {
     modelLoadedBytes: null,
     modelEverResident: false,
     seenUuids: new Set(),
+    queuedMessages: [],
   };
 }
 
@@ -254,6 +278,34 @@ export type ChatAction =
       // Exact attached-file paths (see ChatMessage.attachments) — lets the
       // bubble render pills for paths with spaces that regex detection misses.
       attachments?: string[];
+    }
+  | {
+      // Task 12: a native send came back 'queued' (host FIFO'd it behind an
+      // in-flight turn). Adds to SessionChatState.queuedMessages — NEVER
+      // touches the timeline or turn state (that's exactly the Task 3/11 bug
+      // this replaces: an enqueue-time timeline bubble could land above
+      // content the still-streaming prior turn hadn't emitted yet). content
+      // is the same display string USER_PROMPT would have used for the
+      // bubble, so TRANSCRIPT_USER_MESSAGE's drain-side removal can
+      // content-match it.
+      type: 'QUEUED_MESSAGE_ADDED';
+      sessionId: string;
+      queueId: string;
+      content: string;
+      timestamp: number;
+    }
+  | {
+      // Task 12 (replaces QUEUED_PROMPT_CANCELED): removes a queuedMessages
+      // entry by queueId. Dispatched from the strip's Cancel/Edit handlers on
+      // BOTH outcomes of native:queue-remove — true (the id was found and
+      // removed on the host) and false (too late: the host already drained
+      // it) — so the strip row doesn't linger once removeQueued has run
+      // either way; on the false path the row's counterpart timeline entry is
+      // about to be (or already was) appended by TRANSCRIPT_USER_MESSAGE.
+      // No-op if the id isn't present (already removed, or never existed).
+      type: 'QUEUED_MESSAGE_REMOVED';
+      sessionId: string;
+      queueId: string;
     }
   | {
       type: 'SHOW_PROMPT';
@@ -530,6 +582,12 @@ export interface SerializedSessionChatState {
   modelEverResident?: boolean;
   // Optional so a pre-field snapshot from an older host still deserializes.
   seenUuids?: string[];
+  // Task 12: renderer-local by design (see queuedMessages' WHY comment) — a
+  // remote client's own queue state doesn't come through here, but the field
+  // is still serialized so a same-origin reload doesn't silently drop rows
+  // mid-session. Optional so a pre-field snapshot from an older host still
+  // deserializes.
+  queuedMessages?: Array<{ queueId: string; content: string; timestamp: number }>;
 }
 
 export interface SerializedChatState {
@@ -568,6 +626,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelLoadedBytes: s.modelLoadedBytes,
         modelEverResident: s.modelEverResident,
         seenUuids: Array.from(s.seenUuids),
+        queuedMessages: s.queuedMessages,
       },
     ]);
   }
@@ -604,6 +663,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       // Older hosts predate seenUuids — default to an empty Set (not undefined,
       // which would crash the reducer's .has() dedup check).
       seenUuids: new Set(ser.seenUuids ?? []),
+      // Older hosts predate queuedMessages — default to an empty list.
+      queuedMessages: ser.queuedMessages ?? [],
     });
   }
   return result;
