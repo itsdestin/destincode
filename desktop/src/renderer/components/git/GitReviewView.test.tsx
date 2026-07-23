@@ -117,4 +117,26 @@ describe('GitReviewView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Commit 1 staged file' }));
     await waitFor(() => expect(screen.getByText('nothing added to commit')).toBeInTheDocument());
   });
+
+  it('surfaces a commit-diff fetch error instead of collapsing to "No direct changes"', async () => {
+    const git = mountWith();
+    git.commitFileDiff.mockResolvedValueOnce({ ok: false, error: 'fatal: bad object', hunks: [], binary: false });
+    await waitFor(() => screen.getByText('fix: first'));
+    fireEvent.click(screen.getByText('fix: first'));
+    await waitFor(() => expect(screen.getByText('fatal: bad object')).toBeInTheDocument());
+    expect(screen.queryByText('No direct changes to this file in this commit.')).not.toBeInTheDocument();
+  });
+
+  it('serializes overlapping stage/unstage clicks through run()', async () => {
+    const git = mountWith();
+    await waitFor(() => screen.getByText('Staged for commit'));
+    let resolveStage: (v: { ok: boolean }) => void = () => {};
+    git.stage.mockReturnValueOnce(new Promise((resolve) => { resolveStage = resolve; }));
+    const btn = screen.getByText('Staged for commit');
+    fireEvent.click(btn);
+    fireEvent.click(btn); // second click while the first op is still in-flight
+    expect(git.stage).toHaveBeenCalledTimes(1);
+    resolveStage({ ok: true });
+    await waitFor(() => expect(git.stage).toHaveBeenCalledTimes(1));
+  });
 });

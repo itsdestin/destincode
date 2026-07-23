@@ -33,7 +33,10 @@ export function GitReviewView({
   const [review, setReview] = useState<GitFileReviewResult | null>(null);
   const [extraLog, setExtraLog] = useState<GitLogEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['uncommitted']));
-  const [commitDiffs, setCommitDiffs] = useState<Map<string, StructuredPatchHunk[] | 'loading' | 'empty'>>(new Map());
+  // Error-message standard: a failed `commitFileDiff` fetch (ok:false, or a
+  // rejected promise) must surface the real backend string, never collapse
+  // into the same 'empty' state as a genuinely change-free commit.
+  const [commitDiffs, setCommitDiffs] = useState<Map<string, StructuredPatchHunk[] | 'loading' | 'empty' | { error: string }>>(new Map());
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [opError, setOpError] = useState<string | null>(null);
@@ -63,11 +66,17 @@ export function GitReviewView({
     if (!commitDiffs.has(sha)) {
       setCommitDiffs((m) => new Map(m).set(sha, 'loading'));
       gitApi()?.commitFileDiff?.(projectRoot, sha, relPath)
-        .then((d: { ok: boolean; hunks: StructuredPatchHunk[] }) => {
+        .then((d: { ok: boolean; hunks: StructuredPatchHunk[]; error?: string }) => {
           if (!aliveRef.current) return;
-          setCommitDiffs((m) => new Map(m).set(sha, d.ok && d.hunks.length > 0 ? d.hunks : 'empty'));
+          // ok:false is a real backend failure, not "no changes" — surface it.
+          if (!d.ok) { setCommitDiffs((m) => new Map(m).set(sha, { error: d.error ?? 'git show failed' })); return; }
+          setCommitDiffs((m) => new Map(m).set(sha, d.hunks.length > 0 ? d.hunks : 'empty'));
         })
-        .catch(() => { if (aliveRef.current) setCommitDiffs((m) => new Map(m).set(sha, 'empty')); });
+        .catch((e: unknown) => {
+          if (aliveRef.current) {
+            setCommitDiffs((m) => new Map(m).set(sha, { error: e instanceof Error ? e.message : String(e) }));
+          }
+        });
     }
   };
 
@@ -84,6 +93,10 @@ export function GitReviewView({
   };
 
   const run = async (op: () => Promise<{ ok: boolean; error?: string }>) => {
+    // Serialize git ops: without this guard, a second run() while one is
+    // in-flight wipes the first's opError and re-enables mid-op (the commit
+    // button already checked `busy` via canCommit, but stage/unstage didn't).
+    if (busy) return false;
     setBusy(true);
     setOpError(null);
     try {
@@ -151,10 +164,11 @@ export function GitReviewView({
               {!uncommitted.untracked && (
                 <button
                   type="button"
+                  disabled={busy}
                   onClick={() => run(() => (uncommitted.staged
                     ? gitApi().unstage(projectRoot, relPath)
                     : gitApi().stage(projectRoot, relPath)))}
-                  className="flex items-center gap-1.5 text-[11px] text-fg-2 hover:text-fg transition-colors"
+                  className="flex items-center gap-1.5 text-[11px] text-fg-2 hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                     <rect x="3" y="3" width="18" height="18" rx="3" />
@@ -201,6 +215,9 @@ export function GitReviewView({
             >
               {body === 'loading' && <div className="text-[11px] text-fg-muted py-1">Loading…</div>}
               {body === 'empty' && <div className="text-[11px] text-fg-muted py-1">No direct changes to this file in this commit.</div>}
+              {body && typeof body === 'object' && !Array.isArray(body) && (
+                <div className="text-[11px] text-fg-muted py-1 break-words">{body.error}</div>
+              )}
               {Array.isArray(body) && <UnifiedDiff oldStr="" newStr="" structuredPatch={body} />}
             </GitReviewCard>
           );
