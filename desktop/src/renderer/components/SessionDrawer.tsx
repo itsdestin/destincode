@@ -504,8 +504,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                popover — NOT "toggle off above", which went stale when change 38
                moved those toggles off the drawer body and behind the sliders icon. */
             <EmptyState
-              variant="inline"
-              className="p-3"
+              /* BLOCK, not inline: centered + stacked, matching the Resume
+                 browser (Destin, 2026-07-23). Inline laid the message and button
+                 out in a left-aligned row, which also clipped in a narrow drawer.
+                 px-3 keeps the text off the edges at small drawer widths. */
+              className="px-3"
               message={
                 searchQuery.trim()
                   ? <>No files match “{searchQuery.trim()}”.</>
