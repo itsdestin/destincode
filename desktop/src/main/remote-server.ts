@@ -71,6 +71,7 @@ export class RemoteServer {
   // and never cancelled, so it survived stop() and a restart stacked another.
   private uploadCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private clients = new Set<AuthenticatedClient>();
+  private lastClientActivityMs = 0; // see getLastClientActivityMs()
   private tokens = new Map<string, boolean>(); // token → valid
   private tokensPath: string;
   // `${encoding}:${urlPath}` → compressed bytes. Safe to hold indefinitely
@@ -350,6 +351,14 @@ export class RemoteServer {
   /** Number of currently connected remote clients. */
   getClientCount(): number {
     return this.clients.size;
+  }
+
+  /** Epoch ms of the last authenticated remote-client message (0 = never).
+   *  Read by the presence idle poller (social-handlers.ts): someone driving
+   *  the app through remote access produces no LOCAL keyboard/mouse input, so
+   *  system idle time alone would wrongly mark them away. */
+  getLastClientActivityMs(): number {
+    return this.lastClientActivityMs;
   }
 
   /** List all connected remote clients. */
@@ -702,6 +711,11 @@ export class RemoteServer {
     } catch {
       return;
     }
+
+    // Presence-activity stamp (see getLastClientActivityMs). Any parsed frame
+    // counts: a remote user's typing arrives as pty:input / chat sends, and
+    // even passive viewing produces periodic client messages.
+    this.lastClientActivityMs = Date.now();
 
     const { type, id, payload } = msg;
 

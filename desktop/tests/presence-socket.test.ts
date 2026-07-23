@@ -258,6 +258,54 @@ describe('presence-socket state machine', () => {
     sock.destroy();
   });
 
+  it('user-idle gate: extended idleness closes the socket, activity reconnects, renderer intent preserved', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    // 10+ min with no input anywhere (system or remote): presence must drop so
+    // "Online" means a HUMAN is around — an app left running on an awake
+    // machine (e.g. remote-access keep-awake) must not read online forever.
+    sock.setIdle(true);
+    expect(inst.closeCalls).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'disconnected', reason: 'local' });
+    expect(sock.isConnected()).toBe(false);
+
+    // Input returns → reconnect (renderer still wants presence on).
+    sock.setIdle(false);
+    expect(FakeSocket.instances).toHaveLength(2);
+
+    // Idle while the renderer wants presence OFF: clearing idle must not
+    // conjure a connection.
+    sock.setDesired(false);
+    sock.setIdle(true);
+    sock.setIdle(false);
+    expect(FakeSocket.instances).toHaveLength(2);
+    sock.destroy();
+  });
+
+  it('idle and suspend gates are independent: both must clear before reconnecting', () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    FakeSocket.instances[0].emit('open');
+
+    // Machine goes idle, THEN sleeps (the normal order at a desk).
+    sock.setIdle(true);
+    sock.setSuspended(true);
+    expect(FakeSocket.instances).toHaveLength(1);
+
+    // Wake without input (dark wake / lid opened by a bump): still idle — the
+    // resume alone must NOT reconnect and flash a false "Online" at friends.
+    sock.setSuspended(false);
+    expect(FakeSocket.instances).toHaveLength(1);
+
+    // Real input arrives → both gates clear → reconnect.
+    sock.setIdle(false);
+    expect(FakeSocket.instances).toHaveLength(2);
+    sock.destroy();
+  });
+
   it('send is a silent no-op when disconnected; isConnected gates the honest handler receipt', () => {
     const { sock } = makeSocket(() => 'tok');
     // The manager itself no-ops; the HANDLER (social-handlers.ts) consults
