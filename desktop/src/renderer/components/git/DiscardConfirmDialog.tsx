@@ -2,9 +2,10 @@
 // overlay primitives — never a hand-rolled bg-black/40 (react-renderer rule).
 // The copy states EXACTLY what happens; the failure path (surfaced by the
 // caller) carries real git stderr.
-import React, { useEffect } from 'react';
+import React from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';
+import { useEscClose } from '../../hooks/use-esc-close';
 
 export interface DiscardConfirmDialogProps {
   fileName: string;
@@ -16,15 +17,19 @@ export interface DiscardConfirmDialogProps {
 }
 
 export function DiscardConfirmDialog({ fileName, willTrash, onConfirm, onCancel }: DiscardConfirmDialogProps) {
-  // Capture-phase Escape = cancel, same pattern as UnsavedChangesDialog — the
-  // drawer's own ESC cascade must not fire underneath an open dialog.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel(); }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [onCancel]);
+  // Escape = cancel, routed through the shared useEscClose LIFO stack (same
+  // pattern as CloseSessionPrompt). A dialog-local capture-phase listener
+  // does NOT work here: EscCloseProvider's own capture-phase window listener
+  // fires in registration order (it mounts once at App root, before this
+  // dialog ever exists), so it always runs FIRST and pops whatever is
+  // beneath us on the stack — e.g. SessionDrawer's handleBack — even if this
+  // dialog also calls stopPropagation() in its own listener. stopPropagation
+  // only stops propagation to ancestor/descendant nodes; it does nothing to
+  // sibling listeners already registered on the same window. Joining the
+  // stack via useEscClose(true, onCancel) instead pushes THIS dialog on top,
+  // so EscCloseProvider pops us first and the drawer's entry underneath
+  // never fires.
+  useEscClose(true, onCancel);
 
   return (
     <Scrim layer={3} onClick={onCancel} className="flex items-center justify-center">
