@@ -12,6 +12,18 @@ export const RECORD_SCHEMA_VERSION = 1;
 // lets us merge a single flag independently of the whole record.
 export interface FlagState { value: boolean; updatedAt: string }
 
+// A model reference portable ACROSS devices — persisted with the record so the
+// always-shown resume selector can pre-fill without a round-trip. Deliberately
+// NOT the device-local providerId ULID: that ULID only resolves via THIS
+// device's ~/.youcoded/providers.json, so persisting it would silently break
+// resume on every OTHER synced device. modelId/providerType/providerLabel are
+// the portable identity a peer device can re-resolve (or just display).
+export interface PortableModelRef {
+  modelId: string;
+  providerType: string;
+  providerLabel: string;
+}
+
 export interface ConversationRecord {
   schema: number;
   id: string;                    // provider-stable conversation id (CC: session UUID)
@@ -26,6 +38,7 @@ export interface ConversationRecord {
   createdAt: string;             // ISO-8601
   note: string;                  // user freeform note; '' means none
   noteUpdatedAt: string;         // ISO — own timestamp for independent merge
+  lastUsedModel?: PortableModelRef; // portable — see PortableModelRef; absent until a turn runs
 }
 
 // Keep only well-formed FlagState entries. A malformed flag (string value,
@@ -45,6 +58,27 @@ function sanitizeFlags(raw: unknown): Record<string, FlagState> {
   return out;
 }
 
+// Whitelist parse for lastUsedModel: keep it ONLY when every field is a
+// non-empty string, else drop the FIELD (never the whole record) — same
+// per-field damage containment as sanitizeFlags. A partially-shaped ref would
+// crash the resume selector's `.modelId` read; portable-by-design also means
+// this must never carry the device-local providerId ULID through (see
+// PortableModelRef) — a caller that accidentally passes one still round-trips
+// as a plain string here, but the shape check alone can't catch that; the WHY
+// lives at the write side (service.ts noteModelUsed / conversation-store.ts).
+function sanitizeModelRef(raw: unknown): PortableModelRef | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Partial<Record<keyof PortableModelRef, unknown>>;
+  if (
+    typeof r.modelId === 'string' && r.modelId &&
+    typeof r.providerType === 'string' && r.providerType &&
+    typeof r.providerLabel === 'string' && r.providerLabel
+  ) {
+    return { modelId: r.modelId, providerType: r.providerType, providerLabel: r.providerLabel };
+  }
+  return undefined;
+}
+
 // Parse + validate a record file's content. Returns null on anything invalid —
 // a corrupt record must damage exactly one conversation, never the whole list
 // (same "one bad record can't break the browser" guarantee as parseRecord's
@@ -58,6 +92,7 @@ export function parseRecord(json: string): ConversationRecord | null {
   if (typeof raw.provider !== 'string' || !raw.provider) return null;
   // lastActive must be a real, parseable date — it drives every merge decision.
   if (typeof raw.lastActive !== 'string' || Number.isNaN(Date.parse(raw.lastActive))) return null;
+  const lastUsedModel = sanitizeModelRef(raw.lastUsedModel);
   return {
     schema: RECORD_SCHEMA_VERSION,
     id: raw.id,
@@ -86,6 +121,10 @@ export function parseRecord(json: string): ConversationRecord | null {
         ? raw.noteUpdatedAt
         : (typeof raw.createdAt === 'string' && !Number.isNaN(Date.parse(raw.createdAt))
             ? raw.createdAt : raw.lastActive),
+    // Conditional spread: an absent/invalid lastUsedModel must leave the key
+    // OFF the parsed object entirely (not `undefined`), so a plain `toEqual`
+    // against a source record that never had the field still round-trips.
+    ...(lastUsedModel ? { lastUsedModel } : {}),
   };
 }
 
@@ -173,6 +212,11 @@ export function mergeRecords(a: ConversationRecord, b: ConversationRecord): Conv
     // createdAt is the conversation's birth — keep the earliest claim
     // (content-tiebroken on equal instants, see earliestOf).
     createdAt: earliestOf(a.createdAt, b.createdAt),
+    // lastUsedModel travels with activity like title/device (whichever side
+    // saw the later turn knows the current model) but a real value must never
+    // lose to an absent one — a device that hasn't run since the model was
+    // picked shouldn't erase it.
+    lastUsedModel: newer.lastUsedModel ?? older.lastUsedModel,
   };
 }
 

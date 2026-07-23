@@ -163,8 +163,8 @@ describe('conversations service composition root', () => {
   it('an event upserts projectName/originalPath/lastActive/device', async () => {
     const svc = await freshService(startOpts());
     const cwd = path.join(tmpRoot, 'my-project');
-    svc.noteSessionStarted('claude-abc', cwd);
-    svc.noteTranscriptEvent('claude-abc', ev({ type: 'turn-complete', timestamp: 1_700_000_000_000 }));
+    svc.noteSessionStarted('claude-abc', cwd, 'claude');
+    svc.noteTranscriptEvent('claude-abc', ev({ type: 'turn-complete', timestamp: 1_700_000_000_000 }), 'claude');
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledWith(expect.objectContaining({
       id: 'claude-abc',
@@ -180,8 +180,8 @@ describe('conversations service composition root', () => {
   it('turn-complete mirrors the jsonl and syncs the personal space promptly', async () => {
     const svc = await freshService(startOpts());
     const cwd = path.join(tmpRoot, 'proj-x');
-    svc.noteSessionStarted('claude-xyz', cwd);
-    svc.noteTranscriptEvent('claude-xyz', ev({ type: 'turn-complete' }));
+    svc.noteSessionStarted('claude-xyz', cwd, 'claude');
+    svc.noteTranscriptEvent('claude-xyz', ev({ type: 'turn-complete' }), 'claude');
     await Promise.resolve();
     expect(h.mirrorIn).toHaveBeenCalledTimes(1);
     const arg = h.mirrorIn.mock.calls[0][0];
@@ -262,7 +262,7 @@ describe('conversations service composition root', () => {
     // sweep sees an empty list and this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
     h.store.list.mockResolvedValue([liveRec, idleRec] as any);
-    svc.noteSessionStarted(liveRec.id, liveDir); // liveRec is a LIVE session here
+    svc.noteSessionStarted(liveRec.id, liveDir, 'claude'); // liveRec is a LIVE session here
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -283,7 +283,7 @@ describe('conversations service composition root', () => {
       transcriptRef: 'claude/transcripts/ended-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
     const svc = await freshService(startOpts());
-    svc.noteSessionStarted(rec.id, dir); // now LIVE → guarded
+    svc.noteSessionStarted(rec.id, dir, 'claude'); // now LIVE → guarded
     // Records set AFTER start + guard (as in the sweep tests above) so the
     // startup catch-up sweep sees an empty list — this test isolates the
     // SYNCED-event sweep and the guard-release path.
@@ -318,7 +318,7 @@ describe('conversations service composition root', () => {
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     fs.writeFileSync(localPath, 'aaaa'); // initial size
 
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);            // kicks the async targeted materialize
     await vi.advanceTimersByTimeAsync(0); // flush get() → first stat → arm probe
     // Grow the file mid-wait: the next probe sees a DIFFERENT size, so the copy
@@ -359,7 +359,7 @@ describe('conversations service composition root', () => {
     h.store.get.mockImplementation(async (_p: string, gid: string) => (gid === recA.id ? recA : recB) as any);
     h.store.list.mockResolvedValue([recA, recB] as any);
 
-    svc.noteSessionStarted(recA.id, dirA);
+    svc.noteSessionStarted(recA.id, dirA, 'claude');
     svc.noteSessionEnded(recA.id);
     await vi.advanceTimersByTimeAsync(0);   // flush get() → first stat (absent → size 0) → arm probe
     await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → copy recA only
@@ -391,7 +391,7 @@ describe('conversations service composition root', () => {
     let sz = 100;
     const statSpy = vi.spyOn(fs, 'statSync').mockImplementation(() => ({ size: (sz += 100) } as any));
 
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);
     // Advance well past QUIESCE_MAX_MS (6s) — every probe sees a bigger size.
     for (let i = 0; i < 12; i++) await vi.advanceTimersByTimeAsync(750);
@@ -420,10 +420,10 @@ describe('conversations service composition root', () => {
     h.store.get.mockResolvedValue(rec as any);
     // Local file absent (size 0), so it would reach quiescence on probe 2 — but
     // we re-open the session first, and the post-wait guard must win.
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);              // deletes guard, kicks async materialize
     await vi.advanceTimersByTimeAsync(0);  // flush get() → first probe (size 0) → arm sleep
-    svc.noteSessionStarted(id, dir);       // session re-opens mid-wait → re-adds the guard
+    svc.noteSessionStarted(id, dir, 'claude');       // session re-opens mid-wait → re-adds the guard
     await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → quiesced, but guard is set
     expect(h.materializeOut).not.toHaveBeenCalled();
     svc.stopConversationStore();
@@ -448,7 +448,7 @@ describe('conversations service composition root', () => {
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     fs.writeFileSync(localPath, 'the-final-turn');
 
-    svc.noteSessionStarted(id, dir); // learn the cwd so flush can locate the file
+    svc.noteSessionStarted(id, dir, 'claude'); // learn the cwd so flush can locate the file
     const p = svc.flushSessionToSpace(id);
     await vi.advanceTimersByTimeAsync(0);   // first stat → arm the probe sleep
     await vi.advanceTimersByTimeAsync(750); // probe 2: size stable → quiescent → mirror + push
@@ -588,15 +588,56 @@ describe('conversations service composition root', () => {
   // 5 — title write-through.
   it('noteTitleChanged writes through to store.setTitle', async () => {
     const svc = await freshService(startOpts());
-    svc.noteTitleChanged('claude-t', 'My Title');
+    svc.noteTitleChanged('claude-t', 'My Title', 'claude');
     expect(h.store.setTitle).toHaveBeenCalledWith('claude', 'claude-t', 'My Title');
   });
 
   // 6 — flag write-through.
   it('noteFlagChanged writes through to store.setFlag', async () => {
     const svc = await freshService(startOpts());
-    svc.noteFlagChanged('claude-f', 'complete', true);
+    svc.noteFlagChanged('claude-f', 'complete', true, 'claude');
     expect(h.store.setFlag).toHaveBeenCalledWith('claude', 'claude-f', 'complete', true);
+  });
+
+  // --- noteModelUsed (Task 3) ------------------------------------------------
+  // Never seeds a record on its own (a model-only upsert would be exactly the
+  // §3.2 phantom shape) — it either upserts into an EXISTING record right
+  // away, or stashes on ctx and rides the next transcript-event upsert.
+  describe('noteModelUsed', () => {
+    const ref = { modelId: 'claude-opus-4-7', providerType: 'anthropic', providerLabel: 'Claude Pro' };
+
+    it('upserts lastUsedModel immediately when a record already exists', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'model-proj');
+      svc.noteSessionStarted('claude-m1', dir, 'claude');
+      h.store.get.mockResolvedValue({ id: 'claude-m1', provider: 'claude' } as any);
+      svc.noteModelUsed('claude-m1', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.get).toHaveBeenCalledWith('claude', 'claude-m1');
+      expect(h.store.upsert).toHaveBeenCalledWith({ id: 'claude-m1', provider: 'claude', lastUsedModel: ref });
+    });
+
+    it('does NOT upsert (never seeds a record) when no record exists yet — it rides the next transcript upsert instead', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'model-proj-2');
+      svc.noteSessionStarted('claude-m2', dir, 'claude');
+      h.store.get.mockResolvedValue(null); // no record yet
+      svc.noteModelUsed('claude-m2', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.upsert).not.toHaveBeenCalled();
+      // The stashed ref rides the NEXT transcript-event upsert.
+      svc.noteTranscriptEvent('claude-m2', ev({ type: 'turn-complete' }), 'claude');
+      await Promise.resolve();
+      expect(h.store.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-m2', lastUsedModel: ref }));
+    });
+
+    it('is a no-op for a session that never announced itself (no ctx, no provider known)', async () => {
+      const svc = await freshService(startOpts());
+      svc.noteModelUsed('never-announced', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.get).not.toHaveBeenCalled();
+      expect(h.store.upsert).not.toHaveBeenCalled();
+    });
   });
 
   // --- Meta-write honesty (Item 6) ------------------------------------------
@@ -610,8 +651,8 @@ describe('conversations service composition root', () => {
     it('buffers a flag write made before the store starts, flushes it in order, resolves ok:true', async () => {
       vi.resetModules();
       const svc = await import('../src/main/conversations/service');
-      const p1 = svc.noteFlagChanged('id1', 'complete', true);   // store not started yet
-      const p2 = svc.noteSessionNote('id1', 'note-2');
+      const p1 = svc.noteFlagChanged('id1', 'complete', true, 'claude');   // store not started yet
+      const p2 = svc.noteSessionNote('id1', 'note-2', 'claude');
       await svc.startConversationStore(startOpts());
       expect(await p1).toEqual({ ok: true });
       expect(await p2).toEqual({ ok: true });
@@ -624,7 +665,7 @@ describe('conversations service composition root', () => {
     it('resolves buffered writes ok:false when the store never comes up', async () => {
       vi.resetModules();
       const svc = await import('../src/main/conversations/service');
-      const p = svc.noteFlagChanged('id1', 'complete', true);
+      const p = svc.noteFlagChanged('id1', 'complete', true, 'claude');
       h.managedRoots = null;                                  // no personal root
       await svc.startConversationStore();
       expect(await p).toEqual({ ok: false });
@@ -633,12 +674,12 @@ describe('conversations service composition root', () => {
     it('a rejecting store write resolves ok:false, not ok:true', async () => {
       const svc = await freshService(startOpts());
       h.store.setFlag.mockRejectedValue(new Error('lock timeout'));
-      expect(await svc.noteFlagChanged('id1', 'complete', true)).toEqual({ ok: false });
+      expect(await svc.noteFlagChanged('id1', 'complete', true, 'claude')).toEqual({ ok: false });
     });
 
     it('a ready store resolves a flag write ok:true immediately (no buffering)', async () => {
       const svc = await freshService(startOpts());
-      expect(await svc.noteFlagChanged('id1', 'complete', true)).toEqual({ ok: true });
+      expect(await svc.noteFlagChanged('id1', 'complete', true, 'claude')).toEqual({ ok: true });
     });
 
     // stopConversationStore's idempotent-teardown call (fired at the top of
@@ -651,7 +692,7 @@ describe('conversations service composition root', () => {
       await svc.startConversationStore(startOpts());
       svc.stopConversationStore();
       let settled = false;
-      const p = svc.noteFlagChanged('id2', 'complete', true).then((r) => { settled = true; return r; });
+      const p = svc.noteFlagChanged('id2', 'complete', true, 'claude').then((r) => { settled = true; return r; });
       await new Promise((r) => setTimeout(r, 10));
       expect(settled).toBe(false);          // still buffered, not resolved yet
       await svc.startConversationStore(startOpts());
@@ -671,8 +712,8 @@ describe('conversations service composition root', () => {
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(h.reconcile).toHaveBeenCalledTimes(2);
     // Arm a pending debounce for a chatty event, then stop BEFORE its 5s window.
-    svc.noteSessionStarted('claude-s', path.join(tmpRoot, 'p'));
-    svc.noteTranscriptEvent('claude-s', ev({ type: 'assistant-text' }));
+    svc.noteSessionStarted('claude-s', path.join(tmpRoot, 'p'), 'claude');
+    svc.noteTranscriptEvent('claude-s', ev({ type: 'assistant-text' }), 'claude');
     svc.stopConversationStore();
     // A synced event after stop does nothing (unsubscribed + store nulled).
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
@@ -687,7 +728,7 @@ describe('conversations service composition root', () => {
   // 8 — events for sessions never announced still upsert (no cwd known).
   it('an event for an unannounced session upserts with no originalPath', async () => {
     const svc = await freshService(startOpts());
-    svc.noteTranscriptEvent('claude-unknown', ev({ type: 'turn-complete' }));
+    svc.noteTranscriptEvent('claude-unknown', ev({ type: 'turn-complete' }), 'claude');
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     const arg = h.store.upsert.mock.calls[0][0];
@@ -703,9 +744,9 @@ describe('conversations service composition root', () => {
     vi.resetModules();
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
-    svc.noteSessionStarted('claude-d', path.join(tmpRoot, 'd'));
-    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a1' }));
-    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a2' }));
+    svc.noteSessionStarted('claude-d', path.join(tmpRoot, 'd'), 'claude');
+    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a1' }), 'claude');
+    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a2' }), 'claude');
     await vi.advanceTimersByTimeAsync(5_000);
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -716,9 +757,9 @@ describe('conversations service composition root', () => {
     vi.resetModules();
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
-    svc.noteSessionStarted('claude-c', path.join(tmpRoot, 'c'));
-    svc.noteTranscriptEvent('claude-c', ev({ type: 'assistant-text' })); // arms debounce
-    svc.noteTranscriptEvent('claude-c', ev({ type: 'turn-complete' }));   // immediate upsert + cancel
+    svc.noteSessionStarted('claude-c', path.join(tmpRoot, 'c'), 'claude');
+    svc.noteTranscriptEvent('claude-c', ev({ type: 'assistant-text' }), 'claude'); // arms debounce
+    svc.noteTranscriptEvent('claude-c', ev({ type: 'turn-complete' }), 'claude');   // immediate upsert + cancel
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     // The stale debounce timer must NOT fire a second upsert 5s later.
@@ -731,8 +772,8 @@ describe('conversations service composition root', () => {
   it('a rejecting store.upsert is swallowed (no unhandled rejection)', async () => {
     h.store.upsert.mockRejectedValue(new Error('lock timeout'));
     const svc = await freshService(startOpts());
-    svc.noteSessionStarted('claude-r', path.join(tmpRoot, 'r'));
-    svc.noteTranscriptEvent('claude-r', ev({ type: 'turn-complete' }));
+    svc.noteSessionStarted('claude-r', path.join(tmpRoot, 'r'), 'claude');
+    svc.noteTranscriptEvent('claude-r', ev({ type: 'turn-complete' }), 'claude');
     await new Promise((r) => setTimeout(r, 10));
     // World keeps turning: the prompt push still fired despite the upsert reject.
     expect(h.syncSpacesSyncNow).toHaveBeenCalledWith('personal');

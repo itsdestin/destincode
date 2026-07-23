@@ -547,7 +547,7 @@ export function registerIpcHandlers(
         // host create/resume succeeded) so a FAILED start doesn't take a lease on a
         // dead session.
         sessionIdMap.set(info.id, info.id);
-        noteSessionStarted(info.id, info.cwd);
+        noteSessionStarted(info.id, info.cwd, 'native');
         // NO LEASE FOR NATIVE SESSIONS (2026-07-18 — reverts the acquire added by
         // PR #176; the sessionIdMap + noteSessionStarted lines above deliberately
         // STAY, see below).
@@ -1981,7 +1981,9 @@ export function registerIpcHandlers(
     // via sessionIdMap and skip if we haven't seen the mapping yet (a hook event
     // establishes it — the reconciler backfills anything missed before then).
     const claudeId = sessionIdMap.get(event.sessionId);
-    if (claudeId) noteTranscriptEvent(claudeId, event);
+    // This listener is on the CC TranscriptWatcher only — native transcript
+    // events are routed separately (Task 4 wires the native listener's feed).
+    if (claudeId) noteTranscriptEvent(claudeId, event, 'claude');
   });
 
   // --- Native runtime stack (Phase 1 Plan A, Task 9) ---
@@ -2240,7 +2242,7 @@ export function registerIpcHandlers(
       // title writer (carry-forward 5) — no user-rename path exists yet.
       // Result ignored (best-effort, no UI to revert here) — void per Item 6's
       // Promise<MetaWriteResult> shape.
-      void noteTitleChanged(claudeId, initial);
+      void noteTitleChanged(claudeId, initial, 'claude');
     }
 
     const topicFilePath = path.join(topicDir, `topic-${claudeId}`);
@@ -2254,7 +2256,7 @@ export function registerIpcHandlers(
           lastTopics.set(desktopId, topic);
           sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
           broadcastRename(desktopId, topic);
-          void noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through; result ignored
+          void noteTitleChanged(claudeId, topic, 'claude'); // Conversation Store (Phase 2a) title write-through; result ignored
         }
       });
       watcher.on('error', () => {
@@ -2279,7 +2281,7 @@ export function registerIpcHandlers(
         lastTopics.set(desktopId, topic);
         sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
         broadcastRename(desktopId, topic);
-        void noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through; result ignored
+        void noteTitleChanged(claudeId, topic, 'claude'); // Conversation Store (Phase 2a) title write-through; result ignored
       }
     }, 2000);
     topicWatchers.set(desktopId, interval);
@@ -2350,7 +2352,7 @@ export function registerIpcHandlers(
         transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
-        noteSessionStarted(claudeId, sessionInfo.cwd);
+        noteSessionStarted(claudeId, sessionInfo.cwd, 'claude');
         // 2b Task 8: this device now owns the session — take the lease.
         // Fire-and-forget: a denied (ok:false) result would only mean another
         // device holds it, but the sanctioned resume path already ran takeover
@@ -2514,7 +2516,10 @@ export function registerIpcHandlers(
         // the store-availability dimension — native refusal above is separate
         // and unchanged). No broadcast on a dropped write: the renderer would
         // otherwise refetch and "confirm" a change that never landed.
-        const res = await noteFlagChanged(resolved, flag, !!value);
+        // Provider is hardcoded 'claude' for now — these SESSION_SET_* handlers
+        // still refuse native ids up front via nativeMetaRefusal above; Task 5
+        // makes them provider-aware.
+        const res = await noteFlagChanged(resolved, flag, !!value, 'claude');
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2592,8 +2597,9 @@ export function registerIpcHandlers(
       // native session. (Tags are stored as `tag:<id>` flags, so this is the path
       // that made "tag a native session" seed a phantom CC record.)
       if (canWriteStoreRecord(sessionId, resolved)) {
-        // Item 6: same honest-write parity as SESSION_SET_FLAG.
-        const res = await noteFlagChanged(resolved, key, !!value);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider
+        // hardcoded 'claude' — see SESSION_SET_FLAG's comment.
+        const res = await noteFlagChanged(resolved, key, !!value, 'claude');
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2614,8 +2620,9 @@ export function registerIpcHandlers(
     if (refusal) return refusal;
     try {
       if (canWriteStoreRecord(sessionId, resolved)) {
-        // Item 6: same honest-write parity as SESSION_SET_FLAG.
-        const res = await noteSessionNote(resolved, text);
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider
+        // hardcoded 'claude' — see SESSION_SET_FLAG's comment.
+        const res = await noteSessionNote(resolved, text, 'claude');
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }

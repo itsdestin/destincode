@@ -956,7 +956,9 @@ export class RemoteServer {
           // Item 6: await the real result and answer honestly instead of the old
           // fire-and-forget that always said ok:true even when the write
           // silently evaporated (store not up yet / never came up / rejected).
-          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value);
+          // Provider hardcoded 'claude' — same stopgap as the ipcMain
+          // SESSION_SET_TAG handler (native ids already refused above).
+          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value, 'claude');
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
@@ -976,7 +978,9 @@ export class RemoteServer {
           break;
         }
         if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
-          const res = await noteSessionNote(resolved, text);
+          // Provider hardcoded 'claude' — same stopgap as the ipcMain
+          // SESSION_SET_NOTE handler (native ids already refused above).
+          const res = await noteSessionNote(resolved, text, 'claude');
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
