@@ -195,6 +195,47 @@ export function BuddyOverlayApp() {
     dispatch({ type: 'toggle-chat' });
   }, []);
 
+  // Force-clear the mascot hover flag on any PROGRAMMATIC relocation — a
+  // drag-end edge snap, or disengage's peek re-flush (see reducer's
+  // reconcilePeekPosition-equivalent). Mirrors the groupVisible force-clear
+  // for chat/bar above, for the same underlying reason: the mascot wrapper
+  // is repositioned via inline left/top with no pointer movement involved,
+  // and Chromium does not re-run hit-testing (fire pointerleave) just
+  // because an element moved out from under a stationary cursor. Left
+  // uncorrected, a drag that snaps to a dock edge could leave
+  // hoveredRef.current.mascot stuck true forever, and the screen-sized
+  // overlay would never go click-through again — swallowing every desktop
+  // click (reviewer-flagged risk).
+  //
+  // Trigger: an effect on the committed state.mascot position, guarded on
+  // !draggingRef.current — the simplest correct signal available, since
+  // every relocation NOT under the user's live pointer control (edge snap,
+  // disengage re-flush) shows up as exactly this: state.mascot changing
+  // while draggingRef is false. It never fights an ACTIVE drag (draggingRef
+  // force-hold still owns interactivity there; drag-move's own continuous
+  // repositioning is cursor-controlled, so no clear is needed or wanted),
+  // and it's a no-op init noise (dependency unchanged on renders that don't
+  // move him).
+  //
+  // Chosen failure direction: force to non-interactive, never the reverse.
+  // If the cursor genuinely still sits on the mascot at its new spot, the
+  // very next real pointerenter restores interactivity — a one-hover
+  // correction. The overlay must NEVER eat clicks by default (global
+  // constraint), so "wrongly click-through for a moment" is the acceptable
+  // error, not "wrongly swallowing clicks forever."
+  const prevMascotRef = useRef<Point | null>(null);
+  useEffect(() => {
+    const prev = prevMascotRef.current;
+    prevMascotRef.current = state.mascot;
+    if (draggingRef.current) return;
+    if (!prev) return; // first placement (post-init) — nothing was hoverable yet
+    if (prev.x === state.mascot.x && prev.y === state.mascot.y) return;
+    if (hoveredRef.current.mascot) {
+      hoveredRef.current.mascot = false;
+      reconcileInteractive();
+    }
+  }, [state.mascot.x, state.mascot.y, reconcileInteractive]);
+
   // ── Chat mount/fade lifecycle ──
   // Mirrors BuddyChatApp's onChatState effect, but sourced from the reducer's
   // chatVisible instead of an IPC push (there's no separate chat window to
