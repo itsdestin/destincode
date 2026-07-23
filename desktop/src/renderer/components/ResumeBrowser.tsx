@@ -195,7 +195,12 @@ interface PastSession {
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => void;
+  // Returns whether a resume actually launched (App's handleResumeSession does).
+  // handleConfirmResume awaits it and closes the browser ONLY on success — a create
+  // that never acked keeps the browser open (App toasts the reason) so the user can
+  // retry, instead of closing over a silent failure (Task 6 review ack-gap). `void`
+  // return kept in the union for any non-awaiting wiring (defaults to "close").
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => void | boolean | Promise<void | boolean>;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -231,6 +236,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [nativeResumeBinding, setNativeResumeBinding] = useState<ModelBinding | null>(null);
   // Launch the resumed session in a new peer window (multi-window only).
   const [resumeLaunchInNewWindow, setResumeLaunchInNewWindow] = useState(false);
+  // Sesion id currently resuming — keeps its Resume button busy + the browser open
+  // until the create acks (Task 6 review ack-gap). Closes only on a launched resume.
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const detachAvailable = typeof (window as any).claude?.detach?.openDetached === 'function';
   // Show Complete: when off, sessions marked complete are hidden (default).
   // Persists across opens via localStorage so Destin doesn't re-toggle each time.
@@ -479,7 +487,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   };
 
-  const handleConfirmResume = (s: PastSession) => {
+  const handleConfirmResume = async (s: PastSession) => {
     // Native sessions: the CC-only model / skip-permissions choices are
     // irrelevant (no PTY, no /model or /effort), so pass the current (default)
     // values but tag the row's provider so App takes the native path, PLUS the
@@ -487,8 +495,15 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     // NativeModelSelect below — the Resume button is disabled until this is
     // set (see the (s.provider === 'native' && !nativeResumeBinding) guard on
     // the button), so it is always present here for a native row.
-    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider, nativeResumeBinding ?? undefined);
-    onClose();
+    //
+    // Task 6 review ack-gap: await the resume and close the browser ONLY when it
+    // actually launched. A create that never acked returns false — keep the
+    // browser open (App has toasted the honest reason) so the user can retry or
+    // pick another row, rather than closing over a silent failure.
+    setResumingId(s.sessionId);
+    const result = await onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider, nativeResumeBinding ?? undefined);
+    setResumingId(null);
+    if (result !== false) onClose(); // undefined (non-awaiting wiring) or true → close
   };
 
   if (!open) return null;
@@ -632,6 +647,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           // resume proceed with no binding to launch — that would be exactly
           // the auto-launch Destin's ruling forbids.
           const nativeNeedsPick = s.provider === 'native' && !nativeResumeBinding;
+          const busy = resumingId === s.sessionId; // create in flight — keep the button busy (ack-gap)
           return (
             /* Filled danger for skip-permissions — same call as SessionStrip's
                Create button (spec §11, change 62). See the longer note there. */
@@ -639,10 +655,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               variant={dangerous ? 'danger' : 'primary'}
               size="lg"
               onClick={() => handleConfirmResume(s)}
-              disabled={nativeNeedsPick}
+              disabled={nativeNeedsPick || busy}
               className="w-full py-1.5"
             >
-              {dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
+              {busy ? 'Resuming…' : dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
             </Button>
           );
         })()}

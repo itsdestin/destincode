@@ -101,7 +101,7 @@ import { listProjectConversations, projectConversationHistory, ccProjectSlug } f
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver } from './conversations/service';
 // Task 4: resolves a native session's live model binding into the store's
 // portable {modelId, providerType, providerLabel} shape — see
 // portable-model.ts's WHY comment for why the lookup itself is split out.
@@ -120,6 +120,16 @@ const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 
 // Root of ~/.claude — used by artifact handlers to locate the central index.
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
+// Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
+// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
+// cwdToProjectSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// note). Used by the native RESUME path to validate a cwd BEFORE handing it to
+// nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
+// send a resume into the wrong (empty) directory (Task 9).
+function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
+  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`));
+}
 
 
 export function registerIpcHandlers(
@@ -508,6 +518,19 @@ export function registerIpcHandlers(
     // branch of createSession uses resumeSessionId AS the id, so info.id already
     // equals the resumed id and the host rebuilds the matching session.
     if (info.provider === 'native') {
+      // Surface a native-runtime failure as a session-error transcript event on the
+      // SAME pipe the host uses (drives NATIVE_SESSION_ERROR → the error banner).
+      // Deferred via nextTick so it lands AFTER SESSION_CREATED + assignSession,
+      // matching the ordering guarantee the session-created forward relies on.
+      const emitNativeSessionError = (text: string) => {
+        const errEvent: TranscriptEvent = {
+          type: 'session-error', sessionId: info.id, uuid: randomUUID(), timestamp: Date.now(), data: { text },
+        };
+        process.nextTick(() => {
+          sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
+          remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
+        });
+      };
       try {
         if (opts.resumeSessionId) {
           // Task 6: the resume-time model selector's pick (opts.binding, when the
@@ -517,31 +540,61 @@ export function registerIpcHandlers(
           // eager loadModel() below and noteModelUsed's resolvePortableModel() both
           // read it — see native-session-host.ts's resume() doc comment for why a
           // post-hoc setBinding here would race those reads.
-          const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
-          // No stored file (e.g. resuming an id that was never persisted) → start
-          // a fresh session under the same id so the renderer isn't left with a
-          // SessionInfo backed by no live HarnessSession.
-          if (!resumed && opts.binding) {
-            await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
-          } else if (!resumed && !opts.binding) {
-            // Resume asked for a session whose saved data is gone, and we have no
-            // binding to start a fresh one under this id — the renderer already
-            // holds a live SessionInfo with an empty chat and no way to know why.
-            // Surface a session-error transcript event on the SAME pipe the host
-            // uses (drives NATIVE_SESSION_ERROR → the error banner). Deferred via
-            // nextTick so it lands AFTER SESSION_CREATED + assignSession, matching
-            // the ordering guarantee the session-created forward relies on.
-            const errEvent: TranscriptEvent = {
-              type: 'session-error',
-              sessionId: info.id,
-              uuid: randomUUID(),
-              timestamp: Date.now(),
-              data: { text: 'This conversation could not be resumed — its saved data is missing.' },
-            };
-            process.nextTick(() => {
-              sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
-              remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
-            });
+          //
+          // Task 9 — resolve the transcript's REAL cwd BEFORE resume(). session-
+          // manager silently rewrites a nonexistent cwd to $HOME (session-manager.ts
+          // cwd→homedir); handing that to resume() reads a header from the wrong
+          // (empty) slug and the session spawns blank — the native twin of the CC
+          // greedy-slug/$HOME bugs (bea0de3e/57be5e14). So NEVER pass an unvalidated
+          // cwd: probe the transcript's existence, and on a genuine miss REFUSE with
+          // an accurate, split message rather than resolve to $HOME.
+          let resolvedCwd: string | undefined;
+          let refusal: string | undefined;
+          if (opts.cwd && fs.existsSync(opts.cwd) && nativeTranscriptExists(opts.cwd, opts.resumeSessionId)) {
+            // Happy path: the transcript is exactly where the caller said (same device).
+            resolvedCwd = opts.cwd;
+          } else {
+            // opts.cwd is absent/foreign or holds no transcript for this id. Consult
+            // the synced conversation record and resolve its project folder on THIS
+            // device (the SAME resolver the materialize sweep + Resume Browser use).
+            const rec = await getConversationStore()?.get('native', opts.resumeSessionId);
+            if (rec) {
+              const folder = buildLocalProjectResolver()(rec);
+              if (folder && nativeTranscriptExists(folder, opts.resumeSessionId)) {
+                resolvedCwd = folder;                       // located locally under a resolved folder
+              } else if (folder) {
+                // Folder is here but its transcript isn't — the record synced ahead
+                // of the bytes (a peer created it; this device hasn't pulled it yet).
+                refusal = "This conversation hasn't synced to this device yet — its transcript isn't here.";
+              } else {
+                // The project folder itself isn't present on this device.
+                refusal = `This conversation's project folder ('${rec.projectName}') isn't on this device.`;
+              }
+            }
+            // No record AND no local transcript → resolvedCwd/refusal both unset;
+            // fall through to the create-fresh-if-binding / 'saved data missing'
+            // branch below (an id never persisted ANYWHERE is genuinely-missing
+            // data, not a sync/folder gap — keep the original wording).
+          }
+
+          if (refusal) {
+            emitNativeSessionError(refusal);
+          } else if (resolvedCwd) {
+            info.cwd = resolvedCwd; // fix the SessionInfo so downstream (noteSessionStarted, eager model, renderer) reads the validated cwd
+            await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
+          } else {
+            const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
+            // No stored file (e.g. resuming an id that was never persisted) → start
+            // a fresh session under the same id so the renderer isn't left with a
+            // SessionInfo backed by no live HarnessSession.
+            if (!resumed && opts.binding) {
+              await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
+            } else if (!resumed && !opts.binding) {
+              // Resume asked for a session whose saved data is gone, and we have no
+              // binding to start a fresh one under this id — the renderer already
+              // holds a live SessionInfo with an empty chat and no way to know why.
+              emitNativeSessionError('This conversation could not be resumed — its saved data is missing.');
+            }
           }
         } else {
           await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
@@ -575,31 +628,35 @@ export function registerIpcHandlers(
         void resolvePortableModel(info.id)
           .then((ref) => { if (ref) noteModelUsed(info.id, ref); })
           .catch(() => { /* best-effort — the first turn-complete catches up */ });
-        // NO LEASE FOR NATIVE SESSIONS (2026-07-18 — reverts the acquire added by
-        // PR #176; the sessionIdMap + noteSessionStarted lines above deliberately
-        // STAY, see below).
+        // LEASE FOR NATIVE SESSIONS — re-enabled in M2 (Task 9). It was reverted on
+        // 2026-07-18 (PR #176 fallout) with an explicit condition: "Re-enable this
+        // together with the parity work, NOT before — the lease only becomes
+        // meaningful at the same moment the transcript becomes shared." That moment
+        // is now. The native transcript is SHARED: it mirrors into the native/ space
+        // lane and materializes on peers (M2 Tasks 4/8), so the lease finally
+        // coordinates a REAL cross-device resource. Concretely, leaseQuery now
+        // answers held:true for a native conversation another device owns, and the
+        // resume gate offers the handoff (holder quiesce → flush → release; requester
+        // materialize → acquire) instead of two devices silently resuming two copies.
         //
-        // #176 correctly noticed native sessions had no takeover protection and
-        // enrolled them in the lease system. But native conversations do not
-        // participate in the conversation store or space sync at all, so every
-        // step the lease implies is a no-op for them: the holder's flush mirrors a
-        // file that isn't there, and the requester materializes a record that does
-        // not exist. The net effect was WORSE than the gap it closed — a takeover
-        // destroyed the holder's live session and transferred nothing, while the
-        // requester resumed its own unchanged local copy.
-        //
-        // A lease is a way to serialize access to a SHARED resource. Until native
-        // transcripts sync there is no shared resource: two devices "resuming the
-        // same native session" are resuming two unrelated local files. So not
-        // taking the lease is the honest state, not a stopgap — leaseQuery answers
-        // held:false, the resume gate never offers a handoff, and the holder keeps
-        // running. This is exactly pre-#176 behavior.
-        //
-        // Re-enable this together with the parity work, NOT before — the lease only
-        // becomes meaningful at the same moment the transcript becomes shared.
-        // Spec: docs/active/specs/2026-07-18-native-sync-parity-design.md (§3.3 for
-        // why the two lines above stay: the store writes they enable are gated at
-        // the write sites instead, which is the enforceable version of the rule).
+        // Never-block (spec §3): a failed or DENIED acquire only WARNS — it never
+        // prevents the session from running (the resume must not wait on the lease).
+        // The warn leaves a breadcrumb so a "takeover didn't respond" is diagnosable
+        // (the same gap that hid the 2026-07-18 handoff timeout). For native, info.id
+        // IS the claude session id, so the acquire keys off the identity mapping set
+        // above. Gated on sync being enabled, mirroring the CC acquire at the
+        // SessionStart listener: a lease coordinates cross-device writers, which only
+        // exist for a synced conversation — an unsynced native session has no shared
+        // resource and needs no lease.
+        if (isSyncSpacesEnabled()) {
+          void leaseWiring?.client.acquire(info.id)
+            .then((res) => {
+              if (res && res.ok === false) {
+                log('WARN', 'Lease', 'native session running without its lease (held by another device)', { claudeId: info.id, holder: res.holder });
+              }
+            })
+            .catch(() => { /* never-block */ });
+        }
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
@@ -1950,7 +2007,11 @@ export function registerIpcHandlers(
       const info = sessionManager.getSession(desktopId);
       const projectPath = info?.cwd;
       const projectSlug = projectPath ? ccProjectSlug(projectPath) : undefined;
-      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath };
+      // Carry the provider so the renderer's MovedGate resume takes the NATIVE path
+      // (the pre-resume model picker, never an auto-launch) for a native session —
+      // without it, a moved native conversation would resume as CC and find no JSONL.
+      const provider = info?.provider;
+      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath, provider };
       // Broadcast to ALL main windows, not sendForSession: at push time the holder
       // session still exists but may have no registered owner (e.g. it's shown in a
       // secondary window), and sendForSession's ownerless fallback hits only the

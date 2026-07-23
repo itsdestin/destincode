@@ -261,7 +261,10 @@ function AppInner() {
   // `movedSessionsRef.current` instead. recordMoved/clearMoved keep the state and
   // the ref in lockstep, the ref updated synchronously so the destroy handler
   // (which fires ms after the moved push) reliably sees the entry.
-  type MovedInfo = { device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string };
+  // provider: which runtime the moved session ran as. Threaded so MovedGate's
+  // Resume takes the native path (pre-resume model picker) for a native session
+  // rather than launching it as CC (which would find no JSONL and spawn blank).
+  type MovedInfo = { device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string };
   const [movedSessions, setMovedSessions] = useState<Map<string, MovedInfo>>(new Map());
   const movedSessionsRef = useRef(movedSessions);
   const recordMoved = useCallback((sessionId: string, info: MovedInfo) => {
@@ -314,6 +317,10 @@ function AppInner() {
     claudeSessionId: string; projectSlug: string; projectPath: string; launchInNewWindow?: boolean;
   } | null>(null);
   const [pendingNativeBinding, setPendingNativeBinding] = useState<ModelBinding | null>(null);
+  // True while the pre-resume picker's create is in flight — keeps the modal open
+  // (and its Resume button busy) until the create acks, so a failure doesn't close
+  // the modal over a silent nothing (Task 6 review ack-gap).
+  const [pendingNativeResuming, setPendingNativeResuming] = useState(false);
   // Shown when the user closes an active session — offers to mark it complete
   // in one step so it's hidden from the resume menu by default.
   const [closePromptFor, setClosePromptFor] = useState<string | null>(null);
@@ -1227,13 +1234,14 @@ function AppInner() {
     // <MovedGate>. Still dispatch SESSION_MOVED for its endTurn effect (cleanly
     // stops any 'thinking' state on the now-dead session). The push carries the
     // resume params so the gate's "Resume on this device" needs no extra lookup.
-    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string }) => {
+    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string }) => {
       if (!payload?.sessionId) return;
       recordMoved(payload.sessionId, {
         device: payload.device,
         claudeSessionId: payload.claudeSessionId,
         projectSlug: payload.projectSlug,
         projectPath: payload.projectPath,
+        provider: payload.provider,
       });
       dispatch({ type: 'SESSION_MOVED', sessionId: payload.sessionId, device: payload.device });
     });
@@ -2194,7 +2202,13 @@ function AppInner() {
     clearMoved(id);
   }, [dispatch, clearMoved]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => {
+  // Returns whether a resume was actually launched (true), or was aborted / failed
+  // / deferred to the pre-resume picker (false). Callers that own a modal or row
+  // spinner (the pendingNativeResume modal, ResumeBrowser) await this and keep
+  // their UI open on false instead of closing over a silent failure (Task 6 review
+  // — the create ack-gap: a create that never returned an id used to be a silent
+  // `return`, leaving the user staring at nothing).
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding): Promise<boolean> => {
     const cwd = projectPath;
 
     // Plan 2b Task 9 — conversation-lease takeover gate. Before resuming, ask the
@@ -2213,11 +2227,11 @@ function AppInner() {
       if (q?.held && !q.self) {
         const device = q.device || 'another device';
         const confirmed = await askTakeover(device, 'confirm');
-        if (!confirmed) return; // "Never mind" — abort the resume
+        if (!confirmed) return false; // "Never mind" — abort the resume
         const r = await window.claude.syncSpaces?.leaseTakeover?.(claudeSessionId);
         if (r?.outcome === 'timeout') {
           const forced = await askTakeover(device, 'force');
-          if (!forced) return; // "Never mind" — abort
+          if (!forced) return false; // "Never mind" — abort
           const fr = await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
           // A failed force means the lease was never overwritten — the other device
           // may STILL be live and holding it. Never-block (proceed with the resume),
@@ -2245,7 +2259,7 @@ function AppInner() {
     if (provider === 'native' && !nativeBinding) {
       setPendingNativeBinding(null);
       setPendingNativeResume({ claudeSessionId, projectSlug, projectPath, launchInNewWindow });
-      return;
+      return false; // deferred to the pre-resume picker — not launched yet
     }
     if (provider === 'native') {
       const nativeSession = await (window.claude.session.create as any)({
@@ -2256,7 +2270,16 @@ function AppInner() {
         resumeSessionId: claudeSessionId,
         binding: nativeBinding, // the selector's pick — becomes the live binding (native-session-host.ts resume() override)
       });
-      if (!nativeSession?.id) return;
+      if (!nativeSession?.id) {
+        // The create never acked (Task 6 review — was a silent return). Main also
+        // emits a session-error for the split not-synced / folder-missing / data-
+        // missing REFUSAL cases (those DO return an id, so they don't land here);
+        // this covers a create that returned nothing at all. Non-committal per
+        // error standards — the exact cause isn't known on this side.
+        setToast("Couldn't resume this conversation.");
+        setTimeout(() => setToast(null), 6000);
+        return false;
+      }
       // I1 fix (resume path): same invoke-result patch as createSession — the
       // session:created event seeded this entry with harnessId=undefined (resume
       // can't seed it synchronously), so the live pill would read "Assistant" for
@@ -2270,7 +2293,7 @@ function AppInner() {
       // Hydrate the chat view from disk. Main streams every historical
       // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
       (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
-      return;
+      return true;
     }
 
     // Use explicitly chosen resume model; fall back to the current session's model.
@@ -2285,7 +2308,12 @@ function AppInner() {
       resumeSessionId: claudeSessionId,
       model: m,
     });
-    if (!newSession?.id) return;
+    if (!newSession?.id) {
+      // Honest failure instead of a silent return (Task 6 review — the CC ack-gap).
+      setToast("Couldn't resume this conversation.");
+      setTimeout(() => setToast(null), 6000);
+      return false;
+    }
 
     // Launch-in-new-window for resumed sessions — same peer-window spawn path.
     if (launchInNewWindow) {
@@ -2308,6 +2336,7 @@ function AppInner() {
     } catch (err) {
       console.error('Failed to load history:', err);
     }
+    return true;
   }, [dispatch, currentModel, askTakeover]);
 
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
@@ -2774,7 +2803,11 @@ function AppInner() {
                     // Drop the dead pill first so resume creates a fresh one (no duplicate).
                     removeSessionLocally(sessionId);
                     if (info?.claudeSessionId && info.projectSlug && info.projectPath) {
-                      void handleResumeSession(info.claudeSessionId, info.projectSlug, info.projectPath);
+                      // Thread the provider so a native moved session lands in the
+                      // pre-resume model picker (Task 6's pendingNativeResume path)
+                      // instead of auto-launching — handleResumeSession's native
+                      // branch opens the modal when called without a binding.
+                      void handleResumeSession(info.claudeSessionId, info.projectSlug, info.projectPath, undefined, undefined, undefined, info.provider);
                     } else {
                       // Main couldn't resolve the resume params (no cwd) — fall back
                       // to the Resume Browser so the user isn't stranded.
@@ -3250,7 +3283,7 @@ function AppInner() {
           pending resume entirely (no partial/implicit resume). */}
       {pendingNativeResume && (
         <>
-          <Scrim layer={2} onClick={() => { setPendingNativeResume(null); setPendingNativeBinding(null); }} />
+          <Scrim layer={2} onClick={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }} />
           <OverlayPanel
             layer={2}
             role="dialog"
@@ -3264,6 +3297,7 @@ function AppInner() {
               <Button
                 variant="secondary"
                 size="lg"
+                disabled={pendingNativeResuming}
                 onClick={() => { setPendingNativeResume(null); setPendingNativeBinding(null); }}
               >
                 Cancel
@@ -3271,17 +3305,22 @@ function AppInner() {
               <Button
                 variant="primary"
                 size="lg"
-                disabled={!pendingNativeBinding}
-                onClick={() => {
+                disabled={!pendingNativeBinding || pendingNativeResuming}
+                onClick={async () => {
                   const p = pendingNativeResume;
                   const binding = pendingNativeBinding;
                   if (!p || !binding) return;
-                  setPendingNativeResume(null);
-                  setPendingNativeBinding(null);
-                  void handleResumeSession(p.claudeSessionId, p.projectSlug, p.projectPath, undefined, undefined, p.launchInNewWindow, 'native', binding);
+                  // Keep the modal open until the create acks (Task 6 review ack-gap).
+                  // On success it closes; on failure it stays open — handleResumeSession
+                  // has already surfaced the honest reason via a toast — so the user
+                  // can retry or pick a different model instead of facing a blank pill.
+                  setPendingNativeResuming(true);
+                  const ok = await handleResumeSession(p.claudeSessionId, p.projectSlug, p.projectPath, undefined, undefined, p.launchInNewWindow, 'native', binding);
+                  setPendingNativeResuming(false);
+                  if (ok) { setPendingNativeResume(null); setPendingNativeBinding(null); }
                 }}
               >
-                Resume
+                {pendingNativeResuming ? 'Resuming…' : 'Resume'}
               </Button>
             </div>
           </OverlayPanel>
@@ -3300,7 +3339,7 @@ function AppInner() {
           L1–L4 overlays, the same tier used by similar full-screen views. */}
       <ProjectView
         onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
-        onResumeConversation={(sid, slug, path) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path); }}
+        onResumeConversation={(sid, slug, path, provider) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path, undefined, undefined, undefined, provider); }}
       />
     </div>
     </ArtifactProvider>
