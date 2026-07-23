@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, CloseButton, TextInput, Toggle } from './ui';
+import { Button, CloseButton, TextInput, Toggle, LoadingState } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -879,7 +879,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
           className="fixed overflow-hidden"
           style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(520px, 90vw)', height: 'min(640px, 85vh)' }}
         >
-          <div className="flex items-center justify-center h-full text-fg-muted text-sm">Loading...</div>
+          <LoadingState what="sync status" className="h-full" />
         </OverlayPanel>
       </>
     );

@@ -9,7 +9,7 @@ import type { UpdateLaunchResult } from '../../shared/update-install-types';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import MarkdownContent from './MarkdownContent';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, LoadingState } from './ui';
 
 // Error codes where a fresh download might succeed (transient or file-level).
 // The complement (dmg-corrupt, appimage-not-writable, unsupported-platform,
@@ -208,7 +208,7 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
       </div>
     );
   } else if (loading || !data) {
-    body = <div className="text-fg-dim text-sm py-8 text-center">Loading…</div>;
+    body = <LoadingState what="changelog" />;
   } else if (updateStatus.update_available) {
     // Filter by CHRONOLOGICAL position, not semver. CHANGELOG.md is authored
     // top-newest-bottom-oldest, so source order is release order. Semver math breaks

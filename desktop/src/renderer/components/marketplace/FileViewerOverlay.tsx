@@ -9,7 +9,7 @@ import React, { useEffect, useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import MarkdownContent from "../MarkdownContent";
 import { useEscClose } from "../../hooks/use-esc-close";
-import { CloseButton } from "../ui";
+import { CloseButton, LoadingState } from "../ui";
 
 export type FileViewerTarget = {
   pluginId: string;
@@ -97,7 +97,7 @@ export default function FileViewerOverlay({ target, onClose }: Props) {
         </header>
         <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {state.status === "loading" && (
-            <p className="text-fg-dim text-center py-12">Loading…</p>
+            <LoadingState what="file" />
           )}
           {state.status === "error" && (
             <div className="text-center py-12">

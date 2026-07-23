@@ -4,7 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Toggle, TextInput, Textarea } from './ui';
+import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -135,7 +135,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
         </div>
 
         {!loaded ? (
-          <div className="p-8 text-center text-sm text-fg-muted">Loading…</div>
+          <LoadingState what="preferences" />
         ) : (
           // Padding on inner wrapper so scroll-fade is unpadded — sticky fades flush.
           <div ref={scrollRef} className="scroll-fade">

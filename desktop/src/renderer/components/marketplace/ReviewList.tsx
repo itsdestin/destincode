@@ -22,6 +22,7 @@ import {
 } from '../../state/marketplace-api-client';
 import StarRating from './StarRating';
 import ReportReviewButton from './ReportReviewButton';
+import { LoadingState, EmptyState } from '../ui';
 
 // Unauthenticated client — listRatings is a public endpoint
 const apiClient = createMarketplaceApiClient({
@@ -145,11 +146,11 @@ export default function ReviewList({ pluginId, refreshKey = 0 }: ReviewListProps
       </h4>
 
       {state.status === 'loading' && (
-        <p className="text-xs text-fg-muted">Loading reviews…</p>
+        <LoadingState variant="inline" what="reviews" />
       )}
 
       {state.status === 'empty' && (
-        <p className="text-xs text-fg-muted">No reviews yet — be the first.</p>
+        <EmptyState variant="inline" message="No reviews yet — be the first." />
       )}
 
       {state.status === 'error' && (

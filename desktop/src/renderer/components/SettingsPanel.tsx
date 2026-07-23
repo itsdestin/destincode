@@ -27,7 +27,7 @@ import SettingsRow from './SettingsRow';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, Toggle as UiToggle, TextInput, InputGroup } from './ui';
+import { Button, Toggle as UiToggle, TextInput, InputGroup, LoadingState } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -940,7 +940,7 @@ function RemoteButton({
               <div ref={scrollRef} className="scroll-fade flex-1">
                 <div className="px-4 py-4 space-y-6">
                 {loading ? (
-                  <div className="flex items-center justify-center py-8 text-fg-muted text-sm">Loading...</div>
+                  <LoadingState what="remote access" />
                 ) : (
                   <>
                     {/* Setup banner — shown when no clients connected */}

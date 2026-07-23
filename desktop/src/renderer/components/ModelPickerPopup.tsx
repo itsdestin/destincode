@@ -4,7 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, TextInput, Toggle, FOCUS_RING } from './ui';
+import { Button, CloseButton, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -389,7 +389,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
         </div>
 
         {!loaded ? (
-          <div className="p-8 text-center text-sm text-fg-muted">Loading…</div>
+          <LoadingState what="models" />
         ) : (
           <div className="p-5 space-y-5">
             {/* Model */}
