@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -7,6 +8,21 @@ import {
 } from '../../src/main/git/git-watcher';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function hasGit(): boolean {
+  try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; }
+}
+function sh(cwd: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 't@t.t',
+      GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 't@t.t',
+    },
+  });
+}
 
 describe('git-watcher', () => {
   let root: string;
@@ -123,5 +139,48 @@ describe('git-watcher', () => {
     } finally {
       await fs.promises.rm(root2, { recursive: true, force: true });
     }
+  });
+});
+
+describe.skipIf(!hasGit())('git-watcher (linked worktree, real git)', () => {
+  let mainRoot: string;
+  let linkedRoot: string;
+  let events: Array<{ repoRoot: string }>;
+
+  beforeEach(async () => {
+    mainRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-git-watch-main-'));
+    sh(mainRoot, ['init', '-b', 'main']);
+    await fs.promises.writeFile(path.join(mainRoot, 'a.txt'), 'one\n');
+    sh(mainRoot, ['add', '.']);
+    sh(mainRoot, ['commit', '-m', 'initial']);
+    linkedRoot = path.join(path.dirname(mainRoot), path.basename(mainRoot) + '-linked');
+    sh(mainRoot, ['worktree', 'add', linkedRoot, '-b', 'feature']);
+    events = [];
+    initGitWatchers((e) => events.push(e));
+  });
+
+  afterEach(async () => {
+    try { closeAllGitWatchers(); } catch { /* already torn down */ }
+    try { sh(mainRoot, ['worktree', 'remove', '--force', linkedRoot]); } catch { /* best effort */ }
+    await fs.promises.rm(mainRoot, { recursive: true, force: true });
+    await fs.promises.rm(linkedRoot, { recursive: true, force: true });
+  });
+
+  it('watchGit on a linked worktree root resolves the real gitdir/commondir and reports ok:true', async () => {
+    // <linkedRoot>/.git is a FILE (`gitdir: <main>/.git/worktrees/feature`),
+    // not a directory — the pre-fix code only handled the directory case and
+    // reported {ok:true} on a dead watcher (see resolveGitDirs in git-watcher.ts).
+    expect(fs.statSync(path.join(linkedRoot, '.git')).isFile()).toBe(true);
+    expect(watchGit(linkedRoot, 1).ok).toBe(true);
+  });
+
+  it('emits a debounced event when a commit is made in the linked worktree', async () => {
+    expect(watchGit(linkedRoot, 1).ok).toBe(true);
+    await fs.promises.writeFile(path.join(linkedRoot, 'a.txt'), 'one\ntwo\n');
+    sh(linkedRoot, ['add', '.']);
+    sh(linkedRoot, ['commit', '-m', 'change from linked worktree']);
+    await wait(700); // debounce is 300ms; fs.watch latency varies by platform
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toEqual({ repoRoot: linkedRoot });
   });
 });

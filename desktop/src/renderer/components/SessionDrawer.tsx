@@ -66,9 +66,7 @@ const PATHS: Record<string, string> = {
   editdoc: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z',
   check: 'M20 6 9 17l-5-5',
   close: 'M18 6 6 18M6 6l12 12',
-  back: 'M19 12H5M11 18l-6-6 6-6',
   forward: 'M5 12h14M13 6l6 6-6 6',
-  gitbranch: 'M6 8.5v7M18 10.5c0 3-4 3.5-7 3.5M6 8.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5M6 20.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5M18 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5',
 };
 function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: number }) {
   return (
@@ -382,7 +380,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     }
   }, [projectRoot, sessionId, activeArtifactId, dispatch]);
 
-  // ── ESC / back: rename → find → edit → expand → list → active → drawer ──
+  // ── ESC / back: rename → find → edit → expand → gitReview → list → active → drawer ──
   const handleBack = useCallback(() => {
     if (renameActiveRef.current) { cancelRename(); return; }
     if (findOpen) { setFindOpen(false); return; }

@@ -44,4 +44,31 @@ describe.skipIf(!hasGit())('git-exec (integration, real git)', () => {
   it('resolveRepoRoot returns null outside any repo', async () => {
     expect(await resolveRepoRoot(dir)).toBeNull();
   });
+
+  it('strips inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so calls stay targeted at cwd', async () => {
+    // An app launched from a shell/hook that exports these would otherwise
+    // have every git call below silently retarget at whatever repo/index
+    // those env vars point to, instead of the `dir` this runner was given.
+    const other = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-git-exec-other-'));
+    try {
+      await execGit(other, ['init']);
+      const prevGitDir = process.env.GIT_DIR;
+      const prevGitWorkTree = process.env.GIT_WORK_TREE;
+      process.env.GIT_DIR = path.join(other, '.git');
+      process.env.GIT_WORK_TREE = other;
+      try {
+        await execGit(dir, ['init']);
+        // If GIT_DIR/GIT_WORK_TREE had leaked through, this would report
+        // `other` as the toplevel instead of `dir`.
+        const r = await execGit(dir, ['rev-parse', '--show-toplevel']);
+        expect(r.code).toBe(0);
+        expect(await fs.promises.realpath(r.stdout.trim())).toBe(await fs.promises.realpath(dir));
+      } finally {
+        if (prevGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prevGitDir;
+        if (prevGitWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = prevGitWorkTree;
+      }
+    } finally {
+      await fs.promises.rm(other, { recursive: true, force: true });
+    }
+  });
 });

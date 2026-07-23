@@ -18,13 +18,29 @@ export interface GitExecResult {
 
 export async function execGit(cwd: string, args: string[]): Promise<GitExecResult> {
   try {
-    const { stdout, stderr } = await execFileP('git', args, {
+    // WHY: an app launched from a shell/hook that exports GIT_DIR, GIT_WORK_TREE
+    // or GIT_INDEX_FILE would have every git call below silently retarget at
+    // whatever repo/index those point to, instead of `cwd`. Strip them so this
+    // runner always operates on the repo it was actually asked about.
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    delete env.GIT_INDEX_FILE;
+    const { stdout, stderr } = await execFileP('git', [
+      // WHY: with the default core.quotepath=true, git C-quotes any filename
+      // with non-ASCII bytes in porcelain/numstat/log output (e.g. "café.md"
+      // becomes "caf\303\251.md"). That never matches the plain `rel` string
+      // this service compares paths against, so accented filenames silently
+      // fall out of status/diff/stage matching. Force it off on every call.
+      '-c', 'core.quotepath=false',
+      ...args,
+    ], {
       cwd,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
       // Never let git prompt — a hung credential prompt would wedge the handler.
       // MVP operations are all local, so no credentials are ever needed.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env,
     });
     return { code: 0, stdout: String(stdout), stderr: String(stderr) };
   } catch (err: unknown) {

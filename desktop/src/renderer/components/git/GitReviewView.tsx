@@ -58,6 +58,10 @@ export function GitReviewView({
   useEffect(() => {
     aliveRef.current = true;
     refresh();
+    // NOTE: this only re-fetches ON a `git:changed` event — it does not itself
+    // register the `git:watch` subscription that produces those events. That
+    // registration lives in the host footer's useGitFileStatus hook, so this
+    // view's live refresh depends on the host keeping that subscription alive.
     const off = gitApi()?.onChanged?.(() => refresh()) ?? (() => {});
     return () => { aliveRef.current = false; off(); };
   }, [refresh]);
@@ -198,7 +202,10 @@ export function GitReviewView({
               {uncommitted.hunks.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => onOpenAtLine(uncommitted.hunks[0].newStart)}
+                  // A pure-deletion hunk has newStart: 0 (nothing added at that
+                  // position); revealLine is 1-indexed, so clamp to 1 instead
+                  // of asking the editor to reveal a nonexistent line 0.
+                  onClick={() => onOpenAtLine(Math.max(1, uncommitted.hunks[0].newStart))}
                   className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-fg-dim hover:text-fg hover:bg-inset transition-colors"
                 >
                   Open file ↗

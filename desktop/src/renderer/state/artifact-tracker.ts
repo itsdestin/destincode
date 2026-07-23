@@ -57,7 +57,9 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
       return { ...s, drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true } };
     case 'DRAWER_CLOSED':
       // Reset expand + clear this session's selection (and any pill-error note)
-      // so a re-opened drawer starts at its normal width on the list.
+      // so a re-opened drawer starts at its normal width on the list. Also
+      // resets the git-review flag so a re-opened drawer lands on the file
+      // view, not back inside a stale review sub-view.
       return {
         ...s,
         drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: false },

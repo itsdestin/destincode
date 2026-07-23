@@ -104,6 +104,39 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     expect(r.log).toEqual([]);
   });
 
+  it('fileReview: untracked symlink outside the repo renders as binary stub, never follows the link', async () => {
+    // A malicious/careless untracked symlink pointing outside the repo root
+    // (e.g. at /etc/passwd) must never have its TARGET content read into
+    // hunks — that would leak arbitrary filesystem content through the git
+    // review surface. lstat (not stat) is what prevents the follow.
+    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-'));
+    try {
+      const secretPath = path.join(outside, 'secret.txt');
+      await fs.promises.writeFile(secretPath, 'TOP SECRET CONTENT\n');
+      const linkPath = path.join(root, 'link.txt');
+      await fs.promises.symlink(secretPath, linkPath);
+
+      const r = await gitFileReview(root, 'link.txt');
+      expect(r.ok).toBe(true);
+      expect(r.uncommitted).toMatchObject({ untracked: true, binary: true, hunks: [] });
+      expect(JSON.stringify(r)).not.toContain('TOP SECRET');
+    } finally { await fs.promises.rm(outside, { recursive: true, force: true }); }
+  });
+
+  it('fileStatus: untracked symlink outside the repo counts as 0/0, never follows the link', async () => {
+    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-'));
+    try {
+      const secretPath = path.join(outside, 'secret.txt');
+      await fs.promises.writeFile(secretPath, 'TOP SECRET CONTENT\n');
+      const linkPath = path.join(root, 'link2.txt');
+      await fs.promises.symlink(secretPath, linkPath);
+
+      const r = await gitFileStatus(root, 'link2.txt');
+      expect(r.ok).toBe(true);
+      expect(r.counts).toEqual({ added: 0, removed: 0 });
+    } finally { await fs.promises.rm(outside, { recursive: true, force: true }); }
+  });
+
   it('fileReview: oversize untracked file renders as a binary stub, not synthesized hunks', async () => {
     await fs.promises.writeFile(path.join(root, 'huge.txt'), 'x'.repeat(1024 * 1024 + 1));
     const r = await gitFileReview(root, 'huge.txt');
@@ -219,6 +252,32 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(r.ok).toBe(true);
       expect(sh(fresh, ['status', '--porcelain']).trim()).toBe('?? f.txt');
     } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+  });
+
+  it('handles non-ASCII filenames despite core.quotepath default (fix: -c core.quotepath=false)', async () => {
+    // With the default core.quotepath=true, git C-quotes "café.md" as
+    // "caf\303\251.md" in porcelain/numstat output, which never matches the
+    // plain `rel` string this service compares against — undercounting
+    // stagedCount and dropping the file's review card entirely.
+    const name = 'café.md';
+    await fs.promises.writeFile(path.join(root, name), 'one\n');
+    sh(root, ['add', '.']);
+    sh(root, ['commit', '-m', 'add café.md']);
+    await fs.promises.writeFile(path.join(root, name), 'one\ntwo\n');
+
+    const status = await gitFileStatus(root, name);
+    expect(status.ok).toBe(true);
+    expect(status.counts).toEqual({ added: 1, removed: 0 });
+    expect(status.hasHistory).toBe(true);
+
+    const review = await gitFileReview(root, name);
+    expect(review.ok).toBe(true);
+    expect(review.uncommitted?.hunks[0].lines).toContain('+two');
+    expect(review.stagedCount).toBe(0);
+
+    sh(root, ['add', name]);
+    const staged = await gitFileReview(root, name);
+    expect(staged.stagedCount).toBe(1);
   });
 
   it('LOG_PAGE caps the log and reports hasMore', async () => {

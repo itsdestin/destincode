@@ -55,8 +55,14 @@ const NOT_REPO: Omit<GitFileStatusResult, 'ok' | 'error'> = {
 // HEAD): its whole content is the addition. Oversized or unreadable -> 0/0.
 async function worktreeAddCounts(abs: string): Promise<GitFileCounts> {
   try {
-    const stat = await fs.promises.stat(abs);
-    if (stat.size > MAX_UNTRACKED_BYTES) return { added: 0, removed: 0 };
+    // WHY lstat not stat: stat follows symlinks, so an untracked symlink
+    // pointing outside the repo root (e.g. at /etc/passwd) would have its
+    // TARGET's content read and counted, bypassing the realpath enforcement
+    // the rest of the artifact-read surface relies on (see
+    // write-authorization.ts's symlink-following threat model). Treat any
+    // non-regular-file entry as the existing binary-stub shape.
+    const stat = await fs.promises.lstat(abs);
+    if (!stat.isFile() || stat.size > MAX_UNTRACKED_BYTES) return { added: 0, removed: 0 };
     return countsFromHunks([synthesizeAddHunk(await fs.promises.readFile(abs, 'utf8'))]);
   } catch { return { added: 0, removed: 0 }; }
 }
@@ -127,8 +133,13 @@ export async function gitFileReview(
       let hunks = [] as GitUncommitted['hunks'];
       let binary = false;
       try {
-        const stat = await fs.promises.stat(abs);
-        if (stat.size <= MAX_UNTRACKED_BYTES) hunks = [synthesizeAddHunk(await fs.promises.readFile(abs, 'utf8'))];
+        // WHY lstat not stat: see worktreeAddCounts above — following a
+        // symlink here would read and diff its TARGET's content (possibly
+        // outside the repo), not the symlink itself. Non-regular files render
+        // as the existing binary stub, same as an oversized file.
+        const stat = await fs.promises.lstat(abs);
+        if (!stat.isFile()) binary = true;
+        else if (stat.size <= MAX_UNTRACKED_BYTES) hunks = [synthesizeAddHunk(await fs.promises.readFile(abs, 'utf8'))];
         else binary = true;
       } catch { binary = true; }
       uncommitted = { hunks, counts: countsFromHunks(hunks), staged: entry.staged, untracked: entry.untracked, inHead: false, binary };
