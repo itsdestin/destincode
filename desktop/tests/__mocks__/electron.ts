@@ -49,6 +49,8 @@ export const nativeImage = {
 export const shell = {
   openExternal: vi.fn(),
   openPath: vi.fn(),
+  // git surface discard of untracked files (git-service.ts) — resolves like Electron 41
+  trashItem: vi.fn(async (_path: string) => undefined),
 };
 
 export const powerSaveBlocker = {
