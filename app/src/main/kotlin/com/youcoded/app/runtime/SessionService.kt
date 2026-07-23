@@ -41,6 +41,7 @@ import com.youcoded.app.artifacts.*
 import com.youcoded.app.skills.BundledPlugins
 import com.youcoded.app.skills.LocalSkillProvider
 import com.youcoded.app.skills.PluginInstaller
+import com.youcoded.app.util.forEachKey
 import com.youcoded.app.social.PresenceClient
 
 class SessionService : Service() {
@@ -96,11 +97,6 @@ class SessionService : Service() {
      *  "switch to terminal" must fire even if the last request was also "terminal". */
     private val _viewModeRequest = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
     val viewModeRequest: kotlinx.coroutines.flow.SharedFlow<String> = _viewModeRequest
-
-    /** Emit a view mode change from native code. */
-    fun requestViewMode(mode: String) {
-        _viewModeRequest.tryEmit(mode)
-    }
 
     /** Layout insets reported by React UI (header and bottom bar pixel heights). */
     data class LayoutInsets(val headerPx: Int, val bottomPx: Int)
@@ -624,22 +620,6 @@ class SessionService : Service() {
     }
 
     val titlesDir: File get() = File(bootstrap?.homeDir ?: File("/"), ".claude-mobile/titles")
-
-    // Legacy single-session API — used by ServiceBinder until full migration
-    fun startSession(bs: Bootstrap, apiKey: String? = null) {
-        initBootstrap(bs)
-        val session = createSession(bs.homeDir, dangerousMode = false, apiKey = apiKey)
-        ptyBridge = session.ptyBridge
-        startForeground(NOTIFICATION_ID, buildSessionNotification())
-    }
-
-    fun stopSession() {
-        sessionRegistry.destroyAll()
-        ptyBridge = null
-        releaseWakeLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-    }
 
     fun createSession(cwd: File, dangerousMode: Boolean, apiKey: String?, model: String? = null): ManagedSession {
         val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
@@ -1728,9 +1708,7 @@ class SessionService : Service() {
                     val existing = try {
                         org.json.JSONObject(prefFile.readText())
                     } catch (_: Exception) { org.json.JSONObject() }
-                    val keys = msg.payload.keys()
-                    while (keys.hasNext()) {
-                        val key = keys.next()
+                    msg.payload.forEachKey { key ->
                         existing.put(key, msg.payload.get(key))
                     }
                     prefFile.parentFile?.mkdirs()

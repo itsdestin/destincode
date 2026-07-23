@@ -17,7 +17,6 @@ class SessionRegistry {
     val sessions: StateFlow<Map<String, ManagedSession>> = _sessions
 
     private val _currentSessionId = MutableStateFlow<String?>(null)
-    val currentSessionId: StateFlow<String?> = _currentSessionId
 
     fun getCurrentSession(): ManagedSession? {
         val id = _currentSessionId.value ?: return null
@@ -116,21 +115,6 @@ class SessionRegistry {
         _currentSessionId.value = null
     }
 
-    fun relaunchSession(
-        sessionId: String,
-        bootstrap: Bootstrap,
-        apiKey: String?,
-        titlesDir: File,
-    ): ManagedSession? {
-        val old = _sessions.value[sessionId] ?: return null
-        destroySession(sessionId)
-        return if (old.shellMode) {
-            createShellSession(bootstrap, titlesDir)
-        } else {
-            createSession(bootstrap, old.cwd, old.dangerousMode, apiKey, titlesDir)
-        }
-    }
-
     /** Create a managed shell session (appears in session switcher). */
     fun createShellSession(bootstrap: Bootstrap, titlesDir: File): ManagedSession {
         val sessionId = java.util.UUID.randomUUID().toString()
@@ -154,38 +138,6 @@ class SessionRegistry {
 
         _sessions.update { it + (sessionId to session) }
         _currentSessionId.value = sessionId
-
-        return session
-    }
-
-    /**
-     * Resume a past session. Creates a new Claude Code PTY with --resume flag
-     * in the session's original project directory, then loads history.
-     * Mirrors the desktop's handleResumeSession() in App.tsx.
-     */
-    fun resumeSession(
-        pastSession: SessionBrowser.PastSession,
-        bootstrap: Bootstrap,
-        apiKey: String?,
-        titlesDir: File,
-        model: String? = null,
-    ): ManagedSession {
-        // Derive CWD from the project slug — fall back to homeDir if path doesn't exist
-        val cwd = SessionBrowser.slugToCwd(pastSession.projectSlug, bootstrap.homeDir)
-
-        // Create session with --resume CLI flag (NOT /resume stdin)
-        val session = createSession(
-            bootstrap = bootstrap,
-            cwd = cwd,
-            dangerousMode = false,
-            apiKey = apiKey,
-            titlesDir = titlesDir,
-            resumeSessionId = pastSession.sessionId,
-            model = model,
-        )
-
-        // History for resumed sessions is now handled entirely by the React UI
-        // via TranscriptWatcher forwarding — no need to load it here.
 
         return session
     }

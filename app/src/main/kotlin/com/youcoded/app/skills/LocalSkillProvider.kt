@@ -2,6 +2,7 @@ package com.youcoded.app.skills
 
 import android.content.Context
 import android.util.Log
+import com.youcoded.app.util.forEachKey
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -136,8 +137,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             val skill = JSONObject(cache.getJSONObject(i).toString())
             val o = overrides.optJSONObject(skill.optString("id"))
             if (o != null) {
-                val keys = o.keys()
-                while (keys.hasNext()) { val key = keys.next(); skill.put(key, o.get(key)) }
+                o.forEachKey { key -> skill.put(key, o.get(key)) }
             }
             result.put(skill)
         }
@@ -246,8 +246,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
 
         val override = configStore.getOverride(id)
         if (override != null) {
-            val keys = override.keys()
-            while (keys.hasNext()) { val key = keys.next(); result.put(key, override.get(key)) }
+            override.forEachKey { key -> result.put(key, override.get(key)) }
         }
         return result
     }
@@ -411,9 +410,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         pluginDirs.forEach { pluginDir ->
             val manifest = readPluginManifest(pluginDir) ?: return@forEach
             val provides = manifest.optJSONObject("provides") ?: return@forEach
-            val keys = provides.keys()
-            while (keys.hasNext()) {
-                val cap = keys.next()
+            provides.forEachKey { cap ->
                 providerMap.putIfAbsent(cap, manifest.optString("name"))
             }
         }
@@ -616,8 +613,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             val json = input.bufferedReader().use { it.readText() }
             val registry = JSONObject(json)
             val result = JSONArray()
-            val keys = registry.keys()
-            while (keys.hasNext()) result.put(keys.next())
+            registry.forEachKey { result.put(it) }
             result
         } catch (_: Exception) {
             JSONArray()
@@ -631,9 +627,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             val json = input.bufferedReader().use { it.readText() }
             val registry = JSONObject(json)
             val result = JSONArray()
-            val keys = registry.keys()
-            while (keys.hasNext()) {
-                val id = keys.next()
+            registry.forEachKey { id ->
                 val meta = registry.getJSONObject(id)
                 val entry = JSONObject(meta.toString())
                 entry.put("id", id)

@@ -128,15 +128,13 @@ object SessionBrowser {
 
     data class HistoryResult(
         val messages: List<HistoryMessage>,
-        val hasMore: Boolean,
     )
 
     /**
      * Load the last N conversational messages from a session's JSONL file.
      * Only includes user prompts (with promptId, not isMeta) and assistant
      * end_turn messages (text blocks only, no tool calls).
-     * Returns messages + whether more exist (single parse, no double read).
-     * Mirrors the desktop's loadHistory().
+     * Single parse, no double read. Mirrors the desktop's loadHistory().
      */
     fun loadHistory(
         projectsDir: File,
@@ -147,17 +145,17 @@ object SessionBrowser {
     ): HistoryResult {
         if (!SAFE_ID_RE.matches(projectSlug) || !SAFE_ID_RE.matches(sessionId)) {
             Log.w(TAG, "Invalid slug or sessionId")
-            return HistoryResult(emptyList(), false)
+            return HistoryResult(emptyList())
         }
 
         val jsonlFile = File(projectsDir, "$projectSlug/$sessionId.jsonl")
-        if (!jsonlFile.exists()) return HistoryResult(emptyList(), false)
+        if (!jsonlFile.exists()) return HistoryResult(emptyList())
 
         val allMessages = parseConversationalMessages(jsonlFile)
         return if (all) {
-            HistoryResult(allMessages, false)
+            HistoryResult(allMessages)
         } else {
-            HistoryResult(allMessages.takeLast(count), allMessages.size > count)
+            HistoryResult(allMessages.takeLast(count))
         }
     }
 
