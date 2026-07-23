@@ -24,7 +24,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # build-web-ui.sh runs `npm run build` in desktop/, which invokes
       # electron-builder for all configured Linux targets. Pacman needs
