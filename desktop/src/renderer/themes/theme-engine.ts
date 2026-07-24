@@ -249,6 +249,40 @@ function deriveDestructiveFg(destructive: string, canvas: string, panel: string)
   return target;
 }
 
+/**
+ * Nudge a DERIVED link colour until it is actually readable.
+ *
+ * WHY: the accent-vs-fg distance guard below only asks "is this link
+ * distinguishable from body text" — never "can you read it". Measured across
+ * the 11 shipped themes, that let 4 community packs derive a link that fails
+ * AA on the surface links are mostly painted on, worst of them kuromi-dreamer
+ * at 2.90:1. Same failure shape as --destructive-fg, so same fix: mix toward
+ * white (dark themes) / black (light themes) in 2% steps until it clears 4.5:1
+ * against the WORST of canvas, panel and inset.
+ *
+ * Inset is in that set and canvas is not the tight one: the assistant bubble is
+ * `bg-inset` (AssistantTurnBubble.tsx:374) and MarkdownContent renders inside
+ * it, so the bubble — not the page — is where most links actually live. `well`
+ * is deliberately excluded; it is the command-drawer search surface and nothing
+ * renders a link on it. Including it would fail two packs with no site to fix.
+ *
+ * Only DERIVED links go through this. A pack that declares `link` has made an
+ * explicit choice, and silently overriding it would both break author intent
+ * (creme's olive #5B4A1E is deliberate) and make the audit's HARD link rules
+ * unfailable — a gate that cannot fail reports nothing.
+ */
+function deriveLink(base: string, canvas: string, panel: string, inset: string): string {
+  const worst = (c: string) =>
+    Math.min(contrastRatio(c, canvas), contrastRatio(c, panel), contrastRatio(c, inset));
+  if (worst(base) >= 4.5) return base;
+  const target = rgbLuminance(...parseHex(canvas)) < 0.5 ? '#FFFFFF' : '#000000';
+  for (let t = 0.02; t <= 1.0001; t += 0.02) {
+    const candidate = mixHex(base, target, t);
+    if (worst(candidate) >= 4.5) return candidate;
+  }
+  return target;
+}
+
 /** Computes overlay CSS custom properties from existing theme tokens.
  *  After the glassmorphism refactor, overlay surfaces consume --panels-blur /
  *  --panels-opacity directly (set globally in applyThemeToDom), so this helper
@@ -290,7 +324,17 @@ export function computeOverlayTokens(
   // themes that set accent == fg would otherwise render links invisible against
   // prose. Packs may declare `link` explicitly to opt out of the derivation.
   // Built-ins all declare their own, so this branch only runs for community packs.
-  const link = tokens.link ?? (accentFgDistance > 40 ? tokens.accent : tokens['fg-2']);
+  //
+  // The guard alone is not enough: it answers "different from body text?" but
+  // not "readable?", which is how 4 packs shipped a sub-AA link. deriveLink
+  // finishes the job — see its comment for why inset is in the surface set.
+  const link = tokens.link
+    ?? deriveLink(
+      accentFgDistance > 40 ? tokens.accent : tokens['fg-2'],
+      tokens.canvas,
+      tokens.panel,
+      tokens.inset,
+    );
   const linkHover = tokens['link-hover'] ?? `color-mix(in oklab, ${link} 85%, ${tokens.fg})`;
 
   // Label color for filled --destructive surfaces (danger buttons, danger toggles).

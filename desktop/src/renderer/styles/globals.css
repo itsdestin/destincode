@@ -28,8 +28,10 @@
   --scrollbar-thumb: #C0C0C0;
   --scrollbar-hover: #999999;
   /* --code is computed per-theme by theme-engine.ts from --accent / --fg-2 so community themes get a palette-matched inline-code color instead of inheriting a hardcoded yellow from :root. */
-  --link: #2563EB;
-  --link-hover: #1D4ED8;
+  /* Darkened from #2563EB/#1D4ED8 (change 36): the old pair scored 3.59:1 on
+     --inset, and --inset is the assistant bubble, where most links render. */
+  --link: #2055CA;
+  --link-hover: #1E4395;
   --hl-theme: light;
   color-scheme: light;
   --radius: 4px;
