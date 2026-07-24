@@ -70,29 +70,18 @@ describe('trackedArtifacts', () => {
     expect(trackedArtifacts(arts, [], [], ROOT)).toEqual([]);
   });
 
-  // Rule 4 flipped (2026-07-23 file-merge spec): externals are visible on their
-  // own edit history, mirroring rule 3 for internals. Pins are no longer the
-  // gate — nothing writes manualIncludes once "+ Add file" becomes an import.
-  it('shows external artifacts with Claude work, without any pin', () => {
+  it('shows external artifacts only when manually included', () => {
     const arts = [
-      { kind: 'external', path: 'made.xlsx', absolutePath: 'c:/temp/made.xlsx', versions: [edit], id: 'made' },
-      { kind: 'external', path: 'new.md', absolutePath: 'c:/temp/new.md', versions: [{ type: 'create' }], id: 'new' },
+      { kind: 'external', path: 'in.xlsx', absolutePath: 'c:/temp/in.xlsx', versions: [edit], id: 'in' },
+      { kind: 'external', path: 'out.xlsx', absolutePath: 'c:/temp/out.xlsx', versions: [edit], id: 'out' },
     ];
-    expect(trackedArtifacts(arts, [], [], ROOT).map((a: any) => a.id)).toEqual(['made', 'new']);
+    const includes = [{ path: 'c:/temp/in.xlsx' }];
+    expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['in']);
   });
 
-  it('hides external files that were only VIEWED (read-only versions)', () => {
-    // Same bar as rule 3 — a pill click must not populate External Artifacts.
-    const arts = [
-      { kind: 'external', path: 'seen.pdf', absolutePath: 'c:/temp/seen.pdf', versions: [read], id: 'seen' },
-      { kind: 'external', path: 'made.pdf', absolutePath: 'c:/temp/made.pdf', versions: [edit], id: 'made' },
-    ];
-    expect(trackedArtifacts(arts, [], [], ROOT).map((a: any) => a.id)).toEqual(['made']);
-  });
-
-  it('still shows a legacy pinned external with only read versions (rule 1 survives)', () => {
-    // Upgrade safety: existing users pinned externals with the old "+ Add file".
-    // Rule 1 keeps those visible even though they would fail the new rule 4.
+  it('still shows a pinned external with only read versions (rule 1 survives)', () => {
+    // Rule 1 (pin wins) is checked before rule 4 (externals hidden without a
+    // pin), so a pinned external is visible regardless of its version history.
     const arts = [
       { kind: 'external', path: 'pinned.pdf', absolutePath: 'c:/temp/pinned.pdf', versions: [read], id: 'pinned' },
     ];
@@ -100,12 +89,19 @@ describe('trackedArtifacts', () => {
     expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['pinned']);
   });
 
-  it('still hides an excluded external with Claude work (rule 2 survives)', () => {
+  // The 2026-07-23 flip's version of this test asserted exclude still hid an
+  // external that would OTHERWISE have been visible via edit history alone
+  // (the flipped rule 4). That premise is gone on revert: rule 4 now hides any
+  // external without a pin regardless of exclude, so 'keep' below is hidden
+  // too — exclude has no independent effect on an unpinned external, only on
+  // internal files (see 'hides excluded internal files...' above) or on a
+  // pinned external it does NOT also include (rule 1 still wins if it does).
+  it('hides both an excluded and a non-excluded external with no pin (rule 4 default)', () => {
     const arts = [
       { kind: 'external', path: 'noisy.md', absolutePath: 'c:/temp/noisy.md', versions: [edit], id: 'noisy' },
       { kind: 'external', path: 'keep.md', absolutePath: 'c:/temp/keep.md', versions: [edit], id: 'keep' },
     ];
     const excludes = ['c:/temp/noisy.md'];
-    expect(trackedArtifacts(arts, [], excludes, ROOT).map((a: any) => a.id)).toEqual(['keep']);
+    expect(trackedArtifacts(arts, [], excludes, ROOT).map((a: any) => a.id)).toEqual([]);
   });
 });

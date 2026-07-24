@@ -23,11 +23,11 @@ interface TrackableArtifact {
  *      that was merely VIEWED via a pill click ('read' versions only) does NOT
  *      belong in "files Claude made" — it stays in All files and the session
  *      drawer (an activity log, where "viewed" is at home).
- *   4. External files → visible only with at least one NON-READ version, same
- *      bar as rule 3. Was "hidden unless manually included" until 2026-07-23:
- *      "+ Add file" became a Move/Copy import and stopped writing manualIncludes,
- *      so a pin-gated rule would have left External Artifacts permanently empty.
- *      Rule 1 still wins, which is what keeps legacy pins visible on upgrade.
+ *   4. External files → hidden unless included (rule 1). WHY: tried making this
+ *      mirror rule 3 (2026-07-23) so externals were visible on edit history
+ *      alone; against the real sidecar an ungated external set was ~95%
+ *      incidental noise (scratchpad temps, other-device paths, .claude/
+ *      internals), so it was reverted back to pin-gated.
  *
  * All include/exclude entries are canonical ABSOLUTE paths (the EXCLUDE /
  * INCLUDE_EXTERNAL handlers normalize them); internal artifact paths are
@@ -59,12 +59,8 @@ export function trackedArtifacts<T extends TrackableArtifact>(
     const key = absoluteKey(a);
     if (key && included.has(key)) return true;   // rule 1 — pinned wins
     if (key && excluded.has(key)) return false;  // rule 2 — hidden
-    if (!key && a.kind !== 'internal') return false;  // externals need a key
-    // WHY: rules 3 + 4 now share the same test — both internal and external
-    // artifacts require Claude work (non-read versions) to be visible.
-    // Externals used to require a pin (rule 4), but "+ Add file" became a
-    // Move/Copy import (no more pin writes), so rule 1 survives for legacy
-    // pins while rule 4 now mirrors rule 3 for new externals (see header).
+    if (a.kind !== 'internal') return false;     // rule 4 — externals need a pin
+    // rule 3 — internal: Claude's work only (any non-read version)
     return (a.versions ?? []).some((v) => v.type !== 'read');
   });
 }
