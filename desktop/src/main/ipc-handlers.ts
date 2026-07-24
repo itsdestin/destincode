@@ -3172,16 +3172,17 @@ export function registerIpcHandlers(
   // in — that is LIST_ALL_FILES's job.
   //
   // What comes back is whatever trackedArtifacts() admits (visible-artifacts.ts
-  // owns the rules): internal AND external records that carry at least one
-  // non-read version, plus anything legacy-pinned in manualIncludes, minus
-  // anything in manualExcludes. Externals stopped needing a pin on 2026-07-23,
-  // when "+ Add file" became a real Move/Copy import — which is what makes this
-  // call able to feed Project View's External Artifacts section.
+  // owns the rules): internal records with at least one non-read version, plus
+  // anything legacy-pinned in manualIncludes, minus anything in manualExcludes.
+  // EXTERNAL records need a pin — Project View briefly showed unpinned externals
+  // in an "External Artifacts" section (2026-07-23) but it was removed the same
+  // day (~95% incidental noise against real sidecars), and the pin requirement
+  // reverted with it. Consumers now: FilepathToken (resolve a pill to an
+  // artifact) and the withCount path (the hero/switcher count). No Project View
+  // section reads this any more.
   //
   // Deleted records (tombstones) ARE returned — not because anything here wants
-  // them, but because trackedArtifacts() does not filter on `status`. NO current
-  // consumer of THIS channel wants them: FilesTab drops them
-  // (externalSectionRecords) and FilepathToken does not want them either. The
+  // them, but because trackedArtifacts() does not filter on `status`. The
   // session drawer's "Show deleted" toggle reads a DIFFERENT handler
   // (LIST_SESSION), which returns tombstones on its own — do not assume the
   // drawer depends on this one. Callers that don't want tombstones must filter.
