@@ -315,15 +315,17 @@ export default function MarketplaceScreen({
               </span>
             </Button>
           )}
-          {/* Wide: text "Esc · Back to chat" hint, no border (Esc key does the work). */}
-          <button
-            type="button"
+          {/* Wide: "Esc · Back to chat", no border (the Esc key does the work).
+              Ghost Button rather than a bare <button> so it carries the hover
+              pill + focus ring — matched across all three screens, change 27. */}
+          <Button
+            variant="ghost"
             onClick={onExit}
-            className="hidden sm:inline-block text-fg-dim hover:text-fg text-sm px-2 py-1"
+            className="hidden sm:inline-flex text-sm px-2.5 py-1"
             aria-label="Exit marketplace"
           >
             Esc · Back to chat
-          </button>
+          </Button>
           {/* Narrow: bordered close-X button — touch users have no Esc key, so we
               give them an obvious close affordance with a button-shaped container
               matching the Library button next to it. */}

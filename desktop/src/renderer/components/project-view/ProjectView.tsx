@@ -520,17 +520,18 @@ export function ProjectView(props: ProjectViewProps) {
       <header className="flex items-center gap-3 px-4 py-2.5 border-b border-edge shrink-0">
         <h2 className="text-base font-semibold text-fg shrink-0">Projects</h2>
         <div className="flex-1" />
-        {/* One exit per surface type (change 27) — byte-for-byte the Marketplace
-            and Library treatment. Wide: text hint, no border, because the Esc key
-            is doing the real work. Narrow: bordered ✕, because touch has no Esc. */}
-        <button
-          type="button"
+        {/* One exit per surface type (change 27) — identical on all three screens.
+            Wide: ghost Button, so it keeps the hover pill the old "Esc / Close"
+            control had (review feedback 2026-07-23). Narrow: bordered ✕, because
+            touch has no Esc key. */}
+        <Button
+          variant="ghost"
           onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
-          className="hidden sm:inline-block shrink-0 text-fg-dim hover:text-fg text-sm px-2 py-1"
+          className="hidden sm:inline-flex shrink-0 text-sm px-2.5 py-1"
           aria-label="Exit projects"
         >
           Esc · Back to chat
-        </button>
+        </Button>
         <CloseButton
           onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
           label="Exit projects"

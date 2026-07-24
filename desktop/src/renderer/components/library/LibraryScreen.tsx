@@ -156,14 +156,14 @@ export default function LibraryScreen({
             </Button>
           )}
           {/* Wide: Esc text. Narrow: bordered close-X — matches the marketplace top bar. */}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={onExit}
-            className="hidden sm:inline-block text-fg-dim hover:text-fg text-sm px-2 py-1"
+            className="hidden sm:inline-flex text-sm px-2.5 py-1"
             aria-label="Exit library"
           >
             Esc · Back to chat
-          </button>
+          </Button>
           {/* Was a hand-rolled button + inline ✕ SVG while Marketplace next door
               already used the primitive — change 27 is "one exit per surface
               type", so the two narrow exits must be the same component. */}

@@ -36,7 +36,15 @@ export function ConversationsTab({ conversations, onOpenPreview }: Conversations
       ) : rows.length === 0 ? (
         <p className="text-sm text-fg-muted">No conversations in this project yet.</p>
       ) : (
-        <div className="flex-1 overflow-auto max-sm:overflow-visible flex flex-col gap-2 content-start">
+        <div
+          // p-2 -m-2 matches FilesTab's scroll box exactly. Without it the
+          // scroll container's edge sat at the parent's full px-4 gutter, so the
+          // scrollbar butted right up against the cards — while Files (which has
+          // the offset) and Context (which scrolled the padded element itself)
+          // each sat at a different distance. Same recipe in all three tabs =
+          // one scrollbar position.
+          className="flex-1 overflow-auto max-sm:overflow-visible flex flex-col gap-2 content-start p-2 -m-2"
+        >
           {rows.map((c) => {
             const title = c.name?.trim() ? c.name : 'Untitled';
             return (
