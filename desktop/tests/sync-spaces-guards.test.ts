@@ -35,6 +35,22 @@ describe('DEFAULT_IGNORES', () => {
   });
 });
 
+describe('DEFAULT_IGNORES — import temps', () => {
+  // Two INDEPENDENT ignore lists cover the "+ Add file" import temp: discovery's
+  // isNoiseFile (hides it from Project Files) and this one (stops sync shipping
+  // it). Updating only the first would leave the debris invisible in the UI but
+  // replicated to every device forever.
+  it('ignores an abandoned import temp anywhere in the tree', () => {
+    expect(isIgnoredPath('.youcoded-import-1234-5678-budget.xlsx.part')).toBe(true);
+    expect(isIgnoredPath('docs/.youcoded-import-1-2-notes.md.part')).toBe(true);
+  });
+
+  it('does NOT ignore a user file that merely ends in .part', () => {
+    expect(isIgnoredPath('chapter.part')).toBe(false);
+    expect(isIgnoredPath('docs/thesis.part')).toBe(false);
+  });
+});
+
 describe('isIgnoredPath', () => {
   it('matches directory patterns anywhere in the path', () => {
     expect(isIgnoredPath('node_modules/x/i.js')).toBe(true);
