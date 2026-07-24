@@ -21,6 +21,14 @@ export const DEFAULT_IGNORES: string[] = [
   'node_modules/', '.git/', '.youcoded/', 'dist/', 'build/', 'out/', 'target/',
   '.venv/', 'venv/', '__pycache__/', '.pytest_cache/', '.gradle/',
   '.DS_Store', 'Thumbs.db', 'desktop.ini',
+  // Abandoned "+ Add file" import temp (artifacts/import-file.ts copies to
+  // `.youcoded-import-<pid>-<ts>-<name>.part` in the destination folder, then
+  // renames over the target). A crashed import strands one INSIDE the project
+  // tree. project-file-discovery hides it from Project Files, but that is a
+  // SEPARATE ignore list — without this entry sync would happily transport the
+  // debris to every other device, where it is invisible in the UI yet present
+  // on disk forever.
+  '.youcoded-import-*.part',
   '.env', '.env.*', '*.pem', '*.key', 'id_rsa*', 'id_ed25519*', '*.credentials.json',
 ];
 

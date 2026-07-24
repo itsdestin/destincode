@@ -17,11 +17,10 @@
 // FilesTab (artifact-scoped) since it operates on the active project's artifacts.
 import React, { useEffect, useRef, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
-import { useTheme } from '../../state/theme-context';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { formatRelativeTime } from '../../utils/format-time';
-import type { CentralIndexProject } from '../../../shared/artifacts/types';
+import type { CentralIndexProject, ArtifactRecord } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
 import type { FileTypeGroup } from '../../../shared/artifacts/categorization';
@@ -43,14 +42,16 @@ import { FileFilterPopover } from './FileFilterPopover';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
 
-type TabId = 'artifacts' | 'allfiles' | 'conversations' | 'context';
+// 2026-07-23: the Artifacts tab merged into Files. Artifacts was not a subset of
+// All files, so the merge moved externals into their own section inside this tab
+// rather than deleting them — see the file-merge spec.
+type TabId = 'files' | 'conversations' | 'context';
 
 // Live hero stats, computed from the project:* / artifacts:* IPC (not the stale
 // stats.artifactCount). null repo means the project folder has no git remote.
-// CORE PRINCIPLE: `artifacts` (Claude-authored) and `files` (all on-disk docs)
-// are DISTINCT counts — never the same number.
+// 2026-07-23: the `artifacts` count was dropped when the Artifacts tab merged
+// into Files — there is no longer a separate Claude-authored count to show.
 interface HeroStats {
-  artifacts: number;
   // null = gated root (home dir / drive root — no scan runs, no number).
   files: number | null;
   // Discovery hit a cap — render "N+" so a sample never poses as exact.
@@ -63,20 +64,14 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 
 
 // Shared lucide-style glyphs live in ./icons.tsx (previously each file carried
-// its own copies of the same paths). GridIcon is the one glyph unique to this
-// file — the Artifacts segment icon.
-import { InfoIcon, ChatIcon, FolderIcon, DocIcon } from './icons';
+// its own copies of the same paths). GridIcon (the old Artifacts segment icon)
+// and InfoIcon (the Artifacts-vs-All-files explainer) were both removed here
+// 2026-07-23 when the Artifacts tab merged into Files — one tab needs neither.
+// The search + sliders glyphs live in SearchFilterPill, shared with the drawer.
+// CloseButton is the shared screen-exit affordance (UI tranche 4, change 27).
+import { ChatIcon, FolderIcon, DocIcon } from './icons';
 import { Button, Checkbox, CloseButton, SearchFilterPill } from '../ui';
-
-function GridIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
+import { ImportFileDialog } from './ImportFileDialog';
 
 interface ProjectViewProps {
   // Threaded from App: starts a new conversation in the given cwd.
@@ -86,23 +81,61 @@ interface ProjectViewProps {
   onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string, provider?: string) => void;
 }
 
+// Basename of a picked path, for naming the file a failure is ABOUT.
+const baseName = (p: string): string => p.replace(/\\/g, '/').split('/').pop() || p;
+
+// Task 6: human wording for the two importFile failure codes that need it —
+// see artifacts/import-file.ts. Every other code falls through to
+// `${error}: ${detail}` — a real code beats a friendly guess, and NEVER guess
+// at a cause we haven't verified.
+//   needs-confirm  → the destination is a .claude/ path or a dotenv, which
+//                    main refuses without a protected-path confirm (the
+//                    Move/Copy dialog only asks copy-vs-move, not "you're
+//                    about to overwrite your .env").
+//   MOVE_SOURCE_NOT_REMOVED → the copy SUCCEEDED and the original is still in
+//                    place. Report the partial outcome truthfully — the move
+//                    did not fail, only half of it did.
+// `source` is the file the user picked, and every line names it. WHY: for
+// needs-confirm main's `detail` is the refused DESTINATION — which for a
+// destination-folder refusal is the folder, so a 3-file batch used to print the
+// same "/home/d/proj/.claude was NOT imported" three times, naming a directory
+// nobody tried to import. The destination is still reported (it's the real,
+// verified detail), it just isn't the subject of the sentence.
+export function describeImportFailure(r: { error: string; detail?: string }, source?: string): string {
+  const who = source ? baseName(source) : 'That file';
+  if (r.error === 'needs-confirm') {
+    return `${who} was NOT imported${r.detail ? ` — ${r.detail} is a protected path` : ' — the destination is a protected path'} (inside .claude/ or a dotenv) that needs explicit confirmation this dialog doesn't ask for.`;
+  }
+  if (r.error === 'MOVE_SOURCE_NOT_REMOVED') {
+    return `${who} was copied into the project, but the original could not be removed${r.detail ? ` (${r.detail})` : ''} — both copies exist now.`;
+  }
+  const code = r.detail ? `${r.error}: ${r.detail}` : r.error;
+  return source ? `${who} — ${code}` : code;
+}
+
+// Title for the import-result modal. It is NOT always a failure: a move whose
+// copy landed but whose original couldn't be removed is a partial success, and
+// "already in place" (the file is the one you picked it from) isn't an error at
+// all. Titling all three "Import failed" over those bodies was a lie.
+export function importResultTitle(r: { hardFailures: number; partial: number; alreadyInPlace: number }): string {
+  if (r.hardFailures > 0) return 'Import failed';
+  if (r.partial > 0) return 'Import partly finished';
+  if (r.alreadyInPlace > 0) return 'Nothing to import';
+  return 'Import finished';
+}
+
 export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
-  // Artifact filter toggles live in the shared theme context (also read by the
-  // SessionDrawer). The seg-row chips here toggle them; FilesTab reads them.
-  const {
-    showDeletedArtifacts, setShowDeletedArtifacts,
-  } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
-  const [tab, setTab] = useState<TabId>('artifacts');
+  const [tab, setTab] = useState<TabId>('files');
   // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
   const [artifactSearch, setArtifactSearch] = useState('');
-  // Type filter + sort for the two file tabs — lifted here (like search) so they
-  // live on the seg-row and survive Artifacts ↔ All files toggles. These are
-  // EXPLICIT, visible controls the user sets — the badge counts stay folder
-  // totals, so a filtered grid never silently redefines what "N files" means.
+  // Type filter + sort for the Files tab — lifted here (like search) so they
+  // live on the seg-row next to the segmented control. These are EXPLICIT,
+  // visible controls the user sets — the badge counts stay folder totals, so a
+  // filtered grid never silently redefines what "N files" means.
   // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
   const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
@@ -133,10 +166,33 @@ export function ProjectView(props: ProjectViewProps) {
   // breadcrumb + selection). refreshKey and countsKey both feed the hero
   // effect; only refreshKey feeds FilesTab.
   const [countsKey, setCountsKey] = useState(0);
+  // Task 6: "+ Add file" Move/Copy flow. currentRelDir mirrors FilesTab's own
+  // currentDir (reported up via onCurrentDirChange) so ProjectView knows WHERE
+  // to import into — FilesTab is a breadcrumb tree, so landing everything at
+  // the project root would be surprising once the user has navigated in.
+  // FilesTab resets its currentDir to '' on every project switch, and that
+  // reset flows through the same callback, so this needs no separate reset.
+  const [currentRelDir, setCurrentRelDir] = useState('');
+  // Files picked from the native dialog, staged for the Move/Copy confirm
+  // dialog. collisions = basenames among sources that already exist in the
+  // destination folder, computed BEFORE the dialog opens (see importFiles).
+  const [pendingImport, setPendingImport] = useState<{ sources: string[]; collisions: string[] } | null>(null);
+  // Import outcomes worth reading, surfaced as a non-transient modal (Scrim +
+  // OverlayPanel, same pattern as the project-deletion modal below) rather than
+  // a Toast — describeImportFailure above gives the two special-cased codes
+  // human wording; everything else is the real error code + detail. A Toast
+  // auto-dismisses on a timer with NO manual dismiss control (see Toast.tsx),
+  // and these lines name a specific protected path that was not imported,
+  // report a partial move, or say a file was already where it was headed — the
+  // user needs to notice and may need to act, and a multi-file batch reads as
+  // several lines, which an 8s timer doesn't give enough time to re-read.
+  // `title` is computed per batch (importResultTitle) because not every one of
+  // these outcomes is a failure.
+  const [importResult, setImportResult] = useState<{ title: string; lines: string[] } | null>(null);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
-    artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
+    files: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
   });
   const [heroRepo, setHeroRepo] = useState<HeroRepo | null>(null);
 
@@ -183,6 +239,9 @@ export function ProjectView(props: ProjectViewProps) {
   // The delete-confirm modal takes Esc priority while open (registered after
   // the browser's own handler because it mounts later — LIFO).
   useEscClose(!!deletingProject, () => { setDeletingProject(null); setAlsoDeleteSidecar(false); });
+  // The import-result modal likewise needs its own Esc handler now that it's
+  // a real dialog instead of a Toast (a Toast never listened for Esc at all).
+  useEscClose(!!importResult, () => setImportResult(null));
 
   // Load the projects index whenever the view is opened. Hooks MUST run before
   // any early return — Rules of Hooks. Don't move below the projectViewOpen guard
@@ -228,7 +287,7 @@ export function ProjectView(props: ProjectViewProps) {
   // `cancelled` flag guards against the project switching mid-flight.
   useEffect(() => {
     if (!activeProject) {
-      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
+      setHeroStats({ files: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
       setHeroRepo(null);
       setConversations(null);
       setContext(null);
@@ -245,7 +304,7 @@ export function ProjectView(props: ProjectViewProps) {
       // Reset immediately so the PREVIOUS project's repo/stats don't linger while
       // the new project's data loads. Seed tab data from cache (instant) or null
       // (shows the tab's "Loading…" until the fetch resolves).
-      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
+      setHeroStats({ files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
       setHeroRepo(null);
       setConversations(convCache.current.get(id) ?? null);
       setContext(ctxCache.current.get(id) ?? null);
@@ -280,21 +339,16 @@ export function ProjectView(props: ProjectViewProps) {
         return groups;
       } catch { return []; }
     };
-    // Live artifact count — delegates to the main-process countVisibleArtifacts
-    // helper (via listProject withCount) so the hero, the segment badge, and the
-    // project-switcher row all show the SAME number. The helper returns exactly
-    // what the Artifacts tab shows with "Show deleted" OFF: non-deleted tracked
-    // files that still exist on disk (orphans excluded) plus on-disk discovered
-    // docs. No more renderer-side recomputation that could drift from the switcher.
-    const getArtifactCount = async (): Promise<number> => {
-      try {
-        const res = await (window.claude as any).artifacts.listProject(id, { withCount: true });
-        return typeof res?.visibleCount === 'number' ? res.visibleCount : 0;
-      } catch { return 0; }
-    };
+    // 2026-07-23: the hero's separate "N artifacts" stat was dropped when the
+    // Artifacts tab merged into Files, so the getArtifactCount() helper that fed
+    // it is gone too. Left alone, out of scope for this task: main's
+    // countVisibleArtifacts (still feeds ProjectSwitcher's row hint) and the
+    // persisted stats.artifactCount in the central index — neither is a
+    // renderer concern here.
     // ALL FILES count — the project folder's on-disk files (DISTINCT from the
-    // artifact count). Shares main's discovery cache with the All files tab, so
-    // this and the tab don't double-scan. Gated roots (home dir / drive root)
+    // artifact count). Shares main's discovery cache with the Files tab's
+    // Project Files section, so this and the tab don't double-scan. Gated roots
+    // (home dir / drive root)
     // return { gated } with NO scan → null here → the stat renders "—".
     const getAllFilesCount = async (): Promise<{ count: number | null; truncated: boolean }> => {
       try {
@@ -307,10 +361,9 @@ export function ProjectView(props: ProjectViewProps) {
     };
 
     (async () => {
-      const [convs, ctxGroups, artifactCount, fileCount, repoRes] = await Promise.all([
+      const [convs, ctxGroups, fileCount, repoRes] = await Promise.all([
         getConversations(),
         getContext(),
-        getArtifactCount(),
         getAllFilesCount(),
         (window.claude as any).project.repoInfo(path).catch(() => null),
       ]);
@@ -330,7 +383,6 @@ export function ProjectView(props: ProjectViewProps) {
         : null;
 
       setHeroStats({
-        artifacts: artifactCount,
         files: fileCount.count,
         filesTruncated: fileCount.truncated || undefined,
         conversations: conversationCount,
@@ -470,25 +522,112 @@ export function ProjectView(props: ProjectViewProps) {
     setAlsoDeleteSidecar(false);
   };
 
-  // Add an external file to the active project, then trigger an FilesTab
-  // reload. window.claude.dialog.openFile() returns a string[] of paths.
-  const addExternal = async () => {
+  // Join the project root with the folder FilesTab is currently showing.
+  // currentRelDir is '' at the tree root, so this is just the project path there.
+  const importDestDir = (): string => {
+    const root = activeProject!.path.replace(/[\\/]+$/, '');
+    if (!currentRelDir) return root;
+    const sep = root.includes('\\') ? '\\' : '/';
+    return `${root}${sep}${currentRelDir.replace(/^[\\/]+/, '')}`;
+  };
+
+  // Collisions: basenames among the picked paths that already exist directly
+  // in the destination folder. Compared against the SAME on-disk listing
+  // FilesTab's Project Files section reads (artifacts:list-all-files) — an
+  // extra IPC round trip rather than reaching into FilesTab's internal state,
+  // but that call is cache-backed (project-file-discovery.ts), so it's cheap,
+  // and it keeps this component from depending on FilesTab's internals.
+  //
+  // This list is BEST EFFORT and deliberately treated as such downstream:
+  // discovery skips noise files (package-lock.json, *.map, *.min.js,
+  // .DS_Store), truncates at its caps, and this function returns [] if the call
+  // fails at all. Everything it returns is NAMED in the dialog and forwarded as
+  // disclosedCollisions, and main refuses to 'replace' anything absent from it —
+  // so an omission here costs a keep-both rename, never an unseen overwrite.
+  const computeImportCollisions = async (paths: string[]): Promise<string[]> => {
+    if (!activeProject) return [];
+    // force: true — collision detection must see the REAL listing even on a
+    // gated root (home dir / drive root). Without it, a user who clicked
+    // "Browse anyway" in FilesTab sees the true file list there while this
+    // call silently gets back { files: [] } from the gate, so every collision
+    // would go undetected and the Replace/Keep both/Skip choice would never
+    // be offered. listAllFiles is cache-backed (project-file-discovery.ts),
+    // so this doesn't add a redundant scan when FilesTab already forced one.
+    const res = await (window.claude as any).artifacts.listAllFiles(activeProject.id, { force: true });
+    if (!res?.ok || !Array.isArray(res.files)) return [];
+    const prefix = currentRelDir ? currentRelDir.replace(/\\/g, '/') + '/' : '';
+    const existing = new Set<string>();
+    for (const a of res.files as ArtifactRecord[]) {
+      const p = a.path.replace(/\\/g, '/');
+      if (prefix && !p.startsWith(prefix)) continue;
+      const rest = p.slice(prefix.length);
+      if (!rest || rest.includes('/')) continue; // lives in a deeper subfolder, not this one
+      existing.add(rest);
+    }
+    return paths
+      .map((p) => p.replace(/\\/g, '/').split('/').pop() ?? p)
+      .filter((name) => existing.has(name));
+  };
+
+  // + Add file — was a manualIncludes pin (a "fake" tracked entry pointing at a
+  // file elsewhere on disk); now it actually brings the file INTO the project.
+  // Destination is the folder currently being browsed, not the project root:
+  // FilesTab is a breadcrumb tree, so landing everything at the root would be
+  // surprising once you have navigated in.
+  const importFiles = async () => {
     if (!activeProject) return;
     const paths: string[] = await (window.claude as any).dialog.openFile();
     if (!paths || paths.length === 0) return;
-    await Promise.all(
-      paths.map((p) => (window.claude as any).artifacts.includeExternal(activeProject.path, p)),
-    );
+    const collisions = await computeImportCollisions(paths);
+    setPendingImport({ sources: paths, collisions });
+  };
+
+  const runImport = async ({ mode, onCollision }: { mode: 'move' | 'copy'; onCollision: 'replace' | 'keep-both' | 'skip' }) => {
+    if (!activeProject || !pendingImport) return;
+    const destDir = importDestDir();
+    const sources = pendingImport.sources;
+    const results = await Promise.all(sources.map((p) =>
+      (window.claude as any).artifacts.importFile(activeProject.path, p, destDir, {
+        mode,
+        onCollision,
+        // Forward the EXACT collision list the dialog named. Main applies
+        // 'replace' only to these, so a collision that never made it into the
+        // list (discovery skips noise files and truncates at its caps) falls
+        // back to keep-both instead of silently overwriting a file the user was
+        // never shown. See artifacts/import-file.ts.
+        disclosedCollisions: pendingImport.collisions,
+      })));
+    // Surface the REAL failure (code + path) — never a guessed cause. See
+    // describeImportFailure above for the two codes that need human wording.
+    // Results are index-aligned with `sources` (Promise.all preserves order),
+    // so each line can name the file it is about.
+    const lines: string[] = [];
+    let hardFailures = 0, partial = 0, alreadyInPlace = 0;
+    results.forEach((r: any, i: number) => {
+      if (r && r.ok === false) {
+        if (r.error === 'MOVE_SOURCE_NOT_REMOVED') partial++; else hardFailures++;
+        lines.push(describeImportFailure(r, sources[i]));
+      } else if (r && r.ok === true && r.reason === 'already-in-place') {
+        // Not a failure: the picked file IS the file already sitting in this
+        // folder, so there was nothing to copy or move. Saying so is the only
+        // honest outcome — the alternative used to be deleting it.
+        alreadyInPlace++;
+        lines.push(`${baseName(sources[i])} is already in this folder — nothing to import.`);
+      }
+    });
+    if (lines.length > 0) {
+      setImportResult({ title: importResultTitle({ hardFailures, partial, alreadyInPlace }), lines });
+    }
+    setPendingImport(null);
     setRefreshKey((k) => k + 1);
   };
 
   // Unified segmented control: icon + label + live count per tab.
-  // CORE PRINCIPLE: Artifacts (Claude-authored) and All files (everything on disk)
-  // are separate sections with separate counts. All-files renders via
-  // formatFileCount: "N", "N+" (truncated sample), or "—" (gated root, no scan).
+  // Files renders via formatFileCount: "N", "N+" (truncated sample), or "—"
+  // (gated root, no scan) — the old separate Artifacts count is gone (2026-07-23
+  // merge; see the file-merge spec).
   const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: string }[] = [
-    { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: String(heroStats.artifacts) },
-    { id: 'allfiles', label: 'All files', icon: <FolderIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
+    { id: 'files', label: 'Files', icon: <FolderIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
     { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: String(heroStats.conversations) },
     { id: 'context', label: 'Context', icon: <DocIcon />, count: String(heroStats.contextFiles) },
   ];
@@ -598,12 +737,12 @@ export function ProjectView(props: ProjectViewProps) {
             <div className="flex items-center justify-between gap-3 flex-wrap max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:bg-canvas max-sm:py-2">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
-              {/* All four segments at full width, no scrolling: below 640px the
+              {/* All three segments at full width, no scrolling: below 640px the
                   INACTIVE segments drop to icon-only and the active one keeps
-                  its label + count. Labelled, the four total ~500px
-                  ("Conversations" alone is ~168px), which overflowed a phone
-                  and put Context out of reach entirely. Three ~35px icons plus
-                  one labelled segment fits inside ~374px with room to spare.
+                  its label + count. Fully labelled they overflow a phone
+                  ("Conversations" alone is ~168px), which used to put the last
+                  segment out of reach entirely. Two ~35px icons plus one
+                  labelled segment fits inside ~374px with room to spare.
                   overflow-x-auto stays as a backstop for a very long label at a
                   very small width; it should not normally engage. */}
               <div
@@ -612,7 +751,6 @@ export function ProjectView(props: ProjectViewProps) {
               >
                 {SEGMENTS.map((s) => {
                   const active = tab === s.id;
-                  const isFileTab = s.id === 'artifacts' || s.id === 'allfiles';
                   return (
                     <button
                       key={s.id}
@@ -634,53 +772,41 @@ export function ProjectView(props: ProjectViewProps) {
                       <span className="shrink-0 inline-flex">{s.icon}</span>
                       {/* Label + count collapse to nothing on an inactive
                           segment below 640px — that's what buys the room for
-                          all four to fit without scrolling. */}
+                          all three to fit without scrolling. */}
                       <span className={`truncate ${active ? '' : 'max-sm:hidden'}`}>{s.label}</span>
                       <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
                       </span>
-                      {/* (i) hover explainer for the Artifacts vs All files split —
-                          rendered INSIDE the active file-tab segment (next to the
-                          label + count, per the design) so the answer to "why is
-                          this file in both tabs?" lives right where the question
-                          arises. Hover icon per the app's (i) convention. */}
-                      {active && isFileTab && (
-                        <span
-                          className="opacity-75 hover:opacity-100 inline-flex items-center cursor-help transition-opacity"
-                          title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
-                          aria-label="What is the difference between Artifacts and All files?"
-                        >
-                          <InfoIcon size={13} />
-                        </span>
-                      )}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Right controls for the two file sections. ONE rounded-full search
+              {/* Right controls for the Files tab. ONE rounded-full search
                   pill (same shape language as the segmented control) with the
                   sliders icon inside its right edge — ALL filter/sort options
-                  (type, sort, Show deleted) live behind it in FileFilterPopover.
+                  (type, sort) live behind it in FileFilterPopover.
                   Only "+ Add file" (an action, not a filter) stays visible.
                   Conversations/Context have no toolbar in v1. */}
               {/* Narrow: search + Add file take their own full-width row under
                   the segments (the parent's flex-wrap does the rest). A hard
                   260px pill plus "+ Add file" was ~363px in a 358px content
                   box, so this row alone overflowed the viewport. */}
-              {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
+              {tab === 'files' && activeProject && (
                 <div className="w-full sm:w-auto flex items-center gap-2">
                   <SearchFilterPill
                     ref={filterWrapRef}
                     className="flex-1 sm:flex-none sm:w-[260px]"
                     value={artifactSearch}
                     onChange={setArtifactSearch}
-                    placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
-                    inputAriaLabel={tab === 'allfiles' ? 'Search files' : 'Search artifacts'}
-                    /* Filters active BEYOND the default view (type + Show deleted).
-                       Sort is a preference, so it isn't counted — the badge only
-                       signals "filters narrowed this" while the popover is shut. */
-                    activeFilters={(types.size > 0 ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
+                    placeholder="Search files…"
+                    inputAriaLabel="Search files"
+                    /* Filters active BEYOND the default view (type only). Sort is a
+                       preference, so it isn't counted — the badge only signals
+                       "filters narrowed this" while the popover is shut. Show
+                       deleted dropped out of this count with the tab merge; it is
+                       now a session-drawer-only control. */
+                    activeFilters={types.size > 0 ? 1 : 0}
                     filterOpen={filterOpen}
                     onToggleFilter={() => setFilterOpen((o) => !o)}
                   >
@@ -690,9 +816,12 @@ export function ProjectView(props: ProjectViewProps) {
                         onTypesChange={setTypes}
                         sortBy={fileSort}
                         onSortBy={setFileSort}
-                        showDeleted={showDeletedArtifacts}
-                        onShowDeleted={setShowDeletedArtifacts}
-                        showDeletedAvailable={tab === 'artifacts'}
+                        /* Show deleted is SESSION-DRAWER-ONLY now. The drawer (this
+                           popover's other consumer) passes true; project view opts
+                           out, because a deleted record is a tombstone with no
+                           content and there is no Artifacts tab left for it to
+                           belong to. */
+                        showDeletedAvailable={false}
                         onClose={() => setFilterOpen(false)}
                       />
                     )}
@@ -700,16 +829,16 @@ export function ProjectView(props: ProjectViewProps) {
                   {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
                       for floating overlay affordances — this sits in a toolbar row,
                       so it takes the app's standard button radius. */}
-                  {tab === 'artifacts' && (
-                    <Button
-                      variant="secondary"
-                      className="shrink-0"
-                      onClick={addExternal}
-                      title="Add an external file to this project"
-                    >
-                      + Add file
-                    </Button>
-                  )}
+                  {/* No tab check here: the whole block is already gated on
+                      tab === 'files' above. */}
+                  <Button
+                    variant="secondary"
+                    className="shrink-0"
+                    onClick={importFiles}
+                    title="Copy or move a file into this project folder"
+                  >
+                    + Add file
+                  </Button>
                 </div>
               )}
             </div>
@@ -720,11 +849,8 @@ export function ProjectView(props: ProjectViewProps) {
               model this must take its NATURAL height and let the page scroll,
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
-            {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
-            )}
-            {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
+            {activeProject && tab === 'files' && (
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} onCurrentDirChange={setCurrentRelDir} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
@@ -859,6 +985,53 @@ export function ProjectView(props: ProjectViewProps) {
           onClose={() => setTurnOnSyncFor(null)}
           onDone={(p) => void handleAdded(p)}
         />
+      )}
+
+      {/* Task 6: "+ Add file" Move/Copy confirm — destLabel names the folder
+          being browsed (or the project name at the root) so the target is
+          never a guess; collisions were computed against the current Project
+          Files listing before this opened (see computeImportCollisions). */}
+      {pendingImport && activeProject && (
+        <ImportFileDialog
+          sources={pendingImport.sources}
+          destDir={importDestDir()}
+          destLabel={currentRelDir ? `${currentRelDir}/` : activeProject.name}
+          collisions={pendingImport.collisions}
+          onConfirm={(args) => void runImport(args)}
+          onCancel={() => setPendingImport(null)}
+        />
+      )}
+      {/* Import outcomes — real code + path, never a guessed cause (see
+          describeImportFailure). A non-transient modal, not a Toast: these
+          lines name a protected path that was NOT imported, report a partial
+          move (copy succeeded, original couldn't be removed), or say a file was
+          already where it was headed — the user needs to read and may need to
+          act on this, and Toast has no manual dismiss (only its own timer).
+          The title comes from importResultTitle because a partial move and an
+          "already there" no-op are not failures. Same Scrim + OverlayPanel +
+          Button pattern as the project-deletion modal above. */}
+      {importResult && (
+        <>
+          <Scrim layer={2} onClick={() => setImportResult(null)} />
+          <OverlayPanel
+            layer={2}
+            role="alertdialog"
+            aria-modal={true}
+            aria-label={importResult.title}
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-6 max-w-md w-[calc(100%-2rem)]"
+          >
+            <h3 className="text-lg font-semibold mb-2 text-fg">{importResult.title}</h3>
+            {/* One line per file the user needs to know about. */}
+            <div className="flex flex-col gap-1 mb-4 text-sm text-fg">
+              {importResult.lines.map((line, i) => <span key={i}>{line}</span>)}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" size="lg" onClick={() => setImportResult(null)}>
+                Dismiss
+              </Button>
+            </div>
+          </OverlayPanel>
+        </>
       )}
     </div>
   );

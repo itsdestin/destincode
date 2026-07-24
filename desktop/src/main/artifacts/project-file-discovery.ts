@@ -24,6 +24,13 @@ const NOISE_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
 function isNoiseFile(name: string): boolean {
   const lower = name.toLowerCase();
   if (NOISE_FILES.has(lower)) return true;
+  // Abandoned import temp file. artifacts/import-file.ts copies to
+  // `.youcoded-import-<pid>-<ts>-<basename>.part` in the destination folder and
+  // renames over the target, so a killed or crashed import can strand one. The
+  // dot-prefix skip above only covers DIRECTORIES, so without this the debris
+  // renders as a real card in Project Files and counts toward the badge forever,
+  // with nothing to explain it.
+  if (lower.startsWith('.youcoded-import-') && lower.endsWith('.part')) return true;
   return lower.endsWith('.map') || lower.endsWith('.min.js') || lower.endsWith('.min.css');
 }
 

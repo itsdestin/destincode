@@ -27,8 +27,9 @@ import { cwdToProjectSlug } from '../transcript-watcher';
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 // ARTIFACTS: files Claude directly created/edited (sidecar tracked, internal or
-// included-external), non-deleted AND still on disk (orphans excluded). This is
-// what the Artifacts tab shows with "Show deleted" OFF. NO on-disk discovery is
+// external — see visible-artifacts.ts for the rules), non-deleted AND still on
+// disk (orphans excluded). Feeds the ProjectSwitcher row hint; the Artifacts tab
+// this was written for merged into Files on 2026-07-23. NO on-disk discovery is
 // mixed in here.
 export async function countArtifacts(projectRoot: string): Promise<number> {
   const sidecar = await readSidecar(projectRoot);

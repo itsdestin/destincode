@@ -437,6 +437,10 @@ describe('artifact IPC parity', () => {
     SAVE: 'artifacts:save',
     // Fix: data-flow gap — new channel that wires renderer Tracker → central index
     APPEND_VERSION: 'artifacts:append-version',
+    // Copy/move a picked file into the project (import-file.ts). Was missing
+    // from this map, which made the constForm check below vacuous for this
+    // channel (see the CHANNEL_TO_CONST-coverage test just below this map).
+    IMPORT_FILE: 'artifacts:import-file',
     INCLUDE_EXTERNAL: 'artifacts:include-external',
     EXCLUDE: 'artifacts:exclude',
     CHANGED: 'artifacts:changed',
@@ -483,7 +487,15 @@ describe('artifact IPC parity', () => {
         // ipc-handlers.ts may use the channel as a literal string OR as a constant reference
         // (e.g., ARTIFACT_IPC.LIST_SESSION), so accept either form
         const literalForm = handlers.includes(channel);
-        const constForm = handlers.includes(CHANNEL_TO_CONST[channel]);
+        const constName = CHANNEL_TO_CONST[channel];
+        // Fix: a channel missing from CHANNEL_TO_CONST made constName
+        // `undefined`, and handlers.includes(undefined) coerces its argument
+        // to the string "undefined" — which ipc-handlers.ts contains many
+        // times in ordinary type annotations, so this assertion passed
+        // regardless of whether the handler was registered. Fail loudly
+        // instead of letting a missing map entry silently pass.
+        expect(constName, `${channel} has no CHANNEL_TO_CONST entry — add one, do not rely on the constant-form check`).toBeDefined();
+        const constForm = handlers.includes(constName as string);
         expect(literalForm || constForm, `${channel} missing from ipc-handlers.ts`).toBe(true);
       });
     }

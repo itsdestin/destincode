@@ -1222,6 +1222,18 @@ export function installShim(): void {
       // transcript events so the central index is populated automatically on Android.
       appendVersion: (projectRoot: string, sessionId: string, args: any) =>
         invoke('artifacts:append-version', { projectRoot, sessionId, args }),
+      // Copy or move a picked file INTO the project folder — see
+      // artifacts/import-file.ts for the traversal/collision/protected-path policy.
+      importFile: (projectRoot: string, sourcePath: string, destDir: string,
+                   opts: {
+                     mode: 'move' | 'copy';
+                     onCollision: 'replace' | 'keep-both' | 'skip';
+                     // The colliding basenames the dialog NAMED to the user —
+                     // 'replace' is limited to these, so an undisclosed
+                     // collision can never be overwritten.
+                     disclosedCollisions?: string[];
+                   }) =>
+        invoke('artifacts:import-file', { projectRoot, sourcePath, destDir, opts }),
       includeExternal: (projectRoot: string, absolutePath: string) =>
         invoke('artifacts:include-external', { projectRoot, absolutePath }),
       exclude: (projectRoot: string, canonicalPath: string) =>

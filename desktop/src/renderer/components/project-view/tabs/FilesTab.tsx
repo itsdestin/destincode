@@ -1,20 +1,20 @@
-// FilesTab — the folder-tree file browser for one project, used for BOTH halves of
-// the core Artifacts/All-files split (see ipc-channels.ts):
-//   mode='artifacts' → ARTIFACTS: files Claude directly created/edited (LIST_PROJECT,
-//                      sidecar-tracked). Honors "Show deleted"/orphan state.
-//   mode='allfiles'  → ALL FILES: every real file in the project folder
-//                      (LIST_ALL_FILES, full-browser discovery). No "Show deleted"
-//                      chip (nothing tracked to un-hide); the seg-row search +
-//                      type filter + sort apply to BOTH modes. Badge counts stay
-//                      folder TOTALS — the filters are explicit, visible controls,
-//                      so a filtered grid never redefines what "N files" means.
+// FilesTab — the folder-tree file browser for one project. Renders the
+// Project Files section: every real file in the project folder (LIST_ALL_FILES,
+// full-browser discovery). The disk is the truth here, so a file Claude edited
+// in-folder gets NO special treatment.
+// Merged from the old Artifacts/All-files tab split on 2026-07-23; the search +
+// type filter + sort apply to the one grid. Badge counts stay folder TOTALS.
+// An External Artifacts section (sidecar records outside the project folder)
+// existed briefly (Task 5) and was removed 2026-07-23: against the owner's real
+// sidecar it was ~95% incidental noise (scratchpad temps, other-device paths,
+// .claude/ internals). Externals still surface per-session in the Session
+// Drawer (artifacts.listSession) — that stays their home.
 // Cards use .layer-surface; the deleted badge is a plain word "deleted" (the ●◐○ / ✕
 // glyph language is disliked — plain words instead).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
 import { useProjectWatch } from '../../../hooks/useProjectWatch';
 import { dedupeContentHits, groupContentHits, capGroups, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
-import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
 import type { ActiveArtifactHandle, ArtifactContentInfo } from '../../artifact-views/ActiveArtifactView';
@@ -130,45 +130,51 @@ function MiniTypeIcon({ path }: { path: string }) {
   return <DocIcon size={12} />;
 }
 
-// Shared browser for BOTH project-view file sections (the split is the core
-// principle): mode='artifacts' lists Claude-authored tracked files (LIST_PROJECT);
-// mode='allfiles' lists the project folder's on-disk documents (LIST_ALL_FILES).
-// Everything else — folder-tree navigation, cards, the detail overlay — is shared.
+// The folder-tree file browser for one project — search, type filter, sort,
+// folder navigation, and the detail overlay all live here (mode collapsed
+// 2026-07-23; see the header comment).
 export function FilesTab({
   project,
   search,
   types,
   sortBy,
   refreshKey,
-  mode,
   onMutated,
+  onCurrentDirChange,
   onClearSearch,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
   // Multi-select type filter; EMPTY set = all types (filter popover).
   types: ReadonlySet<FileTypeGroup>;
-  sortBy: FileSortKey;               // filter popover: sort (files only)
+  sortBy: FileSortKey;               // filter popover: sort
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
-  mode: 'artifacts' | 'allfiles';
-  // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
-  // the hero/segment counts without forcing this tab to reload (which would
-  // reset the breadcrumb + selection).
+  // VESTIGIAL as of 2026-07-23: this fired after the only in-tab sidecar mutation
+  // (Exclude, on an external-artifact row) so ProjectView could refetch counts
+  // without reloading the tab. Exclude was removed with the External Artifacts
+  // section, so nothing invokes this now. Kept (not pruned) because untangling
+  // ProjectView's countsKey from its hero-count effect is real risk for zero
+  // gain — it just no longer has a trigger. Re-wire it if an in-tab mutation
+  // ever returns.
   onMutated?: () => void;
+  // Task 6: FilesTab owns currentDir (the breadcrumb tree), but "+ Add file"'s
+  // destination lives in ProjectView (its dialog + IPC call). Reporting the
+  // browsed folder up is cheaper than lifting the whole tree-navigation state,
+  // and keeps this component the sole owner of currentDir's setState calls.
+  onCurrentDirChange?: (relDir: string) => void;
   // Clears the shared search box (owned by ProjectView) from the no-results
   // empty state — without it that state would be a dead end.
   onClearSearch?: () => void;
 }) {
-  // Root breadcrumb label + empty-state wording follow the mode.
-  const rootLabel = mode === 'allfiles' ? 'All files' : 'Artifacts';
-  const noun = mode === 'allfiles' ? 'files' : 'artifacts';
+  // Root breadcrumb label + empty-state wording — constant now that this tab
+  // renders only the one on-disk section.
+  const rootLabel = 'Project Files';
+  const noun = 'files';
   const { state, dispatch } = useArtifact();
   const pvActiveId = state.activeArtifactBySession[PV_SESSION] ?? null;
-  // Read-only here: the toggle chips that SET these live on the ProjectView seg-row.
-  const { showDeletedArtifacts } = useTheme();
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-  // True until the first load for the current project/mode resolves — gates the
-  // empty-state message so "No artifacts yet" can't flash before data arrives.
+  // True until the first load for the current project resolves — gates the
+  // empty-state message so it can't flash before data arrives.
   const [loading, setLoading] = useState(true);
   // True when on-disk discovery hit a cap (folder too large) — surfaced as a note
   // so a partial list never silently reads as complete.
@@ -182,17 +188,26 @@ export function FilesTab({
   // Current folder being browsed ('' = project root). Files are organized into a
   // virtual tree from their relative paths so a 1000-file project is navigable.
   const [currentDir, setCurrentDir] = useState('');
+  // Report the browsed folder up to ProjectView, which needs it as the "+ Add
+  // file" import destination — see the prop comment above. Deliberately keyed
+  // on currentDir ONLY, not on onCurrentDirChange: ProjectView passes its raw
+  // setCurrentRelDir state setter, which React guarantees is referentially
+  // stable, so adding it to the deps wouldn't change how often this fires —
+  // it's omitted to keep the array honest about the one thing that actually
+  // varies (the browsed folder), not because the callback is unstable.
+  useEffect(() => {
+    onCurrentDirChange?.(currentDir);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDir]);
 
   // Load artifacts whenever the active project changes, or after an add-external
   // (refreshKey bump from ProjectView).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    // ARTIFACTS → tracked sidecar files; ALL FILES → on-disk discovery. Normalize
-    // both response shapes (artifacts vs files) into one list.
-    const load = mode === 'allfiles'
-      ? (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined)
-      : (window.claude as any).artifacts.listProject(project.id);
+    // Always the on-disk discovery scan now — the old ARTIFACTS branch
+    // (listProject, tracked sidecar files) was dropped with the mode prop.
+    const load = (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined);
     load.then((res: any) => {
       if (cancelled) return;
       setLoading(false);
@@ -200,52 +215,46 @@ export function FilesTab({
       if (res && res.ok) { setArtifacts(res.files ?? res.artifacts ?? []); setTruncated(!!res.truncated); }
       else { setArtifacts([]); setTruncated(false); }
     });
-    // Clear the active artifact when the project switches so the detail pane
-    // doesn't carry stale content from the previous project.
-    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
-    setCurrentDir(''); // back to the project root on switch
     return () => { cancelled = true; };
-  }, [project.id, refreshKey, mode, forceScan]);
+  }, [project.id, refreshKey, forceScan]);
 
-  // Existence check: fold "file not on disk" into the deleted UI state alongside
-  // sidecar-tracked delete versions. Re-runs whenever the artifact list changes.
-  // WHY exclude discovered files: they were JUST found on disk by the scan, so
-  // they're inherently present — and their ids aren't sidecar ids, so
-  // checkExistence would (wrongly) report every one as "missing" → deleted.
-  const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
+  // Back to the project root — on a PROJECT SWITCH only. Deliberately its own
+  // effect: the loader above also runs on refreshKey (every "+ Add file") and on
+  // forceScan, and resetting here threw the user back to the root after every
+  // import. Worse, the reset propagated up through onCurrentDirChange, so
+  // ProjectView's currentRelDir went stale too and a SECOND consecutive import
+  // landed at the root instead of the folder being browsed — defeating the
+  // whole point of that plumbing. Clearing the active artifact belongs here for
+  // the same reason: it exists so the detail pane can't carry the PREVIOUS
+  // project's content, which an import never causes.
   useEffect(() => {
-    const trackedIds = artifacts.filter((a) => !a.discovered).map((a) => a.id);
-    if (trackedIds.length === 0) { setOrphanIds(new Set()); return; }
-    let cancelled = false;
-    (window.claude as any).artifacts.checkExistence(project.path, trackedIds)
-      .then((res: any) => {
-        if (cancelled || !res?.ok) return;
-        setOrphanIds(new Set(res.missingIds ?? []));
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [project.path, artifacts]);
+    setCurrentDir('');
+    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
-  // Filter the artifact grid (deleted-state, search, type filter).
+  // Filter the file grid (search + multi-select type). 2026-07-23: the
+  // deleted-state / "Show deleted" branch was dropped along with the Artifacts
+  // tab — listAllFiles is a live disk scan, so a "deleted" record (a tombstone
+  // with no content, per VersionEvent) can never appear in its results anyway.
+  // "Hide code & configs" also went away the same day: code is just one of the
+  // types, so an empty `types` set means all types and selecting the other three
+  // expresses the old hide-code view without a second overlapping control.
   // Search matches the FILE NAME only — a query matching a folder name should
-  // not surface every file inside that folder. Hide-code is suspended while the
-  // "Code & configs" TYPE filter is selected (the two together would always
-  // show nothing — an explicit type pick wins over the default hide).
+  // not surface every file inside that folder.
+  // Shared predicate — search + type filter apply to the one Project Files grid.
+  const matchesFilters = (a: ArtifactRecord) => {
+    const filename = a.path.split('/').pop() ?? a.path;
+    if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
+    if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
+    return true;
+  };
   const filtered = useMemo(
-    () => artifacts.filter((a) => {
-      const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
-      if (isDeleted && !showDeletedArtifacts) return false;
-      const filename = a.path.split('/').pop() ?? a.path;
-      if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
-      if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
-      return true;
-    }),
-    [artifacts, showDeletedArtifacts, orphanIds, search, types],
+    () => artifacts.filter(matchesFilters),
+    [artifacts, search, types],
   );
   const refreshArtifacts = () => {
-    const load = mode === 'allfiles'
-      ? (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined)
-      : (window.claude as any).artifacts.listProject(project.id);
+    const load = (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined);
     load.then((r: any) => {
       if (r && r.ok) { setArtifacts(r.files ?? r.artifacts ?? []); setTruncated(!!r.truncated); setGated(!!r.gated); }
     });
@@ -293,9 +302,9 @@ export function FilesTab({
   });
   // Search-result jump: which file+line to reveal once the overlay opens.
   const [pendingReveal, setPendingReveal] = useState<{ id: string; line: number } | null>(null);
-  // A content hit on a file outside the loaded list (untracked in artifacts
-  // mode, cap-truncated in allfiles) still opens via the id-as-path GET
-  // contract — this synthetic record lets the overlay render it.
+  // A content hit on a file outside the loaded list (cap-truncated discovery)
+  // still opens via the id-as-path GET contract — this synthetic record lets
+  // the overlay render it.
   const [syntheticHit, setSyntheticHit] = useState<ArtifactRecord | null>(null);
   useEffect(() => {
     const q = search.trim();
@@ -341,8 +350,7 @@ export function FilesTab({
   // Searching OR an active type filter flattens the tree to matching FILES only
   // — no folder cards. When you're looking for something, folders are noise;
   // each flat card shows its parent folder for context instead. Plain browsing
-  // (no search, no type filter) keeps the navigable folder tree; the visibility
-  // toggles (show-deleted) don't flatten — they only prune it.
+  // (no search, no type filter) keeps the navigable folder tree.
   const searching = !!search.trim();
   const flat = searching || types.size > 0;
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
@@ -363,14 +371,15 @@ export function FilesTab({
   // then hit it live and asked for the Resume-browser treatment instead
   // (2026-07-23): a real empty state with a way out, since two "(0)" headers and
   // no content read as a dead end.
-  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0 && !contentSearching;
+  const noSearchResults = searching && flatResults.length === 0 && contentRows.length === 0
+    && !contentSearching;
   const segments = currentDir ? currentDir.split('/') : [];
 
   // One file card — reused by both the flat search results and the folder view.
   const renderFileCard = (a: ArtifactRecord) => {
     const filename = a.path.split('/').pop() ?? a.path;
     const isActive = pvActiveId === a.id;
-    const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
+    const isDeleted = a.status === 'deleted';
     return (
       // Fixed h-44 (PITFALL: without a fixed card height the thumbnail flex-shrinks
       // to zero in a short grid row, collapsing cards into blank pills). The
@@ -463,8 +472,7 @@ export function FilesTab({
           <p className="text-sm text-fg mb-1.5">This folder is very large.</p>
           <p className="text-[13px] text-fg-muted mb-3">
             It covers your whole {rootLooksLikeDrive(project.path) ? 'drive' : 'home folder'}, so
-            browsing shows only a partial list and can be slow. Conversations and
-            Artifacts work normally either way.
+            browsing shows only a partial list and can be slow. Conversations are unaffected.
           </p>
           {/* Was a pill (rounded-full). Spec decision 65 reserves pills for
               floating overlay affordances — this is an inline action inside the
@@ -482,16 +490,13 @@ export function FilesTab({
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
-          {/* When files EXIST but the filters (type / deleted)
-              hid them all, say so — the bare "no artifacts yet" empty state
-              would lie about the project. */}
+          {/* When files EXIST but the type filter hid them all, say so — the
+              bare "no files" empty state would lie about the project. */}
           {artifacts.length > 0
             ? currentDir
               ? 'This folder is empty under the current filters.'
               : 'Nothing matches the current filters.'
-            : mode === 'allfiles'
-              ? 'No files found in this project folder.'
-              : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
+            : 'No files found in this project folder.'}
         </p>
       )}
 
@@ -675,7 +680,7 @@ export function FilesTab({
         <ArtifactDetail
           artifact={activeArtifact}
           project={project}
-          onRefreshArtifacts={() => { refreshArtifacts(); onMutated?.(); }}
+          onRefreshArtifacts={() => { onMutated?.(); }}
           initialLine={pendingReveal?.id === activeArtifact.id ? pendingReveal.line : undefined}
           onInitialLineConsumed={() => setPendingReveal(null)}
         />
@@ -749,17 +754,6 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, initialLine, artifact.id]);
 
-  const handleExclude = async () => {
-    // Use absolutePath for external artifacts, relative path (internal) gets
-    // canonicalized by the EXCLUDE handler's canonicalize() call.
-    const canonicalPath = artifact.kind === 'internal'
-      ? artifact.path
-      : artifact.absolutePath!;
-    await (window.claude as any).artifacts.exclude(project.path, canonicalPath);
-    handleClose();
-    onRefreshArtifacts();
-  };
-
   const isElectron = getPlatform() === 'electron';
   const handleReveal = () => (window.claude as any).shell?.showItemInFolder?.(absPath);
   // Open the file with the OS default app (HTML→browser, .docx→Word, etc.) —
@@ -773,7 +767,7 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, on
     }).catch(() => { /* clipboard unavailable — ignore */ });
   };
 
-  // Header tools: Edit ↔ Save/Cancel (only for editable formats) + Reveal + Copy + Exclude.
+  // Header tools: Edit ↔ Save/Cancel (only for editable formats) + Reveal + Copy.
   const tools = (
     <>
       {editState.isEditable && (editState.editing ? (
@@ -811,21 +805,6 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, on
         <LinkIcon size={13} />
         {copied ? 'Copied' : 'Copy path'}
       </button>
-      {/* Exclude = hide from the Artifacts tab: un-pins the file AND writes a
-          sticky manualExcludes entry so Claude re-editing it doesn't resurface
-          it. Recovery: "+ Add file" re-pins it (includes win over excludes).
-          Discovered files have no sidecar entry and aren't in Artifacts anyway,
-          so the button is hidden for them. */}
-      {!artifact.discovered && (
-        <button
-          type="button"
-          className={TOOL_BTN_NEUTRAL}
-          onClick={handleExclude}
-          title="Hide this file from Artifacts (bring it back with + Add file)"
-        >
-          Exclude
-        </button>
-      )}
     </>
   );
 

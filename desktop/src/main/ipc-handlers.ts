@@ -96,6 +96,7 @@ import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
 import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
+import { importFile } from './artifacts/import-file';
 import { GIT_IPC } from './git/ipc-channels';
 import {
   gitFileStatus, gitFileReview, gitCommitFileDiff,
@@ -3167,12 +3168,27 @@ export function registerIpcHandlers(
   // have written one without duplicating all of this. See that module for the
   // full doc comments on what each count means.
 
-  // LIST_PROJECT → ARTIFACTS ONLY. Returns the tracked sidecar artifacts (internal
-  // always; external only if manually included). Deleted ones are INCLUDED so the
-  // Artifacts tab's "Show deleted" toggle works; the renderer filters them. NO
-  // on-disk discovery is merged in — that is LIST_ALL_FILES's job (the split is the
-  // core principle). visibleCount (withCount) is the authoritative non-deleted,
-  // on-disk artifact count shared with the hero + switcher.
+  // LIST_PROJECT → TRACKED SIDECAR ARTIFACTS ONLY. No on-disk discovery is merged
+  // in — that is LIST_ALL_FILES's job.
+  //
+  // What comes back is whatever trackedArtifacts() admits (visible-artifacts.ts
+  // owns the rules): internal records with at least one non-read version, plus
+  // anything legacy-pinned in manualIncludes, minus anything in manualExcludes.
+  // EXTERNAL records need a pin — Project View briefly showed unpinned externals
+  // in an "External Artifacts" section (2026-07-23) but it was removed the same
+  // day (~95% incidental noise against real sidecars), and the pin requirement
+  // reverted with it. Consumers now: FilepathToken (resolve a pill to an
+  // artifact) and the withCount path (the hero/switcher count). No Project View
+  // section reads this any more.
+  //
+  // Deleted records (tombstones) ARE returned — not because anything here wants
+  // them, but because trackedArtifacts() does not filter on `status`. The
+  // session drawer's "Show deleted" toggle reads a DIFFERENT handler
+  // (LIST_SESSION), which returns tombstones on its own — do not assume the
+  // drawer depends on this one. Callers that don't want tombstones must filter.
+  //
+  // visibleCount (withCount) is a separate, independently-computed count from
+  // countArtifacts — non-deleted and on-disk — shared with the hero + switcher.
   ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string, opts?: { withCount?: boolean }) => {
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
@@ -3196,10 +3212,16 @@ export function registerIpcHandlers(
     };
   });
 
-  // LIST_ALL_FILES → ALL FILES. The project folder's real documents on disk (the
-  // full-browser view). Pure discovery — bounded, deterministic (stops at nested
-  // git repos), cached. Independent of the sidecar / what Claude touched, so a
-  // Claude-authored doc legitimately appears in BOTH Artifacts and All files.
+  // LIST_ALL_FILES → the Project Files section. The project folder as it exists on
+  // disk: bounded, deterministic discovery (stops at nested git repos), cached.
+  //
+  // NOT pure discovery, despite what this comment said until 2026-07-23 — the
+  // callee projectAllFiles() UNIONS in any tracked INTERNAL artifact that exists on
+  // disk but discovery did not reach (e.g. one inside a skipped nested sub-repo).
+  // That union is load-bearing: it guarantees this list is a superset of the
+  // in-folder tracked files, so a code-heavy project cannot report fewer files than
+  // artifacts. Externals are NEVER unioned, which is exactly why they need their
+  // own section in the UI.
   // Gated roots (home dir / drive root) return { gated: true } with no scan
   // unless opts.force — the tab renders a "Browse anyway?" gate (see
   // isGatedRoot above for WHY).
@@ -3543,15 +3565,46 @@ export function registerIpcHandlers(
     return canonicalize(isAbs ? fwd : `${projectRoot.replace(/\\/g, '/')}/${fwd}`, null);
   };
 
-  // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
-  // files or in-project files Claude never edited). Three steps:
+  // IMPORT_FILE → copy/move a picked file into the project. All policy lives in
+  // artifacts/import-file.ts (traversal, self-import, collisions, temp+rename,
+  // verify-before-unlink). disclosedCollisions is the list of colliding
+  // basenames the renderer's dialog actually NAMED to the user — forwarded so
+  // 'replace' can only overwrite files the user was shown (see that module).
+  ipcMain.handle(ARTIFACT_IPC.IMPORT_FILE, async (
+    _e,
+    projectRoot: string,
+    sourcePath: string,
+    destDir: string,
+    opts: {
+      mode: 'move' | 'copy';
+      onCollision: 'replace' | 'keep-both' | 'skip';
+      disclosedCollisions?: string[];
+    },
+  ) => importFile({
+    projectRoot, sourcePath, destDir,
+    mode: opts.mode,
+    onCollision: opts.onCollision,
+    disclosedCollisions: opts.disclosedCollisions,
+  }));
+
+  // INCLUDE_EXTERNAL = PIN a file into the tracked set (any kind — a file
+  // outside the project folder, or an in-project file Claude never edited).
+  // Writes a manualIncludes entry, which trackedArtifacts treats as rule 1:
+  // visible regardless of whether the file has any Claude work on it.
+  //
+  // NOTHING IN THE APP CALLS THIS TODAY. It used to be "+ Add file", but on
+  // 2026-07-23 that button became a real Move/Copy import (ARTIFACT_IPC.
+  // IMPORT_FILE) and stopped writing pins — so this is no longer the recovery
+  // path for a mistaken Exclude, and Exclude currently has no in-app undo (the
+  // Exclude button says so). The handler and the manualIncludes rule stay
+  // because existing sidecars still carry pins written by the old flow, and
+  // dropping the channel would break the pinned IPC surface. Three steps:
   //   1. Ensure an artifact RECORD exists (appendVersion dedups by path+kind and
   //      creates the sidecar if missing) — a pin with no record would show
   //      nothing, which was a real bug on fresh projects.
   //   2. Add to manualIncludes (idempotent).
-  //   3. Remove from manualExcludes — re-adding is the RECOVERY path for a
-  //      mistaken Exclude (includes also win over excludes in trackedArtifacts,
-  //      so this is belt-and-suspenders).
+  //   3. Remove from manualExcludes (includes also win over excludes in
+  //      trackedArtifacts, so this is belt-and-suspenders).
   ipcMain.handle(ARTIFACT_IPC.INCLUDE_EXTERNAL, async (
     _e, projectRoot: string, absolutePath: string
   ) => {
@@ -3593,10 +3646,20 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // Exclude = HIDE a file from the Artifacts tab: un-pin it (remove from
-  // manualIncludes) AND add a sticky manualExcludes entry so Claude re-editing
-  // the file doesn't resurface it. Recovery: "+ Add file" (see above). Never
-  // touches the file on disk or the session drawer's activity log.
+  // Exclude = un-pin an external artifact (remove from manualIncludes) AND add a
+  // sticky manualExcludes entry so trackedArtifacts() keeps hiding it even if
+  // Claude re-edits the file. Never touches the file on disk or the session
+  // drawer's activity log.
+  //
+  // NO RENDERER CALLER as of 2026-07-23. The Project View button that invoked
+  // this was removed when the External Artifacts section was reverted (~95%
+  // incidental noise against real sidecars). The handler stays because legacy
+  // sidecars carry manualExcludes entries that must keep round-tripping, and
+  // because manualExcludes is still load-bearing in trackedArtifacts() rule 2.
+  // If a future feature re-introduces a caller: it is one-way (nothing writes
+  // manualIncludes any more, so there is no in-app un-exclude), and it only ever
+  // made sense for externals — an in-folder file cannot be hidden from a live
+  // disk walk without lying about the folder's contents.
   ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
     _e, projectRoot: string, canonicalPath: string
   ) => {

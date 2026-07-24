@@ -1,8 +1,12 @@
 // FileFilterPopover — the anchored dropdown behind the sliders icon in the
-// Project View search pill. Hosts ALL file filter/sort controls (type filter,
-// sort, and — Artifacts tab only — the "Show deleted" toggle) so the seg-row
-// stays a single clean pill instead of a strip of mixed dropdowns and chips
-// (design feedback 2026-07-08).
+// SearchFilterPill. Hosts ALL file filter/sort controls (type filter, sort,
+// and — SESSION DRAWER only — the "Show deleted" toggle) so the row stays a
+// single clean pill instead of a strip of mixed dropdowns and chips (design
+// feedback 2026-07-08).
+//
+// TWO consumers: Project View's Files tab and the Session Drawer. Only the
+// drawer passes showDeletedAvailable — Project View merged its Artifacts and
+// All files tabs on 2026-07-23 and dropped the toggle with it.
 //
 // Anchored popover, NOT a modal: styled with .layer-surface per the overlay
 // conventions (dropdowns/context menus skip the scrim), closed by ESC via the
@@ -74,10 +78,15 @@ export function FileFilterPopover({
   onTypesChange(next: Set<FileTypeGroup>): void;
   sortBy: FileSortKey;
   onSortBy(v: FileSortKey): void;
-  showDeleted: boolean;
-  onShowDeleted(v: boolean): void;
-  // "Show deleted" only makes sense for the tracked Artifacts tab (All files
-  // has nothing tracked to un-hide) — the parent gates it by active tab.
+  // OPTIONAL as of 2026-07-23: "Show deleted" is now a SESSION-DRAWER-only
+  // control. Project View merged its two file tabs into one and dropped the
+  // toggle (a deleted record is a tombstone — VersionEvent carries no content —
+  // and there is no Artifacts tab left for it to belong to), so it passes
+  // showDeletedAvailable={false} and supplies neither of these. The drawer
+  // passes all three. The Visibility group below already renders only when
+  // showDeletedAvailable, so the pair is unreachable when omitted.
+  showDeleted?: boolean;
+  onShowDeleted?(v: boolean): void;
   showDeletedAvailable: boolean;
   onClose(): void;
 }) {
@@ -86,10 +95,10 @@ export function FileFilterPopover({
   useEscClose(true, onClose);
 
   // Sort is a preference, not a filter, so "Clear" only resets the filters.
-  const filtersActive = types.size > 0 || (showDeletedAvailable && showDeleted);
+  const filtersActive = types.size > 0 || (showDeletedAvailable && !!showDeleted);
   const clear = () => {
     onTypesChange(new Set());
-    if (showDeletedAvailable) onShowDeleted(false);
+    if (showDeletedAvailable) onShowDeleted?.(false);
   };
 
   return (
@@ -143,7 +152,7 @@ export function FileFilterPopover({
           Only render Visibility when it still has a control to show. */}
       {showDeletedAvailable && (
         <Group label="Visibility" multi>
-          <Chip multi active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
+          <Chip multi active={!!showDeleted} onClick={() => onShowDeleted?.(!showDeleted)}>
             Show deleted
           </Chip>
         </Group>

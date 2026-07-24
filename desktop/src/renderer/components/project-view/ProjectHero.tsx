@@ -5,7 +5,9 @@
 //   PROJECT eyebrow
 //   <project name button ▾>                        [New Conversation]
 //   [folder] path · [octocat] owner/name  (both inline click targets)
-//   N artifacts · N files · N conversations · N context files · active <when>
+//   N files · N conversations · N context files · active <when>
+// (2026-07-23: the separate "N artifacts" stat was dropped when the Artifacts
+// tab merged into Files — there is no longer a tab for it to correspond to.)
 //
 // The project name is a clickable switcher trigger (opens <ProjectSwitcher>,
 // Task 2.3) and MUST NOT truncate — it wraps. The ONE accent use in this card is
@@ -16,9 +18,10 @@ import { getPlatform } from '../../platform';
 import { type SyncDot } from '../sync-dot-state';
 
 // Live, computed-in-ProjectView stats (NOT the stale stats.artifactCount).
+// 2026-07-23: the separate `artifacts` count was dropped when the Artifacts
+// tab merged into Files — see the file-merge spec.
 interface HeroStats {
-  artifacts: number;  // Claude-authored (tracked)
-  // All on-disk files (the All files section). null = gated root (home dir /
+  // All on-disk files (the Files tab). null = gated root (home dir /
   // drive root — no scan runs, so there is no number to show).
   files: number | null;
   // True when discovery hit a cap — render "N+" so a truncated sample never
@@ -346,7 +349,6 @@ export function ProjectHero({
 
         {/* Stat row — dot-separated. */}
         <div className="flex flex-wrap gap-4 mt-3 text-xs text-fg-muted">
-          <span><b className="text-fg-2 font-semibold">{stats.artifacts}</b> artifacts</span>
           <span><b className="text-fg-2 font-semibold">{formatFileCount(stats.files, stats.filesTruncated)}</b> files</span>
           <span><b className="text-fg-2 font-semibold">{stats.conversations}</b> conversations</span>
           <span><b className="text-fg-2 font-semibold">{stats.contextFiles}</b> context files</span>
