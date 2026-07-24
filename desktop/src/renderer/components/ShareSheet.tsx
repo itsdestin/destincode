@@ -114,7 +114,7 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
         {shareLink && (
           <div className="mb-4">
             <div className="flex items-center gap-2 bg-well border border-edge-dim rounded-lg px-3 py-2">
-              <span className="flex-1 text-[11px] text-fg-muted truncate select-all">{shareLink}</span>
+              <span className="flex-1 text-2xs text-fg-muted truncate select-all">{shareLink}</span>
               <Button size="sm" onClick={handleCopy} className="shrink-0">
                 {copied ? 'Copied!' : 'Copy'}
               </Button>

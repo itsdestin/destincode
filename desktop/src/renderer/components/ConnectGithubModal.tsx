@@ -229,7 +229,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
             )}
             {installNote?.kind === 'manual' && (
               <div className="space-y-1">
-                <div className="text-[11px] text-fg-muted">Run this in your terminal, then choose “Check again”:</div>
+                <div className="text-2xs text-fg-muted">Run this in your terminal, then choose “Check again”:</div>
                 {/* copy-inside-container: the Copy button docks INSIDE the code
                     block instead of floating beside it as a second surface.
                     hover:bg-edge overrides ghost's hover:bg-inset, which would be
@@ -298,7 +298,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
                   // Remote / touch — no shell access; render a copyable link the
                   // user opens themselves. <a target=_blank> works in a browser.
                   <div className="space-y-1">
-                    <div className="text-[11px] text-fg-muted">Then open this address in your browser:</div>
+                    <div className="text-2xs text-fg-muted">Then open this address in your browser:</div>
                     <div className="flex items-center gap-2">
                       <a
                         href={code.verificationUri}
@@ -320,12 +320,12 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
                   </div>
                 )}
 
-                <p className="text-[11px] text-fg-muted">Waiting for you to approve in your browser…</p>
+                <p className="text-2xs text-fg-muted">Waiting for you to approve in your browser…</p>
 
                 {/* Plain-language scope disclosure (Phase 3, 2026-07-22): the
                     `repo` scope is broad — same as GitHub's own CLI — and the
                     user deserves to know that BEFORE approving, not in a doc. */}
-                <p className="text-[11px] text-fg-faint leading-relaxed">
+                <p className="text-2xs text-fg-faint leading-relaxed">
                   Approving gives YouCoded the same access GitHub's own command-line
                   tool uses: it can read and write the repositories your account can.
                   YouCoded only uses it for your private sync repos, publishing, and

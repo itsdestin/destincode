@@ -58,11 +58,11 @@ export function TagPicker({ appliedIds, onToggle, registry }: {
             registry={registry} />
         ))}
         {visible.length === 0 && !canCreate && (
-          <div className="px-2 py-1 text-[10px] text-fg-muted">No tags yet — type a name to create one.</div>
+          <div className="px-2 py-1 text-3xs text-fg-muted">No tags yet — type a name to create one.</div>
         )}
       </div>
       <button onClick={() => setShowArchived((v) => !v)}
-        className="self-start text-[9px] text-fg-muted hover:text-fg-2">
+        className="self-start text-4xs text-fg-muted hover:text-fg-2">
         {showArchived ? 'Hide archived' : 'Show archived'}
       </button>
     </div>
@@ -82,9 +82,9 @@ function TagRow({ tag, applied, editing, onToggle, onEdit, registry }: {
             style={{ backgroundColor: applied ? `var(--${tag.color})` : 'transparent',
                      borderColor: `var(--${tag.color})` }} />
           <TagChip tag={tag} />
-          {tag.archived && <span className="text-[9px] text-fg-muted shrink-0">archived</span>}
+          {tag.archived && <span className="text-4xs text-fg-muted shrink-0">archived</span>}
         </button>
-        <button onClick={onEdit} className="text-fg-faint hover:text-fg-muted text-[10px] shrink-0" title="Edit tag" aria-label="Edit tag">✎</button>
+        <button onClick={onEdit} className="text-fg-faint hover:text-fg-muted text-3xs shrink-0" title="Edit tag" aria-label="Edit tag">✎</button>
       </div>
       {editing && (
         <div className="ml-5 mr-1 mb-1 flex flex-col gap-1.5 p-2 rounded-sm bg-inset border border-edge-dim">
@@ -103,9 +103,9 @@ function TagRow({ tag, applied, editing, onToggle, onEdit, registry }: {
           </div>
           <div className="flex gap-3">
             <button onClick={() => registry.update(tag.id, { archived: !tag.archived })}
-              className="text-[10px] text-fg-muted hover:text-fg">{tag.archived ? 'Unarchive' : 'Archive'}</button>
+              className="text-3xs text-fg-muted hover:text-fg">{tag.archived ? 'Unarchive' : 'Archive'}</button>
             <button onClick={() => registry.remove(tag.id)}
-              className="text-[10px] text-[#DD4444] hover:brightness-125">Delete</button>
+              className="text-3xs text-[#DD4444] hover:brightness-125">Delete</button>
           </div>
         </div>
       )}

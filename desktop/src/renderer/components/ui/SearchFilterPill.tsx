@@ -77,7 +77,7 @@ export const SearchFilterPill = React.forwardRef<HTMLDivElement, SearchFilterPil
             aria-label={inputAriaLabel}
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            className="bg-transparent outline-none text-[13px] text-fg w-full min-w-0 placeholder:text-fg-muted"
+            className="bg-transparent outline-none text-sm-tight text-fg w-full min-w-0 placeholder:text-fg-muted"
           />
           <button
             type="button"

@@ -150,7 +150,7 @@ export function GitReviewView({
         <span className="text-xs font-medium text-fg-2 truncate">Reviewing changes for “{fileName}”</span>
         <div className="flex-1" />
         {review?.branch && (
-          <span className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-mono text-fg-dim border border-edge-dim" title="Current branch">
+          <span className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-mono text-fg-dim border border-edge-dim" title="Current branch">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
               <circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" />
               <path d="M6 8.5v7M18 10.5c0 3-4 3.5-7 3.5" />
@@ -170,13 +170,13 @@ export function GitReviewView({
             headerLeft={<span className="text-xs font-semibold text-fg flex-1">Uncommitted changes</span>}
             headerRight={
               <>
-                <span className="text-[10px] font-mono text-green-400">+{uncommitted.counts.added}</span>
-                <span className="text-[10px] font-mono text-red-400">−{uncommitted.counts.removed}</span>
+                <span className="text-3xs font-mono text-green-400">+{uncommitted.counts.added}</span>
+                <span className="text-3xs font-mono text-red-400">−{uncommitted.counts.removed}</span>
               </>
             }
           >
             {uncommitted.binary ? (
-              <div className="text-[11px] text-fg-muted py-1">Binary or oversized file — no line diff.</div>
+              <div className="text-2xs text-fg-muted py-1">Binary or oversized file — no line diff.</div>
             ) : (
               // This box is the SOLE scroll surface for the diff text: it caps
               // at 45vh and scrolls, while UnifiedDiff renders full-height via
@@ -207,7 +207,7 @@ export function GitReviewView({
                 onClick={() => run(() => (uncommitted.staged
                   ? gitApi().unstage(projectRoot, relPath)
                   : gitApi().stage(projectRoot, relPath)))}
-                className="flex items-center gap-1.5 text-[11px] text-fg-2 hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 text-2xs text-fg-2 hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                   <rect x="3" y="3" width="18" height="18" rx="3" />
@@ -219,7 +219,7 @@ export function GitReviewView({
               <button
                 type="button"
                 onClick={() => onRequestDiscard(!uncommitted.inHead)}
-                className="px-2 py-1 rounded-md text-[11px] text-destructive-fg hover:bg-destructive/10 transition-colors"
+                className="px-2 py-1 rounded-md text-2xs text-destructive-fg hover:bg-destructive/10 transition-colors"
               >
                 Revert Changes…
               </button>
@@ -236,7 +236,7 @@ export function GitReviewView({
               onToggle={() => expandCommit(entry)}
               headerLeft={
                 <>
-                  <span className="font-mono text-[11px] text-fg-faint">{entry.shortSha}</span>
+                  <span className="font-mono text-2xs text-fg-faint">{entry.shortSha}</span>
                   <span className="text-xs text-fg-2 truncate flex-1">{entry.subject}</span>
                 </>
               }
@@ -247,26 +247,26 @@ export function GitReviewView({
                       count at all rather than a misleading +0/−0. */}
                   {entry.counts && (
                     <>
-                      <span className="text-[10px] font-mono text-green-400">+{entry.counts.added}</span>
-                      <span className="text-[10px] font-mono text-red-400">−{entry.counts.removed}</span>
+                      <span className="text-3xs font-mono text-green-400">+{entry.counts.added}</span>
+                      <span className="text-3xs font-mono text-red-400">−{entry.counts.removed}</span>
                     </>
                   )}
-                  <span className="text-[11px] text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>
+                  <span className="text-2xs text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>
                 </>
               }
             >
-              {body === 'loading' && <div className="text-[11px] text-fg-muted py-1">Loading…</div>}
+              {body === 'loading' && <div className="text-2xs text-fg-muted py-1">Loading…</div>}
               {/* A rename-only commit (renamedFrom set) with no content change is an
                   honest "moved" state, not the generic "no changes" line — that
                   copy stays reserved for the merge-commit case (no name-status
                   line at all, entry.renamedFrom undefined). */}
               {body === 'empty' && (
                 entry.renamedFrom
-                  ? <div className="text-[11px] text-fg-muted py-1">Moved from “{entry.renamedFrom}” — no content changes in this commit.</div>
-                  : <div className="text-[11px] text-fg-muted py-1">No direct changes to this file in this commit.</div>
+                  ? <div className="text-2xs text-fg-muted py-1">Moved from “{entry.renamedFrom}” — no content changes in this commit.</div>
+                  : <div className="text-2xs text-fg-muted py-1">No direct changes to this file in this commit.</div>
               )}
               {body && typeof body === 'object' && !Array.isArray(body) && (
-                <div className="text-[11px] text-fg-muted py-1 break-words">{body.error}</div>
+                <div className="text-2xs text-fg-muted py-1 break-words">{body.error}</div>
               )}
               {/* Same single-scroll-surface wrapper as the uncommitted card
                   above — see the WHY comment there. */}
@@ -283,7 +283,7 @@ export function GitReviewView({
           <button
             type="button"
             onClick={showMore}
-            className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2 py-1"
+            className="text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2 py-1"
           >
             Show more
           </button>
@@ -297,7 +297,7 @@ export function GitReviewView({
       {uncommitted && (
         <div className="shrink-0 border-t border-edge px-2 py-2 bg-inset">
           {(opError ?? externalError) && (
-            <div className="mb-1 px-2.5 py-1.5 text-[11px] text-fg rounded-md border border-edge bg-well break-all">
+            <div className="mb-1 px-2.5 py-1.5 text-2xs text-fg rounded-md border border-edge bg-well break-all">
               {opError ?? externalError}
             </div>
           )}
@@ -325,7 +325,7 @@ export function GitReviewView({
               disabled whenever nothing is staged, but that gave no clue WHY —
               this line only shows up in that state. */}
           {stagedCount === 0 && (
-            <div className="mt-1 text-[11px] text-fg-muted">
+            <div className="mt-1 text-2xs text-fg-muted">
               Tick “Include in commit” on a change above to choose what gets committed.
             </div>
           )}

@@ -203,7 +203,7 @@ export function ProjectHero({
     <div className="layer-surface p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
       {/* Left: eyebrow + name switcher + path/repo + stat row */}
       <div className="min-w-0">
-        <div className="text-[10px] font-medium tracking-wider text-fg-muted uppercase mb-1.5">
+        <div className="text-3xs font-medium tracking-wider text-fg-muted uppercase mb-1.5">
           Project
         </div>
 
@@ -286,7 +286,7 @@ export function ProjectHero({
                 button inline where it has always been. */}
             {sync.dot.color === 'green' && (
               <>
-                <span className="text-[13px] font-semibold text-[#44A05C]">Syncs across your devices</span>
+                <span className="text-sm-tight font-semibold text-[#44A05C]">Syncs across your devices</span>
                 {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
                 {!narrow && sync.spaceId && (
                   <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
@@ -297,7 +297,7 @@ export function ProjectHero({
             )}
             {sync.dot.color === 'red' && (
               <>
-                <span className="text-[13px] font-semibold text-[#DD4444]">Sync isn't working</span>
+                <span className="text-sm-tight font-semibold text-[#DD4444]">Sync isn't working</span>
                 {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
                 {!narrow && sync.spaceId && (
                   <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
@@ -309,15 +309,15 @@ export function ProjectHero({
             {sync.dot.color === 'gray' && sync.spaceId && sync.stopped && (
               // Stopped = permanent tombstone (detached on every device). Distinct
               // copy so it doesn't falsely promise it'll resume when sync is on.
-              <span className="text-[13px] text-fg-dim">Sync stopped — this project stays on your devices but no longer syncs between them</span>
+              <span className="text-sm-tight text-fg-dim">Sync stopped — this project stays on your devices but no longer syncs between them</span>
             )}
             {sync.dot.color === 'gray' && sync.spaceId && !sync.stopped && (
               // Managed but global Sync is off — the honesty rule.
-              <span className="text-[13px] text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
+              <span className="text-sm-tight text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
             )}
             {sync.dot.color === 'gray' && !sync.spaceId && (
               <>
-                <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
+                <span className="text-sm-tight font-semibold text-fg-2">Only on this computer</span>
                 {/* py-1 keeps this button compact inside the sync status strip;
                     everything else (accent fill, radius, hover) comes from Button. */}
                 {!narrow && (
@@ -335,7 +335,7 @@ export function ProjectHero({
             state it's about is already on screen. */}
         {confirmingStop && (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-[#DD4444]/40 px-3 py-2">
-            <span className="text-[11px] text-fg-dim max-w-[22rem]">
+            <span className="text-2xs text-fg-dim max-w-[22rem]">
               Stop syncing “{shownName}”? The folder stays on all your devices, but changes will no longer sync between them. This can’t be undone from here.
             </span>
             <Button variant="danger-outline" size="sm" onClick={() => void commitStop()}>
@@ -383,7 +383,7 @@ export function ProjectHero({
               // Already stopped (permanent) — no action to offer, just the state
               // (review #4: don't re-render a "Stop syncing" button for a
               // project that's already a tombstone).
-              <span className="text-[11px] text-fg-muted">Sync stopped</span>
+              <span className="text-2xs text-fg-muted">Sync stopped</span>
             ) : syncedFolderName ? (
               !confirmingStop && (
                 <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
@@ -391,7 +391,7 @@ export function ProjectHero({
                 </Button>
               )
             ) : (
-              <span className="text-[11px] text-fg-muted">Managed by sync</span>
+              <span className="text-2xs text-fg-muted">Managed by sync</span>
             )}
           </div>
         )}
@@ -445,7 +445,7 @@ export function ProjectHero({
                 type="button"
                 role="menuitem"
                 onClick={menu.choose(item.onClick)}
-                className={`coarse-roomy w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-inset ${
+                className={`coarse-roomy w-full text-left px-3 py-2 text-sm-tight transition-colors hover:bg-inset ${
                   item.danger ? 'text-[#DD4444]' : 'text-fg-2 hover:text-fg'
                 }`}
               >

@@ -28,7 +28,7 @@ export function GitReviewCard({
         onClick={onToggle}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-inset transition-colors"
       >
-        <span className={`text-fg-muted text-[10px] transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        <span className={`text-fg-muted text-3xs transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
         {headerLeft}
         {headerRight}
       </button>

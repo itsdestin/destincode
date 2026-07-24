@@ -31,7 +31,7 @@ export default function SettingsRow({ icon, title, subtitle, subtitleClassName, 
       </div>
       <div className="flex-1 min-w-0">
         <span className="text-xs text-fg font-medium">{title}</span>
-        {subtitle && <p className={`text-[10px] truncate ${subtitleClassName ?? 'text-fg-muted'}`}>{subtitle}</p>}
+        {subtitle && <p className={`text-3xs truncate ${subtitleClassName ?? 'text-fg-muted'}`}>{subtitle}</p>}
       </div>
       {rightAccessory}
       <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

@@ -129,16 +129,16 @@ export function ProjectSwitcher({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent outline-none text-[15px] text-fg placeholder:text-fg-muted"
+            className="flex-1 bg-transparent outline-none text-base text-fg placeholder:text-fg-muted"
           />
-          <span className="text-[10px] text-fg-muted border border-edge-dim rounded px-1.5 py-0.5">
+          <span className="text-3xs text-fg-muted border border-edge-dim rounded px-1.5 py-0.5">
             esc
           </span>
         </div>
 
         {/* Recent micro-label */}
         <div className="px-2 pt-2">
-          <span className="px-2 text-[10px] tracking-wider text-fg-muted uppercase">
+          <span className="px-2 text-3xs tracking-wider text-fg-muted uppercase">
             Recent
           </span>
         </div>
@@ -146,7 +146,7 @@ export function ProjectSwitcher({
         {/* Project rows */}
         <div className="p-2 max-h-[50vh] overflow-y-auto flex flex-col gap-0.5">
           {filtered.length === 0 && (
-            <div className="px-3 py-4 text-[13px] text-fg-muted">
+            <div className="px-3 py-4 text-sm-tight text-fg-muted">
               No projects match “{query.trim()}”.
             </div>
           )}
@@ -177,7 +177,7 @@ export function ProjectSwitcher({
                   onClick={() => onSelect(p)}
                 >
                   {/* Avatar: first letter of the name in a rounded square. */}
-                  <span className="shrink-0 w-7 h-7 rounded-md bg-inset border border-edge-dim flex items-center justify-center text-[12px] font-semibold text-fg-2">
+                  <span className="shrink-0 w-7 h-7 rounded-md bg-inset border border-edge-dim flex items-center justify-center text-xs font-semibold text-fg-2">
                     {avatar}
                   </span>
                   {/* Name + path. */}
@@ -187,7 +187,7 @@ export function ProjectSwitcher({
                         {shown}
                       </span>
                     </span>
-                    <span className="block font-mono text-[11px] text-fg-muted truncate" title={p.path}>
+                    <span className="block font-mono text-2xs text-fg-muted truncate" title={p.path}>
                       {p.path}
                     </span>
                   </span>
@@ -206,7 +206,7 @@ export function ProjectSwitcher({
                       // squeezed the name+path column to ~140px in a 359px
                       // palette, truncating both to a few characters. The name
                       // is what identifies the project; the counts decorate.
-                      <span className="hidden sm:inline text-[11px] text-fg-muted shrink-0 whitespace-nowrap">
+                      <span className="hidden sm:inline text-2xs text-fg-muted shrink-0 whitespace-nowrap">
                         {filesLabel} file{files === 1 ? '' : 's'}
                         {typeof p.conversationCount === 'number' && (
                           <> · {p.conversationCount} chat{p.conversationCount === 1 ? '' : 's'}</>
@@ -261,7 +261,7 @@ export function ProjectSwitcher({
         {/* Footer: Add a project (opens the OS folder picker via the parent). */}
         <button
           type="button"
-          className="flex items-center gap-2 px-4 py-3 border-t border-edge-dim text-[13px] text-fg-2 hover:bg-inset hover:text-fg transition-colors rounded-b-[inherit]"
+          className="flex items-center gap-2 px-4 py-3 border-t border-edge-dim text-sm-tight text-fg-2 hover:bg-inset hover:text-fg transition-colors rounded-b-[inherit]"
           onClick={handleAdd}
         >
           <PlusIcon size={15} />

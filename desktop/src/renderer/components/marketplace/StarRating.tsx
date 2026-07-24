@@ -40,9 +40,9 @@ export const STAR_GOLD_CLASS = 'text-[#f0ad4e]';
 
 const SIZE_CONFIG = {
   sm: {
-    starText: 'text-[10px]',
-    countText: 'text-[9px]',
-    containerClass: 'text-[10px]',
+    starText: 'text-3xs',
+    countText: 'text-4xs',
+    containerClass: 'text-3xs',
   },
   lg: {
     starText: 'text-sm',

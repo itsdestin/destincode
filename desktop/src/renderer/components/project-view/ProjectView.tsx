@@ -759,7 +759,7 @@ export function ProjectView(props: ProjectViewProps) {
                       // the pill spans the screen exactly; inactive ones stay
                       // at their icon width. title= carries the label for the
                       // icon-only state (aria-label does the same for AT).
-                      className={`shrink-0 ${active ? 'max-sm:flex-1 max-sm:min-w-0' : ''} px-2.5 sm:px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center justify-center gap-1.5 sm:gap-2 transition-colors ${
+                      className={`shrink-0 ${active ? 'max-sm:flex-1 max-sm:min-w-0' : ''} px-2.5 sm:px-3.5 py-1.5 rounded-full text-sm-tight font-medium inline-flex items-center justify-center gap-1.5 sm:gap-2 transition-colors ${
                         active
                           ? 'bg-accent text-on-accent'
                           : 'text-fg-2 hover:text-fg hover:bg-inset'
@@ -774,7 +774,7 @@ export function ProjectView(props: ProjectViewProps) {
                           segment below 640px — that's what buys the room for
                           all three to fit without scrolling. */}
                       <span className={`truncate ${active ? '' : 'max-sm:hidden'}`}>{s.label}</span>
-                      <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
+                      <span className={`text-2xs shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
                       </span>
                     </button>

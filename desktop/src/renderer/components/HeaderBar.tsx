@@ -265,7 +265,7 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
             bg-on-accent/text-accent while open so it stays legible against the
             now-accent-colored button background. */}
         {artifactCount > 0 && (
-          <span className={`text-[10px] rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5 ${
+          <span className={`text-3xs rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5 ${
             drawerOpen ? 'bg-on-accent text-accent' : 'bg-accent text-on-accent'
           }`}>
             {artifactCount}
@@ -612,7 +612,7 @@ export default function HeaderBar({
         {/* Projects button — wide layouts only; narrow reaches it via ||| . */}
         {!narrow && <ProjectsButton />}
         {isRemoteMode() && (
-          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
+          <span className="text-3xs font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE
           </span>
         )}

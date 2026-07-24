@@ -94,7 +94,7 @@ export function ModelInfoTooltip({ model }: { model: ModelAlias }) {
             <p className="text-xs font-semibold text-fg mb-2">{info.tagline}</p>
             <div className="space-y-1">
               {info.pros.map((pro) => (
-                <div key={pro} className="flex items-start gap-1.5 text-[11px] text-fg-2 leading-snug">
+                <div key={pro} className="flex items-start gap-1.5 text-2xs text-fg-2 leading-snug">
                   <span className="text-green-500 shrink-0 font-bold mt-px">✓</span>
                   <span>{pro}</span>
                 </div>
@@ -103,7 +103,7 @@ export function ModelInfoTooltip({ model }: { model: ModelAlias }) {
             {info.cons.length > 0 && (
               <div className="space-y-1 mt-2 pt-2 border-t border-edge-dim">
                 {info.cons.map((con) => (
-                  <div key={con} className="flex items-start gap-1.5 text-[11px] text-fg-muted leading-snug">
+                  <div key={con} className="flex items-start gap-1.5 text-2xs text-fg-muted leading-snug">
                     <span className="shrink-0 mt-px">·</span>
                     <span>{con}</span>
                   </div>
@@ -352,7 +352,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             ) : (
               [...groups.entries()].map(([label, models]) => (
                 <section key={label}>
-                  <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
+                  <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
                   <div className="flex flex-col gap-1">
                     {models.map((m) => {
                       // Prefer App's live SessionInfo.model (updated on every swap)
@@ -454,7 +454,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                   );
                 })}
               </div>
-              <p className="text-[11px] text-fg-muted mt-1.5">
+              <p className="text-2xs text-fg-muted mt-1.5">
                 How hard Claude thinks before responding. Higher = slower but smarter.
               </p>
             </section>
@@ -516,7 +516,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                   <span className="text-fg-2">Input:</span> $30 / million tokens<br />
                   <span className="text-fg-2">Output:</span> $150 / million tokens
                 </div>
-                <div className="text-[11px] text-fg-muted pt-1 border-t border-[#FF9800]/25">
+                <div className="text-2xs text-fg-muted pt-1 border-t border-[#FF9800]/25">
                   Your Claude Pro/Max subscription does not cover these charges. They bill directly against API credits on your Anthropic account.
                 </div>
               </div>

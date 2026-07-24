@@ -407,13 +407,13 @@ export function FilesTab({
         />
         {isDeleted && (
           <span
-            className="absolute top-2 right-2 px-1.5 py-0.5 text-[10px] font-semibold bg-canvas/80 border border-edge rounded text-fg-2"
+            className="absolute top-2 right-2 px-1.5 py-0.5 text-3xs font-semibold bg-canvas/80 border border-edge rounded text-fg-2"
             aria-label="Deleted"
           >
             deleted
           </span>
         )}
-        <span className={`px-2.5 pt-2 pb-0.5 text-[12px] font-mono truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
+        <span className={`px-2.5 pt-2 pb-0.5 text-xs font-mono truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
           {filename}
         </span>
         {/* In flat mode (search / type filter) show the file's folder for
@@ -434,7 +434,7 @@ export function FilesTab({
     <div className="relative flex flex-col h-full overflow-hidden px-2 sm:px-4 pt-4 pb-4 gap-3 min-w-0 max-sm:h-auto max-sm:overflow-visible">
       {/* Breadcrumb — folder-browse mode only (search/type-filter flatten the tree). */}
       {!flat && (
-        <div className="flex items-center gap-1 text-[12px] shrink-0 flex-wrap min-w-0">
+        <div className="flex items-center gap-1 text-xs shrink-0 flex-wrap min-w-0">
           <button
             type="button"
             onClick={() => setCurrentDir('')}
@@ -470,7 +470,7 @@ export function FilesTab({
       {!loading && gated && (
         <div className="max-w-md mt-4 mx-auto text-center">
           <p className="text-sm text-fg mb-1.5">This folder is very large.</p>
-          <p className="text-[13px] text-fg-muted mb-3">
+          <p className="text-sm-tight text-fg-muted mb-3">
             It covers your whole {rootLooksLikeDrive(project.path) ? 'drive' : 'home folder'}, so
             browsing shows only a partial list and can be slow. Conversations are unaffected.
           </p>
@@ -555,9 +555,9 @@ export function FilesTab({
                               title={group.path}
                             >
                               <ChevronIcon className="w-3 h-3 shrink-0" expanded={expanded} />
-                              <span className="text-[12px] font-mono font-medium text-fg-2 shrink-0">{filename}</span>
-                              {dir && <span className="text-[11px] font-mono text-fg-faint truncate min-w-0">{dir}</span>}
-                              <span className="text-[11px] text-fg-muted shrink-0 ml-auto">
+                              <span className="text-xs font-mono font-medium text-fg-2 shrink-0">{filename}</span>
+                              {dir && <span className="text-2xs font-mono text-fg-faint truncate min-w-0">{dir}</span>}
+                              <span className="text-2xs text-fg-muted shrink-0 ml-auto">
                                 {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
                               </span>
                             </button>
@@ -569,7 +569,7 @@ export function FilesTab({
                                 className="w-full flex items-baseline gap-2 pl-7 pr-2.5 py-1 text-left min-w-0 hover:bg-well transition-colors"
                                 title={`${group.path}:${hit.line}`}
                               >
-                                <span className="text-[11px] font-mono text-fg-muted shrink-0 w-8 text-right">{hit.line}</span>
+                                <span className="text-2xs font-mono text-fg-muted shrink-0 w-8 text-right">{hit.line}</span>
                                 <span className="text-[11.5px] font-mono text-fg-dim truncate min-w-0 flex-1">{hit.text}</span>
                               </button>
                             ))}
@@ -631,7 +631,7 @@ export function FilesTab({
                             {previewFiles.map((s) => (
                               <div key={s.id} className="flex items-center gap-1.5 min-w-0">
                                 <span className="text-fg-muted shrink-0"><MiniTypeIcon path={s.path} /></span>
-                                <span className="text-[11px] text-fg-2 truncate">{fileNameOf(s)}</span>
+                                <span className="text-2xs text-fg-2 truncate">{fileNameOf(s)}</span>
                               </div>
                             ))}
                           </div>
@@ -648,7 +648,7 @@ export function FilesTab({
                           body above, so the whole card and the doc cards share one
                           background color. */}
                       <div className="shrink-0 border-t border-edge-dim px-2.5 py-1.5 bg-panel">
-                        <div className="text-[12px] font-mono text-fg-2 flex items-center gap-1.5">
+                        <div className="text-xs font-mono text-fg-2 flex items-center gap-1.5">
                           <span className="text-accent shrink-0"><FolderCardIcon size={13} strokeWidth={1.5} /></span>
                           <span className="truncate">{f.name}</span>
                         </div>
@@ -667,7 +667,7 @@ export function FilesTab({
       {/* Truncation note — discovery hit a cap (very large folder). Never let a
           partial list read as complete. */}
       {truncated && (
-        <p className="text-[11px] text-fg-muted shrink-0">
+        <p className="text-2xs text-fg-muted shrink-0">
           This folder is large — showing the first batch of files. Some documents deeper in the
           folder aren't listed.
         </p>

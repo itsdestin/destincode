@@ -79,7 +79,7 @@ export default function QuickChips({ onChipTap }: Props) {
           <button
             key={chip.label}
             onClick={() => onChipTap(chip)}
-            className={`shrink-0 ${chipHeight} px-2.5 rounded-md bg-panel border border-edge-dim text-[11px] text-fg-2 hover:bg-inset hover:text-fg transition-colors`}
+            className={`shrink-0 ${chipHeight} px-2.5 rounded-md bg-panel border border-edge-dim text-2xs text-fg-2 hover:bg-inset hover:text-fg transition-colors`}
           >
             {chip.label}
           </button>
@@ -294,7 +294,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                       onPointerDown={(e) => handlePointerDown(e, i)}
                       onPointerMove={handlePointerMove}
                       onPointerUp={handlePointerUp}
-                      className={`group/row flex items-center gap-2 px-2 py-1.5 rounded-md bg-well border border-edge-dim text-[11px] select-none touch-none ${
+                      className={`group/row flex items-center gap-2 px-2 py-1.5 rounded-md bg-well border border-edge-dim text-2xs select-none touch-none ${
                         isBeingDragged ? 'opacity-30' : ''
                       }`}
                       style={{
@@ -332,7 +332,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             {chips.length < 10 && !showAddForm && (
               <button
                 onClick={() => setShowAddForm(true)}
-                className="w-full py-1.5 text-[11px] text-fg-muted border border-dashed border-edge-dim rounded-md hover:border-edge hover:text-fg transition-colors"
+                className="w-full py-1.5 text-2xs text-fg-muted border border-dashed border-edge-dim rounded-md hover:border-edge hover:text-fg transition-colors"
               >
                 + Add Chip
               </button>
@@ -371,7 +371,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                     >
                       Add Custom
                     </Button>
-                    <button onClick={() => setShowAddForm(false)} className="px-2 py-1 text-[10px] text-fg-muted hover:text-fg">Cancel</button>
+                    <button onClick={() => setShowAddForm(false)} className="px-2 py-1 text-3xs text-fg-muted hover:text-fg">Cancel</button>
                   </div>
                 </div>
 
@@ -379,13 +379,13 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                 {availableSkills.length > 0 && (
                   <>
                     <div className="border-t border-edge-dim" />
-                    <p className="text-[10px] text-fg-muted font-medium">Or pick from installed skills:</p>
+                    <p className="text-3xs text-fg-muted font-medium">Or pick from installed skills:</p>
                     <div ref={skillPickerRef} className="scroll-fade max-h-32 space-y-0.5">
                       {availableSkills.map(skill => (
                         <button
                           key={skill.id}
                           onClick={() => addFromSkill(skill)}
-                          className="w-full text-left px-2 py-1 text-[11px] text-fg-muted hover:text-fg hover:bg-well rounded-sm transition-colors"
+                          className="w-full text-left px-2 py-1 text-2xs text-fg-muted hover:text-fg hover:bg-well rounded-sm transition-colors"
                         >
                           {skill.displayName || skill.id}
                         </button>
@@ -397,7 +397,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             )}
 
             {chips.length >= 10 && (
-              <p className="text-[10px] text-fg-muted text-center">Maximum 10 chips reached</p>
+              <p className="text-3xs text-fg-muted text-center">Maximum 10 chips reached</p>
             )}
           </div>
         </div>
@@ -430,7 +430,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
           }}
         >
           <DragGrip />
-          <span className="text-[11px] font-medium text-fg whitespace-nowrap max-w-[180px] truncate">
+          <span className="text-2xs font-medium text-fg whitespace-nowrap max-w-[180px] truncate">
             {dragLabel}
           </span>
         </div>

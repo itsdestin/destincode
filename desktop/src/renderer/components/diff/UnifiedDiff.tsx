@@ -160,7 +160,7 @@ export function UnifiedDiff({
           return (
             <React.Fragment key={idx}>
               {showSeparator && (
-                <div className="flex items-center text-fg-muted text-[10px] border-y border-edge-dim bg-inset/40 select-none">
+                <div className="flex items-center text-fg-muted text-3xs border-y border-edge-dim bg-inset/40 select-none">
                   <span className="px-2 py-0.5">⋯</span>
                 </div>
               )}
@@ -181,7 +181,7 @@ export function UnifiedDiff({
       {overflow && (
         <button
           onClick={() => setOpen(o => !o)}
-          className="mt-1 text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
+          className="mt-1 text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
         >
           {open ? 'Collapse' : `Expand (${total} lines)`}
         </button>

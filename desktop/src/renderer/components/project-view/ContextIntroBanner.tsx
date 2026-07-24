@@ -55,7 +55,7 @@ export function ContextIntroBanner() {
       </span>
       <div className="min-w-0">
         {/* Uppercase micro-label / eyebrow, consistent with the design language. */}
-        <div className="text-[10px] tracking-wider text-fg-muted uppercase mb-1">About context</div>
+        <div className="text-3xs tracking-wider text-fg-muted uppercase mb-1">About context</div>
         {/* One plain-language paragraph — no jargon, no glyphs. */}
         <p className="text-[12.5px] text-fg-2 leading-relaxed">
           These are the notes and rules YouCoded reads to understand how you want it to work. Some

@@ -203,7 +203,7 @@ export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOv
   // Meta strip: scope badge · load timing · size.
   const meta = (
     <>
-      <span className="inline-flex items-center text-[10px] uppercase tracking-wide font-medium text-fg-dim bg-inset border border-edge-dim rounded px-1.5 py-0.5">
+      <span className="inline-flex items-center text-3xs uppercase tracking-wide font-medium text-fg-dim bg-inset border border-edge-dim rounded px-1.5 py-0.5">
         {SCOPE_LABEL[file.scope]}
       </span>
       <span className="text-fg-faint">·</span>

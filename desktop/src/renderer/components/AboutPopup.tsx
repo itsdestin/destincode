@@ -72,7 +72,7 @@ function AnalyticsOptInToggle() {
     <div className="flex items-center justify-between mt-2">
       <div>
         <span className="text-xs text-fg font-medium">Share anonymous usage stats</span>
-        <p className="text-[10px] text-fg-muted mt-0.5">Sends a daily ping with the fields listed above.</p>
+        <p className="text-3xs text-fg-muted mt-0.5">Sends a daily ping with the fields listed above.</p>
       </div>
       <Toggle enabled={optIn} onToggle={flip} />
     </div>
@@ -107,7 +107,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
         <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
           <div>
             <h3 id="about-popup-title" className="text-sm font-semibold text-fg">About</h3>
-            <p className="text-[10px] text-fg-muted mt-0.5">{versionLine}</p>
+            <p className="text-3xs text-fg-muted mt-0.5">{versionLine}</p>
           </div>
           <CloseButton onClick={onClose} />
         </div>
@@ -118,14 +118,14 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
           <div className="p-5 space-y-5">
           {/* Disclaimer — identical on both platforms */}
           <section className="space-y-1.5">
-            <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Disclaimer</h4>
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Disclaimer</h4>
+            <p className="text-2xs text-fg-dim leading-relaxed">
               YouCoded is an independent, community-built project. It is not affiliated with, endorsed by, or officially supported by Anthropic.
             </p>
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               "Claude" and "Claude Code" are trademarks of Anthropic, PBC.
             </p>
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               Thanks to the Anthropic team for building Claude Code. This project exists because of their work.
             </p>
           </section>
@@ -140,63 +140,63 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               games line were added by accounts Phase 2 (wording approved by
               Destin 2026-07-09). */}
           <section className="space-y-1.5">
-            <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
+            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
             {platform === 'desktop' ? (
               <>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   Your Claude Pro/Max sign-in is stored locally on your device. It is never transmitted to or collected by YouCoded. All Claude Code interactions happen directly between the on-device CLI and Anthropic's servers. YouCoded does not collect any personal data or message content.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Friends &amp; presence (optional).</strong> If you use friends, we store your friend list, pending requests, and your block list (your block list is visible only to you). While you're signed in with the app open, your friends — and only your friends — can see that you're online and, after you disconnect, a single "last seen" time. We never keep a history of when you were online. You can appear offline any time (incognito in the games panel), download everything we store (Settings → Account → Download my data), and deleting your account removes all of it immediately.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:
                 </p>
-                <ul className="text-[11px] text-fg-dim leading-relaxed list-disc pl-5 space-y-0.5">
+                <ul className="text-2xs text-fg-dim leading-relaxed list-disc pl-5 space-y-0.5">
                   <li>An irreversible hash of your device's hardware ID (the raw ID never leaves your device — it's hashed locally before transmission)</li>
                   <li>Installed app version (e.g. <code>1.3.0</code>)</li>
                   <li>Platform and OS (e.g. <code>desktop / mac</code>)</li>
                   <li>Country and approximate region (e.g. US state), derived from your IP address by Cloudflare. IP addresses are never stored.</li>
                 </ul>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   No message content, no usernames, no tokens, no file paths. The collection of this information helps improve YouCoded for yourself and future users. You may disable this below at any time.
                 </p>
                 <AnalyticsOptInToggle />
-                <p className="text-[11px] text-fg-dim leading-relaxed pt-2">
+                <p className="text-2xs text-fg-dim leading-relaxed pt-2">
                   Remote access (when enabled) serves the UI over your local network or Tailscale. Remote connections are NOT TLS-encrypted — use Tailscale for sensitive conversations since it provides WireGuard encryption end-to-end.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   Multiplayer game moves are relayed through a PartyKit server (Cloudflare) only while a game is open; challenges and the friends lobby go through the YouCoded server. No game traffic is retained server-side beyond the active room.
                 </p>
               </>
             ) : (
               <>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   Your Claude Pro/Max sign-in is stored locally on your device. It is never transmitted to or collected by YouCoded. All Claude Code interactions happen directly between the on-device CLI and Anthropic's servers. YouCoded does not collect any personal data or message content.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Friends &amp; presence (optional).</strong> If you use friends, we store your friend list, pending requests, and your block list (your block list is visible only to you). While you're signed in with the app open, your friends — and only your friends — can see that you're online and, after you disconnect, a single "last seen" time. We never keep a history of when you were online. You can appear offline any time (incognito in the games panel), download everything we store (Settings → Account → Download my data), and deleting your account removes all of it immediately.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:
                 </p>
-                <ul className="text-[11px] text-fg-dim leading-relaxed list-disc pl-5 space-y-0.5">
+                <ul className="text-2xs text-fg-dim leading-relaxed list-disc pl-5 space-y-0.5">
                   <li>An irreversible hash of your device's hardware ID (the raw ID never leaves your device — it's hashed locally before transmission)</li>
                   <li>Installed app version (e.g. <code>1.3.0</code>)</li>
                   <li>Platform (<code>android</code>)</li>
                   <li>Country and approximate region (e.g. US state), derived from your IP address by Cloudflare. IP addresses are never stored.</li>
                 </ul>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   No message content, no usernames, no tokens, no file paths. The collection of this information helps improve YouCoded for yourself and future users. You may disable this below at any time.
                 </p>
                 <AnalyticsOptInToggle />
-                <p className="text-[11px] text-fg-dim leading-relaxed pt-2">
+                <p className="text-2xs text-fg-dim leading-relaxed pt-2">
                   During initial setup, Termux runtime packages are downloaded from packages.termux.dev over HTTPS with SHA256 verification.
                 </p>
               </>
@@ -207,22 +207,22 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
 
           {/* Licenses — platform-specific intro + lib list */}
           <section className="space-y-1.5">
-            <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Licenses</h4>
+            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Licenses</h4>
             {platform === 'desktop' ? (
               <>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   The YouCoded desktop application is licensed under the MIT License.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   Note: The YouCoded Android application is distributed under GPLv3 because it links against Termux. The desktop application has no such dependency and is MIT throughout.
                 </p>
               </>
             ) : (
               <>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   The YouCoded Android application is distributed under the GNU General Public License v3.0 (GPLv3) because it links against Termux terminal components, which are GPLv3.
                 </p>
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   The YouCoded source code itself — including the shared React interface that powers this app — is offered under the MIT License. The Android distribution as a whole is GPLv3; the underlying source remains MIT upstream.
                 </p>
               </>
@@ -230,8 +230,8 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
             <div className="mt-2 space-y-1 pl-2">
               {libs.map(({ lib, license, source }) => (
                 <div key={lib}>
-                  <span className="text-[10px] text-fg-2 font-medium">{lib}</span>
-                  <span className="text-[10px] text-fg-muted ml-1">· {license} · {source}</span>
+                  <span className="text-3xs text-fg-2 font-medium">{lib}</span>
+                  <span className="text-3xs text-fg-muted ml-1">· {license} · {source}</span>
                 </div>
               ))}
             </div>

@@ -129,7 +129,7 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
         }}
         placeholder={placeholder}
       />
-      <span className="text-[11px] text-fg-muted tabular-nums text-center px-1 min-w-[40px]">{shown}</span>
+      <span className="text-2xs text-fg-muted tabular-nums text-center px-1 min-w-[40px]">{shown}</span>
       {/* Lucide-style SVGs (stroke currentColor) — the app's icon convention;
           these were literal ↑/↓/✕ text characters before. */}
       <button type="button" title="Previous (Shift+Enter)" onClick={() => go(-1)}

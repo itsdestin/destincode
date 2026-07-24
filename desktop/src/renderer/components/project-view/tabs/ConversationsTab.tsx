@@ -63,12 +63,12 @@ export function ConversationsTab({ conversations, onOpenPreview }: Conversations
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline gap-2 justify-between">
                     <span className="text-[13.5px] font-medium text-fg truncate">{title}</span>
-                    <span className="text-[11px] text-fg-muted shrink-0">
+                    <span className="text-2xs text-fg-muted shrink-0">
                       {formatRelativeTime(c.lastModified)}
                     </span>
                   </span>
                   {c.preview ? (
-                    <span className="block text-[12px] text-fg-2 truncate mt-0.5">{c.preview}</span>
+                    <span className="block text-xs text-fg-2 truncate mt-0.5">{c.preview}</span>
                   ) : null}
                 </span>
               </button>

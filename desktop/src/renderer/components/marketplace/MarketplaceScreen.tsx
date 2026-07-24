@@ -666,7 +666,7 @@ function IntegrationDetailOverlay({
                   <h1 className="text-xl sm:text-2xl font-semibold text-fg">{item.displayName}</h1>
                   {item.tagline && <p className="mt-1 text-sm sm:text-base text-fg-2">{item.tagline}</p>}
                   <div className="mt-3 flex items-center gap-2 flex-wrap">
-                    <span className={`text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 ${STATUS_TONE_CLASS[statusBadge.tone]}`}>
+                    <span className={`text-3xs uppercase tracking-wide rounded-full px-2 py-0.5 ${STATUS_TONE_CLASS[statusBadge.tone]}`}>
                       {statusBadge.text}
                     </span>
                     {item.state.error && (

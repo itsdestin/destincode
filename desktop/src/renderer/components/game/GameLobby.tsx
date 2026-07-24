@@ -339,12 +339,12 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
               green/faint dot was removed 2026-07-09). This screen only renders
               when connected or incognito (the parent gates the rest), so the
               two reachable states are exactly these words. */}
-          <span className="text-[10px] text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
+          <span className="text-3xs text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
         </div>
         {onToggleIncognito && (
           <button
             onClick={onToggleIncognito}
-            className={`text-[10px] px-1.5 py-0.5 rounded-sm transition-colors ${
+            className={`text-3xs px-1.5 py-0.5 rounded-sm transition-colors ${
               incognito
                 ? 'bg-inset text-fg-2 hover:bg-edge'
                 : 'text-fg-muted hover:text-fg-2'
@@ -416,7 +416,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Incoming friend requests */}
       {incoming.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
           <ul className="flex flex-col gap-2">
             {incoming.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -431,14 +431,14 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   <button
                     onClick={() => runMutation(() => window.claude.social.acceptRequest(req.id), req.id, "Couldn't accept — try again")}
                     disabled={pendingRows.has(req.id)}
-                    className="text-[10px] px-1.5 py-1.5 text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors shrink-0"
+                    className="text-3xs px-1.5 py-1.5 text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Accept
                   </button>
                   <button
                     onClick={() => runMutation(() => window.claude.social.declineRequest(req.id), req.id, "Couldn't decline — try again")}
                     disabled={pendingRows.has(req.id)}
-                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                    className="text-3xs px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Decline
                   </button>
@@ -452,7 +452,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
       {/* Add a friend by handle */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-fg-muted">Add a friend</div>
+        <div className="text-3xs uppercase tracking-wider text-fg-muted">Add a friend</div>
         {/* Change 77: "Send request" moves INSIDE the field. It was left
             `variant="secondary" size="lg"` purely so it would height-match the
             input sitting beside it — inside the field there is nothing to
@@ -487,7 +487,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Friends list */}
       {merged.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
           <ul className="flex flex-col gap-2">
             {merged.map((row) => (
               <li key={row.id} className="flex flex-col gap-0.5">
@@ -502,7 +502,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     <button
                       onClick={() => connection.challengePlayer(row.id)}
                       // px/py-1.5 = touch-target padding (see the Accept button note).
-                      className="text-[10px] px-1.5 py-1.5 text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
+                      className="text-3xs px-1.5 py-1.5 text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
                     >
                       Challenge
                     </button>
@@ -514,7 +514,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   />
                 </div>
                 {/* Plain-word status — never glyphs (workspace rule). */}
-                <span className="text-[10px] text-fg-muted">{statusLabel(row, Date.now())}</span>
+                <span className="text-3xs text-fg-muted">{statusLabel(row, Date.now())}</span>
                 {rowError[row.id] && <p className="text-xs text-red-400">{rowError[row.id]}</p>}
               </li>
             ))}
@@ -525,7 +525,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Sent (outgoing) requests — dim, collapsed-feeling */}
       {outgoing.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
           <ul className="flex flex-col gap-1">
             {outgoing.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -537,7 +537,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     onClick={() => runMutation(() => window.claude.social.cancelRequest(req.id), req.id, "Couldn't cancel — try again")}
                     disabled={pendingRows.has(req.id)}
                     // px/py-1.5 = touch-target padding (see the Accept button note).
-                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                    className="text-3xs px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Cancel
                   </button>

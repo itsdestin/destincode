@@ -45,7 +45,7 @@ function Chip({ active, onClick, multi, children }: {
       aria-checked={multi ? undefined : active}
       aria-pressed={multi ? active : undefined}
       onClick={onClick}
-      className={`px-2.5 py-1 rounded-full text-[12px] transition-colors ${
+      className={`px-2.5 py-1 rounded-full text-xs transition-colors ${
         active
           ? 'bg-accent text-on-accent'
           : 'bg-inset text-fg-2 hover:text-fg border border-edge hover:border-edge-dim'
@@ -59,7 +59,7 @@ function Chip({ active, onClick, multi, children }: {
 function Group({ label, multi, children }: { label: string; multi?: boolean; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[10px] tracking-wider text-fg-muted uppercase">{label}</span>
+      <span className="text-3xs tracking-wider text-fg-muted uppercase">{label}</span>
       <div className="flex flex-wrap gap-1.5" role={multi ? 'group' : 'radiogroup'} aria-label={label}>{children}</div>
     </div>
   );

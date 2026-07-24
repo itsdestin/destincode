@@ -62,7 +62,7 @@ function ReviewRow({ r, pluginId }: { r: RatingEntry; pluginId: string }) {
           />
         ) : (
           // Fallback initials circle when avatar URL is absent or image fails to load
-          <span className="w-6 h-6 rounded-full bg-accent/20 shrink-0 flex items-center justify-center text-[9px] font-bold text-accent">
+          <span className="w-6 h-6 rounded-full bg-accent/20 shrink-0 flex items-center justify-center text-4xs font-bold text-accent">
             {r.user_login.charAt(0).toUpperCase()}
           </span>
         )}
@@ -70,7 +70,7 @@ function ReviewRow({ r, pluginId }: { r: RatingEntry; pluginId: string }) {
         {/* StarRating with hideCount=true — individual review rows don't need "(1)" */}
         {/* count=1: each row represents one review; hideCount suppresses the "(1)" suffix */}
         <StarRating value={r.stars} count={1} size="sm" hideCount />
-        <span className="ml-auto text-[10px] text-fg-muted shrink-0">{formatDate(r.created_at)}</span>
+        <span className="ml-auto text-3xs text-fg-muted shrink-0">{formatDate(r.created_at)}</span>
         {/* Report button — far right of the row, subtle until hovered */}
         <ReportReviewButton
           ratingUserId={r.user_id}

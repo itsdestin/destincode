@@ -132,7 +132,7 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
 
             {/* Choice 1: start new (inline name + create) */}
             <div className="mt-3 rounded-lg border border-edge p-3">
-              <div className="text-[13px] font-semibold text-fg">Start something new</div>
+              <div className="text-sm-tight font-semibold text-fg">Start something new</div>
               <div className="mt-0.5 text-xs text-fg-dim">Creates an empty project in YouCoded that syncs across your devices.</div>
               {/* Change 77: Create submits this field, so it moves INSIDE the
                   field rather than sitting alongside it. Cancel stays in the
@@ -163,7 +163,7 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
               disabled={busy}
               className="mt-2 w-full text-left rounded-lg border border-edge p-3 hover:border-accent hover:bg-inset transition-colors"
             >
-              <div className="text-[13px] font-semibold text-fg">Use a folder already on this computer</div>
+              <div className="text-sm-tight font-semibold text-fg">Use a folder already on this computer</div>
               <div className="mt-0.5 text-xs text-fg-dim">Pick any folder — you'll choose whether it syncs next.</div>
             </button>
 
@@ -182,7 +182,7 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
               disabled={busy}
               className="mt-3 w-full text-left rounded-lg border border-edge p-3 hover:border-accent hover:bg-inset transition-colors"
             >
-              <div className="text-[13px] font-semibold text-fg">Keep it where it is</div>
+              <div className="text-sm-tight font-semibold text-fg">Keep it where it is</div>
               <div className="mt-0.5 text-xs text-fg-dim">Only on this computer. The folder doesn't move and nothing changes.</div>
             </button>
 
@@ -193,7 +193,7 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
               disabled={busy}
               className="mt-2 w-full text-left rounded-lg border border-edge p-3 hover:border-accent hover:bg-inset transition-colors"
             >
-              <div className="text-[13px] font-semibold text-fg">Move it into YouCoded so it syncs</div>
+              <div className="text-sm-tight font-semibold text-fg">Move it into YouCoded so it syncs</div>
               <div className="mt-0.5 text-xs text-fg-dim">The folder moves to ~/YouCoded/Projects/ and syncs across your devices. Anything pointing at the old location (shortcuts, open terminals) will need the new path.</div>
             </button>
 

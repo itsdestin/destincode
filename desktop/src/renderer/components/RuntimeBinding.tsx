@@ -224,7 +224,7 @@ export function RuntimeBindingFields({
   return (
     <>
       <div>
-        <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
+        <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
         <div className="inline-flex rounded border border-edge overflow-hidden">
           <button
             type="button"
@@ -246,11 +246,11 @@ export function RuntimeBindingFields({
       {runtime === 'native' && (
         <div className="flex flex-col gap-2">
           {nb.readyProviders.length === 0 ? (
-            <p className="text-[10px] text-fg-muted">Add a provider key in Settings → Model Providers first.</p>
+            <p className="text-3xs text-fg-muted">Add a provider key in Settings → Model Providers first.</p>
           ) : (
             <>
               <div>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Provider</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Provider</label>
                 {/* Change 21: no native <select> — its option list is drawn by the
                     OS, so a themed app dropped an OS-blue menu out of it. The
                     <label> above is not associated (it never had an htmlFor), so
@@ -270,7 +270,7 @@ export function RuntimeBindingFields({
                 />
               </div>
               <div>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                 {nb.needsFreeformModel ? (
                   <TextInput
                     type="text"
@@ -302,7 +302,7 @@ export function RuntimeBindingFields({
                   the full tool suite; they differ in prompt + starting permission
                   posture. Stamped at create; drives the resolved harnessId. */}
               <div>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Preset</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Preset</label>
                 <div className="flex gap-2">
                   {PRESETS.map((p) => (
                     <button
@@ -313,7 +313,7 @@ export function RuntimeBindingFields({
                       className={`flex-1 text-left rounded border px-2 py-1.5 ${preset === p.id ? 'border-accent bg-inset' : 'border-edge bg-panel hover:bg-inset'}`}
                     >
                       <div className="text-xs text-fg">{p.name}</div>
-                      <div className="text-[10px] text-fg-muted leading-snug">{p.description}</div>
+                      <div className="text-3xs text-fg-muted leading-snug">{p.description}</div>
                     </button>
                   ))}
                 </div>
@@ -324,7 +324,7 @@ export function RuntimeBindingFields({
                   local-engine models only. */}
               {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
                 <div
-                  className={`text-[11px] rounded-sm px-2 py-1.5 border ${
+                  className={`text-2xs rounded-sm px-2 py-1.5 border ${
                     nb.memVerdict.verdict === 'too-large'
                       ? 'border-[var(--destructive)] text-fg-2'
                       : 'border-edge bg-well text-fg-dim'

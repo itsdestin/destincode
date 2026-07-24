@@ -307,7 +307,7 @@ export default function RatingSubmitModal({
               />
               {/* Character counter — shows remaining only when text is present */}
               {reviewText.length > 0 && (
-                <p className="text-right text-[10px] text-fg-muted mt-0.5">
+                <p className="text-right text-3xs text-fg-muted mt-0.5">
                   {reviewText.length}/{MAX_REVIEW_CHARS}
                 </p>
               )}

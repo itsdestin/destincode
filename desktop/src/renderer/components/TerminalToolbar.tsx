@@ -96,7 +96,7 @@ function ToolbarButton({
       type="button"
       onClick={onClick}
       title={title || label}
-      className={`shrink-0 ${heightClass} min-w-[2.25rem] px-2.5 rounded-md border text-[11px] transition-colors select-none ${
+      className={`shrink-0 ${heightClass} min-w-[2.25rem] px-2.5 rounded-md border text-2xs transition-colors select-none ${
         active
           ? 'bg-accent text-on-accent border-accent'
           : 'bg-panel border-edge-dim text-fg-2 hover:bg-inset hover:text-fg'

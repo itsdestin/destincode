@@ -188,7 +188,7 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
         title={title}
         aria-label={liked ? `Unlike (${count})` : `Like (${count})`}
         aria-pressed={liked}
-        className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors disabled:opacity-50 ${
+        className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-3xs font-medium transition-colors disabled:opacity-50 ${
           liked
             ? 'text-red-400 hover:text-red-300'
             : 'text-fg-muted hover:text-red-400'
@@ -204,7 +204,7 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
         <div
           role="status"
           aria-live="polite"
-          className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-[10px] text-fg shadow-md"
+          className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-3xs text-fg shadow-md"
           // zIndex 62 = one above CONTENT_Z[2] (61, L2 content). The toast anchors inline
           // beside the button inside an OverlayPanel, so it needs to clear the panel's
           // own surface. Not L3 (70) — destructive confirmations only. Not using the
