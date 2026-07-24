@@ -211,16 +211,16 @@ dependencies {
     implementation(project(":terminal-emulator-vendored"))
 
     // Apache Commons Compress for extracting .deb packages (ar + tar + xz + zstd)
-    implementation("org.apache.commons:commons-compress:1.27.1")
-    implementation("org.tukaani:xz:1.10")
-    implementation("com.github.luben:zstd-jni:1.5.6-3")
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("org.tukaani:xz:1.12")
+    implementation("com.github.luben:zstd-jni:1.5.7-11")
 
     // Markdown parsing for chat view
-    implementation("org.commonmark:commonmark:0.24.0")
+    implementation("org.commonmark:commonmark:0.29.0")
 
     // WebSocket server for React UI bridge
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.java-websocket:Java-WebSocket:1.5.6")
+    implementation("org.java-websocket:Java-WebSocket:1.6.0")
 
     // Security: encrypted credential storage for paired device passwords
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
@@ -238,7 +238,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
     // Coroutines test support for runTest in SubagentWatcherTest
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     // kotlin.test assertions (assertTrue/assertEquals/etc.) for JVM unit tests
     testImplementation(kotlin("test"))
     // MockWebServer for AnalyticsServiceTest — version matches the OkHttp
@@ -247,5 +247,5 @@ dependencies {
     // Mockito for stubbing Android Context in SkillScannerTest. Needed because
     // SkillScanner takes a Context to read web/data/skill-registry.json from
     // app assets — there's no in-memory fake equivalent (unlike SharedPreferences).
-    testImplementation("org.mockito:mockito-core:5.11.0")
+    testImplementation("org.mockito:mockito-core:5.23.0")
 }
