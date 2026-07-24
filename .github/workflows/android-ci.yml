@@ -29,7 +29,7 @@ jobs:
       # ship a node binary today, but pinning here removes the runner-
       # image dep so CI doesn't silently drift if the image changes.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
