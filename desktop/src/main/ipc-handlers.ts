@@ -3646,17 +3646,20 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // Exclude = HIDE an EXTERNAL artifact from Project View's External Artifacts
-  // section: un-pin it (remove from manualIncludes) AND add a sticky
-  // manualExcludes entry so Claude re-editing the file doesn't resurface it.
-  // Never touches the file on disk or the session drawer's activity log.
+  // Exclude = un-pin an external artifact (remove from manualIncludes) AND add a
+  // sticky manualExcludes entry so trackedArtifacts() keeps hiding it even if
+  // Claude re-edits the file. Never touches the file on disk or the session
+  // drawer's activity log.
   //
-  // There is NO in-app recovery as of 2026-07-23. "+ Add file" used to un-pin it
-  // back (includes win over excludes), but that button became a Move/Copy import
-  // and no longer writes manualIncludes — so this is one-way, which is why the
-  // button's tooltip says so out loud. The Artifacts tab it used to hide things
-  // from is gone; in-folder files cannot be excluded at all now, because hiding a
-  // file the user can see in their file manager would be a lie.
+  // NO RENDERER CALLER as of 2026-07-23. The Project View button that invoked
+  // this was removed when the External Artifacts section was reverted (~95%
+  // incidental noise against real sidecars). The handler stays because legacy
+  // sidecars carry manualExcludes entries that must keep round-tripping, and
+  // because manualExcludes is still load-bearing in trackedArtifacts() rule 2.
+  // If a future feature re-introduces a caller: it is one-way (nothing writes
+  // manualIncludes any more, so there is no in-app un-exclude), and it only ever
+  // made sense for externals — an in-folder file cannot be hidden from a live
+  // disk walk without lying about the folder's contents.
   ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
     _e, projectRoot: string, canonicalPath: string
   ) => {

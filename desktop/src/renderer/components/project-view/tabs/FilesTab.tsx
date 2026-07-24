@@ -149,9 +149,13 @@ export function FilesTab({
   types: ReadonlySet<FileTypeGroup>;
   sortBy: FileSortKey;               // filter popover: sort
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
-  // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
-  // the hero/segment counts without forcing this tab to reload (which would
-  // reset the breadcrumb + selection).
+  // VESTIGIAL as of 2026-07-23: this fired after the only in-tab sidecar mutation
+  // (Exclude, on an external-artifact row) so ProjectView could refetch counts
+  // without reloading the tab. Exclude was removed with the External Artifacts
+  // section, so nothing invokes this now. Kept (not pruned) because untangling
+  // ProjectView's countsKey from its hero-count effect is real risk for zero
+  // gain — it just no longer has a trigger. Re-wire it if an in-tab mutation
+  // ever returns.
   onMutated?: () => void;
   // Task 6: FilesTab owns currentDir (the breadcrumb tree), but "+ Add file"'s
   // destination lives in ProjectView (its dialog + IPC call). Reporting the

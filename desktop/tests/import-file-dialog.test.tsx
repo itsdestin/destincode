@@ -29,7 +29,7 @@ const base = {
 describe('ImportFileDialog', () => {
   // RTL doesn't auto-unmount between tests within one file; without this, each
   // render() piles onto the previous test's DOM and role/text queries see
-  // duplicates (mirrors project-view-external-artifacts.test.tsx).
+  // duplicates.
   afterEach(cleanup);
 
   it('names the destination folder so the target is never a guess', () => {
