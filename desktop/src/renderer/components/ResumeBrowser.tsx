@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { Button, Toggle, LoadingState, EmptyState } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
@@ -747,7 +747,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     <>
       {/* L1 drawer-style modal — theme-driven via Scrim/OverlayPanel. */}
       <Scrim layer={1} onClick={onClose} />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[1] }}>
         <OverlayPanel
           layer={1}
           className="w-full max-w-md max-h-[70vh] flex flex-col pointer-events-auto"

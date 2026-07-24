@@ -25,10 +25,12 @@ import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
+import { SettingsPopup } from './SettingsPopup';
+import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, Toggle as UiToggle, TextInput, InputGroup, LoadingState } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -533,27 +535,14 @@ function SoundButton() {
         onClick={() => setOpen(true)}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(380px, 88vw)',
-              maxHeight: '80vh',
-            }}
-          >
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Sound & Notifications"
+        width="min(380px, 88vw)"
+        panelRef={popupRef}
+      >
             <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-                <h2 className="text-sm font-bold text-fg">Sound & Notifications</h2>
-                <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
-              </div>
-
               <div ref={scrollRef} className="scroll-fade">
                 <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
@@ -612,10 +601,7 @@ function SoundButton() {
                 </div>
               </div>
             </div>
-          </div>
-        </>,
-        document.body,
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -657,25 +643,16 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         onClick={() => setOpen(true)}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(480px, 88vw)',
-              height: 'min(600px, 80vh)',
-            }}
-          >
-            <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
-          </div>
-        </>,
-        document.body,
-      )}
+      {/* No `title`: ThemeScreen renders its own header (including its own ✕). */}
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        width="min(480px, 88vw)"
+        height="min(600px, 80vh)"
+        panelRef={popupRef}
+      >
+        <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
+      </SettingsPopup>
     </>
   );
 }
@@ -827,23 +804,18 @@ function BuddyButton() {
         onClick={() => setOpen(true)}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(340px, 85vw)',
-            }}
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-              <h2 className="text-sm font-bold text-fg">Buddy Floater</h2>
-              <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
-            </div>
+      {/* maxHeight="none" preserves this one's existing behavior — it was the only
+          popup of the seven with no height ceiling, and it has no scroll container,
+          so inheriting the shell's 80vh default would silently CLIP the Linux
+          keep-above row instead of letting the popup grow. */}
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Buddy Floater"
+        width="min(340px, 85vw)"
+        maxHeight="none"
+        panelRef={popupRef}
+      >
             <div className="px-4 py-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-fg font-medium">Show buddy floater</span>
@@ -875,10 +847,7 @@ function BuddyButton() {
                 </div>
               )}
             </div>
-          </div>
-        </>,
-        document.body,
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -973,20 +942,16 @@ function RemoteButton({
         onClick={() => setOpen(true)}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(480px, 88vw)',
-              height: 'min(600px, 80vh)',
-            }}
-          >
+      {/* No `title` prop: this popup owns its own header because it swaps the
+          WHOLE surface for SettingsExplainer when (i) is pressed. The shell's
+          header would still be painted behind that. */}
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        width="min(480px, 88vw)"
+        height="min(600px, 80vh)"
+        panelRef={popupRef}
+      >
             {showInfo ? (
               <SettingsExplainer
                 title="Remote Access"
@@ -1002,7 +967,7 @@ function RemoteButton({
                 <h2 className="text-sm font-bold text-fg">Remote Access</h2>
                 <div className="flex items-center gap-1">
                   <InfoIconButton onClick={() => setShowInfo(true)} />
-                  <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center">✕</button>
+                  <CloseButton onClick={() => setOpen(false)} label="Close Remote Access" />
                 </div>
               </div>
 
@@ -1289,10 +1254,7 @@ function RemoteButton({
               </div>
             </div>
             )}
-          </div>
-        </>,
-        document.body,
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -1524,27 +1486,14 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
         onClick={() => setOpen(true)}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(380px, 88vw)',
-              maxHeight: '80vh',
-            }}
-          >
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Session Defaults"
+        width="min(380px, 88vw)"
+        panelRef={popupRef}
+      >
             <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-                <h2 className="text-sm font-bold text-fg">Session Defaults</h2>
-                <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
-              </div>
-
               <div ref={scrollRef} className="scroll-fade">
                 <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
@@ -1621,10 +1570,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 </div>
               </div>
             </div>
-          </div>
-        </>,
-        document.body,
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -1676,26 +1622,13 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
           via transform/backdrop-filter, which is why an inline-rendered popup
           ends up centered inside the panel instead of the viewport. ThemeButton
           above uses the same portal pattern for the same reason. */}
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(340px, 85vw)',
-              maxHeight: '80vh',
-            }}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-              <h3 className="text-sm font-bold text-fg">Package Tier</h3>
-              <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
-            </div>
-
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Package Tier"
+        width="min(340px, 85vw)"
+        panelRef={popupRef}
+      >
             <div ref={scrollRef} className="scroll-fade" style={{ maxHeight: 'calc(80vh - 52px)' }}>
               <div className="p-3 space-y-2">
               {TIER_OPTIONS.map(t => {
@@ -1723,10 +1656,7 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
               })}
               </div>
             </div>
-          </div>
-        </>,
-        document.body,
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -1877,26 +1807,14 @@ function ConnectToDesktopButton() {
         onClick={() => { setOpen(true); setShowConnectForm(false); }}
       />
 
-      {open && createPortal(
-        <>
-          <Scrim layer={2} onClick={() => setOpen(false)} />
-          <div
-            ref={popupRef}
-            className="layer-surface fixed z-[61] overflow-hidden flex flex-col"
-            style={{
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 'min(380px, 88vw)',
-              maxHeight: '80vh',
-            }}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-              <h2 className="text-sm font-bold text-fg">Connect to Desktop</h2>
-              <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
-            </div>
-
+      <SettingsPopup
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Connect to Desktop"
+        width="min(380px, 88vw)"
+        panelRef={popupRef}
+        className="flex flex-col"
+      >
             <div ref={scrollRef} className="scroll-fade">
               <div className="px-4 py-4 space-y-4">
 
@@ -2064,10 +1982,7 @@ function ConnectToDesktopButton() {
               </p>
               </div>
             </div>
-          </div>
-        </>,
-        document.body
-      )}
+      </SettingsPopup>
     </>
   );
 }
@@ -2202,47 +2117,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
           onClick={() => setShowDonateConfirm(true)}
         />
 
-        {/* Donate confirmation modal */}
-        {showDonateConfirm && createPortal(
-          <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowDonateConfirm(false)}>
-            <div className="absolute inset-0 layer-scrim" data-layer="2" />
-            <div
-              className="layer-surface relative p-6 max-w-xs w-full mx-4 text-center"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
-              <div className="flex items-center justify-center gap-2 mb-5">
-                {/* Custom coffee-mug icon: body + handle + rising steam. Ties to "Buy Me a Coffee" label via BMC yellow. */}
-                <svg className="w-5 h-5 text-[#FFDD00]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M7 2v2M11 2v2M15 2v2" />
-                  <path d="M3 8h14v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z" />
-                  <path d="M17 11h2a2.5 2.5 0 0 1 0 5h-2" />
-                </svg>
-                <span className="text-sm font-bold text-fg">Buy Me a Coffee</span>
-              </div>
-              <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
-              <div className="flex gap-2">
-                {/* py-2.5 kept as a deliberate override: this two-button footer is
-                    the whole modal, so md's py-1.5 reads too slight here. */}
-                <Button variant="secondary" onClick={() => setShowDonateConfirm(false)} className="flex-1 py-2.5">
-                  Cancel
-                </Button>
-                {/* Change 52: hover:brightness-110 was invisible on Light/Creme's
-                    near-black accent and blew out the glow packs. */}
-                <Button
-                  onClick={() => {
-                    window.open('https://buymeacoffee.com/itsdestin', '_blank');
-                    setShowDonateConfirm(false);
-                  }}
-                  className="flex-1 py-2.5"
-                >
-                  Open
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+        <DonateConfirm open={showDonateConfirm} onClose={() => setShowDonateConfirm(false)} />
 
         {aboutInfo && (
           <>
@@ -2544,47 +2419,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           onClick={() => setShowDonateConfirm(true)}
         />
 
-        {/* Donate confirmation modal */}
-        {showDonateConfirm && createPortal(
-          <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowDonateConfirm(false)}>
-            <div className="absolute inset-0 layer-scrim" data-layer="2" />
-            <div
-              className="layer-surface relative p-6 max-w-xs w-full mx-4 text-center"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
-              <div className="flex items-center justify-center gap-2 mb-5">
-                {/* Custom coffee-mug icon: body + handle + rising steam. Ties to "Buy Me a Coffee" label via BMC yellow. */}
-                <svg className="w-5 h-5 text-[#FFDD00]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M7 2v2M11 2v2M15 2v2" />
-                  <path d="M3 8h14v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z" />
-                  <path d="M17 11h2a2.5 2.5 0 0 1 0 5h-2" />
-                </svg>
-                <span className="text-sm font-bold text-fg">Buy Me a Coffee</span>
-              </div>
-              <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
-              <div className="flex gap-2">
-                {/* py-2.5 kept as a deliberate override: this two-button footer is
-                    the whole modal, so md's py-1.5 reads too slight here. */}
-                <Button variant="secondary" onClick={() => setShowDonateConfirm(false)} className="flex-1 py-2.5">
-                  Cancel
-                </Button>
-                {/* Change 52: hover:brightness-110 was invisible on Light/Creme's
-                    near-black accent and blew out the glow packs. */}
-                <Button
-                  onClick={() => {
-                    window.open('https://buymeacoffee.com/itsdestin', '_blank');
-                    setShowDonateConfirm(false);
-                  }}
-                  className="flex-1 py-2.5"
-                >
-                  Open
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+        <DonateConfirm open={showDonateConfirm} onClose={() => setShowDonateConfirm(false)} />
 
         {/* About — popup on click, styled like other settings popups */}
         <SettingsRow

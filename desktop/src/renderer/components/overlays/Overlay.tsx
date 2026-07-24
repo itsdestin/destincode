@@ -13,7 +13,13 @@ import React from 'react';
 export type OverlayLayer = 1 | 2 | 3 | 4;
 
 const SCRIM_Z: Record<OverlayLayer, number> = { 1: 40, 2: 60, 3: 70, 4: 100 };
-const CONTENT_Z: Record<OverlayLayer, number> = { 1: 50, 2: 61, 3: 71, 4: 100 };
+
+// Exported because a few overlays wrap OverlayPanel in a full-screen centring
+// div (the panel then runs at `position: relative; z-index: auto`, so the WRAPPER
+// carries the stacking). Those wrappers were hand-writing `z-[61]` / `z-50`,
+// which re-literalled these numbers in four files. Import the map instead —
+// design rule 11 is that this file is the only place a layer number is decided.
+export const CONTENT_Z: Record<OverlayLayer, number> = { 1: 50, 2: 61, 3: 71, 4: 100 };
 
 // Popover escape-hatch tier: a floating menu/panel SPAWNED FROM a host that
 // lives in the z-9000 exception band (SessionStrip dropdown, ProjectHero,

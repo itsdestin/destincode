@@ -5,7 +5,7 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
-import { Button } from "../ui";
+import { Button, CloseButton } from "../ui";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
 import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
@@ -156,25 +156,22 @@ export default function LibraryScreen({
             </Button>
           )}
           {/* Wide: Esc text. Narrow: bordered close-X — matches the marketplace top bar. */}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={onExit}
-            className="hidden sm:inline-block text-fg-dim hover:text-fg text-sm px-2 py-1"
+            className="hidden sm:inline-flex text-sm px-2.5 py-1"
             aria-label="Exit library"
           >
             Esc · Back to chat
-          </button>
-          <button
-            type="button"
+          </Button>
+          {/* Was a hand-rolled button + inline ✕ SVG while Marketplace next door
+              already used the primitive — change 27 is "one exit per surface
+              type", so the two narrow exits must be the same component. */}
+          <CloseButton
             onClick={onExit}
-            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
-            aria-label="Exit library"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            label="Exit library"
+            className="sm:hidden panel-glass bg-inset rounded-md border border-edge-dim hover:border-edge"
+          />
         </div>
       </div>
 
