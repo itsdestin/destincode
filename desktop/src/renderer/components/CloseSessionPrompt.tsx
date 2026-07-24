@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
@@ -118,7 +118,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   return (
     <>
       <Scrim layer={2} onClick={onCancel} />
-      <div className="fixed inset-0 z-[61] flex items-center justify-center p-4 pointer-events-none">
+      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
         <OverlayPanel
           layer={2}
           className="w-full max-w-sm pointer-events-auto"

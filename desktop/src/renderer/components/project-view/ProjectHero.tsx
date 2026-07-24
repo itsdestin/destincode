@@ -84,6 +84,7 @@ import { createPortal } from 'react-dom';
 import { FolderIcon, GitHubIcon, CogIcon } from './icons';
 import { Button, TextInput } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { OverlayPanel } from '../overlays/Overlay';
 import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
 
 const MENU_WIDTH = 240;
@@ -422,13 +423,16 @@ export function ProjectHero({
       </div>
 
       {narrow && menu.open && menu.pos && createPortal(
-        <div
+        <OverlayPanel
           ref={menu.menuRef}
           role="menu"
-          // z-[9000]: ProjectView is a fixed inset-0 z-[8000] overlay, so the
-          // menu has to clear it. Same ceiling SessionStrip's dropdown uses.
-          className="glass-overlay overlay-no-drag fixed bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden py-1"
-          style={{ top: menu.pos.top, left: menu.pos.left, width: MENU_WIDTH }}
+          // L4, not the old hardcoded z-[9000]. That value existed only to clear
+          // ProjectView's z-[8000]; ProjectView is a z-40 screen now (change 26),
+          // so 9000 would float this kebab above every overlay in the app. L4
+          // matches the other portaled anchored menus (ContextMenu, Select).
+          layer={4}
+          className="overlay-no-drag fixed py-1"
+          style={{ top: menu.pos.top, left: menu.pos.left, width: MENU_WIDTH, borderRadius: 'var(--radius-lg)' }}
         >
           {menuItems.map((item, i) => (
             <React.Fragment key={item.key}>
@@ -447,7 +451,7 @@ export function ProjectHero({
               </button>
             </React.Fragment>
           ))}
-        </div>,
+        </OverlayPanel>,
         document.body,
       )}
     </div>

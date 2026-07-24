@@ -71,27 +71,41 @@ function FileGlyph({ scope, size = 17 }: { scope: ContextScope; size?: number })
 // Info-circle glyph (an "i", not a status glyph) — shared module.
 import { InfoIcon } from '../icons';
 
+// Outer clips, inner scrolls with FilesTab's exact `p-2 -m-2` offset. This tab
+// used to scroll the PADDED element itself, which put its scrollbar hard against
+// the panel edge — a third distinct scrollbar position across three tabs. One
+// shell for all three branches so they can't drift apart again.
+function ContextTabShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col h-full overflow-hidden px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
+      <div className="flex-1 overflow-auto max-sm:overflow-visible flex flex-col content-start p-2 -m-2">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) {
   if (groups === null) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
+      <ContextTabShell>
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">Loading…</p>
-      </div>
+      </ContextTabShell>
     );
   }
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
+      <ContextTabShell>
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">No context files found for this project.</p>
-      </div>
+      </ContextTabShell>
     );
   }
 
   return (
-    <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
+    <ContextTabShell>
       <ContextIntroBanner />
       {groups.map((group) => {
         const meta = GROUP_META[group.scope];
@@ -155,6 +169,6 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
           </div>
         );
       })}
-    </div>
+    </ContextTabShell>
   );
 }

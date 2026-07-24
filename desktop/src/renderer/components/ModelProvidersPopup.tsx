@@ -3,13 +3,12 @@ import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
-import { InfoPopover } from './InfoPopover';
 import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import SettingsRow from './SettingsRow';
-import { Button, CloseButton, InputGroup, TextInput } from './ui';
+import { AnchorTip, Button, CloseButton, InputGroup, TextInput } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -23,7 +22,7 @@ import { Button, CloseButton, InputGroup, TextInput } from './ui';
 //
 // Pattern mirrors AccountSection/AboutPopup: a row-button in the settings stack
 // that opens a centered, portaled L2 overlay where the real controls live. The
-// (i) InfoPopovers carry the plain-language "what is this?" explanations so the
+// (i) AnchorTips carry the plain-language "what is this?" explanations so the
 // section bodies stay focused on the actual settings.
 
 export default function ModelProvidersSection({
@@ -142,7 +141,7 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
   return (
     <div className="flex items-center gap-1.5 mb-2.5">
       <h4 className="text-sm font-semibold text-fg">{title}</h4>
-      <InfoPopover label={info.label} title={title}>{info.body}</InfoPopover>
+      <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>
     </div>
   );
 }

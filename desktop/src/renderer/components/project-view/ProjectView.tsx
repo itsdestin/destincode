@@ -1,7 +1,14 @@
 // ProjectView — full-screen overlay shell for the project browser (Task 2.1 redesign).
 // Opened by the Projects button in HeaderBar (or via dispatch({ type: 'PROJECT_VIEW_OPENED' })).
 // Renders nothing when state.projectViewOpen is false.
-// z-[8000]: below SessionStrip dropdown (9000) but above all other overlays (L2 = 61).
+//
+// z-40 — the SCREEN layer, shared with Marketplace and Library (change 26). Screens
+// sit BELOW every L1-L4 overlay on purpose: a toast, context menu, or AnchorTip that
+// fires while Projects is open must be visible, and at the old z-[8000] it was
+// silently swallowed. Nothing relies on Projects out-stacking a drawer — every L1
+// drawer (Settings, CommandDrawer, ResumeBrowser) mounts a full-screen z-40 scrim
+// that eats the header click, so a drawer and this view can't be co-opened.
+// ⚠ Raising this again re-hides spontaneous overlays; fix the overlay instead.
 //
 // This file is the composed SHELL: header + project list + segmented tab control +
 // tab routing. The artifact grid lives in tabs/FilesTab; Conversations/Context
@@ -59,7 +66,7 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // its own copies of the same paths). GridIcon is the one glyph unique to this
 // file — the Artifacts segment icon.
 import { InfoIcon, ChatIcon, FolderIcon, DocIcon } from './icons';
-import { Button, Checkbox, SearchFilterPill } from '../ui';
+import { Button, Checkbox, CloseButton, SearchFilterPill } from '../ui';
 
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -169,8 +176,8 @@ export function ProjectView(props: ProjectViewProps) {
   const [editingContext, setEditingContext] = useState<ContextFile | null>(null);
   const [infoScope, setInfoScope] = useState<ContextScope | null>(null);
 
-  // ESC closes the browser via the shared LIFO stack — the header button is
-  // labeled "Esc / Close", so the key must actually work. Child overlays
+  // ESC closes the browser via the shared LIFO stack — the header says
+  // "Esc · Back to chat", so the key must actually work. Child overlays
   // (detail, switcher, editor, delete modal) register later → they pop first.
   useEscClose(state.projectViewOpen, () => dispatch({ type: 'PROJECT_VIEW_CLOSED' }));
   // The delete-confirm modal takes Esc priority while open (registered after
@@ -508,21 +515,28 @@ export function ProjectView(props: ProjectViewProps) {
     : null;
 
   return (
-    <div className="fixed inset-0 bg-canvas z-[8000] flex flex-col">
-      {/* Header: title + global search + Esc·Close */}
+    <div className="fixed inset-0 bg-canvas z-40 flex flex-col">
+      {/* Header: title + global search + the shared screen exit (change 27) */}
       <header className="flex items-center gap-3 px-4 py-2.5 border-b border-edge shrink-0">
         <h2 className="text-base font-semibold text-fg shrink-0">Projects</h2>
         <div className="flex-1" />
+        {/* One exit per surface type (change 27) — identical on all three screens.
+            Wide: ghost Button, so it keeps the hover pill the old "Esc / Close"
+            control had (review feedback 2026-07-23). Narrow: bordered ✕, because
+            touch has no Esc key. */}
         <Button
           variant="ghost"
-          className="shrink-0"
           onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
-          title="Close Projects"
-          aria-label="Close Projects"
+          className="hidden sm:inline-flex shrink-0 text-sm px-2.5 py-1"
+          aria-label="Exit projects"
         >
-          <span className="text-[10px] tracking-wider uppercase">Esc</span>
-          <span>Close</span>
+          Esc · Back to chat
         </Button>
+        <CloseButton
+          onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
+          label="Exit projects"
+          className="sm:hidden shrink-0 panel-glass bg-inset rounded-md border border-edge-dim hover:border-edge"
+        />
       </header>
 
       <div className="flex-1 flex overflow-hidden">
