@@ -9,7 +9,7 @@ import type { UpdateLaunchResult } from '../../shared/update-install-types';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import MarkdownContent from './MarkdownContent';
-import { Button, CloseButton, LoadingState } from './ui';
+import { Button, CloseButton, LoadingState, ProgressBar } from './ui';
 
 // Error codes where a fresh download might succeed (transient or file-level).
 // The complement (dmg-corrupt, appimage-not-writable, unsupported-platform,
@@ -265,6 +265,20 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
         <div className="flex-1 overflow-y-auto px-5 py-4">{body}</div>
         {updateStatus.update_available && (
           <footer className="px-5 py-3 border-t border-edge-dim flex flex-col items-end">
+            {/* Change 46: download progress gets a real bar. It used to live only
+                as a percentage inside the (disabled, therefore dimmed) button
+                label, which is the one place a user is least likely to watch.
+                The -1 sentinel means the server sent no Content-Length, so there
+                is genuinely nothing to plot — the button's "Downloading…" text
+                covers that case and no bar is rendered. */}
+            {installState.kind === 'downloading' && installState.percent >= 0 && (
+              <ProgressBar
+                percent={installState.percent}
+                showLabel
+                aria-label="Download progress"
+                className="w-full mb-2"
+              />
+            )}
             <Button
               size="lg"
               onClick={handleUpdate}

@@ -187,7 +187,15 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                   <button
                     type="button"
                     onClick={e => { e.stopPropagation(); openEditor(t.slug); }}
-                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-black/20 transition-colors"
+                    // Change 41: retires the app's last raw `hover:bg-black/20`.
+                    // The obvious swap — the ghost Button's hover:bg-inset — would
+                    // be WRONG here: this button floats on a swatch painted in the
+                    // PREVIEWED theme's colours, so an app-theme hover fill can land
+                    // invisible (or garish) on any given swatch. `bg-current` resolves
+                    // to the inline `color` below, i.e. that theme's own fg, so the
+                    // hover is legible on a light and a dark swatch alike. 20% black
+                    // could not do that — it vanished on dark themes.
+                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-current/15 coarse-hit transition-colors"
                     style={{ color: t.tokens.fg }}
                     title="Edit theme"
                     aria-label={`Edit ${t.name}`}

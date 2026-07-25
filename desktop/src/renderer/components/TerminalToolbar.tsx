@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { isAndroid } from '../platform';
+import { Button } from './ui';
 
 interface TerminalToolbarProps {
   sessionId: string;
@@ -57,21 +58,28 @@ export function TerminalScrollButtons({ sessionId }: TerminalToolbarProps) {
 
   return (
     <div className="absolute bottom-2 right-2 flex flex-col gap-1.5 z-10 pointer-events-auto">
-      <ScrollButton label="↑" onClick={() => send('\x1b[A')} />
-      <ScrollButton label="↓" onClick={() => send('\x1b[B')} />
+      <ScrollButton label="↑" name="Scroll up" onClick={() => send('\x1b[A')} />
+      <ScrollButton label="↓" name="Scroll down" onClick={() => send('\x1b[B')} />
     </div>
   );
 }
 
-function ScrollButton({ label, onClick }: { label: string; onClick: () => void }) {
+function ScrollButton({ label, name, onClick }: { label: string; name: string; onClick: () => void }) {
   return (
-    <button
-      type="button"
+    // Change 41. The 40x40 geometry is KEPT rather than taking size="icon"'s 28px:
+    // this floats over a terminal and is a primary touch control on Android, so
+    // shrinking it by 30% to match a popup ✕ would be a regression dressed as
+    // consistency. What the primitive is here for is the focus ring and the
+    // accessible name — the label is a bare "↑"/"↓" glyph, which a screen reader
+    // announces as "up arrow" with no hint that it scrolls anything.
+    <Button
+      variant="secondary"
       onClick={onClick}
-      className="w-10 h-10 rounded-md text-base font-medium bg-inset text-fg-muted hover:text-fg hover:bg-well transition-colors select-none flex items-center justify-center border border-edge-dim"
+      aria-label={name}
+      className="w-10 h-10 p-0 rounded-md text-base bg-inset select-none"
     >
-      {label}
-    </button>
+      <span aria-hidden>{label}</span>
+    </Button>
   );
 }
 

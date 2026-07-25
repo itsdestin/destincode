@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, InputGroup } from './ui';
+import { Button, InputGroup, ProgressBar } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -115,9 +115,10 @@ function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
   const pct = dl.totalBytes > 0 ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : 0;
   return (
     <div className="mt-2 space-y-1">
-      <div className="h-1.5 rounded-full bg-inset overflow-hidden">
-        <div className="h-full bg-accent transition-[width]" style={{ width: `${pct}%` }} />
-      </div>
+      {/* Change 46: the fill here was the odd one out — every other bar in the
+          app rounds it, this one left it square, so a part-downloaded model had
+          a visibly different bar shape from a part-loaded one. */}
+      <ProgressBar percent={pct} aria-label="Download progress" />
       <div className="flex items-center justify-between">
         <p className="text-3xs text-fg-muted">
           {dl.state === 'verifying' ? 'Verifying…' : `${gb(dl.receivedBytes)} of ${gb(dl.totalBytes)}`}
