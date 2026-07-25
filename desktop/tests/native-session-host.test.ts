@@ -138,7 +138,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
     await host.destroy('s-1');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-1')).toBe('model-B');
@@ -150,7 +150,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
     await host.destroy('s-2');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
     const resumed = await host2.resume('s-2', root);
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-2')).toBe('header-model');
@@ -215,7 +215,7 @@ describe('NativeSessionHost', () => {
     });
     // delayedFactory trickles chunks, so the first turn is genuinely mid-stream
     // when resume lands — the exact window where an orphan does its damage.
-    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null);
+    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -542,7 +542,7 @@ describe('NativeSessionHost', () => {
     let id: string;
 
     beforeEach(async () => {
-      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null);
+      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null, async () => null);
       id = 'q-1';
       await host.create({ sessionId: id, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     });
@@ -629,7 +629,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('a failed turn (factory throw) does not strand the queue', async () => {
-      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null);
+      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null, async () => null);
       await errHost.create({ sessionId: 'e-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const types: string[] = [];
       errHost.on('transcript-event', (e) => types.push(e.type));
@@ -685,7 +685,7 @@ describe('NativeSessionHost', () => {
     it('quiesce clears the queue, aborts mid-stream, and no appends occur after it resolves', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       qHost.send('qz', 'long');              // slow (delayedFactory) turn in flight
       qHost.send('qz', 'queued-survivor');   // FIFO'd behind it — must NEVER run
@@ -706,7 +706,7 @@ describe('NativeSessionHost', () => {
     it('quiesce catches a same-tick send (setImmediate defer) — the turn is aborted, never completed', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       // send() and quiesce() in the SAME synchronous tick. send() defers its
       // runTurns dispatch one macrotask (setImmediate), so an interrupt that ran
