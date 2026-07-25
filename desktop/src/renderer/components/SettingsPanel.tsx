@@ -250,22 +250,18 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
           className="settings-drawer flex flex-col h-full border-r border-edge-dim"
           data-animating={animating ? 'true' : undefined}
         >
-          {/* Header — sits outside the scrolling body so it doesn't fade when
-              content scrolls. `settings-drawer-header` adds extra top padding
-              on macOS so the title clears the native traffic lights (which
-              sit at window top-left and can't be moved). */}
-          <div className="settings-drawer-header shrink-0 flex items-center justify-between px-4 py-3 border-b border-edge">
-            <h2 className="text-sm font-bold text-fg">Settings</h2>
-            <button
-              onClick={onClose}
-              className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            >
-              ✕
-            </button>
-          </div>
+          {/* Change 50 (Destin, approved 2026-07-16): the "Settings" title row and
+              its ✕ are GONE — rows start at the top of the drawer. Closing is Esc
+              or click-outside — `useEscClose` at the top of this component and the
+              <Scrim onClick={onClose}> backdrop above, both verified wired before
+              the ✕ came out. The ✕ was a redundant third path, and design rule 12
+              gains this drawer as its documented exception.
 
-          <div ref={outerScrollRef} className="scroll-fade flex-1 min-h-0">
+              The deleted header carried the macOS traffic-light clearance, so that
+              padding moved onto the scroll body — `settings-drawer-body` in
+              globals.css. Without the move the first row would render underneath
+              the native window buttons on macOS. No-op on every other platform. */}
+          <div ref={outerScrollRef} className="settings-drawer-body scroll-fade flex-1 min-h-0">
             {isAndroid() ? (
               <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} syncAutoOpen={syncAutoOpen} onSyncAutoOpenHandled={onSyncAutoOpenHandled} />
             ) : (

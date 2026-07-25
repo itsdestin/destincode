@@ -1089,9 +1089,15 @@ body[data-mode="buddy-chat"] #theme-bg {
 
 /* Settings drawer sits at window top-left — same spot as the macOS traffic
    lights. Left-padding is a bad fit here (drawer is only 320px wide, which
-   would crowd the ✕ button), so push the header row down instead to clear
-   the lights vertically. */
-.mac-titlebar-inset .settings-drawer-header {
+   would crowd the rows), so push the content down instead to clear the lights
+   vertically.
+
+   Change 50 moved this from `.settings-drawer-header` to the scroll body: the
+   header row was deleted, and it was the only thing holding this clearance. The
+   padding lives on the SCROLLING element deliberately — as the body scrolls the
+   gap scrolls away with it, which is what you want, whereas a fixed spacer would
+   waste 28px of a phone-height drawer forever. */
+.mac-titlebar-inset .settings-drawer-body {
   padding-top: 28px;
 }
 

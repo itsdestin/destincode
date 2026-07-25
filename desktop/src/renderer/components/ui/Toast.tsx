@@ -20,6 +20,12 @@ export type ToastTone = 'default' | 'error';
 
 export type ToastProps = {
   message: React.ReactNode;
+  /** Optional single affordance (e.g. "Send anyway"). Rendered in a
+   *  `pointer-events-auto` slot: the toast body stays click-through so it never
+   *  swallows a click meant for the app underneath, but the one thing that IS
+   *  meant to be clicked still is. Putting the action in `message` instead would
+   *  inherit the body's pointer-events-none and render a dead button. */
+  action?: React.ReactNode;
   onDismiss: () => void;
   tone?: ToastTone;
   /** global = centered above the input bar. anchored = pinned above its
@@ -31,6 +37,7 @@ export type ToastProps = {
 
 export function Toast({
   message,
+  action,
   onDismiss,
   tone = 'default',
   variant = 'global',
@@ -67,6 +74,7 @@ export function Toast({
         <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" aria-hidden="true" />
       )}
       {message}
+      {action && <span className="pointer-events-auto shrink-0">{action}</span>}
     </OverlayPanel>
   );
 }
