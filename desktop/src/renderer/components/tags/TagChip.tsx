@@ -13,7 +13,7 @@ export function TagChip({ tag, onRemove, className = '' }: {
   const c = `var(--${tag.color})`;
   return (
     <span
-      className={`inline-flex items-center gap-1 px-1.5 py-[1px] rounded-sm text-[10px] leading-none border ${className}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-[1px] rounded-sm text-3xs leading-none border ${className}`}
       style={{
         color: c,
         backgroundColor: `color-mix(in srgb, ${c} 16%, transparent)`,

@@ -117,7 +117,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
                 into overlapping text at ~326px. ml-auto on the button still
                 right-aligns it on the first line. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-2 px-1">
-              <span className="text-[10px] font-medium tracking-wider uppercase text-fg-muted">
+              <span className="text-3xs font-medium tracking-wider uppercase text-fg-muted">
                 {meta.label}
               </span>
               <span className="text-[11.5px] text-fg-muted min-w-0">{meta.desc}</span>
@@ -151,16 +151,16 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
                       <span className="flex items-center gap-2">
                         <span className="text-[13.5px] font-medium font-mono text-fg truncate">{f.label}</span>
                         {/* Plain-text load badge — subtle pill, never a glyph. */}
-                        <span className="inline-flex items-center text-[10px] text-fg-dim bg-well border border-edge-dim rounded-full px-2 py-0.5 shrink-0">
+                        <span className="inline-flex items-center text-3xs text-fg-dim bg-well border border-edge-dim rounded-full px-2 py-0.5 shrink-0">
                           {timingLabel(f)}
                         </span>
                       </span>
                       {f.description ? (
-                        <span className="block text-[12px] text-fg-2 truncate mt-0.5">{f.description}</span>
+                        <span className="block text-xs text-fg-2 truncate mt-0.5">{f.description}</span>
                       ) : null}
                     </span>
                     {f.size ? (
-                      <span className="text-[11px] text-fg-muted font-mono shrink-0">{f.size}</span>
+                      <span className="text-2xs text-fg-muted font-mono shrink-0">{f.size}</span>
                     ) : null}
                   </button>
                 ))}

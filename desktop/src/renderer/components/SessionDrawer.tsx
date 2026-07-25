@@ -472,7 +472,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {/* A pill click that couldn't resolve — shown INSTEAD of letting the
             generic empty state contradict the file the user just clicked. */}
         {pillError && (
-          <div className="mx-2 mt-2 px-2.5 py-2 text-[11px] text-fg rounded-md border border-edge bg-well">
+          <div className="mx-2 mt-2 px-2.5 py-2 text-2xs text-fg rounded-md border border-edge bg-well">
             {pillError}
           </div>
         )}
@@ -634,13 +634,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 onChange={(e) => { setRenameDraft(e.target.value); if (renameError) setRenameError(null); }}
                 onBlur={() => commitRename(false)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitRename(true); } }}
-                className="bg-canvas text-fg text-[13px] font-semibold px-2 py-1 w-[150px] outline-none"
+                className="bg-canvas text-fg text-sm-tight font-semibold px-2 py-1 w-[150px] outline-none"
               />
-              <span className="text-[12px] text-fg-muted font-mono px-2">{extOf(fileName)}</span>
+              <span className="text-xs text-fg-muted font-mono px-2">{extOf(fileName)}</span>
             </span>
             {/* Inline failure note — keeps the field open so the user can correct it. */}
             {renameError && (
-              <span className="absolute left-1 top-full mt-1 text-[11px] text-destructive-fg whitespace-nowrap z-10">
+              <span className="absolute left-1 top-full mt-1 text-2xs text-destructive-fg whitespace-nowrap z-10">
                 {renameError}
               </span>
             )}
@@ -652,7 +652,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             title="Click to rename"
             className="group flex items-center gap-1.5 min-w-0 px-2 py-1 rounded-md cursor-text hover:bg-well transition-colors"
           >
-            <span className="text-[13px] font-semibold text-fg truncate decoration-dotted underline-offset-[3px] group-hover:underline group-hover:decoration-fg-muted">
+            <span className="text-sm-tight font-semibold text-fg truncate decoration-dotted underline-offset-[3px] group-hover:underline group-hover:decoration-fg-muted">
               {fileName}
             </span>
             <span className="text-fg-muted opacity-0 group-hover:opacity-100 shrink-0"><Ic name="pencil" size={12} /></span>
@@ -771,7 +771,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               {/* metadata strip — bottom of the DOC column (not a full-width row up
                   top), so it shares the document's width and expands/shrinks with
                   the artifact list (Destin, 2026-07-22). */}
-              <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-t border-edge-dim bg-well shrink-0">
+              <div className="flex items-center gap-2 px-3.5 py-1 text-2xs text-fg-muted border-t border-edge-dim bg-well shrink-0">
                 {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
                 <span>{statusWord}</span>
                 <span className="text-fg-faint">·</span>
@@ -815,7 +815,7 @@ export function GitFooterEntry({
         type="button"
         onClick={onOpenReview}
         title="Review this file's changes"
-        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] text-fg-dim hover:text-fg hover:bg-inset transition-colors"
+        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-2xs text-fg-dim hover:text-fg hover:bg-inset transition-colors"
       >
         Review Changes <Ic name="forward" size={11} />
       </button>
@@ -857,7 +857,7 @@ function ArtifactListItem({ artifact, isActive, isDeleted, onSelect, onRemove }:
           <span className={`font-mono text-xs truncate flex-1 ${isDeleted ? 'line-through' : ''}`}>{fileName}</span>
         </div>
         {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
-        <div className="text-[10px] text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
+        <div className="text-3xs text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
       </button>
       {onRemove && (
         <CloseButton

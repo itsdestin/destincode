@@ -198,7 +198,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
               />
               {/* Character counter — shows remaining when text is present */}
               {reason.length > 0 && (
-                <p className="text-right text-[10px] text-fg-muted mt-0.5">
+                <p className="text-right text-3xs text-fg-muted mt-0.5">
                   {reason.length}/{REPORT_REASON_MAX}
                 </p>
               )}
@@ -322,7 +322,7 @@ export default function ReportReviewButton({
         <div
           role="status"
           aria-live="polite"
-          className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-[10px] text-fg shadow-md"
+          className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-3xs text-fg shadow-md"
           // zIndex 62 = one above CONTENT_Z[2] (61, L2 content). Ephemeral
           // position:absolute sibling anchored beside the button — not a full
           // overlay surface so we don't use the layer primitives here.

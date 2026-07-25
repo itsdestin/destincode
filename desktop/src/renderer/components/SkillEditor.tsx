@@ -98,7 +98,7 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
 
         {/* Name */}
         <label className="block mb-3">
-          <span className="text-[10px] font-medium text-fg-muted tracking-wider">NAME</span>
+          <span className="text-3xs font-medium text-fg-muted tracking-wider">NAME</span>
           {/* Shared field surface (change 20) — the hand-rolled recipe here used
               bg-well + placeholder-fg-muted; FIELD is bg-inset + fg-faint. */}
           <TextInput
@@ -111,7 +111,7 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
 
         {/* Description */}
         <label className="block mb-3">
-          <span className="text-[10px] font-medium text-fg-muted tracking-wider">DESCRIPTION</span>
+          <span className="text-3xs font-medium text-fg-muted tracking-wider">DESCRIPTION</span>
           {/* Same migration as NAME above (change 20). Stays a single-line input —
               it was never a textarea. */}
           <TextInput
@@ -129,7 +129,7 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
             <button>, which is what the Select trigger is, so the accessible name
             moves to aria-label instead. */}
         <div className="block mb-5">
-          <span className="text-[10px] font-medium text-fg-muted tracking-wider">CATEGORY</span>
+          <span className="text-3xs font-medium text-fg-muted tracking-wider">CATEGORY</span>
           <Select
             options={categories}
             value={category}

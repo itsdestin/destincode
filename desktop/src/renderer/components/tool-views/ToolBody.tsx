@@ -57,7 +57,7 @@ function CollapsibleBlock({ children, maxLines = 20, className = '' }: { childre
       {overflow && (
         <button
           onClick={() => setOpen(o => !o)}
-          className="mt-1 text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
+          className="mt-1 text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
         >
           {open ? 'Show less' : `Show ${lines.length - maxLines} more lines`}
         </button>
@@ -71,7 +71,7 @@ function PathHeader({ fp, extra }: { fp: string; extra?: React.ReactNode }) {
   return (
     // data-file-path carries the absolute path so the chat right-click menu can
     // offer View in folder / Copy as path (the DOM otherwise only has display labels).
-    <div className="flex items-center gap-1.5 text-[11px] font-mono" data-file-path={fp || undefined}>
+    <div className="flex items-center gap-1.5 text-2xs font-mono" data-file-path={fp || undefined}>
       {dir && <span className="text-fg-muted">{dir}/</span>}
       <span className="text-fg-2 font-medium">{basename(fp)}</span>
       {extra}
@@ -166,10 +166,10 @@ function ToolFilePreview({ fp, sessionId, chips }: { fp: string; sessionId?: str
           className="w-11 h-11 rounded-md border border-edge shrink-0"
         />
         <span className="flex-1 min-w-0">
-          <span className="block text-[13px] font-semibold text-fg truncate">{name}</span>
-          {dir && <span className="block text-[11px] font-mono text-fg-muted truncate">{dir}/</span>}
+          <span className="block text-sm-tight font-semibold text-fg truncate">{name}</span>
+          {dir && <span className="block text-2xs font-mono text-fg-muted truncate">{dir}/</span>}
         </span>
-        <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md px-2 py-1 transition-colors">
+        <span className="shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md px-2 py-1 transition-colors">
           Open
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M7 7h10v10" />
@@ -195,7 +195,7 @@ function Chip({ children, tone = 'neutral' }: { children: React.ReactNode; tone?
     : tone === 'info' ? 'bg-inset text-fg-2 border-edge'
     : 'bg-inset text-fg-muted border-edge';
   return (
-    <span className={`px-1.5 py-px text-[10px] uppercase tracking-wider rounded-sm border font-medium ${toneClass}`}>
+    <span className={`px-1.5 py-px text-3xs uppercase tracking-wider rounded-sm border font-medium ${toneClass}`}>
       {children}
     </span>
   );
@@ -213,7 +213,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handle}
-      className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2 px-1 rounded-sm"
+      className="text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2 px-1 rounded-sm"
       title="Copy"
     >
       {copied ? 'Copied' : 'Copy'}
@@ -224,7 +224,7 @@ function CopyButton({ text }: { text: string }) {
 function ErrorBlock({ error }: { error: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-red-500 mb-1">Error</div>
+      <div className="text-3xs uppercase tracking-wider text-red-500 mb-1">Error</div>
       <pre className="text-xs text-red-400 bg-panel rounded-sm p-2 overflow-auto max-h-48 whitespace-pre-wrap">
         {error}
       </pre>
@@ -274,7 +274,7 @@ function WriteView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
         chips={
           <>
             <Chip tone="add">New file</Chip>
-            {lineCount > 0 && <span className="text-[10px] text-fg-muted">{lineCount} lines</span>}
+            {lineCount > 0 && <span className="text-3xs text-fg-muted">{lineCount} lines</span>}
           </>
         }
       />
@@ -329,7 +329,7 @@ function ShellView({ tool, commandField }: {
       </div>
       {response && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1">Output</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Output</div>
           <CollapsibleBlock maxLines={20} className="bg-canvas">{response}</CollapsibleBlock>
         </div>
       )}
@@ -406,7 +406,7 @@ function LifecyclePill({ status }: { status?: TaskStatus }) {
   }
   const currentIdx = TASK_LIFECYCLE.indexOf(status);
   return (
-    <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider">
+    <div className="flex items-center gap-1 text-3xs uppercase tracking-wider">
       {TASK_LIFECYCLE.map((s, i) => {
         const done = i < currentIdx;
         const active = i === currentIdx;
@@ -474,7 +474,7 @@ function TaskUpdateView({ tool, task }: { tool: ToolCallState; task?: TaskState 
       <LifecyclePill status={displayStatus} />
       {description && <div className="text-xs text-fg-dim whitespace-pre-wrap">{description}</div>}
       {task && task.events.length > 1 && (
-        <div className="text-[10px] text-fg-muted">
+        <div className="text-3xs text-fg-muted">
           event {task.events.findIndex(e => e.toolUseId === tool.toolUseId) + 1} of {task.events.length}
         </div>
       )}
@@ -553,7 +553,7 @@ function ReadView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string
           {overflow && (
             <button
               onClick={() => setOpen(o => !o)}
-              className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
+              className="text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
             >
               {open ? 'Collapse' : `Expand (${rows.length} lines)`}
             </button>
@@ -855,13 +855,13 @@ function RawFallbackView({ tool }: { tool: ToolCallState }) {
     <div className="space-y-2">
       {formatted && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1">Input</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Input</div>
           <CollapsibleBlock maxLines={15}>{formatted}</CollapsibleBlock>
         </div>
       )}
       {tool.response && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1">Response</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Response</div>
           <CollapsibleBlock maxLines={20}>{tool.response}</CollapsibleBlock>
         </div>
       )}

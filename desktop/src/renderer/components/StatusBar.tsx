@@ -556,7 +556,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
             <div className="px-4 py-3 space-y-4">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
-                <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">
+                <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                   {cat.name}
                 </h3>
                 <div className="space-y-0.5">
@@ -587,8 +587,8 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                                 </svg>
                               )}
                             </span>
-                            <span className="text-[11px] text-fg">{w.label}</span>
-                            {w.locked && <span className="text-[9px] text-fg-muted">always on</span>}
+                            <span className="text-2xs text-fg">{w.label}</span>
+                            {w.locked && <span className="text-4xs text-fg-muted">always on</span>}
                           </button>
 
                           {/* Pencil — Theme widget only. Opens the cycle editor
@@ -629,7 +629,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
                         {/* Expanded info panel */}
                         {isExpanded && (
-                          <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-[10px] space-y-1.5">
+                          <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-3xs space-y-1.5">
                             <p className="text-fg-dim leading-relaxed">{w.description}</p>
                             <p className="text-fg-muted leading-relaxed">
                               <span className="font-medium text-fg-muted">Best for:</span> {w.bestFor}
@@ -641,7 +641,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             Tapping the theme pill in the status bar rotates through
                             every theme checked here. Must keep ≥1 in the cycle. */}
                         {showCycleEditor && (
-                          <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-[10px] space-y-1.5">
+                          <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-3xs space-y-1.5">
                             <p className="text-fg-dim leading-relaxed">
                               Pick which themes the pill rotates through when you tap it.
                             </p>
@@ -722,7 +722,7 @@ export default function StatusBar({
   const ss = sessionStats; // shorthand
 
   return (
-    <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-[10px] text-fg-muted">
+    <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-3xs text-fg-muted">
       {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
          Shift+Space still cycles models via the keyboard shortcut in App.tsx. */}
       {model && (model.kind === 'native' ? (
@@ -1011,7 +1011,7 @@ export default function StatusBar({
         return (
           <button
             onClick={handler}
-            className={`px-1.5 py-0.5 rounded-sm border text-[9px] sm:text-[10px] ${styleClass} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
+            className={`px-1.5 py-0.5 rounded-sm border text-4xs sm:text-3xs ${styleClass} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
             title={isFailing ? 'Sync is failing — click for details' : 'Sync warnings — click for details'}
           >
             {label}

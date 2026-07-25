@@ -75,7 +75,7 @@ export default function LocalModelsSection({ embedded = false }: { embedded?: bo
   return (
     <section>
       {!embedded && (
-        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
       )}
 
       <div className="space-y-4">
@@ -119,13 +119,13 @@ function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
         <div className="h-full bg-accent transition-[width]" style={{ width: `${pct}%` }} />
       </div>
       <div className="flex items-center justify-between">
-        <p className="text-[10px] text-fg-muted">
+        <p className="text-3xs text-fg-muted">
           {dl.state === 'verifying' ? 'Verifying…' : `${gb(dl.receivedBytes)} of ${gb(dl.totalBytes)}`}
           {dl.parts > 1 ? ` · part ${dl.currentPart} of ${dl.parts}` : ''}
         </p>
         <button
           onClick={() => void window.claude.models.downloadCancel(dl.downloadId)}
-          className="text-[10px] font-medium text-red-500 hover:underline"
+          className="text-3xs font-medium text-red-500 hover:underline"
         >
           Cancel
         </button>
@@ -225,13 +225,13 @@ function ModelBrowser({
       </InputGroup>
 
       {curated === null || installed === null ? (
-        <p className="text-[11px] text-fg-muted px-1">Loading…</p>
+        <p className="text-2xs text-fg-muted px-1">Loading…</p>
       ) : (
         <div className="space-y-3">
           {/* Installed (+ in-progress) */}
           {(installedFiltered.length > 0 || partials.length > 0) && (
             <div className="space-y-2">
-              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Installed</p>
+              <p className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Installed</p>
               {installedFiltered.map((m) => (
                 <InstalledRow key={m.id} model={m} onRefresh={onRefreshInstalled} />
               ))}
@@ -250,7 +250,7 @@ function ModelBrowser({
           {/* Recommended (label changes to "matches" while filtering) */}
           {curatedFiltered.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">
+              <p className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
                 {q ? 'Recommended matches' : 'Recommended'}
               </p>
               {curatedFiltered.map((m) => (
@@ -273,11 +273,11 @@ function ModelBrowser({
           {/* Hugging Face — only while actively searching */}
           {searching && (
             <div className="space-y-2">
-              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">More on Hugging Face</p>
-              {hfState === 'loading' && <p className="text-[11px] text-fg-muted px-1">Searching Hugging Face…</p>}
-              {hfState === 'error' && <p className="text-[11px] text-destructive-fg px-1">Couldn't reach Hugging Face.</p>}
+              <p className="text-3xs font-medium text-fg-muted tracking-wider uppercase">More on Hugging Face</p>
+              {hfState === 'loading' && <p className="text-2xs text-fg-muted px-1">Searching Hugging Face…</p>}
+              {hfState === 'error' && <p className="text-2xs text-destructive-fg px-1">Couldn't reach Hugging Face.</p>}
               {hfState === 'idle' && hfFiltered.length === 0 && (
-                <p className="text-[11px] text-fg-muted px-1">No other models found.</p>
+                <p className="text-2xs text-fg-muted px-1">No other models found.</p>
               )}
               {hfFiltered.map((h) => (
                 <RepoCard
@@ -295,7 +295,7 @@ function ModelBrowser({
             </div>
           )}
 
-          {nothing && <p className="text-[11px] text-fg-muted px-1">No models match “{query}”.</p>}
+          {nothing && <p className="text-2xs text-fg-muted px-1">No models match “{query}”.</p>}
         </div>
       )}
     </div>
@@ -375,19 +375,19 @@ function RepoCard({
           </svg>
           <div className="min-w-0 flex-1">
             <p className="text-xs text-fg font-medium truncate">{label}</p>
-            {sub && <p className="text-[10px] text-fg-muted truncate">{sub}</p>}
+            {sub && <p className="text-3xs text-fg-muted truncate">{sub}</p>}
             {loadState === 'loading' && quants === null && (
-              <p className="text-[10px] text-fg-muted mt-0.5">Checking size…</p>
+              <p className="text-3xs text-fg-muted mt-0.5">Checking size…</p>
             )}
             {chosen && (
-              <p className="text-[10px] mt-0.5">
+              <p className="text-3xs mt-0.5">
                 <span className="text-fg-dim">{gb(chosen.totalSizeBytes)} · {chosen.quant}</span>
                 {' · '}
                 <span className={fitColor(chosen.fit.fit)}>{chosen.fit.label}</span>
               </p>
             )}
             {loadState === 'error' && quants === null && (
-              <p className="text-[10px] text-amber-500 mt-0.5">Couldn't reach Hugging Face — expand to retry</p>
+              <p className="text-3xs text-amber-500 mt-0.5">Couldn't reach Hugging Face — expand to retry</p>
             )}
           </div>
         </button>
@@ -399,14 +399,14 @@ function RepoCard({
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-[10px] text-destructive-fg mt-1">{dlError}</p>}
+      {dlError && <p className="text-3xs text-destructive-fg mt-1">{dlError}</p>}
 
       {/* Expanded: the full quant list. */}
       {expanded && (
         <div className="mt-2 pl-5">
-          {loadState === 'loading' && <p className="text-[10px] text-fg-muted px-1">Loading versions…</p>}
+          {loadState === 'loading' && <p className="text-3xs text-fg-muted px-1">Loading versions…</p>}
           {loadState === 'error' && (
-            <button onClick={() => void loadQuants()} className="text-[10px] text-amber-500 hover:underline px-1">
+            <button onClick={() => void loadQuants()} className="text-3xs text-amber-500 hover:underline px-1">
               Couldn't reach Hugging Face — tap to retry
             </button>
           )}
@@ -416,7 +416,7 @@ function RepoCard({
                 <QuantDownloadRow key={qq.quant} repo={repo} q={qq} downloads={downloads} />
               ))}
               {!showAll && hiddenCount > 0 && (
-                <button onClick={() => setShowAll(true)} className="text-[10px] text-fg-2 hover:underline px-1">
+                <button onClick={() => setShowAll(true)} className="text-3xs text-fg-2 hover:underline px-1">
                   Show all {(quants ?? []).length}
                 </button>
               )}
@@ -455,7 +455,7 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-xs text-fg font-medium truncate">{model.id}</p>
-          <p className="text-[10px] text-fg-muted">
+          <p className="text-3xs text-fg-muted">
             {gb(model.sizeBytes)}
             {model.quant ? ` · ${model.quant}` : ''}
             {model.quantDescription ? ` · ${model.quantDescription}` : ''}
@@ -471,7 +471,7 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
       {/* Consequence-gated delete — plain-language warning before the file is removed. */}
       {confirming && (
         <div className="mt-2 space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-          <p className="text-[11px] text-fg-dim leading-relaxed">
+          <p className="text-2xs text-fg-dim leading-relaxed">
             This removes the model file ({gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.
           </p>
           <div className="flex gap-2">
@@ -489,7 +489,7 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
               {busy ? 'Deleting…' : 'Delete model'}
             </Button>
           </div>
-          {delError && <p className="text-[10px] text-destructive-fg">{delError}</p>}
+          {delError && <p className="text-3xs text-destructive-fg">{delError}</p>}
         </div>
       )}
     </div>
@@ -571,7 +571,7 @@ function PartialRow({
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-xs text-fg font-medium truncate">{dl.repo}</p>
-          <p className="text-[10px] text-fg-muted">
+          <p className="text-3xs text-fg-muted">
             {dl.quant} · {label}
             {dl.totalBytes > 0 ? ` · ${gb(dl.receivedBytes)} of ${gb(dl.totalBytes)}` : ''}
           </p>
@@ -612,9 +612,9 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
     <div className="px-2 py-1.5 rounded-md bg-well">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] text-fg font-medium">{q.quant}</p>
-          <p className="text-[10px] text-fg-muted">{q.description}</p>
-          <p className="text-[10px] mt-0.5">
+          <p className="text-2xs text-fg font-medium">{q.quant}</p>
+          <p className="text-3xs text-fg-muted">{q.description}</p>
+          <p className="text-3xs mt-0.5">
             <span className="text-fg-dim">{gb(q.totalSizeBytes)}</span>
             {' · '}
             <span className={fitColor(q.fit.fit)}>{q.fit.label}</span>
@@ -627,7 +627,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-[10px] text-destructive-fg mt-1">{dlError}</p>}
+      {dlError && <p className="text-3xs text-destructive-fg mt-1">{dlError}</p>}
     </div>
   );
 }
@@ -688,7 +688,7 @@ function OtherLocalApps() {
 
       {hits !== null && (
         hits.length === 0 ? (
-          <p className="text-[11px] text-fg-muted mt-2 px-1">No other local model apps found running.</p>
+          <p className="text-2xs text-fg-muted mt-2 px-1">No other local model apps found running.</p>
         ) : (
           <div className="space-y-2 mt-2">
             {hits.map((hit) => {
@@ -702,10 +702,10 @@ function OtherLocalApps() {
                         {hit.modelCount != null ? ` (${hit.modelCount} models)` : ''}
                       </p>
                       {isAdded && (
-                        <p className="text-[10px] text-fg-muted mt-0.5">Added — manage it in Providers above.</p>
+                        <p className="text-3xs text-fg-muted mt-0.5">Added — manage it in Providers above.</p>
                       )}
                       {addError[hit.baseUrl] && (
-                        <p className="text-[10px] text-destructive-fg mt-0.5">{addError[hit.baseUrl]}</p>
+                        <p className="text-3xs text-destructive-fg mt-0.5">{addError[hit.baseUrl]}</p>
                       )}
                     </div>
                     {!isAdded && (

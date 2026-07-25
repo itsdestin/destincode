@@ -194,7 +194,7 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
                     </span>
                     <span className="flex-1 min-w-0">
                       <span className="block text-xs text-fg font-medium">Connected accounts</span>
-                      <span className="block text-[10px] text-fg-muted truncate">{ghSummary}</span>
+                      <span className="block text-3xs text-fg-muted truncate">{ghSummary}</span>
                     </span>
                     <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -225,7 +225,7 @@ function SignedOutBody({
   const [signInError, setSignInError] = useState<string | null>(null);
   return (
     <div className="flex flex-col items-center gap-4 py-2 text-center">
-      <p className="text-[11px] text-fg-dim leading-relaxed">
+      <p className="text-2xs text-fg-dim leading-relaxed">
         One YouCoded account for the marketplace, games, and syncing with friends.
       </p>
       {/* Page-level CTA -> lg. Also drops hover:brightness-110, which was
@@ -250,10 +250,10 @@ function SignedOutBody({
       >
         {signInPending ? 'Signing in…' : 'Sign in to YouCoded'}
       </Button>
-      <p className="text-[10px] text-fg-muted leading-relaxed">
+      <p className="text-3xs text-fg-muted leading-relaxed">
         Uses your GitHub profile to sign in — GitHub only shares your public info.
       </p>
-      {signInError && <p className="text-[10px] text-destructive-fg">{signInError}</p>}
+      {signInError && <p className="text-3xs text-destructive-fg">{signInError}</p>}
     </div>
   );
 }
@@ -384,7 +384,7 @@ function SignedInBody({
         <div className="min-w-0">
           <p className="text-sm text-fg font-medium truncate">{user.display_name ?? user.login}</p>
           {/* Plain words when there's no handle yet — no placeholder glyphs. */}
-          <p className="text-[11px] text-fg-muted truncate">
+          <p className="text-2xs text-fg-muted truncate">
             {user.handle ? `@${user.handle}` : 'No handle yet'}
           </p>
         </div>
@@ -403,13 +403,13 @@ function SignedInBody({
           empty both leave `blocks` falsy so nothing shows in settings). */}
       {blocks && blocks.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Blocked users</h4>
+          <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Blocked users</h4>
           {blocks.map((b) => (
             <div key={b.id} className="space-y-1">
               <div className="flex items-center gap-2">
                 <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
                   <span className="text-xs text-fg truncate">{b.display_name}</span>
-                  {b.handle && <span className="text-[11px] text-fg-muted truncate">@{b.handle}</span>}
+                  {b.handle && <span className="text-2xs text-fg-muted truncate">@{b.handle}</span>}
                 </div>
                 {/* No confirm — unblocking is the recovery action, not the
                     destructive one (blocking is what's consequence-gated). */}
@@ -422,7 +422,7 @@ function SignedInBody({
                   {unblockingId === b.id ? 'Unblocking…' : 'Unblock'}
                 </Button>
               </div>
-              {unblockErrors[b.id] && <p className="text-[10px] text-destructive-fg">{unblockErrors[b.id]}</p>}
+              {unblockErrors[b.id] && <p className="text-3xs text-destructive-fg">{unblockErrors[b.id]}</p>}
             </div>
           ))}
         </section>
@@ -469,11 +469,11 @@ function SignedInBody({
         >
           {exporting ? 'Preparing export…' : 'Download my data'}
         </Button>
-        <p className="text-[10px] text-fg-muted leading-relaxed">
+        <p className="text-3xs text-fg-muted leading-relaxed">
           Downloads a file containing everything YouCoded's server stores about your account.
         </p>
-        {exportSavedPath && <p className="text-[10px] text-fg-muted">Saved to {exportSavedPath}</p>}
-        {exportError && <p className="text-[10px] text-destructive-fg">{exportError}</p>}
+        {exportSavedPath && <p className="text-3xs text-fg-muted">Saved to {exportSavedPath}</p>}
+        {exportError && <p className="text-3xs text-destructive-fg">{exportError}</p>}
       </section>
     </>
   ) : (
@@ -592,7 +592,7 @@ function EditAccountBody({
     <>
       {/* Edit-mode header: label + the way back to view mode. */}
       <div className="flex items-center justify-between">
-        <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Edit account</h4>
+        <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Edit account</h4>
         <Button variant="secondary" onClick={onDone}>
           Done
         </Button>
@@ -600,7 +600,7 @@ function EditAccountBody({
 
       {/* Display name */}
       <section className="space-y-1.5">
-        <label htmlFor="account-display-name" className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">
+        <label htmlFor="account-display-name" className="text-3xs font-medium text-fg-muted uppercase tracking-wider">
           Display name
         </label>
         {/* Change 77: Save moved INSIDE the field. Besides matching the spec, this
@@ -623,13 +623,13 @@ function EditAccountBody({
             {nameSaving ? 'Saving…' : 'Save'}
           </Button>
         </InputGroup>
-        {nameError && <p className="text-[10px] text-destructive-fg">{nameError}</p>}
-        {nameSaved && !nameError && <p className="text-[10px] text-fg-muted">Saved</p>}
+        {nameError && <p className="text-3xs text-destructive-fg">{nameError}</p>}
+        {nameSaved && !nameError && <p className="text-3xs text-fg-muted">Saved</p>}
       </section>
 
       {/* Handle */}
       <section className="space-y-1.5">
-        <label htmlFor="account-handle" className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">
+        <label htmlFor="account-handle" className="text-3xs font-medium text-fg-muted uppercase tracking-wider">
           Handle
         </label>
         {/* Change 77: this was already a hand-rolled InputGroup (bordered wrapper +
@@ -667,7 +667,7 @@ function EditAccountBody({
         {/* Handle-change consequences + explicit confirm (existing handle only). */}
         {handleConfirming && (
           <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               Changing your handle frees @{currentHandle} for anyone else to claim after 30 days — and
               you can't take it back during those 30 days. Friends who know you by @{currentHandle} will
               need your new handle.
@@ -697,15 +697,15 @@ function EditAccountBody({
         )}
 
         {/* Plain words for status, never glyphs. */}
-        {handleError && <p className="text-[10px] text-destructive-fg">{handleError}</p>}
-        {handleSaved && !handleError && <p className="text-[10px] text-fg-muted">Saved</p>}
+        {handleError && <p className="text-3xs text-destructive-fg">{handleError}</p>}
+        {handleSaved && !handleError && <p className="text-3xs text-fg-muted">Saved</p>}
       </section>
 
       <hr className="border-edge-dim" />
 
       {/* Danger zone — 2-step: expand, then typed confirm + explicit button. */}
       <section className="space-y-2">
-        <h4 className="text-[10px] font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
+        <h4 className="text-3xs font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
         {!deleteExpanded ? (
           // Arming step -> danger-outline. red-500 becomes the --destructive
           // token so packs can restyle it (#C62828 today — no longer identical
@@ -715,18 +715,18 @@ function EditAccountBody({
           </Button>
         ) : (
           <div className="space-y-2">
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               Deleting your account removes everything attached to it immediately — your likes,
               reviews, and install history are all gone. This cannot be undone.
             </p>
             {/* The freed-handle lock only applies when there IS a handle to free. */}
             {currentHandle.length > 0 && (
-              <p className="text-[11px] text-fg-dim leading-relaxed">
+              <p className="text-2xs text-fg-dim leading-relaxed">
                 Your handle @{currentHandle} is freed, but locked for 30 days before anyone else can
                 claim it.
               </p>
             )}
-            <label htmlFor="account-delete-confirm" className="block text-[10px] text-fg-muted">
+            <label htmlFor="account-delete-confirm" className="block text-3xs text-fg-muted">
               Type <span className="font-semibold text-fg">delete</span> to confirm
             </label>
             {/* Deliberately NOT migrated to <TextInput>: this field already IS the
@@ -765,7 +765,7 @@ function EditAccountBody({
                 {deleting ? 'Deleting…' : 'Delete my account'}
               </Button>
             </div>
-            {deleteError && <p className="text-[10px] text-destructive-fg">{deleteError}</p>}
+            {deleteError && <p className="text-3xs text-destructive-fg">{deleteError}</p>}
           </div>
         )}
       </section>

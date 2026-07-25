@@ -103,7 +103,7 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
                 <line x1="9" y1="18" x2="15" y2="18" />
               </svg>
               {count > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-on-accent text-[10px] font-medium leading-[16px] text-center">
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-on-accent text-3xs font-medium leading-[16px] text-center">
                   {count}
                 </span>
               )}

@@ -47,7 +47,7 @@ function PluginBadge({ name, onClick }: PluginBadgeProps) {
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick(); }}
       title={`Open ${name}`}
-      className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ${IDENTITY_BADGE} hover:bg-accent/25 transition-colors truncate max-w-[120px]`}
+      className={`text-4xs font-medium px-1 py-0.5 rounded-sm shrink-0 ${IDENTITY_BADGE} hover:bg-accent/25 transition-colors truncate max-w-[120px]`}
     >
       {name}
     </button>
@@ -61,7 +61,7 @@ function SourceTag({ skill }: { skill: SkillEntry }) {
     ? 'YC'
     : (typeLabels[skill.type] ?? 'Plugin');
   return (
-    <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ${IDENTITY_BADGE}`}>
+    <span className={`text-4xs font-medium px-1 py-0.5 rounded-sm shrink-0 ${IDENTITY_BADGE}`}>
       {label}
     </span>
   );
@@ -121,7 +121,7 @@ function SkillCardImpl({ skill, onClick, favorite, pluginBadge }: Props) {
         <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
       )}
       <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
-      <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">{skill.description}</span>
+      <span className="text-2xs text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">{skill.description}</span>
       <div className="mt-2 self-start">{badge}</div>
     </div>
   );

@@ -252,7 +252,7 @@ export default function ContextPopup({
                     >
                       Clear and start over
                     </Button>
-                    <p className="text-[11px] text-fg-muted mt-1 leading-snug">
+                    <p className="text-2xs text-fg-muted mt-1 leading-snug">
                       Erases the visible timeline and resets Claude's memory for this session. No summary is kept.
                     </p>
                   </div>

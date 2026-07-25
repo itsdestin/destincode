@@ -68,7 +68,7 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
               <div className="px-4 py-3 space-y-3 overflow-y-auto">
                 <TagPicker appliedIds={meta.tags} onToggle={meta.setTag} registry={registry} />
                 <div>
-                  <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+                  <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
                   <NoteEditor value={meta.note} onSave={meta.setNote} />
                 </div>
               </div>

@@ -128,15 +128,15 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
           <div className="px-4 pt-4 pb-3 border-b border-edge">
             <h2 className="text-sm font-bold text-fg">Close session</h2>
             {sessionName && (
-              <p className="text-[11px] text-fg-muted mt-1 truncate">{sessionName}</p>
+              <p className="text-2xs text-fg-muted mt-1 truncate">{sessionName}</p>
             )}
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
             {!metaLoaded ? null : !metaSupported ? (
-              <p className="text-[11px] text-fg-muted leading-snug">{metaReason}</p>
+              <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
               <>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tag before closing</label>
+              <label className="text-3xs uppercase tracking-wider text-fg-muted">Tag before closing</label>
               <div className="flex gap-1">
                 {FLAG_ORDER.map((flag) => {
                   const active = sel[flag];
@@ -144,7 +144,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                     <button
                       key={flag}
                       onClick={() => setSel((prev) => ({ ...prev, [flag]: !prev[flag] }))}
-                      className={`flex-1 px-1 py-1.5 rounded-sm text-[11px] transition-colors ${
+                      className={`flex-1 px-1 py-1.5 rounded-sm text-2xs transition-colors ${
                         active
                           ? 'bg-accent text-on-accent font-medium'
                           : 'bg-inset text-fg-dim hover:bg-edge'
@@ -156,19 +156,19 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   );
                 })}
               </div>
-              <p className="text-[10px] text-fg-muted">
+              <p className="text-3xs text-fg-muted">
                 {sel.complete
                   ? 'Complete hides this from the resume menu by default.'
                   : 'Tap a flag to tag this session, or close with none.'}
               </p>
               <div className="flex flex-col gap-1.5 mt-2">
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tags</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted">Tags</label>
                 <TagPicker
                   appliedIds={tagIds}
                   onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
                   registry={registry}
                 />
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mt-1">Note</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted mt-1">Note</label>
                 <NoteEditor value={note} onSave={setNote} />
               </div>
               </>
@@ -179,7 +179,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                 skips this prompt on future closes and destroys sessions directly. */}
             <button
               onClick={() => setDontShowAgain((v) => !v)}
-              className="flex items-center gap-1.5 text-[10px] text-fg-muted hover:text-fg transition-colors"
+              className="flex items-center gap-1.5 text-3xs text-fg-muted hover:text-fg transition-colors"
               aria-pressed={dontShowAgain}
             >
               <span

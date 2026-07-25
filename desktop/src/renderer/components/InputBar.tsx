@@ -654,7 +654,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 />
               ) : (
                 <div className="w-12 h-12 rounded-md border border-edge bg-panel flex items-center justify-center">
-                  <span className="text-[9px] text-fg-dim text-center leading-tight px-1 truncate">
+                  <span className="text-4xs text-fg-dim text-center leading-tight px-1 truncate">
                     {att.name}
                   </span>
                 </div>
@@ -669,7 +669,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 size="icon"
                 aria-label={`Remove ${att.name ?? 'attachment'}`}
                 onClick={() => removeAttachment(att.path)}
-                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-inset text-fg-2 hover:bg-edge text-[10px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-inset text-fg-2 hover:bg-edge text-3xs leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
               >
                 ×
               </Button>

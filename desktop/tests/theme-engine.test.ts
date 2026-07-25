@@ -171,6 +171,22 @@ describe('computeOverlayTokens — --link / --link-hover', () => {
   const derive = (tokens: typeof TOKENS) =>
     computeOverlayTokens(tokens, undefined, undefined, false);
 
+  const lum = (hex: string) => {
+    const ch = (i: number) => {
+      const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+  };
+  const ratio = (a: string, b: string) => {
+    const [hi, lo] = lum(a) > lum(b) ? [lum(a), lum(b)] : [lum(b), lum(a)];
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  // The three surfaces the engine's deriveLink guarantees against — canvas
+  // (prose), panel (tool cards/popups) and inset (the assistant bubble).
+  const worstOf = (c: string, t: { canvas: string; panel: string; inset: string }) =>
+    Math.min(ratio(c, t.canvas), ratio(c, t.panel), ratio(c, t.inset));
+
   it('honors a link declared by the theme instead of deriving one', () => {
     // The four built-ins declare hand-picked links; derivation must not stomp them.
     const result = derive({ ...TOKENS, link: '#2563EB', 'link-hover': '#1D4ED8' } as typeof TOKENS);
@@ -180,20 +196,54 @@ describe('computeOverlayTokens — --link / --link-hover', () => {
 
   it('derives link from accent when accent is far enough from fg', () => {
     // Community packs declare no link and used to inherit :root's #2563EB —
-    // light-blue links on every pack regardless of palette.
-    expect(derive(TOKENS)['--link']).toBe(TOKENS.accent);
+    // light-blue links on every pack regardless of palette. The derived value is
+    // accent NUDGED to AA (change 36), not accent verbatim: this fixture's
+    // #7C6AF7 only scores 3.98:1 on its own inset, so the nudge lightens it.
+    const link = derive(TOKENS)['--link'];
+    expect(link).not.toBe(TOKENS.accent);
+    expect(worstOf(link, TOKENS)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('leaves an already-readable accent alone', () => {
+    // The nudge is a floor, not a filter — a pack whose accent already reads
+    // must keep its exact colour rather than being shifted for no reason.
+    // Far enough from fg to clear the distance guard AND already 10.5:1 on the
+    // tightest surface, so nothing but a no-op is correct here.
+    const readable = { ...TOKENS, accent: '#FFD166' };
+    expect(worstOf(readable.accent, readable)).toBeGreaterThanOrEqual(4.5);
+    expect(derive(readable)['--link']).toBe(readable.accent);
+  });
+
+  it('nudges a derived link that fails AA on the assistant bubble', () => {
+    // The regression this fixes: the accent-vs-fg distance guard only asks
+    // "distinguishable from body text", so kuromi-dreamer shipped a link at
+    // 2.90:1. inset is the tight surface because it IS the assistant bubble.
+    const dim = { ...TOKENS, accent: '#3A2F70' };
+    expect(worstOf(dim.accent, dim)).toBeLessThan(4.5);
+    expect(worstOf(derive(dim)['--link'], dim)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('falls back to fg-2 when accent is too close to fg to read as a link', () => {
     // Themes that set accent == fg for high-contrast buttons would otherwise
-    // render links invisible against prose. Same guard as --code.
-    const flat = { ...TOKENS, accent: TOKENS.fg };
-    expect(derive(flat)['--link']).toBe(TOKENS['fg-2']);
+    // render links invisible against prose. Same guard as --code. fg-2 is the
+    // BASE here; the nudge may still lift it, so assert the source not the hex.
+    const flat = { ...TOKENS, accent: TOKENS.fg, 'fg-2': '#B0B0E8' };
+    expect(derive(flat)['--link']).toBe('#B0B0E8');
+  });
+
+  it('does not nudge a link the theme declared itself', () => {
+    // A declared link is the author's explicit choice (creme's olive #5B4A1E is
+    // deliberate). Silently correcting it would also make the audit's HARD link
+    // rules unfailable, and a gate that cannot fail reports nothing.
+    const bad = { ...TOKENS, link: '#1A1A2E' };
+    expect(worstOf('#1A1A2E', bad)).toBeLessThan(4.5);
+    expect(derive(bad)['--link']).toBe('#1A1A2E');
   });
 
   it('derives link-hover as link mixed 85% toward fg', () => {
-    expect(derive(TOKENS)['--link-hover']).toBe(
-      `color-mix(in oklab, ${TOKENS.accent} 85%, ${TOKENS.fg})`,
+    const out = derive(TOKENS);
+    expect(out['--link-hover']).toBe(
+      `color-mix(in oklab, ${out['--link']} 85%, ${TOKENS.fg})`,
     );
   });
 
@@ -201,6 +251,29 @@ describe('computeOverlayTokens — --link / --link-hover', () => {
     // Rule 15: nothing a component consumes may fall back to :root.
     expect(derive(TOKENS)['--link']).toBeTruthy();
     expect(derive(TOKENS)['--link-hover']).toBeTruthy();
+  });
+
+  it('stays in lockstep with the vendored audit rules', async () => {
+    // Same pin as destructive-fg: feed the ENGINE's derived link to the audit.
+    // If the two derivations drift apart, the audit green-lights a link the app
+    // paints illegibly — which is exactly how these packs shipped sub-AA.
+    const { createRequire } = await import('node:module');
+    const require2 = createRequire(import.meta.url);
+    const rules = require2('../scripts/vendor/contrast-rules.js');
+    const palettes = {
+      'dim accent':   { ...TOKENS, accent: '#3A2F70' },
+      'bright accent': { ...TOKENS, accent: '#C0B4FF' },
+      'light theme':  { ...TOKENS, canvas: '#F2F2F2', panel: '#EAEAEA', inset: '#D7D7D7', fg: '#1A1A1A', accent: '#2563EB' },
+    };
+    for (const [name, tokens] of Object.entries(palettes)) {
+      const engineLink = computeOverlayTokens(tokens as typeof TOKENS, undefined, undefined, false)['--link'];
+      const audited = rules.evaluate({ ...tokens, link: engineLink });
+      for (const ruleName of ['link on canvas', 'link on panel', 'link on inset']) {
+        const rule = audited.results.HARD.find((r: { rule: string }) => r.rule === ruleName);
+        expect(rule, `${name}: ${ruleName} present`).toBeDefined();
+        expect(rule.status, `${name}: ${ruleName} for engine value ${engineLink}`).toBe('PASS');
+      }
+    }
   });
 });
 

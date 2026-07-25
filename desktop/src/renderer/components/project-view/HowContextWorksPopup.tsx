@@ -120,7 +120,7 @@ const INFO_TABS: { id: InfoTabId; label: string; Icon: React.ComponentType<IconP
 // Small uppercase micro-label (the prototype's `.lbl`).
 function MicroLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-medium tracking-wider uppercase text-fg-muted">
+    <div className="text-3xs font-medium tracking-wider uppercase text-fg-muted">
       {children}
     </div>
   );
@@ -146,7 +146,7 @@ function TopicPage({ data }: { data: TopicPageData }) {
           <Icon size={20} />
         </span>
         <div className="min-w-0">
-          <h3 className="text-[17px] font-semibold text-fg leading-tight font-mono">{data.heading}</h3>
+          <h3 className="text-lg font-semibold text-fg leading-tight font-mono">{data.heading}</h3>
           <p className="text-[12.5px] text-fg-muted mt-0.5">{data.tag}</p>
         </div>
       </div>
@@ -165,7 +165,7 @@ function TopicPage({ data }: { data: TopicPageData }) {
       {data.secs.map(([heading, body]) => (
         <div key={heading} className="mb-3.5">
           <MicroLabel>{heading}</MicroLabel>
-          <p className="text-[13px] text-fg-2 leading-relaxed mt-1">{body}</p>
+          <p className="text-sm-tight text-fg-2 leading-relaxed mt-1">{body}</p>
         </div>
       ))}
 
@@ -303,11 +303,11 @@ const OVERVIEW_LAYERS: OverviewLayer[] = [
 function OverviewPage() {
   return (
     <div>
-      <h3 className="text-[17px] font-semibold text-fg leading-tight">How context works</h3>
+      <h3 className="text-lg font-semibold text-fg leading-tight">How context works</h3>
       <p className="text-[12.5px] text-fg-muted mt-0.5 mb-4">
         Everything Claude reads before it starts — and which wins when they disagree.
       </p>
-      <p className="text-[13px] text-fg-2 leading-relaxed mb-3.5">
+      <p className="text-sm-tight text-fg-2 leading-relaxed mb-3.5">
         Claude builds its understanding of your project from several sources, all loaded
         automatically. They stack from broad to specific:
       </p>
@@ -324,14 +324,14 @@ function OverviewPage() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="text-[13.5px] font-medium text-fg">{l.label}</div>
-                  <div className="font-mono text-[11px] text-fg-muted truncate">{l.path}</div>
+                  <div className="font-mono text-2xs text-fg-muted truncate">{l.path}</div>
                 </div>
                 <div className="text-[11.5px] text-fg-dim text-right shrink-0 max-w-[210px]">
                   {l.timing}
                 </div>
               </div>
               {i < OVERVIEW_LAYERS.length - 1 && (
-                <div className="pl-[30px] text-fg-faint text-[12px] leading-none py-0.5">↓</div>
+                <div className="pl-[30px] text-fg-faint text-xs leading-none py-0.5">↓</div>
               )}
             </React.Fragment>
           );
@@ -393,7 +393,7 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
       >
         {/* Header */}
         <header className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-          <span className="text-[15px] font-semibold text-fg">How context works</span>
+          <span className="text-base font-semibold text-fg">How context works</span>
           <CloseButton onClick={onClose} title="Close" />
         </header>
 
@@ -413,7 +413,7 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
                   type="button"
                   // shrink-0 + whitespace-nowrap so the tabs scroll horizontally
                   // as a strip on narrow instead of squashing.
-                  className={`w-auto sm:w-full shrink-0 whitespace-nowrap text-left flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] transition-colors ${
+                  className={`w-auto sm:w-full shrink-0 whitespace-nowrap text-left flex items-center gap-2.5 px-3 py-2 rounded-md text-sm-tight transition-colors ${
                     active
                       ? 'bg-inset text-fg font-medium'
                       : 'text-fg-2 hover:bg-inset hover:text-fg'

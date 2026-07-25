@@ -158,7 +158,7 @@ export default function PerformancePopup({
             )}
 
             {gpuList.length > 0 && (
-              <p className="text-[11px] text-fg-muted">
+              <p className="text-2xs text-fg-muted">
                 Detected GPUs: {gpuList.join(', ')}
               </p>
             )}
@@ -170,7 +170,7 @@ export default function PerformancePopup({
 
             {PERFORMANCE_EXPLAINER.sections.map((section, i) => (
               <section key={i}>
-                <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">
+                <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                   {section.heading}
                 </h3>
                 {section.paragraphs?.map((p, j) => (

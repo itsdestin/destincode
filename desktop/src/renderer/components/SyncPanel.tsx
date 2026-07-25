@@ -177,14 +177,14 @@ function primaryLabelForState(state: SyncDisplayState, loading: boolean): string
 function badgeForState(state: SyncDisplayState): React.ReactNode {
   if (state.kind === 'failing') {
     return (
-      <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-[9px] font-medium shrink-0">
+      <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-4xs font-medium shrink-0">
         {state.warningCount}
       </span>
     );
   }
   if (state.kind === 'attention') {
     return (
-      <span className="px-1.5 py-0.5 rounded-full bg-[#FF9800]/15 text-[#FF9800] text-[9px] font-medium shrink-0">
+      <span className="px-1.5 py-0.5 rounded-full bg-[#FF9800]/15 text-[#FF9800] text-4xs font-medium shrink-0">
         {state.warningCount}
       </span>
     );
@@ -1100,9 +1100,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${dot}`} />
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-fg">{title}</div>
-                          <div className={`text-[11px] mt-0.5 leading-relaxed ${subWarn ? 'text-destructive-fg' : 'text-fg-muted'}`}>{sub}</div>
+                          <div className={`text-2xs mt-0.5 leading-relaxed ${subWarn ? 'text-destructive-fg' : 'text-fg-muted'}`}>{sub}</div>
                           {/* Off-but-errored: keep the normal off sub AND show why the last attempt failed. */}
-                          {offError && <div className="text-[11px] mt-0.5 leading-relaxed text-destructive-fg">{offError}</div>}
+                          {offError && <div className="text-2xs mt-0.5 leading-relaxed text-destructive-fg">{offError}</div>}
                         </div>
                       </div>
                       {/* Enable toggle — migrated to the shared Toggle (spec changes
@@ -1128,8 +1128,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         Native <details> — no React state needed inside this render. */}
                     {errorMsg && (hk === 'error' || offError) && (
                       <details className="mt-2 pl-[18px]">
-                        <summary className="text-[11px] text-fg-muted cursor-pointer hover:text-fg-2 select-none">Show details</summary>
-                        <pre className="mt-1 text-[10px] leading-relaxed text-fg-dim whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{errorMsg as string}</pre>
+                        <summary className="text-2xs text-fg-muted cursor-pointer hover:text-fg-2 select-none">Show details</summary>
+                        <pre className="mt-1 text-3xs leading-relaxed text-fg-dim whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{errorMsg as string}</pre>
                       </details>
                     )}
                   </div>
@@ -1161,7 +1161,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                               aria-selected={active}
                               tabIndex={active ? 0 : -1}
                               onClick={() => setCountTab(t.key)}
-                              className={`inline-flex items-baseline gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors ${active ? 'bg-accent text-on-accent border border-accent' : 'bg-inset border border-edge-dim text-fg-dim hover:text-fg-2'}`}
+                              className={`inline-flex items-baseline gap-1.5 rounded-full px-3 py-1 text-2xs transition-colors ${active ? 'bg-accent text-on-accent border border-accent' : 'bg-inset border border-edge-dim text-fg-dim hover:text-fg-2'}`}
                             >
                               <span className="font-bold text-xs">{t.count}</span> {t.word}
                             </button>
@@ -1172,13 +1172,13 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} syncInProgress={status?.syncInProgress ?? false} lastSyncByDevice={status?.lastSyncByDevice} lastSyncEpoch={status?.lastSyncEpoch ?? null} />}
                         {countTab === 'proj' && (() => {
                           const projects = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project');
-                          if (projects.length === 0) return <p className="text-[11px] text-fg-muted">Turn on sync for a project folder to add it here.</p>;
+                          if (projects.length === 0) return <p className="text-2xs text-fg-muted">Turn on sync for a project folder to add it here.</p>;
                           return (
                             <ul className="space-y-1">
                               {projects.map((s: any) => (
                                 <li key={s.id} className="flex items-center justify-between gap-2">
                                   <span className="text-xs text-fg-2 truncate">{s.displayName || s.id.replace('project:', '')}</span>
-                                  <span className="text-[10px] text-fg-muted shrink-0">{s.remote ? 'connected' : 'local only'}</span>
+                                  <span className="text-3xs text-fg-muted shrink-0">{s.remote ? 'connected' : 'local only'}</span>
                                 </li>
                               ))}
                             </ul>
@@ -1187,7 +1187,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         {countTab === 'conv' && (() => {
                           // Most-recent first; show up to 4 with a "+ N more" muted tail.
                           const sorted = [...(conversations ?? [])].sort((a, b) => b.lastModified - a.lastModified);
-                          if (sorted.length === 0) return <p className="text-[11px] text-fg-muted">No conversations yet.</p>;
+                          if (sorted.length === 0) return <p className="text-2xs text-fg-muted">No conversations yet.</p>;
                           const shown = sorted.slice(0, 4);
                           return (
                             <>
@@ -1195,12 +1195,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                                 {shown.map(c => (
                                   <li key={c.sessionId} className="flex items-center justify-between gap-2">
                                     <span className="text-xs text-fg-2 truncate">{c.name}</span>
-                                    <span className="text-[10px] text-fg-muted shrink-0">{relativeMs(c.lastModified)}</span>
+                                    <span className="text-3xs text-fg-muted shrink-0">{relativeMs(c.lastModified)}</span>
                                   </li>
                                 ))}
                               </ul>
                               {sorted.length > shown.length && (
-                                <p className="text-[10px] text-fg-muted mt-1.5">+ {sorted.length - shown.length} more, all backed up</p>
+                                <p className="text-3xs text-fg-muted mt-1.5">+ {sorted.length - shown.length} more, all backed up</p>
                               )}
                             </>
                           );
@@ -1253,9 +1253,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-fg">Additional backups</span>
-                        <span className="text-[9px] font-medium text-fg-muted tracking-wider uppercase px-1.5 py-0.5 rounded-full bg-inset">optional</span>
+                        <span className="text-4xs font-medium text-fg-muted tracking-wider uppercase px-1.5 py-0.5 rounded-full bg-inset">optional</span>
                       </div>
-                      <p className="text-[11px] text-fg-muted mt-1 leading-relaxed">{sub}</p>
+                      <p className="text-2xs text-fg-muted mt-1 leading-relaxed">{sub}</p>
                     </div>
                     {/* Master toggle: pause-all / resume-all / reveal picker (handleAdditionalToggle). */}
                     {/* Shared Toggle (spec changes 15/16) — same 36x20 geometry, but the
@@ -1299,17 +1299,17 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                             {/* Name + detail */}
                             <div className="flex-1 min-w-0">
                               <div className="text-xs text-fg font-medium truncate">{b.label}</div>
-                              <div className="text-[10px] text-fg-muted truncate">
+                              <div className="text-3xs text-fg-muted truncate">
                                 {b.lastError ? b.lastError :
                                  b.lastPushEpoch ? `Backed up ${timeAgo(b.lastPushEpoch)}` :
                                  !b.syncEnabled ? 'Auto-backup paused' :
                                  'Never backed up'}
                               </div>
                               {isPending && !actionFeedback[b.id] && (
-                                <span className="text-[9px] font-medium text-amber-400">Changes pending upload</span>
+                                <span className="text-4xs font-medium text-amber-400">Changes pending upload</span>
                               )}
                               {actionFeedback[b.id] && (
-                                <span className={`text-[9px] font-medium ${
+                                <span className={`text-4xs font-medium ${
                                   actionFeedback[b.id] === 'error' ? 'text-destructive-fg' :
                                   actionFeedback[b.id]?.includes('ing') ? 'text-blue-400' :
                                   'text-green-400'
@@ -1363,14 +1363,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         onClick={() => { setAddType('drive'); setView('add-config'); }}
                         className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-edge bg-well hover:bg-inset text-xs text-fg-2 transition-colors"
                       >
-                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] bg-blue-500/10 text-blue-400">{'☁'}</span>
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-2xs bg-blue-500/10 text-blue-400">{'☁'}</span>
                         Google Drive
                       </button>
                       <button
                         onClick={() => { setAddType('icloud'); setView('add-config'); }}
                         className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-edge bg-well hover:bg-inset text-xs text-fg-2 transition-colors"
                       >
-                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] bg-sky-500/10 text-sky-400">{'⬡'}</span>
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-2xs bg-sky-500/10 text-sky-400">{'⬡'}</span>
                         iCloud
                       </button>
                     </div>
@@ -1395,7 +1395,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         <button
                           onClick={handleForceSync}
                           disabled={syncing}
-                          className="text-[11px] underline text-fg-muted hover:text-fg-2 disabled:opacity-50 disabled:cursor-wait"
+                          className="text-2xs underline text-fg-muted hover:text-fg-2 disabled:opacity-50 disabled:cursor-wait"
                         >
                           {syncing || status?.syncInProgress ? 'Backing up…' : 'Back up all now'}
                         </button>
@@ -1409,7 +1409,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             {/* 3. Warnings — typed SyncWarning objects with title/body/fix-action/stderr */}
             {status?.warnings && status.warnings.length > 0 && (
               <div>
-                <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Warnings</h3>
+                <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Warnings</h3>
                 <div className="space-y-2">
                   {status.warnings.map((w) => (
                     <div
@@ -1421,14 +1421,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       }`}
                     >
                       <div className="text-xs font-medium text-fg">{w.title}</div>
-                      <div className="text-[11px] text-fg-muted mt-0.5">{w.body}</div>
+                      <div className="text-2xs text-fg-muted mt-0.5">{w.body}</div>
                       {/* Collapsible stderr for UNKNOWN-code warnings where raw output helps diagnose */}
                       {w.code === 'UNKNOWN' && w.stderr && (
                         <details className="mt-1">
-                          <summary className="text-[10px] text-fg-muted cursor-pointer">
+                          <summary className="text-3xs text-fg-muted cursor-pointer">
                             Show error details
                           </summary>
-                          <pre className="mt-1 p-2 bg-inset rounded text-[10px] whitespace-pre-wrap font-mono">
+                          <pre className="mt-1 p-2 bg-inset rounded text-3xs whitespace-pre-wrap font-mono">
                             {w.stderr}
                           </pre>
                         </details>
@@ -1456,8 +1456,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 Now passive text with per-item hover tooltips on the default cursor. */}
             {status && status.syncedCategories.length > 0 && (
               <div>
-                <span className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Includes </span>
-                <span className="text-[11px] text-fg-dim">
+                <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Includes </span>
+                <span className="text-2xs text-fg-dim">
                   {status.syncedCategories.flatMap((cat, i) => {
                     const label = (
                       <span key={cat} title={CATEGORY_DESCRIPTIONS[cat] || ''}>
@@ -1479,7 +1479,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                     try { const log = await claude.sync.getLog(30); setLogLines(log); } catch {}
                   }
                 }}
-                className="flex items-center gap-1.5 text-[10px] font-medium text-fg-muted tracking-wider uppercase hover:text-fg-2 transition-colors"
+                className="flex items-center gap-1.5 text-3xs font-medium text-fg-muted tracking-wider uppercase hover:text-fg-2 transition-colors"
               >
                 <svg className={`w-3 h-3 transition-transform ${showLog ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -1490,10 +1490,10 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               {showLog && (
                 <div className="mt-2">
                   {logLines.length === 0 ? (
-                    <div className="text-[11px] text-fg-muted px-2 py-3">No sync log entries yet.</div>
+                    <div className="text-2xs text-fg-muted px-2 py-3">No sync log entries yet.</div>
                   ) : (
                     <div ref={logScrollRef} className="scroll-fade max-h-48 rounded-lg bg-inset/40 border border-edge-dim">
-                      <pre className="text-[10px] text-fg-dim font-mono px-2 py-2 whitespace-pre-wrap break-all leading-relaxed">
+                      <pre className="text-3xs text-fg-dim font-mono px-2 py-2 whitespace-pre-wrap break-all leading-relaxed">
                         {logLines.map((line, i) => {
                           try {
                             const entry = JSON.parse(line);
@@ -1516,7 +1516,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                   )}
                   <button
                     onClick={async () => { try { setLogLines(await claude.sync.getLog(30)); } catch {} }}
-                    className="mt-1.5 text-[10px] text-fg-muted hover:text-fg-2 transition-colors"
+                    className="mt-1.5 text-3xs text-fg-muted hover:text-fg-2 transition-colors"
                   >
                     Refresh
                   </button>
@@ -1530,7 +1530,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             {!status && !loading && (
               <div className="text-center py-6">
                 <div className="text-fg-muted text-sm mb-1">No Sync Data</div>
-                <div className="text-fg-muted text-[11px]">Sync hasn't run yet. Configure a backup destination to get started.</div>
+                <div className="text-fg-muted text-2xs">Sync hasn't run yet. Configure a backup destination to get started.</div>
               </div>
             )}
             </div>
@@ -1601,7 +1601,7 @@ function ConfirmDialog({
           <h3 className="text-xs font-bold text-destructive-fg">{title}</h3>
         </div>
         <div className="px-4 py-3 space-y-3">
-          <p className="text-[11px] text-fg-dim leading-relaxed">{message}</p>
+          <p className="text-2xs text-fg-dim leading-relaxed">{message}</p>
           <div className="flex gap-2 pt-1">
             {/* Was a filled-grey button (bg-inset/hover:bg-edge). Spec decision 60 folds
                 that whole family into `secondary` (outline) — it sits beside a real
@@ -1671,7 +1671,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
 
   // null = not loaded yet; [] = loaded-but-empty (sync off / no personal root).
   if (devices !== null && devices.length === 0) {
-    return <p className="text-[11px] text-fg-muted">No devices yet — they appear here once sync has run.</p>;
+    return <p className="text-2xs text-fg-muted">No devices yet — they appear here once sync has run.</p>;
   }
 
   return (
@@ -1732,10 +1732,10 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
                     {d.name}
                   </button>
                 )}
-                {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
+                {d.self && <span className="text-3xs text-fg-muted shrink-0">(this device)</span>}
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[10px] text-fg-muted">{right}</span>
+                <span className="text-3xs text-fg-muted">{right}</span>
                 {/* No Remove for self: upsertSelf re-creates this row on the next
                     launch, so offering it would read as a button that does nothing.
                     Hidden while confirming — the confirm block below replaces it. */}
@@ -1744,7 +1744,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
                     type="button"
                     onClick={() => { setConfirmingId(d.id); setRemoveNote(null); }}
                     aria-label={`Remove ${d.name}`}
-                    className="text-[10px] text-fg-muted hover:text-fg"
+                    className="text-3xs text-fg-muted hover:text-fg"
                   >
                     Remove
                   </button>
@@ -1759,7 +1759,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
                 className="mt-1.5 space-y-2 rounded-lg bg-inset border border-edge-dim p-2.5"
                 onKeyDown={(e) => { if (e.key === 'Escape') setConfirmingId(null); }} // matches the rename input's Escape
               >
-                <p className="text-[11px] text-fg-dim leading-relaxed">
+                <p className="text-2xs text-fg-dim leading-relaxed">
                   Remove {d.name}? It stops being listed here. If this device syncs again, it comes back.
                 </p>
                 <div className="flex gap-2">
@@ -1793,7 +1793,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
             {/* Why the remove didn't take. Never invents a cause: the handler's own
                 reason when it gave one, otherwise non-committal. */}
             {removeNote?.id === d.id && (
-              <p className="text-[10px] text-destructive-fg mt-1">{removeNote.text}</p>
+              <p className="text-3xs text-destructive-fg mt-1">{removeNote.text}</p>
             )}
           </li>
         );
@@ -1808,7 +1808,7 @@ function MenuButton({ children, onClick, danger }: { children: React.ReactNode; 
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
+      className={`w-full text-left px-3 py-1.5 text-2xs transition-colors ${
         danger ? 'text-red-400 hover:bg-red-500/10' : 'text-fg hover:bg-inset'
       }`}
     >
@@ -1868,7 +1868,7 @@ function EditBackendForm({
       <div ref={actionsScrollRef} className="scroll-fade flex-1">
         <div className="px-4 py-4 space-y-4">
         <div>
-          <label className="block text-[10px] text-fg-muted mb-1">Name</label>
+          <label className="block text-3xs text-fg-muted mb-1">Name</label>
           {/* Shared FIELD surface (spec change 20). The visible label above isn't
               wired up with htmlFor, so aria-label gives it the same name. Left as a
               plain field rather than an InputGroup: its Save button sits at the very
@@ -1885,13 +1885,13 @@ function EditBackendForm({
         {/* Config fields are read-only — prevents users from breaking rclone remotes or repo URLs */}
         {displayFields.map(field => (
           <div key={field.key}>
-            <div className="text-[10px] text-fg-muted mb-1">{field.label}</div>
+            <div className="text-3xs text-fg-muted mb-1">{field.label}</div>
             <div className="px-2 py-1.5 rounded-md bg-inset/30 border border-edge-dim text-xs text-fg-dim">
               {backend.config[field.key] || '(not set)'}
             </div>
           </div>
         ))}
-        <div className="text-[10px] text-fg-muted">
+        <div className="text-3xs text-fg-muted">
           To change these settings, remove this backup and add a new one.
         </div>
 

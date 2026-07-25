@@ -222,16 +222,16 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
       <div className="text-xs text-fg mb-3">{summary.summary}</div>
       {kind === 'bug' && (
         <details className="mb-3">
-          <summary className="text-[10px] text-fg-muted cursor-pointer">Logs to include (editable)</summary>
+          <summary className="text-3xs text-fg-muted cursor-pointer">Logs to include (editable)</summary>
           {summary.flagged_strings.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {summary.flagged_strings.map((s: string) => (
-                <span key={s} className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">⚠ {s.slice(0, 30)}</span>
+                <span key={s} className="text-4xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">⚠ {s.slice(0, 30)}</span>
               ))}
             </div>
           )}
           {/* Change 42: same migration as the describe screen. `sm` (11px) is the
-              nearest field size to the old text-[10px] — the scale has no 10px
+              nearest field size to the old raw 10px — the scale has no 10px
               field step, and arbitrary text-[Npx] is retired (see globals.css).
               font-mono is kept: this is a log tail and column alignment matters. */}
           <Textarea
@@ -261,8 +261,8 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
         >
           {ctaLabel}
         </Button>
-        <p className="text-[10px] text-amber-400/80 text-center">⚠ High Claude usage — not recommended for Pro plans</p>
-        <button onClick={onEdit} className="text-[10px] text-fg-muted hover:text-fg underline">Edit description</button>
+        <p className="text-3xs text-amber-400/80 text-center">⚠ High Claude usage — not recommended for Pro plans</p>
+        <button onClick={onEdit} className="text-3xs text-fg-muted hover:text-fg underline">Edit description</button>
       </div>
     </>
   );

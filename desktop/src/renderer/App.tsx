@@ -2932,7 +2932,7 @@ function AppInner() {
                 /* Expanded new-session form with toggles */
                 <div className="layer-surface w-full p-3 flex flex-col gap-2">
                   <div>
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                    <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                     {/* Match SessionStrip: the picker's "Manage projects…"
                         footer opens Project View (where adding lives). */}
                     <FolderSwitcher
@@ -2955,13 +2955,13 @@ function AppInner() {
                       picks its model via the binding picker above. */}
                   {welcomeRuntime !== 'native' && (
                     <div>
-                      <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                       <div className="flex gap-1">
                         {MODELS.map((m) => (
                           <button
                             key={m}
                             onClick={() => setWelcomeModel(m)}
-                            className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                            className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
                               welcomeModel === m
                                 ? 'bg-accent text-on-accent font-medium'
                                 : 'bg-inset text-fg-dim hover:bg-edge'
@@ -2974,7 +2974,7 @@ function AppInner() {
                     </div>
                   )}
                   <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                    <label className="text-3xs uppercase tracking-wider text-fg-muted">Skip Permissions</label>
                     {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
                         the shared Toggle on the danger tone, so theme packs can restyle
                         it (changes 15/17). The <label> beside it isn't bound to this
@@ -2991,7 +2991,7 @@ function AppInner() {
                       others). Change 17 puts it on the destructive token so it
                       tracks the toggle above it under a community theme. */}
                   {welcomeDangerous && (
-                    <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                    <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
                     {/* secondary, not ghost: this was the filled-grey family
