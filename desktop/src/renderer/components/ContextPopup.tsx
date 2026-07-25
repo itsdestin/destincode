@@ -4,6 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { Button, CloseButton, Textarea } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
+import { useTheme } from '../state/theme-context';
 
 // Hint copy keyed to spec bands: > 60 plenty, 20–60 getting tight, < 20 very low.
 // Thresholds are intentionally coarser than contextColor() — the copy describes
@@ -75,6 +76,11 @@ export default function ContextPopup({
   // Must be called unconditionally (React hooks rules) — soft-fails without a provider.
   useEscClose(open, onClose);
 
+  // Status-bar pill display mode (percentage vs token counts). Read from the
+  // theme context so the choice persists and syncs to peer windows like the
+  // other appearance preferences.
+  const { contextDisplay, setContextDisplay } = useTheme();
+
   // Reset transient view state when the popup closes so reopening always lands on the main view.
   useEffect(() => {
     if (!open) {
@@ -137,12 +143,55 @@ export default function ContextPopup({
                 </div>
                 {contextTokens != null && (
                   <div className="text-xs text-fg-muted mt-1">
+                    {/* `contextTokens` is the context WINDOW SIZE, not the remainder:
+                        hook-scripts/statusline.sh sets it from `context_window_size`.
+                        This line previously read "N tokens remaining", which reported
+                        a full window on a nearly-exhausted session — the exact
+                        misleading-number failure docs/error-message-standards.md
+                        forbids. Both figures are shown, and the remaining count is
+                        marked approximate because it is derived from an
+                        already-rounded percentage. */}
+                    {contextPercent != null && (
+                      <>~{Math.round(contextTokens * (contextPercent / 100)).toLocaleString()} of </>
+                    )}
                     {contextTokens.toLocaleString()} tokens remaining
                   </div>
                 )}
                 {contextPercent != null && (
                   <p className="text-xs text-fg-2 mt-2">{hintFor(contextPercent)}</p>
                 )}
+              </div>
+
+              {/* Status-bar pill display mode. Lives here rather than in the
+                  Preferences popup because this is where the user is already
+                  thinking about the number the pill shows. Presentation only —
+                  the color band is driven by the percentage in BOTH modes. */}
+              <div className="pt-1">
+                <div className="text-[11px] font-medium text-fg-muted tracking-wider uppercase mb-1.5">
+                  Status bar shows
+                </div>
+                <div role="radiogroup" aria-label="Context pill display" className="flex w-full rounded-lg overflow-hidden border border-edge-dim">
+                  {(['percent', 'tokens'] as const).map((mode, i) => (
+                    <button
+                      key={mode}
+                      role="radio"
+                      aria-checked={contextDisplay === mode}
+                      onClick={() => setContextDisplay(mode)}
+                      className={`flex-1 py-1.5 px-2 text-xs transition-colors ${i === 1 ? 'border-l border-edge-dim' : ''} ${
+                        contextDisplay === mode
+                          ? 'bg-accent text-on-accent font-medium'
+                          : 'bg-panel text-fg-2 hover:bg-inset'
+                      }`}
+                    >
+                      {mode === 'percent' ? 'Percentage' : 'Token counts'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-fg-muted mt-1 leading-snug">
+                  {contextDisplay === 'percent'
+                    ? 'Pill reads “Context: 45% Remaining”.'
+                    : 'Pill reads “Context: 35.2k / 64k” — tokens used out of the window.'}
+                </p>
               </div>
             </div>
 
