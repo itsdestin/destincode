@@ -509,13 +509,22 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   {/* Challenge only when the friend is actually online (has a live
                       presence entry). row.id is the account id challengePlayer wants. */}
                   {row.online && (
-                    <button
+                    // Change 47: this is an ACTION, not a link. Recolouring it to
+                    // the link tokens (the first pass) left the lobby arguing with
+                    // itself — the friend-request row right above has real Buttons
+                    // for Accept/Decline while this row styled its only action as
+                    // text. `secondary` rather than `primary`: Challenge appears on
+                    // every online friend, and a filled accent button per row would
+                    // read as a list of alerts. Button's `sm` carries `coarse-hit`,
+                    // which replaces the hand-rolled px/py-1.5 touch padding.
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => connection.challengePlayer(row.id)}
-                      // px/py-1.5 = touch-target padding (see the Accept button note).
-                      className="text-3xs px-1.5 py-1.5 text-link hover:text-link-hover transition-colors shrink-0"
+                      className="shrink-0"
                     >
                       Challenge
-                    </button>
+                    </Button>
                   )}
                   <FriendRowMenu
                     pending={pendingRows.has(row.id)}

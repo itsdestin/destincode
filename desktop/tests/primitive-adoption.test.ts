@@ -89,16 +89,28 @@ describe('primitive adoption', () => {
     }
   });
 
-  it('the settings drawer stays headerless', () => {
-    // Change 50. The header carried the macOS traffic-light clearance, so if it
-    // ever comes back the padding needs to move with it — and vice versa: the
-    // class below is the only thing keeping the first row clear of the native
-    // window buttons.
+  it('the settings drawer header keeps its macOS traffic-light clearance', () => {
+    // Change 50 deleted this header; Destin reversed that on 2026-07-24 after
+    // seeing it in dev. What this guards is the COUPLING, which is the part that
+    // actually breaks silently: the header element and the padding rule must
+    // exist together. During the brief headerless window the padding lived on the
+    // scroll body instead — either arrangement is fine, but having the element
+    // without the rule puts the first row under the native window buttons on
+    // macOS, and no Linux or Windows session would ever notice.
     const panel = readFileSync(join(RENDERER, 'components', 'SettingsPanel.tsx'), 'utf8');
-    expect(panel).not.toContain('settings-drawer-header');
-    expect(panel).toContain('settings-drawer-body');
-
     const css = readFileSync(join(RENDERER, 'styles', 'globals.css'), 'utf8');
-    expect(css).toMatch(/\.mac-titlebar-inset \.settings-drawer-body\s*\{\s*padding-top/);
+
+    const anchor = panel.includes('settings-drawer-header')
+      ? 'settings-drawer-header'
+      : 'settings-drawer-body';
+    expect(
+      panel,
+      'The drawer must carry one of the two clearance anchors.',
+    ).toContain(anchor);
+    expect(
+      css.match(new RegExp(`\\.mac-titlebar-inset \\.${anchor}\\s*\\{\\s*padding-top`)),
+      `SettingsPanel uses .${anchor}, so globals.css must pad THAT selector — `
+        + 'otherwise macOS renders the drawer under the traffic lights.',
+    ).not.toBeNull();
   });
 });
