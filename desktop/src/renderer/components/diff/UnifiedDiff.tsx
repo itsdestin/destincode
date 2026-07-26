@@ -181,7 +181,7 @@ export function UnifiedDiff({
       {overflow && (
         <button
           onClick={() => setOpen(o => !o)}
-          className="mt-1 text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
+          className="mt-1 text-3xs text-fg-muted tracking-wider uppercase hover:text-fg-2"
         >
           {open ? 'Collapse' : `Expand (${total} lines)`}
         </button>

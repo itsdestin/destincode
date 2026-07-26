@@ -136,7 +136,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
               <>
-              <label className="text-3xs uppercase tracking-wider text-fg-muted">Tag before closing</label>
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tag before closing</label>
               <div className="flex gap-1">
                 {FLAG_ORDER.map((flag) => {
                   const active = sel[flag];
@@ -162,13 +162,13 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   : 'Tap a flag to tag this session, or close with none.'}
               </p>
               <div className="flex flex-col gap-1.5 mt-2">
-                <label className="text-3xs uppercase tracking-wider text-fg-muted">Tags</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
                 <TagPicker
                   appliedIds={tagIds}
                   onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
                   registry={registry}
                 />
-                <label className="text-3xs uppercase tracking-wider text-fg-muted mt-1">Note</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
                 <NoteEditor value={note} onSave={setNote} />
               </div>
               </>

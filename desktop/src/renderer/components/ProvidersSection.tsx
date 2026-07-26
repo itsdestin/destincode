@@ -423,7 +423,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
 
   return (
     <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-      <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Add provider</h4>
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Add provider</h3>
 
       {/* Type — change 21: the native <select> is gone. A native option list is
           drawn by the OS, so a themed app dropped an OS-blue menu out of it;

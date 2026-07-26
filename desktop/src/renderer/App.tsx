@@ -2931,7 +2931,7 @@ function AppInner() {
                 /* Expanded new-session form with toggles */
                 <div className="layer-surface w-full p-3 flex flex-col gap-2">
                   <div>
-                    <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Project Folder</label>
                     {/* Match SessionStrip: the picker's "Manage projects…"
                         footer opens Project View (where adding lives). */}
                     <FolderSwitcher
@@ -2954,7 +2954,7 @@ function AppInner() {
                       picks its model via the binding picker above. */}
                   {welcomeRuntime !== 'native' && (
                     <div>
-                      <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
                       <div className="flex gap-1">
                         {MODELS.map((m) => (
                           <button
@@ -2973,7 +2973,7 @@ function AppInner() {
                     </div>
                   )}
                   <div className="flex items-center justify-between">
-                    <label className="text-3xs uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</label>
                     {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
                         the shared Toggle on the danger tone, so theme packs can restyle
                         it (changes 15/17). The <label> beside it isn't bound to this

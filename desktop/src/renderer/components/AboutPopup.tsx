@@ -118,7 +118,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
           <div className="p-5 space-y-5">
           {/* Disclaimer — identical on both platforms */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Disclaimer</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Disclaimer</h3>
             <p className="text-2xs text-fg-dim leading-relaxed">
               YouCoded is an independent, community-built project. It is not affiliated with, endorsed by, or officially supported by Anthropic.
             </p>
@@ -140,7 +140,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               games line were added by accounts Phase 2 (wording approved by
               Destin 2026-07-09). */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Privacy</h3>
             {platform === 'desktop' ? (
               <>
                 <p className="text-2xs text-fg-dim leading-relaxed">
@@ -207,7 +207,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
 
           {/* Licenses — platform-specific intro + lib list */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Licenses</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Licenses</h3>
             {platform === 'desktop' ? (
               <>
                 <p className="text-2xs text-fg-dim leading-relaxed">

@@ -312,7 +312,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* Favorites section */}
               {favsSorted.length > 0 && (
                 <section className="px-2 pt-2">
-                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {favsSorted.map(renderSkillCard)}
                   </div>
@@ -322,7 +322,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on */}
               {!favoritesOnly && othersSorted.length > 0 && (
                 <section className="px-2 pt-3">
-                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {othersSorted.map(renderSkillCard)}
                   </div>

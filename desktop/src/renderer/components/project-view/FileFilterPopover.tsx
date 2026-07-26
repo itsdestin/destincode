@@ -59,7 +59,7 @@ function Chip({ active, onClick, multi, children }: {
 function Group({ label, multi, children }: { label: string; multi?: boolean; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-3xs tracking-wider text-fg-muted uppercase">{label}</span>
+      <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">{label}</span>
       <div className="flex flex-wrap gap-1.5" role={multi ? 'group' : 'radiogroup'} aria-label={label}>{children}</div>
     </div>
   );

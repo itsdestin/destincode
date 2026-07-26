@@ -352,7 +352,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             ) : (
               [...groups.entries()].map(([label, models]) => (
                 <section key={label}>
-                  <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
+                  <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">{label}</div>
                   <div className="flex flex-col gap-1">
                     {models.map((m) => {
                       // Prefer App's live SessionInfo.model (updated on every swap)
@@ -408,7 +408,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
           <div className="p-5 space-y-5">
             {/* Model */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</label>
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</h3>
               <div className="flex gap-2">
                 {MODELS.map((m) => (
                   <button
@@ -429,9 +429,9 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
             {/* Effort */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Effort Level
-              </label>
+              </h3>
               <div className="grid grid-cols-5 gap-1.5">
                 {EFFORT_LEVELS.map((level) => {
                   const disabled = level === 'max' && !maxAllowed;

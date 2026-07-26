@@ -140,7 +140,9 @@ function ModelProvidersPopupInner({
 function SectionHeader({ title, info }: { title: string; info: { label: string; body: React.ReactNode } }) {
   return (
     <div className="flex items-center gap-1.5 mb-2.5">
-      <h4 className="text-sm font-semibold text-fg">{title}</h4>
+      {/* K1: was the app's only text-sm/font-semibold section header, which read
+          as a second dialog title rather than a section label. */}
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">{title}</h3>
       <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>
     </div>
   );

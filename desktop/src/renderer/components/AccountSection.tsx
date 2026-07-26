@@ -403,7 +403,7 @@ function SignedInBody({
           empty both leave `blocks` falsy so nothing shows in settings). */}
       {blocks && blocks.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Blocked users</h4>
+          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Blocked users</h3>
           {blocks.map((b) => (
             <div key={b.id} className="space-y-1">
               <div className="flex items-center gap-2">
@@ -592,7 +592,7 @@ function EditAccountBody({
     <>
       {/* Edit-mode header: label + the way back to view mode. */}
       <div className="flex items-center justify-between">
-        <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Edit account</h4>
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Edit account</h3>
         <Button variant="secondary" onClick={onDone}>
           Done
         </Button>
@@ -600,7 +600,7 @@ function EditAccountBody({
 
       {/* Display name */}
       <section className="space-y-1.5">
-        <label htmlFor="account-display-name" className="text-3xs font-medium text-fg-muted uppercase tracking-wider">
+        <label htmlFor="account-display-name" className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
           Display name
         </label>
         {/* Change 77: Save moved INSIDE the field. Besides matching the spec, this
@@ -629,7 +629,7 @@ function EditAccountBody({
 
       {/* Handle */}
       <section className="space-y-1.5">
-        <label htmlFor="account-handle" className="text-3xs font-medium text-fg-muted uppercase tracking-wider">
+        <label htmlFor="account-handle" className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
           Handle
         </label>
         {/* Change 77: this was already a hand-rolled InputGroup (bordered wrapper +

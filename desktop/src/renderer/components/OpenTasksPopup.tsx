@@ -96,7 +96,7 @@ function Row({ t, group, onMarkInactive, onUnhide }: {
 
 function SectionHeader({ label }: { label: string }) {
   return (
-    <div className="text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1">
+    <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-2 pb-1">
       {label}
     </div>
   );
@@ -180,7 +180,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
             <>
               <button
                 aria-expanded={completedOpen}
-                className="w-full text-left text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
+                className="w-full text-left text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
                 onClick={() => setCompletedOpen(v => !v)}
               >
                 <span>Completed</span>
@@ -197,7 +197,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
             <>
               <button
                 aria-expanded={inactiveOpen}
-                className="w-full text-left text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
+                className="w-full text-left text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
                 onClick={() => setInactiveOpen(v => !v)}
               >
                 <span>Marked Inactive</span>

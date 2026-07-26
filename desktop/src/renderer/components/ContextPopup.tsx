@@ -150,7 +150,7 @@ export default function ContextPopup({
             <div className="px-4 pb-4 pt-2 space-y-3 border-t border-edge">
               {customizing ? (
                 <div className="space-y-2">
-                  <label htmlFor="compact-instructions" className="block text-xs font-medium text-fg-muted tracking-wider uppercase">
+                  <label htmlFor="compact-instructions" className="block text-3xs font-medium text-fg-muted tracking-wider uppercase">
                     Keep these priorities (optional)
                   </label>
                   {/* Change 42: this was the `border-edge rounded-sm focus:ring-1`

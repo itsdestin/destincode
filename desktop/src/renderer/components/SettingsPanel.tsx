@@ -1930,7 +1930,7 @@ function ConnectToDesktopButton() {
                           form footer — it sits under the whole form, not beside one
                           field, so it is NOT an InputGroup. */}
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Device Name</label>
                         <TextInput
                           size="sm"
                           value={formName}
@@ -1941,7 +1941,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Host / IP</label>
                         <TextInput
                           size="sm"
                           value={formHost}
@@ -1952,7 +1952,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Port</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Port</label>
                         <TextInput
                           size="sm"
                           value={formPort}
@@ -1963,7 +1963,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Password</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Password</label>
                         <TextInput
                           size="sm"
                           type="password"

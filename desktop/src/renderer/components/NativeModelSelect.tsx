@@ -147,7 +147,7 @@ export default function NativeModelSelect({ prefill, onSelect }: NativeModelSele
         ) : (
           [...groups.entries()].map(([label, models]) => (
             <section key={label}>
-              <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">{label}</div>
+              <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">{label}</div>
               <div className="flex flex-col gap-1">
                 {models.map((m) => {
                   const isSelected = selected?.providerId === m.providerId && selected?.modelId === m.id;
