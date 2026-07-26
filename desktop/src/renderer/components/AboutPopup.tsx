@@ -130,8 +130,6 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
             </p>
           </section>
 
-          <hr className="border-edge-dim" />
-
           {/* Privacy — platform-specific. Copy is user-approved (see
               docs/superpowers/specs/2026-04-23-analytics-privacy-copy-draft.md);
               do not edit wording without re-approval. The <AnalyticsOptInToggle />
@@ -202,8 +200,6 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               </>
             )}
           </section>
-
-          <hr className="border-edge-dim" />
 
           {/* Licenses — platform-specific intro + lib list */}
           <section className="space-y-1.5">

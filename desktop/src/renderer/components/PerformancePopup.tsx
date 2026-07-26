@@ -163,9 +163,6 @@ export default function PerformancePopup({
               </p>
             )}
 
-            {/* Visual divider between controls and explainer. */}
-            <hr className="border-edge-dim" />
-
             <p className="text-xs text-fg-2 leading-relaxed">{PERFORMANCE_EXPLAINER.intro}</p>
 
             {PERFORMANCE_EXPLAINER.sections.map((section, i) => (

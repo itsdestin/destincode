@@ -428,8 +428,6 @@ function SignedInBody({
         </section>
       )}
 
-      <hr className="border-edge-dim" />
-
       {/* The single edit affordance — pencil icon + label, per the rework spec.
           The primitive already centers its children and owns the icon gap, so
           only the full-bleed width survives as a layout extra (the py-2.5 row
@@ -700,8 +698,6 @@ function EditAccountBody({
         {handleError && <p className="text-3xs text-destructive-fg">{handleError}</p>}
         {handleSaved && !handleError && <p className="text-3xs text-fg-muted">Saved</p>}
       </section>
-
-      <hr className="border-edge-dim" />
 
       {/* Danger zone — 2-step: expand, then typed confirm + explicit button. */}
       <section className="space-y-2">

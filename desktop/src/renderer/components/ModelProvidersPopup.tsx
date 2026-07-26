@@ -117,15 +117,9 @@ function ModelProvidersPopupInner({
 
             <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
 
-            <hr className="border-edge-dim" />
-
             <OpenRouterBlock />
 
-            <hr className="border-edge-dim" />
-
             <LocalModelsBlock />
-
-            <hr className="border-edge-dim" />
 
             <SearchProvidersBlock />
           </div>
