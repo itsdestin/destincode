@@ -91,6 +91,36 @@ function mapStopReason(finishReason: string | undefined): string {
 }
 const APPROX_CHARS_PER_TOKEN = 4;
 
+// Shrink a role:'tool' message's result text to fit `maxChars`, splitting the
+// allowance evenly when one message carries several results. Used only by
+// fitToContext's oversized-tail salvage — the ordinary path never rewrites
+// content. The trailing notice matters: without it a model reads a hard-cut
+// file as complete and confidently answers from a fragment.
+function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
+  if (msg.role !== 'tool' || !Array.isArray(msg.content)) return msg;
+  const parts = msg.content as any[];
+  const results = parts.filter((p) => p?.type === 'tool-result');
+  if (results.length === 0) return msg;
+  const per = Math.max(500, Math.floor(maxChars / results.length));
+  return {
+    ...msg,
+    content: parts.map((p: any) => {
+      if (p?.type !== 'tool-result') return p;
+      const value = p.output?.value;
+      if (typeof value !== 'string' || value.length <= per) return p;
+      const dropped = value.length - per;
+      return {
+        ...p,
+        output: {
+          ...p.output,
+          value: value.slice(0, per) +
+            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window. Re-run with offset/limit, or use Grep, to see the rest.]`,
+        },
+      };
+    }),
+  } as ModelMessage;
+}
+
 // Turn a caught provider/SDK error into the most ACTIONABLE message we can show
 // (docs/error-message-standards.md — surface the real detail, never a generic
 // wrapper). The AI SDK wraps a provider HTTP failure as AI_APICallError (with
@@ -261,7 +291,8 @@ export class HarnessSession extends EventEmitter {
     // regardless of budget, so history collapses to that single message rather
     // than erroring. That's intentional — one turn through a tiny model beats a
     // hard failure — so no clamp is applied here.
-    let total = Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    const total0 = Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    let total = total0;
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
       const size = Math.ceil(JSON.stringify(messages[i].content).length / APPROX_CHARS_PER_TOKEN);
@@ -284,7 +315,55 @@ export class HarnessSession extends EventEmitter {
       if (isOrphanToolResult || isToolCallOpener) { kept.shift(); continue; }
       break;
     }
+    // The two rules above are individually right and together could return NOTHING:
+    // the size loop always keeps the newest message even when it alone blows the
+    // budget ("history collapses to that single message rather than erroring"),
+    // but if that survivor is a tool result, the pair-aware trim then drops it as
+    // an orphan — and the driver sends an empty prompt, which providers reject
+    // with "Invalid prompt: messages must not be empty".
+    //
+    // Found 2026-07-26 dogfooding: asking a local model to read ROADMAP.md
+    // returned a 100 KB tool result (read.ts raises its own cap to 100_000 chars)
+    // that exceeded the window on its own, and the turn died. Latent on master,
+    // not introduced by Plan C — Plan C just made big local reads routine.
+    if (kept.length === 0) return this.salvageOversizedTail(messages, budgetTokens, total0);
     return kept;
+  }
+
+  /** Last resort for fitToContext: the newest exchange doesn't fit even alone.
+   *
+   *  Rather than dropping the tool result (which leaves the model staring at its
+   *  own unanswered request — it just re-runs the same call until the doom-loop
+   *  guard trips) we keep the PAIR intact and shrink the result's text to the
+   *  budget. Truncating tool output to fit is exactly what compaction's
+   *  pruneToolOutputs does, so this is the established shape, not a new idea.
+   *
+   *  Returns [user?, assistant(tool-call), tool(truncated)] — a valid window that
+   *  preserves the pairing invariant the front trim exists to protect. */
+  private salvageOversizedTail(messages: ModelMessage[], budgetTokens: number, systemTokens: number): ModelMessage[] {
+    const toolIdx = messages.map((m) => m.role).lastIndexOf('tool');
+    // No tool message means the oversized survivor was a plain user/assistant
+    // message, which the front trim never drops — keep the newest and move on.
+    if (toolIdx < 0) return messages.slice(-1);
+
+    const call = messages[toolIdx - 1];
+    const hasCall = !!call && call.role === 'assistant';
+    // The user turn that started this exchange, when there is one — it is what
+    // tells the model WHY the tool ran, and it is small.
+    let userIdx = -1;
+    for (let i = (hasCall ? toolIdx - 2 : toolIdx - 1); i >= 0; i--) {
+      if (messages[i].role === 'user') { userIdx = i; break; }
+    }
+    const head: ModelMessage[] = [];
+    if (userIdx >= 0) head.push(messages[userIdx]);
+    if (hasCall) head.push(call);
+
+    // Whatever budget is left after the system prompt and the head goes to the
+    // tool output. Floored at a usable amount so a hostile budget still yields a
+    // readable fragment rather than an empty string.
+    const usedTokens = systemTokens + head.reduce((n, m) => n + Math.ceil(JSON.stringify(m.content).length / APPROX_CHARS_PER_TOKEN), 0);
+    const availableChars = Math.max(2_000, (budgetTokens - usedTokens) * APPROX_CHARS_PER_TOKEN);
+    return [...head, truncateToolMessage(messages[toolIdx], availableChars)];
   }
 
   // Below this many tokens a span isn't worth a model round-trip to summarize
