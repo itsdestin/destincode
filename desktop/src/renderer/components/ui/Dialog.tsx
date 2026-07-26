@@ -53,6 +53,12 @@ export type DialogProps = {
   /** Rendered to the LEFT of the close button — e.g. an (i) explainer button. */
   headerActions?: React.ReactNode;
   /**
+   * When set, a back chevron appears left of the title. For dialogs with an
+   * internal second page (Account -> Connected accounts). Same affordance
+   * SettingsExplainer already offered; hand-rolled at each site before this.
+   */
+  onBack?: () => void;
+  /**
    * L2 popup (default) or L3 critical — a destructive confirmation, which gets
    * a heavier scrim and sits above ordinary popups so it cannot be lost behind
    * the thing it is confirming.
@@ -92,6 +98,7 @@ export function Dialog({
   title,
   subtitle,
   headerActions,
+  onBack,
   layer = 2,
   destructive,
   size = 'md',
@@ -142,9 +149,22 @@ export function Dialog({
             // (K1), so an h3 title would announce them as its siblings rather
             // than its children.
             <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-              <div className="min-w-0">
-                <h2 className="text-sm font-bold text-fg">{title}</h2>
-                {subtitle && <p className="text-3xs text-fg-muted mt-0.5">{subtitle}</p>}
+              <div className="flex items-center gap-2 min-w-0">
+                {onBack && (
+                  <button
+                    onClick={onBack}
+                    aria-label="Back"
+                    className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset shrink-0"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                )}
+                <div className="min-w-0">
+                  <h2 className="text-sm font-bold text-fg truncate">{title}</h2>
+                  {subtitle && <p className="text-3xs text-fg-muted mt-0.5">{subtitle}</p>}
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 {headerActions}

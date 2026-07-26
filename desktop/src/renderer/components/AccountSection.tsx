@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
-import { Button, InputGroup } from './ui';
+import { Button, Dialog, InputGroup } from './ui';
 import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
@@ -111,45 +110,14 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="account-popup-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
+      <Dialog
+        open
+        onClose={onClose}
+        size="md"
+        maxHeight="85vh"
+        title={page === 'connections' ? 'Connected accounts' : 'Account'}
+        onBack={page === 'connections' ? () => setPage('main') : undefined}
       >
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <div className="flex items-center gap-2 min-w-0">
-            {page === 'connections' && (
-              <button
-                onClick={() => setPage('main')}
-                aria-label="Back to account"
-                className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset shrink-0"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-            )}
-            <h3 id="account-popup-title" className="text-sm font-semibold text-fg truncate">
-              {page === 'connections' ? 'Connected accounts' : 'Account'}
-            </h3>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="scroll-fade">
-          <div className="p-5 space-y-5">
             {page === 'connections' ? (
               <ConnectedAccountsBody
                 status={ghStatus === 'unavailable' ? null : ghStatus}
@@ -203,9 +171,7 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
                 )}
               </>
             )}
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
