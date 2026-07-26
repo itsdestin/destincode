@@ -54,36 +54,20 @@ function describeArtifactSelection(sel: string, container: HTMLElement): string 
  * is what makes it testable — and keeps build-menu.ts a pure DOM-inspection module.
  */
 
-/** Marks the element a reference came from, so the overlay can re-find it. */
-const HOST_ATTR = 'data-reference-host';
-const RUN_ATTR = 'data-reference-run';
-let hostSeq = 0;
-
-function tagHost(el: Element): string {
-  const id = String(++hostSeq);
-  el.setAttribute(HOST_ATTR, id);
-  return `[${HOST_ATTR}="${id}"]`;
-}
-
-/**
- * Wraps the current selection in marker spans so the overlay can re-measure it
- * later. getClientRects() on these spans returns ONE RECT PER LINE BOX — the
- * same shape Range.getClientRects() gives — which is what the union outline
- * (Task 5) traces. Returns null when the selection can't be wrapped (it crosses
- * element boundaries, which surroundContents rejects).
- */
-function tagSelectionRuns(hostId: string): string | null {
+// WHY no DOM tagging here: the original design re-found the host/selection via
+// a `data-reference-host` attribute plus a marker `<span>` wrapped around the
+// selection with Range.surroundContents(). Chat bubbles (UserMessage.tsx,
+// AssistantTurnBubble.tsx) render their text as plain React-managed JSX, so
+// splitting that text node out from under React left its fiber pointing at a
+// node that no longer existed in the expected shape — the next reconcile threw
+// `NotFoundError: Failed to execute 'removeChild'` and crashed the chat view.
+// Holding the live host Element and a cloned Range instead needs no mutation.
+function captureRange(): Range | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-  try {
-    const span = document.createElement('span');
-    span.setAttribute(RUN_ATTR, hostId);
-    sel.getRangeAt(0).surroundContents(span);
-    return `[${RUN_ATTR}="${hostId}"]`;
-  } catch {
-    // Selection spans multiple elements — fall back to a whole-element outline.
-    return null;
-  }
+  // cloneRange: the live selection is cleared the moment focus moves to the
+  // composer, which would empty a borrowed reference out from under us.
+  return sel.getRangeAt(0).cloneRange();
 }
 
 /** One-line, bounded placeholder copy. Newlines collapse so it can't wrap. */
@@ -121,15 +105,13 @@ export function buildChatReference(bubble: Element | null, target: HTMLElement):
       : 'Regarding this:';
 
   const host = (bubble ?? target) as Element;
-  const hostSelector = tagHost(host);
-  const hostId = host.getAttribute(HOST_ATTR)!;
-  const runSelector = selectionText().trim() ? tagSelectionRuns(hostId) : null;
+  const range = selectionText().trim() ? captureRange() : null;
 
   return {
     kind: 'chat-text',
     label: `"${truncateLabel(quote)}"`,
     promptText: scaffold(lead, quote, false),
-    anchor: { hostSelector, runSelector },
+    anchor: { host, range },
   };
 }
 
@@ -139,7 +121,7 @@ export function buildCodeReference(pre: HTMLElement): PendingReference {
     kind: 'chat-code',
     label: truncateLabel(code),
     promptText: scaffold('Earlier, you shared this code:', code, true),
-    anchor: { hostSelector: tagHost(pre), runSelector: null },
+    anchor: { host: pre, range: null },
   };
 }
 
@@ -153,8 +135,6 @@ export function buildArtifactReference(container: HTMLElement): PendingReference
   if (!sel || !path) return null;
 
   const ref = describeArtifactSelection(sel, container);
-  const hostSelector = tagHost(container);
-  const hostId = container.getAttribute(HOST_ATTR)!;
 
   return {
     kind: 'artifact',
@@ -162,6 +142,6 @@ export function buildArtifactReference(container: HTMLElement): PendingReference
     // line form reads well with "of <file>".
     label: ref.startsWith('line') ? `${ref} of ${baseName(path)}` : truncateLabel(ref),
     promptText: `The user is referencing ${ref} from "${path}". Respond to the following prompt accordingly:\n\n`,
-    anchor: { hostSelector, runSelector: tagSelectionRuns(hostId) },
+    anchor: { host: container, range: captureRange() },
   };
 }

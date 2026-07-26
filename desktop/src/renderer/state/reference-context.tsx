@@ -8,10 +8,10 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
  * send time, so the textarea only ever contains the user's own words.
  */
 export type ReferenceAnchor = {
-  /** CSS selector re-finding the element the reference came from. */
-  hostSelector: string;
-  /** Selector for the selected runs inside the host, or null for a whole-element reference. */
-  runSelector: string | null;
+  /** The element the reference came from. Held directly — see the note below. */
+  host: Element;
+  /** Live Range over the selection, or null for a whole-element reference. */
+  range: Range | null;
 };
 
 export type PendingReference = {
@@ -21,9 +21,19 @@ export type PendingReference = {
   /** Prepended at send. Never rendered in the composer. */
   promptText: string;
   /**
-   * How to re-find the source. Selectors, NOT a DOMRect[] snapshot: stored rects
-   * go stale the moment the transcript scrolls, the window resizes, or a drawer
-   * opens, so geometry is re-derived on every measure pass instead.
+   * Live DOM handles, NOT selectors and NOT a DOMRect[] snapshot. Rects go stale
+   * the moment the transcript scrolls, the window resizes, or a drawer opens, so
+   * geometry must be re-derived on every measure pass anyway — which only needs
+   * a live node, not a selector. Selectors were the original design, but
+   * re-finding a host meant tagging it with a `data-reference-host` attribute,
+   * and re-finding a selection meant wrapping it in a marker `<span>` via
+   * `Range.surroundContents()` — a DOM mutation. Chat bubbles render their text
+   * as plain React-managed JSX, so React's fiber still points at the original
+   * text node after surroundContents() splits it; the next reconcile throws
+   * `NotFoundError: Failed to execute 'removeChild'` and takes down the chat
+   * view. Holding the live node/Range instead needs no mutation at all. This is
+   * safe only because this state is renderer-local — never serialized,
+   * persisted, or sent over IPC.
    */
   anchor: ReferenceAnchor | null;
 };

@@ -74,7 +74,23 @@ describe('buildChatReference', () => {
     selectWithin(el, 6, 11); // "bravo"
     const ref = buildChatReference(el, el)!;
     expect(ref.promptText).toContain('"bravo"');
-    expect(ref.anchor?.runSelector).not.toBeNull();
+    expect(ref.anchor?.range).not.toBeNull();
+  });
+
+  it('does not mutate the DOM (no surroundContents split, no host attribute)', () => {
+    // This is the whole point of the fix: the old implementation tagged the
+    // host with data-reference-host and wrapped the selection in a marker
+    // <span> via Range.surroundContents(), which changes outerHTML and (on a
+    // real React tree) crashes the next reconcile with
+    // `NotFoundError: Failed to execute 'removeChild'`. Byte-identical
+    // outerHTML before/after proves the new anchor is DOM-mutation-free.
+    const el = mountBubble('assistant-bubble', 'alpha bravo charlie');
+    selectWithin(el, 6, 11); // "bravo"
+    const before = el.outerHTML;
+    const ref = buildChatReference(el, el)!;
+    expect(el.outerHTML).toBe(before);
+    expect(ref.anchor?.host).toBe(el);
+    expect(ref.anchor?.range).not.toBeNull();
   });
 
   it('returns null when there is nothing to quote', () => {
