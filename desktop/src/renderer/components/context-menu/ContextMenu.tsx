@@ -139,6 +139,7 @@ export function ContextMenu({
             role="menuitem"
             disabled={entry.disabled}
             aria-disabled={entry.disabled || undefined}
+            title={entry.hint}
             tabIndex={-1}
             onClick={() => run(entry)}
             className={[

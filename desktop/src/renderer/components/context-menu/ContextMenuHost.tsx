@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { buildContextMenu, type MenuEntry } from './build-menu';
 import { ContextMenu } from './ContextMenu';
+import { useReference } from '../../state/reference-context';
 
 // Single app-wide right-click host. Listens for `contextmenu` (capture) on the
 // document, asks build-menu what (if anything) applies to the target, and — only
@@ -12,19 +13,24 @@ type MenuState = { x: number; y: number; entries: MenuEntry[] };
 
 export function ContextMenuHost() {
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // "Ask about this" now hands the menu a PendingReference instead of
+  // dispatching the old composer-scaffold CustomEvent — see reference-context.tsx.
+  const { setReference } = useReference();
 
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
-      const entries = buildContextMenu(target);
+      const entries = buildContextMenu(target, setReference);
       if (!entries) return; // not our surface — leave the default behavior alone
       e.preventDefault();
       setMenu({ x: e.clientX, y: e.clientY, entries });
     };
     document.addEventListener('contextmenu', onContextMenu, true);
     return () => document.removeEventListener('contextmenu', onContextMenu, true);
-  }, []);
+    // setReference is useCallback-stable (reference-context.tsx), so listing it
+    // here does not re-subscribe the listener on every render.
+  }, [setReference]);
 
   if (!menu) return null;
   return <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />;

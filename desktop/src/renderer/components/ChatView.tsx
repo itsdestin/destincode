@@ -730,6 +730,9 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       sessionId={sessionId}
                       provider={provider}
                       showTimestamps={showTimestamps}
+                      // Only the LAST entry can be mid-stream; everything above
+                      // it is complete and safe to reference.
+                      streaming={state.isThinking && idx === state.timeline.length - 1}
                     />
                   );
                   break;

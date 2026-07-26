@@ -2,6 +2,10 @@ import { isAndroid, isRemoteMode } from '../../platform';
 import { copyText, readText } from './clipboard';
 import { editorViewFor } from '../artifact-views/cm/editor-registry';
 import type { MenuIconName } from './menu-icons';
+import { buildChatReference, buildCodeReference, buildArtifactReference } from './build-reference';
+import type { PendingReference } from '../../state/reference-context';
+
+type OnReference = (r: PendingReference) => void;
 
 // Builds the chat right-click menu for a given DOM target. Pure inspection of
 // the DOM + current selection → a list of entries; the host owns positioning,
@@ -17,6 +21,10 @@ export type MenuEntry =
       kbd?: string;
       primary?: boolean;
       disabled?: boolean;
+      /** Hover hint, rendered as `title`. Used to explain a DISABLED row.
+       *  Native `title=` is the documented tool for plain hover hints;
+       *  AnchorTip is for rich click-open info (AnchorTip.tsx:23-25). */
+      hint?: string;
       run: () => void | Promise<void>;
     }
   | { type: 'sep' };
@@ -39,6 +47,14 @@ function closestBubble(el: Element): Element | null {
   return el.closest('.assistant-bubble, .user-bubble');
 }
 
+// The lifted reference card is a static clone, so a still-streaming message
+// would freeze mid-sentence inside it. Disabled (not hidden) per Destin
+// 2026-07-26 — a vanishing row reads worse than a greyed one.
+const STREAMING_HINT = 'Unavailable while Claude is still writing this message';
+function isStreaming(el: Element | null): boolean {
+  return el?.closest('[data-streaming="true"]') != null;
+}
+
 function baseName(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
@@ -50,19 +66,6 @@ function selectElementContents(el: Element): void {
   range.selectNodeContents(el);
   sel.removeAllRanges();
   sel.addRange(range);
-}
-
-// "Ask about this" drops a quoted reference + follow-up scaffold into the
-// composer (InputBar listens for this CustomEvent — see InputBar.tsx). Simple v1
-// per Destin (2026-07-17): plain prompt text, no new plumbing. The caret lands
-// right after the scaffold so any existing draft becomes the follow-up.
-function askAboutThis(text: string): void {
-  window.dispatchEvent(new CustomEvent('youcoded:compose-insert', { detail: { text } }));
-}
-
-function scaffold(lead: string, body: string, fenced: boolean): string {
-  const quoted = fenced ? '```\n' + body + '\n```' : `"${body}"`;
-  return `${lead}\n${quoted}\n\nThe user has a follow-up: `;
 }
 
 // Copy + Select all — shared tail for every read-only chat menu.
@@ -179,49 +182,22 @@ function linkMenu(a: HTMLAnchorElement, target: HTMLElement): MenuEntry[] {
   ];
 }
 
-function codeMenu(pre: HTMLElement, target: HTMLElement): MenuEntry[] {
+function codeMenu(pre: HTMLElement, target: HTMLElement, onReference: OnReference): MenuEntry[] {
   const code = pre.innerText.replace(/\n+$/, '');
   return [
-    { type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, disabled: !code, run: () => askAboutThis(scaffold('Earlier, you shared this code:', code, true)) },
+    {
+      type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true,
+      disabled: !code || isStreaming(target),
+      hint: isStreaming(target) ? STREAMING_HINT : undefined,
+      run: () => onReference(buildCodeReference(pre)),
+    },
     { type: 'item', id: 'copy-code', label: 'Copy code block', icon: 'code', disabled: !code, run: () => void copyText(code) },
     { type: 'sep' },
     ...textBasics(closestBubble(target)),
   ];
 }
 
-// TEMP stopgap (Task 2 of the ask-reference plan): describeArtifactSelection MOVED
-// to build-reference.ts (module-private there — see that file for the full
-// rationale comment). artifactMenu below still needs the described-line string for
-// its own "Ask about this" entry, and Task 3 hasn't rewired this call site yet, so
-// this is a deliberate duplicate kept pure/side-effect-free (unlike
-// build-reference.ts's buildArtifactReference, which also tags DOM markers for the
-// reference overlay — calling that here would tag the DOM on every right-click,
-// not just when the user picks "Ask"). Delete this once Task 3 rewires artifactMenu
-// to hold a PendingReference instead of dispatching a compose-insert string.
-function describeArtifactSelectionForAskMenu(sel: string, container: HTMLElement): string {
-  const source = container.getAttribute('data-artifact-source');
-  if (source === 'cm6') {
-    const view = editorViewFor(container);
-    const range = view?.state.selection.main;
-    if (view && range && !range.empty) {
-      const startLine = view.state.doc.lineAt(range.from).number;
-      const endLine = view.state.doc.lineAt(range.to).number;
-      return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
-    }
-    return `"${sel}"`;
-  }
-  const pre = source === 'raw' ? container.querySelector('pre') : null;
-  const full = pre?.textContent ?? '';
-  const idx = pre ? full.indexOf(sel) : -1;
-  if (idx !== -1) {
-    const startLine = (full.slice(0, idx).match(/\n/g) || []).length + 1;
-    const endLine = startLine + (sel.match(/\n/g) || []).length;
-    return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
-  }
-  return `"${sel}"`;
-}
-
-function artifactMenu(container: HTMLElement): MenuEntry[] {
+function artifactMenu(container: HTMLElement, onReference: OnReference): MenuEntry[] {
   // data-doc-path, not data-artifact-path: the latter is reserved by the deferred
   // image sub-menu roadmap item for an ABSOLUTE path on <img> elements. This one
   // is the project-relative artifact path, which is what reads well in a prompt.
@@ -229,39 +205,43 @@ function artifactMenu(container: HTMLElement): MenuEntry[] {
   const sel = selectionText().trim();
   const entries: MenuEntry[] = [];
   if (sel && path) {
-    const ref = describeArtifactSelectionForAskMenu(sel, container);
     entries.push({
       type: 'item',
       id: 'ask',
       label: 'Ask about this',
       icon: 'ask',
       primary: true,
-      run: () => askAboutThis(`The user is referencing ${ref} from "${path}". Respond to the following prompt accordingly:\n\n`),
+      run: () => {
+        const ref = buildArtifactReference(container);
+        if (ref) onReference(ref);
+      },
     });
   }
   entries.push(...textBasics(container));
   return entries;
 }
 
-function textMenu(target: HTMLElement): MenuEntry[] {
+function textMenu(target: HTMLElement, onReference: OnReference): MenuEntry[] {
   const bubble = closestBubble(target);
+  const streaming = isStreaming(target);
   const quote = (selectionText().trim() || bubble?.textContent?.trim()) ?? '';
-  // "you said" reads right for an assistant message; flip it for the user's own
-  // bubble, and stay neutral if we can't tell.
-  const lead = bubble?.classList.contains('assistant-bubble')
-    ? 'In an earlier message, you said:'
-    : bubble?.classList.contains('user-bubble')
-      ? 'Earlier I wrote:'
-      : 'Regarding this:';
   const entries: MenuEntry[] = [];
   if (quote) {
-    entries.push({ type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, run: () => askAboutThis(scaffold(lead, quote, false)) });
+    entries.push({
+      type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true,
+      disabled: streaming,
+      hint: streaming ? STREAMING_HINT : undefined,
+      run: () => {
+        const ref = buildChatReference(bubble, target);
+        if (ref) onReference(ref);
+      },
+    });
   }
   entries.push(...textBasics(bubble));
   return entries;
 }
 
-export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
+export function buildContextMenu(target: HTMLElement, onReference: OnReference): MenuEntry[] | null {
   // Editable text surfaces (Cut/Copy/Paste/Select all) live outside .chat-scroll:
   // the composer, and the artifact viewer's edit-mode textarea. Electron ships no
   // default context menu, so without this branch right-click in the artifact
@@ -282,7 +262,7 @@ export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
   // Artifact viewer (SessionDrawer / ProjectView file tab) lives outside
   // .chat-scroll, so it's checked before that gate.
   const artifactViewer = target.closest('[data-artifact-viewer]');
-  if (artifactViewer instanceof HTMLElement) return finalize(artifactMenu(artifactViewer));
+  if (artifactViewer instanceof HTMLElement) return finalize(artifactMenu(artifactViewer, onReference));
 
   // Everything else is scoped to chat content — never hijack the terminal, the
   // settings panels, or other chrome.
@@ -296,9 +276,9 @@ export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
   if (link instanceof HTMLAnchorElement) return finalize(linkMenu(link, target));
 
   const pre = target.closest('pre');
-  if (pre instanceof HTMLElement) return finalize(codeMenu(pre, target));
+  if (pre instanceof HTMLElement) return finalize(codeMenu(pre, target, onReference));
 
-  return finalize(textMenu(target));
+  return finalize(textMenu(target, onReference));
 }
 
 // Drop a menu with no actionable (enabled) item — e.g. a right-click on empty
