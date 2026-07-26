@@ -339,18 +339,14 @@ import {
   type SoundCategory,
 } from '../utils/sounds';
 
-/** Play glyph for the audition button — a plain right-pointing triangle. */
-function PlayGlyph() {
-  return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M8 5v14l11-7z" />
-    </svg>
-  );
-}
-
-/** Preset selector — stock sounds + custom sound file option */
-function PresetSelector({ category, selectedId, onSelect, customName }: {
-  category: SoundCategory;
+/** Preset selector — stock sounds + custom sound file option.
+ *
+ *  Selecting a sound PLAYS it. That is deliberate (Destin's call 2026-07-26):
+ *  with one shared list behind a category toggle, "assign" and "audition" are
+ *  the same intent, so a separate play button was just a second thing to aim
+ *  at. The whole tile is the hit target — the radio is a visual mark, not the
+ *  only place you can click. */
+function PresetSelector({ selectedId, onSelect, customName }: {
   selectedId: string;
   onSelect: (id: string) => void;
   customName: string | null; // display name of the custom sound file, if set
@@ -361,6 +357,8 @@ function PresetSelector({ category, selectedId, onSelect, customName }: {
     ? [...STOCK_PRESETS.map((p) => p.id), CUSTOM_SOUND_ID]
     : STOCK_PRESETS.map((p) => p.id);
 
+  const rowClass = 'flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50 hover:bg-inset cursor-pointer transition-colors';
+
   return (
     <RadioGroup
       options={optionIds}
@@ -370,40 +368,32 @@ function PresetSelector({ category, selectedId, onSelect, customName }: {
       className="space-y-1"
     >
       {STOCK_PRESETS.map((p) => (
-        <div key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50">
-          {/* Radio ASSIGNS. The play button AUDITIONS. Firing both from one
-              handler meant you could not hear a sound without making it your
-              notification sound -- 15 presets, 15 overwrites. */}
-          <Radio checked={selectedId === p.id} onChange={() => onSelect(p.id)} aria-label={p.label} />
+        <div key={p.id} onClick={() => onSelect(p.id)} className={rowClass}>
+          <Radio
+            checked={selectedId === p.id}
+            onChange={() => onSelect(p.id)}
+            tabIndex={selectedId === p.id ? 0 : -1}
+            aria-label={p.label}
+          />
           <div className="flex-1 min-w-0">
             <div className="text-xs text-fg font-medium">{p.label}</div>
             {p.desc && <p className="text-3xs text-fg-muted -mt-0.5 font-mono">{p.desc}</p>}
           </div>
-          <Button size="icon" variant="ghost" onClick={() => playPreview(p.id)} aria-label={`Play ${p.label}`}>
-            <PlayGlyph />
-          </Button>
         </div>
       ))}
       {/* Custom sound — only present once the user has picked a file. */}
       {customName ? (
-        <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50">
+        <div onClick={() => onSelect(CUSTOM_SOUND_ID)} className={rowClass}>
           <Radio
             checked={selectedId === CUSTOM_SOUND_ID}
             onChange={() => onSelect(CUSTOM_SOUND_ID)}
+            tabIndex={selectedId === CUSTOM_SOUND_ID ? 0 : -1}
             aria-label={customName}
           />
           <div className="flex-1 min-w-0">
             <div className="text-xs text-fg font-medium truncate" title={customName}>{customName}</div>
             <p className="text-3xs text-fg-muted -mt-0.5">Custom sound</p>
           </div>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => playPreview(CUSTOM_SOUND_ID, category)}
-            aria-label={`Play ${customName}`}
-          >
-            <PlayGlyph />
-          </Button>
         </div>
       ) : null}
     </RadioGroup>
@@ -429,9 +419,13 @@ function SoundCategorySection({ category, label, description, dotColor }: {
     });
   }, [category]);
 
+  // Selecting auditions it. Previously the only way to hear a stock sound was
+  // to assign it, which was the bug; the fix is that assigning is now also how
+  // you listen, rather than adding a second control to aim at.
   const handleSelect = useCallback((id: string) => {
     setPresetId(id);
     setSelectedPresetId(category, id);
+    playPreview(id, category);
   }, [category]);
 
   // Pick a custom sound file via the system file picker
@@ -465,18 +459,18 @@ function SoundCategorySection({ category, label, description, dotColor }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          {dotColor && <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />}
-          <span className="text-xs text-fg font-medium">{label}</span>
+      {/* The category's name lives in the tab above; this row carries only its
+          on/off switch and what it does. */}
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2 min-w-0">
+          {dotColor && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />}
+          <p className="text-3xs text-fg-muted">{description}</p>
         </div>
         <Toggle enabled={enabled} onToggle={handleToggle} label={label} />
       </div>
-      <p className="text-3xs text-fg-muted mb-2">{description}</p>
       {enabled && (
         <>
           <PresetSelector
-            category={category}
             selectedId={presetId}
             onSelect={handleSelect}
             customName={customName}
@@ -509,11 +503,28 @@ function SoundCategorySection({ category, label, description, dotColor }: {
   );
 }
 
+/** Per-category copy for the sound popup's toggle. Keyed so the tab, the
+ *  description and the status dot can never drift apart. */
+const SOUND_CATEGORY_META: Record<SoundCategory, { label: string; description: string; dotColor: string }> = {
+  attention: {
+    label: 'Needs Attention',
+    description: 'Plays when a session needs approval',
+    dotColor: 'bg-red-400',
+  },
+  ready: {
+    label: 'Response Ready',
+    description: 'Plays when a background session has a new response',
+    dotColor: 'bg-blue-400',
+  },
+};
+
 /** Sound settings — compact row that opens a popout modal (matches ThemeButton pattern) */
 function SoundButton() {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
   const scrollRef = useScrollFade<HTMLDivElement>();
+  // Which notification the shared sound list is currently editing.
+  const [soundCategory, setSoundCategory] = useState<SoundCategory>('attention');
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem(SOUND_MUTED_KEY) === '1'; } catch { return false; }
   });
@@ -584,9 +595,13 @@ function SoundButton() {
         title="Sound & Notifications"
         width="min(380px, 88vw)"
         panelRef={popupRef}
+        // Fix: the panel needs to BE a flex column for the body to scroll. It
+        // only had maxHeight, so the inner `h-full` resolved against an
+        // indefinite height, .scroll-fade sized to its content, overflow never
+        // engaged, and a long list was simply clipped with no way to reach it.
+        className="flex flex-col"
       >
-            <div className="flex flex-col h-full">
-              <div ref={scrollRef} className="scroll-fade">
+              <div ref={scrollRef} className="scroll-fade flex-1">
                 <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
                 <section>
@@ -622,28 +637,33 @@ function SoundButton() {
                   </div>
                 </section>
 
-                <div className="border-t border-edge-dim" />
-
-                {/* Attention sound — red status dot */}
-                <SoundCategorySection
-                  category="attention"
-                  label="Needs Attention"
-                  description="Plays when a session needs approval"
-                  dotColor="bg-red-400"
-                />
-
-                <div className="border-t border-edge-dim" />
-
-                {/* Ready sound — blue status dot */}
-                <SoundCategorySection
-                  category="ready"
-                  label="Response Ready"
-                  description="Plays when a background session has a new response"
-                  dotColor="bg-blue-400"
-                />
+                {/* One shared sound list behind a category toggle, rather than
+                    two independent lists of the same 15 presets stacked on top
+                    of each other. `key` remounts the section on switch so its
+                    useState initializers re-read that category's saved values. */}
+                <section>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Notification</h3>
+                  <SegmentedTabs
+                    variant="contained"
+                    aria-label="Notification type"
+                    value={soundCategory}
+                    onChange={(id) => setSoundCategory(id as SoundCategory)}
+                    tabs={[
+                      { id: 'attention', label: 'Needs Attention' },
+                      { id: 'ready', label: 'Response Ready' },
+                    ]}
+                    className="mb-3"
+                  />
+                  <SoundCategorySection
+                    key={soundCategory}
+                    category={soundCategory}
+                    label={SOUND_CATEGORY_META[soundCategory].label}
+                    description={SOUND_CATEGORY_META[soundCategory].description}
+                    dotColor={SOUND_CATEGORY_META[soundCategory].dotColor}
+                  />
+                </section>
                 </div>
               </div>
-            </div>
       </SettingsPopup>
     </>
   );
@@ -1533,9 +1553,12 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
         title="Session Defaults"
         width="min(380px, 88vw)"
         panelRef={popupRef}
+        // Same latent clipping bug Sound hit: without flex-col on the panel the
+        // body cannot scroll, it just gets cut off once the content is tall
+        // enough. Short content hid it here.
+        className="flex flex-col"
       >
-            <div className="flex flex-col h-full">
-              <div ref={scrollRef} className="scroll-fade">
+              <div ref={scrollRef} className="scroll-fade flex-1">
                 <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
                 <section>
@@ -1611,7 +1634,6 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 </section>
                 </div>
               </div>
-            </div>
       </SettingsPopup>
     </>
   );
