@@ -5,6 +5,7 @@ import UserMessage from '../UserMessage';
 import AssistantTurnBubble from '../AssistantTurnBubble';
 import { CompactToolStrip } from './CompactToolStrip';
 import PromptCard from '../PromptCard';
+import { sendPromptInput } from '../../state/prompt-input';
 import UsageCard from '../UsageCard';
 import SystemMarker from '../SystemMarker';
 import CompactingCard from '../CompactingCard';
@@ -360,7 +361,8 @@ export function BubbleFeed({ sessionId }: Props) {
                     <PromptCard
                       prompt={entry.prompt}
                       sessionId={sessionId}
-                      onSelect={(input) => window.claude.session.sendInput(sessionId, input)}
+                      onSelect={(button) => sendPromptInput(sessionId, button)}
+                      keyboardShortcuts={false}
                     />
                   );
                   break;

@@ -20,6 +20,40 @@ Three deterministic shapes; no 600ms timing guesses on the Windows path:
    - **Desktop:** wait for the body tail to echo from CC stdout (proving CC drained the body from its input pipe), then write `\r` as one byte — no timing assumption. On echo timeout (`ECHO_TIMEOUT_MS`, 12s) SUPPRESS the CR (no echo ⇒ a live Ink select menu has focus; a blind `\r` answers it). Recovery is the renderer retry. Do NOT reintroduce the blind fallback CR (2026-07-09 stray-Enter fix, youcoded#110).
    - **Android:** still 600ms gap (Linux PTY has no ConPTY gap-collapse). Mirroring desktop's echo-driven approach is a TODO in `PtyBridge.writeInput`.
 
+## Answering a live Ink select menu (2026-07-26, CC 2.1.220)
+
+Driving CC's menus (folder trust, Resume Session, theme/login pickers, usage-limit,
+auto-mode opt-in) is a separate protocol from submitting text, and it was wrong from
+the feature's introduction until 2026-07-26. Two behaviours, both measured with
+`node-pty` + `@xterm/headless` against the real CLI:
+
+- **Arrows in a write that ends with `\r` are DISCARDED.** CC acts on the Enter alone
+  and confirms whatever option is currently highlighted. Measured on `/model`: cursor
+  at index 1, `UP×5 + DOWN×N + \r` as ONE write committed index 1 for N = 0,1,2,3.
+  The old `menuToButtons` emitted exactly that shape, so **every** button answered the
+  highlighted option — on Resume Session that is option 1, which runs `/compact`
+  (hence "all options just compact the session"), and on the folder-trust dialog it
+  meant clicking "No, exit" TRUSTED the folder.
+- **The menus WRAP, they do not clamp.** `UP×5` on the 3-option resume prompt moves
+  index 0 → 1. So "overshoot UP to anchor at the top" — the premise of the April 2026
+  fix — was false independently of the point above.
+- **A bare digit selects AND submits the matching numbered option.** One byte, no
+  Enter, no dependence on cursor position. Verified on `/model`, the real Resume
+  Session prompt, and the folder-trust prompt. This is now the only path buttons take
+  (`menuToButtons` → `state/prompt-input.ts` → `sendPromptInput`); the digit is read
+  off the option's own screen line (`ParsedMenu.optionNumbers`), never inferred from
+  list position.
+
+The arrow fallback (only reachable for a menu whose options carry no number, which CC
+has never produced) sends navigation and the `\r` as TWO writes 150ms apart. Split that
+way the arrows all land: `UP×5 + DOWN×N` then `\r` committed the option N steps away for
+N = 1,2,3, where the identical sequence in ONE write committed the already-highlighted
+option every time. (Arrow-to-arrow works down to at least 60ms; the submit gap was not
+bisected — 150ms is simply the verified value.) Guards:
+`desktop/tests/keystroke-diagnostic.test.ts`, `prompt-integration.test.ts`,
+`prompt-card.test.tsx`. Protocol facts live in `docs/cc-dependencies.md` → "Ink menu
+option selection"; re-probe on a CC version bump.
+
 ## Invariants
 
 - Don't reintroduce a 600ms enter-split in the desktop worker (echo observation makes it superfluous + timing-fragile).

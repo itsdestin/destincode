@@ -1,23 +1,38 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { parseInkSelect, menuToButtons } from '../src/renderer/parser/ink-select-parser';
 
 /**
- * Diagnostic test: Capture and analyze the actual keystroke sequences
- * that would be sent to the PTY for various menu scenarios.
+ * The keystroke contract, per menu shape.
  *
- * This helps identify if the keystroke generation is the root cause
- * of menu selection failures.
+ * This file used to assert the anchor-then-navigate sequence
+ * (`UP×(n+2) + DOWN×index + \r`). That sequence was measured against the real CC
+ * CLI (2.1.220) on 2026-07-26 and is wrong twice over:
+ *
+ *   - Arrows in a write that ends with `\r` are DISCARDED. CC acts on the Enter
+ *     alone, confirming whatever option is highlighted. Every button on a menu
+ *     therefore answered option 1 — on Resume Session that runs /compact, which
+ *     is why "all options just compact the session" was reported.
+ *   - The menus WRAP rather than clamp, so overshooting UP does not anchor at the
+ *     top; `UP×5` on a 3-option menu moves index 0 → 1.
+ *
+ * So the contract is now: **type the option's printed number**. One byte, no
+ * Enter, no dependence on cursor position. These tests pin that across the menu
+ * shapes CC actually renders, and pin the "no arrows + CR in one write" rule that
+ * the old sequence violated.
  */
-describe('Keystroke Sequence Diagnostics', () => {
-  // Helper to visualize escape sequences
-  function visualizeKeystrokes(input: string): string {
-    return input
-      .replace(/\u001b\[A/g, '[UP]')
-      .replace(/\u001b\[B/g, '[DOWN]')
-      .replace(/\r/g, '[ENTER]');
+describe('keystroke contract', () => {
+  const UP = '\u001b[A';
+  const DOWN = '\u001b[B';
+
+  /** Every button must be a single write with no Enter in it, or an arrow write
+   *  paired with a SEPARATE submit — never both in one string. */
+  function expectNoMixedWrite(input: string, submitInput?: string) {
+    const hasArrow = input.includes(UP) || input.includes(DOWN);
+    expect(hasArrow && input.includes('\r')).toBe(false);
+    if (submitInput) expect(submitInput).not.toMatch(/\u001b/);
   }
 
-  describe('Resume Session Menu (colon-numbered)', () => {
+  describe('Resume Session menu (colon-numbered)', () => {
     const resumeSessionText = `Resume Session
 
 Session is 45 minutes old. Resume from summary will compress context.
@@ -27,47 +42,29 @@ Session is 45 minutes old. Resume from summary will compress context.
 
 Enter to confirm`;
 
-    it('parses resume session correctly', () => {
+    it('parses options and cursor position', () => {
       const menu = parseInkSelect(resumeSessionText);
       expect(menu).not.toBeNull();
       if (!menu) return;
 
-      console.log('\n=== Resume Session Parse ===');
-      console.log('Title:', menu.title);
-      console.log('Options:', menu.options);
-      console.log('Selected index:', menu.selectedIndex);
-      console.log('Description:', menu.description);
-
       expect(menu.options).toEqual(['as is (full replay)', 'from summary (compressed)']);
       expect(menu.selectedIndex).toBe(1);
+      expect(menu.optionNumbers).toEqual([1, 2]);
     });
 
-    it('generates correct keystroke sequences for resume session', () => {
+    it('sends each option its own number', () => {
       const menu = parseInkSelect(resumeSessionText);
       if (!menu) return;
-
       const buttons = menuToButtons(menu);
 
-      console.log('\n=== Resume Session Keystrokes ===');
-      buttons.forEach((btn, idx) => {
-        const viz = visualizeKeystrokes(btn.input);
-        console.log(`Button ${idx} (${btn.label}): ${viz}`);
-      });
-
-      // With 2 options and anchor-then-navigate:
-      // Should send UP × 4 (2 + 2) to anchor, then DOWN × index
-      const UP = '\u001b[A';
-      const DOWN = '\u001b[B';
-
-      expect(buttons[0].input).toBe(UP.repeat(4) + DOWN.repeat(0) + '\r');
-      expect(buttons[1].input).toBe(UP.repeat(4) + DOWN.repeat(1) + '\r');
-
-      // Key assertion: both buttons have DIFFERENT keystroke sequences
+      expect(buttons[0].input).toBe('1');
+      expect(buttons[1].input).toBe('2');
       expect(buttons[0].input).not.toBe(buttons[1].input);
+      buttons.forEach((b) => expectNoMixedWrite(b.input, b.submitInput));
     });
   });
 
-  describe('Theme Selection Menu', () => {
+  describe('theme selection menu (4 options)', () => {
     const themeMenuText = `Choose a Theme
 
 Currently dark. Switch themes to preview styling.
@@ -79,48 +76,27 @@ Currently dark. Switch themes to preview styling.
 
 Enter to confirm`;
 
-    it('parses theme menu correctly', () => {
+    it('parses all four options', () => {
       const menu = parseInkSelect(themeMenuText);
       expect(menu).not.toBeNull();
       if (!menu) return;
 
-      console.log('\n=== Theme Menu Parse ===');
-      console.log('Title:', menu.title);
-      console.log('Options:', menu.options);
-      console.log('Selected index:', menu.selectedIndex);
-
       expect(menu.options).toHaveLength(4);
-      expect(menu.selectedIndex).toBe(2); // cursor is on "midnight"
+      expect(menu.selectedIndex).toBe(2); // cursor on "midnight"
     });
 
-    it('generates keystrokes for all theme options', () => {
+    it('gives every option a distinct keystroke', () => {
       const menu = parseInkSelect(themeMenuText);
       if (!menu) return;
-
       const buttons = menuToButtons(menu);
-      const UP = '\u001b[A';
-      const DOWN = '\u001b[B';
 
-      console.log('\n=== Theme Menu Keystrokes ===');
-      buttons.forEach((btn, idx) => {
-        const viz = visualizeKeystrokes(btn.input);
-        console.log(`Button ${idx} (${btn.label}): ${viz}`);
-      });
-
-      // 4 options → anchor with UP × 6
-      expect(buttons[0].input).toBe(UP.repeat(6) + DOWN.repeat(0) + '\r'); // light
-      expect(buttons[1].input).toBe(UP.repeat(6) + DOWN.repeat(1) + '\r'); // dark
-      expect(buttons[2].input).toBe(UP.repeat(6) + DOWN.repeat(2) + '\r'); // midnight (currently selected)
-      expect(buttons[3].input).toBe(UP.repeat(6) + DOWN.repeat(3) + '\r'); // crème
-
-      // All buttons should have different sequences
-      const sequences = buttons.map(b => b.input);
-      const uniqueSequences = new Set(sequences);
-      expect(uniqueSequences.size).toBe(4);
+      expect(buttons.map((b) => b.input)).toEqual(['1', '2', '3', '4']);
+      expect(new Set(buttons.map((b) => b.input)).size).toBe(4);
+      buttons.forEach((b) => expectNoMixedWrite(b.input, b.submitInput));
     });
   });
 
-  describe('2-Option Menu (Theme/Login)', () => {
+  describe('2-option menu (login method)', () => {
     const loginMenuText = `Select Login Method
 
 Choose how to authenticate:
@@ -130,74 +106,52 @@ Choose how to authenticate:
 
 Enter to confirm`;
 
-    it('generates correct keystrokes for 2-option menu', () => {
+    it('sends 1 and 2', () => {
       const menu = parseInkSelect(loginMenuText);
       if (!menu) return;
-
       const buttons = menuToButtons(menu);
-      const UP = '\u001b[A';
-      const DOWN = '\u001b[B';
 
-      console.log('\n=== 2-Option Login Menu Keystrokes ===');
-      buttons.forEach((btn, idx) => {
-        const viz = visualizeKeystrokes(btn.input);
-        console.log(`Button ${idx} (${btn.label}): ${viz}`);
-      });
-
-      // 2 options → anchor with UP × 4
-      expect(buttons[0].input).toBe(UP.repeat(4) + DOWN.repeat(0) + '\r');
-      expect(buttons[1].input).toBe(UP.repeat(4) + DOWN.repeat(1) + '\r');
-
-      // Verify they're different
-      expect(buttons[0].input).not.toBe(buttons[1].input);
+      expect(buttons[0].input).toBe('1');
+      expect(buttons[1].input).toBe('2');
+      buttons.forEach((b) => expectNoMixedWrite(b.input, b.submitInput));
     });
   });
 
-  describe('Critical: Keystroke Independence', () => {
-    it('keystroke sequences should be independent of initial selectedIndex', () => {
-      // This is the core guarantee of anchor-then-navigate:
-      // Clicking option 0 should ALWAYS send the same keystrokes,
-      // regardless of which option was selected when parsing.
+  describe('independence from cursor position', () => {
+    it('sends the same keystroke for an option no matter where the cursor was', () => {
+      // The property the old anchor trick was reaching for, now actually true:
+      // the digit doesn't reference the cursor at all.
+      const screen = (cursor: number) =>
+        ['   1: first', '   2: second', '   3: third']
+          .map((line, i) => (i === cursor ? line.replace('  ', ' ❯') : line))
+          .join('\n');
 
-      const options = ['first', 'second', 'third'];
-      const UP = '\u001b[A';
-      const DOWN = '\u001b[B';
+      const inputsFor = (cursor: number) =>
+        menuToButtons(parseInkSelect('Pick one:\n' + screen(cursor))!).map((b) => b.input);
 
-      // Scenario 1: User at first option when menu renders
-      const seq1 = menuToButtons({
+      expect(inputsFor(0)).toEqual(['1', '2', '3']);
+      expect(inputsFor(1)).toEqual(['1', '2', '3']);
+      expect(inputsFor(2)).toEqual(['1', '2', '3']);
+    });
+
+    it('the arrow fallback still submits in a separate write', () => {
+      // Unnumbered menus can only be hand-built — the parser needs a numeric
+      // prefix to see an option line at all. Pinned so the fallback can't quietly
+      // regrow a mixed arrows+CR write.
+      const buttons = menuToButtons({
         id: 'test',
         title: 'test',
-        options,
-        selectedIndex: 0,
-      })[0].input;
-
-      // Scenario 2: User at second option when menu renders
-      const seq2 = menuToButtons({
-        id: 'test',
-        title: 'test',
-        options,
+        options: ['first', 'second', 'third'],
         selectedIndex: 1,
-      })[0].input;
+      });
 
-      // Scenario 3: User at third option when menu renders
-      const seq3 = menuToButtons({
-        id: 'test',
-        title: 'test',
-        options,
-        selectedIndex: 2,
-      })[0].input;
-
-      console.log('\n=== Keystroke Independence Test ===');
-      console.log('Cursor at index 0:', visualizeKeystrokes(seq1));
-      console.log('Cursor at index 1:', visualizeKeystrokes(seq2));
-      console.log('Cursor at index 2:', visualizeKeystrokes(seq3));
-
-      // All should be identical (this is the whole point!)
-      expect(seq1).toBe(seq2);
-      expect(seq2).toBe(seq3);
-
-      const expected = UP.repeat(5) + DOWN.repeat(0) + '\r'; // 3 options → UP×5
-      expect(seq1).toBe(expected);
+      expect(buttons[0].input).toBe(DOWN.repeat(2)); // 1 -> 0, wrapping
+      expect(buttons[1].input).toBe('');
+      expect(buttons[2].input).toBe(DOWN.repeat(1));
+      buttons.forEach((b) => {
+        expect(b.submitInput).toBe('\r');
+        expectNoMixedWrite(b.input, b.submitInput);
+      });
     });
   });
 });
