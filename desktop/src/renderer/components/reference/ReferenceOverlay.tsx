@@ -64,12 +64,22 @@ export function ReferenceOverlay() {
   // Scroll-to-centre is NOT an option: the most likely right-click target is
   // the newest message, which sits directly above the composer with no
   // scroll room beneath it and can never reach centre by scrolling (spec
-  // 2.1). Artifact references don't travel at all (spec 2.2) — the clone
-  // stays pinned over the source and is clipped to the selection instead, so
-  // it reads at full --fg above the dim while the rest of the window dims.
+  // 2.1).
+  //
+  // Bug fix (task-8 review): this used to be ONE effect, deps
+  // `[reference, travels, d]`, shared with the artifact clip-path logic
+  // below. `d` is recomputed by useReferenceGeometry on EVERY scroll/resize
+  // (it's the traced-outline path), but a travelling clone never reads `d`
+  // at all — only the artifact branch does, for its clip-path. Sharing one
+  // effect meant scrolling at any point during the 460ms travel re-ran the
+  // whole thing: reset `transform` back to the source position and
+  // re-scheduled the RAF that glides it to centre, visibly restarting the
+  // travel. Splitting into two effects — this one keyed on
+  // `[reference, travels]` only — means a travelling reference's FLIP runs
+  // exactly once per reference and is inert to scroll/resize.
   useEffect(() => {
     const node = liftRef.current;
-    if (!node || !reference?.anchor) return;
+    if (!node || !reference?.anchor || !travels) return;
     const src = reference.anchor.host;
     if (!src) return;
 
@@ -85,30 +95,6 @@ export function ReferenceOverlay() {
     // held reference to another.
     node.style.clipPath = 'none';
 
-    if (!travels) {
-      // Artifact reference: no travel. Pin the clone exactly over the
-      // original and clip it to the selection, so only the selected lines
-      // read at full --fg while the rest of the window dims. Clipping the
-      // clone beats re-drawing the text: multi-line selections (the
-      // headline case — "lines 12-18 of engine.ts") keep exact glyphs,
-      // fonts, and highlighting.
-      //
-      // `d` is built in VIEWPORT coordinates (use-reference-geometry.ts's
-      // `origin = {left:0,top:0}`), which lines up for free with the trace
-      // SVG (`.reference-trace` is `position:fixed; inset:0`, so ITS border
-      // box origin IS the viewport origin). It does NOT line up for free
-      // here: `clip-path: path()` resolves its coordinates against the
-      // clipped element's OWN border box — this node's box starts at
-      // (s.left, s.top), not (0,0), because it's pinned over the source.
-      // Verified against the CSS Shapes spec (path() uses the same
-      // reference-box rule polygon()/circle() use for percentages), not
-      // assumed. Without shiftPath the clip silently lands offset by the
-      // source's own position — correct only for a source pinned at the
-      // viewport origin, which is not the general case.
-      node.style.clipPath = d ? `path('${shiftPath(d, -s.left, -s.top)}')` : 'none';
-      return;
-    }
-
     // Next frame so the browser paints the First position before transitioning.
     const raf = requestAnimationFrame(() => {
       const h = node.offsetHeight;
@@ -117,6 +103,48 @@ export function ReferenceOverlay() {
       node.style.transform = `translate(${dx}px, ${dy}px)`;
     });
     return () => cancelAnimationFrame(raf);
+  }, [reference, travels]);
+
+  // Artifact clip: pin the clone over the source and clip it to the
+  // selection (spec 2.2), so only the selected lines read at full --fg while
+  // the rest of the window dims. Clipping the clone beats re-drawing the
+  // text: multi-line selections (the headline case — "lines 12-18 of
+  // engine.ts") keep exact glyphs, fonts, and highlighting.
+  //
+  // Deliberately a SEPARATE effect from the travel FLIP above, and
+  // deliberately keeps `d` in its deps: unlike the travel case, there is no
+  // animation here to interrupt, and the selection genuinely moves with the
+  // page as the artifact pane scrolls — a stale clip-path would keep
+  // clipping to where the selection USED to be, revealing the wrong lines.
+  // Re-running this effect on every scroll/resize tick is exactly the
+  // desired behaviour (this mirrors what the pre-split effect already did
+  // for the non-travelling branch; only the travelling branch's re-run-on-
+  // scroll was the bug).
+  useEffect(() => {
+    const node = liftRef.current;
+    if (!node || !reference?.anchor || travels) return;
+    const src = reference.anchor.host;
+    if (!src) return;
+
+    const s = src.getBoundingClientRect();
+    node.style.left = `${s.left}px`;
+    node.style.top = `${s.top}px`;
+    node.style.width = `${s.width}px`;
+    node.style.transform = 'translate(0, 0)';
+
+    // `d` is built in VIEWPORT coordinates (use-reference-geometry.ts's
+    // `origin = {left:0,top:0}`), which lines up for free with the trace
+    // SVG (`.reference-trace` is `position:fixed; inset:0`, so ITS border
+    // box origin IS the viewport origin). It does NOT line up for free
+    // here: `clip-path: path()` resolves its coordinates against the
+    // clipped element's OWN border box — this node's box starts at
+    // (s.left, s.top), not (0,0), because it's pinned over the source.
+    // Verified against the CSS Shapes spec (path() uses the same
+    // reference-box rule polygon()/circle() use for percentages), not
+    // assumed. Without shiftPath the clip silently lands offset by the
+    // source's own position — correct only for a source pinned at the
+    // viewport origin, which is not the general case.
+    node.style.clipPath = d ? `path('${shiftPath(d, -s.left, -s.top)}')` : 'none';
   }, [reference, travels, d]);
 
   // Esc cancels. LIFO, so if a drawer opened on top, Esc closes that first.

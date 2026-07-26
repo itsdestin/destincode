@@ -333,3 +333,135 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     document.body.removeChild(host);
   });
 });
+
+// Task 8 defect fix: the FLIP positioning effect used to depend on `d`
+// (`[reference, travels, d]`). `d` is recomputed by useReferenceGeometry on
+// EVERY scroll/resize event (see its measure() + window listeners), so
+// scrolling at any point during the 460ms travel re-ran the whole effect:
+// reset `transform` back to the source position and re-scheduled the RAF
+// that glides it to centre, restarting the travel from scratch. `d` is only
+// ever consumed by the non-travelling (artifact) branch's clip-path — the
+// travelling (chat) branch never reads it. These tests pin the mechanism
+// (effect re-run / transform rewrite), not pixel values — jsdom has no
+// layout engine, so `window.innerWidth/innerHeight` and `node.offsetHeight`
+// are whatever jsdom defaults to, not real numbers; what's provable is
+// WHETHER the transform gets rewritten, not what it's rewritten TO.
+describe('lift: scroll must not restart the travel animation (task-8 defect fix)', () => {
+  function makeHost(text: string): HTMLElement {
+    const host = document.createElement('div');
+    host.setAttribute('data-test-marker', 'source');
+    host.textContent = text;
+    document.body.appendChild(host);
+    return host;
+  }
+
+  // Real per-call rect, mutable so a later "scroll" can change what
+  // getBoundingClientRect returns without changing the anchor's identity —
+  // exactly what happens for a real scroll (the source's viewport position
+  // moves; the reference itself doesn't change).
+  function stubMovingRect(host: HTMLElement, initial: DOMRect) {
+    let current = initial;
+    vi.spyOn(host, 'getBoundingClientRect').mockImplementation(() => current);
+    return {
+      move(next: DOMRect) { current = next; },
+    };
+  }
+
+  it('a chat (travelling) reference does not rewrite `transform` when only `d` changes (i.e. on scroll)', async () => {
+    const host = makeHost('the referenced message');
+    const rectCtl = stubMovingRect(host, {
+      left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50,
+    } as DOMRect);
+
+    renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+    // Let the RAF-scheduled "Last" transform apply (real timers — see the
+    // raf-sanity check this fix was verified against: a real ~50ms wait is
+    // enough for jsdom's requestAnimationFrame to fire).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift).not.toBeNull();
+    const transformAfterTravel = lift.style.transform;
+    // Sanity: the RAF callback ran and actually rewrote transform away from
+    // the FLIP "First" position — otherwise the test below would trivially
+    // pass for the wrong reason (nothing ever changed the string at all).
+    expect(transformAfterTravel).not.toBe('translate(0, 0)');
+
+    // Simulate a scroll: the source's viewport position changes AND
+    // useReferenceGeometry's window-level 'scroll' listener (capture: true)
+    // fires, forcing a re-measure that changes `d` — reference/travels are
+    // untouched.
+    rectCtl.move({ left: 400, top: 300, right: 500, bottom: 350, width: 100, height: 50 } as DOMRect);
+    await act(async () => {
+      fireEvent.scroll(window);
+    });
+    // Give any (wrongly) re-scheduled RAF a chance to fire too, so a
+    // regression can't hide behind "the assertion ran before the RAF
+    // callback landed." A separate act() call from the fireEvent above —
+    // the scroll-triggered state update (measure() -> setGeom) needs its own
+    // flush cycle before the effect that reads the new `d` even runs, so a
+    // single combined act() can starve the RAF of time within one window.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    // The whole point of the fix: scrolling mid-travel must not touch
+    // `transform` again. Before the fix, the effect re-ran on the `d`
+    // change, reset `transform` to 'translate(0, 0)' synchronously, then
+    // re-scheduled a fresh RAF — an observable restart of the glide.
+    expect(lift.style.transform).toBe(transformAfterTravel);
+
+    document.body.removeChild(host);
+  });
+
+  it('an artifact (non-travelling) reference DOES update its clip-path when `d` changes (i.e. on scroll)', async () => {
+    const host = makeHost('const x = 1;');
+    const rectCtl = stubMovingRect(host, {
+      left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50,
+    } as DOMRect);
+
+    renderOverlay({
+      kind: 'artifact',
+      label: 'lines 1-1 of x.ts',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift).not.toBeNull();
+    const firstClip = lift.style.clipPath;
+    expect(firstClip).not.toBe('none');
+
+    // Move the source (simulating the artifact pane scrolling) and fire the
+    // same window 'scroll' event useReferenceGeometry listens for. Width/
+    // height are deliberately DIFFERENT from the initial rect, not just the
+    // position: shiftPath re-expresses the path relative to the clone's own
+    // box origin, so a same-size rect moved to a new (left, top) produces the
+    // exact same shifted string — a real scroll can also change the box's
+    // size (line wrap, reflow), and this is the only way to prove the effect
+    // actually re-measured rather than coincidentally matching.
+    const movedRect = { left: 400, top: 300, right: 540, bottom: 360, width: 140, height: 60 } as DOMRect;
+    rectCtl.move(movedRect);
+    act(() => { fireEvent.scroll(window); });
+
+    // Unlike the travelling case above, the artifact clip MUST track the
+    // new rect — the selection moved with the page, so a stale clip would
+    // reveal the wrong lines. Recompute independently (same idiom as the
+    // existing artifact test above) rather than just asserting "changed".
+    const expectedD = buildUnionPath(toBoxes([movedRect], { left: 0, top: 0 } as DOMRect));
+    const expectedClip = `path('${shiftPath(expectedD, -movedRect.left, -movedRect.top)}')`;
+    expect(lift.style.clipPath).toBe(expectedClip);
+    expect(lift.style.clipPath).not.toBe(firstClip);
+
+    document.body.removeChild(host);
+  });
+});
