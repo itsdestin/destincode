@@ -80,12 +80,27 @@ export interface ParsedMenu {
   options: string[];
   selectedIndex: number;
   description?: string; // Contextual text above the menu (e.g., resume trade-off explanation)
+  /** The number CC prints in front of each option ("1. Yes" → 1), index-aligned
+   *  with `options`. This is what menuToButtons sends: typing the digit is the
+   *  only cursor-independent way to pick an option (see menuToButtons). */
+  optionNumbers?: (number | null)[];
 }
 
 export interface PromptButton {
   label: string;
   input: string;
+  /** A SECOND pty write, sent after `input` with a gap (see
+   *  state/prompt-input.ts), for the arrow-navigation fallback only. Arrows and
+   *  `\r` must never share one write — CC discards the arrows and acts on the
+   *  Enter alone (see menuToButtons). */
+  submitInput?: string;
 }
+
+/** A horizontal rule / box border — the top edge of CC's prompt box, and the
+ *  boundary between the prompt's own body and whatever the session printed
+ *  before it. `│` is deliberately absent: it's a SIDE border that appears on
+ *  body lines, not a boundary. */
+const PROMPT_BOUNDARY = /^[─═━┌┐└┘╭╮╯╰├┤┬┴┼╔╗╚╝]{8,}$/;
 
 function stripAnsi(line: string): string {
   return line.replace(ANSI_ESCAPE, '');
@@ -97,6 +112,16 @@ function stripAnsi(line: string): string {
 function stripNumbering(text: string): string {
   // Match both period ("1. ") and colon ("1: ") numbered formats
   return text.replace(/^\d+[.:]\s+/, '');
+}
+
+/**
+ * Read the option's printed number ("2. Resume full session as-is" → 2).
+ * Returns null if the line carries none — menuToButtons then falls back to
+ * arrow navigation for that option.
+ */
+function numberOf(text: string): number | null {
+  const m = text.match(/^(\d+)[.:]\s+/);
+  return m ? Number(m[1]) : null;
 }
 
 /**
@@ -167,6 +192,8 @@ export function parseInkSelect(screenText: string): ParsedMenu | null {
   const referenceIndent = indentOf(afterSelector);
 
   const options: string[] = [];
+  // Index-aligned with `options` — the digit CC printed for each one.
+  const optionNumbers: (number | null)[] = [];
   let selectedIndex = 0;
 
   // Walk backward to find options above the selector
@@ -177,11 +204,15 @@ export function parseInkSelect(screenText: string): ParsedMenu | null {
     // Don't include lines that look like titles (end with ? or :)
     if (/[?:]$/.test(trimmed) && !/^\d+[.:]\s+/.test(trimmed)) break;
     options.unshift(stripNumbering(trimmed));
+    optionNumbers.unshift(numberOf(trimmed));
   }
 
   // Insert the selected option
   selectedIndex = options.length;
   options.push(selectedText);
+  // The number came off the selector line, before ❯ was stripped — re-read it
+  // from the raw line rather than from the already-stripped label.
+  optionNumbers.push(numberOf(selectorLine.replace(/^\s*[❯>]\s*/, '').trim()));
 
   // Walk forward to find options below the selector
   for (let i = selectorIdx + 1; i < lines.length; i++) {
@@ -189,33 +220,62 @@ export function parseInkSelect(screenText: string): ParsedMenu | null {
     if (!trimmed) break;
     if (!isOptionLine(lines[i], referenceIndent)) break;
     options.push(stripNumbering(trimmed));
+    optionNumbers.push(numberOf(trimmed));
   }
 
   if (options.length < 2) return null;
   if (options.some((o) => o.length > 200)) return null;
 
-  // Extract title from lines above the menu
-  const firstOptionLine = selectorIdx - selectedIndex;
-  const title = extractTitle(lines, Math.max(0, firstOptionLine), options);
+  const firstOptionLine = Math.max(0, selectorIdx - selectedIndex);
+
+  // Where the prompt's OWN body starts. CC draws its prompt inside a box whose
+  // top edge is a horizontal rule; above that rule is unrelated session output
+  // (on a resumed session, the entire replayed transcript tail). Bounding both
+  // extractors at the rule is what stops "❄ Churned for 3m 44s ● API Error…"
+  // from being rendered as the prompt's description, and stops TITLE_OVERRIDES
+  // from matching a phrase that belongs to the conversation (2026-07-26).
+  const bodyStart = findBodyStart(lines, firstOptionLine);
+
+  // Extract title from the prompt's own body lines
+  const title = extractTitle(lines, firstOptionLine, options, bodyStart);
 
   const id = 'menu_' + options.map((o) => o.slice(0, 10)).join('_')
     .toLowerCase().replace(/[^a-z0-9_]/g, '');
 
-  // Extract contextual description from lines above the menu (e.g., resume
+  // Extract contextual description from the prompt's own body (e.g., resume
   // session trade-off text: session age, token count, usage warning)
-  const description = extractDescription(lines, Math.max(0, firstOptionLine), title);
+  const description = extractDescription(lines, firstOptionLine, title, bodyStart);
 
-  return { id, title, options, selectedIndex, description };
+  return { id, title, options, selectedIndex, description, optionNumbers };
+}
+
+/**
+ * First line of the prompt's own body: one past the nearest box border above
+ * the options, or a 15-line window when the prompt isn't boxed (older CC
+ * dialogs, and the hand-written screens in tests).
+ */
+function findBodyStart(lines: string[], firstOptionLine: number): number {
+  const floor = Math.max(0, firstOptionLine - 15);
+  for (let i = firstOptionLine - 1; i >= floor; i--) {
+    if (PROMPT_BOUNDARY.test(stripAnsi(lines[i]).trim())) return i + 1;
+  }
+  return floor;
 }
 
 /**
  * Extract a title for the menu by examining lines above the first option.
- * TITLE_OVERRIDES are checked against only the nearby lines (not the full
- * screen text) to prevent stale content from earlier prompts from matching —
- * e.g., after answering a trust prompt, the word "trust" remains in the
- * terminal buffer and would incorrectly title all subsequent menus.
+ * TITLE_OVERRIDES are checked against the prompt's own body only (never the
+ * full screen text) to prevent stale content from earlier prompts, or ordinary
+ * conversation text, from matching — e.g., after answering a trust prompt the
+ * word "trust" remains in the terminal buffer and would incorrectly title all
+ * subsequent menus.
  */
-function extractTitle(lines: string[], firstOptionLine: number, options: string[] = []): string {
+function extractTitle(
+  lines: string[],
+  firstOptionLine: number,
+  options: string[] = [],
+  bodyStart = Math.max(0, firstOptionLine - 10),
+): string {
   // Option-label overrides win: they don't depend on how far the prompt's body
   // text happens to sit above the menu (see OPTION_TITLE_OVERRIDES).
   for (const option of options) {
@@ -223,7 +283,8 @@ function extractTitle(lines: string[], firstOptionLine: number, options: string[
     if (title) return title;
   }
 
-  const searchStart = Math.max(0, firstOptionLine - 10);
+  // Never look above the prompt's own box, and never further than 10 lines.
+  const searchStart = Math.max(bodyStart, firstOptionLine - 10);
   const nearbyText = lines.slice(searchStart, firstOptionLine).join(' ').toLowerCase();
 
   for (const [keyword, title] of Object.entries(TITLE_OVERRIDES)) {
@@ -242,19 +303,27 @@ function extractTitle(lines: string[], firstOptionLine: number, options: string[
 }
 
 /**
- * Extract descriptive text from lines above the menu options, between the
- * title region and the first option. Used to surface contextual info like
- * the resume prompt's session-age and usage-limit trade-off explanation.
- * Skips box-drawing, empty lines, and lines that match the extracted title.
+ * Extract descriptive text from the prompt's own body — the lines between the
+ * box's top edge (`bodyStart`) and the first option. Used to surface contextual
+ * info like the resume prompt's session-age and usage-limit trade-off text.
+ *
+ * The `bodyStart` bound is load-bearing: this used to SKIP box borders and keep
+ * walking, so on a resumed session it swallowed the replayed transcript tail and
+ * rendered it as the prompt's description (2026-07-26 report — a card whose body
+ * read "…❄ Churned for 3m 44s ● API Error: ENOTIMP…" before the real text).
  */
-function extractDescription(lines: string[], firstOptionLine: number, title: string): string | undefined {
-  const searchStart = Math.max(0, firstOptionLine - 15);
+function extractDescription(
+  lines: string[],
+  firstOptionLine: number,
+  title: string,
+  bodyStart = Math.max(0, firstOptionLine - 15),
+): string | undefined {
   const descLines: string[] = [];
 
-  for (let i = searchStart; i < firstOptionLine; i++) {
+  for (let i = bodyStart; i < firstOptionLine; i++) {
     const clean = stripAnsi(lines[i]).trim();
     if (!clean) continue;
-    // Skip box-drawing / decorative lines
+    // Skip side borders and short decorative runs inside the box
     if (/^[─┌┐└┘│╭╮╯╰┬┴├┤┼╔╗╚╝║═━]+$/.test(clean)) continue;
     // Skip the line that became the title (avoid duplication)
     if (clean.replace(/[:?]$/, '').trim() === title.replace(/[:?]$/, '').trim()) continue;
@@ -267,22 +336,51 @@ function extractDescription(lines: string[], firstOptionLine: number, title: str
   return descLines.join(' ');
 }
 
+/**
+ * Turn a parsed menu into clickable buttons: each one types the option's NUMBER.
+ *
+ * Why not arrow keys — two facts measured against the real CC CLI (2.1.220) on
+ * 2026-07-26, both of which break every arrow-based scheme:
+ *
+ *  1. **Arrows in a write that ends with `\r` are discarded.** CC acts on the
+ *     Enter alone, confirming whatever option is currently highlighted. Measured
+ *     on the /model menu: cursor at index 1, sending `UP×5 + DOWN×N + \r`
+ *     committed index 1 for N = 0,1,2,3. This is the bug Destin reported — every
+ *     button on the Resume Session card confirmed option 1 ("Resume from
+ *     summary"), which runs /compact, so every option compacted the session. It
+ *     is also why the earlier "as-is sends from-summary" report never got fixed.
+ *  2. **These menus WRAP, they do not clamp.** `UP×5` on the 3-option resume
+ *     prompt moves index 0 → 1, not → 0. So the "anchor to the top by
+ *     overshooting UP" trick this function used was wrong on its own terms; the
+ *     comment claiming "Ink clamps arrow-up at index 0" was simply false.
+ *
+ * A bare digit selects AND submits in one byte, with no dependency on where the
+ * cursor happens to be — verified on the /model menu, the real Resume Session
+ * prompt, and the folder-trust prompt. It never sends `\r`, so there is nothing
+ * for CC to collapse. `pty-worker.js` routes it down the passthrough path.
+ */
 export function menuToButtons(menu: ParsedMenu): PromptButton[] {
-  const UP = '\u001b[A';
   const DOWN = '\u001b[B';
+  const count = menu.options.length;
 
-  // Anchor-then-navigate: always overshoot UP to snap Ink's cursor to the top
-  // of the menu (Ink clamps arrow-up at index 0), THEN press DOWN to reach the
-  // target. This makes the keystroke sequence independent of cursor state at
-  // click time — previously we computed a relative offset from the parsed
-  // selectedIndex, which went stale the moment the user arrowed in the
-  // terminal view or Ink re-rendered (same menu.id, so usePromptDetector
-  // doesn't re-emit SHOW_PROMPT). Stale offset was the root cause of
-  // "clicked option N, got option M" bugs on the Resume Session menu.
-  const anchorUps = UP.repeat(menu.options.length + 2);
+  return menu.options.map((label, index) => {
+    const number = menu.optionNumbers?.[index] ?? null;
 
-  return menu.options.map((label, index) => ({
-    label,
-    input: anchorUps + DOWN.repeat(index) + '\r',
-  }));
+    // Single-digit numbers cover every CC menu we have seen (the parser requires
+    // a numeric prefix to recognise an option line at all, so this is the path
+    // that actually runs).
+    if (number !== null && number >= 1 && number <= 9) {
+      return { label, input: String(number) };
+    }
+
+    // Fallback for a menu whose options carry no usable digit: step DOWN from
+    // the cursor position parsed at SHOW_PROMPT time, then submit in a SEPARATE
+    // write (state/prompt-input.ts adds the gap). Relative DOWN steps are
+    // wrap-correct (fact 2 above), and the `\r` has to be its own write (fact 1) —
+    // split that way the arrows DO all land, measured 2026-07-26. Best-effort
+    // only: `selectedIndex` goes stale if the user arrows in the terminal view
+    // after the card appears.
+    const steps = (((index - menu.selectedIndex) % count) + count) % count;
+    return { label, input: DOWN.repeat(steps), submitInput: '\r' };
+  });
 }

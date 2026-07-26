@@ -195,7 +195,11 @@ export function usePromptDetector() {
               promptId: menu.id,
               title: menu.title,
               description: menu.description,
-              buttons: buttons.map((b) => ({ label: b.label, input: b.input })),
+              buttons: buttons.map((b) => ({
+                label: b.label,
+                input: b.input,
+                submitInput: b.submitInput,
+              })),
             });
           }, PROMPT_DEBOUNCE_MS);
 

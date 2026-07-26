@@ -65,50 +65,159 @@ press enter to confirm`;
     });
   });
 
+  // Regression (2026-07-26): menuToButtons used to emit
+  // `UP×(n+2) + DOWN×index + \r` in ONE pty write. Measured against the real CC
+  // CLI (2.1.220), that is doubly wrong:
+  //   1. Arrows in a write that ends with `\r` are DISCARDED — CC acts on the
+  //      Enter alone and confirms whatever option is highlighted. On the Resume
+  //      Session menu every button therefore confirmed option 1 ("Resume from
+  //      summary"), which runs /compact: every option compacted the session.
+  //      Clicking "No, exit" on the folder-trust dialog TRUSTED the folder.
+  //   2. The menus WRAP rather than clamp, so the "overshoot UP to anchor at the
+  //      top" premise was false even ignoring (1).
+  // The fix types the option's number, which selects and submits in one byte.
   describe('menuToButtons', () => {
-    it('generates correct keystroke sequences with anchor-then-navigate', () => {
-      const menu = {
-        id: 'test',
-        title: 'Resume Session',
-        options: ['as is', 'from summary'],
-        selectedIndex: 1,
-        description: 'test',
-      };
+    const UP = '\u001b[A';
+    const DOWN = '\u001b[B';
+
+    it('types the option number that CC printed on screen', () => {
+      const menu = parseInkSelect(`Resuming from a summary
+
+ ❯ 1. Resume from summary (recommended)
+   2. Resume full session as-is
+   3. Don't ask me again`);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
 
       const buttons = menuToButtons(menu);
-      expect(buttons).toHaveLength(2);
-
-      const UP = '\u001b[A';
-      const DOWN = '\u001b[B';
-
-      // First option: go to top (UP×4 for 2 options) then navigate to index 0
-      const firstButton = buttons[0];
-      expect(firstButton.label).toBe('as is');
-      const expectedFirst = UP.repeat(4) + DOWN.repeat(0) + '\r';
-      expect(firstButton.input).toBe(expectedFirst);
-
-      // Second option: go to top, then DOWN once
-      const secondButton = buttons[1];
-      expect(secondButton.label).toBe('from summary');
-      const expectedSecond = UP.repeat(4) + DOWN.repeat(1) + '\r';
-      expect(secondButton.input).toBe(expectedSecond);
+      expect(buttons.map((b) => b.input)).toEqual(['1', '2', '3']);
+      expect(buttons.map((b) => b.label)).toEqual([
+        'Resume from summary (recommended)',
+        'Resume full session as-is',
+        "Don't ask me again",
+      ]);
+      // Nothing to submit — the digit is the whole keystroke.
+      expect(buttons.every((b) => b.submitInput === undefined)).toBe(true);
     });
 
-    it('produces independent keystroke sequences regardless of initial selectedIndex', () => {
-      // Same options, different selectedIndex shouldn't change the sequences
-      // (this is the whole point of anchor-then-navigate)
+    it('uses the printed number, not the list position', () => {
+      // A menu scrolled so that its visible options start at 3 — the digit has to
+      // come off the screen, or every button would be off by two.
+      const menu = parseInkSelect(`Pick one:
+   3. third
+ ❯ 4. fourth
+   5. fifth`);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+      expect(menu.optionNumbers).toEqual([3, 4, 5]);
+      expect(menuToButtons(menu).map((b) => b.input)).toEqual(['3', '4', '5']);
+    });
 
-      const option0Cmd = menuToButtons({
-        id: 'test', title: 'Test', options: ['a', 'b'], selectedIndex: 0,
-      })[0].input;
+    it('never puts arrow keys and a carriage return in the same write', () => {
+      // THE invariant. CC drops the arrows and acts on the Enter alone, so any
+      // button whose single write contains both silently answers the wrong option.
+      const menus = [
+        parseInkSelect(' ❯ 1. Yes, I trust this folder\n   2. No, exit'),
+        parseInkSelect('Pick one:\n ❯ 1. a\n   2. b\n   3. c\n   4. d'),
+        // Hand-built, unnumbered → takes the arrow fallback
+        { id: 'x', title: 'x', options: ['a', 'b', 'c'], selectedIndex: 0 },
+      ];
+      for (const menu of menus) {
+        expect(menu).not.toBeNull();
+        if (!menu) continue;
+        for (const button of menuToButtons(menu)) {
+          const hasArrow = button.input.includes(UP) || button.input.includes(DOWN);
+          expect(hasArrow && button.input.includes('\r')).toBe(false);
+          expect(button.submitInput ?? '').not.toMatch(/\u001b/);
+        }
+      }
+    });
 
-      const option0Cmd2 = menuToButtons({
-        id: 'test', title: 'Test', options: ['a', 'b'], selectedIndex: 1,
-      })[0].input;
+    it('falls back to relative DOWN steps plus a SEPARATE submit write when options carry no number', () => {
+      // Only reachable for a menu whose option lines have no digit, which CC has
+      // never produced (the parser requires a numeric prefix to see an option at
+      // all) — so this is the hand-built / future-proofing path.
+      const buttons = menuToButtons({
+        id: 'test',
+        title: 'Test',
+        options: ['a', 'b', 'c'],
+        selectedIndex: 2,
+      });
 
-      // Both should produce the same keystroke sequence for option 0
-      // (This verifies cursor state doesn't matter)
-      expect(option0Cmd).toBe(option0Cmd2);
+      // Relative steps from the parsed cursor, wrapping — these menus wrap.
+      expect(buttons[0].input).toBe(DOWN.repeat(1)); // 2 -> 0
+      expect(buttons[1].input).toBe(DOWN.repeat(2)); // 2 -> 1
+      expect(buttons[2].input).toBe('');             // already there
+      expect(buttons.every((b) => b.submitInput === '\r')).toBe(true);
+    });
+
+    it('is independent of where the cursor sits for numbered menus', () => {
+      const screen = (cursor: number) => [
+        '   1. a',
+        '   2. b',
+        '   3. c',
+      ].map((line, i) => (i === cursor ? line.replace('  ', ' ❯') : line)).join('\n');
+
+      const fromFirst = menuToButtons(parseInkSelect('Pick one:\n' + screen(0))!);
+      const fromLast = menuToButtons(parseInkSelect('Pick one:\n' + screen(2))!);
+      expect(fromFirst.map((b) => b.input)).toEqual(fromLast.map((b) => b.input));
+    });
+  });
+
+  // Regression (2026-07-26): extractDescription walked 15 lines up and SKIPPED box
+  // borders instead of stopping at them, so on a resumed session the card's body
+  // was the replayed transcript tail — Destin's screenshot showed a Resume Session
+  // card describing itself as "…❄ Churned for 3m 44s ● API Error: ENOTIMP…".
+  describe('description is bounded to the prompt box', () => {
+    const RESUMED_SCREEN = [
+      '● Shipped. feat/artifact-viewer is merged to master and pushed (dd85cdfd), and dev3 is fully shut down.',
+      '',
+      '✻ Cooked for 2m 25s',
+      '  ⎿  SessionStart:resume hook error',
+      '  ⎿  Failed with non-blocking status code: bash: session-start.sh: No such file or directory',
+      '',
+      '────────────────────────────────────────────────────────────────────',
+      '  This session is 17d 19h old and 415.6k tokens.',
+      '',
+      '  Resuming the full session will consume a substantial portion of your usage limits. We recommend',
+      '  resuming from a summary.',
+      '',
+      '  ❯ 1. Resume from summary (recommended)',
+      '    2. Resume full session as-is',
+      "    3. Don't ask me again",
+      '',
+      '  Enter to confirm · Esc to cancel',
+    ].join('\n');
+
+    it('keeps the prompt body and drops the replayed transcript above the box', () => {
+      const menu = parseInkSelect(RESUMED_SCREEN);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+
+      expect(menu.title).toBe('Resume Session');
+      expect(menu.description).toContain('This session is 17d 19h old and 415.6k tokens.');
+      expect(menu.description).toContain('We recommend resuming from a summary.');
+      // None of the session's own output may appear in the card body.
+      expect(menu.description).not.toContain('Cooked for');
+      expect(menu.description).not.toContain('artifact-viewer');
+      expect(menu.description).not.toContain('hook error');
+      // Nor the footer instruction line.
+      expect(menu.description).not.toContain('Enter to confirm');
+    });
+
+    it('does not let text above the box set the title', () => {
+      const menu = parseInkSelect([
+        'I switched the app to dark mode as you asked — the text style that looks best is up to you.',
+        '─────────────────────────────────────────────',
+        'Continue?',
+        ' ❯ 1. Yes',
+        '   2. No',
+      ].join('\n'));
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+      // 'text style that looks best' is a TITLE_OVERRIDES anchor, but it sits
+      // ABOVE the prompt box, so it must not win.
+      expect(menu.title).toBe('Continue?');
     });
   });
 

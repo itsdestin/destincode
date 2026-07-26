@@ -2,6 +2,8 @@ import React, { useCallback } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { InteractivePrompt } from '../state/chat-types';
 import { TRUST_PROMPT_TITLE } from '../parser/ink-select-parser';
+import { sendPromptInput } from '../state/prompt-input';
+import type { PromptCardButton } from './PromptCard';
 import { AppIcon, ThemeMascot } from './Icons';
 
 interface Props {
@@ -54,9 +56,13 @@ export default function TrustGate({ sessionId }: Props) {
   const trustPrompt = findTrustPrompt(sessionId, state);
 
   const handleSelect = useCallback(
-    (input: string, label: string) => {
+    (button: PromptCardButton, label: string) => {
       if (!trustPrompt) return;
-      window.claude.session.sendInput(sessionId, input);
+      // Deliberate menu-driving write: this answers the live Ink trust dialog.
+      // Before the 2026-07-26 fix this sent arrows + `\r` in ONE write, which CC
+      // collapses to a bare Enter — so clicking "No, exit" confirmed the
+      // highlighted option and TRUSTED the folder. Now it types the option digit.
+      sendPromptInput(sessionId, button);
       const action = {
         type: 'COMPLETE_PROMPT' as const,
         sessionId,
@@ -84,7 +90,7 @@ export default function TrustGate({ sessionId }: Props) {
         {trustPrompt.buttons.map((btn) => (
           <button
             key={btn.label}
-            onClick={() => handleSelect(btn.input, btn.label)}
+            onClick={() => handleSelect(btn, btn.label)}
             className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${intentStyles[buttonIntent(btn.label)]}`}
           >
             {btn.label}

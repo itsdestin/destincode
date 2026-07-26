@@ -5,7 +5,8 @@ import UserMessage from './UserMessage';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
-import PromptCard from './PromptCard';
+import PromptCard, { PromptCardButton } from './PromptCard';
+import { sendPromptInput } from '../state/prompt-input';
 import UsageCard from './UsageCard';
 import SystemMarker from './SystemMarker';
 import CompactingCard from './CompactingCard';
@@ -520,7 +521,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   }, []);
 
   const handlePromptSelect = useCallback(
-    (promptId: string, input: string, label: string, promptTitle?: string) => {
+    (promptId: string, button: PromptCardButton, label: string, promptTitle?: string) => {
       // Resume-from-summary tie-in: clicking "Resume from summary" (or similar)
       // on the Resume Session prompt triggers Claude Code's compaction flow.
       // Dispatch COMPACTION_PENDING NOW so the spinner appears immediately —
@@ -535,8 +536,9 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
           beforeContextTokens: null, // Resume doesn't have pre-compaction stats
         });
       }
-      // Send keystrokes to PTY to navigate the Ink menu
-      window.claude.session.sendInput(sessionId, input);
+      // Send the keystroke(s) that pick this option in the live Ink menu — a bare
+      // option digit, or (fallback only) arrows plus a separately-written \r.
+      sendPromptInput(sessionId, button);
       // Mark the prompt as completed in the UI
       dispatch({
         type: 'COMPLETE_PROMPT',
@@ -747,7 +749,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                     <PromptCard
                       prompt={entry.prompt}
                       sessionId={sessionId}
-                      onSelect={(input, label) => handlePromptSelect(entry.prompt.promptId, input, label, entry.prompt.title)}
+                      onSelect={(button, label) => handlePromptSelect(entry.prompt.promptId, button, label, entry.prompt.title)}
                     />
                   );
                   break;
