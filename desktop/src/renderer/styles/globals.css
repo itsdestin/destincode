@@ -903,6 +903,36 @@ body[data-reference-held] .bottom-float {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   "Ask Claude about this" held reference (spec 2026-07-26)
+   All values derive from theme tokens so the glow re-themes with everything
+   else — a literal colour here would break every community theme.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.reference-scrim {
+  --ref-stroke: var(--accent);
+  --ref-wash: color-mix(in oklab, var(--accent) 12%, transparent);
+  --ref-glow: color-mix(in oklab, var(--accent) 45%, transparent);
+  /* 2.5x the standard overlay shadow: reads as lifted on light themes
+     (0.2 -> 0.5) without going murky on dark ones (0.1 -> 0.25). */
+  --ref-lift-shadow: 0 24px 64px rgba(0, 0, 0, calc(var(--shadow-strength, 0.15) * 2.5));
+}
+
+.reference-trace { position: fixed; inset: 0; pointer-events: none; overflow: visible; }
+.reference-trace path.wash { fill: var(--ref-wash); stroke: none; }
+.reference-trace path.outline {
+  fill: none;
+  stroke: var(--ref-stroke);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px var(--ref-glow));
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: reference-trace-in 620ms 120ms cubic-bezier(.4, 0, .2, 1) forwards,
+             reference-breathe 2800ms 740ms ease-in-out infinite;
+}
+@keyframes reference-trace-in { to { stroke-dashoffset: 0; } }
+@keyframes reference-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
 /* Marketplace rail cards — tighter shadow scoped to the rail scroll
    container. The default 0 8px 32px shadow needs ~40px of bottom
    clearance to render uncut inside overflow-x-auto's clip box; that

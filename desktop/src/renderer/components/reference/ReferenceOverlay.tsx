@@ -4,6 +4,7 @@ import { Scrim, REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
 import { CloseButton } from '../ui/CloseButton';
 import { useReference } from '../../state/reference-context';
 import { useEscClose, useEscStackDepth } from '../../hooks/use-esc-close';
+import { useReferenceGeometry } from './use-reference-geometry';
 
 /**
  * The held "Ask Claude about this" reference (spec 2026-07-26).
@@ -19,6 +20,9 @@ export function ReferenceOverlay() {
   const { reference, clearReference } = useReference();
   const depth = useEscStackDepth();
   const depthAtOpen = useRef<number | null>(null);
+  // Task 7: the traced outline around the referenced content. `rects` is
+  // unused here — Task 8 needs it to redraw the selected runs above the scrim.
+  const { d } = useReferenceGeometry(reference?.anchor ?? null);
 
   // Esc cancels. LIFO, so if a drawer opened on top, Esc closes that first.
   useEscClose(!!reference, clearReference);
@@ -82,6 +86,17 @@ export function ReferenceOverlay() {
 
   return createPortal(
     <Scrim layer={2} onClick={clearReference} className="reference-scrim">
+      {/* Traced outline around the referenced selection/element (Task 7).
+          pathLength={100} normalizes both paths' length to 100 units so the
+          fixed 100-unit stroke-dasharray/breathe animation in globals.css
+          works regardless of the actual traced perimeter. Empty when the
+          source is gone (host disconnected) — nothing renders in that case. */}
+      {d && (
+        <svg className="reference-trace" aria-hidden="true">
+          <path className="wash" d={d} />
+          <path className="outline" d={d} pathLength={100} />
+        </svg>
+      )}
       {/* Cancel affordance. Positioned by Task 8 against the lifted card; until
           then it parks top-right so the state is always escapable by mouse. */}
       <div className="absolute top-4 right-4">
