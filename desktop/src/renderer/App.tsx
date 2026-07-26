@@ -30,6 +30,7 @@ import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
+import { ReferenceProvider } from './state/reference-context';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
 import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
@@ -2616,9 +2617,13 @@ function AppInner() {
   ) : null;
 
   return (
-    // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
-    // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
-    // etc.) because artifact operations may eventually consume chat/theme context.
+    // ReferenceProvider: holds the "Ask Claude about this" pending reference,
+    // parked per session so it can't leak between conversations. Outside
+    // ArtifactProvider because the artifact viewer is one of its two sources.
+    <ReferenceProvider sessionId={sessionId ?? ''}>
+    {/* ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
+        subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
+        etc.) because artifact operations may eventually consume chat/theme context. */}
     <ArtifactProvider value={{ state: artifactState, dispatch: dispatchArtifact }}>
     <div className={`app-shell flex w-screen h-full text-fg ${getPlatform() === 'android' && currentViewMode === 'terminal' ? '' : 'bg-canvas'}`}>
       {/* Mount-only: listens for chat:export-snapshot from main, serializes
@@ -3397,6 +3402,7 @@ function AppInner() {
       />
     </div>
     </ArtifactProvider>
+    </ReferenceProvider>
   );
 }
 
