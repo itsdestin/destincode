@@ -189,26 +189,17 @@ function codeMenu(pre: HTMLElement, target: HTMLElement): MenuEntry[] {
   ];
 }
 
-// Best-effort: match the selection against the artifact's rendered <pre> text to
-// report source line numbers. Only attempted for 'raw' viewers (CodeView, and
-// MarkdownView on non-.md files) where the <pre> is a verbatim copy of the file —
-// rendered markdown prose doesn't map 1:1 back to source lines, so it always
-// falls through to a quote. Line matching is first-occurrence indexOf, so a
-// selection that also appears earlier in the file can report the wrong line —
-// an acceptable miss for a prompt scaffold the user reviews before sending.
-//
-// textContent, NOT innerText: innerText is layout-dependent (forces a reflow, and
-// its line handling follows *rendered* boxes) — on a `whitespace-pre-wrap` <pre>
-// that risks counting soft-wrap breaks as source newlines. textContent walks the
-// highlight.js spans and yields the file's exact characters. It's also the only
-// one jsdom implements, so this stays unit-testable.
-function describeArtifactSelection(sel: string, container: HTMLElement): string {
+// TEMP stopgap (Task 2 of the ask-reference plan): describeArtifactSelection MOVED
+// to build-reference.ts (module-private there — see that file for the full
+// rationale comment). artifactMenu below still needs the described-line string for
+// its own "Ask about this" entry, and Task 3 hasn't rewired this call site yet, so
+// this is a deliberate duplicate kept pure/side-effect-free (unlike
+// build-reference.ts's buildArtifactReference, which also tags DOM markers for the
+// reference overlay — calling that here would tag the DOM on every right-click,
+// not just when the user picks "Ask"). Delete this once Task 3 rewires artifactMenu
+// to hold a PendingReference instead of dispatching a compose-insert string.
+function describeArtifactSelectionForAskMenu(sel: string, container: HTMLElement): string {
   const source = container.getAttribute('data-artifact-source');
-  // CodeMirror viewers NEVER use the textContent path below: CM6 virtualizes,
-  // so only viewport lines exist in the DOM and an indexOf count reports a
-  // plausible WRONG line (a selection at line 800 cites "line 41") straight
-  // into a prompt scaffold (spec §5.3). state.doc.lineAt() is
-  // virtualization-immune; the live view comes from the editor registry.
   if (source === 'cm6') {
     const view = editorViewFor(container);
     const range = view?.state.selection.main;
@@ -238,7 +229,7 @@ function artifactMenu(container: HTMLElement): MenuEntry[] {
   const sel = selectionText().trim();
   const entries: MenuEntry[] = [];
   if (sel && path) {
-    const ref = describeArtifactSelection(sel, container);
+    const ref = describeArtifactSelectionForAskMenu(sel, container);
     entries.push({
       type: 'item',
       id: 'ask',
