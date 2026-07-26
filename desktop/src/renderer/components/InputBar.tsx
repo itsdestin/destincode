@@ -184,6 +184,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // across sessions so switching away and back preserves your draft.
   const draftsRef = useRef<Map<string, { text: string; attachments: Attachment[] }>>(new Map());
   const prevSessionRef = useRef<string>(sessionId);
+  // Fix (reviewer Critical, cross-session reference leak): always mirrors the
+  // CURRENTLY rendered sessionId prop — unlike the `sessionId` a send's async
+  // callback closes over (which is frozen at the moment that particular send
+  // started), this ref is live. The native-send failure path below compares
+  // its closure's sessionId against this ref to detect "the user switched
+  // sessions while the ack was still in flight" before restoring a reference.
+  const activeSessionIdRef = useRef<string>(sessionId);
+  useEffect(() => { activeSessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => {
     const prev = prevSessionRef.current;
     if (prev === sessionId) return;
@@ -483,7 +491,26 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             // time): restoring one without the other silently changes what
             // gets sent. Guarded the same way as text/attachments above —
             // only refill if nothing newer was set during the round-trip.
-            setReference((cur) => cur ?? reference);
+            //
+            // Fix (reviewer Critical, cross-session reference leak): ALSO
+            // guarded on session identity. There is exactly one
+            // ReferenceProvider for the whole app, keyed to whichever session
+            // is currently active — its per-session parking effect swaps the
+            // live slot the instant the user switches sessions. `sessionId`
+            // here is frozen at the moment THIS send started (closure); if
+            // the user switched sessions before this ack came back,
+            // `activeSessionIdRef.current` now names the NEW session while
+            // `reference` still holds the OLD session's quoted content.
+            // Restoring unconditionally would silently write session A's
+            // reference into session B's live slot — the next message sent
+            // from session B would silently inject another conversation's
+            // quoted content into Claude's context. Only restore when the
+            // send's session is still the one on screen. (The setText/
+            // setAttachments restores just above have this same race but are
+            // out of scope for this fix — see task-4-report.md.)
+            if (sessionId === activeSessionIdRef.current) {
+              setReference((cur) => cur ?? reference);
+            }
             return;
           }
           // Task 12: a 'queued' ack dispatches QUEUED_MESSAGE_ADDED instead of

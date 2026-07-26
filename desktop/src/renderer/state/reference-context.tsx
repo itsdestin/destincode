@@ -89,8 +89,28 @@ export function ReferenceProvider({ sessionId, children }: { sessionId: string; 
   return <ReferenceContext.Provider value={value}>{children}</ReferenceContext.Provider>;
 }
 
+// Stable inert no-ops shared by every call site missing a provider — same
+// module-level singleton per render tree, so they're safe to sit in effect
+// dependency arrays (InputBar's minimal-mode clearReference effect) without
+// retriggering on every render the way a freshly-allocated `() => {}` would.
+const INERT_API: ReferenceApi = {
+  reference: null,
+  setReference: () => {},
+  clearReference: () => {},
+};
+
+// Soft-fail when no provider is mounted: the hook becomes a no-op rather than
+// throwing. Production always has a ReferenceProvider around InputBar's main-
+// app tree, so the real path is always exercised there. The soft-fail exists
+// for two other trees that mount InputBar with NO ReferenceProvider ancestor:
+// the Buddy companion windows (BuddyChatApp, BuddyOverlayApp — see App.tsx's
+// "Buddy windows render as isolated placeholders without main-app providers"
+// comment) and isolated component tests. Before this fix, opening the Buddy
+// window crashed it blank — useReference() threw on InputBar's very first
+// render, with no ErrorBoundary between the buddy early-return and the throw.
+// Follows the same pattern as React Router hooks, and the same pattern
+// already established by useEscClose (use-esc-close.tsx).
 export function useReference(): ReferenceApi {
   const ctx = useContext(ReferenceContext);
-  if (!ctx) throw new Error('useReference must be used inside a ReferenceProvider');
-  return ctx;
+  return ctx ?? INERT_API;
 }

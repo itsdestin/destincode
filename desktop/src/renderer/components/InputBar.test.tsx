@@ -313,6 +313,102 @@ describe('InputBar native send — failure also restores the held reference (gap
   });
 });
 
+// Reviewer Important fix: the ONE app-wide ReferenceProvider is keyed to
+// whichever session is currently active (App.tsx wraps it around the whole
+// tree, scoped by the active sessionId — see reference-context.tsx's
+// per-session parking effect). If the user switches sessions while a native
+// send's ack is still in flight, the gap-1 restore above (`setReference((cur)
+// => cur ?? reference)`) would otherwise write the ORIGINAL session's
+// reference into the NEW session's live slot — quoted content from a
+// different conversation silently attaching to the next message sent from
+// the session now on screen. This harness renders InputBar AND
+// ReferenceProvider both keyed off one `sessionId` prop (mirroring how
+// App.tsx wires them together) so `rerender` with a new sessionId reproduces
+// an actual session switch, not just a prop tweak on InputBar alone.
+describe('InputBar native send — session switch during flight must not leak the reference (reviewer Critical fix)', () => {
+  const REF: PendingReference = {
+    kind: 'chat-text',
+    label: '"session A text"',
+    promptText: 'In an earlier message, you said:\n"x"\n\nThe user has a follow-up: ',
+    anchor: null,
+  };
+
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    (window as any).claude = {
+      native: {
+        supported: true,
+        send: vi.fn(),
+      },
+      session: {
+        sendInput: vi.fn(),
+      },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function Harness({ sessionId, onToast }: { sessionId: string; onToast: (m: string) => void }) {
+    return (
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId={sessionId}>
+            <ReferenceProbe />
+            <InputBar sessionId={sessionId} provider="native" onToast={onToast} />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>
+    );
+  }
+
+  it("does NOT attach session A's reference to session B after the user switches sessions mid-flight", async () => {
+    let resolveAck: (v: any) => void;
+    const ack = new Promise((resolve) => { resolveAck = resolve; });
+    (window as any).claude.native.send.mockReturnValue(ack);
+
+    const onToast = vi.fn();
+    const { rerender } = render(<Harness sessionId="sess-A" onToast={onToast} />);
+
+    act(() => { referenceApi.setReference(REF); });
+    const textarea = screen.getByPlaceholderText('Ask Claude about "session A text"') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello from A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    // Optimistic send already cleared the reference (unchanged, correct
+    // success-path behavior) — the failure branch's restore is what's under
+    // test here.
+    expect(referenceApi.reference).toBeNull();
+
+    // The user switches to a different session BEFORE session A's native
+    // ack comes back — sessionId prop changes on BOTH InputBar and
+    // ReferenceProvider together, exactly as App.tsx wires them.
+    rerender(<Harness sessionId="sess-B" onToast={onToast} />);
+    // Session B has never held a reference — its live slot is null.
+    expect(referenceApi.reference).toBeNull();
+
+    // NOW session A's send fails.
+    resolveAck!({ status: 'failed', reason: 'not-live' });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalled();
+    });
+    // The fix: session A's reference must NOT leak into session B's live
+    // slot. Without the sessionId guard, `setReference((cur) => cur ??
+    // reference)` sees session B's null slot and unconditionally refills it
+    // with session A's REF — this assertion catches exactly that leak.
+    expect(referenceApi.reference).toBeNull();
+  });
+});
+
 // Gap 2 (task-4-report.md "Concerns" #2): terminal view's send paths
 // (handleSubmit's `minimal` branch, the textarea onKeyDown's `minimal`
 // branch) write straight to the PTY and never call sendMessage/
