@@ -28,6 +28,16 @@ describe('placeholderFor', () => {
   it('the approval gate still wins over a held reference', () => {
     expect(placeholderFor(REF, true)).toBe('Waiting for approval...');
   });
+
+  // Gap 2 (task-4-report.md "Concerns" #2): minimal (terminal view) send
+  // paths write straight to the PTY and never call composeOutgoing, so a
+  // reference can never be consumed there. Announcing it in the placeholder
+  // would promise a scaffold that will never be sent — minimal must silence
+  // it even though a reference IS held (default `minimal` arg is `false`,
+  // which is why every other test above still sees it announced).
+  it('does not announce a held reference in minimal (terminal view) mode', () => {
+    expect(placeholderFor(REF, false, true)).toBe('Message Claude...');
+  });
 });
 
 describe('composeOutgoing', () => {

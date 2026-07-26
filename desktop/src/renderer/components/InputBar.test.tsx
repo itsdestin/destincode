@@ -9,8 +9,20 @@ import { SkillProvider } from '../state/skill-context';
 // send-time scaffold assembly), which throws outside a ReferenceProvider —
 // every render site below needs the wrapper, same sessionId as the InputBar
 // under test (App.tsx scopes ReferenceProvider by sessionId the same way).
-import { ReferenceProvider } from '../state/reference-context';
+// useReference/PendingReference are additionally needed by the gap-1/gap-2
+// regression tests below, which read/set the held reference directly via a
+// Probe component (same idiom as InputBar.reference.test.tsx).
+import { ReferenceProvider, useReference, type PendingReference } from '../state/reference-context';
 import InputBar, { InputBarHandle } from './InputBar';
+
+// Hoisted to module scope (mirrors InputBar.reference.test.tsx's Probe idiom):
+// tsc's definite-assignment check only exempts USAGE inside a nested closure
+// relative to the declaration — a local `let api` inside an `it(...)` body
+// with a direct `expect(api...)` in the same scope still trips TS2454, even
+// though render() has synchronously run Probe by then. Module scope makes
+// every usage (inside a nested `it()` closure) exempt.
+let referenceApi: ReturnType<typeof useReference>;
+function ReferenceProbe() { referenceApi = useReference(); return null; }
 
 // jsdom (per this repo's vitest.config.ts) has no global setupFiles/polyfills —
 // useScrollFade (mounted unconditionally by InputBar's textarea) reaches for
@@ -182,6 +194,214 @@ describe('InputBar native send — failure keeps the draft (reviewer Critical fi
     await waitFor(() => {
       expect(textarea.value).toBe('hello world');
     });
+  });
+});
+
+// Gap 1 (task-4-report.md "Concerns" #1): a failed async native send restores
+// the draft (tested above) but, before this fix, silently dropped the held
+// reference — clearReference() already ran synchronously in send() right
+// after the optimistic sendMessage() returned true, before the ack settled.
+// The user got their text back with the "Ask Claude about X" scaffold gone,
+// and resending would have silently omitted it.
+describe('InputBar native send — failure also restores the held reference (gap 1 fix)', () => {
+  const REF: PendingReference = {
+    kind: 'chat-text',
+    label: '"earlier text"',
+    promptText: 'In an earlier message, you said:\n"x"\n\nThe user has a follow-up: ',
+    anchor: null,
+  };
+
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    (window as any).claude = {
+      native: {
+        supported: true,
+        send: vi.fn(),
+      },
+      session: {
+        sendInput: vi.fn(),
+      },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('restores the reference alongside the draft when the ack is failed', async () => {
+    let resolveAck: (v: any) => void;
+    const ack = new Promise((resolve) => { resolveAck = resolve; });
+    (window as any).claude.native.send.mockReturnValue(ack);
+
+    const onToast = vi.fn();
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    act(() => { referenceApi.setReference(REF); });
+    const textarea = screen.getByPlaceholderText('Ask Claude about "earlier text"') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello world' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    // send() clears the reference synchronously on the optimistic path —
+    // this is correct and unchanged (spec §7's success-path clear).
+    expect(referenceApi.reference).toBeNull();
+    expect(textarea.value).toBe('');
+
+    resolveAck!({ status: 'failed', reason: 'not-live' });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(textarea.value).toBe('hello world');
+    });
+    // The fix: the reference travels back with the draft instead of staying
+    // gone. Without it, this stays null and the test fails.
+    expect(referenceApi.reference).toEqual(REF);
+  });
+
+  it('does NOT clobber a newer reference the user set during the ack round-trip', async () => {
+    let resolveAck: (v: any) => void;
+    const ack = new Promise((resolve) => { resolveAck = resolve; });
+    (window as any).claude.native.send.mockReturnValue(ack);
+
+    const onToast = vi.fn();
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    act(() => { referenceApi.setReference(REF); });
+    const textarea = screen.getByPlaceholderText('Ask Claude about "earlier text"') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'first message' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(referenceApi.reference).toBeNull();
+
+    // User picks a NEW reference while the first send's ack is still in flight.
+    const REF2: PendingReference = { ...REF, label: '"newer text"' };
+    act(() => { referenceApi.setReference(REF2); });
+
+    resolveAck!({ status: 'failed', reason: 'queue-full' });
+
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalled();
+    });
+    // The guard (`cur ?? reference`) must have refused to overwrite — the
+    // newer reference survives, the lost first reference does not reappear.
+    expect(referenceApi.reference).toEqual(REF2);
+  });
+});
+
+// Gap 2 (task-4-report.md "Concerns" #2): terminal view's send paths
+// (handleSubmit's `minimal` branch, the textarea onKeyDown's `minimal`
+// branch) write straight to the PTY and never call sendMessage/
+// composeOutgoing, so a reference held in chat view would otherwise survive
+// invisibly if the user switched to terminal view and sent from there — the
+// scaffold is never sent AND the reference never clears. This suite covers
+// the "clearing behavior" half (placeholderFor's silencing is covered by the
+// pure-function test in InputBar.reference.test.tsx); driving an actual PTY
+// send in jsdom isn't attempted here per the brief's guidance.
+describe('InputBar — minimal (terminal) mode clears a held reference (gap 2 fix)', () => {
+  const REF: PendingReference = {
+    kind: 'chat-text',
+    label: '"earlier text"',
+    promptText: 'In an earlier message, you said:\n"x"\n\nThe user has a follow-up: ',
+    anchor: null,
+  };
+
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    (window as any).claude = {
+      native: { supported: true, send: vi.fn() },
+      session: { sendInput: vi.fn() },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('clears a reference held from chat view when the composer switches into minimal mode', () => {
+    const { rerender } = render(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <InputBar sessionId="sess-1" />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    act(() => { referenceApi.setReference(REF); });
+    expect(referenceApi.reference).toEqual(REF);
+    expect(screen.getByPlaceholderText('Ask Claude about "earlier text"')).toBeInTheDocument();
+
+    // Same sessionId, same provider instances — only `minimal` flips, exactly
+    // like the real chat-view -> terminal-view toggle (Ctrl+`).
+    rerender(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <InputBar sessionId="sess-1" minimal />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    // Without the fix, this stays REF — nothing ever clears it, and the
+    // "Ask Claude about ..." placeholder would keep promising a scaffold
+    // that terminal view's send path can never deliver.
+    expect(referenceApi.reference).toBeNull();
+  });
+
+  it('clears a reference set while the composer is already in minimal mode', () => {
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <InputBar sessionId="sess-1" minimal />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    act(() => { referenceApi.setReference(REF); });
+
+    // The effect's dep array includes `reference` (not just `minimal`), so it
+    // re-fires on this set and clears it right back out rather than only
+    // catching the chat-to-terminal transition.
+    expect(referenceApi.reference).toBeNull();
   });
 });
 

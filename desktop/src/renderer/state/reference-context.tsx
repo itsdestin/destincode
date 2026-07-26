@@ -40,7 +40,11 @@ export type PendingReference = {
 
 type ReferenceApi = {
   reference: PendingReference | null;
-  setReference: (r: PendingReference | null) => void;
+  // Accepts a value OR a React-style updater (prev) => next — the updater form
+  // lets callers restore a reference conditionally (e.g. "only if nothing newer
+  // was set meanwhile") without a stale-closure read of `reference`. See the
+  // native-send-failure restore in InputBar.tsx for the motivating case.
+  setReference: (r: PendingReference | null | ((prev: PendingReference | null) => PendingReference | null)) => void;
   clearReference: () => void;
 };
 
@@ -67,7 +71,12 @@ export function ReferenceProvider({ sessionId, children }: { sessionId: string; 
     prevSession.current = sessionId;
   }, [sessionId]);
 
-  const setReference = useCallback((r: PendingReference | null) => setReferenceState(r), []);
+  // Forwards straight to useState's setter, which already accepts both a plain
+  // value and an updater function — no extra branching needed here.
+  const setReference = useCallback(
+    (r: PendingReference | null | ((prev: PendingReference | null) => PendingReference | null)) => setReferenceState(r),
+    [],
+  );
   const clearReference = useCallback(() => setReferenceState(null), []);
 
   // Memoized: this context changes only on set/clear, so consumers must not

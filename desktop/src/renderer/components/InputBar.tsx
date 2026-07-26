@@ -108,9 +108,16 @@ function sendFailureCopy(result: NativeSendResult | undefined): string {
  * empty box states what the next message is about (spec 2026-07-26 §2.1).
  * The approval gate outranks it — that copy is a hard block, not a hint.
  */
-export function placeholderFor(reference: PendingReference | null, disabled: boolean): string {
+export function placeholderFor(reference: PendingReference | null, disabled: boolean, minimal = false): string {
   if (disabled) return 'Waiting for approval...';
-  if (reference) return `Ask Claude about ${reference.label}`;
+  // Fix (gap 2, task-4-report.md): `minimal` (terminal view) send paths write
+  // straight to the PTY and never call composeOutgoing (see handleSubmit /
+  // the textarea's onKeyDown below) — the reference can never be consumed
+  // there, so announcing it here would promise a scaffold that will never be
+  // sent. The reference is a chat-composer concept; it goes silent in
+  // minimal mode. See the clearReference-on-minimal effect in the component
+  // for why nothing stays held invisibly either.
+  if (reference && !minimal) return `Ask Claude about ${reference.label}`;
   return 'Message Claude...';
 }
 
@@ -151,7 +158,27 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // The "Ask Claude about this" held reference (spec 2026-07-26). Scoped by
   // ReferenceProvider per-session (App.tsx), same parking idiom as draftsRef
   // below — reference and draft are independent pieces of per-session state.
-  const { reference, clearReference } = useReference();
+  const { reference, setReference, clearReference } = useReference();
+
+  // Fix (gap 2, task-4-report.md): terminal view's send paths (handleSubmit's
+  // minimal branch, the textarea's onKeyDown minimal branch) write straight
+  // to the PTY and never touch composeOutgoing/sendMessage, so a reference
+  // held while the composer is in minimal mode can never be consumed or
+  // announced (placeholderFor also silences it above, in minimal mode). A
+  // reference held while its source is off-screen and unconsumable is worse
+  // than no reference — it would look live in chat view but do nothing here,
+  // then resurface in chat view later as a stale, forgotten scaffold.
+  // Deliberately NOT attempting to prepend the scaffold to the PTY write
+  // instead: desktop/CLAUDE.md documents Windows-ConPTY chunking constraints
+  // (SAFE_ATOMIC_LEN / echo-driven submit) that a multi-line scaffold prepend
+  // would trip. Clearing outright is the explicit, honest behavior.
+  // `reference` is in the dep array (not just `minimal`) so this also covers
+  // a reference getting set WHILE already in minimal mode (e.g. some future
+  // caller of setReference that isn't chat-view-gated) — not only the
+  // chat-to-terminal transition.
+  useEffect(() => {
+    if (minimal && reference) clearReference();
+  }, [minimal, reference, clearReference]);
 
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
@@ -446,6 +473,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             // clobber newer input.
             setText((cur) => (cur.trim() ? cur : effectiveMessage));
             setAttachments((cur) => (cur.length > 0 ? cur : files));
+            // Fix (gap self-reported in task-4-report.md): `send()` also ran
+            // clearReference() synchronously in that same post-return block,
+            // so a failed ack was restoring the draft but leaving the
+            // reference gone — the user got their text back with the "Ask
+            // Claude about X" scaffold silently dropped, and resending would
+            // no longer include it. The draft and its reference are one unit
+            // (composeOutgoing prepends the scaffold to the draft at send
+            // time): restoring one without the other silently changes what
+            // gets sent. Guarded the same way as text/attachments above —
+            // only refill if nothing newer was set during the round-trip.
+            setReference((cur) => cur ?? reference);
             return;
           }
           // Task 12: a 'queued' ack dispatches QUEUED_MESSAGE_ADDED instead of
@@ -522,7 +560,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       }, submitStart);
       return true;
     },
-    [sessionId, disabled, dispatch, view, provider, reference, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
+    [sessionId, disabled, dispatch, view, provider, reference, setReference, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
   );
 
   // Auto-resize textarea to fit content, up to 3 lines then scroll
@@ -792,7 +830,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onPaste={handlePaste}
-            placeholder={placeholderFor(reference, !!disabled)}
+            placeholder={placeholderFor(reference, !!disabled, !!minimal)}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the
