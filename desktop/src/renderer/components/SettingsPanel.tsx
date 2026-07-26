@@ -30,7 +30,7 @@ import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -1158,21 +1158,19 @@ function RemoteButton({
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-fg-2">Keep awake</span>
                         </div>
-                        <div className="flex gap-1">
-                          {KEEP_AWAKE_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.value}
-                              onClick={() => onSetKeepAwake(opt.value)}
-                              className={`flex-1 px-1.5 py-1 rounded-sm text-3xs transition-colors ${
-                                config?.keepAwakeHours === opt.value
-                                  ? 'bg-accent text-on-accent font-medium'
-                                  : 'bg-inset text-fg-dim hover:bg-edge'
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
+                        {/* K3: four short options -> segmented. SegmentedTabs keys
+                            on string ids and keepAwakeHours is a number, so both
+                            directions convert at the boundary. */}
+                        <SegmentedTabs
+                          variant="contained"
+                          aria-label="Keep awake"
+                          value={String(config?.keepAwakeHours ?? 0)}
+                          onChange={(id) => onSetKeepAwake(Number(id))}
+                          tabs={KEEP_AWAKE_OPTIONS.map((opt) => ({
+                            id: String(opt.value),
+                            label: opt.label,
+                          }))}
+                        />
                       </div>
                     </section>
 
@@ -1542,22 +1540,23 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 {/* Default Model */}
                 <section>
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
-                  <div className="flex gap-1">
-                    {MODELS.map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => onDefaultsChange({ model: m })}
-                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-2xs transition-colors flex items-center justify-center ${
-                          defaults.model === m
-                            ? 'bg-accent text-on-accent font-medium'
-                            : 'bg-inset text-fg-dim hover:bg-edge'
-                        }`}
-                      >
-                        {MODEL_LABELS[m] || m}
-                        <ModelInfoTooltip model={m} />
-                      </button>
-                    ))}
-                  </div>
+                  {/* K3: three short options -> segmented. The info tooltip
+                      rides in the label, which is a ReactNode. */}
+                  <SegmentedTabs
+                    variant="contained"
+                    aria-label="Default Model"
+                    value={defaults.model}
+                    onChange={(id) => onDefaultsChange({ model: id })}
+                    tabs={MODELS.map((m) => ({
+                      id: m,
+                      label: (
+                        <>
+                          {MODEL_LABELS[m] || m}
+                          <ModelInfoTooltip model={m} />
+                        </>
+                      ),
+                    }))}
+                  />
                 </section>
 
                 {/* Skip Permissions */}

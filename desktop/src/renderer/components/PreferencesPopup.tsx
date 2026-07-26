@@ -4,7 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup } from './ui';
+import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -182,21 +182,17 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
               <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Editor Mode
               </h3>
-              <div className="flex gap-2">
-                {(['normal', 'vim'] as EditorMode[]).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => save('editorMode', m)}
-                    className={`flex-1 py-1.5 px-3 text-sm rounded transition-colors ${
-                      prefs.editorMode === m
-                        ? 'bg-accent text-on-accent'
-                        : 'bg-inset text-fg-2 hover:bg-well'
-                    }`}
-                  >
-                    {m === 'normal' ? 'Normal' : 'Vim'}
-                  </button>
-                ))}
-              </div>
+              {/* K3: <=4 short options with no description -> segmented. */}
+              <SegmentedTabs
+                variant="contained"
+                aria-label="Editor Mode"
+                value={prefs.editorMode}
+                onChange={(id) => save('editorMode', id as EditorMode)}
+                tabs={[
+                  { id: 'normal', label: 'Normal' },
+                  { id: 'vim', label: 'Vim' },
+                ]}
+              />
             </section>
 
             {/* Output style */}
