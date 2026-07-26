@@ -93,6 +93,7 @@ import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
+import { ReferenceOverlay } from './components/reference/ReferenceOverlay';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
 import { BuddyBarApp } from './components/buddy/BuddyBarApp';
@@ -2637,6 +2638,9 @@ function AppInner() {
           (copy/paste, Ask about this, file-pill actions). Opens only over
           surfaces it owns; leaves the terminal and other chrome untouched. */}
       <ContextMenuHost />
+      {/* Mount-only: the held "Ask Claude about this" reference — window-wide
+          dim, traced outline, and the lifted source card. */}
+      <ReferenceOverlay />
       {/* Main area — relative so bottom-float chrome can position against it.
           When a Phase-2 full-screen destination is active, hide the chat
           chrome entirely. Unmounting via `hidden` is cleaner than z-index

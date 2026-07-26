@@ -20,6 +20,9 @@ import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 import { useReference, type PendingReference } from '../state/reference-context';
+// The composer must stay live and clickable ABOVE the reference scrim (L2,
+// z-60) while a reference is held — see ReferenceOverlay.tsx and design rule 11.
+import { REFERENCE_COMPOSER_Z } from './overlays/Overlay';
 
 export interface InputBarHandle {
   clear: () => void;
@@ -718,6 +721,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   return (
     <div
       className="input-bar-container shrink-0"
+      // While a reference is held the composer must stay live ABOVE the dim —
+      // you type your question while the source sits pinned behind it. Inline
+      // style, not a `z-[NN]` class: tests/overlay-layer-authority.test.ts
+      // rejects hardcoded z-index classNames (design rule 11).
+      style={reference ? { position: 'relative', zIndex: REFERENCE_COMPOSER_Z } : undefined}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >

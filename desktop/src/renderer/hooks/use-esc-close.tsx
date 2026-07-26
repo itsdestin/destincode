@@ -57,6 +57,10 @@ class EscStore {
     return this.stack.length === 0;
   }
 
+  get depth(): number {
+    return this.stack.length;
+  }
+
   subscribe(l: StoreListener): () => void {
     this.listeners.add(l);
     return () => this.listeners.delete(l);
@@ -125,6 +129,26 @@ export function useEscStackEmpty(): boolean {
     useCallback((l) => (store ? store.subscribe(l) : () => {}), [store]),
     useCallback(() => (store ? store.isEmpty : true), [store]),
     useCallback(() => true, []),
+  );
+}
+
+/**
+ * How many overlays are currently registered.
+ *
+ * Added for the "Ask Claude about this" reference overlay: it reuses the L2
+ * band (scrim z-60), so an L1 drawer at z-40/50 would open UNDERNEATH its
+ * scrim. Rather than invent a new layer, the reference cancels itself when the
+ * stack grows past its own registration depth — the two states become mutually
+ * exclusive and the z-ordering question never arises.
+ */
+export function useEscStackDepth(): number {
+  const store = useContext(EscStoreContext);
+  // Same soft-fail + useSyncExternalStore shape as useEscStackEmpty above:
+  // no provider (isolated component tests) means no stack, so depth 0.
+  return useSyncExternalStore(
+    useCallback((l) => (store ? store.subscribe(l) : () => {}), [store]),
+    useCallback(() => (store ? store.depth : 0), [store]),
+    useCallback(() => 0, []),
   );
 }
 
