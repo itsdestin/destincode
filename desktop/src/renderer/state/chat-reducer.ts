@@ -542,6 +542,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         lastActivityAt: Date.now(),
         attentionState: 'ok',
         stallWarning: action.stallWarning ?? null,
+        // Same lifetime rule as stallWarning: present on the announcing heartbeat,
+        // cleared by the next plain one (which the first real chunk triggers).
+        promptProcessing: action.promptProcessing ?? null,
       });
       return next;
     }

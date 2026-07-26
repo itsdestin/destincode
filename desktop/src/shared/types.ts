@@ -184,6 +184,16 @@ export interface TranscriptEvent {
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
     /**
+     * Native runtime only. Emitted on `assistant-thinking` the moment a step's
+     * stream opens, BEFORE any token arrives, so the UI can say the model is
+     * reading the prompt rather than showing an idle spinner. Local models take
+     * minutes to prefill a long prompt and there is otherwise nothing to tell
+     * that apart from a hang — which is what made the 75s stall watchdog's false
+     * alarm so alarming (2026-07-26). `budgetMs` is how long prefill is allowed
+     * to take before the watchdog treats the silence as a real stall.
+     */
+    promptProcessing?: { promptTokens: number; budgetMs: number };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).

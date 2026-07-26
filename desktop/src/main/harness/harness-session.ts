@@ -53,6 +53,10 @@ export interface HarnessSessionOpts {
    *  triggers the auto-retry / session-error. Default 60_000 / 15_000. */
   stallWarningMs?: number;
   stallCountdownMs?: number;
+  /** Test hook: the TIME-TO-FIRST-TOKEN budget, which is separate from (and much
+   *  larger than) `stallWarningMs` because prefill on a local model legitimately
+   *  runs to minutes. Defaults to prefillBudgetMs(promptTokens). */
+  prefillWarningMs?: number;
   /** Resolved capability profile (Task 5): steers the doom-loop window and
    *  whether tools are attached at all. Absent → CLOUD_DEFAULT (full posture). */
   profile?: CapabilityProfile;
@@ -172,14 +176,50 @@ const STALL_RETRY = Symbol('stall-retry');
 // already streamed, or the one allowed retry was already spent). Routes through
 // send()'s catch → session-error. Message is specific + accurate (we KNOW it's a
 // timeout — docs/error-message-standards.md: never guess an unverified cause).
-class StreamStallError extends Error {
-  constructor(totalMs: number) {
+export class StreamStallError extends Error {
+  /** `phase` distinguishes the two very different silences this watchdog sees.
+   *  Saying "stopped responding" while a local model is still reading a large
+   *  prompt is a guessed cause — it never started, and nothing is wrong. */
+  constructor(totalMs: number, phase: 'prefill' | 'streaming' = 'streaming', promptTokens = 0) {
+    const secs = Math.round(totalMs / 1000);
     super(
-      `The model stopped responding — no data received for ${Math.round(totalMs / 1000)} seconds. `
-      + `The provider may be stalled; send your message again to retry.`,
+      phase === 'prefill'
+        ? `The model didn't begin responding within ${secs} seconds while reading a `
+          + `${promptTokens.toLocaleString()}-token prompt. Local models process long prompts slowly; `
+          + `a shorter prompt (read less of the file, or use Grep) will start faster.`
+        : `The model stopped responding — no data received for ${secs} seconds. `
+          + `The provider may be stalled; send your message again to retry.`,
     );
     this.name = 'StreamStallError';
   }
+}
+
+// Time-to-FIRST-token is a different animal from a mid-stream gap, and conflating
+// them is what made a healthy local model look dead (Destin, 2026-07-26: a 25k-token
+// ROADMAP.md prompt tripped the 75s watchdog while llama.cpp was still doing prefill).
+//
+// Prefill cost scales with prompt size and hardware. Rather than guess a throughput
+// per backend, allow a floor plus a conservative per-token budget: PREFILL_MS_PER_TOKEN
+// assumes only ~50 tokens/sec of prompt processing, far below what any real setup
+// manages, so the watchdog stays a genuine liveness check without ever calling a
+// working model dead. Bounded so a truly hung server still surfaces.
+//
+// Applied to EVERY provider, not just local: a cloud model with a small prompt lands
+// at ~the old timeout anyway, and a huge cloud prompt legitimately takes longer too.
+// One rule beats a provider branch that has to be kept in sync.
+// Only ANNOUNCE prompt processing when the prompt is big enough that the wait
+// could plausibly look like a hang. Emitting a "reading your prompt" heartbeat
+// for a 30-token turn would flicker for a few hundred milliseconds and tell the
+// user nothing, while adding an event to every single step of the FROZEN emit
+// surface (pinned by harness-session-loop.test.ts's ordering contract).
+const PROMPT_PROCESSING_NOTICE_TOKENS = 2_000;
+const PREFILL_BASE_MS = 90_000;
+const PREFILL_MS_PER_TOKEN = 20;          // ≈50 tok/s of prompt processing
+const PREFILL_MAX_MS = 15 * 60_000;       // a hung server must still surface
+
+export function prefillBudgetMs(promptTokens: number): number {
+  const scaled = PREFILL_BASE_MS + Math.max(0, promptTokens) * PREFILL_MS_PER_TOKEN;
+  return Math.min(scaled, PREFILL_MAX_MS);
 }
 
 // CONCURRENCY PRECONDITION: `send()` is NOT re-entrant. `abort`, `interrupted`,
@@ -812,6 +852,14 @@ export class HarnessSession extends EventEmitter {
     // genuinely silent stream — an actively-streaming reasoning model never trips it.
     const warnMs = this.opts.stallWarningMs ?? STALL_WARNING_MS;
     const countdownMs = this.opts.stallCountdownMs ?? STALL_RETRY_COUNTDOWN_MS;
+    // PREFILL vs MID-STREAM: until the first chunk arrives the model is reading the
+    // prompt, which on a local model legitimately takes minutes. Only once tokens
+    // have started does a 60s gap mean something is actually wrong. A test that
+    // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
+    const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
+      + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    const firstChunkMs = this.opts.prefillWarningMs ?? this.opts.stallWarningMs ?? prefillBudgetMs(promptTokens);
+    let sawFirstChunk = false;
     let warned = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
@@ -825,8 +873,15 @@ export class HarnessSession extends EventEmitter {
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
         stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
-      }, warnMs);
+      }, sawFirstChunk ? warnMs : firstChunkMs);
     };
+    // Tell the UI the model is READING, not hanging. Without this the user stares
+    // at an idle spinner for minutes with nothing to distinguish it from a hang —
+    // which is exactly what made the false stall so alarming. Gated on prompt size
+    // so ordinary turns keep their existing event sequence exactly.
+    if (promptTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+      this.emitEvent('assistant-thinking', { promptProcessing: { promptTokens, budgetMs: firstChunkMs } });
+    }
     armWatchdog();
 
     try {
@@ -853,9 +908,19 @@ export class HarnessSession extends EventEmitter {
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
           if (!emittedAny && isFirstAttempt) return STALL_RETRY;
-          throw new StreamStallError(warnMs + countdownMs);
+          // Name the phase honestly: a model that never STARTED (prefill) has not
+          // "stopped responding", and telling the user it did sends them chasing a
+          // provider fault that isn't there.
+          throw new StreamStallError(
+            (sawFirstChunk ? warnMs : firstChunkMs) + countdownMs,
+            sawFirstChunk ? 'streaming' : 'prefill',
+            promptTokens,
+          );
         }
         if (chunk.done) break;
+        // A real chunk arrived → the model is past prefill, so every LATER gap is
+        // judged by the strict mid-stream budget rather than the generous one.
+        sawFirstChunk = true;
         // A real chunk arrived → clear any shown warning and re-arm the watchdog.
         if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
         armWatchdog();

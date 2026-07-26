@@ -180,6 +180,14 @@ export interface SessionChatState {
    */
   stallWarning: { retryInMs: number; willRetry: boolean } | null;
   /**
+   * Native runtime: the model is READING the prompt (prefill), not hanging. Set
+   * by a `promptProcessing`-bearing heartbeat and cleared by any other event, so
+   * it lives exactly as long as the pre-first-token wait. Local models can spend
+   * minutes here on a long prompt, and an idle spinner is indistinguishable from
+   * a hang — which is what made the stall watchdog's false alarm so alarming.
+   */
+  promptProcessing: { promptTokens: number; budgetMs: number } | null;
+  /**
    * Wall-clock of the last non-spinner buffer change (set by classifier).
    * Used to distinguish "spinner is ticking but nothing else is changing"
    * from "buffer is actively producing new output."
@@ -258,6 +266,7 @@ export function createSessionChatState(): SessionChatState {
     attentionState: 'ok',
     errorMessage: null,
     stallWarning: null,
+    promptProcessing: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
     modelState: null,
@@ -392,6 +401,7 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
+      promptProcessing?: { promptTokens: number; budgetMs: number };
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
@@ -664,6 +674,11 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       errorMessage: ser.errorMessage ?? null,
       // Older hosts predate stallWarning — default null so a pre-field snapshot hydrates.
       stallWarning: ser.stallWarning ?? null,
+      // Deliberately NOT serialized: prefill is an in-flight condition of THIS
+      // client's stream. A hydrating client (remote reconnect, window restore) is
+      // not mid-prefill, and restoring a stale "Reading your prompt…" would be a
+      // lie that never clears — nothing would arrive to reset it.
+      promptProcessing: null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
       // Older hosts predate these — default null so a pre-field snapshot hydrates.

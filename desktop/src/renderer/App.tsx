@@ -1206,6 +1206,7 @@ function AppInner() {
               // Native watchdog: a stall-warning payload drives the countdown; a
               // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
               stallWarning: event.data?.stallWarning,
+              promptProcessing: event.data?.promptProcessing,
             });
           }
           break;

@@ -35,9 +35,11 @@ interface ThinkingIndicatorProps {
    * (true) or stay non-committal because the stall will end in an error (false).
    */
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
+  /** Native prefill: the model is reading a long prompt, not hanging. */
+  promptProcessing?: { promptTokens: number; budgetMs: number } | null;
 }
 
-export default function ThinkingIndicator({ stallWarning }: ThinkingIndicatorProps = {}) {
+export default function ThinkingIndicator({ stallWarning, promptProcessing }: ThinkingIndicatorProps = {}) {
   const [lineIndex, setLineIndex] = useState(() =>
     Math.floor(Math.random() * THINKING_LINES.length),
   );
@@ -69,13 +71,20 @@ export default function ThinkingIndicator({ stallWarning }: ThinkingIndicatorPro
 
   // Stalled: fixed warning copy. Only promise a retry when the harness actually
   // will retry — otherwise the stall ends in an error (no misleading "retrying").
+  // Prefill copy is deliberately NOT alarming: nothing is wrong, the model is
+  // simply reading. Naming the size makes the wait legible ("it's a big prompt")
+  // instead of mysterious, and it's the honest reason a local model is slow here.
+  // A real stall warning still outranks it — if we've crossed into "something may
+  // be wrong" territory, say so rather than keep reassuring.
   const label = stallWarning
     ? `This is taking a while, something may be wrong…${
         stallWarning.willRetry
           ? secondsLeft > 0 ? ` Retrying in ${secondsLeft}s…` : ' Retrying…'
           : ''
       }`
-    : THINKING_LINES[lineIndex];
+    : promptProcessing
+      ? `Reading your prompt — ${promptProcessing.promptTokens.toLocaleString()} tokens. Local models take a while on long prompts…`
+      : THINKING_LINES[lineIndex];
 
   return (
     // in-view: opts the inner bg-inset bubble into wallpaper-driven bubble
