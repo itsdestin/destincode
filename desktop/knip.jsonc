@@ -1,0 +1,65 @@
+{
+  // Dead-code oracle. Exists so "is this still used?" is a command, not a
+  // judgement call from a grep — see youcoded-dev/CLAUDE.md → "Never assert a
+  // negative from a single search". Run it with `npm run knip`.
+  //
+  // JSONC (not .json) specifically so the ignore rationale below can live next
+  // to the ignores. Every entry here is a VERIFIED false positive, not a
+  // silenced real finding.
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+
+  "entry": [
+    "src/main/main.ts",
+    "src/main/preload.ts",
+    "src/main/pty-worker.js",
+    "src/renderer/index.tsx",
+    "vite.config.ts",
+    "scripts/*.js",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    // The vitest suite lives in tests/, NOT beside the source. Without this,
+    // every export used only by a test reads as unused.
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    // Standalone probe harnesses run by hand (see docs/PITFALLS.md → PTY
+    // Writes). They are real entry points and the only consumer of
+    // @xterm/headless — omitting them made that a phantom "unused dependency".
+    "test-conpty/**/*.mjs",
+    "test-engine/**/*.mjs"
+  ],
+
+  "project": ["src/**/*.{ts,tsx}"],
+  "ignore": ["dist/**", "src/renderer/dev/fixtures/**"],
+
+  "ignoreDependencies": [
+    // Peer of @tailwindcss/postcss, wired through postcss.config.js rather
+    // than imported. Removing it breaks the CSS build with no import to trace.
+    "tailwindcss",
+    // Spawned as a subprocess by scripts/run-dev.js:52
+    // (`spawn(npx, ['wait-on', viteUrl])`), so no static import exists.
+    "wait-on",
+    // Imported only as a CSS subpath (`highlight.js/styles/github-dark.css`,
+    // theme-context.tsx) — knip resolves the specifier, not the package.
+    "highlight.js"
+  ],
+
+  // Gate on the categories that are CLEAN today, so CI ratchets (nothing new
+  // rots in) without demanding a big-bang cleanup first. The noisy-but-real
+  // categories report as warnings and are tracked in ROADMAP instead:
+  //   - types (262): dominated by src/shared/types.ts, a deliberate shared
+  //     type surface consumed structurally. Erroring here would be wrong.
+  //   - exports (10) / unlisted (4): real findings, but deleting an export or
+  //     re-pinning a transitive dep is a reviewed change, not a lint autofix.
+  // Tighten these to "error" as each category is driven to zero.
+  "rules": {
+    "files": "error",
+    "unresolved": "error",
+    "duplicates": "error",
+    "dependencies": "error",
+    "unlisted": "warn",
+    "exports": "warn",
+    "types": "warn",
+    "enumMembers": "warn",
+    "classMembers": "warn"
+  }
+}

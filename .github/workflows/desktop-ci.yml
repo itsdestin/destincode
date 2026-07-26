@@ -50,6 +50,15 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Dead-code check. Deliberately a SEPARATE step rather than chained onto
+      # `npm test` — that script is bare `vitest` (watch-capable), so chaining
+      # would re-run knip on every file save in the local dev loop.
+      # Gates only on the categories that are clean today (see desktop/knip.jsonc
+      # → "rules"); the noisy-but-real ones report as warnings and exit 0, so
+      # this ratchets without demanding a big-bang cleanup first.
+      - name: Dead-code check (knip)
+        run: npm run knip
+
       # Must run BEFORE the build — electron-builder's deb/rpm/pacman packagers
       # run inside `npm run build` (see desktop/electron-builder.yml linux.target).
       # PR #98 added rpm + pacman targets without updating CI, so every Desktop
