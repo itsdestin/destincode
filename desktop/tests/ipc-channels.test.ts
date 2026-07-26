@@ -700,6 +700,8 @@ describe('native:*/provider:* channel parity', () => {
     'native:get-permission-mode', 'native:sessions-list',
     // Task 11 — cancel/edit a queued-but-not-yet-sent message.
     'native:queue-remove',
+    // M3 item 2 — user-initiated /compact for a native session.
+    'native:compact',
     'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
   ];
   const CHANNEL_TO_CONST: Record<string, string> = {
@@ -708,6 +710,7 @@ describe('native:*/provider:* channel parity', () => {
     'native:get-permission-mode': 'IPC.NATIVE_GET_PERMISSION_MODE',
     'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
     'native:queue-remove': 'IPC.NATIVE_QUEUE_REMOVE',
+    'native:compact': 'IPC.NATIVE_COMPACT',
     'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
     'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
     'provider:set-key': 'IPC.PROVIDER_SET_KEY', 'provider:catalog': 'IPC.PROVIDER_CATALOG',

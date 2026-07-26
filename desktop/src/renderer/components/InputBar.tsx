@@ -11,6 +11,7 @@ import { isTypingTarget } from '../utils/is-typing-target';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
+import { runNativeSlashAction } from '../state/native-slash-actions';
 import type { UsageSnapshot } from '../state/chat-types';
 import { hasPendingInteraction } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
@@ -367,10 +368,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         callbacks: { onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker },
       });
       if (dispatchResult.handled) {
+        // Native sessions with a REAL harness implementation take it (M3 item 2).
+        // Checked before alsoSendToPty because a command can carry both — the PTY
+        // string is the Claude Code path, this is the YouCoded-runtime one.
+        if (provider === 'native' && dispatchResult.nativeAction) {
+          void runNativeSlashAction(dispatchResult.nativeAction, { sessionId, dispatch, onToast });
+          return true;
+        }
         if (dispatchResult.alsoSendToPty) {
           if (provider === 'native') {
-            // Native sessions have no PTY to forward to, and the harness has no
-            // slash-command layer yet. Tell the user rather than silently dropping.
+            // Native sessions have no PTY to forward to, and this command has no
+            // harness equivalent yet. Tell the user rather than silently dropping.
             onToast?.("Slash commands aren't available for YouCoded-runtime sessions yet.");
           } else {
             // For commands like /clear and /compact that still need Claude Code's own state to change.

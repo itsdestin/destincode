@@ -515,6 +515,22 @@ export class NativeSessionHost extends EventEmitter {
     entry.inFlight = false;
   }
 
+  /** User-initiated /compact for a native session (M3 item 2). Returns a coded
+   *  result rather than a bare boolean so the renderer can say WHY nothing
+   *  happened — this path exists specifically to replace a silent no-op.
+   *
+   *  Refuses while a turn is in flight (including one still draining the M1
+   *  queue): compaction rewrites `history`, and doing that underneath a running
+   *  turn would corrupt the tool-call/result pairing the whole driver depends on.
+   *  The session's own re-entrancy guard is the backstop, but refusing here means
+   *  the user gets a real explanation instead of a thrown error. */
+  async compact(sessionId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+    return entry.session.compactNow();
+  }
+
   interrupt(sessionId: string): boolean {
     const entry = this.live.get(sessionId);
     // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a

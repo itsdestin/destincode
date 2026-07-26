@@ -1126,6 +1126,9 @@ export const IPC = {
   // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
+  // the caller needs the {ok, reason} result to explain a refusal.
+  NATIVE_COMPACT: 'native:compact',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   // Read the session's current native permission mode. Seeds the StatusBar chip

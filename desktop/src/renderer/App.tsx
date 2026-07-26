@@ -34,7 +34,8 @@ import { categorizeArtifact } from '../shared/artifacts/categorization';
 import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
-import { dispatchSlashCommand } from './state/slash-command-dispatcher';
+import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
+import { runNativeSlashAction } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
@@ -557,6 +558,30 @@ function AppInner() {
     window.claude.session.sendInput(sid, text);
     return true;
   }, [notifyIfPtyBlocked]);
+
+  // Route a handled slash-command result to the transport this session actually
+  // has (M3 item 2). A command can carry BOTH a PTY string (Claude Code's path)
+  // and a `nativeAction` (the harness's); the dispatcher stays provider-agnostic
+  // and the choice is made here, where the provider is known.
+  //
+  // Reads the provider from sessionsRef rather than the `isNativeSession` value
+  // declared later in this component — a ref lookup can't be caught out by
+  // declaration order, and this helper is called from several places.
+  const runSlashResult = useCallback((sid: string, result: DispatcherResult) => {
+    if (!result.handled) return;
+    if (sessionsRef.current.find((x) => x.id === sid)?.provider === 'native' && result.nativeAction) {
+      void runNativeSlashAction(result.nativeAction, {
+        sessionId: sid,
+        dispatch,
+        onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); },
+      });
+      return;
+    }
+    // Claude Code path. guardedPtySend refuses for native sessions, which is the
+    // correct outcome for a command with no harness equivalent yet — and it
+    // toasts on the pending-interaction case rather than dropping silently.
+    if (result.alsoSendToPty) guardedPtySend(sid, result.alsoSendToPty);
+  }, [guardedPtySend, dispatch]);
 
   // Task 11 (cancel/edit queued messages), rewired for Task 12's docked strip
   // (was UserMessage's Cancel/Edit affordances — now QueuedMessagesStrip's):
@@ -2082,9 +2107,7 @@ function AppInner() {
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
         });
         if (result.handled) {
-          if (result.alsoSendToPty) {
-            guardedPtySend(sessionId, result.alsoSendToPty);
-          }
+          runSlashResult(sessionId, result);
           return;
         }
         // Dispatcher declined (e.g. missing callback) — fall through to raw PTY send.
@@ -2135,9 +2158,7 @@ function AppInner() {
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
         });
         if (result.handled) {
-          if (result.alsoSendToPty) {
-            guardedPtySend(sessionId, result.alsoSendToPty);
-          }
+          runSlashResult(sessionId, result);
           return;
         }
       }
@@ -2929,9 +2950,7 @@ function AppInner() {
                     // USER_PROMPT optimistic bubble that InputBar dispatches — for /compact and /clear, the
                     // COMPACTION_PENDING / CLEAR_TIMELINE reducer actions already update the timeline, so a
                     // USER_PROMPT bubble would render redundantly alongside them.
-                    if (result.handled && result.alsoSendToPty) {
-                      guardedPtySend(sessionId, result.alsoSendToPty);
-                    }
+                    runSlashResult(sessionId, result);
                   }}
                   openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}

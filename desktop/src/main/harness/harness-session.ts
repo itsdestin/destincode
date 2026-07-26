@@ -342,6 +342,64 @@ export class HarnessSession extends EventEmitter {
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
+  /** USER-INITIATED compaction (the /compact command and the Context popup's
+   *  "Compact conversation" button), as opposed to maybeCompact's automatic,
+   *  threshold-driven one.
+   *
+   *  Differences from maybeCompact, all deliberate:
+   *   - No `planCompaction` trigger check and no MIN_SUMMARIZE_SPAN thrash guard.
+   *     Those exist to stop the AUTOMATIC path burning model calls on its own
+   *     initiative; when the user explicitly asks, "you're not full enough yet"
+   *     would be the app second-guessing an explicit instruction.
+   *   - Emits `compact-summary` WITHOUT `autoCompaction`. That flag exists purely
+   *     to let a spontaneous compaction bypass the renderer's `compactionPending`
+   *     guard. The manual path already sets `compactionPending` (the dispatcher
+   *     does it before calling us), so it must take the ORDINARY route — setting
+   *     `auto` here would make the manual marker skip its own pending state.
+   *   - Returns a REASON on refusal rather than resolving silently, so the caller
+   *     can tell the user why nothing happened (docs/error-message-standards.md).
+   *     A silent no-op is what this whole milestone exists to delete.
+   *
+   *  Takes `this.abort` for the duration: that makes the summary stream
+   *  interruptible via interrupt() exactly like a turn's, and makes a concurrent
+   *  send() hit the existing re-entrancy guard instead of mutating history
+   *  underneath us. Cleared in a finally so a throw can't brick the session. */
+  async compactNow(): Promise<{ ok: true } | { ok: false; reason: 'turn-in-flight' | 'nothing-to-compact' | 'summary-failed' }> {
+    if (this.abort) return { ok: false, reason: 'turn-in-flight' };
+    this.abort = new AbortController();
+    try {
+      const cfg = this.compactionConfig();
+      // Prune first — same order as the automatic path, and it shrinks the span
+      // the model has to read before we pay for a summary.
+      this.history = pruneToolOutputs(this.history, cfg);
+      const cut = this.summarizeCutIndex();
+      // <2 user turns means there is no boundary we can cut on without risking
+      // splitting a tool-call/result pair, so there is genuinely nothing to do.
+      if (cut <= 0) return { ok: false, reason: 'nothing-to-compact' };
+      const keep = this.history.slice(cut);
+      const span = this.history.slice(0, cut);
+      if (span.length === 0) return { ok: false, reason: 'nothing-to-compact' };
+      let summary = '';
+      try {
+        const model = await this.modelFactory(this.binding, {
+          serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+        });
+        summary = await this.generateSummary(model, span);
+      } catch {
+        summary = '';
+      }
+      // FAIL-SAFE, same as the automatic path: a failed or empty summary leaves
+      // the PRUNED history in place rather than discarding anything. The user
+      // still gets a real (if smaller) reduction, and never a lost conversation.
+      if (!summary.trim()) return { ok: false, reason: 'summary-failed' };
+      this.emitEvent('compact-summary', { summary });
+      this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
+      return { ok: true };
+    } finally {
+      this.abort = null;
+    }
+  }
+
   /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];

@@ -47,9 +47,15 @@ export interface DispatcherInput {
   callbacks: DispatcherCallbacks;
 }
 
+/** A command that has a REAL native-runtime implementation, named so callers can
+ *  route it to the harness instead of a PTY that doesn't exist. The dispatcher
+ *  stays provider-agnostic on purpose — it names the intent, and the caller (who
+ *  is the one that knows the session's provider) picks the transport. */
+export type NativeSlashAction = 'compact';
+
 export type DispatcherResult =
   | { handled: false; rewritten?: string }
-  | { handled: true; alsoSendToPty?: string };
+  | { handled: true; alsoSendToPty?: string; nativeAction?: NativeSlashAction };
 
 /**
  * Route a slash command through the central dispatcher.
@@ -97,8 +103,11 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
         beforeContextTokens: snapshot?.contextTokens ?? null,
       });
       // Forward original command (with any optional focus args) to PTY.
-      // Claude Code parses /compact [instructions] itself.
-      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r` };
+      // Claude Code parses /compact [instructions] itself. A native session has
+      // no PTY — `nativeAction` tells the caller to drive the harness's own
+      // two-stage compaction instead. Both are returned; the caller picks by
+      // provider, so this stays a pure function of the input text.
+      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r`, nativeAction: 'compact' };
     }
 
     case '/clear':
