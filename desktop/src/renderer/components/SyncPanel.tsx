@@ -292,7 +292,7 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
   // Keep the compact row fresh: patch sync fields from the 10s status:data push
   // so "Last synced X ago" doesn't freeze on the value captured at mount.
   // (Full status still comes from getSyncStatus — status:data only has the
-  // live-updating fields: lastSyncEpoch, syncInProgress, backupMeta.)
+  // live-updating fields: lastSyncEpoch, syncInProgress, backupMeta, warnings.)
   useEffect(() => {
     const handler = (window as any).claude?.on?.statusData?.((data: any) => {
       if (!data) return;
@@ -306,6 +306,22 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
           // Keep per-device recency live between full refetches (same pattern as
           // lastSyncEpoch). Absent on the push → keep the last-known map.
           lastSyncByDevice: data.lastSyncByDevice ?? prev.lastSyncByDevice,
+          // Fix (2026-07-26): warnings drive the row's red "Sync Failing" dot +
+          // badge, and used to be frozen at the ONE mount-time getSyncStatus().
+          // This component mounts with the APP (DesktopSettings renders
+          // unconditionally inside the always-mounted settings drawer), so that
+          // fetch lands ~35s before SyncService.runHealthCheck() finishes
+          // rewriting .sync-warnings.json — the row captured the PREVIOUS
+          // session's warnings and, with nothing else refetching them (the
+          // popup's refreshStatus only auto-fires when the LEGACY .sync-marker
+          // epoch advances, and that file doesn't exist on a spaces-only
+          // install), stayed red for the whole app run while the popup two
+          // clicks away read green off its own fresh fetch. buildStatusData
+          // re-reads the warnings file every cycle, so the push is the
+          // authoritative source — App.tsx's gear danger-dot already uses it.
+          // `Array.isArray` not `??`: absent means "no news" (an older remote
+          // host omits the field), empty array means "all clear".
+          warnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : prev.warnings,
         };
       });
     });
