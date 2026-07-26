@@ -22,4 +22,46 @@ describe('resolveMappingAction', () => {
     expect(resolveMappingAction('claude-1', 'claude-2', 'Stop')).toBe('ignore');
     expect(resolveMappingAction('claude-1', 'claude-2', undefined)).toBe('ignore');
   });
+
+  // A `startup` SessionStart means a Claude process ANNOUNCED ITSELF for the
+  // first time. On a desktop session that is already mapped, that can only be a
+  // FOREIGN process reporting into our session (CLAUDE_DESKTOP_SESSION_ID is
+  // inherited by any descendant of the PTY, so a nested `claude` run inherits
+  // our desktop id). Adopting it repointed the transcript watcher at an
+  // unrelated JSONL, whose offset-0 replay flooded the chat view with someone
+  // else's conversation while the terminal kept showing the real session.
+  it('ignores a startup remap on an already-mapped session (foreign process announcing in)', () => {
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', 'startup')).toBe('ignore');
+  });
+
+  // The two legitimate in-session rotations must still be followed: /clear
+  // rotates onto a fresh empty transcript, and an in-session /resume switches
+  // the live process to another conversation. In both cases the chat view
+  // SHOULD follow the new id.
+  it('still remaps on a clear rotation', () => {
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', 'clear')).toBe('adopt');
+  });
+
+  it('still remaps on an in-session resume', () => {
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', 'resume')).toBe('adopt');
+  });
+
+  // FAIL-OPEN: `source` is CC-supplied and unverified in the wild. If it is
+  // absent or a value we don't recognize, fall back to the pre-guard behavior
+  // rather than silently stranding the chat view on a stale transcript. A
+  // future CC that drops/renames the field degrades to today's behavior, not
+  // to a broken one.
+  it('falls back to adopting when source is missing or unrecognized', () => {
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', undefined)).toBe('adopt');
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', '')).toBe('adopt');
+    expect(resolveMappingAction('claude-1', 'claude-2', 'SessionStart', 'some-future-source')).toBe('adopt');
+  });
+
+  // The guard applies ONLY to the remap. A first sighting must still bind
+  // unconditionally — a resumed session's very first hook is a `startup`
+  // whose transcript is non-empty by definition, and refusing it would leave
+  // the chat view permanently empty for every resumed conversation.
+  it('adopts a first sighting even from a startup source', () => {
+    expect(resolveMappingAction(undefined, 'claude-1', 'SessionStart', 'startup')).toBe('adopt');
+  });
 });

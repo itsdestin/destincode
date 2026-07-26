@@ -10,12 +10,32 @@
 
 export type MappingAction = 'adopt' | 'ignore';
 
+// CC tags every SessionStart with a `source` (it shows up in transcripts as
+// `SessionStart:<source>`): startup | resume | clear | compact. Only `clear`
+// and an in-session `/resume` are real mid-PTY rotations of OUR session.
+//
+// Fix (2026-07-26): a `startup` on an ALREADY-MAPPED desktop session is never
+// our own rotation — it is a foreign `claude` process announcing itself into
+// our session. CLAUDE_DESKTOP_SESSION_ID is inherited by every descendant of
+// the PTY, so any nested `claude` run reports our desktop id alongside its own
+// session id. Adopting that repointed the transcript watcher at an unrelated
+// JSONL; because startWatching begins at offset 0, the whole file replayed into
+// the chat view (observed: a 44MB, 15k-line conversation from months earlier)
+// while the terminal kept showing the real session.
 export function resolveMappingAction(
   currentClaudeId: string | undefined,
   incomingClaudeId: string,
   hookEventName: string | undefined,
+  // CC's SessionStart `source`. Optional and FAIL-OPEN on purpose — see below.
+  source?: string,
 ): MappingAction {
   if (!currentClaudeId) return 'adopt';                      // first sighting
   if (currentClaudeId === incomingClaudeId) return 'ignore'; // no change
-  return hookEventName === 'SessionStart' ? 'adopt' : 'ignore';
+  if (hookEventName !== 'SessionStart') return 'ignore';
+
+  // Fail open: `source` is CC-supplied, so a version that drops or renames it
+  // must degrade to the OLD behavior (adopt), never to a chat view stranded on
+  // a stale transcript. Only a positively-identified 'startup' is refused;
+  // 'clear'/'resume' (and anything unrecognized) still adopt.
+  return source === 'startup' ? 'ignore' : 'adopt';
 }
