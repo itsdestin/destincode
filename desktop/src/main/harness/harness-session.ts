@@ -231,6 +231,12 @@ export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
   private interrupted = false;
+  // Prompt tokens as of the PREVIOUS step of this turn. Used to report how much
+  // context is genuinely NEW — llama.cpp reuses the cached prefix, so only the
+  // appended messages actually get prefilled. Reset per turn; 0 means "next step
+  // is a full prefill" (first step, or history rewritten by compaction, which
+  // invalidates the cached prefix).
+  private lastStepPromptTokens = 0;
   binding: ModelBinding;
 
   // Tool runtime state (Task 9). readRegistry + todos are per-SESSION runtime
@@ -614,6 +620,7 @@ export class HarnessSession extends EventEmitter {
     this.emitEvent('user-message', { text });
     this.history.push({ role: 'user', content: text });
     this.abort = new AbortController();
+    this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
@@ -858,7 +865,25 @@ export class HarnessSession extends EventEmitter {
     // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
     const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
       + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    // How much of that is genuinely NEW work. llama.cpp reuses the cached prefix,
+    // so a step that appends a 100 KB tool result only prefills the tool result —
+    // reporting the whole context would wildly overstate the wait. A SHRINKING
+    // total means compaction rewrote history, which invalidates the cached prefix,
+    // so that step really is a full prefill again.
+    const newTokens = this.lastStepPromptTokens > 0 && promptTokens >= this.lastStepPromptTokens
+      ? promptTokens - this.lastStepPromptTokens
+      : promptTokens;
+    this.lastStepPromptTokens = promptTokens;
+    // The BUDGET deliberately scales on the TOTAL, not the increment: cache reuse
+    // is an optimistic assumption (a busy slot can evict it), and being generous
+    // here only risks a late stall report, whereas being tight risks resurrecting
+    // the false "model stopped responding" this whole change exists to kill.
     const firstChunkMs = this.opts.prefillWarningMs ?? this.opts.stallWarningMs ?? prefillBudgetMs(promptTokens);
+    // Name what is actually being read, so the copy is true at any step. After a
+    // tool call the new context IS the tool output — "your prompt" would be plain
+    // wrong there (Destin, 2026-07-26).
+    const lastMsg = (streamArgs.messages as ModelMessage[])[streamArgs.messages.length - 1];
+    const source: 'prompt' | 'tool-output' = lastMsg?.role === 'tool' ? 'tool-output' : 'prompt';
     let sawFirstChunk = false;
     let warned = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -879,8 +904,12 @@ export class HarnessSession extends EventEmitter {
     // at an idle spinner for minutes with nothing to distinguish it from a hang —
     // which is exactly what made the false stall so alarming. Gated on prompt size
     // so ordinary turns keep their existing event sequence exactly.
-    if (promptTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
-      this.emitEvent('assistant-thinking', { promptProcessing: { promptTokens, budgetMs: firstChunkMs } });
+    // Gate on the NEW tokens: a step that adds almost nothing to a huge cached
+    // context returns instantly and needs no explanation, however big the total.
+    if (newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+      this.emitEvent('assistant-thinking', {
+        promptProcessing: { promptTokens: newTokens, budgetMs: firstChunkMs, source },
+      });
     }
     armWatchdog();
 

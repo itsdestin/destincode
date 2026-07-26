@@ -186,7 +186,15 @@ export interface SessionChatState {
    * minutes here on a long prompt, and an idle spinner is indistinguishable from
    * a hang — which is what made the stall watchdog's false alarm so alarming.
    */
-  promptProcessing: { promptTokens: number; budgetMs: number } | null;
+  promptProcessing: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' } | null;
+  /**
+   * When visible assistant OUTPUT last arrived (text or reasoning delta) — as
+   * distinct from lastActivityAt, which any event bumps. The thinking indicator
+   * hides while this is fresh: a bubble filling with tokens already proves the
+   * model is alive, and a spinner next to it is noise. null until the first
+   * output of the session.
+   */
+  lastOutputAt: number | null;
   /**
    * Wall-clock of the last non-spinner buffer change (set by classifier).
    * Used to distinguish "spinner is ticking but nothing else is changing"
@@ -267,6 +275,7 @@ export function createSessionChatState(): SessionChatState {
     errorMessage: null,
     stallWarning: null,
     promptProcessing: null,
+    lastOutputAt: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
     modelState: null,
@@ -401,7 +410,7 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
-      promptProcessing?: { promptTokens: number; budgetMs: number };
+      promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' };
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
@@ -679,6 +688,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       // not mid-prefill, and restoring a stale "Reading your prompt…" would be a
       // lie that never clears — nothing would arrive to reset it.
       promptProcessing: null,
+      // Transient like promptProcessing — a hydrating client is not mid-stream.
+      lastOutputAt: null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
       // Older hosts predate these — default null so a pre-field snapshot hydrates.

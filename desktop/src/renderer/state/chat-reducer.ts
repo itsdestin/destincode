@@ -732,6 +732,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session, assistantTurns, timeline, currentTurnId, seenUuids,
         currentGroupId: null, // next tool_use creates a new group
         lastActivityAt: Date.now(),
+        // Visible OUTPUT arrived (not merely activity). The thinking indicator
+        // suppresses itself while this is fresh — a filling bubble is already proof
+        // the model is alive, so a spinner beside it is noise.
+        lastOutputAt: Date.now(),
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
@@ -772,6 +776,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session, assistantTurns, timeline, currentTurnId,
         currentGroupId: null,
         lastActivityAt: Date.now(),
+        // Visible OUTPUT arrived (not merely activity). The thinking indicator
+        // suppresses itself while this is fresh — a filling bubble is already proof
+        // the model is alive, so a spinner beside it is noise.
+        lastOutputAt: Date.now(),
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,

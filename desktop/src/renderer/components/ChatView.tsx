@@ -841,7 +841,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       </div>
                     </div>
                   )
-                  : <ThinkingIndicator stallWarning={state.stallWarning} promptProcessing={state.promptProcessing} />;
+                  : <ThinkingIndicator stallWarning={state.stallWarning} promptProcessing={state.promptProcessing} lastOutputAt={state.lastOutputAt} />;
               }
               if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
                 return (

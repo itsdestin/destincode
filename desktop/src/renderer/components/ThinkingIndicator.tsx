@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import BrailleSpinner from './BrailleSpinner';
 
+// How long after the last token the model still counts as "actively streaming".
+// Long enough to bridge normal inter-token gaps, short enough that a real pause
+// brings the indicator back promptly.
+const STREAMING_GRACE_MS = 2_000;
+
 const THINKING_LINES = [
   'Thinking',
   'Cogitating',
@@ -36,10 +41,13 @@ interface ThinkingIndicatorProps {
    */
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
   /** Native prefill: the model is reading a long prompt, not hanging. */
-  promptProcessing?: { promptTokens: number; budgetMs: number } | null;
+  promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' } | null;
+  /** When visible output last arrived. While this is fresh the indicator renders
+   *  NOTHING — the filling bubble is already the proof of life. */
+  lastOutputAt?: number | null;
 }
 
-export default function ThinkingIndicator({ stallWarning, promptProcessing }: ThinkingIndicatorProps = {}) {
+export default function ThinkingIndicator({ stallWarning, promptProcessing, lastOutputAt }: ThinkingIndicatorProps = {}) {
   const [lineIndex, setLineIndex] = useState(() =>
     Math.floor(Math.random() * THINKING_LINES.length),
   );
@@ -71,6 +79,30 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing }: Th
 
   // Stalled: fixed warning copy. Only promise a retry when the harness actually
   // will retry — otherwise the stall ends in an error (no misleading "retrying").
+  // ── Suppress while output is actively arriving ───────────────────────────
+  // The indicator exists to answer "is it alive?" when the user has NO other
+  // evidence of progress. Tokens landing in a bubble ARE that evidence, so a
+  // spinner beside them is pure noise (Destin, 2026-07-26). Tool cards and
+  // approval prompts are handled upstream by ChatView's thinkingArea predicate;
+  // streaming text is the case that had no signal until now.
+  //
+  // Grace rather than a hard flag because there is no "output ended" event —
+  // only deltas arriving. The useful side effect: if generation genuinely pauses
+  // for longer than the grace, the indicator returns, which is exactly when
+  // reassurance is wanted again.
+  const [, forceTick] = useState(0);
+  const streamingNow = lastOutputAt != null && Date.now() - lastOutputAt < STREAMING_GRACE_MS;
+  useEffect(() => {
+    if (!streamingNow) return;
+    // Re-evaluate once the grace expires so the indicator reappears on a pause.
+    const remaining = STREAMING_GRACE_MS - (Date.now() - (lastOutputAt ?? 0));
+    const id = setTimeout(() => forceTick((n) => n + 1), Math.max(50, remaining));
+    return () => clearTimeout(id);
+  }, [streamingNow, lastOutputAt]);
+  // A stall warning outranks everything: if we think something is wrong, say so
+  // even if a delta landed a moment ago.
+  if (streamingNow && !stallWarning) return null;
+
   // Prefill copy is deliberately NOT alarming: nothing is wrong, the model is
   // simply reading. Naming the size makes the wait legible ("it's a big prompt")
   // instead of mysterious, and it's the honest reason a local model is slow here.
@@ -83,7 +115,7 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing }: Th
           : ''
       }`
     : promptProcessing
-      ? `Reading your prompt — ${promptProcessing.promptTokens.toLocaleString()} tokens. Local models take a while on long prompts…`
+      ? `${promptProcessing.source === 'tool-output' ? 'Reading tool output' : 'Reading your prompt'} — ${promptProcessing.promptTokens.toLocaleString()} tokens…`
       : THINKING_LINES[lineIndex];
 
   return (

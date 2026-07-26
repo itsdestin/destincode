@@ -192,7 +192,7 @@ export interface TranscriptEvent {
      * alarm so alarming (2026-07-26). `budgetMs` is how long prefill is allowed
      * to take before the watchdog treats the silence as a real stall.
      */
-    promptProcessing?: { promptTokens: number; budgetMs: number };
+    promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' };
     /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
