@@ -401,6 +401,9 @@ class ManagedSession(
         "Usage Limit Reached", // /rate-limit-options menu — Upgrade / Stop and wait
         "Enable auto mode?", // CC v2.1.83+ first-run opt-in — 4-option auto-mode confirmation
         "Message Flagged", // Model-safeguard fallback — Switch model / Edit prompt and retry
+        // Startup dialog when CLAUDE.md imports files outside the cwd. Previously it was
+        // mislabeled "Trust This Folder?" by the stale trust anchor (2026-07-26).
+        "Allow External Imports?",
     )
 
     /** Detect permission mode from visible screen only (not raw buffer).
