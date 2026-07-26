@@ -5,6 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { ChatProvider, useChatDispatch, useChatStore } from '../state/chat-context';
 import { SkillProvider } from '../state/skill-context';
+// Task 4: InputBar now calls useReference() unconditionally (placeholder +
+// send-time scaffold assembly), which throws outside a ReferenceProvider —
+// every render site below needs the wrapper, same sessionId as the InputBar
+// under test (App.tsx scopes ReferenceProvider by sessionId the same way).
+import { ReferenceProvider } from '../state/reference-context';
 import InputBar, { InputBarHandle } from './InputBar';
 
 // jsdom (per this repo's vitest.config.ts) has no global setupFiles/polyfills —
@@ -74,7 +79,9 @@ describe('InputBar native send — failure keeps the draft (reviewer Critical fi
     render(
       <ChatProvider>
         <SkillProvider>
-          <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          <ReferenceProvider sessionId="sess-1">
+            <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );
@@ -114,7 +121,9 @@ describe('InputBar native send — failure keeps the draft (reviewer Critical fi
     render(
       <ChatProvider>
         <SkillProvider>
-          <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          <ReferenceProvider sessionId="sess-1">
+            <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );
@@ -150,7 +159,9 @@ describe('InputBar native send — failure keeps the draft (reviewer Critical fi
     render(
       <ChatProvider>
         <SkillProvider>
-          <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          <ReferenceProvider sessionId="sess-1">
+            <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );
@@ -211,8 +222,10 @@ describe('InputBar — stop button (Task 10 placement)', () => {
     render(
       <ChatProvider>
         <SkillProvider>
-          <DispatchCapture />
-          <InputBar sessionId="sess-1" provider={provider} />
+          <ReferenceProvider sessionId="sess-1">
+            <DispatchCapture />
+            <InputBar sessionId="sess-1" provider={provider} />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );
@@ -298,7 +311,9 @@ describe('InputBar — InputBarHandle hasDraft/fillDraft (Task 11)', () => {
     render(
       <ChatProvider>
         <SkillProvider>
-          <InputBar ref={ref} sessionId="sess-1" provider="native" />
+          <ReferenceProvider sessionId="sess-1">
+            <InputBar ref={ref} sessionId="sess-1" provider="native" />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );
@@ -370,9 +385,11 @@ describe('InputBar native send — queued ack dispatches QUEUED_MESSAGE_ADDED, n
     render(
       <ChatProvider>
         <SkillProvider>
-          <DispatchCapture />
-          <StoreCapture />
-          <InputBar sessionId="sess-1" provider="native" />
+          <ReferenceProvider sessionId="sess-1">
+            <DispatchCapture />
+            <StoreCapture />
+            <InputBar sessionId="sess-1" provider="native" />
+          </ReferenceProvider>
         </SkillProvider>
       </ChatProvider>,
     );

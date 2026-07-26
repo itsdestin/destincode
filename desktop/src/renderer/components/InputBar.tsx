@@ -19,18 +19,19 @@ import type { NativeSendResult } from '../../shared/types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
+import { useReference, type PendingReference } from '../state/reference-context';
 
 export interface InputBarHandle {
   clear: () => void;
   // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
   // existing "external surface reads/replaces InputBar's draft" mechanism —
-  // `initialInput` fills once per session id (already consumed for an ACTIVE
-  // session) and the `youcoded:compose-insert` CustomEvent only prepends
-  // fire-and-forget (no way to check emptiness first, which the brief's
-  // ordering — refuse BEFORE removing the queued entry — requires). Extending
-  // this existing ref (already used by App for `clear()`) with a synchronous
-  // read + an unconditional replace was the smallest addition that supports
-  // the required check-then-act sequence; see task-11-report.md.
+  // `initialInput` only fills once per session id (already consumed for an
+  // ACTIVE session), which can't support a check-then-act sequence (the
+  // brief's ordering — refuse BEFORE removing the queued entry — requires
+  // reading emptiness first). Extending this existing ref (already used by
+  // App for `clear()`) with a synchronous read + an unconditional replace was
+  // the smallest addition that supports the required sequence; see
+  // task-11-report.md.
   /** True when the composer currently holds a non-empty (trimmed) draft. */
   hasDraft: () => boolean;
   /** Replace the composer's content with `text` and focus it. Caller must call
@@ -102,6 +103,26 @@ function sendFailureCopy(result: NativeSendResult | undefined): string {
   return 'The message could not be sent — no response from the session host.';
 }
 
+/**
+ * Composer placeholder. A held reference replaces "Message Claude..." so the
+ * empty box states what the next message is about (spec 2026-07-26 §2.1).
+ * The approval gate outranks it — that copy is a hard block, not a hint.
+ */
+export function placeholderFor(reference: PendingReference | null, disabled: boolean): string {
+  if (disabled) return 'Waiting for approval...';
+  if (reference) return `Ask Claude about ${reference.label}`;
+  return 'Message Claude...';
+}
+
+/**
+ * Assembles what actually goes to Claude. The scaffold lives in the reference,
+ * NOT in the textarea — this is the whole point of the 2026-07-26 redesign, so
+ * the user's draft is only ever their own words.
+ */
+export function composeOutgoing(draft: string, reference: PendingReference | null): string {
+  return reference ? reference.promptText + draft : draft;
+}
+
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -126,6 +147,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // re-render whenever the gate itself hasn't flipped. Same visibility
   // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
   const showStop = useStreamingGate(sessionId);
+
+  // The "Ask Claude about this" held reference (spec 2026-07-26). Scoped by
+  // ReferenceProvider per-session (App.tsx), same parking idiom as draftsRef
+  // below — reference and draft are independent pieces of per-session state.
+  const { reference, clearReference } = useReference();
 
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
@@ -293,27 +319,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     return () => window.removeEventListener('buddy:attach-file', listener);
   }, [addFiles]);
 
-  // External "insert into composer" entry point — the chat right-click menu's
-  // "Ask about this" action dispatches this window CustomEvent with a pre-built
-  // quote + follow-up scaffold. Mirrors buddy:attach-file so no prop threading
-  // is needed. We PREPEND the scaffold and drop the caret right after it, so any
-  // draft the user was already typing survives as the follow-up text.
-  useEffect(() => {
-    const listener = (e: Event) => {
-      const insert = (e as CustomEvent<{ text?: string }>).detail?.text;
-      if (!insert) return;
-      setText((prev) => insert + prev);
-      requestAnimationFrame(() => {
-        const el = inputRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(insert.length, insert.length);
-      });
-    };
-    window.addEventListener('youcoded:compose-insert', listener);
-    return () => window.removeEventListener('youcoded:compose-insert', listener);
-  }, []);
-
   const removeAttachment = useCallback((path: string) => {
     setAttachments((prev) => prev.filter((a) => a.path !== path));
   }, []);
@@ -382,12 +387,21 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash)
       const effectiveMessage = dispatchResult.rewritten ?? message;
 
-      // One sanitized source string for BOTH the optimistic bubble and the PTY
-      // send. The transcript confirms the bubble by EXACT content match, so if
-      // the bubble kept newlines the send stripped, a multiline message could
-      // never be confirmed — `pending` stayed set forever and
-      // useSubmitConfirmation fired a stray recovery \r. See outgoing-message.ts.
-      const outgoing = buildOutgoingMessage(effectiveMessage, files.map((f) => f.path));
+      // Bubble content is built from the user's own words only — never the
+      // held reference's scaffold. The chat bubble must show what the user
+      // typed, not the assembled outgoing string (spec §7). This intentionally
+      // duplicates the sanitize-and-join buildOutgoingMessage does below —
+      // see its header comment for why bubble and PTY text used to share
+      // exactly one string; TRANSCRIPT_USER_MESSAGE dedup now matches on the
+      // pending flag, not content, so the two are free to diverge here.
+      const bubbleMessage = buildOutgoingMessage(effectiveMessage, files.map((f) => f.path));
+
+      // The held reference's scaffold is prepended HERE, at send — it was
+      // never in the textarea. On a refused send (the gate above, or
+      // `disabled` below) we return before this point, so the reference
+      // survives alongside the draft (spec §7) — clearReference() only runs
+      // on the success path in `send()`.
+      const outgoing = buildOutgoingMessage(composeOutgoing(effectiveMessage, reference), files.map((f) => f.path));
       if (!outgoing) return true; // nothing to send — treat as consumed
       if (disabled) return false;
 
@@ -445,14 +459,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               type: 'QUEUED_MESSAGE_ADDED',
               sessionId,
               queueId: result.queueId,
-              content: outgoing.content,
+              // bubbleMessage, not outgoing — see the bubbleMessage comment above.
+              content: bubbleMessage?.content ?? '',
               timestamp: Date.now(),
             });
           } else {
             dispatch({
               type: 'USER_PROMPT',
               sessionId,
-              content: outgoing.content,
+              // bubbleMessage, not outgoing — see the bubbleMessage comment above.
+              content: bubbleMessage?.content ?? '',
               timestamp: Date.now(),
               attachments: files.map((f) => f.path),
             });
@@ -467,7 +483,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
-        content: outgoing.content,
+        // bubbleMessage, not outgoing — see the bubbleMessage comment above.
+        content: bubbleMessage?.content ?? '',
         timestamp: Date.now(),
         // Exact attachment paths so UserMessage can render each as a clickable
         // pill — file-picker paths routinely contain spaces, which the joined
@@ -505,7 +522,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       }, submitStart);
       return true;
     },
-    [sessionId, disabled, dispatch, view, provider, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
+    [sessionId, disabled, dispatch, view, provider, reference, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
   );
 
   // Auto-resize textarea to fit content, up to 3 lines then scroll
@@ -550,10 +567,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending
+    // Reference is consumed once its scaffold has been sent (spec §7). A
+    // refused send returns above, before this line, so the reference
+    // survives alongside the draft — see sendMessage's outgoing comment.
+    clearReference();
     onCloseDrawer?.();
     // Reset height after clearing
     if (inputRef.current) inputRef.current.style.height = 'auto';
-  }, [text, attachments, sendMessage, onCloseDrawer, sessionId]);
+  }, [text, attachments, sendMessage, onCloseDrawer, sessionId, clearReference]);
 
   // Keep sendRef pointing at the latest send so the global keydown handler
   // (which can't depend on send without thrashing the listener) stays current
@@ -771,7 +792,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onPaste={handlePaste}
-            placeholder={disabled ? 'Waiting for approval...' : 'Message Claude...'}
+            placeholder={placeholderFor(reference, !!disabled)}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the
