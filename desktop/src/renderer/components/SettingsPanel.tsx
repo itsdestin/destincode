@@ -30,7 +30,7 @@ import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -339,6 +339,15 @@ import {
   type SoundCategory,
 } from '../utils/sounds';
 
+/** Play glyph for the audition button — a plain right-pointing triangle. */
+function PlayGlyph() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
 /** Preset selector — stock sounds + custom sound file option */
 function PresetSelector({ category, selectedId, onSelect, customName }: {
   category: SoundCategory;
@@ -346,36 +355,58 @@ function PresetSelector({ category, selectedId, onSelect, customName }: {
   onSelect: (id: string) => void;
   customName: string | null; // display name of the custom sound file, if set
 }) {
+  // Option ids in visual order, so RadioGroup's arrow keys walk the same list
+  // the user sees. The custom entry only exists once a file has been picked.
+  const optionIds = customName
+    ? [...STOCK_PRESETS.map((p) => p.id), CUSTOM_SOUND_ID]
+    : STOCK_PRESETS.map((p) => p.id);
+
   return (
-    <div className="flex flex-wrap gap-1">
+    <RadioGroup
+      options={optionIds}
+      value={selectedId}
+      onChange={onSelect}
+      aria-label="Notification sound"
+      className="space-y-1"
+    >
       {STOCK_PRESETS.map((p) => (
-        <button
-          key={p.id}
-          onClick={() => { onSelect(p.id); playPreview(p.id); }}
-          className={`px-2 py-1 rounded text-3xs transition-colors ${
-            selectedId === p.id
-              ? 'bg-accent text-on-accent font-medium'
-              : 'bg-inset text-fg-dim hover:bg-edge'
-          }`}
-        >
-          {p.label}
-        </button>
+        <div key={p.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50">
+          {/* Radio ASSIGNS. The play button AUDITIONS. Firing both from one
+              handler meant you could not hear a sound without making it your
+              notification sound -- 15 presets, 15 overwrites. */}
+          <Radio checked={selectedId === p.id} onChange={() => onSelect(p.id)} aria-label={p.label} />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-fg font-medium">{p.label}</div>
+            {p.desc && <p className="text-3xs text-fg-muted -mt-0.5 font-mono">{p.desc}</p>}
+          </div>
+          <Button size="icon" variant="ghost" onClick={() => playPreview(p.id)} aria-label={`Play ${p.label}`}>
+            <PlayGlyph />
+          </Button>
+        </div>
       ))}
-      {/* Custom sound — shown as a button when set, or as a "+" to pick one */}
+      {/* Custom sound — only present once the user has picked a file. */}
       {customName ? (
-        <button
-          onClick={() => { onSelect(CUSTOM_SOUND_ID); playPreview(CUSTOM_SOUND_ID, category); }}
-          className={`px-2 py-1 rounded text-3xs transition-colors ${
-            selectedId === CUSTOM_SOUND_ID
-              ? 'bg-accent text-on-accent font-medium'
-              : 'bg-inset text-fg-dim hover:bg-edge'
-          }`}
-          title={customName}
-        >
-          {customName}
-        </button>
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50">
+          <Radio
+            checked={selectedId === CUSTOM_SOUND_ID}
+            onChange={() => onSelect(CUSTOM_SOUND_ID)}
+            aria-label={customName}
+          />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-fg font-medium truncate" title={customName}>{customName}</div>
+            <p className="text-3xs text-fg-muted -mt-0.5">Custom sound</p>
+          </div>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => playPreview(CUSTOM_SOUND_ID, category)}
+            aria-label={`Play ${customName}`}
+          >
+            <PlayGlyph />
+          </Button>
+        </div>
       ) : null}
-    </div>
+    </RadioGroup>
   );
 }
 
