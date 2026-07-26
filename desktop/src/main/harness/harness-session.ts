@@ -25,6 +25,7 @@ import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
+import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -64,7 +65,10 @@ export interface HarnessSessionOpts {
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
 // parallel_tool_calls:false; cloud factories ignore it.
-export type ModelFactory = (binding: ModelBinding, opts?: { serialToolCalls?: boolean }) => Promise<LanguageModel>;
+export type ModelFactory = (
+  binding: ModelBinding,
+  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+) => Promise<LanguageModel>;
 
 // One collected tool-call from a step's stream (input already PARSED to an
 // object by streamText — see the ai@7 contract test).
@@ -467,6 +471,41 @@ export class HarnessSession extends EventEmitter {
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
+  // Live prefill progress from llama.cpp, forwarded onto the SAME
+  // assistant-thinking notice the size-only estimate already drives — the UI
+  // upgrades in place from "reading N tokens" to a real fraction + countdown.
+  //
+  // Throttled: llama-server reports roughly once per batch, but a small batch on
+  // fast hardware can produce a burst, and every emit crosses IPC and re-renders
+  // the indicator. One update per 400ms is well past the eye's ability to read a
+  // changing number. The FINAL reading always goes through, so the bar cannot be
+  // left stranded at 87%.
+  private lastPrefillEmitAt = 0;
+  private emitPrefillProgress(p: PrefillProgress): void {
+    // Prefill progress after the first token would be describing work the user
+    // can already see the result of; the notice is a pre-output affordance only.
+    if (this.abort == null) return;
+    const report = toReport(p);
+    const isFinal = report.processed >= report.total;
+    const now = Date.now();
+    if (!isFinal && now - this.lastPrefillEmitAt < 400) return;
+    this.lastPrefillEmitAt = now;
+    this.emitEvent('assistant-thinking', {
+      promptProcessing: {
+        promptTokens: report.total,
+        budgetMs: 0,
+        source: this.prefillSource,
+        processed: report.processed,
+        cached: report.cache,
+        etaMs: report.etaMs,
+      },
+    });
+  }
+
+  /** What grew the context for the CURRENT step — set when the step opens so the
+   *  async progress callbacks can label themselves without re-deriving it. */
+  private prefillSource: 'prompt' | 'tool-output' = 'prompt';
+
   /** USER-INITIATED compaction (the /compact command and the Context popup's
    *  "Compact conversation" button), as opposed to maybeCompact's automatic,
    *  threshold-driven one.
@@ -640,7 +679,13 @@ export class HarnessSession extends EventEmitter {
       // Serial-only when the profile constrains args AND the model can't do parallel
       // tool calls (spec §4.2 — small local models): the factory injects
       // parallel_tool_calls:false on the local-engine branch. Cloud factories ignore it.
-      const model = await this.modelFactory(this.binding, { serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls });
+      const model = await this.modelFactory(this.binding, {
+        serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+        // Live prefill progress → the same assistant-thinking notice the estimate
+        // already drives, so the UI upgrades from "reading N tokens" to a real
+        // percentage and countdown without a second event type.
+        onPrefillProgress: (p) => this.emitPrefillProgress(p),
+      });
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 
       // Tracks the LAST step's real input-token count (from provider usage) so
@@ -884,6 +929,8 @@ export class HarnessSession extends EventEmitter {
     // wrong there (Destin, 2026-07-26).
     const lastMsg = (streamArgs.messages as ModelMessage[])[streamArgs.messages.length - 1];
     const source: 'prompt' | 'tool-output' = lastMsg?.role === 'tool' ? 'tool-output' : 'prompt';
+    this.prefillSource = source;
+    this.lastPrefillEmitAt = 0;   // fresh throttle window per step
     let sawFirstChunk = false;
     let warned = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;

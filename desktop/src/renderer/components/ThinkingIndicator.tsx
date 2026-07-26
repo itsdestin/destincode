@@ -6,6 +6,44 @@ import BrailleSpinner from './BrailleSpinner';
 // brings the indicator back promptly.
 const STREAMING_GRACE_MS = 2_000;
 
+/**
+ * Round an ETA to something honest. The projection runs OPTIMISTIC — prefill
+ * slows as context grows, so a rate measured early under-predicts what's left
+ * (measured ~7% out a third of the way in, ~22% two thirds in against llama.cpp
+ * b9992). Rendering "9.9s" would claim a precision we don't have, so buckets:
+ * near the end it barely matters, further out we round hard and say "about".
+ */
+export function formatEta(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 2_000) return null;                       // about to finish — a number here only flickers
+  if (ms < 60_000) return `about ${Math.round(ms / 5_000) * 5}s left`;
+  const mins = Math.round(ms / 60_000);
+  return `about ${mins} min${mins === 1 ? '' : 's'} left`;
+}
+
+/**
+ * What the indicator says while the model is reading. Upgrades in place: with no
+ * live progress it states the size; once llama.cpp reports progress it becomes a
+ * percentage, and an ETA joins once one can be projected.
+ */
+export function prefillLabel(p: {
+  promptTokens: number; source?: 'prompt' | 'tool-output';
+  processed?: number; cached?: number; etaMs?: number | null;
+}): string {
+  const what = p.source === 'tool-output' ? 'Reading tool output' : 'Reading your prompt';
+  const parts: string[] = [];
+  // A percentage is more legible than raw counts once we have real progress;
+  // without it, the token count is the only honest thing we can say.
+  if (p.processed != null && p.promptTokens > 0) {
+    parts.push(`${Math.min(100, Math.round((p.processed / p.promptTokens) * 100))}% of ${p.promptTokens.toLocaleString()} tokens`);
+  } else {
+    parts.push(`${p.promptTokens.toLocaleString()} tokens`);
+  }
+  const eta = formatEta(p.etaMs);
+  if (eta) parts.push(eta);
+  return `${what} — ${parts.join(', ')}…`;
+}
+
 const THINKING_LINES = [
   'Thinking',
   'Cogitating',
@@ -41,7 +79,7 @@ interface ThinkingIndicatorProps {
    */
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
   /** Native prefill: the model is reading a long prompt, not hanging. */
-  promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' } | null;
+  promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null } | null;
   /** When visible output last arrived. While this is fresh the indicator renders
    *  NOTHING — the filling bubble is already the proof of life. */
   lastOutputAt?: number | null;
@@ -115,7 +153,7 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
           : ''
       }`
     : promptProcessing
-      ? `${promptProcessing.source === 'tool-output' ? 'Reading tool output' : 'Reading your prompt'} — ${promptProcessing.promptTokens.toLocaleString()} tokens…`
+      ? prefillLabel(promptProcessing)
       : THINKING_LINES[lineIndex];
 
   return (

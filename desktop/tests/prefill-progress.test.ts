@@ -1,0 +1,196 @@
+// Live prefill progress from llama.cpp (Destin, 2026-07-26).
+//
+// The payloads below are REAL — captured from llama.cpp b9992 on
+// /v1/chat/completions with `return_progress: true`, a 5,519-token prompt on a
+// 2B model. Six updates, roughly one per 2,048-token batch. Using the genuine
+// shape (rather than one invented to match the parser) is the point: this is the
+// contract with an external server, and a fixture that only agrees with our own
+// assumptions would prove nothing.
+import { describe, it, expect } from 'vitest';
+import {
+  parseProgressChunk,
+  scanPrefillProgress,
+  withPrefillProgress,
+  toReport,
+} from '../src/main/providers/prefill-progress';
+
+/** Verbatim chunk from the capture (truncated to the fields that matter). */
+const REAL_CHUNK = {
+  choices: [{ finish_reason: null, index: 0, delta: { role: 'assistant', content: null } }],
+  created: 1785106386,
+  model: '/home/destin/.cache/llama.cpp/Qwen3.5-2B-Q8_0.gguf',
+  system_fingerprint: 'b9992-6eddde06a',
+  object: 'chat.completion.chunk',
+  prompt_progress: { total: 5519, cache: 0, processed: 2048, time_ms: 5838 },
+};
+
+const REAL_SEQUENCE = [
+  { total: 5519, cache: 0, processed: 0, time_ms: 0 },
+  { total: 5519, cache: 0, processed: 2048, time_ms: 5838 },
+  { total: 5519, cache: 0, processed: 4096, time_ms: 11373 },
+  { total: 5519, cache: 0, processed: 5003, time_ms: 14691 },
+  { total: 5519, cache: 0, processed: 5515, time_ms: 16270 },
+  { total: 5519, cache: 0, processed: 5519, time_ms: 16440 },
+];
+
+function sseBody(chunks: object[], trailing = true): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(c) {
+      for (const ch of chunks) c.enqueue(enc.encode(`data: ${JSON.stringify(ch)}\n\n`));
+      if (trailing) c.enqueue(enc.encode('data: [DONE]\n\n'));
+      c.close();
+    },
+  });
+}
+
+describe('parseProgressChunk', () => {
+  it('reads progress off a real llama.cpp chunk', () => {
+    expect(parseProgressChunk(REAL_CHUNK)).toEqual({ total: 5519, cache: 0, processed: 2048, timeMs: 5838 });
+  });
+
+  it('ignores ordinary content chunks', () => {
+    expect(parseProgressChunk({ choices: [{ delta: { content: 'hi' } }] })).toBeNull();
+  });
+
+  it('rejects a reading with no usable total rather than dividing by zero later', () => {
+    expect(parseProgressChunk({ prompt_progress: { total: 0, processed: 0 } })).toBeNull();
+    expect(parseProgressChunk({ prompt_progress: { processed: 5 } })).toBeNull();
+  });
+
+  it('survives junk without throwing — this runs on a copy of a live response', () => {
+    for (const junk of [null, undefined, 'nope', 42, {}, { prompt_progress: 'no' }]) {
+      expect(parseProgressChunk(junk)).toBeNull();
+    }
+  });
+});
+
+describe('scanPrefillProgress', () => {
+  it('reports every reading in the captured sequence, in order', async () => {
+    const seen: number[] = [];
+    await scanPrefillProgress(sseBody(REAL_SEQUENCE.map((p) => ({ prompt_progress: p }))), (p) => seen.push(p.processed));
+    expect(seen).toEqual([0, 2048, 4096, 5003, 5515, 5519]);
+  });
+
+  it('handles a reading split across chunk boundaries', async () => {
+    // TCP does not respect JSON. A naive per-read parse loses this one.
+    const enc = new TextEncoder();
+    const full = `data: ${JSON.stringify({ prompt_progress: REAL_SEQUENCE[1] })}\n\n`;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode(full.slice(0, 30)));
+        c.enqueue(enc.encode(full.slice(30)));
+        c.close();
+      },
+    });
+    const seen: number[] = [];
+    await scanPrefillProgress(body, (p) => seen.push(p.processed));
+    expect(seen).toEqual([2048]);
+  });
+
+  it('reports nothing for a server that never sends progress — the degrade path', async () => {
+    // LM Studio, a remote endpoint, anything that ignores return_progress.
+    const seen: unknown[] = [];
+    await scanPrefillProgress(sseBody([{ choices: [{ delta: { content: 'hello' } }] }]), (p) => seen.push(p));
+    expect(seen).toEqual([]);
+  });
+
+  it('never throws on a body that is not SSE at all', async () => {
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(enc.encode('<html>nope</html>')); c.close(); } });
+    await expect(scanPrefillProgress(body, () => {})).resolves.toBeUndefined();
+  });
+});
+
+describe('withPrefillProgress — the tee must not disturb the SDK', () => {
+  it('delivers the response body to the caller byte-for-byte', async () => {
+    const chunks = REAL_SEQUENCE.map((p) => ({ prompt_progress: p }));
+    const expected = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n';
+    const base = async () => new Response(sseBody(chunks), { status: 200 });
+
+    const wrapped = withPrefillProgress(base as any, () => {});
+    const res = await wrapped('http://x/v1/chat/completions' as any);
+
+    // The SDK's branch must see EXACTLY what the server sent.
+    expect(await res.text()).toBe(expected);
+  });
+
+  it('reports progress while the caller consumes its own branch', async () => {
+    const chunks = REAL_SEQUENCE.map((p) => ({ prompt_progress: p }));
+    const base = async () => new Response(sseBody(chunks), { status: 200 });
+    const seen: number[] = [];
+
+    const wrapped = withPrefillProgress(base as any, (p) => seen.push(p.processed));
+    const res = await wrapped('http://x' as any);
+    await res.text();                       // drain the SDK branch
+    await new Promise((r) => setTimeout(r, 20));   // let the scan branch finish
+
+    expect(seen).toEqual([0, 2048, 4096, 5003, 5515, 5519]);
+  });
+
+  it('passes error responses straight through untouched', async () => {
+    // A 500 has no stream to watch and must not be wrapped or delayed.
+    const base = async () => new Response('boom', { status: 500 });
+    const wrapped = withPrefillProgress(base as any, () => { throw new Error('must not run'); });
+    const res = await wrapped('http://x' as any);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe('boom');
+  });
+});
+
+describe('toReport — the projection', () => {
+  it('projects remaining time from the measured rate', () => {
+    const r = toReport({ total: 5519, cache: 0, processed: 2048, timeMs: 5838 });
+    expect(r.fraction).toBeCloseTo(0.371, 2);
+    // Real finish was 16,440ms, so ~10,602ms actually remained. Optimistic by ~7%,
+    // which is why the UI rounds this into coarse buckets rather than showing it raw.
+    expect(r.etaMs).toBeGreaterThan(8_000);
+    expect(r.etaMs).toBeLessThan(11_000);
+  });
+
+  it('has no ETA before anything has been processed', () => {
+    expect(toReport({ total: 5519, cache: 0, processed: 0, timeMs: 0 }).etaMs).toBeNull();
+  });
+
+  it('clamps the fraction at 1 and never projects negative time', () => {
+    const r = toReport({ total: 100, cache: 0, processed: 120, timeMs: 500 });
+    expect(r.fraction).toBe(1);
+    expect(r.etaMs).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Request-body contract. The hook must appear ONLY when something needs it —
+// provider-registry.test.ts pins that an unconstrained local model keeps the
+// SDK's default body byte-for-byte, and adding progress must not break that.
+// ---------------------------------------------------------------------------
+describe('return_progress request flag', () => {
+  /** Mirrors the spread logic in provider-registry.ts's local-engine branch. */
+  const buildHook = (opts: { serialToolCalls?: boolean; onPrefillProgress?: unknown }) =>
+    (opts.serialToolCalls || opts.onPrefillProgress
+      ? (b: Record<string, any>) => ({
+        ...b,
+        ...(opts.serialToolCalls ? { parallel_tool_calls: false } : {}),
+        ...(opts.onPrefillProgress ? { return_progress: true } : {}),
+      })
+      : undefined);
+
+  it('attaches NO hook when neither feature is requested', () => {
+    expect(buildHook({})).toBeUndefined();
+  });
+
+  it('asks for progress only when a listener exists', () => {
+    const hook = buildHook({ onPrefillProgress: () => {} })!;
+    expect(hook({ model: 'm' })).toEqual({ model: 'm', return_progress: true });
+  });
+
+  it('carries BOTH flags through one hook — a second spread would clobber the first', () => {
+    const hook = buildHook({ serialToolCalls: true, onPrefillProgress: () => {} })!;
+    expect(hook({ model: 'm' })).toEqual({ model: 'm', parallel_tool_calls: false, return_progress: true });
+  });
+
+  it('leaves serial-only behaviour unchanged when no listener exists', () => {
+    const hook = buildHook({ serialToolCalls: true })!;
+    expect(hook({ model: 'm' })).toEqual({ model: 'm', parallel_tool_calls: false });
+  });
+});

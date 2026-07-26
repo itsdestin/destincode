@@ -7,6 +7,7 @@
 // are written as plain language telling the user what to do — not debug codes.
 import { ulid } from 'ulid';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { withPrefillProgress, type PrefillProgress } from './prefill-progress';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -180,7 +181,10 @@ export class ProviderRegistry {
   /** THE factory (spec §2.2). Throws plain-language errors — they surface in the UI error banner.
    *  `opts.serialToolCalls` (spec §4.2) is honored ONLY on the local-engine branch —
    *  cloud providers handle parallel tool calls fine and ignore it. */
-  async languageModel(binding: ModelBinding, opts?: { serialToolCalls?: boolean }): Promise<LanguageModel> {
+  async languageModel(
+    binding: ModelBinding,
+    opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+  ): Promise<LanguageModel> {
     const p = this.readAll().find((x) => x.id === binding.providerId);
     if (!p) throw new Error(`Provider '${binding.providerId}' is not configured.`);
     if (!p.enabled) throw new Error(`${p.label} is disabled in Settings → Providers.`);
@@ -193,16 +197,44 @@ export class ProviderRegistry {
         // ensureRunning boots the engine on demand (idle-stopped or first use)
         // and its trackedFetch keeps the idle timer honest for every request.
         const base = await this.localEngine.ensureRunning();
+        // Live prefill progress (llama.cpp `return_progress`). Only wrap when a
+        // consumer is listening — an unwatched tee would copy every byte of every
+        // response for nothing. See prefill-progress.ts for why this rides a fetch
+        // wrapper rather than the SDK's stream.
+        const localFetch = opts?.onPrefillProgress
+          ? withPrefillProgress(this.localEngine.fetchImpl(), opts.onPrefillProgress)
+          : this.localEngine.fetchImpl();
         return createOpenAICompatible({
           name: 'local',
           baseURL: base,
-          fetch: this.localEngine.fetchImpl(),
+          fetch: localFetch,
           // Serial-only for small local models (spec §4.2): llama-server honors
           // parallel_tool_calls:false; --jinja already grammar-constrains the args.
           // NEVER a top-level json_schema — that would force JSON on every reply.
           // Only attach the hook when serialToolCalls is requested so unconstrained
           // local models keep the SDK's default (parallel-capable) body untouched.
-          ...(opts?.serialToolCalls ? { transformRequestBody: (b: Record<string, any>) => ({ ...b, parallel_tool_calls: false }) } : {}),
+          // ONE transformRequestBody for BOTH hooks — the SDK accepts a single
+          // function, so two `...(cond ? {transformRequestBody} : {})` spreads
+          // would silently overwrite each other. Still attached only when
+          // something actually needs it: with neither flag set the request body
+          // must stay byte-identical to the SDK's default (pinned by
+          // provider-registry.test.ts).
+          ...(opts?.serialToolCalls || opts?.onPrefillProgress
+            ? {
+              transformRequestBody: (b: Record<string, any>) => ({
+                ...b,
+                // llama-server honors parallel_tool_calls:false; --jinja already
+                // grammar-constrains the args. NEVER a top-level json_schema —
+                // that would force JSON on every reply.
+                ...(opts?.serialToolCalls ? { parallel_tool_calls: false } : {}),
+                // llama.cpp-specific. An OpenAI-compatible server that doesn't
+                // know it (LM Studio, a remote endpoint) ignores unknown body
+                // keys, so this degrades to "no progress reported" rather than
+                // failing the request.
+                ...(opts?.onPrefillProgress ? { return_progress: true } : {}),
+              }),
+            }
+            : {}),
         })(binding.modelId);
       }
       case 'openrouter': {

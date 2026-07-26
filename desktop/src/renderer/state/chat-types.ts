@@ -186,7 +186,7 @@ export interface SessionChatState {
    * minutes here on a long prompt, and an idle spinner is indistinguishable from
    * a hang — which is what made the stall watchdog's false alarm so alarming.
    */
-  promptProcessing: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' } | null;
+  promptProcessing: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null } | null;
   /**
    * When visible assistant OUTPUT last arrived (text or reasoning delta) — as
    * distinct from lastActivityAt, which any event bumps. The thinking indicator
@@ -410,7 +410,7 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
-      promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output' };
+      promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null };
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are

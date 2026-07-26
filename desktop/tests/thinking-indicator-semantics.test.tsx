@@ -77,3 +77,57 @@ describe('ThinkingIndicator — what it says while waiting', () => {
     expect(screen.queryByText(/Reading your prompt/)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live prefill progress: the label upgrades in place as llama.cpp reports in.
+// ---------------------------------------------------------------------------
+import { formatEta, prefillLabel } from '../src/renderer/components/ThinkingIndicator';
+
+describe('formatEta — deliberately coarse', () => {
+  it('says nothing when the wait is nearly over', () => {
+    // A number here would just flicker on its way to zero.
+    expect(formatEta(1_500)).toBeNull();
+  });
+
+  it('rounds seconds to 5s buckets — the projection is not precise enough for more', () => {
+    expect(formatEta(9_894)).toBe('about 10s left');
+    expect(formatEta(23_100)).toBe('about 25s left');
+  });
+
+  it('switches to minutes for long waits, pluralized', () => {
+    expect(formatEta(61_000)).toBe('about 1 min left');
+    expect(formatEta(200_000)).toBe('about 3 mins left');
+  });
+
+  it('returns null for missing or nonsense input rather than rendering NaN', () => {
+    for (const v of [null, undefined, NaN, -5]) expect(formatEta(v as any)).toBeNull();
+  });
+});
+
+describe('prefillLabel', () => {
+  it('states the size when there is no live progress yet', () => {
+    expect(prefillLabel({ promptTokens: 25_000, source: 'prompt' }))
+      .toBe('Reading your prompt — 25,000 tokens…');
+  });
+
+  it('upgrades to a percentage once llama.cpp reports progress', () => {
+    const label = prefillLabel({ promptTokens: 5_519, processed: 2_048, source: 'prompt', etaMs: 9_894 });
+    expect(label).toContain('37% of 5,519 tokens');
+    expect(label).toContain('about 10s left');
+  });
+
+  it('still names tool output correctly with live progress attached', () => {
+    expect(prefillLabel({ promptTokens: 98_000, processed: 49_000, source: 'tool-output', etaMs: 30_000 }))
+      .toContain('Reading tool output — 50% of 98,000 tokens');
+  });
+
+  it('omits the ETA when none can be projected', () => {
+    const label = prefillLabel({ promptTokens: 5_519, processed: 0, source: 'prompt', etaMs: null });
+    expect(label).toContain('0% of 5,519 tokens');
+    expect(label).not.toContain('left');
+  });
+
+  it('never shows more than 100%', () => {
+    expect(prefillLabel({ promptTokens: 100, processed: 130, source: 'prompt' })).toContain('100% of 100 tokens');
+  });
+});
