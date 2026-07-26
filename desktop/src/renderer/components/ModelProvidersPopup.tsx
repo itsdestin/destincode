@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
@@ -360,22 +359,14 @@ function ConnectOpenRouterModal({
 
   return createPortal(
     <>
-      <Scrim layer={3} onClick={onClose} />
-      <OverlayPanel
+      <Dialog
+        open
+        onClose={onClose}
         layer={3}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="connect-openrouter-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
+        size="sm"
+        title={hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
+        scrollBody={false}
       >
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-4 py-3">
-          <h3 id="connect-openrouter-title" className="text-sm font-semibold text-fg">
-            {hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
-          </h3>
-          <CloseButton onClick={onClose} />
-        </div>
-
         <div className="p-4 space-y-3">
           <ol className="text-2xs text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
             <li>
@@ -425,7 +416,7 @@ function ConnectOpenRouterModal({
             </Button>
           </div>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

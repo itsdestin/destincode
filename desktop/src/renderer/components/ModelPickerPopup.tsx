@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
+import { Button, CloseButton, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -318,18 +317,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
     };
     return createPortal(
       <>
-        <Scrim layer={2} onClick={onClose} />
-        <OverlayPanel
-          layer={2}
-          role="dialog"
-          aria-modal={true}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[80vh] flex flex-col"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
-            <h3 className="text-sm font-semibold text-fg">Model</h3>
-            <CloseButton onClick={onClose} label="Close model picker" />
-          </div>
+        <Dialog open onClose={onClose} title="Model" size="md" scrollBody={false}>
           <div className="px-5 pt-3">
             {/* Change 20: the shared field surface. No submit button belongs
                 inside it — the list below filters as you type. */}
@@ -377,7 +365,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
               ))
             )}
           </div>
-        </OverlayPanel>
+        </Dialog>
       </>,
       document.body,
     );
@@ -389,18 +377,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   return createPortal(
     // Overlay layer L2 — theme-driven scrim/surface via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
-          <h3 className="text-sm font-semibold text-fg">Model &amp; Effort</h3>
-          <CloseButton onClick={onClose} label="Close model picker" />
-        </div>
+      <Dialog open onClose={onClose} title="Model & Effort" size="md" scrollBody={false}>
 
         {!loaded ? (
           <LoadingState what="models" />
@@ -481,20 +458,20 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             </section>
           </div>
         )}
-      </OverlayPanel>
+      </Dialog>
 
       {/* Fast mode confirmation — L3 (critical/destructive) because enabling
          Fast mode bills per-token on top of any Pro/Max subscription. */}
       {fastConfirmOpen && (
         <>
-          <Scrim layer={3} onClick={() => setFastConfirmOpen(false)} />
-          <OverlayPanel
+          <Dialog
+            open
+            onClose={() => setFastConfirmOpen(false)}
             layer={3}
             destructive
-            role="alertdialog"
-            aria-modal={true}
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
-            onClick={(e) => e.stopPropagation()}
+            size="sm"
+            aria-label="Enable Fast mode?"
+            scrollBody={false}
           >
             <div className="p-5 space-y-4">
               <div className="flex items-start gap-3">
@@ -551,7 +528,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                 </button>
               </div>
             </div>
-          </OverlayPanel>
+          </Dialog>
         </>
       )}
     </>,

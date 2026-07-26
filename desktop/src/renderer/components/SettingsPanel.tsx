@@ -12,10 +12,10 @@ import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { Scrim } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import AboutPopup from './AboutPopup';
 import { DevelopmentPopup } from './development/DevelopmentPopup';
@@ -153,16 +153,8 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   useEscClose(open, onClose);
   if (!open) return null;
   return createPortal(
-    // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-5 max-w-sm w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={onClose} size="sm" aria-label="Keyboard Shortcuts" scrollBody={false} className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-fg">Keyboard Shortcuts</h3>
           <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors">
@@ -179,7 +171,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
             </div>
           ))}
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body
   );
@@ -1437,12 +1429,14 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
           {/* Confirmation popup for Approve All — L3 destructive, theme-driven glass */}
           {confirmOpen && createPortal(
             <>
-              <Scrim layer={3} onClick={() => setConfirmOpen(false)} />
-              <OverlayPanel
+              <Dialog
+                open
+                onClose={() => setConfirmOpen(false)}
                 layer={3}
                 destructive
-                className="fixed overflow-hidden"
-                style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(340px, 85vw)' }}
+                size="sm"
+                aria-label="This is extremely dangerous"
+                scrollBody={false}
               >
                 <div className="px-4 py-3 border-b border-red-600/30 bg-red-600/10">
                   {/* Warning: extreme danger header */}
@@ -1482,7 +1476,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     </Button>
                   </div>
                 </div>
-              </OverlayPanel>
+              </Dialog>
             </>,
             document.body,
           )}

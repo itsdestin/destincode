@@ -3,6 +3,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 import { Dialog, DIALOG_WIDTHS } from '../src/renderer/components/ui/Dialog';
 
 // Guard for D1 — the one dialog shell.
@@ -20,17 +22,6 @@ import { Dialog, DIALOG_WIDTHS } from '../src/renderer/components/ui/Dialog';
 // what these assertions pin: you cannot get a Dialog whose body does not scroll.
 
 afterEach(cleanup);
-
-// jsdom does not implement ResizeObserver; Dialog's scroll body runs
-// useScrollFade, which observes its own size. Same stub the other overlay
-// render tests use (context-popup, resume-browser-native-picker).
-if (typeof (globalThis as any).ResizeObserver === 'undefined') {
-  (globalThis as any).ResizeObserver = class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
-}
 
 // createPortal renders into document.body; query from there.
 function panel(): HTMLElement {
@@ -96,5 +87,52 @@ describe('Dialog shell', () => {
     render(<Dialog open onClose={() => {}} title="X">body</Dialog>);
     expect(panel().style.maxHeight).toBe('80vh');
     expect(panel().style.height).toBe('');
+  });
+});
+
+// ── The adoption guard ──────────────────────────────────────────────────────
+//
+// Source-text, unlike the render assertions above: the failure mode is a future
+// session hand-rolling createPortal + Scrim + OverlayPanel in a NEW file, which
+// looks fine and only shows up as another bespoke width months later. 49 files
+// did exactly that against 7 using the old shell.
+//
+// Scoped to top-level components/*.tsx -- the settings and status-bar family
+// this work is about. Marketplace, project-view, game, git, tags and
+// context-menu keep their own overlays for now; they are different surfaces
+// with their own visual language and are recorded as tranche-2 residue.
+
+const COMPONENTS = join(__dirname, '..', 'src', 'renderer', 'components');
+
+// Named, with the reason each is NOT a dialog. An exemption you cannot see is
+// how the inconsistency this test exists to stop got in.
+const NOT_DIALOGS: Record<string, string> = {
+  'ResumeBrowser.tsx': 'L1 drawer, not a centered modal',
+  'QuickChips.tsx': 'anchored popover positioned against its trigger',
+  'SyncPanel.tsx': 'anchored popover positioned against its trigger',
+  'ZoomOverlay.tsx': 'L4 system indicator pinned top-right, no scrim dismissal',
+};
+
+describe('dialog shell adoption', () => {
+  it('no top-level component hand-rolls the shell', () => {
+    const offenders = readdirSync(COMPONENTS)
+      .filter((f) => f.endsWith('.tsx') && !f.includes('.test.'))
+      .filter((f) => !(f in NOT_DIALOGS))
+      .filter((f) => readFileSync(join(COMPONENTS, f), 'utf8').includes('<OverlayPanel'));
+    expect(
+      offenders,
+      'Centered modals go through <Dialog>. It owns scrim, centering, the width '
+        + 'ladder, the header and the scroll body — the last of which two of the old '
+        + "shell's seven callers got wrong, producing dialogs that clipped with no way to scroll.",
+    ).toEqual([]);
+  });
+
+  it('every exempted file still exists and still hand-rolls', () => {
+    // An exemption is a liability once it stops being true: if one of these is
+    // migrated or deleted, this list should shrink rather than quietly rot.
+    for (const [file, why] of Object.entries(NOT_DIALOGS)) {
+      const src = readFileSync(join(COMPONENTS, file), 'utf8');
+      expect(src.includes('<OverlayPanel'), `${file} (${why}) no longer hand-rolls — drop it from NOT_DIALOGS`).toBe(true);
+    }
   });
 });

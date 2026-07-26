@@ -115,8 +115,6 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
   if (!open) return null;
 
   return createPortal(
-    // Overlay layer L2 via <Scrim>/<OverlayPanel>; scrim, blur, shadow all
-    // driven by theme tokens — previously hardcoded bg-black/40.
     <>
       <Dialog open={open} onClose={onClose} title="Claude Code Preferences" size="md">
         {!loaded ? (
