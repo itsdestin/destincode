@@ -1,7 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button } from './ui';
+import { Button, Dialog } from './ui';
 
 const DONATE_URL = 'https://buymeacoffee.com/itsdestin';
 
@@ -22,14 +21,14 @@ export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () =>
 
   return createPortal(
     <>
-      <Scrim layer={3} onClick={onClose} />
-      <OverlayPanel
+      <Dialog
+        open
+        onClose={onClose}
         layer={3}
-        role="dialog"
-        aria-modal={true}
+        size="sm"
         aria-label="Confirm opening the donation link"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-6 max-w-xs w-[calc(100%-2rem)] text-center"
-        onClick={(e) => e.stopPropagation()}
+        scrollBody={false}
+        className="p-6 text-center"
       >
         <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
         <div className="flex items-center justify-center gap-2 mb-5">
@@ -60,7 +59,7 @@ export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () =>
             Open
           </Button>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

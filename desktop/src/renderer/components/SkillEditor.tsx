@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useSkills } from '../state/skill-context';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, Select, TextInput } from './ui';
+import { Button, Dialog, Select, TextInput } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 
 interface SkillEditorProps {
@@ -43,13 +42,9 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
     return (
       // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
       <>
-        <Scrim layer={2} onClick={onClose} />
-        <OverlayPanel
-          layer={2}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-5 max-w-sm w-[calc(100%-2rem)]"
-        >
+        <Dialog open onClose={onClose} size="sm" aria-label="Skill not found" scrollBody={false} className="p-5">
           <p className="text-sm text-fg-muted">Skill not found</p>
-        </OverlayPanel>
+        </Dialog>
       </>
     );
   }
@@ -86,15 +81,7 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
   return (
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-5 max-w-sm w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="text-sm font-bold text-fg mb-4">Edit Skill</h3>
+      <Dialog open onClose={onClose} size="sm" title="Edit Skill" scrollBody={false} className="p-5">
 
         {/* Name */}
         <label className="block mb-3">
@@ -167,7 +154,7 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
             {saving ? 'Saving...' : 'Save'}
           </Button>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

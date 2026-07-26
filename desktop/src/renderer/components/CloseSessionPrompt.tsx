@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { NoteEditor } from './tags/NoteEditor';
-import { Button } from './ui';
+import { Button, Dialog } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
@@ -117,14 +116,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
 
   return (
     <>
-      <Scrim layer={2} onClick={onCancel} />
-      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
-        <OverlayPanel
-          layer={2}
-          className="w-full max-w-sm pointer-events-auto"
-          style={{ position: 'relative', zIndex: 'auto' }}
-          onClick={(e) => e.stopPropagation()}
-        >
+      <Dialog open onClose={onCancel} size="sm" aria-label="Close session" scrollBody={false}>
           <div className="px-4 pt-4 pb-3 border-b border-edge">
             <h2 className="text-sm font-bold text-fg">Close session</h2>
             {sessionName && (
@@ -213,8 +205,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               </Button>
             </div>
           </div>
-        </OverlayPanel>
-      </div>
+      </Dialog>
     </>
   );
 }

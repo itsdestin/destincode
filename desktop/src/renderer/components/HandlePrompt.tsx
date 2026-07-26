@@ -4,10 +4,9 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
-import { Button, InputGroup } from './ui';
+import { Button, Dialog, InputGroup } from './ui';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
@@ -95,15 +94,7 @@ function HandlePromptPopup({
   return createPortal(
     <>
       {/* Skip on scrim click so the prompt is genuinely skippable. */}
-      <Scrim layer={2} onClick={skip} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="handle-prompt-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={skip} size="sm" aria-label="Choose a handle" scrollBody={false}>
         <div className="p-5 space-y-4">
           <div className="space-y-1.5">
             <h3 id="handle-prompt-title" className="text-sm font-semibold text-fg">Pick a handle</h3>
@@ -143,7 +134,7 @@ function HandlePromptPopup({
             Skip for now
           </Button>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
