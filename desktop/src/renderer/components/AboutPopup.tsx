@@ -1,10 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Toggle } from './SettingsPanel';
-import { CloseButton } from './ui';
+import { Dialog } from './ui';
 import { formatVersionLine } from '../../shared/version-line';
 
 // Shared About popup for Desktop and Android settings. Previously this was an
@@ -80,7 +78,6 @@ function AnalyticsOptInToggle() {
 }
 
 export default function AboutPopup({ open, onClose, platform, version, build, channel }: AboutPopupProps) {
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   // Escape-to-close, matching PreferencesPopup/ModelPickerPopup convention.
   useEscClose(open, onClose);
@@ -92,30 +89,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="about-popup-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* See-through header — matches ModelPickerPopup / StatusBar popups.
-            No bg-panel here: the opaque header rectangle would clip sharp top
-            corners over the parent's rounded .layer-surface. */}
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <div>
-            <h3 id="about-popup-title" className="text-sm font-semibold text-fg">About</h3>
-            <p className="text-3xs text-fg-muted mt-0.5">{versionLine}</p>
-          </div>
-          <CloseButton onClick={onClose} />
-        </div>
-
-        {/* Padding lives on an inner wrapper so scroll-fade has no padding;
-            sticky fade pseudos then sit flush with the scroll-fade's outer edge. */}
-        <div ref={scrollRef} className="scroll-fade">
-          <div className="p-5 space-y-5">
+      <Dialog open onClose={onClose} title="About" subtitle={versionLine} size="md">
           {/* Disclaimer — identical on both platforms */}
           <section className="space-y-1.5">
             <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Disclaimer</h3>
@@ -232,9 +206,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               ))}
             </div>
           </section>
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

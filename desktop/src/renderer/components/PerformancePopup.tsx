@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
-import { Button, CloseButton, Toggle } from './ui';
+import { Button, Dialog, Toggle } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -73,7 +71,6 @@ export default function PerformancePopup({
 }: Props) {
   // Always mounted when open (parent uses {open && <PerformancePopup>}) — so open=true is correct here.
   useEscClose(true, onClose);
-  const bodyRef = useScrollFade<HTMLDivElement>();
   const [restarting, setRestarting] = useState(false);
 
   const handleToggle = () => {
@@ -98,18 +95,7 @@ export default function PerformancePopup({
 
   return (
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel layer={2} className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-h-[80vh] overflow-hidden flex flex-col">
-        {/* Header — matches the SettingsExplainer header so the popup
-            visually fits with the rest of the settings UI. */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-          <h2 className="text-sm font-bold text-fg">Performance</h2>
-          <CloseButton onClick={onClose} label="Close performance settings" />
-        </div>
-
-        {/* Scrollable body. Controls at top, explainer below. */}
-        <div ref={bodyRef} className="scroll-fade flex-1">
-          <div className="px-4 py-4 space-y-4">
+      <Dialog open onClose={onClose} title="Performance" size="lg">
             <p className="text-xs text-fg-2">GPU choice affects performance.</p>
 
             {/* Toggle row. This was a whole-row <button role="switch"> whose
@@ -186,9 +172,7 @@ export default function PerformancePopup({
                 )}
               </section>
             ))}
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

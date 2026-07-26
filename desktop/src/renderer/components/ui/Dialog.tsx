@@ -1,6 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel, CONTENT_Z } from '../overlays/Overlay';
+import { Scrim, OverlayPanel, CONTENT_Z, type OverlayLayer } from '../overlays/Overlay';
 import { CloseButton } from './CloseButton';
 import { useScrollFade } from '../../hooks/useScrollFade';
 
@@ -48,8 +48,18 @@ export type DialogProps = {
   onClose: () => void;
   /** Omit ONLY when the caller renders its own header (see `scrollBody`). */
   title?: string;
+  /** Small second line under the title — e.g. About's version string. */
+  subtitle?: React.ReactNode;
   /** Rendered to the LEFT of the close button — e.g. an (i) explainer button. */
   headerActions?: React.ReactNode;
+  /**
+   * L2 popup (default) or L3 critical — a destructive confirmation, which gets
+   * a heavier scrim and sits above ordinary popups so it cannot be lost behind
+   * the thing it is confirming.
+   */
+  layer?: Extract<OverlayLayer, 2 | 3>;
+  /** Marks the panel destructive, which the theme uses to tint its border. */
+  destructive?: boolean;
   size?: DialogSize;
   /** Ceiling only. Defaults to 80vh. There is deliberately no `height`. */
   maxHeight?: string;
@@ -80,7 +90,10 @@ export function Dialog({
   open,
   onClose,
   title,
+  subtitle,
   headerActions,
+  layer = 2,
+  destructive,
   size = 'md',
   maxHeight = '80vh',
   minHeight,
@@ -100,17 +113,18 @@ export function Dialog({
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
+      <Scrim layer={layer} onClick={onClose} />
       {/* Outer wrapper centers and carries the stacking; the panel then runs at
           position:relative / z-index:auto. pointer-events-none lets clicks fall
           through to the Scrim beneath, which is what closes on outside-click. */}
       <div
         className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
-        style={{ zIndex: CONTENT_Z[2] }}
+        style={{ zIndex: CONTENT_Z[layer] }}
       >
         <OverlayPanel
           ref={panelRef}
-          layer={2}
+          layer={layer}
+          destructive={destructive}
           role="dialog"
           aria-modal={true}
           aria-label={title ?? aria['aria-label']}
@@ -128,7 +142,10 @@ export function Dialog({
             // (K1), so an h3 title would announce them as its siblings rather
             // than its children.
             <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-              <h2 className="text-sm font-bold text-fg">{title}</h2>
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-fg">{title}</h2>
+                {subtitle && <p className="text-3xs text-fg-muted mt-0.5">{subtitle}</p>}
+              </div>
               <div className="flex items-center gap-1">
                 {headerActions}
                 <CloseButton onClick={onClose} label={`Close ${title}`} />

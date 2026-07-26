@@ -2,13 +2,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useScrollFade } from '../hooks/useScrollFade';
 import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import SettingsRow from './SettingsRow';
-import { AnchorTip, Button, CloseButton, InputGroup, TextInput } from './ui';
+import { AnchorTip, Button, CloseButton, Dialog, InputGroup, TextInput } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -90,26 +89,10 @@ function ModelProvidersPopupInner({
   onOpenClaudePreferences?: () => void;
 }) {
   useEscClose(true, onClose);
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="model-providers-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 id="model-providers-title" className="text-sm font-semibold text-fg">Model Providers</h3>
-          <CloseButton onClick={onClose} />
-        </div>
-
-        <div ref={scrollRef} className="scroll-fade">
-          <div className="p-5 space-y-6">
+      <Dialog open onClose={onClose} title="Model Providers" size="md">
             <p className="text-2xs text-fg-dim leading-relaxed">
               Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
               local models are optional alternatives.
@@ -122,9 +105,7 @@ function ModelProvidersPopupInner({
             <LocalModelsBlock />
 
             <SearchProvidersBlock />
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
