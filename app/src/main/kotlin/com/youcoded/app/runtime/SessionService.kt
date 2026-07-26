@@ -3688,6 +3688,7 @@ class SessionService : Service() {
             // not-implemented-on-mobile rather than no-op'ing. Android's native
             // runtime is M8; an honest refusal beats a silently ignored command.
             "native:compact",
+            "native:clear",
             "native:set-binding",
             "native:set-permission-mode",
             "native:get-permission-mode",

@@ -366,6 +366,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         dispatch,
         timeline: [], // Day 1: unused; will wire per-session timeline on Day 2 when commands need it
         callbacks: { onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker },
+        // Native /clear is durable-first — see deferUiEffectsToRuntime.
+        deferUiEffectsToRuntime: provider === 'native',
       });
       if (dispatchResult.handled) {
         // Native sessions with a REAL harness implementation take it (M3 item 2).

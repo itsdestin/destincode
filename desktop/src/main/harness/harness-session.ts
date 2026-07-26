@@ -400,6 +400,31 @@ export class HarnessSession extends EventEmitter {
     }
   }
 
+  /** /clear as a CONTEXT BARRIER (M3 item 2, Destin's call 2026-07-26).
+   *
+   *  The session JSONL is append-only with a write-once header, so "clear"
+   *  genuinely cannot erase history. Instead it drops the model's in-memory
+   *  history and appends a `context-clear` marker; `rebuildHistory` treats that
+   *  marker as a barrier on resume, so the model never sees anything before it
+   *  while the conversation keeps its file, its id and its full readable
+   *  scrollback. Chosen over "start a new session" so a reset doesn't scatter
+   *  half-conversations through the user's history.
+   *
+   *  Refuses while a turn is in flight rather than yanking history out from
+   *  under a running turn — the same reasoning (and the same honest coded
+   *  refusal) as compactNow. */
+  clearHistory(): { ok: true } | { ok: false; reason: 'turn-in-flight' } {
+    if (this.abort) return { ok: false, reason: 'turn-in-flight' };
+    this.history = [];
+    // Emitted (not just persisted) so the store appends it through the host's
+    // normal chain AND every attached surface — other windows, the remote web
+    // client — learns the conversation was cleared. On replay this same event
+    // resets the visible timeline, keeping what the user sees after a restart
+    // identical to what they saw when they cleared.
+    this.emitEvent('context-clear', {});
+    return { ok: true };
+  }
+
   /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];

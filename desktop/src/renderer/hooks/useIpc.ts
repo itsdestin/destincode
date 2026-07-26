@@ -266,6 +266,9 @@ declare global {
         // swallowed — `reason` is one of turn-in-flight | nothing-to-compact |
         // summary-failed | not-live | error.
         compact: (sessionId: string) => Promise<{ ok: true } | { ok: false; reason: string; detail?: string }>;
+        // M3 item 2: /clear as a context BARRIER — appends a marker so the model
+        // stops seeing prior turns; the on-disk log is never rewritten.
+        clear: (sessionId: string) => Promise<{ ok: true } | { ok: false; reason: string; detail?: string }>;
         setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
         // Per-session native permission mode (StatusBar chip, Task 13). Returns
         // the APPLIED mode — authoritative; the chip renders the return value.

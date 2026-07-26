@@ -531,6 +531,16 @@ export class NativeSessionHost extends EventEmitter {
     return entry.session.compactNow();
   }
 
+  /** User-initiated /clear for a native session (M3 item 2) — a context BARRIER,
+   *  not a deletion. Same refusal discipline as compact(): a clear that landed
+   *  mid-turn would drop the history the running turn is still appending to. */
+  clear(sessionId: string): { ok: true } | { ok: false; reason: string } {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+    return entry.session.clearHistory();
+  }
+
   interrupt(sessionId: string): boolean {
     const entry = this.live.get(sessionId);
     // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a

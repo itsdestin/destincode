@@ -45,13 +45,25 @@ export interface DispatcherInput {
   dispatch: React.Dispatch<ChatAction>;
   timeline: TimelineEntry[];         // Current session timeline, for commands that need history
   callbacks: DispatcherCallbacks;
+  /** Caller-supplied: this session's UI effects are driven by the RUNTIME, not
+   *  optimistically here. Set for native sessions, whose /clear is a durable
+   *  context barrier — the harness echoes a `context-clear` event that clears the
+   *  timeline once the barrier actually lands.
+   *
+   *  WHY it matters: CLEAR_TIMELINE is irreversible in practice. `seenUuids`
+   *  survives it, so a transcript replay after a clear is deduped away to
+   *  nothing — there is no restoring a timeline cleared in error. Clearing
+   *  optimistically and then having the runtime REFUSE (a turn is in flight)
+   *  would leave an empty-looking conversation the model still fully remembers.
+   *  This is data the caller knows, not a provider branch inside the dispatcher. */
+  deferUiEffectsToRuntime?: boolean;
 }
 
 /** A command that has a REAL native-runtime implementation, named so callers can
  *  route it to the harness instead of a PTY that doesn't exist. The dispatcher
  *  stays provider-agnostic on purpose — it names the intent, and the caller (who
  *  is the one that knows the session's provider) picks the transport. */
-export type NativeSlashAction = 'compact';
+export type NativeSlashAction = 'compact' | 'clear';
 
 export type DispatcherResult =
   | { handled: false; rewritten?: string }
@@ -123,13 +135,20 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       if (input.files.length > 0 && input.callbacks.onToast) {
         input.callbacks.onToast('Attachments ignored with /clear');
       }
-      input.dispatch({
-        type: 'CLEAR_TIMELINE',
-        sessionId: input.sessionId,
-        markerId: `clear-${Date.now()}`,
-        timestamp: Date.now(),
-      });
-      return { handled: true, alsoSendToPty: '/clear\r' };
+      // See deferUiEffectsToRuntime: for a runtime-driven session the clear is
+      // applied when the durable barrier echoes back, not before.
+      if (!input.deferUiEffectsToRuntime) {
+        input.dispatch({
+          type: 'CLEAR_TIMELINE',
+          sessionId: input.sessionId,
+          markerId: `clear-${Date.now()}`,
+          timestamp: Date.now(),
+        });
+      }
+      // Native sessions have no PTY. `clear` drives the harness's context
+      // BARRIER instead: the append-only log keeps every line, but the model
+      // stops seeing anything before the marker.
+      return { handled: true, alsoSendToPty: '/clear\r', nativeAction: 'clear' };
     }
 
     case '/model':

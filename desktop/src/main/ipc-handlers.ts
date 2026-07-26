@@ -2289,6 +2289,14 @@ export function registerIpcHandlers(
       return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
     }
   });
+  // /clear as a context BARRIER — appends a marker; the log is never rewritten.
+  ipcMain.handle(IPC.NATIVE_CLEAR, (_e, { sessionId }: { sessionId: string }) => {
+    try {
+      return nativeHost.clear(sessionId);
+    } catch (err: any) {
+      return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+    }
+  });
   ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => {
     const ok = await nativeHost.setBinding(sessionId, binding);
     // Task 4: a successful mid-session model swap is exactly the "model may

@@ -996,8 +996,16 @@ export default function StatusBar({
               contextDisplay,
             );
             return (
-              <span
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+              // Clickable since M3 item 2 (Destin's request, 2026-07-25). It was
+              // deliberately a plain <span> while the popup's only two actions —
+              // Compact and Clear — had no native implementation and would have
+              // been dead buttons. Both are real now, so this opens the SAME
+              // ContextPopup the Claude Code chip does.
+              <button
+                onClick={() => setContextPopupOpen(true)}
+                aria-haspopup="dialog"
+                aria-label={`Context: ${nativeChips.contextPct}% remaining. Click to manage context.`}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
                 title={`Context: ${nativeChips.contextPct}% of the model's window remaining${
                   nativeContextLength ? ` (${nativeChips.totalTokens.toLocaleString()} of ${nativeContextLength.toLocaleString()} tokens used)` : ''
                 }`}
@@ -1005,7 +1013,7 @@ export default function StatusBar({
                 <span>Context:</span>
                 <span className={contextColor(nativeChips.contextPct)}>{pill.value}</span>
                 {pill.suffix && <span>{pill.suffix}</span>}
-              </span>
+              </button>
             );
           })()}
 
@@ -1288,12 +1296,16 @@ export default function StatusBar({
       )}
 
       {/* Context popup — portal-rendered; position in tree is cosmetic. */}
+      {/* Native sessions have their own numbers: the CC fields (contextPercent /
+          sessionStats) are always null for them, because a native session writes
+          no statusline file. Feed the harness-derived figures so the popup shows
+          real values instead of "--" now that the native pill can open it. */}
       <ContextPopup
         open={contextPopupOpen}
         onClose={() => setContextPopupOpen(false)}
         sessionId={sessionId ?? null}
-        contextPercent={contextPercent}
-        contextTokens={sessionStats?.contextTokens ?? null}
+        contextPercent={contextPercent ?? nativeChips?.contextPct ?? null}
+        contextTokens={sessionStats?.contextTokens ?? nativeContextLength ?? null}
         onDispatch={onDispatch ?? (() => {})}
       />
     </div>

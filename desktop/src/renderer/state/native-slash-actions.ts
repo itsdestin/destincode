@@ -49,6 +49,7 @@ export async function runNativeSlashAction(
   action: NativeSlashAction,
   { sessionId, dispatch, onToast }: NativeActionDeps,
 ): Promise<boolean> {
+  if (action === 'clear') return runNativeClear({ sessionId, onToast });
   if (action !== 'compact') return false;
 
   let result: { ok: true } | { ok: false; reason: string; detail?: string };
@@ -83,6 +84,47 @@ export async function runNativeSlashAction(
       // Unknown reason: pass the real detail through when we have one, and stay
       // non-committal when we don't, rather than asserting a cause.
       (result.detail ? `Couldn't compact: ${result.detail}` : "Couldn't compact this conversation."),
+  );
+  return false;
+}
+
+/** Copy for a refused /clear. Same discipline as COMPACT_REFUSAL above. */
+const CLEAR_REFUSAL: Record<string, string> = {
+  'turn-in-flight':
+    "Can't clear while Claude is still working. Stop the current turn (or wait for it to finish) and try again.",
+  'not-live': "This session isn't running, so there's nothing to clear.",
+};
+
+/**
+ * /clear for a native session — a context BARRIER, not a deletion.
+ *
+ * The dispatcher has ALREADY dispatched CLEAR_TIMELINE optimistically, which is
+ * what the user sees. This drives the durable half: the harness drops the
+ * model's in-memory history and appends a `context-clear` marker so a resume
+ * rebuilds from the barrier forward. The append-only log keeps every line, so
+ * the conversation stays fully readable — only the model's memory resets.
+ *
+ * Nothing to undo on refusal: for a native session the dispatcher SKIPS its
+ * optimistic CLEAR_TIMELINE (see `deferUiEffectsToRuntime`), because the visible
+ * timeline can't be restored once cleared — `seenUuids` survives the clear, so a
+ * transcript replay would be deduped away to nothing. Instead the UI clears only
+ * when the durable `context-clear` event comes back, which means a refused clear
+ * leaves the conversation exactly as it was.
+ */
+async function runNativeClear({ sessionId, onToast }: Omit<NativeActionDeps, 'dispatch'>): Promise<boolean> {
+  let result: { ok: true } | { ok: false; reason: string; detail?: string };
+  try {
+    result = await window.claude.native.clear(sessionId);
+  } catch (err: any) {
+    result = { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+  }
+
+  if (result.ok) return true;
+
+  const known = CLEAR_REFUSAL[result.reason];
+  onToast?.(
+    known ??
+      (result.detail ? `Couldn't clear: ${result.detail}` : "Couldn't clear this conversation."),
   );
   return false;
 }

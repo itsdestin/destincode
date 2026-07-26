@@ -1219,6 +1219,20 @@ function AppInner() {
             message: event.data.text ?? 'The model request failed.',
           });
           break;
+        case 'context-clear':
+          // The durable /clear barrier (native runtime). This is the ONLY thing
+          // that clears a native session's timeline — the dispatcher defers to
+          // it rather than clearing optimistically, so a refused clear leaves
+          // the conversation untouched. It also fires during transcript REPLAY,
+          // which is what makes a resumed session show the same post-clear view
+          // the user left behind instead of resurrecting the old conversation.
+          dispatch({
+            type: 'CLEAR_TIMELINE',
+            sessionId: event.sessionId,
+            markerId: `clear-${event.uuid}`,
+            timestamp: event.timestamp,
+          });
+          break;
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works
@@ -2105,6 +2119,8 @@ function AppInner() {
           dispatch,
           timeline: [],
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // Native /clear is durable-first — see deferUiEffectsToRuntime.
+          deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
         if (result.handled) {
           runSlashResult(sessionId, result);
@@ -2156,6 +2172,8 @@ function AppInner() {
           dispatch,
           timeline: [],
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // Native /clear is durable-first — see deferUiEffectsToRuntime.
+          deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
         if (result.handled) {
           runSlashResult(sessionId, result);
@@ -2945,6 +2963,7 @@ function AppInner() {
                         getSessionState: (sid: string) => chatStateMapRef.current.get(sid),
                         onOpenModelPicker: () => setModelPickerOpen(true),
                       },
+                      deferUiEffectsToRuntime: currentSession?.provider === 'native',
                     });
                     // Forward alsoSendToPty so Claude Code itself runs the command. We deliberately skip the
                     // USER_PROMPT optimistic bubble that InputBar dispatches — for /compact and /clear, the

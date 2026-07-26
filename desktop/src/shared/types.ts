@@ -118,7 +118,15 @@ export type TranscriptEventType =
   // Native-runtime only: a provider/stream failure ended the turn. Carries the
   // human-readable message in data.text. Never emitted by CC's transcript
   // watcher and never persisted to the native session store (stale on resume).
-  | 'session-error';
+  | 'session-error'
+  // Native-runtime only: /clear's CONTEXT BARRIER (M3 item 2). The native
+  // session log is append-only with a write-once header, so "clear" cannot
+  // erase anything — it appends this marker instead, and everything before it
+  // is ignored when history is rebuilt. The conversation therefore keeps its
+  // identity and stays fully readable on disk while the model's memory resets.
+  // Unlike session-error this IS persisted: a barrier that vanished on resume
+  // would silently resurrect the context the user deliberately dropped.
+  | 'context-clear';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -1129,6 +1137,8 @@ export const IPC = {
   // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
   // the caller needs the {ok, reason} result to explain a refusal.
   NATIVE_COMPACT: 'native:compact',
+  // M3 item 2 — /clear as a context barrier. invoke: the caller needs {ok, reason}.
+  NATIVE_CLEAR: 'native:clear',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   // Read the session's current native permission mode. Seeds the StatusBar chip

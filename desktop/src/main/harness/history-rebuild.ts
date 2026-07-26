@@ -75,6 +75,20 @@ export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
       case 'user-interrupt':
         flushAssistant(); flushResults();
         break;
+      // /clear's CONTEXT BARRIER (M3 item 2). Everything before it is dropped
+      // from the REBUILT model history — the on-disk events are untouched and
+      // still replay into the visible timeline, which is the whole point of the
+      // barrier design: the conversation stays readable, the model's memory does
+      // not. Discarding the in-progress accumulators too (rather than flushing
+      // them) is deliberate: a half-built assistant message from before the
+      // barrier must not survive into the post-barrier history, and dropping an
+      // unpaired tool-call here is safe because nothing after the barrier can
+      // reference it.
+      case 'context-clear':
+        out.length = 0;
+        assistantParts = [];
+        toolResults = [];
+        break;
       default:
         // assistant-thinking, compact-summary, session-error, and any unknown
         // future type never enter model history in Plan A.
