@@ -32,10 +32,21 @@ object InkSelectParser {
     // Note: bypass permissions prompt is handled by a hardcoded handler in ManagedSession,
     // not by the generic InkSelectParser, because it uses Enter/Esc (not arrow navigation).
     private val TITLE_OVERRIDES = mapOf(
-        // Folder-trust prompt — anchored on its security-note body line ("Important:
-        // Only use Claude Code with files you trust. …"), the same line the old bare
-        // "trust" key matched.
-        "files you trust" to "Trust This Folder?",
+        // Folder-trust prompt — anchored on the "Quick safety check:" opener of the
+        // CC ~2.1.2xx rewrite. The previous anchor ("files you trust", from the old
+        // "Important: Only use Claude Code with files you trust…" note) no longer
+        // appears in this dialog at all; in the 2.1.220 bundle that sentence survives
+        // only in the external-CLAUDE.md-imports dialog below, so keeping it here both
+        // missed the real prompt and hijacked the wrong one (2026-07-26).
+        "quick safety check" to "Trust This Folder?",
+        // Same dialog, second anchor — the body varies (optional "This folder
+        // pre-approves N tool permissions" / "This folder adds …" lines), and this
+        // sentence sits closer to the options, inside extractTitle's lookback window.
+        "execute files here" to "Trust This Folder?",
+        // External CLAUDE.md imports — the dialog that inherited the old
+        // "…files you trust…" security note. Anchored on its own body sentence
+        // because the generic heuristic would otherwise title it "security risks".
+        "imports files outside the current working directory" to "Allow External Imports?",
         // Model-safeguard fallback prompt — "This model's safeguards flagged this
         // message…" with Switch-model / Edit-and-retry options.
         "safeguards flagged this message" to "Message Flagged",
@@ -50,6 +61,20 @@ object InkSelectParser {
         // Key on "limit to reset" (unique to option 1) rather than the generic
         // "What do you want to do?" title to avoid false matches on future menus.
         "limit to reset" to "Usage Limit Reached",
+    )
+
+    // Overrides keyed on an OPTION LABEL rather than on body text above the menu.
+    // Body text is fragile: extractTitle only looks 10 lines up, and CC's dialogs grow
+    // and shrink optional body lines (the folder-trust dialog adds "This folder
+    // pre-approves N tool permissions" / "This folder adds …" when the project ships
+    // settings), which can push the distinctive phrase out of range. Option labels are
+    // the prompt's own vocabulary and survive every body rewrite, so they must be exact
+    // whole-label matches — a substring would be as collision-prone as the old bare
+    // "trust" key. Keep in sync with desktop's ink-select-parser.ts.
+    private val OPTION_TITLE_OVERRIDES = mapOf(
+        // Present in BOTH the old ("Do you trust the files in this folder?") and the
+        // CC ~2.1.2xx ("Accessing workspace: … Quick safety check:") trust dialogs.
+        "yes, i trust this folder" to "Trust This Folder?",
     )
 
     /**
@@ -129,7 +154,7 @@ object InkSelectParser {
         if (options.any { it.length > 120 }) return null
 
         // Extract title from context above the menu
-        val title = extractTitle(lines, optionIndices.first(), screenText)
+        val title = extractTitle(lines, optionIndices.first(), screenText, options)
 
         // Generate a stable ID from the options
         val id = "menu_" + options.joinToString("_") { it.take(10) }
@@ -171,7 +196,17 @@ object InkSelectParser {
      * Look for a title/question in the lines above the menu.
      * First checks TITLE_OVERRIDES, then scans for the nearest question or heading.
      */
-    private fun extractTitle(lines: List<String>, firstOptionLine: Int, fullText: String): String {
+    private fun extractTitle(
+        lines: List<String>,
+        firstOptionLine: Int,
+        fullText: String,
+        options: List<String> = emptyList(),
+    ): String {
+        // Option-label overrides win: they don't depend on how far the prompt's body
+        // text happens to sit above the menu (see OPTION_TITLE_OVERRIDES).
+        for (option in options) {
+            OPTION_TITLE_OVERRIDES[option.trim().lowercase()]?.let { return it }
+        }
         // Check title overrides against only the ~10 lines ABOVE the menu, not the
         // full screen text — matches desktop's ink-select-parser.ts. Full-screen
         // matching let stale content from earlier prompts (still in the buffer)

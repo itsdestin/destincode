@@ -13,10 +13,23 @@ export const TRUST_PROMPT_TITLE = 'Trust This Folder?';
 // relabeled the Fable 5 model-safeguard prompt (and would relabel ANY menu)
 // whenever "trust" appeared in nearby text.
 const TITLE_OVERRIDES: Record<string, string> = {
-  // Folder-trust prompt — anchored on its security-note body line ("Important:
-  // Only use Claude Code with files you trust. Accessing untrusted files may
-  // pose security risks"), the same line the old bare 'trust' key matched.
-  'files you trust': TRUST_PROMPT_TITLE,
+  // Folder-trust prompt — anchored on the "Quick safety check:" opener of the
+  // CC ~2.1.2xx rewrite. The previous anchor ('files you trust', from the old
+  // "Important: Only use Claude Code with files you trust…" note) no longer
+  // appears in this dialog at all; the only remaining occurrence of that
+  // sentence in the 2.1.220 bundle belongs to the external-CLAUDE.md-imports
+  // dialog below, so keeping it here both missed the real prompt and hijacked
+  // the wrong one (2026-07-26).
+  'quick safety check': TRUST_PROMPT_TITLE,
+  // Same dialog, second anchor — the body varies (optional "This folder
+  // pre-approves N tool permissions" / "This folder adds …" lines), and this
+  // sentence sits closer to the options, inside extractTitle's lookback window.
+  'execute files here': TRUST_PROMPT_TITLE,
+  // External CLAUDE.md imports — the dialog that inherited the old
+  // "…files you trust…" security note. Anchored on its own body sentence
+  // because the generic heuristic would otherwise title it "security risks"
+  // (the last body line before the options).
+  'imports files outside the current working directory': 'Allow External Imports?',
   // Model-safeguard fallback prompt (CC + Fable 5) — "This model's safeguards
   // flagged this message…" with "Switch to <model> and continue" /
   // "Edit prompt and retry with <model>" options. The phrase appears in every
@@ -45,6 +58,20 @@ const TITLE_OVERRIDES: Record<string, string> = {
   // lines can fall under extractTitle's < 80-char fallback and be returned
   // as the title verbatim.
   'auto mode lets claude': 'Enable auto mode?',
+};
+
+// Overrides keyed on an OPTION LABEL rather than on body text above the menu.
+// Body text is fragile: extractTitle only looks 10 lines up, and CC's dialogs
+// grow and shrink optional body lines (the folder-trust dialog adds
+// "This folder pre-approves N tool permissions" / "This folder adds …" when the
+// project ships settings), which can push the distinctive phrase out of range.
+// Option labels are the prompt's own vocabulary and survive every body rewrite,
+// so they must be exact whole-label matches — a substring would be as
+// collision-prone as the old bare 'trust' key.
+const OPTION_TITLE_OVERRIDES: Record<string, string> = {
+  // Present in BOTH the old ("Do you trust the files in this folder?") and the
+  // CC ~2.1.2xx ("Accessing workspace: … Quick safety check:") trust dialogs.
+  'yes, i trust this folder': TRUST_PROMPT_TITLE,
 };
 
 export interface ParsedMenu {
@@ -169,7 +196,7 @@ export function parseInkSelect(screenText: string): ParsedMenu | null {
 
   // Extract title from lines above the menu
   const firstOptionLine = selectorIdx - selectedIndex;
-  const title = extractTitle(lines, Math.max(0, firstOptionLine));
+  const title = extractTitle(lines, Math.max(0, firstOptionLine), options);
 
   const id = 'menu_' + options.map((o) => o.slice(0, 10)).join('_')
     .toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -188,7 +215,14 @@ export function parseInkSelect(screenText: string): ParsedMenu | null {
  * e.g., after answering a trust prompt, the word "trust" remains in the
  * terminal buffer and would incorrectly title all subsequent menus.
  */
-function extractTitle(lines: string[], firstOptionLine: number): string {
+function extractTitle(lines: string[], firstOptionLine: number, options: string[] = []): string {
+  // Option-label overrides win: they don't depend on how far the prompt's body
+  // text happens to sit above the menu (see OPTION_TITLE_OVERRIDES).
+  for (const option of options) {
+    const title = OPTION_TITLE_OVERRIDES[option.trim().toLowerCase()];
+    if (title) return title;
+  }
+
   const searchStart = Math.max(0, firstOptionLine - 10);
   const nearbyText = lines.slice(searchStart, firstOptionLine).join(' ').toLowerCase();
 

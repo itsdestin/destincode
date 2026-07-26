@@ -151,7 +151,7 @@ safe, normal conversations.
       ]);
     });
 
-    it('still labels the real folder-trust prompt via its security-note anchor', () => {
+    it('still labels the pre-2.1.2xx folder-trust prompt (old security-note wording)', () => {
       const screenText = `Do you want to work in this folder?
 
 C:\\Users\\someone\\project
@@ -168,6 +168,96 @@ files may pose security risks.
       if (!menu) return;
       expect(menu.title).toBe('Trust This Folder?');
       expect(menu.options).toHaveLength(3);
+    });
+  });
+
+  // Regression (2026-07-26): CC ~2.1.2xx rewrote the folder-trust dialog. The old
+  // body line ("Important: Only use Claude Code with files you trust…") is gone
+  // from it entirely — it now belongs ONLY to the "Allow external CLAUDE.md file
+  // imports?" dialog. So the old anchor both (a) stopped matching the real trust
+  // prompt, which fell through to the generic heuristic ("Security guide") and
+  // was dropped by usePromptDetector's SETUP_PROMPT_TITLES gate, and (b) started
+  // matching the wrong dialog. Verified against the 2.1.220 CLI bundle.
+  describe('folder-trust prompt — CC 2.1.2xx "Accessing workspace" wording', () => {
+    it('labels the new folder-trust dialog Trust This Folder?', () => {
+      const screenText = `Accessing workspace:
+
+/home/destin
+
+Quick safety check: Is this a project you created or one you trust? (Like your own code, a
+well-known open source project, or work from your team). If not, take a moment to review
+what's in this folder first.
+
+Claude Code'll be able to read, edit, and execute files here.
+
+Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+Enter to confirm · Esc to cancel`;
+
+      const menu = parseInkSelect(screenText);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+      expect(menu.title).toBe('Trust This Folder?');
+      expect(menu.options).toEqual(['Yes, I trust this folder', 'No, exit']);
+    });
+
+    it('labels it even when the pre-approval body pushes the safety-check text out of the lookback window', () => {
+      // The dialog grows extra body lines when the folder ships settings that
+      // pre-approve permissions or add workspace directories. That pushes the
+      // "Quick safety check" line past extractTitle's 10-line lookback, so the
+      // body-text anchor alone is not enough — the option label is.
+      const screenText = `Accessing workspace:
+
+/home/destin/some/project
+
+Quick safety check: Is this a project you created or one you trust? (Like your own code, a
+well-known open source project, or work from your team). If not, take a moment to review
+what's in this folder first.
+
+Claude Code'll be able to read, edit, and execute files here.
+
+This folder pre-approves 7 tool permissions
+
+This folder adds 2 directories to the workspace in .claude/settings.json
+
+These will apply without asking. Only proceed if you trust this configuration.
+
+Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, continue without these permissions
+   3. No, exit`;
+
+      const menu = parseInkSelect(screenText);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+      expect(menu.title).toBe('Trust This Folder?');
+      expect(menu.options).toHaveLength(3);
+    });
+
+    it('does not label the external-CLAUDE.md-imports dialog as the trust prompt', () => {
+      const screenText = `Allow external CLAUDE.md file imports?
+
+This project's CLAUDE.md imports files outside the current working directory. Never allow
+this for third-party repositories.
+
+External imports:
+  ~/shared/standards.md
+
+Important: Only use Claude Code with files you trust. Accessing untrusted files may pose
+security risks
+
+ ❯ 1. Yes, allow external imports
+   2. No, disable external imports`;
+
+      const menu = parseInkSelect(screenText);
+      expect(menu).not.toBeNull();
+      if (!menu) return;
+      expect(menu.title).not.toBe('Trust This Folder?');
+      expect(menu.title).toBe('Allow External Imports?');
     });
   });
 
