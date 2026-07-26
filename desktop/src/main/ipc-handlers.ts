@@ -2492,8 +2492,32 @@ export function registerIpcHandlers(
       // /compact is safe here: it rewrites the SAME transcript file without
       // rotating the id (the transcript-shrink machinery depends on that), so
       // its SessionStart arrives with a matching id and resolves to 'ignore'.
+      //
+      // `source` (startup|resume|clear|compact) gates the REMAP specifically:
+      // a `startup` on an already-mapped session is a FOREIGN claude process
+      // reporting in under our inherited CLAUDE_DESKTOP_SESSION_ID, not our own
+      // rotation. See session-id-mapping.ts for the full why.
       const current = sessionIdMap.get(desktopId);
-      if (resolveMappingAction(current, claudeId, event.payload?.hook_event_name as string) !== 'adopt') return;
+      const hookEventName = event.payload?.hook_event_name as string | undefined;
+      const source = event.payload?.source as string | undefined;
+      if (resolveMappingAction(current, claudeId, hookEventName, source) !== 'adopt') {
+        // Log only a REFUSED remap (not the steady-state 'ignore' of matching
+        // ids / tool hooks, which would spam every hook event). This is the
+        // breadcrumb the 2026-07-26 wrong-transcript investigation had to do
+        // multi-hour disk forensics for: nothing recorded that the chat view
+        // had been repointed at another conversation.
+        if (current && current !== claudeId && hookEventName === 'SessionStart') {
+          log('WARN', 'SessionMap', 'refused session-id remap', {
+            desktopId, from: current, to: claudeId, source,
+          });
+        }
+        return;
+      }
+      if (current && current !== claudeId) {
+        log('INFO', 'SessionMap', 'remapping session id', {
+          desktopId, from: current, to: claudeId, hookEventName, source,
+        });
+      }
 
       // Remap (e.g. /clear rotated the CC session id): tear down the old
       // topic + transcript watchers before starting new ones. startWatching
@@ -2501,10 +2525,15 @@ export function registerIpcHandlers(
       // first we'd leak its FSWatcher/interval and keep broadcasting renames
       // from the stale topic file.
       // INVARIANT: this remap assumes the rotated transcript starts EMPTY
-      // (true for /clear). If a future CC change rotates onto a non-empty
-      // file, the offset-0 replay would append into an already-populated
-      // chat timeline — the renderer would need a CLEAR_TIMELINE-equivalent
-      // coupled to the remap.
+      // (true for /clear). An in-session /resume rotates onto a NON-empty file
+      // by design — its offset-0 replay is what hydrates the chat view with the
+      // resumed conversation, which is correct there.
+      // The dangerous case — a foreign process's `startup` repointing us at an
+      // unrelated conversation — is now refused by the `source` gate above
+      // (2026-07-26). If a future CC change rotates onto a non-empty file under
+      // some OTHER source, the offset-0 replay would append into an
+      // already-populated chat timeline, and the renderer would need a
+      // CLEAR_TIMELINE-equivalent coupled to the remap.
       if (current) {
         teardownSessionWatchers(desktopId);
         // 2b: /clear rotates the CC session id WITHOUT firing session-exit, so the
