@@ -111,6 +111,22 @@ describe('buildCodeReference', () => {
       'Earlier, you shared this code:\n```\nconst x = 1;\n```\n\nThe user has a follow-up: ',
     );
   });
+
+  it('does not mutate the DOM (no surroundContents split, no host attribute)', () => {
+    // Same guarantee as buildChatReference's equivalent test, extended to this
+    // builder: the old buildCodeReference() also tagged `pre` with
+    // data-reference-host unconditionally. buildCodeReference never reads the
+    // live selection (it always quotes the whole <pre>), so there's no
+    // selection setup needed here — just prove the host is untouched.
+    const pre = document.createElement('pre');
+    pre.append(document.createTextNode('const x = 1;\n\n'));
+    document.body.appendChild(pre);
+    Object.defineProperty(pre, 'innerText', { value: 'const x = 1;\n\n', configurable: true });
+    const before = pre.outerHTML;
+    const ref = buildCodeReference(pre);
+    expect(pre.outerHTML).toBe(before);
+    expect(ref.anchor?.host).toBe(pre);
+  });
 });
 
 describe('buildArtifactReference', () => {
@@ -140,5 +156,22 @@ describe('buildArtifactReference', () => {
   it('returns null with no selection — never reference a whole file', () => {
     const { container } = mountViewer('alpha\nbravo');
     expect(buildArtifactReference(container)).toBeNull();
+  });
+
+  it('does not mutate the DOM (no surroundContents split, no host attribute)', () => {
+    // Same guarantee as buildChatReference's equivalent test, extended to this
+    // builder: the old buildArtifactReference() also tagged the container with
+    // data-reference-host and wrapped the selection in a marker <span>. A real
+    // selection is required here — with no selection the function returns null
+    // before it would ever reach the old mutation code path, which would make
+    // this assertion pass trivially without proving anything.
+    const { container, pre } = mountViewer('alpha\nbravo\ncharlie');
+    selectWithin(pre, 6, 11); // "bravo" — line 2
+    const before = container.outerHTML;
+    const ref = buildArtifactReference(container)!;
+    expect(ref).not.toBeNull();
+    expect(container.outerHTML).toBe(before);
+    expect(ref.anchor?.host).toBe(container);
+    expect(ref.anchor?.range).not.toBeNull();
   });
 });
