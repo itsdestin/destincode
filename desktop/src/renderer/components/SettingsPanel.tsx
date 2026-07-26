@@ -1073,12 +1073,12 @@ function RemoteButton({
                           </div>
                         ) : setupStatus === 'installing' ? (
                           <div className="text-center py-1">
-                            <p className="text-xs text-fg-2 animate-pulse">Installing Tailscale...</p>
+                            <LoadingState what="Tailscale" variant="inline" className="justify-center" />
                             <p className="text-3xs text-fg-muted mt-1">This may take a few minutes</p>
                           </div>
                         ) : setupStatus === 'authenticating' ? (
                           <div className="text-center py-1">
-                            <p className="text-xs text-fg-2 animate-pulse">Authenticating...</p>
+                            <LoadingState what="the Tailscale sign-in" variant="inline" className="justify-center" />
                             <p className="text-3xs text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
                           </div>
                         ) : setupStatus === 'done' ? (

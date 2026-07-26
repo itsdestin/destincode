@@ -3,7 +3,7 @@ import { useTheme } from '../state/theme-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { PublishState } from '../../shared/theme-marketplace-types';
-import { Button } from './ui';
+import { Button, LoadingState } from './ui';
 
 interface ThemeShareSheetProps {
   themeSlug: string;
@@ -103,7 +103,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
         <div className="rounded-lg overflow-hidden border border-edge-dim mb-4">
           {previewLoading ? (
             <div className="w-full h-40 bg-well flex items-center justify-center">
-              <span className="text-xs text-fg-muted animate-pulse">Generating preview...</span>
+              <LoadingState what="the preview" variant="inline" />
             </div>
           ) : previewPath ? (
             <img

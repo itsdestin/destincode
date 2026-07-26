@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useSkills } from '../state/skill-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button } from './ui';
+import { Button, LoadingState } from './ui';
 
 interface ShareSheetProps {
   skillId: string;
@@ -97,7 +97,7 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
         <div className="flex justify-center mb-4">
           {linkLoading ? (
             <div className="w-40 h-40 rounded-lg bg-well border border-edge-dim flex items-center justify-center">
-              <span className="text-xs text-fg-muted animate-pulse">Generating...</span>
+              <LoadingState what="the share link" variant="inline" />
             </div>
           ) : linkError ? (
             <div className="w-40 h-40 rounded-lg bg-well border border-edge-dim flex items-center justify-center p-3">
