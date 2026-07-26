@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, CloseButton, Textarea } from './ui';
+import { Button, Dialog, Textarea } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
@@ -98,15 +97,19 @@ export default function ContextPopup({
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby={showInfo ? undefined : 'context-popup-title'}
+      {/* The explainer used to swap max-h-[85vh] for a hard h-[85vh], so opening
+          it made the panel JUMP to full height and closing it snapped back.
+          Dialog cannot express a fixed height, so both views now hug their
+          content up to the same ceiling. */}
+      <Dialog
+        open
+        onClose={onClose}
+        size="sm"
+        maxHeight="85vh"
+        title={showInfo ? undefined : 'Context'}
         aria-label={showInfo ? 'About Context' : undefined}
-        className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px] flex flex-col overflow-hidden ${showInfo ? 'h-[85vh]' : 'max-h-[85vh]'}`}
-        onClick={(e) => e.stopPropagation()}
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
+        scrollBody={false}
       >
         {showInfo ? (
           // Explainer takes over the full panel frame; has its own header with Back + Close.
@@ -119,16 +122,6 @@ export default function ContextPopup({
           />
         ) : (
           <>
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-              <h3 id="context-popup-title" className="text-sm font-semibold text-fg">Context</h3>
-              <div className="flex items-center gap-1">
-                {/* (i) button — opens the explainer view explaining what context percentage means */}
-                <InfoIconButton onClick={() => setShowInfo(true)} />
-                <CloseButton onClick={onClose} label="Close context panel" />
-              </div>
-            </div>
-
             {/* Current state */}
             <div className="px-4 py-4 space-y-3">
               <div className="text-center">
@@ -261,7 +254,7 @@ export default function ContextPopup({
             </div>
           </>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

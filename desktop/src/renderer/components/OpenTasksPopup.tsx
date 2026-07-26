@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { TaskState } from '../state/task-state';
-import { Button } from './ui';
+import { Button, Dialog } from './ui';
 
 // L2 popup opened by OpenTasksChip in the StatusBar. Groups tasks by status:
 // In Progress → Pending → Completed (collapsible). A separate "Marked Inactive"
@@ -124,26 +123,8 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
 
   return (
     <>
-      <Scrim layer={2} onClick={onClose} />
-      {/* Centered in viewport — matches ModelPickerPopup/PreferencesPopup positioning. */}
-      <OverlayPanel
-        layer={2}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] max-w-[calc(100vw-2rem)] max-h-[70vh] rounded-md flex flex-col"
-        role="dialog"
-        aria-label="Open tasks"
-      >
-        {/* Header row — non-scrolling so the title stays visible. Counts live
-            inline with each section (and in the StatusBar chip), so repeating
-            "N open" here was noise. flex-shrink-0 keeps the title fixed while
-            the body scrolls. */}
-        <div className="px-3 pt-2 pb-1 border-b border-edge-dim flex-shrink-0">
-          <span className="text-sm font-medium text-fg">Open Tasks</span>
-        </div>
-
-        {/* Scrollable body. .layer-surface has overflow:hidden by design (clips
-            to rounded border), so the scroll container has to live inside.
-            min-h-0 is required for flex-1 + overflow-auto to actually scroll. */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
+      <Dialog open onClose={onClose} title="Open Tasks" size="md" maxHeight="70vh">
+        <>
           {/* Empty state: nothing at all */}
           {openCount === 0 && completed.length === 0 && inactive.length === 0 && (
             <div className="px-3 py-4 text-xs text-fg-muted text-center">No open tasks.</div>
@@ -208,8 +189,8 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
               ))}
             </>
           )}
-        </div>
-      </OverlayPanel>
+        </>
+      </Dialog>
     </>
   );
 }

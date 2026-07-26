@@ -36,6 +36,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
     globalSetup: ['tests/global-setup.ts'],
+    // Per-file DOM shims (ResizeObserver). Inert under the 'node'
+    // environment -- the file checks for `window` before touching anything.
+    setupFiles: ['tests/setup-dom.ts'],
     // Fix: use jsdom for .tsx test files (React components) so DOM APIs are available;
     // plain .ts files (main-process logic) stay in 'node' via environmentMatchGlobs.
     environment: 'node',

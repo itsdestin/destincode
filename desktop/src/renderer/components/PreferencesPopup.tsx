@@ -1,10 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
+import { Button, Dialog, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -57,7 +55,6 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
   useEscClose(open, onClose);
   const [prefs, setPrefs] = useState<PrefsState>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   // Per-turn metadata toggle is a theme-context preference (localStorage-backed),
   // not a Claude Code settings.json field — source state from useTheme(), not prefs.
   const { showTurnMetadata, setShowTurnMetadata } = useTheme();
@@ -121,25 +118,11 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
     // Overlay layer L2 via <Scrim>/<OverlayPanel>; scrim, blur, shadow all
     // driven by theme tokens — previously hardcoded bg-black/40.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="shrink-0 bg-panel border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 className="text-sm font-semibold text-fg">Claude Code Preferences</h3>
-          <CloseButton onClick={onClose} label="Close preferences" />
-        </div>
-
+      <Dialog open={open} onClose={onClose} title="Claude Code Preferences" size="md">
         {!loaded ? (
           <LoadingState what="preferences" />
         ) : (
-          // Padding on inner wrapper so scroll-fade is unpadded — sticky fades flush.
-          <div ref={scrollRef} className="scroll-fade">
-            <div className="p-5 space-y-5">
+          <>
             {/* Permission default */}
             <section>
               <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
@@ -273,10 +256,9 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
               </p>
             </section>
             )}
-            </div>
-          </div>
+          </>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
