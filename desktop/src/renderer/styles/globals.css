@@ -1090,7 +1090,14 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* Settings drawer sits at window top-left — same spot as the macOS traffic
    lights. Left-padding is a bad fit here (drawer is only 320px wide, which
    would crowd the ✕ button), so push the header row down instead to clear
-   the lights vertically. */
+   the lights vertically.
+
+   Briefly moved to `.settings-drawer-body` when change 50 deleted the header;
+   moved back when that change was reversed on 2026-07-24. The two must always
+   travel together — the header is the only thing holding this clearance, so
+   deleting it without relocating this rule puts the first row under the native
+   window buttons on macOS, which no Linux or Windows session would ever notice.
+   tests/primitive-adoption.test.ts pins the pair. */
 .mac-titlebar-inset .settings-drawer-header {
   padding-top: 28px;
 }

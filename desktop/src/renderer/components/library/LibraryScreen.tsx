@@ -5,7 +5,7 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
-import { Button, CloseButton } from "../ui";
+import { Button, CloseButton, SegmentedTabs } from "../ui";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
 import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
@@ -175,32 +175,24 @@ export default function LibraryScreen({
         </div>
       </div>
 
-      {/* Tab chip row — sticky so it stays visible while scrolling content. */}
-      <div className="sticky top-0 z-10 bg-canvas px-4 py-2 border-b border-edge-dim flex gap-2">
-        {(['skills', 'themes'] as const).map(t => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={`px-3 py-1.5 rounded-md text-sm ${
-              tab === t ? 'bg-accent text-on-accent' : 'bg-inset text-fg-2 hover:text-fg'
-            }`}
-          >
-            {t === 'skills' ? 'Skills' : 'Themes'}
-          </button>
-        ))}
-        {/* Updates tab only shown when there are updates to act on. */}
-        {updateCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setTab('updates')}
-            className={`px-3 py-1.5 rounded-md text-sm ${
-              tab === 'updates' ? 'bg-accent text-on-accent' : 'bg-inset text-fg-2 hover:text-fg'
-            }`}
-          >
-            Updates · {updateCount}
-          </button>
-        )}
+      {/* Tab chip row — sticky so it stays visible while scrolling content.
+          Change 45: two visual changes here, both deliberate. Inactive tabs lose
+          their permanent bg-inset fill (approved option B — transparent, hover
+          reveals the tint), and the labels shrink text-sm -> text-xs to match the
+          one tab recipe. The Updates tab is conditional, so it is appended to the
+          array rather than rendered as a sibling — otherwise it would sit outside
+          the tablist and drop out of arrow-key navigation. */}
+      <div className="sticky top-0 z-10 bg-canvas px-4 py-2 border-b border-edge-dim">
+        <SegmentedTabs
+          aria-label="Library sections"
+          value={tab}
+          onChange={(id) => setTab(id as typeof tab)}
+          tabs={[
+            { id: 'skills', label: 'Skills' },
+            { id: 'themes', label: 'Themes' },
+            ...(updateCount > 0 ? [{ id: 'updates', label: `Updates · ${updateCount}` }] : []),
+          ]}
+        />
       </div>
 
       <div className="px-4 flex flex-col gap-8 pb-12 pt-4">

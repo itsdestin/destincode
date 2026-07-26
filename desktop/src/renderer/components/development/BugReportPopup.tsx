@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { Button, Textarea } from '../ui';
+import { Button, SegmentedTabs, Textarea } from '../ui';
 
 interface Props {
   open: boolean;
@@ -181,17 +181,18 @@ export function BugReportPopup({ open, onClose }: Props) {
 function DescribeScreen({ kind, setKind, description, setDescription, onContinue, busy }: any) {
   return (
     <>
-      <div className="flex gap-1 mb-3 p-1 bg-inset/50 rounded-lg">
-        {(['bug', 'feature'] as Kind[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => setKind(k)}
-            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${kind === k ? 'bg-accent text-on-accent' : 'text-fg-2 hover:bg-inset'}`}
-          >
-            {k === 'bug' ? 'Bug' : 'Feature'}
-          </button>
-        ))}
-      </div>
+      {/* Change 45: this row already used the approved inactive style (transparent
+          + hover tint), so the primitive is a de-duplication here rather than a
+          restyle. It also gains role="tablist" and arrow-key navigation, which a
+          pair of plain <button>s never had. */}
+      <SegmentedTabs
+        variant="contained"
+        aria-label="Report type"
+        className="mb-3"
+        value={kind}
+        onChange={(id) => setKind(id as Kind)}
+        tabs={[{ id: 'bug', label: 'Bug' }, { id: 'feature', label: 'Feature' }]}
+      />
       {/* Change 42: this was already the target recipe (border-edge-dim, rounded-lg,
           focus:border-accent), so migrating it is mostly a de-duplication —
           bg-inset/50 becomes the shared bg-inset and the padding picks up the one
