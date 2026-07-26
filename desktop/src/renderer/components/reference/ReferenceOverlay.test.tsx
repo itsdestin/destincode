@@ -5,12 +5,25 @@
 import React, { useEffect, useState } from 'react';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, act, fireEvent, screen } from '@testing-library/react';
 import { EscCloseProvider, useEscClose } from '../../hooks/use-esc-close';
 import { ReferenceProvider, useReference, type PendingReference } from '../../state/reference-context';
 import { ReferenceOverlay } from './ReferenceOverlay';
 import { REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
+import { toBoxes, buildUnionPath, shiftPath } from './reference-geometry';
+
+// jsdom doesn't implement ResizeObserver (same stub as
+// use-reference-geometry.test.ts). Only the Task 8 lift tests below drive a
+// real (non-null) anchor through useReferenceGeometry, which is what
+// actually constructs one — but defining it once at module scope is simpler
+// than duplicating the stub per-test for just those cases.
+class NoopResizeObserver {
+  observe() {}
+  disconnect() {}
+  unobserve() {}
+}
+(global as any).ResizeObserver = NoopResizeObserver;
 
 // ReferenceOverlay portals straight to document.body (window-wide, not scoped
 // to RTL's per-test container), so an un-cleaned-up previous test's scrim
@@ -183,5 +196,140 @@ describe('depth-cancel race (review Finding 3 — documented, accepted behavior)
     act(() => {});
 
     expect(document.querySelector('.reference-scrim')).toBeNull();
+  });
+});
+
+// Task 8: the lift. jsdom has no real layout engine, so getBoundingClientRect
+// on an unmocked element is all-zeros and there is no way to assert the FLIP
+// transition's actual transform PIXEL values here — a real dev-instance
+// visual check (does the newest message, right above the composer, actually
+// glide to centre; does a long message scroll internally instead of
+// overflowing; does a multi-line artifact clip track scrolling) is still
+// required before shipping, per the task brief. What IS provable in jsdom,
+// and what these tests pin: (1) which element kinds travel vs. don't, (2)
+// that the lifted card is a `cloneNode` copy — not the source itself, not an
+// innerHTML re-parse — and that the source is left byte-identical, and (3)
+// that the artifact clip-path is `d` SHIFTED by the source's own rect, not
+// `d` used as-is (the coordinate-system bug the brief's literal `path(d)`
+// would have shipped — see the WHY comment on the `shiftPath` call in
+// ReferenceOverlay.tsx for the CSS Shapes spec citation), and (4) that
+// nothing survives in the DOM once the reference clears.
+describe('lift (Task 8: FLIP travel + artifact clip)', () => {
+  function makeHost(text: string): HTMLElement {
+    const host = document.createElement('div');
+    host.setAttribute('data-test-marker', 'source');
+    host.textContent = text;
+    document.body.appendChild(host);
+    return host;
+  }
+
+  it('a chat reference clones the source via cloneNode, travels, and leaves the source unmutated', () => {
+    const host = makeHost('the referenced message');
+    const originalOuterHTML = host.outerHTML;
+
+    renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift');
+    expect(lift).not.toBeNull();
+    expect(lift?.getAttribute('data-travels')).toBe('true');
+
+    const card = document.querySelector('.reference-lift-card');
+    const clone = card?.firstElementChild;
+    expect(clone).not.toBeNull();
+    // A DIFFERENT node than the source — proves this is cloneNode output,
+    // not a re-parent/move of the original (which would detach it from the
+    // transcript) and not a live reference to it.
+    expect(clone).not.toBe(host);
+    expect(clone?.outerHTML).toBe(originalOuterHTML);
+    expect(clone?.getAttribute('data-test-marker')).toBe('source');
+
+    // No DOM mutation in the reference path — the invariant this whole
+    // feature is built around (see reference-context.tsx's WHY comment on
+    // the withdrawn Range.surroundContents() design, which crashed the
+    // renderer). The source keeps its exact original markup and stays
+    // attached exactly where it always was.
+    expect(host.outerHTML).toBe(originalOuterHTML);
+    expect(host.isConnected).toBe(true);
+    expect(host.parentElement).toBe(document.body);
+
+    document.body.removeChild(host);
+  });
+
+  it('an artifact reference does NOT travel and clips the clone to the selection, shifted into the clone\'s own coordinate space', () => {
+    const host = makeHost('const x = 1;');
+    // jsdom's own getBoundingClientRect is all-zero (no layout engine) —
+    // stub a real rect so the clip-path math has something non-degenerate to
+    // shift, same idiom as use-reference-geometry.test.ts.
+    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+
+    renderOverlay({
+      kind: 'artifact',
+      label: 'lines 1-1 of x.ts',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift).not.toBeNull();
+    // Absent, not merely falsy — globals.css' `:not([data-travels="true"])`
+    // selector depends on the attribute not being present at all.
+    expect(lift.hasAttribute('data-travels')).toBe(false);
+    expect(lift.style.transform).toBe('translate(0, 0)');
+
+    // The clip-path must be `d` SHIFTED by the source's own rect, not `d`
+    // used as-is. `clip-path: path()` resolves its coordinates against the
+    // CLIPPED ELEMENT's own border box (confirmed against the CSS Shapes
+    // spec), and this element's border box starts at (rect.left, rect.top),
+    // not (0, 0) — so the raw viewport-relative `d` would clip the wrong
+    // region if used unshifted. This is exactly the "reuses buildUnionPath
+    // unchanged" pipeline the geometry hook already runs, recomputed here
+    // and compared against what the effect actually wrote.
+    const expectedD = buildUnionPath(toBoxes([rect], { left: 0, top: 0 } as DOMRect));
+    const expectedClip = `path('${shiftPath(expectedD, -rect.left, -rect.top)}')`;
+    expect(lift.style.clipPath).toBe(expectedClip);
+    // Sanity check that the shift is load-bearing: the unshifted path is a
+    // DIFFERENT string, so a regression back to `path(d)` (no shift) would
+    // fail the assertion above rather than accidentally still pass.
+    expect(expectedD).not.toBe(shiftPath(expectedD, -rect.left, -rect.top));
+
+    document.body.removeChild(host);
+  });
+
+  it('clearing the reference unmounts the whole lift — no leaked clone left in the DOM', () => {
+    const host = makeHost('goodbye');
+    const { rerender } = renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+    expect(document.querySelector('.reference-lift-card')?.firstElementChild).not.toBeNull();
+
+    rerender(
+      <EscCloseProvider>
+        <ReferenceProvider sessionId="test-session">
+          <SetsReference value={null} />
+          <ReferenceOverlay />
+        </ReferenceProvider>
+      </EscCloseProvider>,
+    );
+    act(() => {});
+
+    // ReferenceOverlay returns null (and its portal with it) once `reference`
+    // clears, so .reference-lift and its card unmount together — nothing of
+    // the clone survives detached in the DOM.
+    expect(document.querySelector('.reference-lift')).toBeNull();
+    expect(document.querySelector('.reference-lift-card')).toBeNull();
+
+    document.body.removeChild(host);
   });
 });

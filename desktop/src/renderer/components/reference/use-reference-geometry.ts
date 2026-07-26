@@ -12,13 +12,13 @@ import type { ReferenceAnchor } from '../../state/reference-context';
  * Returns an empty path when the source is gone; the overlay falls back to a
  * non-anchored centred card in that case (spec §7).
  */
-export function useReferenceGeometry(anchor: ReferenceAnchor | null): { d: string; rects: DOMRect[] } {
-  const [geom, setGeom] = useState<{ d: string; rects: DOMRect[] }>({ d: '', rects: [] });
+export function useReferenceGeometry(anchor: ReferenceAnchor | null): { d: string } {
+  const [geom, setGeom] = useState<{ d: string }>({ d: '' });
 
   const measure = useCallback(() => {
-    if (!anchor) { setGeom({ d: '', rects: [] }); return; }
+    if (!anchor) { setGeom({ d: '' }); return; }
     const host = anchor.host;
-    if (!host.isConnected) { setGeom({ d: '', rects: [] }); return; }
+    if (!host.isConnected) { setGeom({ d: '' }); return; }
 
     // Trace the SELECTION when there is one (Destin's 9B call); fall back to
     // the whole host element's box when there isn't — which is exactly the
@@ -46,11 +46,12 @@ export function useReferenceGeometry(anchor: ReferenceAnchor | null): { d: strin
     const rects = runRects.length ? runRects : [host.getBoundingClientRect()];
 
     // Viewport-relative: the trace SVG is position:fixed, so the "host" origin
-    // for toBoxes is the viewport itself.
+    // for toBoxes is the viewport itself. Task 8's artifact clip-path also
+    // consumes `d` in this same viewport coordinate system (see the WHY
+    // comment on ReferenceOverlay.tsx's shiftPath call for how it's
+    // re-expressed relative to the clone's own box before use).
     const origin = { left: 0, top: 0 } as DOMRect;
-    // rects is returned too — the artifact case re-draws the selected runs above
-    // the scrim from these (Task 8), since the originals are behind the dim.
-    setGeom({ d: buildUnionPath(toBoxes(rects as DOMRect[], origin)), rects: rects as DOMRect[] });
+    setGeom({ d: buildUnionPath(toBoxes(rects as DOMRect[], origin)) });
   }, [anchor]);
 
   useEffect(() => {

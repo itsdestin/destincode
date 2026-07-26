@@ -3,7 +3,7 @@
 // the outline is the stepped union of those boxes — down the right edges,
 // back up the left. No DOM needed, so this runs in the default node env.
 import { describe, it, expect } from 'vitest';
-import { buildUnionPath, toBoxes, type Box } from './reference-geometry';
+import { buildUnionPath, toBoxes, shiftPath, type Box } from './reference-geometry';
 
 const box = (l: number, t: number, r: number, b: number): Box => ({ l, t, r, b });
 
@@ -52,5 +52,31 @@ describe('toBoxes', () => {
   it('sorts by top so unsorted input still steps downward', () => {
     const out = toBoxes([rect(120, 90, 40, 20), rect(120, 70, 40, 20)], host, 0);
     expect(out[0].t).toBeLessThan(out[1].t);
+  });
+});
+
+// Task 8: clip-path correction. clip-path: path() resolves against the
+// clipped element's OWN border box, not the viewport, so a viewport-relative
+// `d` must be re-expressed relative to the clone's own rect before use.
+describe('shiftPath', () => {
+  it('shifts every M/L coordinate pair by (dx, dy)', () => {
+    const d = buildUnionPath([box(10, 0, 90, 20)]); // 'M 90 0 L 90 20 L 10 20 L 10 0 Z'
+    expect(shiftPath(d, -10, -5)).toBe('M 80 -5 L 80 15 L 0 15 L 0 -5 Z');
+  });
+
+  it('leaves a multi-box union path fully shifted, command-by-command', () => {
+    const d = buildUnionPath([box(40, 0, 100, 20), box(0, 20, 100, 40)]);
+    expect(shiftPath(d, 5, 5)).toBe(
+      'M 105 5 L 105 25 L 105 25 L 105 45 L 5 45 L 5 25 L 45 25 L 45 5 Z',
+    );
+  });
+
+  it('passes an empty path through unchanged', () => {
+    expect(shiftPath('', -10, -5)).toBe('');
+  });
+
+  it('is a no-op with a zero offset', () => {
+    const d = buildUnionPath([box(0, 0, 10, 10)]);
+    expect(shiftPath(d, 0, 0)).toBe(d);
   });
 });

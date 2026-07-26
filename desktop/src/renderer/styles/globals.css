@@ -933,6 +933,35 @@ body[data-reference-held] .bottom-float {
 @keyframes reference-trace-in { to { stroke-dashoffset: 0; } }
 @keyframes reference-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 
+/* The lifted clone. Chat references travel to centre; artifact references do
+   NOT (their selection is already where the user is looking) — spec 2.2. */
+.reference-lift {
+  position: fixed;
+  z-index: 61;                 /* CONTENT_Z[2]; the composer sits one above */
+  pointer-events: none;
+  transition: transform 460ms cubic-bezier(.22, 1, .36, 1);
+  will-change: transform;
+}
+/* Fix (deviation from the brief's literal `.reference-lift > *`): the cancel
+   button's wrapper is ALSO a direct child of .reference-lift (it's pinned to
+   the card at -top-3 -right-3), so a bare `> *` selector would hand the
+   button wrapper the same box-shadow/70vh-scroll treatment as the cloned
+   card. Scope to .reference-lift-card, the clone holder only. */
+.reference-lift > .reference-lift-card {
+  box-shadow: var(--ref-lift-shadow);
+  /* A message longer than the viewport must not overflow off-screen. */
+  max-height: 70vh;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+/* Non-travelling (artifact) clone: pinned over the original and clipped to the
+   selection, so only the referenced lines stay bright above the dim. */
+.reference-lift:not([data-travels="true"]) > .reference-lift-card {
+  box-shadow: none;
+  max-height: none;
+  overflow: visible;
+}
+
 /* Marketplace rail cards — tighter shadow scoped to the rail scroll
    container. The default 0 8px 32px shadow needs ~40px of bottom
    clearance to render uncut inside overflow-x-auto's clip box; that

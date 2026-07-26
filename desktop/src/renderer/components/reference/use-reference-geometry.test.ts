@@ -69,7 +69,6 @@ describe('useReferenceGeometry', () => {
     (global as any).ResizeObserver = SpyResizeObserver;
     const { result } = renderHook(() => useReferenceGeometry(null));
     expect(result.current.d).toBe('');
-    expect(result.current.rects).toEqual([]);
   });
 
   it('uses the range rects when the range is contained in the host', () => {
@@ -93,7 +92,11 @@ describe('useReferenceGeometry', () => {
 
     expect(rectsStub).toHaveBeenCalled();
     expect(hostRectSpy).not.toHaveBeenCalled();
-    expect(result.current.rects).toEqual([{ left: 1, right: 2, top: 3, bottom: 4, width: 1, height: 1 }]);
+    // `d` is non-empty proof the range branch's rect fed the path builder —
+    // the raw rects themselves are no longer exposed (Task 8 deleted the
+    // unused `rects` field; nothing outside this hook ever consumed it once
+    // the artifact clip-path switched to reusing `d` directly).
+    expect(result.current.d).not.toBe('');
 
     document.body.removeChild(host);
   });
@@ -131,7 +134,7 @@ describe('useReferenceGeometry', () => {
     // The range must never even be consulted once containment fails.
     expect(rectsStub).not.toHaveBeenCalled();
     expect(hostRectSpy).toHaveBeenCalled();
-    expect(result.current.rects).toEqual([{ left: 10, right: 20, top: 30, bottom: 40, width: 10, height: 10 }]);
+    expect(result.current.d).not.toBe('');
 
     document.body.removeChild(host);
     document.body.removeChild(outside);
@@ -149,7 +152,7 @@ describe('useReferenceGeometry', () => {
     const { result } = renderHook(() => useReferenceGeometry(anchor));
 
     expect(hostRectSpy).toHaveBeenCalled();
-    expect(result.current.rects).toEqual([{ left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5 }]);
+    expect(result.current.d).not.toBe('');
 
     document.body.removeChild(host);
   });
@@ -160,7 +163,6 @@ describe('useReferenceGeometry', () => {
     const anchor = makeAnchor(host, null); // constructed once — see file header
     const { result } = renderHook(() => useReferenceGeometry(anchor));
     expect(result.current.d).toBe('');
-    expect(result.current.rects).toEqual([]);
   });
 
   it('registers resize/scroll listeners and a ResizeObserver on mount, and tears every one of them down on unmount', () => {
@@ -218,7 +220,7 @@ describe('useReferenceGeometry', () => {
     // even with the callback annotated `| null` — leaving the later
     // `rerender({ anchor: null })` call failing to typecheck. Pinning the
     // generics directly sidesteps the inference instead of fighting it.
-    const { result, rerender } = renderHook<{ d: string; rects: DOMRect[] }, { anchor: ReferenceAnchor | null }>(
+    const { result, rerender } = renderHook<{ d: string }, { anchor: ReferenceAnchor | null }>(
       ({ anchor }) => useReferenceGeometry(anchor),
       { initialProps: { anchor: initialAnchor } },
     );
