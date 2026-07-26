@@ -10,7 +10,7 @@
 // comfortably in 64k overflowed the phantom 32k budget, the context trimmer
 // emptied the window, and the turn died with "messages must not be empty".
 import { describe, it, expect } from 'vitest';
-import { clampContextWindow } from '../src/main/engine/engine-manager';
+import { clampContextWindow, resolveEffectiveContext } from '../src/main/engine/engine-manager';
 
 describe('clampContextWindow', () => {
   it('ignores a zero/absent live reading rather than treating it as a real window', () => {
@@ -47,5 +47,45 @@ describe('the failure this unblocks', () => {
 
     expect(toolTokens + systemTokens).toBeGreaterThan(budget(32_768));   // what happened
     expect(toolTokens + systemTokens).toBeLessThan(budget(64_000));      // what should have
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE SEAM. The first version of this fix used `loaded ?? configured`, which
+// does NOT fall back on 0 — and router-mode /props reports a literal
+// `"n_ctx": 0`. So the fallback was inert in exactly the case it was written
+// for, while the tests above passed, because they exercised clampContextWindow
+// with the values I ASSUMED reached it rather than the expression that computed
+// them. Caught only by checking the live engine against a 128k session
+// (Destin, 2026-07-26).
+// ---------------------------------------------------------------------------
+describe('resolveEffectiveContext — what /props actually sends', () => {
+  it('falls back on a literal 0 — the exact router-mode reading', () => {
+    // {"model_path":"none","n_ctx":0} with -c 128000 configured.
+    expect(resolveEffectiveContext(0, 128_000, null)).toBe(128_000);
+  });
+
+  it('falls back on null/undefined too', () => {
+    expect(resolveEffectiveContext(null, 128_000, null)).toBe(128_000);
+    expect(resolveEffectiveContext(undefined, 128_000, null)).toBe(128_000);
+  });
+
+  it('treats a negative or non-numeric reading as unknown, not as a window', () => {
+    expect(resolveEffectiveContext(-1, 64_000, null)).toBe(64_000);
+    expect(resolveEffectiveContext('64000', 64_000, null)).toBe(64_000);
+    expect(resolveEffectiveContext(NaN, 64_000, null)).toBe(64_000);
+  });
+
+  it('a REAL live reading still wins over the configured value', () => {
+    // The server clamped our -c down for VRAM: believe the server.
+    expect(resolveEffectiveContext(8_192, 128_000, null)).toBe(8_192);
+  });
+
+  it('still clamps to the trained maximum when that is smallest', () => {
+    expect(resolveEffectiveContext(128_000, 128_000, 32_768)).toBe(32_768);
+  });
+
+  it('with nothing known at all, the conservative default stands', () => {
+    expect(resolveEffectiveContext(0, null, null)).toBe(32_768);
   });
 });

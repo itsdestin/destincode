@@ -50,6 +50,26 @@ export function selectInstallAsset(
 // a 4k-trained model driven at a configured 32k -c silently corrupts once history
 // crosses the file's real ceiling. Take the smaller of the two known numbers;
 // with neither known, fall back to a conservative default that nothing overruns.
+/** Resolve the window from a RAW /props reading plus our own configured -c.
+ *
+ *  Extracted as a pure function because the bug this exists to prevent lived in
+ *  an inline expression that no test could reach: `loaded ?? configured` does
+ *  NOT fall back when loaded is 0, because `??` only catches null/undefined. In
+ *  router mode /props reports a literal `n_ctx: 0`, so the fallback added on
+ *  2026-07-26 was inert in precisely the case it was written for — and the unit
+ *  tests passed anyway, because they exercised clampContextWindow directly with
+ *  the values I ASSUMED reached it. Test the seam, not the collaborator.
+ *
+ *  A non-positive reading means "unknown", never "zero context". */
+export function resolveEffectiveContext(
+  loadedRaw: unknown,
+  configured: number | null,
+  trainedMax: number | null,
+): number {
+  const loaded = typeof loadedRaw === 'number' && Number.isFinite(loadedRaw) && loadedRaw > 0 ? loadedRaw : null;
+  return clampContextWindow(loaded ?? configured, trainedMax);
+}
+
 export function clampContextWindow(loaded: number | null, trainedMax: number | null): number {
   const vals = [loaded, trainedMax].filter((n): n is number => typeof n === 'number' && n > 0);
   return vals.length ? Math.min(...vals) : 32_768;   // conservative default
@@ -287,7 +307,7 @@ export class EngineManager extends EventEmitter {
       const props: any = await res.json();
       // The field carrying the loaded context has drifted across llama.cpp builds
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
-      const loaded = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
+      const loadedRaw = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
       const trained = this.trainedContextFor(modelId);
       // Fall back to the -c WE spawned the server with, not a blind constant.
       //
@@ -321,10 +341,10 @@ export class EngineManager extends EventEmitter {
       // Closing the gap properly means parsing <arch>.context_length from the GGUF
       // — tracked as the trainedContextFor TODO below, not solved by guessing low.
       const configured = readEngineConfig(this.home).contextSize ?? null;
-      return clampContextWindow(loaded ?? configured, trained);
+      return resolveEffectiveContext(loadedRaw, configured, trained);
     } catch {
       // Same reasoning on the error path — prefer our own -c over a guess.
-      try { return clampContextWindow(readEngineConfig(this.home).contextSize ?? null, null); } catch { return 32_768; }
+      try { return resolveEffectiveContext(null, readEngineConfig(this.home).contextSize ?? null, null); } catch { return 32_768; }
     }
   }
 
