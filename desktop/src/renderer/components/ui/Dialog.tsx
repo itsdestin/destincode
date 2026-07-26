@@ -2,6 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel, CONTENT_Z } from '../overlays/Overlay';
 import { CloseButton } from './CloseButton';
+import { useScrollFade } from '../../hooks/useScrollFade';
 
 /**
  * D1 — the one dialog shell.
@@ -52,6 +53,14 @@ export type DialogProps = {
   size?: DialogSize;
   /** Ceiling only. Defaults to 80vh. There is deliberately no `height`. */
   maxHeight?: string;
+  /**
+   * Floor, for dialogs that must not collapse as the user moves between
+   * sub-views (Appearance, Remote Access). This is the honest version of the
+   * fixed height those two used to set: it stops the panel shrinking without
+   * letting it ignore the viewport. The banned case is a height that changes
+   * with the view — that is the ContextPopup jump.
+   */
+  minHeight?: string;
   /** For callers wiring their own outside-click detection. */
   panelRef?: React.Ref<HTMLDivElement>;
   /** Extra classes on the panel. Layout classes are owned here — prefer not to. */
@@ -74,12 +83,19 @@ export function Dialog({
   headerActions,
   size = 'md',
   maxHeight = '80vh',
+  minHeight,
   panelRef,
   className = '',
   scrollBody = true,
   children,
   ...aria
 }: DialogProps) {
+  // Dialog owns the scroll region, so it owns the edge-fade hook too. Callers
+  // used to wire their own useScrollFade at the body they supplied; leaving it
+  // to them now would silently drop the fades on every migrated dialog.
+  // Declared before the early return -- hooks must run unconditionally.
+  const scrollRef = useScrollFade<HTMLDivElement>();
+
   if (!open) return null;
 
   return createPortal(
@@ -104,6 +120,7 @@ export function Dialog({
             zIndex: 'auto',
             maxWidth: DIALOG_WIDTHS[size],
             maxHeight,
+            ...(minHeight ? { minHeight } : {}),
           }}
         >
           {title && (
@@ -121,7 +138,7 @@ export function Dialog({
           {scrollBody ? (
             // Unpadded scroll region so the fade pseudo-elements sit flush with
             // the panel edge; padding lives on the inner track.
-            <div className="scroll-fade flex-1">
+            <div ref={scrollRef} className="scroll-fade flex-1">
               <div className="px-4 py-4 space-y-5">{children}</div>
             </div>
           ) : (

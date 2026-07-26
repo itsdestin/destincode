@@ -21,6 +21,17 @@ import { Dialog, DIALOG_WIDTHS } from '../src/renderer/components/ui/Dialog';
 
 afterEach(cleanup);
 
+// jsdom does not implement ResizeObserver; Dialog's scroll body runs
+// useScrollFade, which observes its own size. Same stub the other overlay
+// render tests use (context-popup, resume-browser-native-picker).
+if (typeof (globalThis as any).ResizeObserver === 'undefined') {
+  (globalThis as any).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // createPortal renders into document.body; query from there.
 function panel(): HTMLElement {
   const el = document.querySelector('[data-layer="2"].layer-surface');

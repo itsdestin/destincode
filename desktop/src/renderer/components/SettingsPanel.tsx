@@ -25,12 +25,11 @@ import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
-import { SettingsPopup } from './SettingsPopup';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup, SegmentedTabs, Dialog } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -522,7 +521,6 @@ const SOUND_CATEGORY_META: Record<SoundCategory, { label: string; description: s
 function SoundButton() {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   // Which notification the shared sound list is currently editing.
   const [soundCategory, setSoundCategory] = useState<SoundCategory>('attention');
   const [muted, setMuted] = useState(() => {
@@ -589,20 +587,13 @@ function SoundButton() {
         onClick={() => setOpen(true)}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Sound & Notifications"
-        width="min(380px, 88vw)"
+        size="md"
         panelRef={popupRef}
-        // Fix: the panel needs to BE a flex column for the body to scroll. It
-        // only had maxHeight, so the inner `h-full` resolved against an
-        // indefinite height, .scroll-fade sized to its content, overflow never
-        // engaged, and a long list was simply clipped with no way to reach it.
-        className="flex flex-col"
       >
-              <div ref={scrollRef} className="scroll-fade flex-1">
-                <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
                 <section>
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Volume</h3>
@@ -662,9 +653,7 @@ function SoundButton() {
                     dotColor={SOUND_CATEGORY_META[soundCategory].dotColor}
                   />
                 </section>
-                </div>
-              </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -707,15 +696,17 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
       />
 
       {/* No `title`: ThemeScreen renders its own header (including its own ✕). */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        width="min(480px, 88vw)"
-        height="min(600px, 80vh)"
+        aria-label="Appearance"
+        size="lg"
+        minHeight="min(600px, 80vh)"
+        scrollBody={false}
         panelRef={popupRef}
       >
         <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -871,12 +862,13 @@ function BuddyButton() {
           popup of the seven with no height ceiling, and it has no scroll container,
           so inheriting the shell's 80vh default would silently CLIP the Linux
           keep-above row instead of letting the popup grow. */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Buddy Floater"
-        width="min(340px, 85vw)"
+        size="sm"
         maxHeight="none"
+        scrollBody={false}
         panelRef={popupRef}
       >
             <div className="px-4 py-4">
@@ -910,7 +902,7 @@ function BuddyButton() {
                 </div>
               )}
             </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1008,11 +1000,13 @@ function RemoteButton({
       {/* No `title` prop: this popup owns its own header because it swaps the
           WHOLE surface for SettingsExplainer when (i) is pressed. The shell's
           header would still be painted behind that. */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        width="min(480px, 88vw)"
-        height="min(600px, 80vh)"
+        aria-label="Remote Access"
+        size="lg"
+        minHeight="min(600px, 80vh)"
+        scrollBody={false}
         panelRef={popupRef}
       >
             {showInfo ? (
@@ -1315,7 +1309,7 @@ function RemoteButton({
               </div>
             </div>
             )}
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1506,7 +1500,6 @@ interface DefaultsButtonProps {
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   // Close-session prompt suppression — reads/writes localStorage directly since
   // this is a UI preference, not a session default backed by sessionDefaults.
   const [closePromptDisabled, setClosePromptDisabled] = useState(
@@ -1547,19 +1540,13 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
         onClick={() => setOpen(true)}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Session Defaults"
-        width="min(380px, 88vw)"
+        size="md"
         panelRef={popupRef}
-        // Same latent clipping bug Sound hit: without flex-col on the panel the
-        // body cannot scroll, it just gets cut off once the content is tall
-        // enough. Short content hid it here.
-        className="flex flex-col"
       >
-              <div ref={scrollRef} className="scroll-fade flex-1">
-                <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
                 <section>
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
@@ -1632,9 +1619,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                     />
                   </div>
                 </section>
-                </div>
-              </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1652,7 +1637,6 @@ const TIER_OPTIONS = [
 function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string) => void }) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   useEffect(() => {
     if (!open) return;
@@ -1686,15 +1670,13 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
           via transform/backdrop-filter, which is why an inline-rendered popup
           ends up centered inside the panel instead of the viewport. ThemeButton
           above uses the same portal pattern for the same reason. */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Package Tier"
-        width="min(340px, 85vw)"
+        size="sm"
         panelRef={popupRef}
       >
-            <div ref={scrollRef} className="scroll-fade" style={{ maxHeight: 'calc(80vh - 52px)' }}>
-              <div className="p-3 space-y-2">
               {TIER_OPTIONS.map(t => {
                 const isActive = tier === t.id;
                 return (
@@ -1718,9 +1700,7 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
                   </button>
                 );
               })}
-              </div>
-            </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1736,7 +1716,6 @@ interface PairedDevice {
 
 function ConnectToDesktopButton() {
   const [open, setOpen] = useState(false);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [connectedDeviceName, setConnectedDeviceName] = useState('');
@@ -1871,16 +1850,13 @@ function ConnectToDesktopButton() {
         onClick={() => { setOpen(true); setShowConnectForm(false); }}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Connect to Desktop"
-        width="min(380px, 88vw)"
+        size="md"
         panelRef={popupRef}
-        className="flex flex-col"
       >
-            <div ref={scrollRef} className="scroll-fade">
-              <div className="px-4 py-4 space-y-4">
 
               {/* Tailscale warning */}
               {!tailscaleLoading && tailscaleStatus !== null && !tailscaleStatus.connected && (
@@ -2044,9 +2020,7 @@ function ConnectToDesktopButton() {
               <p className="text-3xs text-fg-muted">
                 Connect to the YouCoded desktop app on your computer. Set up remote access in the desktop app's settings first.
               </p>
-              </div>
-            </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
