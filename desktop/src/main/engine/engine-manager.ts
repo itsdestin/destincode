@@ -304,6 +304,22 @@ export class EngineManager extends EventEmitter {
       // is right whenever /props is merely UNINFORMATIVE. A live /props reading
       // still wins when present — it catches the case where the server clamped
       // our -c down to what the model or VRAM actually allowed.
+      //
+      // ADDRESSING this function's own doc comment above ("replaces trusting the
+      // configured -c blindly — a small model overflows if we size to a -c larger
+      // than its trained ceiling"): that concern is real but it does NOT argue for
+      // the old behavior, because the constant it fell back to was 32_768 — itself
+      // far larger than the 4k-trained model the warning describes. The old default
+      // over-sized that model too; it just over-sized everything else DOWNWARD as
+      // well. Three things bound the risk here:
+      //   - /props only reports 0 when NOTHING is resident. Once a model loads, the
+      //     live reading wins and any server-side clamp is respected.
+      //   - effectiveContextForModel then clamps to the registry's documented
+      //     maxContextWindow for every known family.
+      //   - trainedContextFor() is inert today (no GGUF header reader), so the
+      //     "trained max" guard the comment relies on provides nothing either way.
+      // Closing the gap properly means parsing <arch>.context_length from the GGUF
+      // — tracked as the trainedContextFor TODO below, not solved by guessing low.
       const configured = readEngineConfig(this.home).contextSize ?? null;
       return clampContextWindow(loaded ?? configured, trained);
     } catch {
