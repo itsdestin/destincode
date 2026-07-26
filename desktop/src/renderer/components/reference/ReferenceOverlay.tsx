@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim } from '../overlays/Overlay';
+import { Scrim, REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
 import { CloseButton } from '../ui/CloseButton';
 import { useReference } from '../../state/reference-context';
 import { useEscClose, useEscStackDepth } from '../../hooks/use-esc-close';
@@ -38,14 +38,44 @@ export function ReferenceOverlay() {
     // Something opened ON TOP of us. We live in the L2 band, so an L1 drawer
     // (z-40/50) would render UNDER this scrim. Cancel instead of painting over
     // it — the two states are mutually exclusive by design (spec §6).
+    //
+    // Known, ACCEPTED edge case (review Finding 3): this is a COUNT comparison,
+    // not an identity check on "what's above us in the stack." If some OTHER
+    // useEscClose-registering overlay opens in the exact SAME React commit as
+    // this one's own registration (e.g. one event handler synchronously flips
+    // both an overlay's `open` state and calls setReference — React 18 batches
+    // that into one commit), both pushes land in the same passive-effect flush,
+    // and the depth baseline captured just above can't tell whether the other
+    // push landed above or below ours in the LIFO stack — it only sees total
+    // depth grow by 2 instead of the expected 1, so this fires and cancels the
+    // reference even in the (rare) ordering where ours ended up on top.
+    // Deliberately NOT distinguishing that ordering: the L2 band is already
+    // documented as mutually-exclusive-with-anything-else by design (spec §6),
+    // and "silently drop a reference that could have safely coexisted with
+    // itself on top" is a strictly safer failure mode than the alternative
+    // (an identity-based rewrite of the shared, app-wide useEscClose stack —
+    // touching that has a much larger blast radius than one feature's edge
+    // case). So: any contention for the L2 band — sequential OR same-commit —
+    // makes the reference yield. Pinned by
+    // ReferenceOverlay.test.tsx's "same-commit L2 contention" test.
     if (depth > depthAtOpen.current) clearReference();
   }, [reference, depth, clearReference]);
 
-  // Mark the document so the composer can lift above the scrim (globals.css).
+  // Mark the document so the composer can lift above the scrim (globals.css'
+  // `body[data-reference-held] .bottom-float` rule — review Finding 1/2 fix).
+  // The layer NUMBER is not hardcoded in CSS: Overlay.tsx is the one place a
+  // layer number is decided (design rule 11), so publish REFERENCE_COMPOSER_Z
+  // as a CSS custom property here and let the stylesheet consume var(...).
+  // Both the attribute and the var are cleaned up on unmount/clear so nothing
+  // about normal (no-reference-held) chrome ordering is ever affected.
   useEffect(() => {
     if (!reference) return;
     document.body.setAttribute('data-reference-held', 'true');
-    return () => document.body.removeAttribute('data-reference-held');
+    document.body.style.setProperty('--reference-composer-z', String(REFERENCE_COMPOSER_Z));
+    return () => {
+      document.body.removeAttribute('data-reference-held');
+      document.body.style.removeProperty('--reference-composer-z');
+    };
   }, [reference]);
 
   if (!reference) return null;

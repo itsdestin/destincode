@@ -564,6 +564,29 @@ body[data-mode="buddy-chat"] #theme-bg {
   will-change: transform;
 }
 
+/* Review Finding 1/2 fix: while an "Ask Claude about this" reference is held,
+   the composer must paint ABOVE the reference scrim (Overlay.tsx's Scrim
+   layer={2}, z-60) so the textarea/Send button stay clickable. `.bottom-float`
+   already forms its OWN stacking context (position:absolute + z-index + the
+   transform/will-change above each independently qualify), so its z-index:20
+   only competes against OTHER stacking contexts at the SAME ancestor level as
+   the reference scrim — which is portalled straight onto document.body,
+   outside .app-shell entirely. Raising a z-index on some element NESTED
+   inside .bottom-float (the old approach, InputBar.tsx) can never win that
+   fight: a descendant's z-index only orders it against ITS OWN siblings
+   inside .bottom-float's stacking context, never against .bottom-float
+   itself. So this rule raises the stacking-context-forming box directly, and
+   ONLY while [data-reference-held] is set on <body> (ReferenceOverlay.tsx),
+   so normal chrome ordering (under every other L1/L3/L4 scrim) is untouched
+   otherwise. The actual number is NOT hardcoded here — Overlay.tsx is the
+   sole place a layer number is decided (design rule 11, guarded by
+   tests/overlay-layer-authority.test.ts); ReferenceOverlay.tsx publishes
+   REFERENCE_COMPOSER_Z as --reference-composer-z on <body> alongside the
+   attribute, and this rule just consumes the var. */
+body[data-reference-held] .bottom-float {
+  z-index: var(--reference-composer-z, 20);
+}
+
 /* Jump-to-bottom button — chrome floats over the content area,
    so push the button up above it. Task 12 review fix: + --queued-strip-height
    (published by ChatView.tsx's measurement effect, 0px when the queued strip

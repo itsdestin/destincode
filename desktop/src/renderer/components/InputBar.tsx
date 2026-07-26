@@ -20,9 +20,6 @@ import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 import { useReference, type PendingReference } from '../state/reference-context';
-// The composer must stay live and clickable ABOVE the reference scrim (L2,
-// z-60) while a reference is held — see ReferenceOverlay.tsx and design rule 11.
-import { REFERENCE_COMPOSER_Z } from './overlays/Overlay';
 
 export interface InputBarHandle {
   clear: () => void;
@@ -721,11 +718,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   return (
     <div
       className="input-bar-container shrink-0"
-      // While a reference is held the composer must stay live ABOVE the dim —
-      // you type your question while the source sits pinned behind it. Inline
-      // style, not a `z-[NN]` class: tests/overlay-layer-authority.test.ts
-      // rejects hardcoded z-index classNames (design rule 11).
-      style={reference ? { position: 'relative', zIndex: REFERENCE_COMPOSER_Z } : undefined}
+      // Fix (review Finding 1): this used to carry an inline
+      // `position: relative; zIndex: REFERENCE_COMPOSER_Z` while a reference
+      // was held, but it could never work — this container is a descendant
+      // of `.bottom-float`, which already forms its own stacking context
+      // (globals.css: position:absolute + z-index + transform/will-change).
+      // A descendant's z-index only orders it against ITS OWN siblings
+      // inside that context, never against `.bottom-float` itself, so the
+      // whole bottom chrome kept painting under the reference scrim (z-60)
+      // regardless of this value. The real fix lifts `.bottom-float` itself
+      // (globals.css' `body[data-reference-held] .bottom-float` rule) — no
+      // inline style needed here at all.
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
