@@ -330,6 +330,14 @@ function assistantTurnPropsAreEqual(prev: Props, next: Props): boolean {
   if (prev.sessionId !== next.sessionId) return false;
   if (prev.provider !== next.provider) return false;
   if (prev.showTimestamps !== next.showTimestamps) return false;
+  // WHY: SESSION_PROCESS_EXITED / NATIVE_SESSION_ERROR call endTurn(session),
+  // which flips isThinking false WITHOUT replacing the turn object (unlike
+  // TRANSCRIPT_TURN_COMPLETE / TRANSCRIPT_INTERRUPT, which both do
+  // assistantTurns.set(id, {...turn, ...})). For a text-only turn with no
+  // tool groups, `streaming` going true->false is otherwise the ONLY prop
+  // that changes — miss it here and data-streaming stays "true" forever,
+  // permanently disabling "Ask about this" on a finished message.
+  if (prev.streaming !== next.streaming) return false;
 
   // Same turn object (checked above) ⇒ same segments ⇒ same group IDs. We only
   // need to walk one side's IDs.
