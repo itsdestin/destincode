@@ -289,8 +289,27 @@ export class EngineManager extends EventEmitter {
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
       const loaded = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
       const trained = this.trainedContextFor(modelId);
-      return clampContextWindow(loaded, trained);
-    } catch { return 32_768; }   // never throw — see doc comment
+      // Fall back to the -c WE spawned the server with, not a blind constant.
+      //
+      // WHY (found 2026-07-26 dogfooding): in `--models-dir` ROUTER mode — the
+      // default — /props answers `{model_path: "none", n_ctx: 0}` whenever no
+      // model is currently resident. clampContextWindow discards any value <= 0,
+      // so it fell through to its hardcoded 32_768 and every local session
+      // believed it had half the window it was actually given. A read of
+      // ROADMAP.md that fits comfortably in 64k then overflowed a phantom 32k
+      // budget and killed the turn ("messages must not be empty").
+      //
+      // The configured contextSize is strictly better than a constant: it is the
+      // exact number this app passed to llama-server on the command line, so it
+      // is right whenever /props is merely UNINFORMATIVE. A live /props reading
+      // still wins when present — it catches the case where the server clamped
+      // our -c down to what the model or VRAM actually allowed.
+      const configured = readEngineConfig(this.home).contextSize ?? null;
+      return clampContextWindow(loaded ?? configured, trained);
+    } catch {
+      // Same reasoning on the error path — prefer our own -c over a guess.
+      try { return clampContextWindow(readEngineConfig(this.home).contextSize ?? null, null); } catch { return 32_768; }
+    }
   }
 
   /** The model's GGUF-trained max context, if known. CONCERN: today the cache
