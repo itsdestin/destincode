@@ -46,21 +46,72 @@ const CONSUMERS = walk(RENDERER)
 
 describe('primitive adoption', () => {
   it('every ui/ primitive is used outside components/ui/', () => {
+    // Scan EXPORTED COMPONENT NAMES, not filenames. The first version of this
+    // test derived names from `^[A-Z]\w*\.tsx` filenames, which silently skipped
+    // `states.tsx` — a lowercase filename holding three real primitives
+    // (LoadingState, EmptyState, ErrorState). A guard against unadopted
+    // primitives that cannot see three of them is the same class of blind spot
+    // it was written to catch.
+    // Both declaration forms: `export function X` and `export const X = forwardRef(...)`
+    // — the primitives are split roughly half and half between them.
     const primitives = readdirSync(UI_DIR)
-      .filter((f) => /^[A-Z]\w*\.tsx$/.test(f) && !/\.test\.tsx$/.test(f))
-      .map((f) => f.replace(/\.tsx$/, ''));
+      .filter((f) => /\.tsx$/.test(f) && !/\.test\.tsx$/.test(f))
+      .flatMap((f) => {
+        const src = readFileSync(join(UI_DIR, f), 'utf8');
+        return [...src.matchAll(/^export (?:function|const) ([A-Z][A-Za-z0-9]*)/gm)].map((m) => m[1]);
+      })
+      // Drop SCREAMING_CASE exports (FOCUS_RING) — shared class strings, not components.
+      .filter((name) => !/^[A-Z0-9_]+$/.test(name));
 
-    // Sanity: if this ever reads zero the glob broke and the test is vacuous.
-    expect(primitives.length).toBeGreaterThan(5);
+    // Sanity: if this under-reads, the test goes quietly vacuous. 19 today.
+    expect(primitives.length).toBeGreaterThan(15);
+
+    // Two exemptions, for DIFFERENT reasons — both named rather than skipped
+    // silently, because an exemption you can't see is how the thing this test
+    // guards against happens in the first place. Do NOT add to this list to make
+    // the bar green.
+    //
+    //   ErrorState — unadopted BY DECISION. Change 33 of the UI-consistency
+    //     ledger was held: choosing `recoverable` (specific message + Retry) vs
+    //     `general` (two-action fallback) at each site is the error-message
+    //     audit's own core decision, so adopting it early prejudges every one.
+    //     Remove this entry when that audit lands.
+    //
+    //   FieldError — unadopted BY OVERSIGHT, found the moment this test started
+    //     scanning `states.tsx` (a lowercase filename the first version skipped).
+    //     25 sites across 14 files still hand-roll its exact markup as
+    //     `<p className="text-{2,3}xs text-destructive-fg">`. It is NOT a
+    //     decision, just unfinished — but adopting it is a real change, because
+    //     6 of those sites are text-2xs and the primitive hardcodes text-3xs, so
+    //     a blind swap shrinks them. Tracked on the ROADMAP; remove this entry
+    //     when it is done.
+    const INTENTIONALLY_UNADOPTED = new Set(['ErrorState', 'FieldError']);
 
     const unused = primitives.filter(
-      (name) => !CONSUMERS.some(({ src }) => src.includes(`<${name}`)),
+      (name) =>
+        !INTENTIONALLY_UNADOPTED.has(name)
+        && !CONSUMERS.some(({ src }) => src.includes(`<${name}`)),
     );
     expect(
       unused,
       'A primitive with no call site is a copy waiting to happen — see FirstRunView\'s '
         + 'local ProgressBar, which shadowed the shared one for weeks. Adopt it or delete it.',
     ).toEqual([]);
+  });
+
+  it('the intentionally-unadopted list does not rot', () => {
+    // The exemption above is a liability once it stops being true: a primitive
+    // that HAS been adopted but is still listed means the list is now hiding
+    // whatever gets added next to it.
+    const src = readFileSync(join(__dirname, 'primitive-adoption.test.ts'), 'utf8');
+    const listed = [...src.matchAll(/INTENTIONALLY_UNADOPTED = new Set\(\[([^\]]*)\]/g)]
+      .flatMap((m) => [...m[1].matchAll(/'([A-Z]\w*)'/g)].map((x) => x[1]));
+    for (const name of listed) {
+      expect(
+        CONSUMERS.some(({ src: c }) => c.includes(`<${name}`)),
+        `${name} is exempt as unadopted but now HAS call sites — remove it from the list.`,
+      ).toBe(false);
+    }
   });
 
   it('the toast is not re-hand-rolled', () => {
