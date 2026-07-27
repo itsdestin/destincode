@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import BrailleSpinner from './BrailleSpinner';
 
 // How long after the last token the model still counts as "actively streaming".
@@ -120,10 +120,19 @@ interface ThinkingIndicatorProps {
 }
 
 export default function ThinkingIndicator({ stallWarning, promptProcessing, lastOutputAt }: ThinkingIndicatorProps = {}) {
+  // ── EVERY hook runs unconditionally, before any early return ──────────────
+  // The suppression branch below used to sit ABOVE the prefill hooks, so a
+  // render that returned early ran fewer hooks than the previous one and React
+  // threw "Rendered fewer hooks than expected", taking the chat view down with
+  // it (Destin, 2026-07-26). Keep all hooks together at the top; the only
+  // conditional is the return at the end of this block.
   const [lineIndex, setLineIndex] = useState(() =>
     Math.floor(Math.random() * THINKING_LINES.length),
   );
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [, forceTick] = useState(0);
+  const [, setPrefillTick] = useState(0);
+  const prefillSeenAt = useRef<{ key: string; at: number } | null>(null);
 
   // Rotate the playful words only while NOT stalled — a stall shows fixed copy.
   useEffect(() => {
@@ -136,7 +145,7 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
 
   // Countdown while stalled. Seeded from the watchdog's retryInMs and ticked to
   // zero. A fresh stallWarning object (each distinct stall) restarts the timer;
-  // clearing it (→ null, activity resumed) tears the timer down.
+  // clearing it (-> null, activity resumed) tears the timer down.
   useEffect(() => {
     if (!stallWarning) { setSecondsLeft(0); return; }
     let n = Math.ceil(stallWarning.retryInMs / 1000);
@@ -149,20 +158,27 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
     return () => clearInterval(id);
   }, [stallWarning]);
 
-  // Stalled: fixed warning copy. Only promise a retry when the harness actually
-  // will retry — otherwise the stall ends in an error (no misleading "retrying").
-  // ── Suppress while output is actively arriving ───────────────────────────
-  // The indicator exists to answer "is it alive?" when the user has NO other
-  // evidence of progress. Tokens landing in a bubble ARE that evidence, so a
-  // spinner beside them is pure noise (Destin, 2026-07-26). Tool cards and
-  // approval prompts are handled upstream by ChatView's thinkingArea predicate;
-  // streaming text is the case that had no signal until now.
-  //
-  // Grace rather than a hard flag because there is no "output ended" event —
-  // only deltas arriving. The useful side effect: if generation genuinely pauses
-  // for longer than the grace, the indicator returns, which is exactly when
-  // reassurance is wanted again.
-  const [, forceTick] = useState(0);
+  // Identity of the current server reading. Changing it restarts the clock.
+  const ppKey = promptProcessing
+    ? `${promptProcessing.processed}/${promptProcessing.promptTokens}/${promptProcessing.timeMs ?? 0}`
+    : '';
+  // Stamped in an EFFECT, not during render: mutating this ref mid-render is
+  // what produced React's "Cannot update a component while rendering a
+  // different component" warning.
+  useEffect(() => {
+    if (!promptProcessing) { prefillSeenAt.current = null; return; }
+    prefillSeenAt.current = { key: ppKey, at: Date.now() };
+  }, [ppKey, promptProcessing]);
+
+  // Tick while a prefill reading is on screen so the extrapolation can advance
+  // it between the server's sparse per-batch reports. 250ms is smooth to the eye
+  // and trivial next to the work the model is doing.
+  useEffect(() => {
+    if (!promptProcessing) return;
+    const id = setInterval(() => setPrefillTick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, [promptProcessing]);
+
   const streamingNow = lastOutputAt != null && Date.now() - lastOutputAt < STREAMING_GRACE_MS;
   useEffect(() => {
     if (!streamingNow) return;
@@ -171,52 +187,40 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
     const id = setTimeout(() => forceTick((n) => n + 1), Math.max(50, remaining));
     return () => clearTimeout(id);
   }, [streamingNow, lastOutputAt]);
-  // A stall warning outranks everything: if we think something is wrong, say so
-  // even if a delta landed a moment ago.
+
+  // ── Hooks done; conditional rendering from here ───────────────────────────
+  //
+  // Suppress while output is actively arriving: the indicator answers "is it
+  // alive?" when the user has NO other evidence of progress, and tokens landing
+  // in a bubble ARE that evidence. Tool cards and approval prompts are handled
+  // upstream by ChatView's thinkingArea predicate. A stall warning outranks
+  // this — if we think something is wrong, say so even if a delta just landed.
   if (streamingNow && !stallWarning) return null;
 
-  // Prefill copy is deliberately NOT alarming: nothing is wrong, the model is
-  // simply reading. Naming the size makes the wait legible ("it's a big prompt")
-  // instead of mysterious, and it's the honest reason a local model is slow here.
-  // A real stall warning still outranks it — if we've crossed into "something may
-  // be wrong" territory, say so rather than keep reassuring.
-  // Tick while a prefill reading is on screen so the interpolation above can
-  // advance it between the server's sparse per-batch reports. 250ms is smooth to
-  // the eye and trivial next to the work the model is doing.
-  const [prefillTick, setPrefillTick] = useState(0);
-  const prefillSeenAt = React.useRef<{ key: string; at: number } | null>(null);
-  const ppKey = promptProcessing ? `${promptProcessing.processed}/${promptProcessing.promptTokens}/${promptProcessing.timeMs ?? 0}` : '';
-  if (promptProcessing && prefillSeenAt.current?.key !== ppKey) {
-    // New reading from the server — restart the extrapolation clock from it.
-    prefillSeenAt.current = { key: ppKey, at: Date.now() };
-  }
-  useEffect(() => {
-    if (!promptProcessing) return;
-    const id = setInterval(() => setPrefillTick((n) => n + 1), 250);
-    return () => clearInterval(id);
-  }, [promptProcessing]);
-
+  // Extrapolate the reading forward for display only; the next real report snaps
+  // it back to truth. `since` is 0 until the effect above has stamped a reading,
+  // which simply means no extrapolation on that first paint.
+  const since = prefillSeenAt.current ? Date.now() - prefillSeenAt.current.at : 0;
   const smoothedPrefill = promptProcessing
     ? {
       ...promptProcessing,
-      processed: interpolateProcessed(promptProcessing, Date.now() - (prefillSeenAt.current?.at ?? Date.now())),
+      processed: interpolateProcessed(promptProcessing, since),
       // Count the extrapolated time down too, so the ETA doesn't sit frozen
       // between reports the way the percentage used to.
-      etaMs: promptProcessing.etaMs != null
-        ? Math.max(0, promptProcessing.etaMs - (Date.now() - (prefillSeenAt.current?.at ?? Date.now())))
-        : promptProcessing.etaMs,
+      etaMs: promptProcessing.etaMs != null ? Math.max(0, promptProcessing.etaMs - since) : promptProcessing.etaMs,
     }
     : null;
-  void prefillTick;   // the tick exists to re-render; the values are read above
 
+  // Prefill copy is deliberately NOT alarming: nothing is wrong, the model is
+  // simply reading. A real stall warning still outranks it.
   const label = stallWarning
-    ? `This is taking a while, something may be wrong…${
+    ? `This is taking a while, something may be wrong...${
         stallWarning.willRetry
-          ? secondsLeft > 0 ? ` Retrying in ${secondsLeft}s…` : ' Retrying…'
+          ? secondsLeft > 0 ? ` Retrying in ${secondsLeft}s...` : ' Retrying...'
           : ''
       }`
-    : promptProcessing
-      ? prefillLabel(smoothedPrefill ?? promptProcessing)
+    : smoothedPrefill
+      ? prefillLabel(smoothedPrefill)
       : THINKING_LINES[lineIndex];
 
   return (

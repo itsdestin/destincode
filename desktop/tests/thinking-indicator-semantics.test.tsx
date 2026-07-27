@@ -171,3 +171,42 @@ describe('interpolateProcessed', () => {
     expect(interpolateProcessed({ promptTokens: 7149 } as any, 5_000)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rules of hooks. The suppression branch once sat ABOVE the prefill hooks, so a
+// render that returned early ran fewer hooks than the previous one — React threw
+// "Rendered fewer hooks than expected" and the ErrorBoundary took the whole chat
+// view down (Destin, 2026-07-26). These drive the exact transitions that crashed.
+// ---------------------------------------------------------------------------
+describe('ThinkingIndicator — hook order survives every transition', () => {
+  it('survives toggling from suppressed to shown and back', () => {
+    // suppressed (early return) -> shown -> suppressed, on ONE mounted instance.
+    const { rerender, container } = render(<ThinkingIndicator lastOutputAt={Date.now()} />);
+    expect(container.innerHTML).toBe('');
+
+    expect(() => rerender(<ThinkingIndicator lastOutputAt={Date.now() - 10_000} />)).not.toThrow();
+    expect(container.innerHTML).not.toBe('');
+
+    expect(() => rerender(<ThinkingIndicator lastOutputAt={Date.now()} />)).not.toThrow();
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('survives gaining and losing a prefill reading while suppressed', () => {
+    // The crash needed the prefill hooks to be skipped on the suppressed render.
+    const { rerender } = render(<ThinkingIndicator lastOutputAt={Date.now()} />);
+    expect(() => {
+      rerender(<ThinkingIndicator lastOutputAt={Date.now()} promptProcessing={{ promptTokens: 5000, budgetMs: 0, processed: 100, timeMs: 500 }} />);
+      rerender(<ThinkingIndicator lastOutputAt={Date.now() - 10_000} promptProcessing={{ promptTokens: 5000, budgetMs: 0, processed: 2048, timeMs: 5000 }} />);
+      rerender(<ThinkingIndicator lastOutputAt={Date.now()} />);
+    }).not.toThrow();
+  });
+
+  it('survives a stall warning appearing during suppression', () => {
+    // stallWarning flips the early return off — another hook-count transition.
+    const { rerender, container } = render(<ThinkingIndicator lastOutputAt={Date.now()} />);
+    expect(() => rerender(
+      <ThinkingIndicator lastOutputAt={Date.now()} stallWarning={{ retryInMs: 15_000, willRetry: true }} />,
+    )).not.toThrow();
+    expect(container.innerHTML).not.toBe('');
+  });
+});
