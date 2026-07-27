@@ -618,3 +618,100 @@ describe('reduced effects (Task 9)', () => {
     expect(lift?.hasAttribute('data-reduced')).toBe(false);
   });
 });
+
+// Issues A/B (final review): detached source. Reachable two ways — a session
+// switch away-and-back restores a PARKED reference (reference-context.tsx)
+// whose original message DOM was replaced meanwhile by ChatView, or an
+// artifact reference's file tab is switched/closed while the reference stays
+// held. `reference.anchor.host` is a real Element object in both cases (never
+// null) but `.isConnected` is false. Before the fix, both positioning
+// effects called `src.getBoundingClientRect()` unconditionally, which
+// returns an all-zero rect for a disconnected element — landing the card
+// pinned in the viewport's top-left corner (chat: zero-width FLIP source;
+// artifact: pinned at (0,0) with no clip, showing the whole unclipped file).
+// Spec §7 requires a non-anchored, CENTRED card instead. These tests fail
+// against the pre-fix code because the pre-fix left/top/transform come out
+// as the zero-rect values ('0px' / 'translate(0, 0)'-derived), not '50%' /
+// 'translate(-50%, -50%)'.
+describe('detached source (Issues A/B: final review)', () => {
+  // Round-trips the host through the document rather than never attaching it
+  // at all, matching the REAL scenario the bug report describes — a host
+  // that WAS in the document and got torn out from under a parked reference
+  // — not a host that was never attached in the first place.
+  function makeDetachedHost(text: string): HTMLElement {
+    const host = document.createElement('div');
+    host.textContent = text;
+    document.body.appendChild(host);
+    document.body.removeChild(host);
+    return host;
+  }
+
+  it('chat reference: renders a centred, non-animated card instead of a zero-rect corner pin', () => {
+    const host = makeDetachedHost('a message that no longer has a DOM home');
+    expect(host.isConnected).toBe(false);
+
+    renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift).not.toBeNull();
+    expect(lift.getAttribute('data-detached')).toBe('true');
+    expect(lift.style.left).toBe('50%');
+    expect(lift.style.top).toBe('50%');
+    expect(lift.style.transform).toBe('translate(-50%, -50%)');
+    expect(lift.style.clipPath).toBe('none');
+
+    // The clone itself is still valid — captured once at reference-creation
+    // time, independent of the source's later connectivity — so there is
+    // still content to show; only the positioning inputs were gone.
+    const clone = document.querySelector('.reference-lift-card')?.firstElementChild;
+    expect(clone).not.toBeNull();
+    expect(clone?.textContent).toBe('a message that no longer has a DOM home');
+  });
+
+  it('artifact reference: renders the same centred, unclipped card, not pinned at (0,0)', () => {
+    const host = makeDetachedHost('const x = 1;');
+    expect(host.isConnected).toBe(false);
+
+    renderOverlay({
+      kind: 'artifact',
+      label: 'lines 1-1 of x.ts',
+      promptText: 'x',
+      anchor: { host, range: null },
+    });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift).not.toBeNull();
+    expect(lift.hasAttribute('data-travels')).toBe(false); // sanity: still an artifact kind
+    expect(lift.getAttribute('data-detached')).toBe('true');
+    expect(lift.style.left).toBe('50%');
+    expect(lift.style.top).toBe('50%');
+    expect(lift.style.transform).toBe('translate(-50%, -50%)');
+    // No clip: there is no live selection position left to clip against.
+    expect(lift.style.clipPath).toBe('none');
+  });
+
+  it('an attached reference never gets data-detached (regression guard)', () => {
+    const host = document.createElement('div');
+    host.textContent = 'still attached';
+    document.body.appendChild(host);
+    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+
+    renderOverlay({ kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null } });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    expect(lift.hasAttribute('data-detached')).toBe(false);
+    // Sanity: it took the normal attached FLIP path, not the centred one.
+    expect(lift.style.left).toBe('10px');
+
+    document.body.removeChild(host);
+  });
+});

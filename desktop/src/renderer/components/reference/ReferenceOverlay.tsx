@@ -101,6 +101,37 @@ export function ReferenceOverlay() {
     const src = reference.anchor.host;
     if (!src) return;
 
+    // Issue A (final review): detached source. Reachable when a session
+    // switch away-and-back restores a PARKED reference (reference-context.tsx)
+    // whose original message DOM was replaced meanwhile by ChatView — the
+    // reference object survives, but `src` is no longer in the document.
+    // getBoundingClientRect() on a disconnected element returns an all-zero
+    // rect, which used to compute a bogus FLIP "First" position and land the
+    // card pinned in the viewport's top-left corner. Spec §7 wants a
+    // non-anchored, CENTRED card instead. The clone itself is still valid —
+    // captured once at reference-creation time in the effect above,
+    // independent of what happens to `src` afterward — so there is still
+    // content to show; only these positioning inputs are gone.
+    //
+    // Deliberately NO FLIP/RAF animation here: a "travel" implies a real
+    // start position to fly from, and a zero rect isn't one — animating from
+    // it would just be a meaningless slide from the corner, not a motion that
+    // means anything. The card simply appears centred. `data-detached` lets
+    // globals.css force `transition: none` too, so this doesn't depend on
+    // timing to avoid a stray CSS-transition slide from whatever inline
+    // transform this reused node happened to carry from its last attached
+    // measurement.
+    if (!src.isConnected) {
+      node.setAttribute('data-detached', 'true');
+      node.style.left = '50%';
+      node.style.top = '50%';
+      node.style.width = 'min(90vw, 640px)';
+      node.style.transform = 'translate(-50%, -50%)';
+      node.style.clipPath = 'none';
+      return;
+    }
+    node.removeAttribute('data-detached');
+
     const s = src.getBoundingClientRect();
     node.style.left = `${s.left}px`;
     node.style.top = `${s.top}px`;
@@ -143,6 +174,25 @@ export function ReferenceOverlay() {
     if (!node || !reference?.anchor || travels) return;
     const src = reference.anchor.host;
     if (!src) return;
+
+    // Issue B (final review): same detached-source handling as the travel
+    // effect above, for the artifact (non-travelling) branch — reachable
+    // when the file tab holding the referenced selection is switched or
+    // closed while the reference stays held. No clip either: a stale
+    // selection rect no longer corresponds to anything on screen, so
+    // clipping to it would just hide the (still-valid) clone behind an
+    // arbitrary mask. See the WHY comment on the travel effect for the full
+    // reasoning (no FLIP animation, `data-detached` drives the CSS side).
+    if (!src.isConnected) {
+      node.setAttribute('data-detached', 'true');
+      node.style.left = '50%';
+      node.style.top = '50%';
+      node.style.width = 'min(90vw, 640px)';
+      node.style.transform = 'translate(-50%, -50%)';
+      node.style.clipPath = 'none';
+      return;
+    }
+    node.removeAttribute('data-detached');
 
     const s = src.getBoundingClientRect();
     node.style.left = `${s.left}px`;

@@ -962,6 +962,25 @@ body[data-reference-held] .bottom-float {
   overflow: visible;
 }
 
+/* Issue A/B (final review): detached source — the held reference survived a
+   session switch or a closed file tab, but the DOM node it pointed at
+   didn't. See the WHY comment on the positioning effects in
+   ReferenceOverlay.tsx: there is no meaningful FLIP "First" position for a
+   disconnected element, so this state is deliberately static, not animated.
+   `transition: none` stops any stray slide from whatever inline transform
+   this REUSED node happened to carry from its last attached measurement.
+   The card-level override comes after (and therefore beats, same
+   specificity) the artifact `:not([data-travels="true"])` rule above —
+   without it, a detached ARTIFACT reference's clone (which can be an entire
+   file's worth of content, since there's no live selection left to clip
+   against) would render with `overflow: visible` and no height cap. */
+.reference-lift[data-detached="true"] { transition: none; }
+.reference-lift[data-detached="true"] > .reference-lift-card {
+  max-height: 70vh;
+  overflow-y: auto;
+  box-shadow: var(--ref-lift-shadow);
+}
+
 /* Reduced effects (Task 9): outline only. Kills the trace animation, the
    breathing pulse, the glow drop-shadow, and the travel easing — leaving a
    static accent border and the standard overlay shadow. Every new visual
