@@ -5,10 +5,11 @@
 import React, { useEffect, useState } from 'react';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import { render, cleanup, act, fireEvent, screen } from '@testing-library/react';
 import { EscCloseProvider, useEscClose } from '../../hooks/use-esc-close';
 import { ReferenceProvider, useReference, type PendingReference } from '../../state/reference-context';
+import { ThemeProvider } from '../../state/theme-context';
 import { ReferenceOverlay } from './ReferenceOverlay';
 import { REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
 import { toBoxes, buildUnionPath, shiftPath } from './reference-geometry';
@@ -518,5 +519,102 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
     expect(lift.style.clipPath).not.toBe(firstClip);
 
     document.body.removeChild(host);
+  });
+});
+
+// Task 9: reduced-effects fallback. globals.css keys the whole branch off a
+// `data-reduced` attribute stamped by THIS component (there's no
+// data-reduced-effects attribute on <html> to select on — theme-engine.ts
+// only zeroes blur vars for this setting, verified in the task brief), so the
+// only honestly-checkable-in-jsdom claim is the mechanism: does the attribute
+// land on `.reference-trace` and `.reference-lift` when reducedEffects is
+// true, and is it ABSENT (not merely falsy — globals.css's `[data-reduced=
+// "true"]` selector needs the attribute gone entirely) when it's false. What
+// this can NOT prove — computed styles, whether the animation/glow/transition
+// actually stop, whether the lift shadow visually drops back — needs a real
+// dev-instance check (see the task report).
+describe('reduced effects (Task 9)', () => {
+  const REDUCED_EFFECTS_KEY = 'youcoded-reduced-effects';
+
+  // Fix: Node 22+ ships a stub globalThis.localStorage that lacks real
+  // methods and throws without --localstorage-file — same fix as
+  // useSessionTasks.test.tsx. Scoped to this describe block (not file-wide)
+  // since it's the only place in this file that touches localStorage.
+  function makeLocalStorageMock() {
+    let store: Record<string, string> = {};
+    return {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = String(value); },
+      removeItem: (key: string) => { delete store[key]; },
+      clear: () => { store = {}; },
+      get length() { return Object.keys(store).length; },
+      key: (n: number) => Object.keys(store)[n] ?? null,
+    };
+  }
+  const lsMock = makeLocalStorageMock();
+  beforeAll(() => { vi.stubGlobal('localStorage', lsMock); });
+  afterAll(() => { vi.unstubAllGlobals(); });
+
+  afterEach(() => {
+    try { localStorage.removeItem(REDUCED_EFFECTS_KEY); } catch {}
+  });
+
+  function renderOverlayWithTheme(initial: PendingReference | null) {
+    return render(
+      <ThemeProvider>
+        <EscCloseProvider>
+          <ReferenceProvider sessionId="test-session">
+            <SetsReference value={initial} />
+            <ReferenceOverlay />
+          </ReferenceProvider>
+        </EscCloseProvider>
+      </ThemeProvider>,
+    );
+  }
+
+  // `.reference-trace` only renders when `d` is non-empty (`{d && (<svg .../>)}`
+  // in ReferenceOverlay.tsx), and `d` is empty for a null anchor OR for jsdom's
+  // default all-zero getBoundingClientRect (toBoxes drops zero-area rects) —
+  // same reason the Task 8 lift tests above stub a real rect. A real host with
+  // a stubbed rect is needed here so the trace svg actually mounts.
+  function makeReferenceWithHost(): PendingReference {
+    const host = document.createElement('div');
+    host.textContent = 'the referenced message';
+    document.body.appendChild(host);
+    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+    return { kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null } };
+  }
+
+  it('stamps data-reduced="true" on the trace svg and the lift when reducedEffects is on', () => {
+    localStorage.setItem(REDUCED_EFFECTS_KEY, '1'); // ThemeProvider reads this synchronously on mount (theme-context.tsx:139)
+    renderOverlayWithTheme(makeReferenceWithHost());
+    act(() => {});
+
+    const trace = document.querySelector('.reference-trace');
+    const lift = document.querySelector('.reference-lift');
+    expect(trace).not.toBeNull();
+    expect(lift).not.toBeNull();
+    expect(trace?.getAttribute('data-reduced')).toBe('true');
+    expect(lift?.getAttribute('data-reduced')).toBe('true');
+  });
+
+  it('leaves data-reduced entirely absent (not just falsy) when reducedEffects is off', () => {
+    // No localStorage write — ThemeProvider's default is reducedEffects: false.
+    renderOverlayWithTheme(makeReferenceWithHost());
+    act(() => {});
+
+    const trace = document.querySelector('.reference-trace');
+    const lift = document.querySelector('.reference-lift');
+    expect(trace).not.toBeNull();
+    expect(lift).not.toBeNull();
+    // hasAttribute, not a falsy getAttribute check: React only omits the DOM
+    // attribute entirely when the prop value is `undefined`, and globals.css's
+    // `[data-reduced="true"]` attribute selector cares about presence, not
+    // truthiness — `data-reduced="false"` would still (wrongly) not match
+    // this selector but WOULD show up in the DOM, which is a different bug
+    // than what this test is pinning.
+    expect(trace?.hasAttribute('data-reduced')).toBe(false);
+    expect(lift?.hasAttribute('data-reduced')).toBe(false);
   });
 });

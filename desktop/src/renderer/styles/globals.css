@@ -962,6 +962,46 @@ body[data-reference-held] .bottom-float {
   overflow: visible;
 }
 
+/* Reduced effects (Task 9): outline only. Kills the trace animation, the
+   breathing pulse, the glow drop-shadow, and the travel easing — leaving a
+   static accent border and the standard overlay shadow. Every new visual
+   effect in this app gets one of these branches; no exceptions.
+
+   Keyed off data-reduced stamped by ReferenceOverlay.tsx, NOT an html
+   attribute: verified 2026-07-26 that theme-engine.ts applies reducedEffects
+   by zeroing the blur vars and never writes a data-reduced-effects attribute
+   to <html>, so an attribute selector there would be dead CSS.
+
+   Corrected from the brief's literal selectors, which predate the Task 8
+   markup split: the brief targeted `.reference-lift[data-reduced="true"] >
+   *`, but `.reference-lift`'s only element children today are
+   `.reference-lift-card` (the clone holder) and, for travelling references,
+   the cancel-button wrapper (`-top-3 -right-3`) — a bare `> *` would hand
+   that wrapper the same box-shadow treatment as the card, same class of bug
+   the non-reduced `.reference-lift > .reference-lift-card` rule above was
+   already scoped to avoid. Scoped to `.reference-lift-card` here too. */
+.reference-trace[data-reduced="true"] path.outline {
+  animation: none;
+  stroke-dashoffset: 0;
+  stroke-width: 2;
+  filter: none;
+}
+.reference-lift[data-reduced="true"] { transition: none; }
+/* Only the travelling (chat) case gets the amplified `--ref-lift-shadow` in
+   the first place (the non-travelling/artifact rule just above sets
+   box-shadow: none unconditionally) — so this drop-back-to-standard rule is
+   scoped to `[data-travels="true"]` too, otherwise it would tie with that
+   rule's specificity and (by source order) incorrectly paint a shadow onto
+   the clipped artifact clone when reduced effects is on. */
+.reference-lift[data-reduced="true"][data-travels="true"] > .reference-lift-card {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, var(--shadow-strength, 0.15));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reference-trace path.outline { animation: none; stroke-dashoffset: 0; }
+  .reference-lift { transition: none; }
+}
+
 /* Marketplace rail cards — tighter shadow scoped to the rail scroll
    container. The default 0 8px 32px shadow needs ~40px of bottom
    clearance to render uncut inside overflow-x-auto's clip box; that

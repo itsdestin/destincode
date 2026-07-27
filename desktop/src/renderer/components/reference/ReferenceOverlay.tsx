@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Scrim, REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
 import { CloseButton } from '../ui/CloseButton';
 import { useReference } from '../../state/reference-context';
+import { useTheme } from '../../state/theme-context';
 import { useEscClose, useEscStackDepth } from '../../hooks/use-esc-close';
 import { useReferenceGeometry } from './use-reference-geometry';
 import { shiftPath } from './reference-geometry';
@@ -19,6 +20,12 @@ import { shiftPath } from './reference-geometry';
  */
 export function ReferenceOverlay() {
   const { reference, clearReference } = useReference();
+  // Task 9: reduced-effects fallback — collapses the trace/pulse/glow/travel
+  // motion to a static outline. Read here (not derived in globals.css alone)
+  // because there's no data-reduced-effects attribute on <html> to key a CSS
+  // selector off of (theme-engine.ts only zeroes blur vars for this setting),
+  // so the component stamps its own data-reduced flag instead.
+  const { reducedEffects } = useTheme();
   const depth = useEscStackDepth();
   const depthAtOpen = useRef<number | null>(null);
   // Task 7: the traced outline around the referenced content. Task 8 also
@@ -226,7 +233,7 @@ export function ReferenceOverlay() {
           works regardless of the actual traced perimeter. Empty when the
           source is gone (host disconnected) — nothing renders in that case. */}
       {d && (
-        <svg className="reference-trace" aria-hidden="true">
+        <svg className="reference-trace" aria-hidden="true" data-reduced={reducedEffects ? 'true' : undefined}>
           <path className="wash" d={d} />
           <path className="outline" d={d} pathLength={100} />
         </svg>
@@ -234,8 +241,14 @@ export function ReferenceOverlay() {
       {/* Task 8: the clone. Chat kinds travel to centre (`data-travels`
           drives the CSS transition + the non-clipping shadow/scroll rules);
           artifact kinds stay pinned over the source and get clipped instead
-          (see the positioning effect above). */}
-      <div ref={liftRef} className="reference-lift" data-travels={travels ? 'true' : undefined}>
+          (see the positioning effect above). data-reduced (Task 9) disables
+          the travel transition and drops the lift shadow back to standard. */}
+      <div
+        ref={liftRef}
+        className="reference-lift"
+        data-travels={travels ? 'true' : undefined}
+        data-reduced={reducedEffects ? 'true' : undefined}
+      >
         <div ref={holderRef} className="reference-lift-card" />
         {/* Cancel affordance pinned to the lifted card itself, not the
             viewport corner, once there IS a card to pin it to. */}
