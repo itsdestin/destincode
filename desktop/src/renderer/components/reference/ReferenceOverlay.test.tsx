@@ -96,6 +96,61 @@ describe('ReferenceOverlay', () => {
   });
 });
 
+// Review finding: the cancel button's wrapper is a SIBLING of
+// .reference-lift-card inside .reference-lift, which globals.css sets
+// pointer-events: none on. Only .reference-lift-card gets pointer-events:
+// auto restored (globals.css ~line 955), so the wrapper — and everything in
+// it, including the button — was NOT a hit-test target: hover never showed
+// and the button's own onClick never fired. It only LOOKED like it worked
+// because the click fell through to the full-viewport scrim underneath,
+// whose onClick={clearReference} does the same thing for a different reason.
+//
+// jsdom has no real layout/paint engine, so it cannot honestly prove a click
+// "reaches" the button through pointer-events — that's a hit-testing
+// question a real browser answers, jsdom does not. What CAN be proven here,
+// and what this test pins, is the mechanism the fix relies on: the wrapper
+// carries the same `pointer-events-auto` class Toast.tsx's action slot uses
+// to restore hit-testing under a pointer-events: none ancestor. A real
+// dev-instance check (hover + click the Cancel button; confirm :hover
+// actually paints, not just that SOMETHING dismisses the reference) is still
+// required before shipping — see the task report.
+describe('cancel button pointer-events (review finding)', () => {
+  function wrapperOf(cancelButton: Element): Element {
+    const wrapper = cancelButton.parentElement;
+    if (!wrapper) throw new Error('cancel button has no parent wrapper');
+    return wrapper;
+  }
+
+  it('travelling (chat) case: the cancel button wrapper carries pointer-events-auto', () => {
+    renderOverlay(mockReference); // kind: 'chat-text' -> travels
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift');
+    expect(lift?.getAttribute('data-travels')).toBe('true'); // sanity: this IS the travelling case
+
+    const cancelButton = document.querySelector('[aria-label="Cancel reference"]');
+    expect(cancelButton).not.toBeNull();
+    const wrapper = wrapperOf(cancelButton as Element);
+    // The wrapper must restore pointer-events, since .reference-lift (its
+    // ancestor) sets pointer-events: none and only .reference-lift-card — a
+    // SIBLING of this wrapper, not an ancestor of it — gets it restored.
+    expect(wrapper.className).toMatch(/\bpointer-events-auto\b/);
+  });
+
+  it('non-travelling (artifact) case: the cancel button wrapper carries pointer-events-auto', () => {
+    renderOverlay({ kind: 'artifact', label: 'x', promptText: 'x', anchor: null });
+    act(() => {});
+
+    const lift = document.querySelector('.reference-lift');
+    expect(lift?.hasAttribute('data-travels')).toBe(false); // sanity: this IS the non-travelling case
+
+    const cancelButton = document.querySelector('[aria-label="Cancel reference"]');
+    expect(cancelButton).not.toBeNull();
+    const wrapper = wrapperOf(cancelButton as Element);
+    expect(wrapper.className).toMatch(/\bpointer-events-auto\b/);
+  });
+});
+
 // Review Finding 4: no test asserted the composer-lift mechanism at all.
 // jsdom has no real layout engine, so none of this can prove actual paint
 // order (i.e. that a click really lands on the textarea instead of the

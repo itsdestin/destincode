@@ -38,10 +38,21 @@ export function ReferenceOverlay() {
   // original unmounting (e.g. the transcript virtualizes it away, or a new
   // turn pushes it out of the rendered window).
   //
-  // cloneNode(true), NOT innerHTML: no HTML re-parsing, no XSS surface, and
-  // canvas/img/scroll state comes across intact. The clone is a static
-  // snapshot — safe because Task 3's `data-streaming` guard disables the
-  // "Ask about this" menu row on the turn still in flight, so every message
+  // cloneNode(true), NOT innerHTML: innerHTML would serialise the source to a
+  // string and re-parse it, which is both wasted work and an XSS surface;
+  // cloneNode copies the live DOM nodes directly, no parsing involved. NOTE
+  // this does NOT mean everything about the source comes across — a <canvas>'s
+  // drawn bitmap is GPU/raster state, not a DOM attribute, so cloning one
+  // yields a blank canvas; likewise scrollTop/scrollLeft on a scrolled
+  // descendant are runtime state that cloneNode does not copy (the clone
+  // reads scrollTop 0). Neither matters TODAY — the app's one <canvas> is an
+  // unrelated background layer, not referenceable content — but a future
+  // reference source with either will need more than cloneNode to snapshot
+  // faithfully.
+  //
+  // The clone is a static snapshot — safe because Task 3's `data-streaming`
+  // guard disables the "Ask about this" menu row on the turn still in flight,
+  // so every message
   // that CAN become a reference is already complete text; nothing under the
   // clone can still be mutated by the transcript watcher. The one thing that
   // *can* still change after cloning is theme/appearance (font, syntax
@@ -229,7 +240,15 @@ export function ReferenceOverlay() {
         {/* Cancel affordance pinned to the lifted card itself, not the
             viewport corner, once there IS a card to pin it to. */}
         {travels && (
-          <div className="absolute -top-3 -right-3">
+          // pointer-events-auto (review finding): `.reference-lift` itself is
+          // pointer-events: none (globals.css) so mouse events fall through to
+          // the scrim beneath everywhere except the explicitly-restored
+          // `.reference-lift-card`. This wrapper is a SIBLING of that card, not
+          // a descendant, so it doesn't inherit the restore — without this
+          // class the button is un-hoverable and un-clickable; the click that
+          // "worked" was really landing on the scrim's own onClick behind it.
+          // Same idiom as Toast.tsx's action slot.
+          <div className="absolute -top-3 -right-3 pointer-events-auto">
             <CloseButton label="Cancel reference" onClick={clearReference} />
           </div>
         )}
@@ -237,7 +256,14 @@ export function ReferenceOverlay() {
       {/* Artifact case has no travelling card, so the cancel affordance stays
           parked in the viewport corner — always escapable by mouse. */}
       {!travels && (
-        <div className="absolute top-4 right-4">
+        // pointer-events-auto: not strictly load-bearing today (this wrapper
+        // sits directly under `.reference-scrim`, which has no pointer-events
+        // rule of its own, so it's already hit-testable) — but declared
+        // explicitly anyway so the invariant doesn't depend on staying
+        // outside `.reference-lift`'s pointer-events: none subtree. Matches
+        // the travelling-case wrapper above rather than relying on a CSS
+        // ancestry detail a future refactor could silently change.
+        <div className="absolute top-4 right-4 pointer-events-auto">
           <CloseButton label="Cancel reference" onClick={clearReference} />
         </div>
       )}
