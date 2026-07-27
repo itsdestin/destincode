@@ -22,6 +22,40 @@ export function formatEta(ms: number | null | undefined): string | null {
 }
 
 /**
+ * Advance a progress reading between server reports.
+ *
+ * llama.cpp reports once per BATCH (n_batch, typically 2048), so a 7,149-token
+ * prompt produces about four readings — 0%, 29%, 57%, 100%. Rendering those raw
+ * looks broken: the number sits still for tens of seconds, then leaps
+ * (Destin, 2026-07-26, "really janky/jumpy").
+ *
+ * Between reports we extrapolate from the rate the server itself measured. This
+ * is presentation only — the underlying reading is never altered, and the next
+ * real report snaps the display back to truth.
+ *
+ * Two guards keep the lie small and always in the honest direction:
+ *   - never pass 99%, so the bar cannot claim completion the server hasn't
+ *     confirmed (finishing early then waiting is the most annoying failure);
+ *   - never advance more than one batch ahead of the last real reading, so a
+ *     stalled prefill visibly stops instead of gliding serenely to the end.
+ */
+export function interpolateProcessed(
+  p: { processed?: number; promptTokens: number; timeMs?: number },
+  msSinceReport: number,
+  batchSize = 2048,
+): number | undefined {
+  if (p.processed == null || p.promptTokens <= 0) return p.processed;
+  if (!p.timeMs || p.timeMs <= 0 || p.processed <= 0) return p.processed;
+  const rate = p.processed / p.timeMs;                 // tokens per ms, measured
+  const projected = p.processed + rate * Math.max(0, msSinceReport);
+  const ceiling = Math.min(
+    p.processed + batchSize,                           // at most one batch ahead
+    Math.floor(p.promptTokens * 0.99),                 // never claim done
+  );
+  return Math.min(projected, Math.max(p.processed, ceiling));
+}
+
+/**
  * What the indicator says while the model is reading. Upgrades in place: with no
  * live progress it states the size; once llama.cpp reports progress it becomes a
  * percentage, and an ETA joins once one can be projected.
@@ -79,7 +113,7 @@ interface ThinkingIndicatorProps {
    */
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
   /** Native prefill: the model is reading a long prompt, not hanging. */
-  promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null } | null;
+  promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number } | null;
   /** When visible output last arrived. While this is fresh the indicator renders
    *  NOTHING — the filling bubble is already the proof of life. */
   lastOutputAt?: number | null;
@@ -146,6 +180,35 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   // instead of mysterious, and it's the honest reason a local model is slow here.
   // A real stall warning still outranks it — if we've crossed into "something may
   // be wrong" territory, say so rather than keep reassuring.
+  // Tick while a prefill reading is on screen so the interpolation above can
+  // advance it between the server's sparse per-batch reports. 250ms is smooth to
+  // the eye and trivial next to the work the model is doing.
+  const [prefillTick, setPrefillTick] = useState(0);
+  const prefillSeenAt = React.useRef<{ key: string; at: number } | null>(null);
+  const ppKey = promptProcessing ? `${promptProcessing.processed}/${promptProcessing.promptTokens}/${promptProcessing.timeMs ?? 0}` : '';
+  if (promptProcessing && prefillSeenAt.current?.key !== ppKey) {
+    // New reading from the server — restart the extrapolation clock from it.
+    prefillSeenAt.current = { key: ppKey, at: Date.now() };
+  }
+  useEffect(() => {
+    if (!promptProcessing) return;
+    const id = setInterval(() => setPrefillTick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, [promptProcessing]);
+
+  const smoothedPrefill = promptProcessing
+    ? {
+      ...promptProcessing,
+      processed: interpolateProcessed(promptProcessing, Date.now() - (prefillSeenAt.current?.at ?? Date.now())),
+      // Count the extrapolated time down too, so the ETA doesn't sit frozen
+      // between reports the way the percentage used to.
+      etaMs: promptProcessing.etaMs != null
+        ? Math.max(0, promptProcessing.etaMs - (Date.now() - (prefillSeenAt.current?.at ?? Date.now())))
+        : promptProcessing.etaMs,
+    }
+    : null;
+  void prefillTick;   // the tick exists to re-render; the values are read above
+
   const label = stallWarning
     ? `This is taking a while, something may be wrong…${
         stallWarning.willRetry
@@ -153,7 +216,7 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
           : ''
       }`
     : promptProcessing
-      ? prefillLabel(promptProcessing)
+      ? prefillLabel(smoothedPrefill ?? promptProcessing)
       : THINKING_LINES[lineIndex];
 
   return (

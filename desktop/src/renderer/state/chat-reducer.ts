@@ -544,7 +544,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         stallWarning: action.stallWarning ?? null,
         // Same lifetime rule as stallWarning: present on the announcing heartbeat,
         // cleared by the next plain one (which the first real chunk triggers).
-        promptProcessing: action.promptProcessing ?? null,
+        //
+        // EXCEPT when this heartbeat is a stall WARNING: that carries no
+        // promptProcessing of its own, and nulling it there wiped the progress
+        // readout mid-prefill, so the percentage appeared to reset itself
+        // (Destin, 2026-07-26). A stall warning means "still waiting", not
+        // "prefill ended" — the reading it was showing is still the truth.
+        promptProcessing: action.promptProcessing ?? (action.stallWarning ? session.promptProcessing : null),
       });
       return next;
     }

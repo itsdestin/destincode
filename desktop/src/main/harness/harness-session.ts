@@ -217,7 +217,16 @@ export class StreamStallError extends Error {
 // user nothing, while adding an event to every single step of the FROZEN emit
 // surface (pinned by harness-session-loop.test.ts's ordering contract).
 const PROMPT_PROCESSING_NOTICE_TOKENS = 2_000;
-const PREFILL_BASE_MS = 90_000;
+// Covers the silent window BEFORE prefill even starts: llama-server loads the
+// model on the first request, and a 122B Q4 is tens of gigabytes off disk. The
+// harness gets no signal for that (nothing in here knows about model residency),
+// so the base has to be generous enough to sit through it — Destin hit the
+// watchdog on a 122B while it was still loading (2026-07-26).
+//
+// A generous base costs little now that ANY prefill progress re-arms the clock:
+// the only genuinely silent window left is the load itself, and a truly dead
+// server still surfaces once this elapses with nothing at all having happened.
+const PREFILL_BASE_MS = 240_000;
 const PREFILL_MS_PER_TOKEN = 20;          // ≈50 tok/s of prompt processing
 const PREFILL_MAX_MS = 15 * 60_000;       // a hung server must still surface
 
@@ -481,10 +490,19 @@ export class HarnessSession extends EventEmitter {
   // changing number. The FINAL reading always goes through, so the bar cannot be
   // left stranded at 87%.
   private lastPrefillEmitAt = 0;
+  /** Re-arm hook for the CURRENT step's stall watchdog, installed by
+   *  runStreamOnce. Prefill progress is proof of life and must reset the clock —
+   *  without this a slow-but-healthy prefill trips the watchdog, gets KILLED and
+   *  RETRIED from scratch, which is what made progress appear to reset itself
+   *  (Destin, 2026-07-26). */
+  private rearmStallWatchdog: (() => void) | null = null;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
     // can already see the result of; the notice is a pre-output affordance only.
     if (this.abort == null) return;
+    // Proof of life FIRST, before any throttling — a throttled-away report must
+    // still reset the stall clock, or the throttle itself could cause a stall.
+    this.rearmStallWatchdog?.();
     const report = toReport(p);
     const isFinal = report.processed >= report.total;
     const now = Date.now();
@@ -498,6 +516,9 @@ export class HarnessSession extends EventEmitter {
         processed: report.processed,
         cached: report.cache,
         etaMs: report.etaMs,
+        // The renderer extrapolates between these sparse per-batch reports and
+        // needs the measured rate, which is processed/timeMs.
+        timeMs: report.timeMs,
       },
     });
   }
@@ -947,6 +968,7 @@ export class HarnessSession extends EventEmitter {
         stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
       }, sawFirstChunk ? warnMs : firstChunkMs);
     };
+    this.rearmStallWatchdog = armWatchdog;
     // Tell the UI the model is READING, not hanging. Without this the user stares
     // at an idle spinner for minutes with nothing to distinguish it from a hang —
     // which is exactly what made the false stall so alarming. Gated on prompt size
@@ -996,7 +1018,17 @@ export class HarnessSession extends EventEmitter {
         if (chunk.done) break;
         // A real chunk arrived → the model is past prefill, so every LATER gap is
         // judged by the strict mid-stream budget rather than the generous one.
-        sawFirstChunk = true;
+        //
+        // "Real" EXCLUDES the SDK's synthetic lifecycle parts. streamText emits
+        // `start` about 8ms after the stream opens — before the provider has done
+        // anything at all — and `start-step` likewise. Counting those flipped this
+        // flag almost immediately, which abandoned the prefill budget on every
+        // stream and left prompt processing judged by the strict 60s mid-stream
+        // window. That is why the stall warning kept firing mid-prefill on a slow
+        // local model even after the prefill budget was added (Destin, 2026-07-26):
+        // the budget was never actually in force. Verified by logging fullStream
+        // part timings against a mock that delays its first real part by 800ms.
+        if (chunk.value?.type !== 'start' && chunk.value?.type !== 'start-step') sawFirstChunk = true;
         // A real chunk arrived → clear any shown warning and re-arm the watchdog.
         if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
         armWatchdog();
@@ -1043,6 +1075,9 @@ export class HarnessSession extends EventEmitter {
     } finally {
       // Always release the watchdog timers — on done/throw/return alike.
       clearTimeout(stageTimer);
+      // Stop late progress callbacks from re-arming a watchdog for a step that
+      // has already ended (the tee outlives the iterator on an interrupt).
+      this.rearmStallWatchdog = null;
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {

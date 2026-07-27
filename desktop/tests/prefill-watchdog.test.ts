@@ -20,14 +20,19 @@ describe('prefillBudgetMs — time-to-first-token scales with the prompt', () =>
     // ~25k tokens is what a 100 KB tool result plus system prompt comes to.
     const budget = prefillBudgetMs(25_000);
     expect(budget).toBeGreaterThan(75_000);          // the failure being fixed
-    expect(budget).toBeGreaterThan(8 * 60_000);      // minutes, not seconds
+    expect(budget).toBeGreaterThan(10 * 60_000);     // minutes, not seconds
   });
 
-  it('still allows a small prompt only a short wait — this stays a liveness check', () => {
-    // A trivial prompt that produces nothing for 90s IS suspicious; the fix must
-    // not turn the watchdog off.
-    expect(prefillBudgetMs(0)).toBe(90_000);
-    expect(prefillBudgetMs(500)).toBeLessThan(2 * 60_000);
+  it('the floor covers a large MODEL LOAD, which is silent and precedes prefill', () => {
+    // Raised 90s -> 240s on 2026-07-26: llama-server loads the model on the first
+    // request and a 122B Q4 is tens of gigabytes off disk. Nothing in the harness
+    // knows about residency, so that whole window counts against this budget and
+    // Destin tripped the watchdog while the model was still loading.
+    //
+    // A generous floor costs little now that any prefill PROGRESS re-arms the
+    // clock: the only genuinely silent window left is the load itself.
+    expect(prefillBudgetMs(0)).toBe(240_000);
+    expect(prefillBudgetMs(500)).toBeLessThan(5 * 60_000);
   });
 
   it('is bounded, so a genuinely hung server still surfaces', () => {
@@ -44,7 +49,7 @@ describe('prefillBudgetMs — time-to-first-token scales with the prompt', () =>
   });
 
   it('treats a negative/garbage token count as zero rather than shrinking the budget', () => {
-    expect(prefillBudgetMs(-5_000)).toBe(90_000);
+    expect(prefillBudgetMs(-5_000)).toBe(240_000);
   });
 });
 

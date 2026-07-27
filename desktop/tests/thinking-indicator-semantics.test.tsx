@@ -131,3 +131,43 @@ describe('prefillLabel', () => {
     expect(prefillLabel({ promptTokens: 100, processed: 130, source: 'prompt' })).toContain('100% of 100 tokens');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Smoothing. llama.cpp reports once per 2,048-token batch, so a 7,149-token
+// prompt yields ~4 readings — 0%, 29%, 57%, 100% — which reads as broken:
+// "starts at 0%, sits there for a long time, jumps to 29, sits there, jumps to
+// 57, jumps to 100" (Destin, 2026-07-26). We extrapolate between reports from
+// the rate the server itself measured.
+// ---------------------------------------------------------------------------
+import { interpolateProcessed } from '../src/renderer/components/ThinkingIndicator';
+
+describe('interpolateProcessed', () => {
+  const READING = { processed: 2048, promptTokens: 7149, timeMs: 20_000 };  // ~102 tok/s
+
+  it('advances between reports instead of sitting frozen', () => {
+    const at0 = interpolateProcessed(READING, 0)!;
+    const at5s = interpolateProcessed(READING, 5_000)!;
+    expect(at0).toBe(2048);
+    expect(at5s).toBeGreaterThan(at0);
+  });
+
+  it('never advances more than one batch past the last real reading', () => {
+    // A stalled prefill must visibly STOP, not glide to the finish line.
+    expect(interpolateProcessed(READING, 10 * 60_000)!).toBeLessThanOrEqual(2048 + 2048);
+  });
+
+  it('never claims completion the server has not confirmed', () => {
+    const nearEnd = { processed: 7100, promptTokens: 7149, timeMs: 60_000 };
+    expect(interpolateProcessed(nearEnd, 10 * 60_000)!).toBeLessThan(7149);
+  });
+
+  it('never moves backwards from the reported value', () => {
+    const late = { processed: 7148, promptTokens: 7149, timeMs: 60_000 };
+    expect(interpolateProcessed(late, 5_000)!).toBeGreaterThanOrEqual(7148);
+  });
+
+  it('leaves a reading alone when there is no rate to extrapolate from', () => {
+    expect(interpolateProcessed({ processed: 0, promptTokens: 7149, timeMs: 0 }, 5_000)).toBe(0);
+    expect(interpolateProcessed({ promptTokens: 7149 } as any, 5_000)).toBeUndefined();
+  });
+});

@@ -194,3 +194,62 @@ describe('return_progress request flag', () => {
     expect(hook({ model: 'm' })).toEqual({ model: 'm', parallel_tool_calls: false });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Progress is PROOF OF LIFE. Before this, a slow-but-healthy prefill outran the
+// stall watchdog, got killed and retried from scratch — which is what made the
+// percentage appear to reset itself mid-read (Destin, 2026-07-26).
+// ---------------------------------------------------------------------------
+import { HarnessSession } from '../src/main/harness/harness-session';
+import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
+import { MockLanguageModelV4 } from 'ai/test';
+import type { TranscriptEvent } from '../src/shared/types';
+
+describe('prefill progress re-arms the stall watchdog', () => {
+  it('a stream that reports progress does NOT trip a short stall budget', async () => {
+    // First token arrives well past prefillWarningMs, but progress lands
+    // steadily throughout. Without the re-arm this turn dies and retries.
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          async start(c) {
+            // First token far past the stall budget — only steady progress saves it.
+            await new Promise((r) => setTimeout(r, 1_200));
+            c.enqueue({ type: 'stream-start', warnings: [] });
+            c.enqueue({ type: 'text-start', id: 'p1' });
+            c.enqueue({ type: 'text-delta', id: 'p1', delta: 'ok' });
+            c.enqueue({ type: 'text-end', id: 'p1' });
+            c.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } });
+            c.close();
+          },
+        }) as any,
+      }),
+    });
+
+    const session = new HarnessSession(
+      {
+        sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET,
+        binding: { providerId: 'local', modelId: 'Qwen3.5-122B' },
+        // Deliberately shorter than the total first-token wait above.
+        prefillWarningMs: 120, stallCountdownMs: 120, retryDelays: [],
+      } as any,
+      async (_b, opts: any) => {
+        // Drive progress on the same cadence the stream is waiting.
+        let processed = 0;
+        const timer = setInterval(() => {
+          processed += 200;
+          opts?.onPrefillProgress?.({ total: 6000, cache: 0, processed, timeMs: processed });
+        }, 60);
+        setTimeout(() => clearInterval(timer), 1_400);
+        return model as any;
+      },
+    );
+    const events: TranscriptEvent[] = [];
+    session.on('transcript-event', (e: TranscriptEvent) => events.push(e));
+
+    await session.send('hi');
+
+    expect(events.some((e) => e.type === 'session-error')).toBe(false);
+    expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
+  });
+});
