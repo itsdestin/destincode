@@ -105,20 +105,18 @@ export default function ContextPopup({
         open
         onClose={onClose}
         size="prompt"
-        title={showInfo ? undefined : 'Context'}
-        aria-label={showInfo ? 'About Context' : undefined}
+        // K12: the explainer no longer paints a header — Dialog does, and the
+        // back chevron is Dialog's `onBack`, which tranche 2 added for exactly
+        // this and which nothing had used until now.
+        title={showInfo ? 'About Context' : 'Context'}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
         headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
-        scrollBody={false}
+        // The explainer takes the shell's scroll body (and its edge fades); the
+        // main view still owns its own surface.
+        scrollBody={showInfo}
       >
         {showInfo ? (
-          // Explainer takes over the full panel frame; has its own header with Back + Close.
-          <SettingsExplainer
-            title="Context"
-            intro={INFO_INTRO}
-            sections={INFO_SECTIONS}
-            onBack={() => setShowInfo(false)}
-            onClose={onClose}
-          />
+          <SettingsExplainer intro={INFO_INTRO} sections={INFO_SECTIONS} />
         ) : (
           <>
             {/* Current state */}

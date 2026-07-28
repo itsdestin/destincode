@@ -656,6 +656,9 @@ function SoundButton() {
 function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSendInput?: (text: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
   const { activeTheme } = useTheme();
   const [open, setOpen] = useState(false);
+  // K12: ThemeScreen fills this Dialog but does not own it, so it cannot reach
+  // the shell's header. The boolean lives here and drives title/onBack/scrollBody.
+  const [showInfo, setShowInfo] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
 
   const { canvas, panel, inset, accent } = activeTheme.tokens;
@@ -685,10 +688,13 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         onClick={() => setOpen(true)}
       />
 
-      {/* No `title`: ThemeScreen renders its own header (including its own ✕). */}
+      {/* No `title` on the main view: ThemeScreen renders its own header there
+          (recorded residue). The EXPLAINER view uses the shell's, per K12. */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
+        title={showInfo ? 'About Appearance' : undefined}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
         aria-label="Appearance"
         // A panel, not a document. Its theme cards are a 6px gradient strip and
         // a truncated name -- there is no canvas to size for, so the grid sets
@@ -697,10 +703,17 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         // as a document made it 600px wide for content that needed none of it.
         size="panel"
         fill
-        scrollBody={false}
+        scrollBody={showInfo}
         panelRef={popupRef}
       >
-        <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
+        <ThemeScreen
+          onClose={() => setOpen(false)}
+          onSendInput={onSendInput}
+          onOpenMarketplace={onOpenMarketplace}
+          onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }}
+          showInfo={showInfo}
+          onShowInfo={setShowInfo}
+        />
       </Dialog>
     </>
   );
@@ -1009,25 +1022,25 @@ function RemoteButton({
         onClick={() => setOpen(true)}
       />
 
-      {/* No `title` prop: this popup owns its own header because it swaps the
-          WHOLE surface for SettingsExplainer when (i) is pressed. The shell's
-          header would still be painted behind that. */}
+      {/* K12: the explainer view now uses the shell's header (title + onBack)
+          and the shell's scroll body. The MAIN view still paints its own header
+          below — converting that too means moving this popup's whole layout
+          onto Dialog, which is recorded residue rather than part of K12. */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
+        title={showInfo ? 'About Remote Access' : undefined}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
         aria-label="Remote Access"
         size="panel"
         fill
-        scrollBody={false}
+        scrollBody={showInfo}
         panelRef={popupRef}
       >
             {showInfo ? (
               <SettingsExplainer
-                title="Remote Access"
                 intro={REMOTE_ACCESS_EXPLAINER.intro}
                 sections={REMOTE_ACCESS_EXPLAINER.sections}
-                onBack={() => setShowInfo(false)}
-                onClose={() => setOpen(false)}
               />
             ) : (
             <div className="flex flex-col h-full">

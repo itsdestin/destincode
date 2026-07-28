@@ -62,7 +62,23 @@ function roundnessToShape(value: number) {
   return { 'radius-sm': `${sm}px`, 'radius-md': `${md}px`, 'radius-lg': `${lg}px`, 'radius-xl': `${xl}px`, 'radius-2xl': `${xxl}px`, 'radius-full': '9999px' };
 }
 
-interface Props { onClose: () => void; onSendInput?: (text: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void; }
+interface Props {
+  onClose: () => void;
+  onSendInput?: (text: string) => void;
+  onOpenMarketplace?: () => void;
+  onPublishTheme?: (slug: string) => void;
+  /**
+   * K12: `showInfo` is LIFTED to the Dialog owner rather than held here.
+   *
+   * This component fills a Dialog it does not own, so it cannot reach the
+   * shell's header to set the explainer's title and back chevron. The host
+   * holds the boolean, sets `title`/`onBack`/`scrollBody` from it, and passes
+   * it back down — which is what lets the explainer drop its hand-rolled
+   * header instead of reimplementing the one D1 already owns.
+   */
+  showInfo: boolean;
+  onShowInfo: (next: boolean) => void;
+}
 
 // Small pencil icon used on theme cards to open the per-theme edit panel.
 const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
@@ -71,7 +87,7 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
   </svg>
 );
 
-export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme }: Props) {
+export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo }: Props) {
   // Always mounted when open (parent conditionally renders) — so open=true is correct here.
   useEscClose(true, onClose);
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();
@@ -89,8 +105,6 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
     return active ? [...favs, active] : favs;
   }, [allThemes, themeFavSet, activeSlug]);
 
-  // Flips the popup body to the plain-language explainer view via the (i) icon.
-  const [showInfo, setShowInfo] = useState(false);
   // Slug of the theme currently being edited (pencil opened). Null = main list.
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const listScrollRef = useScrollFade<HTMLDivElement>();
@@ -113,15 +127,8 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
     : null;
 
   if (showInfo) {
-    return (
-      <SettingsExplainer
-        title="Appearance"
-        intro={APPEARANCE_EXPLAINER.intro}
-        sections={APPEARANCE_EXPLAINER.sections}
-        onBack={() => setShowInfo(false)}
-        onClose={onClose}
-      />
-    );
+    // Header + scroll body come from the Dialog above this component now.
+    return <SettingsExplainer intro={APPEARANCE_EXPLAINER.intro} sections={APPEARANCE_EXPLAINER.sections} />;
   }
 
   if (editingTheme) {
@@ -142,7 +149,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
       <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
         <h2 className="text-sm font-bold text-fg">Themes</h2>
         <div className="flex items-center gap-1">
-          <InfoIconButton onClick={() => setShowInfo(true)} />
+          <InfoIconButton onClick={() => onShowInfo(true)} />
           {/* w-6 h-6 kept: this sits in a tight header row beside InfoIconButton,
               and CloseButton's default 28px would break their alignment. */}
           <CloseButton onClick={onClose} label="Close themes" className="w-6 h-6" />

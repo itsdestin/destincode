@@ -904,18 +904,20 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         open
         onClose={onClose}
         panelRef={popupRef}
+        // K12: the explainer view takes the shell's header (title + onBack) and
+        // scroll body. The main view and the setup wizard still paint their own
+        // headers — recorded residue, not part of K12.
+        title={showInfo ? 'About Backup & Sync' : undefined}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
         aria-label="Backup & Sync"
         size="panel"
         fill
-        scrollBody={false}
+        scrollBody={showInfo}
       >
         {showInfo ? (
           <SettingsExplainer
-            title="Backup & Sync"
             intro={SYNC_EXPLAINER.intro}
             sections={SYNC_EXPLAINER.sections}
-            onBack={() => setShowInfo(false)}
-            onClose={onClose}
           />
         ) : (view === 'add-type' || view === 'add-config') ? (
           // Guided setup wizard handles type selection, prereq check, OAuth, and config

@@ -105,10 +105,14 @@ describe('ContextPopup — info view', () => {
     expect(screen.queryByText(/Plenty of room/i)).toBeNull();
   });
 
+  // K12 moved the explainer's header onto <Dialog>, so Back and Close are the
+  // SHELL's controls now and carry its accessible names — "Back" rather than
+  // the explainer's old "Back to settings", and "Close About Context" rather
+  // than a bare "Close". Same behavior, different owner.
   it('returns to the main view when Back is clicked', () => {
     renderPopup();
     fireEvent.click(screen.getByLabelText('What is this?'));
-    fireEvent.click(screen.getByLabelText('Back to settings'));
+    fireEvent.click(screen.getByLabelText('Back'));
     expect(screen.getByText(/Plenty of room/i)).toBeInTheDocument();
     expect(screen.queryByText('About Context')).toBeNull();
   });
@@ -116,10 +120,7 @@ describe('ContextPopup — info view', () => {
   it('closes the whole popup when the explainer Close is clicked', () => {
     const { onClose } = renderPopup();
     fireEvent.click(screen.getByLabelText('What is this?'));
-    // Explainer renders its own Close button; main-view header is not mounted when showInfo is true.
-    // This one is SettingsExplainer's CloseButton, which passes no `label` and so
-    // keeps the default "Close" — distinct from the main view's "Close Context".
-    fireEvent.click(screen.getByLabelText('Close'));
+    fireEvent.click(screen.getByLabelText('Close About Context'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
