@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import SettingsExplainer from '../src/renderer/components/SettingsExplainer';
+import { stripComments } from './helpers/guard-scope';
 
 // Guard for K12 — the explainer renders a payload, and nothing else.
 //
@@ -56,12 +57,6 @@ describe('explainer hosts', () => {
   // and passed back down — which is why SettingsPanel appears here twice over
   // (Remote Access owns its Dialog directly; Appearance owns ThemeScreen's).
   const HOSTS = ['ContextPopup.tsx', 'ThemeScreen.tsx', 'SettingsPanel.tsx', 'SyncPanel.tsx'];
-
-  function stripComments(src: string): string {
-    return src
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-  }
 
   it('no host passes the explainer chrome props it no longer has', () => {
     // title/onBack/onClose moved to <Dialog>. A host still passing them would be

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { stripComments, RENDERER } from './helpers/guard-scope';
 
 // Guard for tranche 6 (change 35): the renderer's type scale is enumerable.
 //
@@ -14,7 +15,6 @@ import { describe, it, expect } from 'vitest';
 // a future session typing `text-[10px]` into one new component, which renders
 // perfectly and only shows up as scale drift months later.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 
 // The named steps. Below text-xs (12px) the ladder is 2xs/3xs/4xs; text-sm-tight
 // is the one step ABOVE xs that Tailwind's scale is missing (see globals.css).
@@ -24,14 +24,6 @@ const NAMED_TOKENS = ['--text-2xs', '--text-3xs', '--text-4xs', '--text-sm-tight
 // exist precisely to record what a site used to be. Strip block comments (which
 // covers JSX `{/* ... */}` too) and whole-line `//` comments before scanning, so
 // the invariant is about what SHIPS in a class list, not what prose may mention.
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-}
-
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);

@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { inScopeFiles, stripComments, RENDERER, assertScopeIsPopulated } from './helpers/guard-scope';
 
 // Guard for K6 — item lists.
 //
@@ -16,33 +17,6 @@ import { join } from 'path';
 // already a proper Button primitive using the glyph as its label. Treating all
 // five the same would have been wrong three times over.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
-
-/**
- * Blank out comments, preserving offsets and line count.
- *
- * Mandatory for every source-text guard in this suite: the WHY comments these
- * migrations leave behind QUOTE the idiom they replaced — this file's own
- * migrations mention the ✕ by name — so a guard reading raw text fails on the
- * explanation of its own fix.
- */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-}
 
 /**
  * Bare glyphs still rendered as an element's only child, counted per file.
@@ -93,6 +67,12 @@ describe('item list actions', () => {
 });
 
 describe('help text matches the controls it describes', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+  });
+
   it('no in-menu copy tells the user to press a control that was removed', () => {
     // K6 deleted the ✕ next to each connected device. The Remote Access
     // explainer literally read "Use the ✕ next to a device under Connected

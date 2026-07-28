@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { Callout } from '../src/renderer/components/ui/Callout';
+import { inScopeFiles, stripComments, assertScopeIsPopulated, assertPatternMatches } from './helpers/guard-scope';
 
 // Guard for K4 — the callout.
 //
@@ -69,32 +70,6 @@ describe('Callout', () => {
 
 // ── Adoption ────────────────────────────────────────────────────────────────
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
-
-/**
- * Blank out comments, preserving offsets and line count.
- *
- * Mandatory for every source-text guard in this suite: the WHY comments these
- * migrations leave behind QUOTE the recipe they replaced, so a guard reading raw
- * text fails on the explanation of its own fix.
- */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-}
 
 /**
  * A tinted, bordered block — the shape a callout wears.
@@ -158,6 +133,14 @@ function tintedBlocks(src: string): number {
 }
 
 describe('callout adoption', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+    assertPatternMatches(TINT, 'border border-destructive/50 text-destructive-fg hover:bg-destructive/10',
+      'a border-FIRST tinted surface — the order that scored Button.tsx at zero');
+  });
+
   it('no in-scope file grows a new hand-rolled callout', () => {
     const drift: string[] = [];
     for (const file of inScopeFiles()) {

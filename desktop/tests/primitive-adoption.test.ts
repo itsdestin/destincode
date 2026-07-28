@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { stripComments, RENDERER } from './helpers/guard-scope';
 
 // Guards for tranche 8 (changes 44-51). Two distinct invariants:
 //
@@ -14,7 +15,6 @@ import { describe, it, expect } from 'vitest';
 // overlay-layer-authority: a re-hand-rolled toast renders perfectly and only
 // shows up as system-wide inconsistency much later.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 const UI_DIR = join(RENDERER, 'components', 'ui');
 
 // WHY comments necessarily quote the idioms they replaced, so a raw grep flags
@@ -22,14 +22,6 @@ const UI_DIR = join(RENDERER, 'components', 'ui');
 // `{/* ... */}`) and whole-line `//` before asserting — the invariant is about
 // what ships in a class list, not what the prose may mention. Same trap that bit
 // overlay-layer-authority and type-scale-authority; third time, same fix.
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-}
-
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);
