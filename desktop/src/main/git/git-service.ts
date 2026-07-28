@@ -61,7 +61,15 @@ async function locate(projectRoot: string, relPath: string): Promise<Located | '
   // Defense in depth under the IPC known-root gate: an artifact path may never
   // escape its project root.
   if (inProject.startsWith('..') || path.isAbsolute(inProject)) return 'outside';
-  const repoRoot = await resolveRepoRoot(realProject);
+  // WHY dirname(abs), not realProject: a project root can contain independent
+  // NESTED repos — e.g. youcoded-dev/worktrees/<name>, a linked git worktree
+  // of a different repo that the outer project deliberately gitignores.
+  // Resolving from realProject always found the OUTER repo, whose status can
+  // never see a path it ignores — silently hiding real changes (and the
+  // Review Changes button) for every file under a worktree. Resolving from
+  // the file's own directory lets git find the nearest enclosing repo, same
+  // as running `git status` by hand from that directory would.
+  const repoRoot = await resolveRepoRoot(path.dirname(abs));
   if (!repoRoot) return null;
   const rel = path.relative(repoRoot, abs).split(path.sep).join('/');
   return { repoRoot, abs, rel, realProject };

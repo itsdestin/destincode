@@ -150,6 +150,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   // strip's own rendered element).
   const chatRootRef = useRef<HTMLDivElement>(null);
   const queuedStripRef = useRef<HTMLDivElement>(null);
+  const modelStatusRef = useRef<HTMLDivElement>(null);
   // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
   // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
   const [findOpen, setFindOpen] = useState(false);
@@ -626,6 +627,40 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     return () => observer.disconnect();
   }, [hasQueuedMessages]);
 
+  // Fix (Destin, 2026-07-28 — "jump to bottom overlaps model unloaded popup"):
+  // .jump-to-bottom and .model-status-strip previously shared the BYTE-FOR-BYTE
+  // identical `bottom:` calc formula, so whenever both were visible at once
+  // (model asleep + user scrolled up) they rendered at the exact same rect and
+  // visually overlapped. Same fix shape as --queued-strip-height above: measure
+  // ModelLoadingBar's own rendered height and publish it as --model-status-height
+  // on chatRootRef, then globals.css folds it into ONLY .jump-to-bottom's bottom
+  // calc (not model-status-strip's own — that would push it up above itself).
+  //
+  // ModelLoadingBar's shown/hidden condition depends on modelState/isThinking/
+  // everResident math that lives inside that component (loading || showReload) —
+  // rather than duplicating that logic here and risking drift, this reads
+  // modelStatusRef.current directly after each render: null means the component
+  // rendered nothing this pass, so the effect zeroes the var instead of
+  // guessing from a re-derived boolean.
+  const MODEL_STATUS_GAP = '0.75rem'; // matches .jump-to-bottom's own gap so the two bands stack evenly
+  useEffect(() => {
+    const root = chatRootRef.current;
+    if (!root) return;
+    const el = modelStatusRef.current;
+    if (!el) {
+      root.style.setProperty('--model-status-height', '0px');
+      return;
+    }
+    const update = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      root.style.setProperty('--model-status-height', `calc(${h}px + ${MODEL_STATUS_GAP})`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    update();
+    return () => observer.disconnect();
+  }, [state.modelState, state.modelInfo, state.modelLoadedBytes, state.modelEverResident, state.isThinking]);
+
   return (
     <div
       // Fix: previously toggled display:none/flex, which forced a full reflow of
@@ -926,6 +961,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
           slept. In the outer absolute div (like jump-to-bottom) so it floats
           above the input chrome, unclipped. No-op for claude sessions. */}
       <ModelLoadingBar
+        ref={modelStatusRef}
         modelState={state.modelState}
         modelInfo={state.modelInfo}
         loadedBytes={state.modelLoadedBytes}

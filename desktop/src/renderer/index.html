@@ -45,7 +45,16 @@
 </head>
 <body>
   <!-- Lives inside #root so React's first commit clears it — createRoot()
-       replaces the container's existing children, so no teardown code needed. -->
+       replaces the container's existing children, so no teardown code needed.
+
+       id="boot" is LOAD-BEARING beyond styling: main.ts's dev-load-recovery
+       watchdog decides "did React mount?" by checking this element is gone
+       (src/main/dev-mount-probe.ts). Renaming or removing it, or adding other
+       pre-React content inside #root, breaks the only recovery path for a dev
+       window whose module fetches were aborted mid-boot — and breaks it
+       SILENTLY, which is exactly what happened for the six days after this
+       skeleton landed. tests/dev-load-recovery.test.tsx runs that probe against
+       this file, so it fails instead of rotting. -->
   <div id="root">
     <div id="boot" role="status" aria-label="Loading YouCoded"><div></div></div>
   </div>

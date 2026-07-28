@@ -36,15 +36,23 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
     globalSetup: ['tests/global-setup.ts'],
-    // Per-file DOM shims (ResizeObserver). Inert under the 'node'
-    // environment -- the file checks for `window` before touching anything.
+    // Per-file DOM shims (ResizeObserver). Inert under the 'node' environment —
+    // the file checks for `window` before touching anything.
     setupFiles: ['tests/setup-dom.ts'],
-    // Fix: use jsdom for .tsx test files (React components) so DOM APIs are available;
-    // plain .ts files (main-process logic) stay in 'node' via environmentMatchGlobs.
+    // Node is the default; a test that needs DOM APIs opts in PER FILE with a
+    // `// @vitest-environment jsdom` docblock on line 1.
+    //
+    // This used to also carry `environmentMatchGlobs: [['tests/**/*.tsx','jsdom']]`
+    // with a comment promising .tsx files got jsdom automatically. Vitest 4
+    // REMOVED that option — it is absent from the shipped type defs and is
+    // silently ignored, with no deprecation warning — so the promise had been
+    // false since the v4 bump while reading as true. Verified 2026-07-26: a new
+    // tests/*.tsx file died on `document is not defined` until the docblock was
+    // added, and the two .tsx files that lack one today (Button.test.tsx,
+    // session-drawer-deleted-toggle.test.tsx) pass in the node environment.
+    // Don't reinstate it; use `test.projects` if per-glob environments are ever
+    // wanted again.
     environment: 'node',
-    environmentMatchGlobs: [
-      ['tests/**/*.tsx', 'jsdom'],
-    ],
     alias: {
       // Stub Electron APIs so main-process imports don't crash in Node.js
       electron: path.resolve(__dirname, 'tests/__mocks__/electron.ts'),
