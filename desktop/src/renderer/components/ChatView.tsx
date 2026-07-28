@@ -22,6 +22,7 @@ import { useActiveProject } from '../hooks/useActiveProject';
 import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 
 interface Props {
   sessionId: string;
@@ -142,9 +143,13 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     return () => { cancelled = true; };
   }, [cwd, sessionId, artifactDispatch]);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [atBottom, setAtBottom] = useState(true);
+  // Auto-scroll ("stick to bottom"). See use-stick-to-bottom.ts for why this is
+  // intent-driven instead of observer-driven — the old IntersectionObserver
+  // could not see a scroll that a streaming delta undid in the same frame.
+  const {
+    atBottom, stickRef, scrollToBottom, stickToBottom, jumpToBottom, releaseStick,
+  } = useStickToBottom(scrollContainerRef);
   // Task 12 review fix: refs for the --queued-strip-height measurement effect
   // below (chatRootRef = this component's OUTER root; queuedStripRef = the
   // strip's own rendered element).
@@ -199,30 +204,19 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     provider,
   });
 
-  // Scroll container directly to scrollHeight instead of using
-  // bottomRef.scrollIntoView. Why: .chat-scroll has padding-bottom equal to
-  // --bottom-chrome-height so the last message clears the input bar. The sentinel
-  // sits ABOVE that padding, so scrollIntoView({block:'end'}) stops short of the
-  // true bottom by exactly chrome-height — leaving the last message behind the
-  // input bar. scrollTop = scrollHeight always reaches the real bottom.
-  const scrollToBottom = useCallback(() => {
-    const c = scrollContainerRef.current;
-    if (c) c.scrollTop = c.scrollHeight;
-  }, []);
-
   // Scroll to bottom on tab switch / mount. The follow-up ResizeObserver below
   // handles the chrome-height race (input bar can differ per session).
   useEffect(() => {
     if (!visible) return;
-    const raf = requestAnimationFrame(scrollToBottom);
+    const raf = requestAnimationFrame(stickToBottom);
     return () => cancelAnimationFrame(raf);
-  }, [visible, scrollToBottom]);
+  }, [visible, stickToBottom]);
 
   // Fix: input bar height can differ between sessions (drafts, multi-line),
   // so --bottom-chrome-height changes right after tab switch. App's ResizeObserver
   // updates the CSS var asynchronously, which grows .chat-scroll's padding-bottom
   // AFTER we already scrolled — leaving the last message a few px behind the bar.
-  // Re-snap to bottom whenever the chrome-wrapper resizes while atBottom && visible.
+  // Re-snap to bottom whenever the chrome-wrapper resizes while stuck && visible.
   useEffect(() => {
     if (!visible) return;
     // Fix: target the BOTTOM chrome-wrapper (input bar) specifically — there are
@@ -232,61 +226,54 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     const chrome = document.querySelector('.chrome-wrapper--bottom');
     if (!chrome) return;
     const observer = new ResizeObserver(() => {
-      if (atBottomRef.current) scrollToBottom();
+      if (stickRef.current) scrollToBottom();
     });
     observer.observe(chrome);
     return () => observer.disconnect();
-  }, [visible, scrollToBottom]);
+  }, [visible, scrollToBottom, stickRef]);
 
-  // Track whether user is scrolled to bottom
+  // Auto-scroll when new content arrives and the view is still stuck to the
+  // bottom. Uses lastActivityAt (a timestamp that updates on content-producing
+  // actions) instead of Map references which changed on every reducer dispatch.
+  // Fix: reads stickRef, NOT the atBottom state — a native session dispatches
+  // one delta per streamed token, and the state value is a render behind, so a
+  // scroll the user just made would be undone before React caught up.
   useEffect(() => {
-    const sentinel = bottomRef.current;
-    if (!sentinel) return;
+    if (stickRef.current) scrollToBottom();
+  }, [state.timeline.length, state.lastActivityAt, state.isThinking, scrollToBottom, stickRef]);
 
-    const observer = new IntersectionObserver(
-      ([entry]) => setAtBottom(entry.isIntersecting),
-      { threshold: 0.1, rootMargin: '0px 0px 150px 0px' },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, []);
-
-  // Auto-scroll when new content arrives and user is at bottom.
-  // Uses lastActivityAt (a timestamp that updates on content-producing actions)
-  // instead of Map references which changed on every reducer dispatch.
+  // Sending a message re-arms auto-scroll. Without this, reading back through
+  // history (which now correctly unsticks) and then sending would leave you
+  // parked mid-transcript watching nothing happen. Keyed on timeline length so
+  // it fires once per appended entry, and only when that entry is the user's.
+  const timelineLength = state.timeline.length;
   useEffect(() => {
-    if (atBottom) scrollToBottom();
-  }, [state.timeline.length, state.lastActivityAt, state.isThinking, atBottom, scrollToBottom]);
+    if (state.timeline[timelineLength - 1]?.kind === 'user') stickToBottom();
+    // state.timeline is intentionally not a dep — only its length matters here,
+    // and the array identity changes on every reducer dispatch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineLength, stickToBottom]);
 
   // Fix: when a tool/permission card expands at the bottom of the chat, its new
   // content grows below the input bar and the user has to manually scroll. The
   // reducer-based effect above doesn't fire because expansion is local ToolCard
   // state, invisible to ChatView. Watch the content wrapper's size instead and
-  // re-stick to bottom on any growth while atBottom is true.
+  // re-stick to bottom on any growth while still stuck.
   const contentRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(atBottom);
-  useEffect(() => {
-    atBottomRef.current = atBottom;
-  }, [atBottom]);
   useEffect(() => {
     const node = contentRef.current;
     if (!node) return;
     let lastHeight = node.scrollHeight;
     const observer = new ResizeObserver(() => {
       const next = node.scrollHeight;
-      if (next > lastHeight && atBottomRef.current) {
+      if (next > lastHeight && stickRef.current) {
         scrollToBottom();
       }
       lastHeight = next;
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [scrollToBottom]);
-
-  const jumpToBottom = useCallback(() => {
-    const c = scrollContainerRef.current;
-    if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
-  }, []);
+  }, [scrollToBottom, stickRef]);
 
   // IntersectionObserver for backdrop-filter optimization: only apply blur
   // to visible bubbles on wallpaper themes (reduces GPU compositing cost)
@@ -322,6 +309,13 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       // Accelerate: start at 40px, increase by 20px per repeat, cap at 300px
       scrollSpeed.current = Math.min(scrollSpeed.current + 20, 300);
       const direction = e.key === 'ArrowUp' ? -1 : 1;
+      // Fix: stop following new content the moment the user scrolls up. Done
+      // here (synchronously, before layout) rather than by observing where the
+      // scroll landed — during a streaming turn the auto-scroll would re-pin us
+      // in the same frame and the observation would never see it. ArrowDown
+      // doesn't unstick: when already pinned it cannot move the container, so
+      // no scroll event would fire to re-arm.
+      if (direction < 0) releaseStick();
       container.scrollBy({ top: direction * scrollSpeed.current, behavior: 'auto' });
     };
 
@@ -337,7 +331,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('keyup', onKeyUp, true);
     };
-  }, []);
+  }, [releaseStick]);
 
   // Ctrl/Cmd+F opens the chat-history find bar. Only the visible ChatView
   // responds (one per session is mounted). Defers to the artifact drawer's own
@@ -899,7 +893,6 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
             })()}
           </>
         )}
-        <div ref={bottomRef} className="h-1" />
            </div>
           </div>
           {/* Task 12: docked strip for queued messages — a sibling of
