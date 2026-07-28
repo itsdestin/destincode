@@ -948,9 +948,6 @@ body[data-reference-held] .bottom-float {
    button wrapper the same box-shadow/70vh-scroll treatment as the cloned
    card. Scope to .reference-lift-card, the clone holder only. */
 .reference-lift > .reference-lift-card {
-  /* A message longer than the viewport must not overflow off-screen. */
-  max-height: 70vh;
-  overflow-y: auto;
   pointer-events: auto;
 }
 
@@ -965,6 +962,14 @@ body[data-reference-held] .bottom-float {
 .reference-lift > .reference-lift-card > * {
   max-width: 100%;
   width: 100%;
+  /* A message longer than the viewport must not overflow off-screen.
+     This lives on the CLONE, not the holder: box-shadow paints OUTSIDE the
+     border box and is clipped by an ANCESTOR's overflow, so holder-level
+     `overflow-y: auto` sliced the clone's ring off everywhere except where it
+     bled past the corners — the "weird corners" Destin saw in dev review.
+     An element's own overflow never clips its own shadow. */
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 /* Ring + glow on the CLONE, not the holder: the clone keeps the bubble's own
@@ -979,7 +984,8 @@ body[data-reference-held] .bottom-float {
 }
 /* Non-travelling (artifact) clone: pinned over the original and clipped to the
    selection, so only the referenced lines stay bright above the dim. */
-.reference-lift:not([data-travels="true"]) > .reference-lift-card {
+.reference-lift:not([data-travels="true"]) > .reference-lift-card,
+.reference-lift:not([data-travels="true"]) > .reference-lift-card > * {
   box-shadow: none;
   max-height: none;
   overflow: visible;
@@ -998,7 +1004,7 @@ body[data-reference-held] .bottom-float {
    file's worth of content, since there's no live selection left to clip
    against) would render with `overflow: visible` and no height cap. */
 .reference-lift[data-detached="true"] { transition: none; }
-.reference-lift[data-detached="true"] > .reference-lift-card {
+.reference-lift[data-detached="true"] > .reference-lift-card > * {
   max-height: 70vh;
   overflow-y: auto;
 }

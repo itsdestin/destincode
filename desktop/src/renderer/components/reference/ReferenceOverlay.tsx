@@ -320,7 +320,14 @@ export function ReferenceOverlay() {
           // "worked" was really landing on the scrim's own onClick behind it.
           // Same idiom as Toast.tsx's action slot.
           <div className="absolute -top-3 -right-3 pointer-events-auto">
-            <CloseButton label="Cancel reference" onClick={clearReference} />
+            <CloseButton
+              label="Cancel reference"
+              onClick={clearReference}
+              // Solid circular chip: the default ghost variant is transparent,
+              // which vanishes against a wallpaper theme (Destin, dev review).
+              // bg-panel + border-edge keeps it theme-driven, never a literal.
+              className="rounded-full bg-panel border border-edge text-fg-2 hover:bg-inset hover:text-fg shadow-sm"
+            />
           </div>
         )}
       </div>
@@ -335,7 +342,14 @@ export function ReferenceOverlay() {
         // the travelling-case wrapper above rather than relying on a CSS
         // ancestry detail a future refactor could silently change.
         <div className="absolute top-4 right-4 pointer-events-auto">
-          <CloseButton label="Cancel reference" onClick={clearReference} />
+          <CloseButton
+              label="Cancel reference"
+              onClick={clearReference}
+              // Solid circular chip: the default ghost variant is transparent,
+              // which vanishes against a wallpaper theme (Destin, dev review).
+              // bg-panel + border-edge keeps it theme-driven, never a literal.
+              className="rounded-full bg-panel border border-edge text-fg-2 hover:bg-inset hover:text-fg shadow-sm"
+            />
         </div>
       )}
     </Scrim>,
