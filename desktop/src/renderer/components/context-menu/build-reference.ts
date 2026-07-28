@@ -89,11 +89,27 @@ function baseName(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
 
+/**
+ * The quotable text of a bubble, EXCLUDING its chrome.
+ *
+ * `.bubble-timestamp` renders INSIDE the bubble div (UserMessage.tsx:75,
+ * AssistantTurnBubble.tsx:437), so a plain `textContent` sweeps it into the
+ * quote — Destin's dev review caught a scaffold reading
+ * `...ready to use or delete as needed.12:55 AM"`. Clone the node, strip the
+ * chrome, then read. Cloning matters: the reference path must never mutate
+ * the live DOM (an earlier design did, and crashed React's reconciler).
+ */
+function elementQuote(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('.bubble-timestamp').forEach((n) => n.remove());
+  return copy.textContent?.trim() ?? '';
+}
+
 export function buildChatReference(bubble: Element | null, target: HTMLElement): PendingReference | null {
   // Fix vs. the original textMenu(): fall back to TARGET's text, not just bubble's,
   // when there's no bubble ancestor — otherwise a floating (non-bubble) text node
   // with no live selection always produced an empty quote and a silent null return.
-  const quote = (selectionText().trim() || (bubble ?? target).textContent?.trim()) ?? '';
+  const quote = (selectionText().trim() || elementQuote(bubble ?? target)) ?? '';
   if (!quote) return null;
 
   // "you said" reads right for an assistant message; flip it for the user's own

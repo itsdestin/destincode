@@ -175,3 +175,29 @@ describe('buildArtifactReference', () => {
     expect(ref.anchor?.range).not.toBeNull();
   });
 });
+
+describe('quote excludes bubble chrome', () => {
+  it('does not sweep the timestamp into the quote', () => {
+    // .bubble-timestamp renders INSIDE the bubble (UserMessage.tsx:75,
+    // AssistantTurnBubble.tsx:437). A plain textContent read produced
+    // `...as needed.12:55 AM` in the scaffold — caught in dev review.
+    const el = document.createElement('div');
+    el.className = 'assistant-bubble';
+    el.innerHTML = 'Done! Created a test file.<div class="bubble-timestamp">12:55 AM</div>';
+    document.body.appendChild(el);
+
+    const ref = buildChatReference(el, el)!;
+    expect(ref.promptText).toContain('"Done! Created a test file."');
+    expect(ref.promptText).not.toContain('12:55');
+  });
+
+  it('leaves the live DOM untouched while stripping chrome', () => {
+    const el = document.createElement('div');
+    el.className = 'assistant-bubble';
+    el.innerHTML = 'body<div class="bubble-timestamp">12:55 AM</div>';
+    document.body.appendChild(el);
+    const before = el.outerHTML;
+    buildChatReference(el, el);
+    expect(el.outerHTML).toBe(before);
+  });
+});
