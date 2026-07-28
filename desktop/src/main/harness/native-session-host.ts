@@ -28,6 +28,8 @@ import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
+import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { fitInjection } from './injection/injection-budget';
 import { log } from '../logger';
 
 export interface CreateNativeSessionOpts {
@@ -144,6 +146,11 @@ export class NativeSessionHost extends EventEmitter {
     // test constructions still compile; the real wiring (ipc-handlers) injects
     // { search: searchService }.
     private toolServices?: ToolServices,
+    // Installed-skill source for /skill-name and the Skill tool (M3 item 1).
+    // Injected + LAST so existing constructions still compile, and so a test can
+    // supply a fake instead of scanning the real ~/.claude — which makes "no
+    // skills installed" an expressible state rather than an environment accident.
+    private skillCatalog?: SkillCatalog,
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -265,9 +272,14 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog'> {
     return {
       tools: CORE_TOOLS,
+      // Skill is NOT in CORE_TOOLS — it is attached per session by
+      // buildAiTools when the profile can afford its catalog. Threading the
+      // catalog (rather than letting the session scan on its own) means the host
+      // and the session agree on one source, and a test can inject a fake.
+      ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
       // Thread injected runtime services (WebSearch's SearchService) into the
@@ -539,6 +551,49 @@ export class NativeSessionHost extends EventEmitter {
     if (!entry) return { ok: false, reason: 'not-live' };
     if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
     return entry.session.clearHistory();
+  }
+
+  /** User-initiated /skill-name for a native session (M3 item 1).
+   *
+   *  The path that works on EVERY model: the Skill TOOL is withheld from small
+   *  windows because its catalog would ride every turn, but one explicit
+   *  invocation costs a single injection and is affordable anywhere.
+   *
+   *  Sends the skill's body as an ordinary turn, so it persists to the session
+   *  JSONL through the normal `send` path — no new event type, and a resume
+   *  replays it like any other message (Global Constraint 2).
+   *
+   *  Bounded by the profile's injection budget: a long SKILL.md on a small model
+   *  would otherwise crowd out the conversation it is meant to act on. */
+  async invokeSkill(sessionId: string, skill: string, args?: string): Promise<{ ok: true } | { ok: false; reason: string; detail?: string }> {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    // Same refusal discipline as compact/clear: queueing this would land the
+    // instructions after work that was started without them.
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+
+    let loaded;
+    try {
+      loaded = (this.skillCatalog ?? createSkillCatalog()).load(skill);
+    } catch (err: any) {
+      // SkillNotFound is the ordinary case — the user typed a Claude Code command
+      // or a skill they haven't installed — so it is a coded refusal, not an error.
+      const reason = err?.name === 'SkillNotFound' ? 'not-a-skill'
+        : err?.name === 'SkillUnreadable' ? 'unreadable'
+        : 'error';
+      return { ok: false, reason, detail: err?.message ?? String(err) };
+    }
+
+    const fitted = fitInjection(loaded.body, entry.session.profileSnapshot.injectionBudgetTokens);
+    // The user's own words come AFTER the instructions, so a skill that reads
+    // "act on what the user asked" has something to act on.
+    const text = `<skill-instructions name="${loaded.id}">\n${fitted.text}\n</skill-instructions>`
+      + (args ? `\n\n${args}` : '');
+    // Report send()'s own refusal rather than claiming success — the in-flight
+    // check above closes the common case, but the queue can still be full.
+    const sent = this.send(sessionId, text);
+    if (sent.status === 'failed') return { ok: false, reason: sent.reason };
+    return { ok: true };
   }
 
   interrupt(sessionId: string): boolean {

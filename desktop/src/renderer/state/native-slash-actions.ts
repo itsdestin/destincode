@@ -49,8 +49,9 @@ export async function runNativeSlashAction(
   action: NativeSlashAction,
   { sessionId, dispatch, onToast }: NativeActionDeps,
 ): Promise<boolean> {
-  if (action === 'clear') return runNativeClear({ sessionId, onToast });
-  if (action !== 'compact') return false;
+  if (action.kind === 'clear') return runNativeClear({ sessionId, onToast });
+  if (action.kind === 'invoke-skill') return runNativeSkill(action.skill, action.args, { sessionId, onToast });
+  if (action.kind !== 'compact') return false;
 
   let result: { ok: true } | { ok: false; reason: string; detail?: string };
   try {
@@ -125,6 +126,51 @@ async function runNativeClear({ sessionId, onToast }: Omit<NativeActionDeps, 'di
   onToast?.(
     known ??
       (result.detail ? `Couldn't clear: ${result.detail}` : "Couldn't clear this conversation."),
+  );
+  return false;
+}
+
+/** Copy for a refused /skill-name. Same discipline as the maps above.
+ *
+ *  `not-a-skill` covers TWO real cases with one honest sentence, because the
+ *  dispatcher cannot tell them apart: the user typed a skill that isn't
+ *  installed, OR they typed a Claude Code command (/doctor, /login) that has no
+ *  YouCoded-runtime equivalent. Claiming either one specifically would be a
+ *  guess, so the copy states what we know and points at what to do next. */
+const SKILL_REFUSAL: Record<string, string> = {
+  'not-a-skill':
+    "That isn't an installed skill, and it isn't a command YouCoded-runtime sessions support yet. Browse the marketplace to install skills.",
+  'unreadable':
+    "That skill is installed, but its instructions couldn't be read. Reinstalling it from the marketplace usually fixes this.",
+  'turn-in-flight':
+    "Can't start a skill while Claude is still working. Stop the current turn (or wait for it to finish) and try again.",
+  'not-live': "This session isn't running, so there's nothing to run the skill in.",
+};
+
+/** Load a skill's instructions into the conversation as one turn.
+ *
+ *  This is the path that works on EVERY model: the Skill TOOL is withheld from
+ *  small windows (its catalog would ride every turn), but a single explicit
+ *  invocation costs one injection and is affordable anywhere. */
+async function runNativeSkill(
+  skill: string,
+  args: string | undefined,
+  { sessionId, onToast }: Omit<NativeActionDeps, 'dispatch'>,
+): Promise<boolean> {
+  let result: { ok: true } | { ok: false; reason: string; detail?: string };
+  try {
+    result = await window.claude.native.invokeSkill(sessionId, skill, args);
+  } catch (err: any) {
+    // Surface the REAL error text rather than inventing a cause.
+    result = { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+  }
+
+  if (result.ok) return true;
+
+  const known = SKILL_REFUSAL[result.reason];
+  onToast?.(
+    known ??
+      (result.detail ? `Couldn't run /${skill}: ${result.detail}` : `Couldn't run /${skill}.`),
   );
   return false;
 }

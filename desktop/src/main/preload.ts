@@ -323,6 +323,7 @@ const IPC = {
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_COMPACT: 'native:compact',
   NATIVE_CLEAR: 'native:clear',
+  NATIVE_INVOKE_SKILL: 'native:invoke-skill',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
@@ -1180,6 +1181,7 @@ contextBridge.exposeInMainWorld('claude', {
     compact: (sessionId: string) => ipcRenderer.invoke(IPC.NATIVE_COMPACT, { sessionId }),
     // /clear as a context barrier — appends a marker, never erases the log.
     clear: (sessionId: string) => ipcRenderer.invoke(IPC.NATIVE_CLEAR, { sessionId }),
+    invokeSkill: (sessionId: string, skill: string, args?: string) => ipcRenderer.invoke(IPC.NATIVE_INVOKE_SKILL, { sessionId, skill, args }),
     // Request-response: match the positional ipcMain.handle signatures.
     setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),
     setPermissionMode: (sessionId: string, mode: string) => ipcRenderer.invoke(IPC.NATIVE_SET_PERMISSION_MODE, sessionId, mode),

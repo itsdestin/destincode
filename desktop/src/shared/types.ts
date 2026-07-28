@@ -1161,6 +1161,7 @@ export const IPC = {
   NATIVE_COMPACT: 'native:compact',
   // M3 item 2 — /clear as a context barrier. invoke: the caller needs {ok, reason}.
   NATIVE_CLEAR: 'native:clear',
+  NATIVE_INVOKE_SKILL: 'native:invoke-skill',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   // Read the session's current native permission mode. Seeds the StatusBar chip

@@ -957,3 +957,53 @@ describe('git:* IPC parity (git surface, spec 2026-07-22)', () => {
     expect(shim).toContain(`'git:changed'`);
   });
 });
+
+// Four-surface parity for the native:* channels.
+//
+// GAP THIS CLOSES (found 2026-07-28): shim/Android coverage in this file is
+// per-PREFIX — dev:* and account:* each got their own block, and native:* never
+// did. So "four-surface parity, pinned by ipc-channels.test.ts" (workspace
+// CLAUDE.md, M3 handoff §2.7) was only two-thirds true for the native runtime:
+// preload↔types drift was caught, but a channel missing from remote-shim.ts or
+// SessionService.kt passed silently. Verified by deleting the native:invoke-skill
+// line from remote-shim.ts — the whole file still went green.
+//
+// The consequence that matters: a native command that works on desktop and dies
+// on the remote web client is exactly what program §9 exit criterion (c) forbids,
+// and nothing would have told us.
+describe('native:* channel parity', () => {
+  const NATIVE_CHANNELS = [
+    'native:send',
+    'native:queue-remove',
+    'native:interrupt',
+    'native:compact',
+    'native:clear',
+    'native:invoke-skill',
+    'native:set-binding',
+    'native:set-permission-mode',
+    'native:get-permission-mode',
+    'native:sessions-list',
+  ];
+
+  it('every native:* channel is declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`'${t}'`);
+  });
+
+  it('every native:* channel is referenced in remote-shim.ts', () => {
+    // The remote web client is in scope for every milestone (program §9 (c)).
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`'${t}'`);
+  });
+
+  it('every native:* channel is answered by SessionService.kt (Android)', () => {
+    // Android's native runtime is M8, so these are honest not-implemented
+    // replies rather than implementations — but a channel absent from the list
+    // gets NO reply at all, which hangs the shared React UI instead of degrading it.
+    const src = fs.readFileSync(path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    ), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`"${t}"`);
+  });
+});

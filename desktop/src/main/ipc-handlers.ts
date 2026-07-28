@@ -2297,6 +2297,15 @@ export function registerIpcHandlers(
       return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
     }
   });
+  // /skill-name — loads one skill's instructions as a turn (M3 item 1). Works on
+  // every model, unlike the Skill TOOL, which small windows never get.
+  ipcMain.handle(IPC.NATIVE_INVOKE_SKILL, async (_e, { sessionId, skill, args }: { sessionId: string; skill: string; args?: string }) => {
+    try {
+      return await nativeHost.invokeSkill(sessionId, skill, args);
+    } catch (err: any) {
+      return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+    }
+  });
   ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => {
     const ok = await nativeHost.setBinding(sessionId, binding);
     // Task 4: a successful mid-session model swap is exactly the "model may

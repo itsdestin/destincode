@@ -272,6 +272,10 @@ export class HarnessSession extends EventEmitter {
   // Resolved capability profile (Task 5). Drives the doom-loop window + tool
   // attachment; re-assigned by setBinding on a mid-session model swap.
   private profile: CapabilityProfile;
+  /** Read-only view of the resolved profile. The host needs the injection budget
+   *  to size a /skill-name body, and re-resolving it there would risk drifting
+   *  from what this session actually runs with (setBinding can have changed it). */
+  get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
     super();

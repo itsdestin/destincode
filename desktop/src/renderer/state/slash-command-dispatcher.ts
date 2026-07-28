@@ -63,10 +63,24 @@ export interface DispatcherInput {
  *  route it to the harness instead of a PTY that doesn't exist. The dispatcher
  *  stays provider-agnostic on purpose — it names the intent, and the caller (who
  *  is the one that knows the session's provider) picks the transport. */
-export type NativeSlashAction = 'compact' | 'clear';
+export type NativeSlashAction =
+  | { kind: 'compact' }
+  | { kind: 'clear' }
+  /** M3 item 1. `skill` is the command word; `args` is whatever followed it, so a
+   *  skill can act on what the user typed rather than only on its own body. */
+  | { kind: 'invoke-skill'; skill: string; args?: string };
 
+/** `nativeAction` rides BOTH branches on purpose.
+ *
+ *  A recognized command (/compact, /clear) is handled:true and names its action.
+ *  An UNRECOGNIZED slash command is handled:false — so a Claude Code session
+ *  forwards it to the PTY exactly as before — while still naming an invoke-skill
+ *  intent for a native session, whose harness owns the skill catalog and can
+ *  resolve it. That keeps the dispatcher provider-agnostic (it names intent; the
+ *  caller, who knows the provider, picks the transport) and avoids plumbing the
+ *  installed-skill list into two renderer components that have no other use for it. */
 export type DispatcherResult =
-  | { handled: false; rewritten?: string }
+  | { handled: false; rewritten?: string; nativeAction?: NativeSlashAction }
   | { handled: true; alsoSendToPty?: string; nativeAction?: NativeSlashAction };
 
 /**
@@ -119,7 +133,7 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       // no PTY — `nativeAction` tells the caller to drive the harness's own
       // two-stage compaction instead. Both are returned; the caller picks by
       // provider, so this stays a pure function of the input text.
-      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r`, nativeAction: 'compact' };
+      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r`, nativeAction: { kind: 'compact' } };
     }
 
     case '/clear':
@@ -148,7 +162,7 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       // Native sessions have no PTY. `clear` drives the harness's context
       // BARRIER instead: the append-only log keeps every line, but the model
       // stops seeing anything before the marker.
-      return { handled: true, alsoSendToPty: '/clear\r', nativeAction: 'clear' };
+      return { handled: true, alsoSendToPty: '/clear\r', nativeAction: { kind: 'clear' } };
     }
 
     case '/model':
@@ -254,7 +268,20 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       return { handled: true };
     }
 
-    default:
-      return { handled: false };
+    default: {
+      // Unrecognized slash command. For Claude Code this is unchanged — handled:
+      // false, forwarded to the PTY. For a native session it is the /skill-name
+      // path (M3 item 1): the harness owns the catalog, so it decides whether
+      // `cmd` names an installed skill, and reports honestly when it does not.
+      //
+      // Resolving LAST means an installed skill can never shadow a built-in — a
+      // marketplace skill called `clear` cannot take over the /clear barrier,
+      // because that case returned several branches above.
+      //
+      // `/` alone carries no command word and is left alone.
+      const skill = cmd.slice(1);
+      if (!skill) return { handled: false };
+      return { handled: false, nativeAction: { kind: 'invoke-skill', skill, ...(args ? { args } : {}) } };
+    }
   }
 }
