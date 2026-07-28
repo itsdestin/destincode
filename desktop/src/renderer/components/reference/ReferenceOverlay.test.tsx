@@ -533,6 +533,36 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
 // this can NOT prove — computed styles, whether the animation/glow/transition
 // actually stop, whether the lift shadow visually drops back — needs a real
 // dev-instance check (see the task report).
+describe('dev-review fix: the highlight must not be left behind at the source', () => {
+  function withHost(kind: PendingReference['kind']): PendingReference {
+    const host = document.createElement('div');
+    host.textContent = 'referenced content';
+    document.body.appendChild(host);
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect,
+    );
+    return { kind, label: 'x', promptText: 'x', anchor: { host, range: null } };
+  }
+
+  it('a TRAVELLING (chat) reference renders no source-anchored trace', () => {
+    // The card flies to the viewport centre, so a trace measured from the
+    // source would outline the empty space the bubble left behind — the
+    // "black box around where the message bubble was originally" Destin hit
+    // in dev review. The travelling card carries its ring/glow in CSS instead.
+    renderOverlay(withHost('chat-text'));
+    act(() => {});
+    expect(document.querySelector('.reference-lift')).not.toBeNull();
+    expect(document.querySelector('.reference-trace')).toBeNull();
+  });
+
+  it('a NON-travelling (artifact) reference still renders the in-place trace', () => {
+    // Nothing moves here, so the source-anchored outline is exactly right.
+    renderOverlay(withHost('artifact'));
+    act(() => {});
+    expect(document.querySelector('.reference-trace')).not.toBeNull();
+  });
+});
+
 describe('reduced effects (Task 9)', () => {
   const REDUCED_EFFECTS_KEY = 'youcoded-reduced-effects';
 
@@ -586,28 +616,49 @@ describe('reduced effects (Task 9)', () => {
     return { kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null } };
   }
 
+  // The source-anchored trace svg only renders for NON-travelling (artifact)
+  // references now — a travelling chat card carries its own ring/glow in CSS
+  // so nothing is left behind at the source (dev-review fix). So the trace
+  // half of these assertions needs an artifact reference.
+  function makeArtifactReferenceWithHost(): PendingReference {
+    const host = document.createElement('div');
+    host.textContent = 'the referenced lines';
+    document.body.appendChild(host);
+    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+    return { kind: 'artifact', label: 'x', promptText: 'x', anchor: { host, range: null } };
+  }
+
   it('stamps data-reduced="true" on the trace svg and the lift when reducedEffects is on', () => {
     localStorage.setItem(REDUCED_EFFECTS_KEY, '1'); // ThemeProvider reads this synchronously on mount (theme-context.tsx:139)
-    renderOverlayWithTheme(makeReferenceWithHost());
+    const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
 
-    const trace = document.querySelector('.reference-trace');
-    const lift = document.querySelector('.reference-lift');
-    expect(trace).not.toBeNull();
-    expect(lift).not.toBeNull();
-    expect(trace?.getAttribute('data-reduced')).toBe('true');
-    expect(lift?.getAttribute('data-reduced')).toBe('true');
+    // Travelling (chat): no source-anchored trace, but the lift is stamped.
+    expect(document.querySelector('.reference-trace')).toBeNull();
+    expect(document.querySelector('.reference-lift')?.getAttribute('data-reduced')).toBe('true');
+    unmount();
+
+    // Non-travelling (artifact): the trace renders and is stamped too.
+    renderOverlayWithTheme(makeArtifactReferenceWithHost());
+    act(() => {});
+    expect(document.querySelector('.reference-trace')?.getAttribute('data-reduced')).toBe('true');
   });
 
   it('leaves data-reduced entirely absent (not just falsy) when reducedEffects is off', () => {
     // No localStorage write — ThemeProvider's default is reducedEffects: false.
-    renderOverlayWithTheme(makeReferenceWithHost());
+    const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
 
-    const trace = document.querySelector('.reference-trace');
     const lift = document.querySelector('.reference-lift');
-    expect(trace).not.toBeNull();
     expect(lift).not.toBeNull();
+    expect(lift?.hasAttribute('data-reduced')).toBe(false);
+    unmount();
+
+    renderOverlayWithTheme(makeArtifactReferenceWithHost());
+    act(() => {});
+    const trace = document.querySelector('.reference-trace');
+    expect(trace).not.toBeNull();
     // hasAttribute, not a falsy getAttribute check: React only omits the DOM
     // attribute entirely when the prop value is `undefined`, and globals.css's
     // `[data-reduced="true"]` attribute selector cares about presence, not
@@ -615,7 +666,6 @@ describe('reduced effects (Task 9)', () => {
     // this selector but WOULD show up in the DOM, which is a different bug
     // than what this test is pinning.
     expect(trace?.hasAttribute('data-reduced')).toBe(false);
-    expect(lift?.hasAttribute('data-reduced')).toBe(false);
   });
 });
 

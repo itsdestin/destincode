@@ -282,7 +282,15 @@ export function ReferenceOverlay() {
           fixed 100-unit stroke-dasharray/breathe animation in globals.css
           works regardless of the actual traced perimeter. Empty when the
           source is gone (host disconnected) — nothing renders in that case. */}
-      {d && (
+      {/* Only the NON-travelling (artifact) case gets the source-anchored trace.
+          `d` is measured from anchor.host where it actually sits, so for a
+          travelling chat reference — whose card flies to the viewport centre —
+          it would paint a hard outlined box around the EMPTY space the bubble
+          left behind (Destin, dev review: "the black box visible around where
+          the message bubble was originally"). The travelling card carries its
+          own ring + glow in CSS instead, so the highlight hugs the card and
+          travels with it by construction. */}
+      {d && !travels && (
         <svg className="reference-trace" aria-hidden="true" data-reduced={reducedEffects ? 'true' : undefined}>
           <path className="wash" d={d} />
           <path className="outline" d={d} pathLength={100} />

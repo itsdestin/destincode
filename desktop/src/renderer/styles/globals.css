@@ -948,11 +948,34 @@ body[data-reference-held] .bottom-float {
    button wrapper the same box-shadow/70vh-scroll treatment as the cloned
    card. Scope to .reference-lift-card, the clone holder only. */
 .reference-lift > .reference-lift-card {
-  box-shadow: var(--ref-lift-shadow);
   /* A message longer than the viewport must not overflow off-screen. */
   max-height: 70vh;
   overflow-y: auto;
   pointer-events: auto;
+}
+
+/* The cloned bubble must FILL the lifted wrapper.
+   Chat bubbles carry `max-w-[85%]` (AssistantTurnBubble.tsx / UserMessage.tsx)
+   so they occupy 85% of the transcript row. The wrapper is already sized to the
+   bubble's own measured rect, so that percentage resolves a SECOND time against
+   it — leaving the card 15% narrower than its wrapper, with dead space on the
+   right and the cancel button pinned out in it (Destin, dev review: "the weird
+   extra clear space to the right of the centered message bubble"). Unlayered
+   CSS beats Tailwind's @layer utilities, so this wins without !important. */
+.reference-lift > .reference-lift-card > * {
+  max-width: 100%;
+  width: 100%;
+}
+
+/* Ring + glow on the CLONE, not the holder: the clone keeps the bubble's own
+   border-radius, so the ring follows its rounded shape instead of boxing it.
+   This replaces the source-anchored SVG trace for travelling references —
+   it hugs the card and travels with it, so nothing is left behind. */
+.reference-lift[data-travels="true"] > .reference-lift-card > * {
+  box-shadow:
+    0 0 0 1.5px var(--ref-stroke),
+    0 0 18px var(--ref-glow),
+    var(--ref-lift-shadow);
 }
 /* Non-travelling (artifact) clone: pinned over the original and clipped to the
    selection, so only the referenced lines stay bright above the dim. */
@@ -978,7 +1001,6 @@ body[data-reference-held] .bottom-float {
 .reference-lift[data-detached="true"] > .reference-lift-card {
   max-height: 70vh;
   overflow-y: auto;
-  box-shadow: var(--ref-lift-shadow);
 }
 
 /* Reduced effects (Task 9): outline only. Kills the trace animation, the
@@ -1012,8 +1034,13 @@ body[data-reference-held] .bottom-float {
    scoped to `[data-travels="true"]` too, otherwise it would tie with that
    rule's specificity and (by source order) incorrectly paint a shadow onto
    the clipped artifact clone when reduced effects is on. */
-.reference-lift[data-reduced="true"][data-travels="true"] > .reference-lift-card {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, var(--shadow-strength, 0.15));
+/* Targets the CLONE (`> * `), matching where the ring + glow now live. Keeps a
+   plain 1.5px ring so the card is still identifiable as the reference, drops
+   the accent glow and the amplified lift shadow. */
+.reference-lift[data-reduced="true"][data-travels="true"] > .reference-lift-card > * {
+  box-shadow:
+    0 0 0 1.5px var(--ref-stroke),
+    0 8px 32px rgba(0, 0, 0, var(--shadow-strength, 0.15));
 }
 
 @media (prefers-reduced-motion: reduce) {
