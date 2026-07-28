@@ -24,12 +24,11 @@ import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
-import SettingsRow from './SettingsRow';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, Radio, RadioGroup, SegmentedTabs, Dialog } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -348,8 +347,9 @@ function PresetSelector({ selectedId, onSelect, customName }: {
     ? [...STOCK_PRESETS.map((p) => p.id), CUSTOM_SOUND_ID]
     : STOCK_PRESETS.map((p) => p.id);
 
-  const rowClass = 'flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50 hover:bg-inset cursor-pointer transition-colors';
-
+  // K2: these are `item` rows — one of N being chosen between — with the Radio
+  // in the icon slot (K3's "any option needs a description" form). SettingRow
+  // renders the Radio and keeps the whole tile as the hit target.
   return (
     <RadioGroup
       options={optionIds}
@@ -359,33 +359,31 @@ function PresetSelector({ selectedId, onSelect, customName }: {
       className="space-y-1"
     >
       {STOCK_PRESETS.map((p) => (
-        <div key={p.id} onClick={() => onSelect(p.id)} className={rowClass}>
-          <Radio
-            checked={selectedId === p.id}
-            onChange={() => onSelect(p.id)}
-            tabIndex={selectedId === p.id ? 0 : -1}
-            aria-label={p.label}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="text-xs text-fg font-medium">{p.label}</div>
-            {p.desc && <p className="text-3xs text-fg-muted -mt-0.5 font-mono">{p.desc}</p>}
-          </div>
-        </div>
+        <SettingRow
+          key={p.id}
+          variant="item"
+          title={p.label}
+          // The tone signature is data, not prose — font-mono keeps the note
+          // names aligned down the list.
+          description={p.desc}
+          descriptionClassName="text-fg-muted font-mono"
+          selected={selectedId === p.id}
+          onSelect={() => onSelect(p.id)}
+          radioTabIndex={selectedId === p.id ? 0 : -1}
+        />
       ))}
       {/* Custom sound — only present once the user has picked a file. */}
       {customName ? (
-        <div onClick={() => onSelect(CUSTOM_SOUND_ID)} className={rowClass}>
-          <Radio
-            checked={selectedId === CUSTOM_SOUND_ID}
-            onChange={() => onSelect(CUSTOM_SOUND_ID)}
-            tabIndex={selectedId === CUSTOM_SOUND_ID ? 0 : -1}
-            aria-label={customName}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="text-xs text-fg font-medium truncate" title={customName}>{customName}</div>
-            <p className="text-3xs text-fg-muted -mt-0.5">Custom sound</p>
-          </div>
-        </div>
+        <SettingRow
+          variant="item"
+          title={customName}
+          // The only unbounded title in the app — a filename the user chose.
+          truncateTitle
+          description="Custom sound"
+          selected={selectedId === CUSTOM_SOUND_ID}
+          onSelect={() => onSelect(CUSTOM_SOUND_ID)}
+          radioTabIndex={selectedId === CUSTOM_SOUND_ID ? 0 : -1}
+        />
       ) : null}
     </RadioGroup>
   );
@@ -556,7 +554,7 @@ function SoundButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
             {muted ? (
@@ -575,7 +573,7 @@ function SoundButton() {
           </svg>
         }
         title="Sound"
-        subtitle={summaryParts.join(' · ')}
+        description={summaryParts.join(' · ')}
         onClick={() => setOpen(true)}
       />
 
@@ -673,7 +671,7 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <div className="flex rounded-sm overflow-hidden w-full h-full">
             <div style={{ flex: 1, background: canvas }} />
@@ -683,7 +681,7 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
           </div>
         }
         title="Appearance"
-        subtitle={activeTheme.name}
+        description={activeTheme.name}
         onClick={() => setOpen(true)}
       />
 
@@ -848,10 +846,10 @@ function BuddyButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={<BuddyIcon />}
         title="Buddy Floater"
-        subtitle={status}
+        description={status}
         onClick={() => setOpen(true)}
       />
 
@@ -867,35 +865,53 @@ function BuddyButton() {
         scrollBody={false}
         panelRef={popupRef}
       >
-            <div className="px-4 py-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-fg font-medium">Show buddy floater</span>
-                <Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />
-              </div>
-              <p className="text-3xs text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
-              {enabled && dismissed && (
-                <p className="text-3xs text-fg-muted mt-2">
-                  Hidden until restart{' · '}
-                  <button onClick={showNow} className="text-accent hover:underline">Show now</button>
-                </p>
-              )}
+            {/* K2: this popup was the worst offender in the app — it used TWO
+                different description placements within itself (one <p> below the
+                row, one <p> inside the left column). Both are left-column
+                descriptions now, and the border-t between them goes: the rows
+                are carded, so the rule was drawing a line between two things
+                that were already separated. */}
+            <div className="px-4 py-4 space-y-2">
+              <SettingRow
+                variant="item"
+                title="Show buddy floater"
+                description={
+                  <>
+                    A small always-on-top mascot that stays visible even when the app is minimized.
+                    {enabled && dismissed && (
+                      <>
+                        <br />
+                        Hidden until restart{' · '}
+                        <button onClick={showNow} className="text-accent hover:underline">Show now</button>
+                      </>
+                    )}
+                  </>
+                }
+                control={<Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />}
+              />
               {/* Task 8: Linux-only — Electron's setAlwaysOnTop is a no-op on
                   Wayland; this opt-in runs a KWin scripting DBus call instead,
                   which only does anything on KDE Plasma (see kwin-keep-above.ts). */}
               {platform === 'linux' && (
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-edge">
-                  <div>
-                    <span className="text-xs text-fg font-medium block">Pin buddy above other windows (KDE only)</span>
-                    <p className="text-3xs text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
-                    {/* Honest, non-committal per-action feedback — NOT the toggle's
-                        own state (that's the preference, above). Only appears right
-                        after a click that couldn't reach KWin; see toggleKeepAbove. */}
-                    {keepAboveHint && (
-                      <p className="text-3xs text-fg-muted mt-1">{keepAboveHint}</p>
-                    )}
-                  </div>
-                  <Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />
-                </div>
+                <SettingRow
+                  variant="item"
+                  title="Pin buddy above other windows (KDE only)"
+                  description={
+                    <>
+                      Requires KDE Plasma. No effect on other desktops.
+                      {/* Honest, non-committal per-action feedback — NOT the toggle's
+                          own state (that's the preference, above). Only appears right
+                          after a click that couldn't reach KWin; see toggleKeepAbove. */}
+                      {keepAboveHint && (
+                        <>
+                          <br />
+                          {keepAboveHint}
+                        </>
+                      )}
+                    </>
+                  }
+                  control={<Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />}
+                />
               )}
             </div>
       </Dialog>
@@ -985,11 +1001,11 @@ function RemoteButton({
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         // Status indicator dot — green when remote + Tailscale VPN fully active, gray otherwise
         icon={<div className={`w-2.5 h-2.5 rounded-full ${isFullyConnected ? 'bg-green-500' : 'bg-fg-muted/40'}`} />}
         title="Remote Access"
-        subtitle={subtitle}
+        description={subtitle}
         onClick={() => setOpen(true)}
       />
 
@@ -1122,10 +1138,15 @@ function RemoteButton({
                     <section>
                       <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Server</h3>
 
-                      <label className="flex items-center justify-between py-2 cursor-pointer">
-                        <span className="text-xs text-fg-2">Enabled</span>
-                        <Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />
-                      </label>
+                      {/* onClick keeps the whole-row hit target the <label> used
+                          to give this; SettingRow stops the toggle's own click
+                          from bubbling back into it. */}
+                      <SettingRow
+                        variant="item"
+                        title="Enabled"
+                        onClick={onToggleEnabled}
+                        control={<Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />}
+                      />
                       {/* The server is started from the toggle now, so it can fail
                           (port already bound, permission denied). Show the real
                           reason here — the toggle has already snapped back off. */}
@@ -1260,30 +1281,37 @@ function RemoteButton({
                       <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Tailscale</h3>
 
                       {tailscale?.installed ? (
-                        <>
+                        // space-y-1 replaces the py-2 each bare row used to carry
+                        // its own spacing with — the rows are carded now, so the
+                        // gap belongs between them, not inside them.
+                        <div className="space-y-1">
                           {/* Distinguish "installed and connected" from "installed but VPN off" —
                               previously detection conflated the two and forced the not-installed branch. */}
-                          <div className="py-2 flex items-center justify-between">
-                            <span className="text-xs text-fg-2">Status</span>
-                            {tailscale.connected ? (
-                              <span className="text-3xs text-green-400">
-                                Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
-                              </span>
-                            ) : (
-                              <span className="text-3xs text-fg-muted">VPN not active</span>
-                            )}
-                          </div>
-
-                          <div className="py-2 flex items-center justify-between">
-                            <span className="text-xs text-fg-2">IP</span>
-                            <span className="text-xs text-fg-dim font-mono">{tailscale.ip ?? '—'}</span>
-                          </div>
-
-                          <label className="flex items-center justify-between py-2 cursor-pointer">
-                            <span className="text-xs text-fg-2">Skip password on Tailscale</span>
-                            <Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} label="Skip password on Tailscale" />
-                          </label>
-                        </>
+                          {/* K2 value rows. Status keeps its green/muted colour —
+                              that is state, not chrome — but takes the value
+                              slot's size so it lines up with the IP below it
+                              instead of sitting a step smaller. */}
+                          <SettingRow
+                            variant="item"
+                            title="Status"
+                            value={
+                              tailscale.connected ? (
+                                <span className="text-green-400">
+                                  Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-fg-muted">VPN not active</span>
+                              )
+                            }
+                          />
+                          <SettingRow variant="item" title="IP" value={tailscale.ip ?? '—'} />
+                          <SettingRow
+                            variant="item"
+                            title="Skip password on Tailscale"
+                            onClick={onToggleTailscaleTrust}
+                            control={<Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} label="Skip password on Tailscale" />}
+                          />
+                        </div>
                       ) : (
                         <div className="py-2">
                           <p className="text-xs text-fg-muted mb-2">
@@ -1367,22 +1395,37 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
-          <p className="text-3xs text-fg-muted mt-0.5">New sessions will skip tool approval</p>
-        </div>
-        <Toggle
-          enabled={defaults.skipPermissions}
-          onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
-          color="red"
-          label="Skip Permissions"
-        />
-      </div>
+      {/* K2: "Skip Permissions" was a K1 SECTION LABEL doing a row title's job —
+          an uppercase eyebrow heading labelling a single control. K1's rule is
+          that a section label never labels one control; if a control needs a
+          label, it is this row's title. The consequence line was the other
+          retired shape (a <p> below the whole row); it belongs in the left
+          column under the title, where every other description lives. */}
+      <SettingRow
+        variant="item"
+        title="Skip Permissions"
+        description={
+          <>
+            New sessions will skip tool approval
+            {defaults.skipPermissions && (
+              <>
+                <br />
+                <span className="text-[#DD4444]">Claude will execute tools without asking for approval.</span>
+              </>
+            )}
+          </>
+        }
+        control={
+          <Toggle
+            enabled={defaults.skipPermissions}
+            onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
+            color="red"
+            label="Skip Permissions"
+          />
+        }
+      />
       {defaults.skipPermissions && (
         <>
-          <p className="text-3xs text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
-
           {/* Advanced expandable section */}
           <button
             onClick={() => setAdvancedOpen(!advancedOpen)}
@@ -1401,14 +1444,16 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
           {advancedOpen && (
             <div className="mt-2 ml-1 border-l border-edge-dim pl-3 space-y-3">
-              {/* Approve All toggle */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-3xs text-fg-dim font-medium">Auto-approve all</p>
-                  <p className="text-4xs text-fg-muted">Silently approve all protected requests</p>
-                </div>
-                <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />
-              </div>
+              {/* Approve All toggle. K2: these were text-3xs/text-4xs — a third
+                  and fourth type size used to signal nesting depth. The indent
+                  rail to the left already says "nested"; the rows take the one
+                  item density like every other in-menu row. */}
+              <SettingRow
+                variant="item"
+                title="Auto-approve all"
+                description="Silently approve all protected requests"
+                control={<Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />}
+              />
 
               {/* Separator */}
               <div className="flex items-center gap-2">
@@ -1419,13 +1464,17 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
               {/* Per-category toggles */}
               {OVERRIDE_CATEGORIES.map(({ key, label, description }) => (
-                <div key={key} className={`flex items-center justify-between ${overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}`}>
-                  <div>
-                    <p className="text-3xs text-fg-dim font-medium">{label}</p>
-                    <p className="text-4xs text-fg-muted">{description}</p>
-                  </div>
-                  <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />
-                </div>
+                <SettingRow
+                  key={key}
+                  variant="item"
+                  title={label}
+                  description={description}
+                  // 40% + pointer-events-none, not the row's own `disabled`: this
+                  // is "superseded by approve-all", not "unavailable", and the
+                  // existing resting opacity is what the spec approved.
+                  className={overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}
+                  control={<Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />}
+                />
               ))}
             </div>
           )}
@@ -1526,7 +1575,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
             <line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" />
@@ -1534,7 +1583,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
           </svg>
         }
         title="Defaults"
-        subtitle={summaryParts.join(' · ')}
+        description={summaryParts.join(' · ')}
         onClick={() => setOpen(true)}
       />
 
@@ -1592,16 +1641,18 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 {/* Close-session prompt — toggle off to skip the tag-before-closing
                     popup and destroy sessions immediately. Mirrors the "Don't show
                     again" checkbox inside the prompt itself. */}
-                <section>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
-                      <p className="text-3xs text-fg-muted mt-0.5">Show tag options when closing a session</p>
-                    </div>
-                    {/* Was a hand-rolled 32x18 track with an inline var(--accent)
-                        background; one geometry now (change 16). The state is stored
-                        INVERTED (closePromptDisabled), so `checked` is the negation —
-                        the switch reads as "show the prompt". */}
+                {/* K2: the other K1-label-as-row-title violation, and the one the
+                    spec called out by name. "Close-session prompt" was an
+                    uppercase section eyebrow labelling exactly one switch. */}
+                <SettingRow
+                  variant="item"
+                  title="Close-session prompt"
+                  description="Show tag options when closing a session"
+                  control={
+                    // Was a hand-rolled 32x18 track with an inline var(--accent)
+                    // background; one geometry now (change 16). The state is stored
+                    // INVERTED (closePromptDisabled), so `checked` is the negation —
+                    // the switch reads as "show the prompt".
                     <UiToggle
                       checked={!closePromptDisabled}
                       onChange={(show) => {
@@ -1615,8 +1666,8 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       }}
                       aria-label="Close-session prompt"
                     />
-                  </div>
-                </section>
+                  }
+                />
       </Dialog>
     </>
   );
@@ -1655,10 +1706,10 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
           is the current tier's name (was reversed: the tier name used to be
           the title with no static label, the one anti-pattern this component
           shared with pre-redesign Appearance/Remote Access/Buddy Floater). */}
-      <SettingsRow
+      <SettingRow
         icon={<span className="text-sm leading-none text-fg-dim">⬡</span>}
         title="Package Tier"
-        subtitle={currentTier.name}
+        description={currentTier.name}
         onClick={() => setOpen(true)}
       />
 
@@ -1829,7 +1880,7 @@ function ConnectToDesktopButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <div className="relative flex items-center justify-center">
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -1843,8 +1894,8 @@ function ConnectToDesktopButton() {
           </div>
         }
         title="Connect to Desktop"
-        subtitle={subtitle}
-        subtitleClassName={remoteConnected ? 'text-green-400' : undefined}
+        description={subtitle}
+        descriptionClassName={remoteConnected ? 'text-green-400' : undefined}
         onClick={() => { setOpen(true); setShowConnectForm(false); }}
       />
 
@@ -2117,7 +2168,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         {/* Development — bug reports, contributions, known issues */}
-        <SettingsRow
+        <SettingRow
           icon={
             // {YC} — curly braces with YC monogram in Cascadia Mono (matches
             // the "Development" label's font size).
@@ -2128,7 +2179,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
             </svg>
           }
           title="Development"
-          subtitle="Report a bug, contribute, or browse known issues"
+          description="Report a bug, contribute, or browse known issues"
           onClick={() => setShowDevMenu(true)}
         />
         <DevelopmentPopup
@@ -2142,14 +2193,14 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
         {/* Keyboard shortcuts intentionally omitted on Android — no physical keyboard. */}
 
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
             </svg>
           }
           title="Donate"
-          subtitle="Support YouCoded development"
+          description="Support YouCoded development"
           onClick={() => setShowDonateConfirm(true)}
         />
 
@@ -2157,7 +2208,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
         {aboutInfo && (
           <>
-            <SettingsRow
+            <SettingRow
               icon={
                 <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10" />
@@ -2166,7 +2217,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
                 </svg>
               }
               title="About"
-              subtitle={formatVersionLine({ version: aboutInfo.version, build: aboutInfo.build })}
+              description={formatVersionLine({ version: aboutInfo.version, build: aboutInfo.build })}
               onClick={() => setShowAbout(true)}
             />
             <AboutPopup
@@ -2407,7 +2458,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         {/* Development — bug reports, contributions, known issues */}
-        <SettingsRow
+        <SettingRow
           icon={
             // {YC} — curly braces with YC monogram in Cascadia Mono (matches
             // the "Development" label's font size).
@@ -2418,7 +2469,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             </svg>
           }
           title="Development"
-          subtitle="Report a bug, contribute, or browse known issues"
+          description="Report a bug, contribute, or browse known issues"
           onClick={() => setShowDevMenu(true)}
         />
         <DevelopmentPopup
@@ -2431,7 +2482,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
 
         {/* Keyboard Shortcuts */}
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2" />
@@ -2439,26 +2490,26 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             </svg>
           }
           title="Keyboard Shortcuts"
-          subtitle="View all hotkeys"
+          description="View all hotkeys"
           onClick={() => setShowShortcuts(true)}
         />
         <ShortcutsPopup open={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
             </svg>
           }
           title="Donate"
-          subtitle="Support YouCoded development"
+          description="Support YouCoded development"
           onClick={() => setShowDonateConfirm(true)}
         />
 
         <DonateConfirm open={showDonateConfirm} onClose={() => setShowDonateConfirm(false)} />
 
         {/* About — popup on click, styled like other settings popups */}
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" />
@@ -2467,7 +2518,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             </svg>
           }
           title="About"
-          subtitle={formatVersionLine({ version: desktopVersion, channel: desktopChannel })}
+          description={formatVersionLine({ version: desktopVersion, channel: desktopChannel })}
           onClick={() => setShowAbout(true)}
         />
         <AboutPopup

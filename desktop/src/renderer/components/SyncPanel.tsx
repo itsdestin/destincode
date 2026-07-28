@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, CloseButton, Dialog, TextInput, Toggle, LoadingState } from './ui';
+import { Button, CloseButton, Dialog, TextInput, Toggle, LoadingState, SettingRow } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -20,7 +20,6 @@ import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
-import SettingsRow from './SettingsRow';
 import { latestUnresolvedError, deriveSyncBoxState, type SyncStatusData } from './sync-dot-state';
 // relativeMs is co-located in the pure device-activity-label module (single
 // wording ladder, shared by the device recency label and the fallback below).
@@ -404,11 +403,11 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={<div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />}
         title="Backup & Sync"
-        subtitle={counts ? `${primaryLabel} \u00B7 ${counts}` : primaryLabel}
-        rightAccessory={badge}
+        description={counts ? `${primaryLabel} \u00B7 ${counts}` : primaryLabel}
+        accessory={badge}
         onClick={() => setOpen(true)}
       />
 

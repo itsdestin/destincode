@@ -4,8 +4,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
-import SettingsRow from './SettingsRow';
-import { Button, Dialog, InputGroup } from './ui';
+import { Button, Dialog, InputGroup, SettingRow } from './ui';
 import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
@@ -48,7 +47,7 @@ export default function AccountSection() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           signedIn && user?.avatar_url ? (
             // alt="" so the avatar doesn't leak into the row's accessible name.
@@ -58,7 +57,7 @@ export default function AccountSection() {
           )
         }
         title={rowLabel}
-        subtitle={rowDesc}
+        description={rowDesc}
         onClick={() => setOpen(true)}
       />
 
@@ -145,28 +144,21 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
                     sign-in state (the GitHub connection is independent of it),
                     hidden only where the github:* channels don't exist. */}
                 {ghStatus !== 'unavailable' && (
-                  <button
+                  <SettingRow
                     onClick={() => setPage('connections')}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-                  >
-                    {/* Neutral link glyph, NOT the octocat — the WeCoded
-                        sign-in button above already wears GitHub's mark, and
-                        doubling it is what made the two read as one broken
-                        flow. Provider marks belong on the sub-page rows. */}
-                    <span className="flex items-center justify-center shrink-0 text-fg-muted" style={{ width: 32, height: 20 }}>
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    icon={
+                      /* Neutral link glyph, NOT the octocat — the WeCoded
+                         sign-in button above already wears GitHub's mark, and
+                         doubling it is what made the two read as one broken
+                         flow. Provider marks belong on the sub-page rows. */
+                      <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
                         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                       </svg>
-                    </span>
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-xs text-fg font-medium">Connected accounts</span>
-                      <span className="block text-3xs text-fg-muted truncate">{ghSummary}</span>
-                    </span>
-                    <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
+                    }
+                    title="Connected accounts"
+                    description={ghSummary}
+                  />
                 )}
               </>
             )}

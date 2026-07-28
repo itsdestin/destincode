@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Toggle } from './SettingsPanel';
-import { Dialog } from './ui';
+import { Dialog, SettingRow } from './ui';
 import { formatVersionLine } from '../../shared/version-line';
 
 // Shared About popup for Desktop and Android settings. Previously this was an
@@ -67,13 +67,13 @@ function AnalyticsOptInToggle() {
   };
 
   return (
-    <div className="flex items-center justify-between mt-2">
-      <div>
-        <span className="text-xs text-fg font-medium">Share anonymous usage stats</span>
-        <p className="text-3xs text-fg-muted mt-0.5">Sends a daily ping with the fields listed above.</p>
-      </div>
-      <Toggle enabled={optIn} onToggle={flip} />
-    </div>
+    <SettingRow
+      className="mt-2"
+      variant="item"
+      title="Share anonymous usage stats"
+      description="Sends a daily ping with the fields listed above."
+      control={<Toggle enabled={optIn} onToggle={flip} label="Share anonymous usage stats" />}
+    />
   );
 }
 

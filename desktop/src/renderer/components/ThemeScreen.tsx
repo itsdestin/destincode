@@ -7,7 +7,7 @@ import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './Sett
 import type { LoadedTheme } from '../themes/theme-types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Select, Toggle } from './ui';
+import { Button, CloseButton, Select, Toggle, SettingRow } from './ui';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -265,34 +265,36 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             Global: disables particles, forces blur to 0, shortens animations. Previously
             this was nested inside the wallpaper-only Glass section, hiding it from users
             on solid/gradient themes who also benefit from the accessibility setting. */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-fg-2">Reduce Visual Effects</p>
-            <p className="text-3xs text-fg-muted">Disables particles, blur, and animations</p>
-          </div>
-          {/* Was a hand-rolled 36x20 switch (change 15): same geometry, but the
-              shared Toggle also carries role="switch" + aria-checked, which this
-              one never had — a screen reader read it as an unlabelled button. */}
-          <Toggle
-            checked={reducedEffects}
-            onChange={(next) => setReducedEffects(next)}
-            aria-label="Reduce Visual Effects"
-          />
-        </div>
+        <SettingRow
+          variant="item"
+          title="Reduce Visual Effects"
+          description="Disables particles, blur, and animations"
+          control={
+            // Was a hand-rolled 36x20 switch (change 15): same geometry, but the
+            // shared Toggle also carries role="switch" + aria-checked, which this
+            // one never had — a screen reader read it as an unlabelled button.
+            <Toggle
+              checked={reducedEffects}
+              onChange={(next) => setReducedEffects(next)}
+              aria-label="Reduce Visual Effects"
+            />
+          }
+        />
 
         {/* Message timestamps toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-fg-2">Message Timestamps</p>
-            <p className="text-3xs text-fg-muted">Show time sent in each chat bubble</p>
-          </div>
-          {/* Same migration as the toggle above (change 15). */}
-          <Toggle
-            checked={showTimestamps}
-            onChange={(next) => setShowTimestamps(next)}
-            aria-label="Message Timestamps"
-          />
-        </div>
+        <SettingRow
+          variant="item"
+          title="Message Timestamps"
+          description="Show time sent in each chat bubble"
+          // Same migration as the toggle above (change 15).
+          control={
+            <Toggle
+              checked={showTimestamps}
+              onChange={(next) => setShowTimestamps(next)}
+              aria-label="Message Timestamps"
+            />
+          }
+        />
         </div>
       </div>
     </div>

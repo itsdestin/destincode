@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
+import { Button, CloseButton, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState, SettingRow } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -438,23 +438,26 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
             {/* Fast mode toggle */}
             <section>
-              <div className="flex items-start justify-between gap-3 p-2 rounded hover:bg-inset">
-                <div className="flex-1">
-                  <div className="text-sm text-fg flex items-center gap-1.5">
-                    <FastIcon className="w-3.5 h-3.5 text-yellow-500" /> Fast mode
-                  </div>
-                  <div className="text-xs text-fg-muted">Same model, faster output streaming</div>
-                </div>
-                {/* Was a fifth hand-rolled toggle geometry (32x16) with a
-                    hardcoded green-600 on-state. One geometry now, and the
-                    on-state is the theme's accent (changes 15/16). It already
-                    had role="switch" but no accessible name. */}
-                <Toggle
-                  checked={fast}
-                  onChange={handleFastToggle}
-                  aria-label="Fast mode"
-                />
-              </div>
+              {/* K2: the icon moves out of the title and into the icon slot,
+                  which is what that slot is for — inline, it was pushing the
+                  title text off the alignment every other row shares. */}
+              <SettingRow
+                variant="item"
+                icon={<FastIcon className="w-3.5 h-3.5 text-yellow-500" />}
+                title="Fast mode"
+                description="Same model, faster output streaming"
+                control={
+                  // Was a fifth hand-rolled toggle geometry (32x16) with a
+                  // hardcoded green-600 on-state. One geometry now, and the
+                  // on-state is the theme's accent (changes 15/16). It already
+                  // had role="switch" but no accessible name.
+                  <Toggle
+                    checked={fast}
+                    onChange={handleFastToggle}
+                    aria-label="Fast mode"
+                  />
+                }
+              />
             </section>
           </div>
         )}

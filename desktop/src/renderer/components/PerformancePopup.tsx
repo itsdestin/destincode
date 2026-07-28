@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
-import { Button, Dialog, Toggle } from './ui';
+import { Button, Dialog, Toggle, SettingRow } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -104,31 +104,22 @@ export default function PerformancePopup({
                 (change 15), on the right like every other settings row.
 
                 The row stays clickable (bigger touch target — this renderer is also
-                the Android UI), but a <button> can't legally contain another one, so
-                the wrapper is a div. The guard below drops clicks that originated on
-                the Toggle itself, which would otherwise fire handleToggle twice and
-                cancel out. */}
-            <div
-              onClick={(e) => {
-                if ((e.target as HTMLElement).closest('[role="switch"]')) return;
-                handleToggle();
-              }}
-              className="w-full text-left flex items-start gap-3 p-3 rounded-lg hover:bg-inset transition-colors cursor-pointer"
-            >
-              <span className="flex-1">
-                <span className="block text-sm text-fg">Prefer power saving</span>
-                <span className="block text-xs text-fg-muted mt-0.5">
-                  Use the integrated GPU instead of the discrete one. Saves battery,
-                  but UI animations may stutter.
-                </span>
-              </span>
-              <Toggle
-                checked={saved}
-                onChange={handleToggle}
-                aria-label="Prefer power saving"
-                className="mt-0.5"
-              />
-            </div>
+                the Android UI). SettingRow owns the "don't fire twice" problem now:
+                it stops the control's own click from bubbling, replacing the
+                closest('[role="switch"]') guard this row used to hand-roll. */}
+            <SettingRow
+              variant="item"
+              title="Prefer power saving"
+              description="Use the integrated GPU instead of the discrete one. Saves battery, but UI animations may stutter."
+              onClick={handleToggle}
+              control={
+                <Toggle
+                  checked={saved}
+                  onChange={handleToggle}
+                  aria-label="Prefer power saving"
+                />
+              }
+            />
 
             {needsRestart && (
               <div className="px-3 py-2 rounded-lg bg-inset flex items-center justify-between gap-3">

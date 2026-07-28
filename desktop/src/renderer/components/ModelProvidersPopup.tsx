@@ -5,8 +5,7 @@ import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
-import SettingsRow from './SettingsRow';
-import { AnchorTip, Button, CloseButton, Dialog, InputGroup, TextInput } from './ui';
+import { AnchorTip, Button, CloseButton, Dialog, InputGroup, TextInput, SettingRow } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -55,7 +54,7 @@ export default function ModelProvidersSection({
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         // Simple stacked-layers glyph — "choose your engine".
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -64,7 +63,7 @@ export default function ModelProvidersSection({
           </svg>
         }
         title="Model Providers"
-        subtitle="Claude Code, OpenRouter, and local models"
+        description="Claude Code, OpenRouter, and local models"
         onClick={() => setOpen(true)}
       />
 

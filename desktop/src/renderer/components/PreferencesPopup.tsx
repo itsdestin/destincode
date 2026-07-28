@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, Dialog, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup, SegmentedTabs } from './ui';
+import { Button, Dialog, Toggle, TextInput, Textarea, LoadingState, RadioGroup, SegmentedTabs, SettingRow } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -137,23 +137,15 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
                 className="space-y-1.5"
               >
                 {(Object.keys(PERMISSION_LABELS) as PermissionDefault[]).map((mode) => (
-                  <div
+                  <SettingRow
                     key={mode}
-                    onClick={() => save('defaultMode', mode)}
-                    className="flex items-start gap-3 p-2 rounded hover:bg-inset cursor-pointer"
-                  >
-                    <Radio
-                      checked={prefs.defaultMode === mode}
-                      onChange={() => save('defaultMode', mode)}
-                      tabIndex={prefs.defaultMode === mode ? 0 : -1}
-                      aria-label={PERMISSION_LABELS[mode].label}
-                      className="mt-0.5"
-                    />
-                    <div>
-                      <div className="text-sm text-fg">{PERMISSION_LABELS[mode].label}</div>
-                      <div className="text-xs text-fg-muted">{PERMISSION_LABELS[mode].desc}</div>
-                    </div>
-                  </div>
+                    variant="item"
+                    title={PERMISSION_LABELS[mode].label}
+                    description={PERMISSION_LABELS[mode].desc}
+                    selected={prefs.defaultMode === mode}
+                    onSelect={() => save('defaultMode', mode)}
+                    radioTabIndex={prefs.defaultMode === mode ? 0 : -1}
+                  />
                 ))}
               </RadioGroup>
             </section>
@@ -262,17 +254,20 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
   );
 }
 
+// K2: was the app's only text-sm/text-xs row — a third density between the two
+// approved ones, and the outlier that made "settings rows" mean three different
+// sizes. These are settings being scanned, so they take the `item` density that
+// every other in-menu toggle row already used.
 function ToggleRow({ label, desc, checked, onChange }: { label: string; desc: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-start justify-between gap-3 p-2 rounded hover:bg-inset">
-      <div className="flex-1">
-        <div className="text-sm text-fg">{label}</div>
-        <div className="text-xs text-fg-muted">{desc}</div>
-      </div>
-      {/* Was a hand-rolled 32x16 track with a green-600 on-state; one geometry and
-          the app accent now (changes 15/16). role="switch"/aria-checked come from
-          the primitive; aria-label gives it the name the row text couldn't. */}
-      <Toggle checked={checked} onChange={onChange} aria-label={label} />
-    </div>
+    <SettingRow
+      variant="item"
+      title={label}
+      description={desc}
+      // Was a hand-rolled 32x16 track with a green-600 on-state; one geometry and
+      // the app accent now (changes 15/16). role="switch"/aria-checked come from
+      // the primitive; aria-label gives it the name the row text couldn't.
+      control={<Toggle checked={checked} onChange={onChange} aria-label={label} />}
+    />
   );
 }
