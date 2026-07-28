@@ -5,9 +5,8 @@ import FavoriteStar from './marketplace/FavoriteStar';
 import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Select, Toggle, SettingRow } from './ui';
+import { Button, Select, Toggle, SettingRow } from './ui';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -78,6 +77,13 @@ interface Props {
    */
   showInfo: boolean;
   onShowInfo: (next: boolean) => void;
+  /**
+   * Lifted for the same reason as `showInfo`: the Dialog's header has to name
+   * the theme being edited and offer the way back, and this component cannot
+   * reach a Dialog it does not own.
+   */
+  editingSlug: string | null;
+  onEditSlug: (slug: string | null) => void;
 }
 
 // Small pencil icon used on theme cards to open the per-theme edit panel.
@@ -87,7 +93,7 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
   </svg>
 );
 
-export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo }: Props) {
+export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo, editingSlug, onEditSlug }: Props) {
   // Always mounted when open (parent conditionally renders) — so open=true is correct here.
   useEscClose(true, onClose);
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();
@@ -106,14 +112,12 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
   }, [allThemes, themeFavSet, activeSlug]);
 
   // Slug of the theme currently being edited (pencil opened). Null = main list.
-  const [editingSlug, setEditingSlug] = useState<string | null>(null);
-  const listScrollRef = useScrollFade<HTMLDivElement>();
 
   // Open edit view for a theme. We also activate it so edits preview live
   // behind the popup — users expect to see changes as they drag sliders.
   const openEditor = (slug: string) => {
     if (slug !== activeSlug) setTheme(slug);
-    setEditingSlug(slug);
+    onEditSlug(slug);
   };
 
   // Fix: read from activeTheme (which has glassOverrides merged) rather than
@@ -138,26 +142,16 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         reducedEffects={reducedEffects}
         setGlassOverride={setGlassOverride}
         onPublishTheme={onPublishTheme}
-        onBack={() => setEditingSlug(null)}
         onClose={onClose}
       />
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-        <h2 className="text-sm font-bold text-fg">Themes</h2>
-        <div className="flex items-center gap-1">
-          <InfoIconButton onClick={() => onShowInfo(true)} />
-          {/* w-6 h-6 kept: this sits in a tight header row beside InfoIconButton,
-              and CloseButton's default 28px would break their alignment. */}
-          <CloseButton onClick={onClose} label="Close themes" className="w-6 h-6" />
-        </div>
-      </div>
-
-      <div ref={listScrollRef} className="scroll-fade flex-1">
-        <div className="p-3 space-y-4">
+    // D1: header, close and scroll body come from the Dialog. The body keeps
+    // space-y-4 rather than the shell's space-y-5 — the theme grid is dense on
+    // purpose — but takes the shell's px-4 py-4 in place of its own p-3.
+    <div className="space-y-4">
         {/* Theme grid — pencil on each card opens the per-theme edit view.
             Cycle membership moved to the status bar widget editor. */}
         <div>
@@ -302,8 +296,6 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             />
           }
         />
-        </div>
-      </div>
     </div>
   );
 }
@@ -316,13 +308,15 @@ interface EditProps {
   reducedEffects: boolean;
   setGlassOverride: (slug: string, field: string, v: number) => void;
   onPublishTheme?: (slug: string) => void;
-  onBack: () => void;
+  /** Closes the popup after publishing. An ACTION, not header chrome. */
   onClose: () => void;
 }
 
-function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme, onBack, onClose }: EditProps) {
+// D1: the "Edit: {name}" title and the back chevron are the Dialog's, driven by
+// the same `editingSlug` that selects this view. Its own header reimplemented
+// the back arrow as a bare "←" glyph at a third size.
+function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme, onClose }: EditProps) {
   const accentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editScrollRef = useScrollFade<HTMLDivElement>();
   const isUserTheme = theme.source === 'user';
   // Community themes are downloaded from the marketplace. They share the
   // non-user edit surface (glass + terminal overrides only, preserved per-slug)
@@ -394,26 +388,7 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
   useEffect(() => { setRoundnessDraft(currentRoundness); }, [currentRoundness]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            onClick={onBack}
-            className="text-fg-muted hover:text-fg-2 text-sm leading-none w-6 h-6 flex items-center justify-center shrink-0"
-            title="Back"
-            aria-label="Back to themes"
-          >
-            ←
-          </button>
-          <h2 className="text-sm font-bold text-fg truncate">Edit: {theme.name}</h2>
-        </div>
-        {/* Same w-6 h-6 as the list header above, so the two views' close buttons
-            don't jump size when you switch between them. */}
-        <CloseButton onClick={onClose} label="Close theme editor" className="w-6 h-6 shrink-0" />
-      </div>
-
-      <div ref={editScrollRef} className="scroll-fade flex-1">
-        <div className="p-3 space-y-4">
+    <div className="space-y-4">
         {/* Locked banner for non-user themes so it's clear why most controls are absent */}
         {!isUserTheme && (
           <p className="text-3xs text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
@@ -582,8 +557,6 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             Publish to Marketplace
           </Button>
         )}
-        </div>
-      </div>
     </div>
   );
 }

@@ -654,11 +654,15 @@ function SoundButton() {
 
 /** Compact "Appearance" row — opens ThemeScreen in a centered popup modal */
 function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSendInput?: (text: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
-  const { activeTheme } = useTheme();
+  const { activeTheme, allThemes } = useTheme();
   const [open, setOpen] = useState(false);
-  // K12: ThemeScreen fills this Dialog but does not own it, so it cannot reach
-  // the shell's header. The boolean lives here and drives title/onBack/scrollBody.
+  // ThemeScreen fills this Dialog but does not own it, so it cannot reach the
+  // shell's header. Both view flags live here and drive title/onBack; the
+  // component gets them back as props. Same lift K12 did for `showInfo`,
+  // extended to the theme editor so its header can go too.
   const [showInfo, setShowInfo] = useState(false);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const editingTheme = editingSlug ? (allThemes.find((t) => t.slug === editingSlug) ?? null) : null;
   const popupRef = useRef<HTMLDivElement>(null);
 
   const { canvas, panel, inset, accent } = activeTheme.tokens;
@@ -688,13 +692,21 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         onClick={() => setOpen(true)}
       />
 
-      {/* No `title` on the main view: ThemeScreen renders its own header there
-          (recorded residue). The EXPLAINER view uses the shell's, per K12. */}
+      {/* D1: one header for all three of ThemeScreen's views. */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        title={showInfo ? 'About Appearance' : undefined}
-        onBack={showInfo ? () => setShowInfo(false) : undefined}
+        title={
+          showInfo ? 'About Appearance'
+            : editingTheme ? `Edit: ${editingTheme.name}`
+              : 'Themes'
+        }
+        onBack={
+          showInfo ? () => setShowInfo(false)
+            : editingTheme ? () => setEditingSlug(null)
+              : undefined
+        }
+        headerActions={!showInfo && !editingTheme ? <InfoIconButton onClick={() => setShowInfo(true)} /> : undefined}
         aria-label="Appearance"
         // A panel, not a document. Its theme cards are a 6px gradient strip and
         // a truncated name -- there is no canvas to size for, so the grid sets
@@ -703,7 +715,6 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         // as a document made it 600px wide for content that needed none of it.
         size="panel"
         fill
-        scrollBody={showInfo}
         panelRef={popupRef}
       >
         <ThemeScreen
@@ -713,6 +724,8 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
           onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }}
           showInfo={showInfo}
           onShowInfo={setShowInfo}
+          editingSlug={editingSlug}
+          onEditSlug={setEditingSlug}
         />
       </Dialog>
     </>
@@ -984,7 +997,8 @@ function RemoteButton({
   // main settings, not whichever screen they last viewed.
   const [showInfo, setShowInfo] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
+  // No scroll ref here any more — Dialog owns the scroll region and its edge
+  // fades for both views.
 
   useEffect(() => {
     if (!open) setShowInfo(false);
@@ -1030,19 +1044,20 @@ function RemoteButton({
         onClick={() => setOpen(true)}
       />
 
-      {/* K12: the explainer view now uses the shell's header (title + onBack)
-          and the shell's scroll body. The MAIN view still paints its own header
-          below — converting that too means moving this popup's whole layout
-          onto Dialog, which is recorded residue rather than part of K12. */}
+      {/* D1, finished: BOTH views use the shell's header and scroll body now.
+          The main view used to paint its own — an h2, a CloseButton, and a
+          `.scroll-fade flex-1` wrapper — which is the exact set of things D1
+          exists to own, and the exact set two of SettingsPopup's seven callers
+          got wrong. `space-y-6` rather than Dialog's default `space-y-5`, so
+          the section rhythm here is unchanged. */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        title={showInfo ? 'About Remote Access' : undefined}
+        title={showInfo ? 'About Remote Access' : 'Remote Access'}
         onBack={showInfo ? () => setShowInfo(false) : undefined}
-        aria-label="Remote Access"
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
         size="panel"
         fill
-        scrollBody={showInfo}
         panelRef={popupRef}
       >
             {showInfo ? (
@@ -1051,19 +1066,7 @@ function RemoteButton({
                 sections={REMOTE_ACCESS_EXPLAINER.sections}
               />
             ) : (
-            <div className="flex flex-col h-full">
-              {/* Header — info icon (left of close) reveals the explainer view */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-                <h2 className="text-sm font-bold text-fg">Remote Access</h2>
-                <div className="flex items-center gap-1">
-                  <InfoIconButton onClick={() => setShowInfo(true)} />
-                  <CloseButton onClick={() => setOpen(false)} label="Close Remote Access" />
-                </div>
-              </div>
-
-              {/* Scrollable content */}
-              <div ref={scrollRef} className="scroll-fade flex-1">
-                <div className="px-4 py-4 space-y-6">
+            <div className="space-y-6">
                 {loading ? (
                   <LoadingState what="remote access" />
                 ) : (
@@ -1379,8 +1382,6 @@ function RemoteButton({
                     </section>
                   </>
                 )}
-                </div>
-              </div>
             </div>
             )}
       </Dialog>

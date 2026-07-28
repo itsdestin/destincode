@@ -90,7 +90,26 @@ describe('explainer hosts', () => {
         if (!/showInfo/.test(src)) offenders.push(`${host} (expected a lifted showInfo prop)`);
         continue;
       }
-      if (!/onBack=\{showInfo/.test(src)) offenders.push(host);
+      // Match the INTENT, not the formatting. Two earlier versions of this got
+      // it wrong in opposite directions: `onBack={showInfo` failed once
+      // SyncPanel's became a multi-line ternary (four views share that Dialog
+      // now), and requiring a newline before the closing brace then failed on
+      // the hosts that fit on one line. Extract every onBack expression by
+      // BALANCING BRACES and require that one of them consults showInfo —
+      // SettingsPanel legitimately has a second onBack for Account's
+      // connections sub-page, which has nothing to do with the explainer.
+      const expressions: string[] = [];
+      for (const m of src.matchAll(/onBack=\{/g)) {
+        let depth = 1;
+        let i = m.index! + m[0].length;
+        while (i < src.length && depth > 0) {
+          if (src[i] === '{') depth++;
+          else if (src[i] === '}') depth--;
+          i++;
+        }
+        expressions.push(src.slice(m.index!, i));
+      }
+      if (!expressions.some((e) => e.includes('showInfo'))) offenders.push(host);
     }
     expect(offenders, 'Pass onBack to <Dialog>, gated on showInfo.').toEqual([]);
   });
