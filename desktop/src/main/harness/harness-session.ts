@@ -26,6 +26,8 @@ import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
+import { createSkillTool } from './tools/skill';
+import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -61,6 +63,11 @@ export interface HarnessSessionOpts {
   /** Resolved capability profile (Task 5): steers the doom-loop window and
    *  whether tools are attached at all. Absent → CLOUD_DEFAULT (full posture). */
   profile?: CapabilityProfile;
+  /** Installed-skill source for the Skill tool (M3 item 1). Injected so tests can
+   *  supply a fake instead of scanning the real ~/.claude — and so a machine with
+   *  no skills is an expressible state rather than an environment accident.
+   *  Absent → the real filesystem catalog. */
+  skillCatalog?: SkillCatalog;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -312,6 +319,42 @@ export class HarnessSession extends EventEmitter {
     this.emit('transcript-event', event);
   }
 
+  /** Add or remove the Skill tool to match the CURRENT profile (M3 item 1).
+   *
+   *  Skill is the one conditional tool: its description lists every offered
+   *  skill's id and one-liner, and that rides the schema on every turn, so a
+   *  small window cannot afford it. Those sessions still reach skills through
+   *  the user-invoked /skill-name path.
+   *
+   *  Run per buildAiTools rather than once in the constructor because
+   *  setBinding() re-resolves the profile on a model swap: a tool attached under
+   *  a 128k model must come back OFF when the user switches to an 8k one, and
+   *  back on when they switch back. The has()/delete() pair makes both
+   *  directions idempotent, so the filesystem scan happens once per attachment,
+   *  not once per turn.
+   */
+  private syncSkillTool(): void {
+    const wanted = this.profile.exposeSkillCatalog;
+    if (!wanted) { this.toolByName.delete('Skill'); return; }
+    if (this.toolByName.has('Skill')) return;
+
+    const catalog = this.opts.skillCatalog ?? createSkillCatalog();
+    const allow = this.opts.harness.skills;
+    // Per-preset allowlist (the manifest's `skills` field, dead until now):
+    // Assistant may offer fewer skills than Coder. load() stays unscoped — an
+    // allowlist decides what the model is TOLD about, and a request for anything
+    // outside it can't arrive because it was never advertised.
+    const scoped: SkillCatalog = allow
+      ? { list: () => catalog.list().filter((s) => allow.includes(s.id)), load: (id) => catalog.load(id) }
+      : catalog;
+
+    // No offerable skills → no tool. A catalog that lists nothing still reads as
+    // "you may load a skill", which invites the model to invent an id and burn a
+    // step discovering it doesn't exist.
+    if (scoped.list().length === 0) return;
+    this.toolByName.set('Skill', createSkillTool(scoped));
+  }
+
   /** NativeTool → ai `tool({description, inputSchema})` WITHOUT execute, keyed by
    *  name. No execute => the SDK emits 'tool-call' parts and finishes with
    *  'tool-calls' WITHOUT looping (verified ai@7 contract) — WE own the loop. */
@@ -320,6 +363,7 @@ export class HarnessSession extends EventEmitter {
     // SDK never sends a tool schema. WHY: a small local model the registry marks
     // tool-less would otherwise emit malformed tool-calls we can't honor.
     if (!this.profile.supportsTools) return {};
+    this.syncSkillTool();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
     // defines none) so the schema stays small enough for a weak model to follow.
