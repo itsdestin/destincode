@@ -279,15 +279,15 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     return host;
   }
 
-  it('a chat reference clones the source via cloneNode, travels, and leaves the source unmutated', () => {
+  it('a chat reference clones the source via cloneNode, travels, hides the source, and restores it byte-identical on clear', () => {
     const host = makeHost('the referenced message');
     const originalOuterHTML = host.outerHTML;
 
-    renderOverlay({
+    const { rerender } = renderOverlay({
       kind: 'chat-text',
       label: 'x',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
 
@@ -300,19 +300,43 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     expect(clone).not.toBeNull();
     // A DIFFERENT node than the source — proves this is cloneNode output,
     // not a re-parent/move of the original (which would detach it from the
-    // transcript) and not a live reference to it.
+    // transcript) and not a live reference to it. Captured from the ORIGINAL
+    // markup, before the source-hide effect below adds an inline style — the
+    // clone must reflect the bubble as it looked at capture time, not
+    // (accidentally) invisible itself.
     expect(clone).not.toBe(host);
     expect(clone?.outerHTML).toBe(originalOuterHTML);
     expect(clone?.getAttribute('data-test-marker')).toBe('source');
 
-    // No DOM mutation in the reference path — the invariant this whole
-    // feature is built around (see reference-context.tsx's WHY comment on
-    // the withdrawn Range.surroundContents() design, which crashed the
-    // renderer). The source keeps its exact original markup and stays
-    // attached exactly where it always was.
-    expect(host.outerHTML).toBe(originalOuterHTML);
+    // Dev-review fix 1 ("I don't like that I can see both the original
+    // message and the centered message"): the SOURCE gets hidden — not
+    // removed, not mutated structurally — for as long as its (travelling)
+    // reference is held. visibility:hidden, not display:none, so the
+    // transcript layout doesn't reflow under the dim.
+    expect(host.style.visibility).toBe('hidden');
+    // No STRUCTURAL DOM mutation in the reference path — the invariant this
+    // whole feature is built around (see reference-context.tsx's WHY comment
+    // on the withdrawn Range.surroundContents() design, which split text
+    // nodes and crashed the renderer). One reversible inline style is a
+    // different class of change: it adds no nodes/classes/attributes, and
+    // gets undone exactly below.
     expect(host.isConnected).toBe(true);
     expect(host.parentElement).toBe(document.body);
+
+    // Clearing the reference must restore the EXACT prior inline style — a
+    // reference that gets cleared must never leave a permanently invisible
+    // message behind in the transcript.
+    rerender(
+      <EscCloseProvider>
+        <ReferenceProvider sessionId="test-session">
+          <SetsReference value={null} />
+          <ReferenceOverlay />
+        </ReferenceProvider>
+      </EscCloseProvider>,
+    );
+    act(() => {});
+    expect(host.outerHTML).toBe(originalOuterHTML);
+    expect(host.style.visibility).toBe('');
 
     document.body.removeChild(host);
   });
@@ -329,7 +353,7 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
       kind: 'artifact',
       label: 'lines 1-1 of x.ts',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
 
@@ -365,7 +389,7 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
       kind: 'chat-text',
       label: 'x',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
     expect(document.querySelector('.reference-lift-card')?.firstElementChild).not.toBeNull();
@@ -385,6 +409,90 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     // the clone survives detached in the DOM.
     expect(document.querySelector('.reference-lift')).toBeNull();
     expect(document.querySelector('.reference-lift-card')).toBeNull();
+
+    document.body.removeChild(host);
+  });
+
+  // Dev-review fix B, wired end-to-end: apply-highlight.test.ts pins the
+  // wrapping mechanics in isolation; this proves ReferenceOverlay actually
+  // CALLS applyHighlightMark on the clone with the anchor's captured
+  // offsets, for both kinds — a wiring bug (wrong offsets passed, or never
+  // called at all) wouldn't show up in the isolated unit tests alone.
+  it('applies the reference-mark highlight inside the clone at the anchor\'s captured offsets', () => {
+    const host = makeHost('alpha bravo charlie'); // "bravo" = offsets 6-11
+
+    renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null, selection: { start: 6, end: 11 } },
+    });
+    act(() => {});
+
+    const clone = document.querySelector('.reference-lift-card')?.firstElementChild;
+    expect(clone).not.toBeNull();
+    const mark = clone?.querySelector('mark.reference-mark');
+    expect(mark).not.toBeNull();
+    expect(mark?.textContent).toBe('bravo');
+    // The rest of the clone's text must still be there, untouched.
+    expect(clone?.textContent).toBe('alpha bravo charlie');
+
+    document.body.removeChild(host);
+  });
+
+  it('a selection spanning multiple text nodes in the source highlights each covered run in the clone', () => {
+    const host = document.createElement('div');
+    host.setAttribute('data-test-marker', 'source');
+    const spanA = document.createElement('span');
+    spanA.textContent = 'alpha ';
+    const spanB = document.createElement('span');
+    spanB.textContent = 'bravo';
+    host.appendChild(spanA);
+    host.appendChild(spanB);
+    document.body.appendChild(host);
+
+    // Full text "alpha bravo" (11 chars); offsets 3-8 ("ha br") straddle the
+    // spanA/spanB boundary at offset 6 — same fixture shape as
+    // apply-highlight.test.ts's multi-node case, exercised through the real
+    // component this time.
+    renderOverlay({
+      kind: 'chat-text',
+      label: 'x',
+      promptText: 'x',
+      anchor: { host, range: null, selection: { start: 3, end: 8 } },
+    });
+    act(() => {});
+
+    const clone = document.querySelector('.reference-lift-card')?.firstElementChild;
+    expect(clone).not.toBeNull();
+    const marks = clone?.querySelectorAll('mark.reference-mark');
+    expect(marks).toHaveLength(2);
+    expect(Array.from(marks ?? []).map((m) => m.textContent)).toEqual(['ha ', 'br']);
+    expect(clone?.textContent).toBe('alpha bravo');
+
+    document.body.removeChild(host);
+  });
+
+  it('skips the highlight (renders the clone unmarked, no throw) when the offsets cannot be resolved', () => {
+    const host = makeHost('short');
+
+    // Offsets that don't correspond to anything in a 5-character host —
+    // applyHighlightMark's runs list comes back empty, and ReferenceOverlay
+    // must not let that take down the whole reference.
+    expect(() => {
+      renderOverlay({
+        kind: 'chat-text',
+        label: 'x',
+        promptText: 'x',
+        anchor: { host, range: null, selection: { start: 100, end: 200 } },
+      });
+      act(() => {});
+    }).not.toThrow();
+
+    const clone = document.querySelector('.reference-lift-card')?.firstElementChild;
+    expect(clone).not.toBeNull();
+    expect(clone?.querySelector('mark.reference-mark')).toBeNull();
+    expect(clone?.textContent).toBe('short');
 
     document.body.removeChild(host);
   });
@@ -433,7 +541,7 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
       kind: 'chat-text',
       label: 'x',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
     // Let the RAF-scheduled "Last" transform apply (real timers — see the
@@ -488,7 +596,7 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
       kind: 'artifact',
       label: 'lines 1-1 of x.ts',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
 
@@ -522,18 +630,14 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
   });
 });
 
-// Task 9: reduced-effects fallback. globals.css keys the whole branch off a
-// `data-reduced` attribute stamped by THIS component (there's no
-// data-reduced-effects attribute on <html> to select on — theme-engine.ts
-// only zeroes blur vars for this setting, verified in the task brief), so the
-// only honestly-checkable-in-jsdom claim is the mechanism: does the attribute
-// land on `.reference-trace` and `.reference-lift` when reducedEffects is
-// true, and is it ABSENT (not merely falsy — globals.css's `[data-reduced=
-// "true"]` selector needs the attribute gone entirely) when it's false. What
-// this can NOT prove — computed styles, whether the animation/glow/transition
-// actually stop, whether the lift shadow visually drops back — needs a real
-// dev-instance check (see the task report).
-describe('dev-review fix: the highlight must not be left behind at the source', () => {
+// Dev-review fix C/D: "the artifact panel still puts a weird black box around
+// the selection" / "the traced outline is uneven and janky". The `.reference-
+// trace` SVG (wash fill + animated stroke outline) is deleted entirely — for
+// BOTH kinds, not just the travelling one it was already skipped for. The
+// artifact clip-path (still driven by the same `d` geometry) is what actually
+// keeps the selection bright; it was never rendered THROUGH this SVG, so
+// removing the SVG doesn't touch the clip.
+describe('dev-review fix C/D: no traced SVG outline for either kind', () => {
   function withHost(kind: PendingReference['kind']): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'referenced content';
@@ -541,7 +645,7 @@ describe('dev-review fix: the highlight must not be left behind at the source', 
     vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
       { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect,
     );
-    return { kind, label: 'x', promptText: 'x', anchor: { host, range: null } };
+    return { kind, label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
   }
 
   it('a TRAVELLING (chat) reference renders no source-anchored trace', () => {
@@ -555,11 +659,17 @@ describe('dev-review fix: the highlight must not be left behind at the source', 
     expect(document.querySelector('.reference-trace')).toBeNull();
   });
 
-  it('a NON-travelling (artifact) reference still renders the in-place trace', () => {
-    // Nothing moves here, so the source-anchored outline is exactly right.
+  it('a NON-travelling (artifact) reference ALSO renders no traced outline (the "weird black box" fix)', () => {
+    // Previously this WAS the one case that rendered `.reference-trace` — the
+    // exact "weird black box" / "uneven and janky" outline dev review flagged.
+    // It's gone now; the clip-path (asserted elsewhere) does the real work.
     renderOverlay(withHost('artifact'));
     act(() => {});
-    expect(document.querySelector('.reference-trace')).not.toBeNull();
+    expect(document.querySelector('.reference-trace')).toBeNull();
+    // Sanity: the lift itself still renders and still isn't the travelling case.
+    const lift = document.querySelector('.reference-lift');
+    expect(lift).not.toBeNull();
+    expect(lift?.hasAttribute('data-travels')).toBe(false);
   });
 });
 
@@ -602,70 +712,63 @@ describe('reduced effects (Task 9)', () => {
     );
   }
 
-  // `.reference-trace` only renders when `d` is non-empty (`{d && (<svg .../>)}`
-  // in ReferenceOverlay.tsx), and `d` is empty for a null anchor OR for jsdom's
-  // default all-zero getBoundingClientRect (toBoxes drops zero-area rects) —
-  // same reason the Task 8 lift tests above stub a real rect. A real host with
-  // a stubbed rect is needed here so the trace svg actually mounts.
+  // A real host with a stubbed rect (jsdom's own getBoundingClientRect is
+  // all-zero — no layout engine) so the lift's positioning effects have
+  // something non-degenerate to work with.
   function makeReferenceWithHost(): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'the referenced message';
     document.body.appendChild(host);
     const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
     vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
-    return { kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null } };
+    return { kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
   }
 
-  // The source-anchored trace svg only renders for NON-travelling (artifact)
-  // references now — a travelling chat card carries its own ring/glow in CSS
-  // so nothing is left behind at the source (dev-review fix). So the trace
-  // half of these assertions needs an artifact reference.
   function makeArtifactReferenceWithHost(): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'the referenced lines';
     document.body.appendChild(host);
     const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
     vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
-    return { kind: 'artifact', label: 'x', promptText: 'x', anchor: { host, range: null } };
+    return { kind: 'artifact', label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
   }
 
-  it('stamps data-reduced="true" on the trace svg and the lift when reducedEffects is on', () => {
+  // Dev-review fix C/D deleted `.reference-trace` for both kinds, so its
+  // data-reduced stamping is no longer a thing to assert — only
+  // `.reference-lift`'s remains (it still drives the reduced ring/shadow).
+  it('stamps data-reduced="true" on the lift when reducedEffects is on, for both kinds', () => {
     localStorage.setItem(REDUCED_EFFECTS_KEY, '1'); // ThemeProvider reads this synchronously on mount (theme-context.tsx:139)
     const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
-
-    // Travelling (chat): no source-anchored trace, but the lift is stamped.
     expect(document.querySelector('.reference-trace')).toBeNull();
     expect(document.querySelector('.reference-lift')?.getAttribute('data-reduced')).toBe('true');
     unmount();
 
-    // Non-travelling (artifact): the trace renders and is stamped too.
     renderOverlayWithTheme(makeArtifactReferenceWithHost());
     act(() => {});
-    expect(document.querySelector('.reference-trace')?.getAttribute('data-reduced')).toBe('true');
+    expect(document.querySelector('.reference-trace')).toBeNull();
+    expect(document.querySelector('.reference-lift')?.getAttribute('data-reduced')).toBe('true');
   });
 
-  it('leaves data-reduced entirely absent (not just falsy) when reducedEffects is off', () => {
+  it('leaves data-reduced entirely absent (not just falsy) on the lift when reducedEffects is off, for both kinds', () => {
     // No localStorage write — ThemeProvider's default is reducedEffects: false.
     const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
 
     const lift = document.querySelector('.reference-lift');
     expect(lift).not.toBeNull();
-    expect(lift?.hasAttribute('data-reduced')).toBe(false);
-    unmount();
-
-    renderOverlayWithTheme(makeArtifactReferenceWithHost());
-    act(() => {});
-    const trace = document.querySelector('.reference-trace');
-    expect(trace).not.toBeNull();
     // hasAttribute, not a falsy getAttribute check: React only omits the DOM
     // attribute entirely when the prop value is `undefined`, and globals.css's
     // `[data-reduced="true"]` attribute selector cares about presence, not
     // truthiness — `data-reduced="false"` would still (wrongly) not match
     // this selector but WOULD show up in the DOM, which is a different bug
     // than what this test is pinning.
-    expect(trace?.hasAttribute('data-reduced')).toBe(false);
+    expect(lift?.hasAttribute('data-reduced')).toBe(false);
+    unmount();
+
+    renderOverlayWithTheme(makeArtifactReferenceWithHost());
+    act(() => {});
+    expect(document.querySelector('.reference-lift')?.hasAttribute('data-reduced')).toBe(false);
   });
 });
 
@@ -704,7 +807,7 @@ describe('detached source (Issues A/B: final review)', () => {
       kind: 'chat-text',
       label: 'x',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
 
@@ -732,7 +835,7 @@ describe('detached source (Issues A/B: final review)', () => {
       kind: 'artifact',
       label: 'lines 1-1 of x.ts',
       promptText: 'x',
-      anchor: { host, range: null },
+      anchor: { host, range: null, selection: null },
     });
     act(() => {});
 
@@ -754,7 +857,7 @@ describe('detached source (Issues A/B: final review)', () => {
     const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
     vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
 
-    renderOverlay({ kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null } });
+    renderOverlay({ kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } });
     act(() => {});
 
     const lift = document.querySelector('.reference-lift') as HTMLElement;

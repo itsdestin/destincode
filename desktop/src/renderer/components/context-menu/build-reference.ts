@@ -78,6 +78,44 @@ function captureRange(): Range | null {
   return sel.getRangeAt(0).cloneRange();
 }
 
+/**
+ * Character offsets of `range` relative to `host`'s TEXT — walks host's text
+ * nodes in document order (TreeWalker), accumulating lengths until the
+ * range's start/end containers+offsets are reached (dev-review fix B: show
+ * which part of the message was actually selected inside the moved clone).
+ *
+ * Computed against the LIVE host, not a stripped-chrome copy (contrast
+ * `elementQuote`, which strips `.bubble-timestamp` before reading text) —
+ * ReferenceOverlay later re-walks the CLONE (`host.cloneNode(true)`) with
+ * these same offsets, and `cloneNode` preserves host's exact node order and
+ * text lengths, chrome included. Offsets computed against a stripped copy
+ * would silently drift once the clone's un-stripped chrome text nodes are
+ * counted differently.
+ *
+ * Only resolves the simple, common case where the Range's start/end
+ * containers ARE text nodes (true for a plain click-drag selection, which is
+ * what `selectionText()`/`captureRange()` already require to be non-empty).
+ * Returns null — never throws — when a container isn't found among host's
+ * text nodes, so the caller can skip the highlight instead of crashing the
+ * reference capture.
+ */
+function computeSelectionOffsets(host: Element, range: Range): { start: number; end: number } | null {
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let start: number | null = null;
+  let end: number | null = null;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const len = (node as Text).data.length;
+    if (start === null && node === range.startContainer) start = offset + range.startOffset;
+    if (end === null && node === range.endContainer) end = offset + range.endOffset;
+    offset += len;
+    if (start !== null && end !== null) break;
+  }
+  if (start === null || end === null || end <= start) return null;
+  return { start, end };
+}
+
 /** One-line, bounded placeholder copy. Newlines collapse so it can't wrap. */
 export function truncateLabel(text: string, max = 42): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -125,12 +163,13 @@ export function buildChatReference(bubble: Element | null, target: HTMLElement):
 
   const host = (bubble ?? target) as Element;
   const range = selectionText().trim() ? captureRange() : null;
+  const selection = range ? computeSelectionOffsets(host, range) : null;
 
   return {
     kind: 'chat-text',
     label: `"${truncateLabel(quote)}"`,
     promptText: buildScaffold(lead, quote, false),
-    anchor: { host, range },
+    anchor: { host, range, selection },
   };
 }
 
@@ -140,7 +179,10 @@ export function buildCodeReference(pre: HTMLElement): PendingReference {
     kind: 'chat-code',
     label: truncateLabel(code),
     promptText: buildScaffold(LEAD_CODE, code, true),
-    anchor: { host: pre, range: null },
+    // No live-selection concept here: buildCodeReference always quotes the
+    // WHOLE <pre> block (never a partial selection), so there's nothing to
+    // highlight inside the clone.
+    anchor: { host: pre, range: null, selection: null },
   };
 }
 
@@ -154,6 +196,8 @@ export function buildArtifactReference(container: HTMLElement): PendingReference
   if (!sel || !path) return null;
 
   const ref = describeArtifactSelection(sel, container);
+  const range = captureRange();
+  const selection = range ? computeSelectionOffsets(container, range) : null;
 
   return {
     kind: 'artifact',
@@ -161,6 +205,6 @@ export function buildArtifactReference(container: HTMLElement): PendingReference
     // line form reads well with "of <file>".
     label: ref.startsWith('line') ? `${ref} of ${baseName(path)}` : truncateLabel(ref),
     promptText: buildArtifactScaffold(ref, path),
-    anchor: { host: container, range: captureRange() },
+    anchor: { host: container, range, selection },
   };
 }

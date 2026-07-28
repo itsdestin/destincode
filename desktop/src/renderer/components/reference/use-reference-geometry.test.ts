@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 function makeAnchor(host: Element, range: Range | null): ReferenceAnchor {
-  return { host, range };
+  return { host, range, selection: null };
 }
 
 // jsdom's Range has no getClientRects at all (not even a no-op) — vi.spyOn

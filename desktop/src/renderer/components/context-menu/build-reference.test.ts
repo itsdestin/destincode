@@ -99,6 +99,63 @@ describe('buildChatReference', () => {
   });
 });
 
+// Dev-review fix B: "it doesn't show that I was asking about a specific
+// selection" — the anchor now carries character offsets, relative to the
+// host's TEXT, of exactly what was selected. These round-trip tests fail
+// against the pre-fix code because `anchor.selection` doesn't exist there at
+// all (TypeScript would reject `ref.anchor?.selection`, and at runtime the
+// property reads `undefined`).
+describe('selection offset capture (dev-review fix B)', () => {
+  it('round-trips a plain substring selection to matching offsets', () => {
+    const el = mountBubble('assistant-bubble', 'alpha bravo charlie');
+    selectWithin(el, 6, 11); // "bravo"
+    const ref = buildChatReference(el, el)!;
+    expect(ref.anchor?.selection).toEqual({ start: 6, end: 11 });
+    // The offsets must map back onto the SAME text they were captured from.
+    expect(el.textContent!.slice(6, 11)).toBe('bravo');
+  });
+
+  it('is null when there is no live selection (whole-element reference)', () => {
+    const el = mountBubble('assistant-bubble', 'no selection here');
+    const ref = buildChatReference(el, el)!;
+    expect(ref.anchor?.range).toBeNull();
+    expect(ref.anchor?.selection).toBeNull();
+  });
+
+  it('walks PAST a later chrome text node without corrupting the offsets (host text includes chrome)', () => {
+    // Mirrors a real bubble: content text node, then a chrome element
+    // (.bubble-timestamp) with its OWN, separate text node — both under the
+    // same host. Offsets are deliberately computed against the host's FULL
+    // text-node walk, chrome included (see computeSelectionOffsets's WHY
+    // comment): ReferenceOverlay repeats this exact walk over the
+    // cloneNode(true) copy later, and cloneNode preserves the chrome too.
+    const el = document.createElement('div');
+    el.className = 'assistant-bubble';
+    el.innerHTML = 'alpha bravo charlie<div class="bubble-timestamp">12:55 AM</div>';
+    document.body.appendChild(el);
+
+    selectWithin(el, 6, 11); // selects within el.firstChild -> "bravo"
+    const ref = buildChatReference(el, el)!;
+    expect(ref.anchor?.selection).toEqual({ start: 6, end: 11 });
+  });
+
+  it('artifact references also capture selection offsets, relative to the container', () => {
+    const container = document.createElement('div');
+    container.setAttribute('data-artifact-viewer', 'true');
+    container.setAttribute('data-doc-path', 'docs/notes.txt');
+    container.setAttribute('data-artifact-source', 'raw');
+    const pre = document.createElement('pre');
+    pre.textContent = 'alpha\nbravo\ncharlie';
+    container.appendChild(pre);
+    document.body.appendChild(container);
+
+    selectWithin(pre, 6, 11); // "bravo"
+    const ref = buildArtifactReference(container)!;
+    expect(ref.anchor?.selection).toEqual({ start: 6, end: 11 });
+    expect(container.textContent!.slice(6, 11)).toBe('bravo');
+  });
+});
+
 describe('buildCodeReference', () => {
   it('fences the code block and strips trailing newlines', () => {
     const pre = document.createElement('pre');

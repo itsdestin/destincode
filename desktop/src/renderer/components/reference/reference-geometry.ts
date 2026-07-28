@@ -46,10 +46,12 @@ export function buildUnionPath(boxes: Box[]): string {
  * Shifts every coordinate pair in a `buildUnionPath` string by (dx, dy).
  *
  * Task 8's artifact-reference clip-path needs this: `d` is built in VIEWPORT
- * coordinates (use-reference-geometry.ts's `origin = {left:0,top:0}`), which
- * is exactly right for the trace SVG (`.reference-trace` is `position:fixed;
- * inset:0`, so its own border box origin IS the viewport origin). But CSS
- * `clip-path: path(...)` resolves its coordinates against the top-left of the
+ * coordinates (use-reference-geometry.ts's `origin = {left:0,top:0}` — a
+ * carry-over from when it also fed a `position:fixed; inset:0` traced SVG,
+ * `.reference-trace`, since removed in a dev-review pass; the viewport-origin
+ * choice stayed because it's still the natural coordinate space for a
+ * `getBoundingClientRect()`-derived path). CSS `clip-path: path(...)`
+ * resolves its coordinates against the top-left of the
  * CLIPPED ELEMENT'S OWN reference box (border-box by default) — the same rule
  * `polygon()`/`circle()` use for percentages — NOT the viewport. The lifted
  * clone's box is pinned at the source's rect, not at (0,0), so its path must

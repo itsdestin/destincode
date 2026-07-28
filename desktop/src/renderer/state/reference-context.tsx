@@ -12,6 +12,20 @@ export type ReferenceAnchor = {
   host: Element;
   /** Live Range over the selection, or null for a whole-element reference. */
   range: Range | null;
+  /**
+   * Character offsets of the selection relative to `host`'s TEXT (walked via
+   * TreeWalker, same node order `host.cloneNode(true)` preserves) — null when
+   * there was no live selection to capture, or the offsets couldn't be
+   * resolved. Dev-review fix: the centred/pinned clone used to show the whole
+   * message with no indication of which part was actually selected ("it
+   * doesn't show that I was asking about a specific selection"). Offsets,
+   * not the Range itself, are what ReferenceOverlay re-applies to the CLONE —
+   * the clone is a structurally-identical copy (same text-node order/
+   * lengths), so an offset pair computed against the live host maps onto it
+   * without needing the original Range object (which points at nodes that
+   * belong to the source, not the clone).
+   */
+  selection: { start: number; end: number } | null;
 };
 
 export type PendingReference = {

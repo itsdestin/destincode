@@ -910,28 +910,31 @@ body[data-reference-held] .bottom-float {
    ═══════════════════════════════════════════════════════════════════════════ */
 .reference-scrim {
   --ref-stroke: var(--accent);
-  --ref-wash: color-mix(in oklab, var(--accent) 12%, transparent);
   --ref-glow: color-mix(in oklab, var(--accent) 45%, transparent);
   /* 2.5x the standard overlay shadow: reads as lifted on light themes
      (0.2 -> 0.5) without going murky on dark ones (0.1 -> 0.25). */
   --ref-lift-shadow: 0 24px 64px rgba(0, 0, 0, calc(var(--shadow-strength, 0.15) * 2.5));
 }
 
-.reference-trace { position: fixed; inset: 0; pointer-events: none; overflow: visible; }
-.reference-trace path.wash { fill: var(--ref-wash); stroke: none; }
-.reference-trace path.outline {
-  fill: none;
-  stroke: var(--ref-stroke);
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 5px var(--ref-glow));
-  stroke-dasharray: 100;
-  stroke-dashoffset: 100;
-  animation: reference-trace-in 620ms 120ms cubic-bezier(.4, 0, .2, 1) forwards,
-             reference-breathe 2800ms 740ms ease-in-out infinite;
+/* Dev-review fix C/D removed the traced SVG outline entirely (`.reference-
+   trace`, its wash/outline paths, and the `reference-trace-in`/
+   `reference-breathe` keyframes that drove it) — it was both "the weird
+   black box" around an artifact selection and "uneven and janky" as an
+   outline. `--ref-wash` (the fill it used) went with it; `--ref-stroke` and
+   `--ref-glow` survive below, reused by the travelling clone's own ring.
+   The artifact clip-path (ReferenceOverlay.tsx) still does the real work of
+   keeping only the referenced lines bright above the dim — it never rendered
+   through this SVG, just shared its `d` geometry. */
+
+/* Dev-review fix B: the highlighted span inside a reference clone (chat and
+   artifact both — see apply-highlight.ts). Theme tokens only: a literal
+   colour here would break every community theme, same rule as the rest of
+   this block. */
+.reference-mark {
+  background: color-mix(in oklab, var(--accent) 28%, transparent);
+  color: inherit;
+  border-radius: var(--radius-sm);
 }
-@keyframes reference-trace-in { to { stroke-dashoffset: 0; } }
-@keyframes reference-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 
 /* The lifted clone. Chat references travel to centre; artifact references do
    NOT (their selection is already where the user is looking) — spec 2.2. */
@@ -1009,10 +1012,11 @@ body[data-reference-held] .bottom-float {
   overflow-y: auto;
 }
 
-/* Reduced effects (Task 9): outline only. Kills the trace animation, the
-   breathing pulse, the glow drop-shadow, and the travel easing — leaving a
-   static accent border and the standard overlay shadow. Every new visual
-   effect in this app gets one of these branches; no exceptions.
+/* Reduced effects (Task 9): drops the travel easing and the amplified glow —
+   leaving a static accent ring and the standard overlay shadow. Every new
+   visual effect in this app gets one of these branches; no exceptions.
+   (The trace-animation/breathing-pulse half of this comment's original scope
+   was removed along with `.reference-trace` itself — dev-review fix C/D.)
 
    Keyed off data-reduced stamped by ReferenceOverlay.tsx, NOT an html
    attribute: verified 2026-07-26 that theme-engine.ts applies reducedEffects
@@ -1027,12 +1031,6 @@ body[data-reference-held] .bottom-float {
    that wrapper the same box-shadow treatment as the card, same class of bug
    the non-reduced `.reference-lift > .reference-lift-card` rule above was
    already scoped to avoid. Scoped to `.reference-lift-card` here too. */
-.reference-trace[data-reduced="true"] path.outline {
-  animation: none;
-  stroke-dashoffset: 0;
-  stroke-width: 2;
-  filter: none;
-}
 .reference-lift[data-reduced="true"] { transition: none; }
 /* Only the travelling (chat) case gets the amplified `--ref-lift-shadow` in
    the first place (the non-travelling/artifact rule just above sets
@@ -1050,7 +1048,6 @@ body[data-reference-held] .bottom-float {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .reference-trace path.outline { animation: none; stroke-dashoffset: 0; }
   .reference-lift { transition: none; }
 }
 

@@ -7,12 +7,15 @@ import { useTheme } from '../../state/theme-context';
 import { useEscClose, useEscStackDepth } from '../../hooks/use-esc-close';
 import { useReferenceGeometry } from './use-reference-geometry';
 import { shiftPath } from './reference-geometry';
+import { applyHighlightMark } from './apply-highlight';
 
 /**
  * The held "Ask Claude about this" reference (spec 2026-07-26).
  *
- * One app-wide instance. Owns the window-wide dim; Tasks 7 and 8 add the traced
- * outline and the lifted clone on top of this shell.
+ * One app-wide instance. Owns the window-wide dim; Task 8 adds the lifted
+ * clone on top of this shell. (Task 7's traced SVG outline was removed in the
+ * dev-review pass — see the WHY comment below `useReferenceGeometry` — but
+ * its underlying geometry hook lives on, feeding the artifact clip-path.)
  *
  * Window-wide, not pane-scoped — Destin's 10B call: "dim should apply to the
  * whole window so it's obvious what is being highlighted / what the user is
@@ -28,11 +31,15 @@ export function ReferenceOverlay() {
   const { reducedEffects } = useTheme();
   const depth = useEscStackDepth();
   const depthAtOpen = useRef<number | null>(null);
-  // Task 7: the traced outline around the referenced content. Task 8 also
-  // reuses `d` directly for the artifact clip-path (see the lift effect
-  // below) — the hook used to return raw `rects` too, for a redraw approach
-  // that was dropped in favor of clipping the clone, so that field was
-  // deleted as dead code.
+  // Task 7 originally drew `d` as a visible traced SVG outline around the
+  // referenced content. Dev review flagged it as "the weird black box" /
+  // "uneven and janky" — that rendering is gone (see the JSX below), but the
+  // hook and `d` itself stay: Task 8 still needs `d` for the artifact
+  // clip-path (see the lift effect below), which is what actually keeps only
+  // the referenced lines bright above the dim. (The hook used to return raw
+  // `rects` too, for a redraw approach dropped in favor of clipping the
+  // clone; that field was deleted as dead code back then, unrelated to this
+  // pass.)
   const { d } = useReferenceGeometry(reference?.anchor ?? null);
 
   // Task 8: chat references lift a clone to the viewport centre; artifact
@@ -73,9 +80,77 @@ export function ReferenceOverlay() {
     if (!src) return;
     const copy = src.cloneNode(true) as HTMLElement;
     // (nothing to strip — the anchor never wrote attributes onto the source)
+
+    // Dev-review fix B: show WHICH PART was selected, inside the clone.
+    // `selection` is a pair of character offsets computed against the LIVE
+    // host (build-reference.ts's computeSelectionOffsets) — they map onto
+    // `copy` unchanged because cloneNode(true) preserves host's exact
+    // text-node order and lengths. Applied to the CLONE, never the source:
+    // mutating a detached clone is safe (see apply-highlight.ts's WHY
+    // comment); mutating the live source is exactly the class of change that
+    // crashed React's reconciler under the withdrawn surroundContents()
+    // design. Best-effort — if the offsets don't resolve (e.g. a stale
+    // selection that no longer maps onto the current DOM shape),
+    // applyHighlightMark silently no-ops rather than throwing, so a bad
+    // offset degrades to "no highlight" instead of a broken reference.
+    const sel = reference.anchor.selection;
+    if (sel) {
+      try {
+        applyHighlightMark(copy, sel.start, sel.end);
+      } catch {
+        // Skip the highlight rather than losing the whole clone over it.
+      }
+    }
+
     holder.replaceChildren(copy);
     return () => holder.replaceChildren();
   }, [reference]);
+
+  // Dev-review fix 1: "I don't like that I can see both the original message
+  // and the centered message. It should be the same bubble that appears to
+  // move." Hide the SOURCE bubble for the duration a CHAT (travelling)
+  // reference is held, so the clone reads as the original having moved
+  // rather than a second copy appearing alongside it. Scoped to `travels`
+  // only — the artifact (pinned/clipped) case deliberately still shows the
+  // dimmed original underneath its clipped-bright clone; hiding it there
+  // would blank out everything outside the selection instead of dimming it.
+  //
+  // visibility: hidden, NOT display: none — the transcript's layout box must
+  // stay in place. display: none would collapse the row's height and reflow
+  // every message below it while the dim is up, which is its own visible
+  // glitch (and would also break the FLIP "First" measurement, which reads
+  // the source's live rect).
+  //
+  // Inline style only, restored to its EXACT prior value (not hardcoded back
+  // to ''): some other feature could already have an inline `visibility` on
+  // this element for an unrelated reason, and clobbering that on clear would
+  // leave it wrong. This is NOT the same class of change as the withdrawn
+  // Range.surroundContents() design (see reference-context.tsx's WHY
+  // comment) — that SPLIT TEXT NODES, a structural DOM mutation React's
+  // fiber tree loses track of. Toggling one existing inline style property
+  // adds/removes no nodes, classes, or attributes, and React never wrote
+  // this property itself, so there is nothing for the next reconcile to
+  // disagree with.
+  useEffect(() => {
+    if (!reference?.anchor || !travels) return;
+    const src = reference.anchor.host as HTMLElement;
+    if (!src || !src.style) return;
+    const prevVisibility = src.style.visibility;
+    // Remember whether `style` existed at all BEFORE we touch it: setting a
+    // longhand property back to '' correctly drops it from cssText (verified
+    // against jsdom — `style.length` falls back to 0 when it was the only
+    // property), but browsers never auto-remove the now-empty `style=""`
+    // ATTRIBUTE itself, only an explicit removeAttribute does. Restoring
+    // "exactly" means the source ends up with NO style attribute at all if it
+    // never had one — not a harmless-looking but still-different `style=""`
+    // husk left behind in the live transcript's markup.
+    const hadStyleAttr = src.hasAttribute('style');
+    src.style.visibility = 'hidden';
+    return () => {
+      src.style.visibility = prevVisibility;
+      if (!hadStyleAttr && src.style.length === 0) src.removeAttribute('style');
+    };
+  }, [reference, travels]);
 
   // FLIP: place the clone exactly over the real element (First), then
   // transform it to the viewport centre (Last) — chat references only.
@@ -201,17 +276,15 @@ export function ReferenceOverlay() {
     node.style.transform = 'translate(0, 0)';
 
     // `d` is built in VIEWPORT coordinates (use-reference-geometry.ts's
-    // `origin = {left:0,top:0}`), which lines up for free with the trace
-    // SVG (`.reference-trace` is `position:fixed; inset:0`, so ITS border
-    // box origin IS the viewport origin). It does NOT line up for free
-    // here: `clip-path: path()` resolves its coordinates against the
-    // clipped element's OWN border box — this node's box starts at
-    // (s.left, s.top), not (0,0), because it's pinned over the source.
-    // Verified against the CSS Shapes spec (path() uses the same
-    // reference-box rule polygon()/circle() use for percentages), not
-    // assumed. Without shiftPath the clip silently lands offset by the
-    // source's own position — correct only for a source pinned at the
-    // viewport origin, which is not the general case.
+    // `origin = {left:0,top:0}`). `clip-path: path()` does NOT resolve its
+    // coordinates against the viewport — it resolves against the clipped
+    // element's OWN border box, and this node's box starts at (s.left,
+    // s.top), not (0,0), because it's pinned over the source. Verified
+    // against the CSS Shapes spec (path() uses the same reference-box rule
+    // polygon()/circle() use for percentages), not assumed. Without
+    // shiftPath the clip silently lands offset by the source's own
+    // position — correct only for a source pinned at the viewport origin,
+    // which is not the general case.
     node.style.clipPath = d ? `path('${shiftPath(d, -s.left, -s.top)}')` : 'none';
   }, [reference, travels, d]);
 
@@ -277,25 +350,15 @@ export function ReferenceOverlay() {
 
   return createPortal(
     <Scrim layer={2} onClick={clearReference} className="reference-scrim">
-      {/* Traced outline around the referenced selection/element (Task 7).
-          pathLength={100} normalizes both paths' length to 100 units so the
-          fixed 100-unit stroke-dasharray/breathe animation in globals.css
-          works regardless of the actual traced perimeter. Empty when the
-          source is gone (host disconnected) — nothing renders in that case. */}
-      {/* Only the NON-travelling (artifact) case gets the source-anchored trace.
-          `d` is measured from anchor.host where it actually sits, so for a
-          travelling chat reference — whose card flies to the viewport centre —
-          it would paint a hard outlined box around the EMPTY space the bubble
-          left behind (Destin, dev review: "the black box visible around where
-          the message bubble was originally"). The travelling card carries its
-          own ring + glow in CSS instead, so the highlight hugs the card and
-          travels with it by construction. */}
-      {d && !travels && (
-        <svg className="reference-trace" aria-hidden="true" data-reduced={reducedEffects ? 'true' : undefined}>
-          <path className="wash" d={d} />
-          <path className="outline" d={d} pathLength={100} />
-        </svg>
-      )}
+      {/* Dev-review fix C/D: the traced SVG outline (formerly rendered here for
+          the non-travelling/artifact case) is GONE — it was both "the weird
+          black box" around the selection and "uneven and janky" (Destin, dev
+          review). `d` and `useReferenceGeometry` stay: the artifact clone
+          below still needs `d` for its clip-path (that's what keeps only the
+          referenced lines bright above the dim), it's just no longer also
+          drawn as a visible stroke. The travelling clone already has its own
+          ring + glow in CSS, and now the selection highlight from fix B too —
+          between the two, nothing is left needing a traced outline. */}
       {/* Task 8: the clone. Chat kinds travel to centre (`data-travels`
           drives the CSS transition + the non-clipping shadow/scroll rules);
           artifact kinds stay pinned over the source and get clipped instead
