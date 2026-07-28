@@ -30,6 +30,7 @@ import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
+import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
 
@@ -600,6 +601,10 @@ export class NativeSessionHost extends EventEmitter {
     // runSkill, NOT send: the model needs the instructions but the TIMELINE needs
     // to show what the user did. Sending the body through send() rendered a 26k
     // character SKILL.md as a chat bubble (Destin, 2026-07-28).
+    // frameSkillInvocation owns the wording, which IS the mechanism here — see
+    // its header. It also places the user's own args last.
+    const body = frameSkillInvocation(loaded.id, fitted.text, args);
+
     entry.inFlight = true;
     // Same setImmediate defer as send(): the IPC reply must flush BEFORE the
     // session emits its transcript event, or the confirm can beat the ack to the
@@ -608,8 +613,9 @@ export class NativeSessionHost extends EventEmitter {
       void this.runTurns(sessionId, entry, () => entry.session.runSkill({
         skillId: loaded.id,
         displayName: loaded.displayName,
-        body: `<skill-instructions name="${loaded.id}">\n${fitted.text}\n</skill-instructions>`,
-        args,
+        body,
+        // NOT passed to runSkill: frameSkillInvocation already placed them last
+        // inside `body`. Passing them here too would repeat the user's words.
         skillPath: loaded.file,
       }));
     });
