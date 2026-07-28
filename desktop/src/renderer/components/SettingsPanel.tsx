@@ -692,7 +692,12 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         open={open}
         onClose={() => setOpen(false)}
         aria-label="Appearance"
-        size="document"
+        // A panel, not a document. Its theme cards are a 6px gradient strip and
+        // a truncated name -- there is no canvas to size for, so the grid sets
+        // no meaningful width floor. At panel width the 2-up cards are 194px,
+        // which is ample for a strip plus a label and two 20px icons. Sizing it
+        // as a document made it 600px wide for content that needed none of it.
+        size="panel"
         fill
         scrollBody={false}
         panelRef={popupRef}
