@@ -120,7 +120,7 @@ const INFO_TABS: { id: InfoTabId; label: string; Icon: React.ComponentType<IconP
 // Small uppercase micro-label (the prototype's `.lbl`).
 function MicroLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-3xs font-medium tracking-wider uppercase text-fg-muted">
+    <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
       {children}
     </div>
   );

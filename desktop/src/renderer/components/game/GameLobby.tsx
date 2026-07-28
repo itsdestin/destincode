@@ -416,7 +416,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Incoming friend requests */}
       {incoming.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Friend requests</div>
           <ul className="flex flex-col gap-2">
             {incoming.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -462,7 +462,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
       {/* Add a friend by handle */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
-        <div className="text-3xs uppercase tracking-wider text-fg-muted">Add a friend</div>
+        <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Add a friend</div>
         {/* Change 77: "Send request" moves INSIDE the field. It was left
             `variant="secondary" size="lg"` purely so it would height-match the
             input sitting beside it — inside the field there is nothing to
@@ -497,7 +497,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Friends list */}
       {merged.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Friends ({merged.length})</div>
           <ul className="flex flex-col gap-2">
             {merged.map((row) => (
               <li key={row.id} className="flex flex-col gap-0.5">
@@ -544,7 +544,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Sent (outgoing) requests — dim, collapsed-feeling */}
       {outgoing.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Sent requests</div>
           <ul className="flex flex-col gap-1">
             {outgoing.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">

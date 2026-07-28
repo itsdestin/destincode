@@ -9,10 +9,9 @@
 // remote WebSocket. The one platform difference is opening the verification URL
 // (shell.openExternal on Electron; a copyable link on remote — see below).
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { getPlatform } from '../platform';
-import { Button } from './ui';
+import { Button, Dialog } from './ui';
 
 type Stage = 'checking' | 'gh-missing' | 'code' | 'done' | 'error';
 
@@ -190,13 +189,13 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
 
   return (
     <>
-      <Scrim layer={2} onClick={handleClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal
-        aria-labelledby="connect-github-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[26rem] max-w-[calc(100vw-2rem)] p-5"
+      <Dialog
+        open
+        onClose={handleClose}
+        size="panel"
+        aria-label="Connect GitHub"
+        scrollBody={false}
+        className="p-5"
       >
         {/* Header — consistent across every stage */}
         <div className="flex items-start justify-between gap-3">
@@ -373,7 +372,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
             </div>
           </div>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
@@ -8,14 +7,13 @@ import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
-import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
 import OpenTasksChip from './OpenTasksChip';
 import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
-import { CloseButton } from './ui';
+import { Dialog } from './ui';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -510,7 +508,6 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
   // so the Theme pill's cycle can be edited without leaving the widget popup.
   const { allThemes, cycleList, setCycleList } = useTheme();
   // Scroll-fade: hide scrollbar, fade edges to signal hidden scroll room.
-  const widgetListRef = useScrollFade<HTMLDivElement>();
 
   if (!open) return null;
 
@@ -526,34 +523,13 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
   return createPortal(
     <>
-      {/* Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
-          Layout mirrors ResumeBrowser: outer flex wrapper centers the panel,
-          panel uses position:relative + flex-col + max-h so its flex-1 scroll
-          region actually has a bounded height to scroll within. The prior
-          position:fixed + transform approach broke the height constraint. */}
-      <Scrim layer={2} onClick={onClose} />
-      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
-        <OverlayPanel
-          layer={2}
-          className="w-full max-w-[420px] max-h-[80vh] flex flex-col pointer-events-auto"
-          style={{ position: 'relative', zIndex: 'auto' }}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-            <h2 className="text-sm font-bold text-fg">Status Bar Widgets</h2>
-            <CloseButton onClick={onClose} label="Close status bar widgets" />
-          </div>
-
-          {/* Widget list grouped by category — scrolls within the panel.
-              No flex-1: OverlayPanel only has max-h (indefinite height), which breaks
-              flex-grow in Chromium. Using default flex: 0 1 auto lets flex-shrink
-              clamp this div when content exceeds max-h so overflow-y: auto engages
-              and the scroll-fade hook sees a real scroll. */}
-          {/* Padding lives on an inner wrapper so the scroll-fade element itself has
-              no padding — sticky fade pseudos then sit flush with the scroll-fade's
-              outer edge. Rounded corners are clipped via overflow:hidden on .layer-surface. */}
-          <div ref={widgetListRef} className="scroll-fade">
-            <div className="px-4 py-3 space-y-4">
+      {/* This popup already used the outer-flex-wrapper centering that Dialog
+          now owns -- it was one of the two places that had independently
+          discovered transform centering breaks a bounded scroll region. Its
+          "No flex-1" workaround is gone too: that was needed because its body
+          was a bare overflow-y-auto div with no min-height:0, which .scroll-fade
+          supplies. */}
+      <Dialog open onClose={onClose} title="Status Bar Widgets" size="panel">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
                 <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
@@ -687,10 +663,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                 </div>
               </section>
             ))}
-            </div>
-          </div>
-        </OverlayPanel>
-      </div>
+      </Dialog>
     </>,
     document.body
   );

@@ -1,10 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Toggle } from './SettingsPanel';
-import { CloseButton } from './ui';
+import { Dialog, SettingRow } from './ui';
 import { formatVersionLine } from '../../shared/version-line';
 
 // Shared About popup for Desktop and Android settings. Previously this was an
@@ -69,18 +67,17 @@ function AnalyticsOptInToggle() {
   };
 
   return (
-    <div className="flex items-center justify-between mt-2">
-      <div>
-        <span className="text-xs text-fg font-medium">Share anonymous usage stats</span>
-        <p className="text-3xs text-fg-muted mt-0.5">Sends a daily ping with the fields listed above.</p>
-      </div>
-      <Toggle enabled={optIn} onToggle={flip} />
-    </div>
+    <SettingRow
+      className="mt-2"
+      variant="item"
+      title="Share anonymous usage stats"
+      description="Sends a daily ping with the fields listed above."
+      control={<Toggle enabled={optIn} onToggle={flip} label="Share anonymous usage stats" />}
+    />
   );
 }
 
 export default function AboutPopup({ open, onClose, platform, version, build, channel }: AboutPopupProps) {
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   // Escape-to-close, matching PreferencesPopup/ModelPickerPopup convention.
   useEscClose(open, onClose);
@@ -92,33 +89,10 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="about-popup-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* See-through header — matches ModelPickerPopup / StatusBar popups.
-            No bg-panel here: the opaque header rectangle would clip sharp top
-            corners over the parent's rounded .layer-surface. */}
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <div>
-            <h3 id="about-popup-title" className="text-sm font-semibold text-fg">About</h3>
-            <p className="text-3xs text-fg-muted mt-0.5">{versionLine}</p>
-          </div>
-          <CloseButton onClick={onClose} />
-        </div>
-
-        {/* Padding lives on an inner wrapper so scroll-fade has no padding;
-            sticky fade pseudos then sit flush with the scroll-fade's outer edge. */}
-        <div ref={scrollRef} className="scroll-fade">
-          <div className="p-5 space-y-5">
+      <Dialog open onClose={onClose} title="About" subtitle={versionLine} size="panel">
           {/* Disclaimer — identical on both platforms */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Disclaimer</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Disclaimer</h3>
             <p className="text-2xs text-fg-dim leading-relaxed">
               YouCoded is an independent, community-built project. It is not affiliated with, endorsed by, or officially supported by Anthropic.
             </p>
@@ -130,8 +104,6 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
             </p>
           </section>
 
-          <hr className="border-edge-dim" />
-
           {/* Privacy — platform-specific. Copy is user-approved (see
               docs/superpowers/specs/2026-04-23-analytics-privacy-copy-draft.md);
               do not edit wording without re-approval. The <AnalyticsOptInToggle />
@@ -140,7 +112,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               games line were added by accounts Phase 2 (wording approved by
               Destin 2026-07-09). */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Privacy</h3>
             {platform === 'desktop' ? (
               <>
                 <p className="text-2xs text-fg-dim leading-relaxed">
@@ -203,11 +175,9 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
             )}
           </section>
 
-          <hr className="border-edge-dim" />
-
           {/* Licenses — platform-specific intro + lib list */}
           <section className="space-y-1.5">
-            <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Licenses</h4>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Licenses</h3>
             {platform === 'desktop' ? (
               <>
                 <p className="text-2xs text-fg-dim leading-relaxed">
@@ -236,9 +206,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               ))}
             </div>
           </section>
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

@@ -1,10 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Toggle, TextInput, Textarea, LoadingState, Radio, RadioGroup } from './ui';
+import { Button, Dialog, Toggle, TextInput, Textarea, LoadingState, RadioGroup, SegmentedTabs, SettingRow } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -57,7 +55,6 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
   useEscClose(open, onClose);
   const [prefs, setPrefs] = useState<PrefsState>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   // Per-turn metadata toggle is a theme-context preference (localStorage-backed),
   // not a Claude Code settings.json field — source state from useTheme(), not prefs.
   const { showTurnMetadata, setShowTurnMetadata } = useTheme();
@@ -118,33 +115,17 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
   if (!open) return null;
 
   return createPortal(
-    // Overlay layer L2 via <Scrim>/<OverlayPanel>; scrim, blur, shadow all
-    // driven by theme tokens — previously hardcoded bg-black/40.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="shrink-0 bg-panel border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 className="text-sm font-semibold text-fg">Claude Code Preferences</h3>
-          <CloseButton onClick={onClose} label="Close preferences" />
-        </div>
-
+      <Dialog open={open} onClose={onClose} title="Claude Code Preferences" size="panel">
         {!loaded ? (
           <LoadingState what="preferences" />
         ) : (
-          // Padding on inner wrapper so scroll-fade is unpadded — sticky fades flush.
-          <div ref={scrollRef} className="scroll-fade">
-            <div className="p-5 space-y-5">
+          <>
             {/* Permission default */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Default Permission Mode
-              </label>
+              </h3>
               {/* Change 39: native radios → the Radio primitive inside a
                   RadioGroup (one tab stop + arrow-key nav via roving tabindex).
                   The row stays fully clickable; the Radio is the visual mark. */}
@@ -156,54 +137,42 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
                 className="space-y-1.5"
               >
                 {(Object.keys(PERMISSION_LABELS) as PermissionDefault[]).map((mode) => (
-                  <div
+                  <SettingRow
                     key={mode}
-                    onClick={() => save('defaultMode', mode)}
-                    className="flex items-start gap-3 p-2 rounded hover:bg-inset cursor-pointer"
-                  >
-                    <Radio
-                      checked={prefs.defaultMode === mode}
-                      onChange={() => save('defaultMode', mode)}
-                      tabIndex={prefs.defaultMode === mode ? 0 : -1}
-                      aria-label={PERMISSION_LABELS[mode].label}
-                      className="mt-0.5"
-                    />
-                    <div>
-                      <div className="text-sm text-fg">{PERMISSION_LABELS[mode].label}</div>
-                      <div className="text-xs text-fg-muted">{PERMISSION_LABELS[mode].desc}</div>
-                    </div>
-                  </div>
+                    variant="item"
+                    title={PERMISSION_LABELS[mode].label}
+                    description={PERMISSION_LABELS[mode].desc}
+                    selected={prefs.defaultMode === mode}
+                    onSelect={() => save('defaultMode', mode)}
+                    radioTabIndex={prefs.defaultMode === mode ? 0 : -1}
+                  />
                 ))}
               </RadioGroup>
             </section>
 
             {/* Editor mode */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Editor Mode
-              </label>
-              <div className="flex gap-2">
-                {(['normal', 'vim'] as EditorMode[]).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => save('editorMode', m)}
-                    className={`flex-1 py-1.5 px-3 text-sm rounded transition-colors ${
-                      prefs.editorMode === m
-                        ? 'bg-accent text-on-accent'
-                        : 'bg-inset text-fg-2 hover:bg-well'
-                    }`}
-                  >
-                    {m === 'normal' ? 'Normal' : 'Vim'}
-                  </button>
-                ))}
-              </div>
+              </h3>
+              {/* K3: <=4 short options with no description -> segmented. */}
+              <SegmentedTabs
+                variant="contained"
+                aria-label="Editor Mode"
+                value={prefs.editorMode}
+                onChange={(id) => save('editorMode', id as EditorMode)}
+                tabs={[
+                  { id: 'normal', label: 'Normal' },
+                  { id: 'vim', label: 'Vim' },
+                ]}
+              />
             </section>
 
             {/* Output style */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Output Style
-              </label>
+              </h3>
               {/* Shared FIELD surface (change 20) — was its own rounded/px-3 py-1.5
                   recipe. The uppercase <label> above has no htmlFor, so the field
                   carries its own accessible name. */}
@@ -241,9 +210,9 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
 
             {/* System prompt */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 System Prompt
-              </label>
+              </h3>
               {/* Same FIELD surface as the input above (change 20). resize-none was
                   already the behavior here and is the Textarea default. */}
               <Textarea
@@ -277,26 +246,28 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
               </p>
             </section>
             )}
-            </div>
-          </div>
+          </>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
 }
 
+// K2: was the app's only text-sm/text-xs row — a third density between the two
+// approved ones, and the outlier that made "settings rows" mean three different
+// sizes. These are settings being scanned, so they take the `item` density that
+// every other in-menu toggle row already used.
 function ToggleRow({ label, desc, checked, onChange }: { label: string; desc: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-start justify-between gap-3 p-2 rounded hover:bg-inset">
-      <div className="flex-1">
-        <div className="text-sm text-fg">{label}</div>
-        <div className="text-xs text-fg-muted">{desc}</div>
-      </div>
-      {/* Was a hand-rolled 32x16 track with a green-600 on-state; one geometry and
-          the app accent now (changes 15/16). role="switch"/aria-checked come from
-          the primitive; aria-label gives it the name the row text couldn't. */}
-      <Toggle checked={checked} onChange={onChange} aria-label={label} />
-    </div>
+    <SettingRow
+      variant="item"
+      title={label}
+      description={desc}
+      // Was a hand-rolled 32x16 track with a green-600 on-state; one geometry and
+      // the app accent now (changes 15/16). role="switch"/aria-checked come from
+      // the primitive; aria-label gives it the name the row text couldn't.
+      control={<Toggle checked={checked} onChange={onChange} aria-label={label} />}
+    />
   );
 }

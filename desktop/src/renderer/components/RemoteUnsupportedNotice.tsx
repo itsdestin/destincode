@@ -13,6 +13,7 @@
 
 import { useEffect, useState } from 'react';
 import { REMOTE_UNSUPPORTED_EVENT, type RemoteUnsupportedDetail } from '../remote-unsupported';
+import { CloseButton } from './ui';
 
 const VISIBLE_MS = 6000;
 
@@ -53,14 +54,9 @@ export default function RemoteUnsupportedNotice() {
         </svg>
       </span>
       <span className="min-w-0">{notice.message}</span>
-      <button
-        type="button"
-        onClick={() => setNotice(null)}
-        className="shrink-0 -mr-1 -mt-0.5 w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-inset"
-        aria-label="Dismiss"
-      >
-        ✕
-      </button>
+      {/* Same migration as CopyPicker's — the approved icon+ghost recipe,
+          which this had reimplemented at a different size with no focus ring. */}
+      <CloseButton onClick={() => setNotice(null)} label="Dismiss" className="shrink-0 -mr-1 -mt-0.5" />
     </div>
   );
 }

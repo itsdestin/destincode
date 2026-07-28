@@ -124,7 +124,9 @@ describe('OpenTasksPopup', () => {
     );
     // Scrim primitive does not forward arbitrary props, so find it by its
     // theme-driven class name rather than a test id.
-    const scrim = container.querySelector('.layer-scrim');
+    // Queried off `document`, not `container`: this popup used to render inline,
+    // and <Dialog> portals to document.body like every other dialog does.
+    const scrim = document.querySelector('.layer-scrim');
     expect(scrim).toBeTruthy();
     fireEvent.click(scrim!);
     expect(onClose).toHaveBeenCalled();

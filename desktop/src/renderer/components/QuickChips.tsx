@@ -3,8 +3,7 @@ import { createPortal } from 'react-dom';
 import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, CloseButton, TextInput, Textarea } from './ui';
+import { Button, Dialog, TextInput, Textarea } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 
@@ -149,7 +148,6 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
   const isDragging = useRef(false);
   const suppressClick = useRef(false);
   // Scroll-fade: header stays outside scroll region; body mask shows fade edges.
-  const bodyRef = useScrollFade<HTMLDivElement>();
   const skillPickerRef = useScrollFade<HTMLDivElement>();
 
   const handlePointerDown = useCallback((e: React.PointerEvent, idx: number) => {
@@ -258,28 +256,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
 
   return createPortal(
     <>
-      {/* Overlay layer L2 — theme-driven via Scrim/OverlayPanel. */}
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        className="fixed flex flex-col"
-        style={{
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 'min(420px, 90vw)',
-          maxHeight: '80vh',
-        }}
-      >
-        {/* Header stays outside the scroll region so the fade mask
-            never clips it. Matches PreferencesPopup/StatusBar pattern. */}
-        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-edge">
-          <h2 className="text-sm font-bold text-fg">Edit Quick Chips</h2>
-          <CloseButton onClick={onClose} label="Close quick chips editor" />
-        </div>
-
-        <div ref={bodyRef} className="scroll-fade">
-          <div className="px-4 py-3 space-y-4">
+      <Dialog open onClose={onClose} title="Edit Quick Chips" size="panel">
             {/* Chip list — drag-to-reorder via pointer events (mirrors
                 SessionStrip dropdown). Grip icon appears on hover; drop
                 splices the row into the target position. */}
@@ -399,9 +376,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             {chips.length >= 10 && (
               <p className="text-3xs text-fg-muted text-center">Maximum 10 chips reached</p>
             )}
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
 
       {/* Insertion indicator — horizontal accent bar in the row gap */}
       {dragging && ghostTarget && (

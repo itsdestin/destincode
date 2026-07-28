@@ -36,6 +36,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
     globalSetup: ['tests/global-setup.ts'],
+    // Per-file DOM shims (ResizeObserver). Inert under the 'node' environment —
+    // the file checks for `window` before touching anything.
+    setupFiles: ['tests/setup-dom.ts'],
     // Node is the default; a test that needs DOM APIs opts in PER FILE with a
     // `// @vitest-environment jsdom` docblock on line 1.
     //

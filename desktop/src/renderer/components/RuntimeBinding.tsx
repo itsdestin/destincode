@@ -224,7 +224,7 @@ export function RuntimeBindingFields({
   return (
     <>
       <div>
-        <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
+        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Runtime</label>
         <div className="inline-flex rounded border border-edge overflow-hidden">
           <button
             type="button"
@@ -250,7 +250,7 @@ export function RuntimeBindingFields({
           ) : (
             <>
               <div>
-                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Provider</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Provider</label>
                 {/* Change 21: no native <select> — its option list is drawn by the
                     OS, so a themed app dropped an OS-blue menu out of it. The
                     <label> above is not associated (it never had an htmlFor), so
@@ -270,7 +270,7 @@ export function RuntimeBindingFields({
                 />
               </div>
               <div>
-                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
                 {nb.needsFreeformModel ? (
                   <TextInput
                     type="text"
@@ -302,7 +302,7 @@ export function RuntimeBindingFields({
                   the full tool suite; they differ in prompt + starting permission
                   posture. Stamped at create; drives the resolved harnessId. */}
               <div>
-                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Preset</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Preset</label>
                 <div className="flex gap-2">
                   {PRESETS.map((p) => (
                     <button
