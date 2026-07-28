@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
 import { CloseButton } from '../ui/CloseButton';
@@ -8,6 +8,14 @@ import { useEscClose, useEscStackDepth } from '../../hooks/use-esc-close';
 import { useReferenceGeometry } from './use-reference-geometry';
 import { shiftPath } from './reference-geometry';
 import { applyHighlightMark } from './apply-highlight';
+
+// Mirrors the duration in globals.css's `.reference-lift { transition:
+// transform 460ms ... }` — not read from the stylesheet (no clean way to
+// introspect a computed transition-duration before the transition itself has
+// started), just kept numerically in sync by hand. If that rule's duration
+// ever changes, this constant must change with it. Module-level: it's a
+// static value, not per-render state.
+const RETURN_DURATION_MS = 460;
 
 /**
  * The held "Ask Claude about this" reference (spec 2026-07-26).
@@ -288,8 +296,125 @@ export function ReferenceOverlay() {
     node.style.clipPath = d ? `path('${shiftPath(d, -s.left, -s.top)}')` : 'none';
   }, [reference, travels, d]);
 
-  // Esc cancels. LIFO, so if a drawer opened on top, Esc closes that first.
-  useEscClose(!!reference, clearReference);
+  // Dev-review follow-up: "there is an animation to center them, but I want
+  // an animation to move it back into place when I click out / exit the ask
+  // mode." Esc, the scrim click, and the × button all route through THIS
+  // function now instead of calling `clearReference()` straight from context
+  // — see the WHY block below for why that indirection is the whole trick.
+  //
+  // Sending a message must NOT play this animation (the reference is
+  // consumed, not cancelled — spec says it "clears immediately"). InputBar's
+  // send() still calls the context's `clearReference()` DIRECTLY (see
+  // reference-context.tsx), never this function, so the distinction is
+  // structural: whichever code path calls beginExit() is by definition a
+  // user cancel, and whichever calls context.clearReference() directly is
+  // by definition an immediate consume/discard. No flag, no "was this a
+  // send" boolean to keep in sync — the CALL SITE is the signal.
+  //
+  // Mechanism: this does NOT null the context's `reference` up front. It
+  // only re-targets the clone's `transform` (the existing CSS transition on
+  // `.reference-lift` — see globals.css — animates between whatever value
+  // was last painted and this new one, no JS interpolation needed) and
+  // defers the REAL `clearReference()` call until after the transition
+  // would have finished. Because `reference` stays truthy for the whole
+  // return trip, every other effect in this component that keys off it —
+  // the source-visibility hide, the body `data-reference-held` attribute —
+  // keeps doing exactly what it already does for a held reference, with no
+  // extra plumbing: the source only pops back into view (and the body
+  // attribute only clears) at the SAME moment `reference` finally goes
+  // null, which is the end of the flight, not the start. That's what
+  // prevents the "two copies visible" bug this feature already fixed once
+  // (see the source-hide effect's WHY comment above) from coming back on
+  // the way OUT.
+  const exitingRef = useRef(false);
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const beginExit = useCallback(() => {
+    if (!reference) return; // nothing held — nothing to cancel
+    if (exitingRef.current) return; // already animating out; a second Esc/click mid-flight is a no-op, not a restart
+
+    const node = liftRef.current;
+    const src = reference.anchor?.host as HTMLElement | undefined;
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+
+    // Clear immediately, no animation, when there is nothing meaningful to
+    // animate:
+    //   - !travels (artifact): the clone never travelled anywhere, so there
+    //     is no return trip to make — same reasoning as the entry effect,
+    //     which never runs the FLIP choreography for this kind either.
+    //   - reducedEffects / prefers-reduced-motion: motion is opted out.
+    //   - no anchor, no node, or a detached source: no live rect to fly
+    //     BACK TO. Animating to a stale/zero rect would be exactly the
+    //     "meaningless slide from the corner" the entry effect's own
+    //     detached-source branch already refuses to do (see its WHY
+    //     comment) — same call, applied to the exit direction.
+    if (!travels || reducedEffects || prefersReducedMotion || !node || !src || !src.isConnected) {
+      clearReference();
+      return;
+    }
+
+    exitingRef.current = true;
+    // Diagnostic/test hook, not load-bearing for any CSS rule today — lets a
+    // test (or a future style) distinguish "flying in" from "flying out"
+    // without re-deriving it from transform math.
+    node.setAttribute('data-exiting', 'true');
+
+    // Reverse FLIP. `node.style.left`/`top` are still the ENTRY "First"
+    // position (the source's rect at the moment the reference was taken —
+    // nothing has touched them since), so express the CURRENT source rect
+    // as a delta from that SAME anchor and hand it to `transform`. No RAF
+    // needed here, unlike the entry effect: the node is already painted at
+    // its centred position (it's been sitting there since entry), so simply
+    // assigning a NEW `transform` value lets the existing CSS transition
+    // animate FROM that already-painted value TO this one. The entry effect
+    // needs the RAF trick only because it sets left/top and
+    // transform:translate(0,0) in the same synchronous pass, before
+    // anything has painted — a same-tick change has no visible "before"
+    // state to transition from.
+    const originalLeft = parseFloat(node.style.left) || 0;
+    const originalTop = parseFloat(node.style.top) || 0;
+    const s = src.getBoundingClientRect();
+    // Snap width to the source's CURRENT size (not transitioned, same as the
+    // entry effect's one-time width set) — the brief asks for "the source
+    // element's current rect", and the source's width may have reflowed
+    // (e.g. a window resize) while the reference was held.
+    node.style.width = `${s.width}px`;
+    node.style.transform = `translate(${s.left - originalLeft}px, ${s.top - originalTop}px)`;
+
+    exitTimerRef.current = setTimeout(() => {
+      exitingRef.current = false;
+      exitTimerRef.current = null;
+      // The REAL clear. Only now — after the flight has had time to finish —
+      // does `reference` actually go null, which is what lets the source and
+      // the body attribute pop back at the right moment (see the block
+      // comment above).
+      clearReference();
+    }, RETURN_DURATION_MS);
+  }, [reference, travels, reducedEffects, clearReference]);
+
+  // Safety net for two cases at once: (1) the component unmounts mid-flight
+  // (a pending timer must not fire clearReference() against a dead
+  // component's stale closure), and (2) `reference` changes out from under
+  // an in-flight exit for some OTHER reason (e.g. a brand new reference gets
+  // set before the old one's return trip finished) — the stale timer must
+  // not later clear the NEW reference. Keyed on `reference` alone: this
+  // cleanup runs on every identity change of `reference`, including the
+  // exit timer's own eventual `clearReference()` call, at which point
+  // `exitTimerRef.current` is already null and this is a harmless no-op.
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current) {
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = null;
+      }
+      exitingRef.current = false;
+    };
+  }, [reference]);
+
+  // Esc cancels — via beginExit, not a direct clearReference, so Esc plays
+  // the return animation like the scrim click and × button do. LIFO, so if a
+  // drawer opened on top, Esc closes that first (unrelated to this feature).
+  useEscClose(!!reference, beginExit);
 
   useEffect(() => {
     if (!reference) { depthAtOpen.current = null; return; }
@@ -326,6 +451,14 @@ export function ReferenceOverlay() {
     // case). So: any contention for the L2 band — sequential OR same-commit —
     // makes the reference yield. Pinned by
     // ReferenceOverlay.test.tsx's "same-commit L2 contention" test.
+    //
+    // Deliberately calls clearReference() DIRECTLY, not beginExit(): this
+    // fires because something else just claimed the L2 band and is about to
+    // paint over this scrim, not because the user asked to cancel. Whatever
+    // opened on top would visually cover a return flight anyway, and
+    // yielding immediately keeps this already-accepted-as-lossy edge case
+    // (see the Finding 3 comment above) simple rather than layering an
+    // animation underneath a state where "cancel" wasn't really the intent.
     if (depth > depthAtOpen.current) clearReference();
   }, [reference, depth, clearReference]);
 
@@ -349,7 +482,7 @@ export function ReferenceOverlay() {
   if (!reference) return null;
 
   return createPortal(
-    <Scrim layer={2} onClick={clearReference} className="reference-scrim">
+    <Scrim layer={2} onClick={beginExit} className="reference-scrim">
       {/* Dev-review fix C/D: the traced SVG outline (formerly rendered here for
           the non-travelling/artifact case) is GONE — it was both "the weird
           black box" around the selection and "uneven and janky" (Destin, dev
@@ -385,7 +518,7 @@ export function ReferenceOverlay() {
           <div className="absolute -top-3 -right-3 pointer-events-auto">
             <CloseButton
               label="Cancel reference"
-              onClick={clearReference}
+              onClick={beginExit}
               // Solid circular chip: the default ghost variant is transparent,
               // which vanishes against a wallpaper theme (Destin, dev review).
               // bg-panel + border-edge keeps it theme-driven, never a literal.
@@ -407,7 +540,7 @@ export function ReferenceOverlay() {
         <div className="absolute top-4 right-4 pointer-events-auto">
           <CloseButton
               label="Cancel reference"
-              onClick={clearReference}
+              onClick={beginExit}
               // Solid circular chip: the default ghost variant is transparent,
               // which vanishes against a wallpaper theme (Destin, dev review).
               // bg-panel + border-edge keeps it theme-driven, never a literal.

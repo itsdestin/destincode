@@ -930,10 +930,46 @@ body[data-reference-held] .bottom-float {
    artifact both — see apply-highlight.ts). Theme tokens only: a literal
    colour here would break every community theme, same rule as the rest of
    this block. */
+/* Dev-review follow-up round 2: "my highlighted artifact viewer selections
+   aren't focused/selected at all." Investigated before changing anything —
+   `anchor.selection` IS captured on the artifact path too (build-reference.ts
+   ->computeSelectionOffsets, same call used by the chat path; pinned by
+   build-reference.test.ts's "artifact references also capture selection
+   offsets" case), and ReferenceOverlay.tsx's mark-application effect isn't
+   kind-gated, so applyHighlightMark DOES reach the artifact clone. clip-path
+   isn't cropping it away either — the mark's offsets and the clip's `d` are
+   both derived from the SAME captured Range, so they land in the same place.
+   The actual gap: for an ARTIFACT reference the clip-path ALREADY undims
+   almost exactly the marked span (that's the whole mechanism keeping only
+   the referenced lines bright — see the clip effect's WHY comment in
+   ReferenceOverlay.tsx), so a translucent background tint on top of a region
+   that's already "the bright part" reads as barely-there — there's nothing
+   BUT the dim/bright boundary distinguishing it, and that boundary has no
+   edge of its own. The travelling (chat) case never had this problem: its
+   clone is undimmed everywhere, so the mark was the ONLY signal — but a flat
+   tint is just as weak a signal there too, it's only less noticeable because
+   the ring+glow on the whole travelling card (`--ref-stroke`/`--ref-glow`
+   above) was already doing that job for it. Fix: give the mark its OWN edge
+   — an inset ring, independent of whatever's dimmed around it — so it reads
+   as "this text is selected" on its own terms, not by contrast alone. Not a
+   traced outline around the union bounding box (explicitly rejected as "a
+   weird black box" / "uneven and janky" — see the dev-review fix C/D block
+   below): this rides on the SAME per-run `<mark>` elements apply-highlight.ts
+   already produces, one per covered text run (naturally one per source line
+   for CM6 — each `.cm-line` is its own text node), so multi-line selections
+   get several small rings that hug each line's own text rather than one
+   rectangle spanning the whole selection. box-decoration-break: clone makes
+   a SINGLE mark that itself wraps across visual lines (a raw <pre>
+   multi-line selection is one continuous text node — MarkdownView.tsx's
+   non-CM6 path) render the ring on every line fragment too, instead of the
+   default 'slice' behavior leaving the wrap points looking open-ended. */
 .reference-mark {
-  background: color-mix(in oklab, var(--accent) 28%, transparent);
+  background: color-mix(in oklab, var(--accent) 30%, transparent);
   color: inherit;
   border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 55%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* The lifted clone. Chat references travel to centre; artifact references do

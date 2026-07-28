@@ -868,3 +868,332 @@ describe('detached source (Issues A/B: final review)', () => {
     document.body.removeChild(host);
   });
 });
+
+// Dev-review follow-up: "there is an animation to center them, but I want an
+// animation to move it back into place when I click out / exit the ask
+// mode." jsdom has no real layout or CSS transition engine, so nothing here
+// proves the card visually glides back — that's a real-browser check (see
+// the task report). What IS provable: (1) a user cancel keeps the reference
+// held (and the source hidden) through a delay instead of clearing
+// synchronously, (2) the clone's `transform` gets re-targeted away from its
+// entry value, (3) the reference genuinely clears — and the source
+// un-hides — only after that delay, (4) sending (a direct clearReference()
+// call, same as InputBar's send()) is untouched: still immediate, (5) a
+// detached source and reducedEffects/prefers-reduced-motion all skip
+// straight to an immediate clear, and (6) unmounting mid-flight leaves
+// nothing stranded.
+describe('exit animation (dev-review follow-up: return trip on cancel)', () => {
+  const REF_RECT = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+
+  function makeHost(text: string): HTMLElement {
+    const host = document.createElement('div');
+    host.setAttribute('data-test-marker', 'source');
+    host.textContent = text;
+    document.body.appendChild(host);
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(REF_RECT);
+    return host;
+  }
+
+  async function settleEntry() {
+    // Let the entry FLIP's RAF land, so there's a real "painted" transform
+    // value to leave from — same idiom as the scroll-restart tests above.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  }
+
+  async function settlePastReturnWindow() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+  }
+
+  // Bridges InputBar's real send() call site: send() calls the context's
+  // clearReference() DIRECTLY, never through ReferenceOverlay's cancel UI —
+  // this button reproduces exactly that call, without depending on
+  // InputBar's own composer machinery.
+  function ClearsReferenceDirectly() {
+    const { clearReference } = useReference();
+    return <button onClick={clearReference}>send</button>;
+  }
+
+  it('cancelling via the scrim keeps the reference held and the source hidden through a delay, re-targets transform, then actually clears', async () => {
+    const host = makeHost('the referenced message');
+
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+    await settleEntry();
+
+    const lift = document.querySelector('.reference-lift') as HTMLElement;
+    const transformAfterEntry = lift.style.transform;
+    // Sanity: it actually travelled in, so a later "changed again" check
+    // isn't trivially true from an untouched initial value.
+    expect(transformAfterEntry).not.toBe('translate(0, 0)');
+    expect(host.style.visibility).toBe('hidden');
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {});
+
+    // The whole point of the fix: cancelling must NOT clear synchronously —
+    // before this fix clearReference() ran straight from the click and the
+    // scrim (and the clone) vanished on this same synchronous assertion.
+    expect(document.querySelector('.reference-scrim')).not.toBeNull();
+    expect(lift.getAttribute('data-exiting')).toBe('true');
+    expect(lift.style.transform).not.toBe(transformAfterEntry);
+    // Source must stay hidden through the whole flight — showing it back
+    // early is exactly the "two copies visible" duplication bug this
+    // feature already fixed once on the way IN (see ReferenceOverlay.tsx's
+    // source-hide effect WHY comment).
+    expect(host.style.visibility).toBe('hidden');
+
+    await settlePastReturnWindow();
+
+    // NOW it actually clears, and the source pops back — not before.
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+    expect(document.body.hasAttribute('data-reference-held')).toBe(false);
+
+    document.body.removeChild(host);
+  });
+
+  it('cancelling via the × button plays the same deferred-clear return trip', async () => {
+    const host = makeHost('the referenced message');
+
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+    await settleEntry();
+
+    fireEvent.click(document.querySelector('[aria-label="Cancel reference"]') as Element);
+    act(() => {});
+    expect(document.querySelector('.reference-scrim')).not.toBeNull();
+    expect(host.style.visibility).toBe('hidden');
+
+    await settlePastReturnWindow();
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+
+    document.body.removeChild(host);
+  });
+
+  it('cancelling via Esc plays the same deferred-clear return trip', async () => {
+    const host = makeHost('the referenced message');
+
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+    await settleEntry();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    act(() => {});
+    expect(document.querySelector('.reference-scrim')).not.toBeNull();
+    expect(host.style.visibility).toBe('hidden');
+
+    await settlePastReturnWindow();
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+
+    document.body.removeChild(host);
+  });
+
+  it('sending (InputBar\'s real call site: a direct clearReference()) clears immediately — no held delay, no exit animation', async () => {
+    const host = makeHost('the referenced message');
+
+    render(
+      <EscCloseProvider>
+        <ReferenceProvider sessionId="test-session">
+          <SetsReference value={{
+            kind: 'chat-text', label: 'x', promptText: 'x',
+            anchor: { host, range: null, selection: null },
+          }} />
+          <ClearsReferenceDirectly />
+          <ReferenceOverlay />
+        </ReferenceProvider>
+      </EscCloseProvider>,
+    );
+    act(() => {});
+    await settleEntry();
+    expect(host.style.visibility).toBe('hidden'); // sanity: reference is actually held
+
+    fireEvent.click(screen.getByText('send'));
+    act(() => {}); // NO extra 460ms wait — this is the whole point of the test
+
+    // Cleared on the SAME tick as the click — no "still held" window like
+    // the cancel tests above get, and the source is restored right away
+    // rather than staying hidden through a delay.
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+
+    document.body.removeChild(host);
+  });
+
+  it('a detached source clears immediately on cancel — nothing to fly back to', async () => {
+    const host = document.createElement('div');
+    host.textContent = 'no longer in the document';
+    document.body.appendChild(host);
+    document.body.removeChild(host); // detach, matching the Issues A/B fixture above
+    expect(host.isConnected).toBe(false);
+
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {}); // no extra wait
+
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+  });
+
+  it('an artifact reference clears immediately on cancel — it never travelled, so there is no return trip', async () => {
+    const host = makeHost('const x = 1;');
+
+    renderOverlay({
+      kind: 'artifact', label: 'lines 1-1 of x.ts', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {}); // no extra wait
+
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+
+    document.body.removeChild(host);
+  });
+
+  it('unmounting mid-animation leaves no stranded body attribute, custom property, or hidden source, and the later timer fires harmlessly', async () => {
+    const host = makeHost('the referenced message');
+
+    const { unmount } = renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+    await settleEntry();
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {});
+    // Mid-flight: still held, source still hidden.
+    expect(document.body.getAttribute('data-reference-held')).toBe('true');
+    expect(host.style.visibility).toBe('hidden');
+
+    // Unmount the WHOLE tree before the return window elapses — this is the
+    // "component unmounts mid-animation" case the brief calls out.
+    expect(() => unmount()).not.toThrow();
+
+    // React's own effect cleanups (source-hide, body attribute) run on
+    // unmount regardless of the exit timer's state — nothing left stranded.
+    expect(document.body.hasAttribute('data-reference-held')).toBe(false);
+    expect(document.body.style.getPropertyValue('--reference-composer-z')).toBe('');
+    expect(host.style.visibility).toBe('');
+
+    // The pending exit timer would otherwise fire AFTER the tree is gone —
+    // must not throw when it does (this also proves the cleanup effect
+    // actually cancelled it, since a stray clearReference() call against a
+    // torn-down provider is the failure mode being guarded against).
+    await expect(settlePastReturnWindow()).resolves.not.toThrow();
+
+    document.body.removeChild(host);
+  });
+
+  it('reducedEffects skips the animation and clears immediately on cancel', async () => {
+    const REDUCED_EFFECTS_KEY = 'youcoded-reduced-effects';
+    function makeLocalStorageMock() {
+      let store: Record<string, string> = {};
+      return {
+        getItem: (key: string) => store[key] ?? null,
+        setItem: (key: string, value: string) => { store[key] = String(value); },
+        removeItem: (key: string) => { delete store[key]; },
+        clear: () => { store = {}; },
+        get length() { return Object.keys(store).length; },
+        key: (n: number) => Object.keys(store)[n] ?? null,
+      };
+    }
+    const lsMock = makeLocalStorageMock();
+    vi.stubGlobal('localStorage', lsMock);
+    localStorage.setItem(REDUCED_EFFECTS_KEY, '1'); // ThemeProvider reads this synchronously on mount
+
+    const host = makeHost('the referenced message');
+    render(
+      <ThemeProvider>
+        <EscCloseProvider>
+          <ReferenceProvider sessionId="test-session">
+            <SetsReference value={{
+              kind: 'chat-text', label: 'x', promptText: 'x',
+              anchor: { host, range: null, selection: null },
+            }} />
+            <ReferenceOverlay />
+          </ReferenceProvider>
+        </EscCloseProvider>
+      </ThemeProvider>,
+    );
+    act(() => {});
+    await settleEntry();
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {}); // no extra wait — reducedEffects must clear right away
+
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+
+    vi.unstubAllGlobals();
+    document.body.removeChild(host);
+  });
+
+  it('prefers-reduced-motion skips the animation and clears immediately on cancel', async () => {
+    // jsdom has no matchMedia at all (see ProjectHero.test.tsx) — stub it to
+    // report the reduce query as matched.
+    (window as any).matchMedia = (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+
+    const host = makeHost('the referenced message');
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: null },
+    });
+    act(() => {});
+    await settleEntry();
+
+    fireEvent.click(document.querySelector('.reference-scrim') as Element);
+    act(() => {}); // no extra wait
+
+    expect(document.querySelector('.reference-scrim')).toBeNull();
+    expect(host.style.visibility).toBe('');
+
+    delete (window as any).matchMedia;
+    document.body.removeChild(host);
+  });
+});
+
+// Dev-review follow-up round 2: "my highlighted artifact viewer selections
+// aren't focused/selected at all." Investigation confirmed the mark WAS
+// reaching the artifact clone (applyHighlightMark isn't kind-gated, and
+// build-reference.test.ts already pins that artifact selections capture
+// `anchor.selection` too) — the gap was purely visual: a translucent
+// background on top of a clip-path region that's ALREADY the bright part of
+// the screen barely reads as anything. This test pins the CSS fix (an inset
+// ring giving the mark its own edge) the same way the composer-lift test
+// above pins its rule — a source-text assertion, since jsdom can't render
+// color-mix() or prove a ring is visually distinguishable.
+describe('reference-mark visibility (dev-review follow-up round 2)', () => {
+  it('globals.css gives .reference-mark its own ring, not just a background tint', () => {
+    const css = readFileSync(join(__dirname, '..', '..', 'styles', 'globals.css'), 'utf8');
+    const rule = css.match(/\.reference-mark\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    // Theme tokens only — a literal colour would break community themes.
+    expect(rule).toMatch(/box-shadow:\s*inset[^;]*var\(--accent\)/);
+  });
+});
