@@ -28,7 +28,7 @@ import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -1061,10 +1061,9 @@ function RemoteButton({
                           showSetupQR ? (
                             <div className="mt-2">
                               {/* Remind users that Tailscale must be installed + running on the receiving device too */}
-                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
-                              </div>
+                              <Callout tone="warning" title="Before scanning:" className="mb-2">
+                                Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running. The page won&apos;t load without it.
+                              </Callout>
                               <p className="text-3xs text-fg-muted mb-2">Then scan to connect:</p>
                               <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                                 <QRCodeSVG value={tailscale.url} size={140} />
@@ -1077,10 +1076,9 @@ function RemoteButton({
                           ) : (
                             <div className="space-y-2">
                               {/* Persistent reminder — visible whenever Tailscale is ready but no device has connected yet */}
-                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2">
-                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Other device setup required:</p>
-                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
-                              </div>
+                              <Callout tone="warning" title="Other device setup required:">
+                                Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running before scanning. The page won&apos;t load without it.
+                              </Callout>
                               {/* Was bg-blue-600 with NO text-color class, so the
                                   label inherited the theme fg — near-black on blue
                                   on Creme. Button primary carries text-on-accent. */}
@@ -1261,10 +1259,9 @@ function RemoteButton({
                           </button>
                         </div>
                         {/* Remind users that Tailscale must be installed + running on the receiving device too */}
-                        <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                          <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                          <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
-                        </div>
+                        <Callout tone="warning" title="Before scanning:" className="mb-2">
+                          Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running. The page won&apos;t load without it.
+                        </Callout>
                         <p className="text-3xs text-fg-muted mb-2">Then scan QR or copy link to connect:</p>
                         <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                           <QRCodeSVG value={tailscale.url} size={140} />
@@ -1909,17 +1906,24 @@ function ConnectToDesktopButton() {
 
               {/* Tailscale warning */}
               {!tailscaleLoading && tailscaleStatus !== null && !tailscaleStatus.connected && (
-                <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                      <line x1="12" y1="9" x2="12" y2="13" />
-                      <line x1="12" y1="17" x2="12.01" y2="17" />
-                    </svg>
-                    <span className="text-xs text-amber-400 font-medium">Tailscale not connected</span>
-                  </div>
-                  <p className="text-3xs text-fg-dim">Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.</p>
-                </div>
+                <Callout
+                  tone="warning"
+                  title={
+                    // The glyph rides in the title node rather than getting its
+                    // own slot: it is the ONLY callout in the app that has one,
+                    // so a slot would be a prop that exists for a single caller.
+                    <span className="flex items-center gap-2">
+                      <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                        <line x1="12" y1="9" x2="12" y2="13" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                      </svg>
+                      Tailscale not connected
+                    </span>
+                  }
+                >
+                  Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.
+                </Callout>
               )}
 
               {/* Connected banner */}
@@ -1944,9 +1948,11 @@ function ConnectToDesktopButton() {
 
               {/* Error */}
               {connectError && (
-                <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2">
-                  <p className="text-3xs text-destructive-fg">{connectError}</p>
-                </div>
+                // Was raw `red-500` around text that already used the destructive
+                // TOKEN — the surface and its own body disagreed about which red
+                // they were. Change 17 moved the app's reds onto the token so
+                // theme packs can restyle them; this one survived that sweep.
+                <Callout tone="danger">{connectError}</Callout>
               )}
 
               {/* Saved devices — always listed */}

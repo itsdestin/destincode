@@ -1607,12 +1607,15 @@ function ConfirmDialog({
         layer={3}
         destructive
         size="prompt"
-        aria-label={title}
+        title={title}
         scrollBody={false}
       >
-        <div className="px-4 py-3 border-b border-destructive/30 bg-destructive/10">
-          <h3 className="text-xs font-bold text-destructive-fg">{title}</h3>
-        </div>
+        {/* The hand-rolled tinted header is gone. Tranche 2 recorded the confirm
+            cards as residue — "titling them is a copy decision, not a mechanical
+            one" — but that is not true of THIS one: it already receives a
+            `title` prop and was only passing it as an aria-label while drawing
+            the visible heading itself. Dialog's `destructive` already tints the
+            panel, so the header tint was saying the same thing twice. */}
         <div className="px-4 py-3 space-y-3">
           <p className="text-2xs text-fg-dim leading-relaxed">{message}</p>
           <div className="flex gap-2 pt-1">
