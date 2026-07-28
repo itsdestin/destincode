@@ -1,5 +1,6 @@
 import React from 'react';
 import type { CopyPickerOption } from '../state/chat-types';
+import { CloseButton } from './ui';
 
 // Inline picker shown when /copy [N] targets an assistant turn with multiple
 // copyable units (the full text + each code block). On Android in particular,
@@ -21,13 +22,10 @@ export default function CopyPicker({ options, onCopy, onDismiss }: Props) {
           <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
             Copy to clipboard
           </div>
-          <button
-            onClick={onDismiss}
-            className="text-fg-muted hover:text-fg text-xs"
-            aria-label="Cancel copy"
-          >
-            ✕
-          </button>
+          {/* Was a hand-rolled glyph: it had an aria-label but no focus ring
+              and no hover surface, so keyboard users could not see where they
+              were. CloseButton is the approved icon+ghost recipe. */}
+          <CloseButton onClick={onDismiss} label="Cancel copy" />
         </div>
         <div className="space-y-1.5">
           {options.map((opt) => (

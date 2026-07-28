@@ -65,7 +65,7 @@ const REMOTE_ACCESS_EXPLAINER: { intro: string; sections: ExplainerSection[] } =
         { term: "Phone can't connect", text: 'Make sure Tailscale is also installed on your phone and signed in to the same account. Both devices need it running at the same time.' },
         { term: "QR code won't scan", text: 'Tap "Copy link" instead, send the link to your phone (text it to yourself), and open it in your phone\'s browser.' },
         { term: 'Forgot the password', text: 'Just type a new one into the password box and hit "Set". The old one is replaced — there\'s nothing to recover.' },
-        { term: 'Connected device should be removed', text: 'Use the ✕ next to a device under "Connected Devices" to disconnect it. They\'ll need the password again to reconnect.' },
+        { term: 'Connected device should be removed', text: 'Use the Disconnect button next to a device under "Connected Devices". They\'ll need the password again to reconnect.' },
       ],
     },
   ],
@@ -1228,19 +1228,24 @@ function RemoteButton({
 
                         <div className="space-y-1">
                           {clients.map(client => (
-                            <div key={client.id} className="flex items-center justify-between py-1.5 px-2 rounded-sm bg-inset/50">
-                              <div>
-                                <span className="text-xs text-fg-2 font-mono">{client.ip}</span>
-                                <span className="text-3xs text-fg-muted ml-2">{timeAgo(client.connectedAt)}</span>
-                              </div>
-                              <button
-                                onClick={() => onDisconnectClient(client.id)}
-                                className="text-fg-faint hover:text-red-400 text-sm leading-none px-1"
-                                title="Disconnect"
-                              >
-                                ✕
-                              </button>
-                            </div>
+                            // K6: an item list is a K2 row with a status dot in
+                            // the icon slot. The action was a bare ✕ with no
+                            // accessible name and no focus ring — change 41
+                            // banned those app-wide and this one survived the
+                            // sweep, announcing itself to a screen reader as
+                            // the literal character.
+                            <SettingRow
+                              key={client.id}
+                              variant="item"
+                              icon={<span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />}
+                              title={client.ip}
+                              description={timeAgo(client.connectedAt)}
+                              control={
+                                <Button variant="ghost" size="sm" onClick={() => onDisconnectClient(client.id)}>
+                                  Disconnect
+                                </Button>
+                              }
+                            />
                           ))}
                         </div>
                       </section>
@@ -1251,12 +1256,10 @@ function RemoteButton({
                       <section className="bg-inset/50 rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
                           <h3 className="text-xs font-medium text-fg-2">Add Device</h3>
-                          <button
-                            onClick={() => onSetShowAddDevice(false)}
-                            className="text-fg-muted hover:text-fg-2 text-sm leading-none"
-                          >
-                            ✕
-                          </button>
+                          {/* NOT a K6 action — this dismisses the whole
+                              sub-panel, so it is a CloseButton, which already
+                              carries a label and a focus ring. */}
+                          <CloseButton onClick={() => onSetShowAddDevice(false)} label="Close Add Device" />
                         </div>
                         {/* Remind users that Tailscale must be installed + running on the receiving device too */}
                         <Callout tone="warning" title="Before scanning:" className="mb-2">
@@ -1961,22 +1964,26 @@ function ConnectToDesktopButton() {
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Saved Devices</h3>
                   <div className="space-y-1">
                     {pairedDevices.map(device => (
-                      <div key={`${device.host}:${device.port}`} className="flex items-center justify-between py-2 px-3 rounded-sm bg-inset/50">
-                        <button
-                          onClick={() => doConnect(device)}
-                          disabled={connecting || remoteConnected}
-                          className="min-w-0 flex-1 text-left disabled:opacity-50"
-                        >
-                          <span className="text-xs text-fg block">{device.name}</span>
-                          <span className="text-3xs text-fg-muted font-mono block">{device.host}:{device.port}</span>
-                        </button>
-                        <button
-                          onClick={() => handleRemoveDevice(device)}
-                          className="text-fg-faint hover:text-red-400 text-sm leading-none px-1 shrink-0 ml-2"
-                        >
-                          ✕
-                        </button>
-                      </div>
+                      // K6. The row was already two controls in a flex box: a
+                      // borderless <button> wrapping the name so the whole thing
+                      // connects, plus a bare ✕. SettingRow expresses exactly
+                      // that — onClick makes the row the hit target and stops the
+                      // control's click from bubbling into it, so Remove no
+                      // longer risks also firing Connect.
+                      <SettingRow
+                        key={`${device.host}:${device.port}`}
+                        variant="item"
+                        title={device.name}
+                        description={`${device.host}:${device.port}`}
+                        descriptionClassName="text-fg-muted font-mono"
+                        onClick={() => doConnect(device)}
+                        disabled={connecting || remoteConnected}
+                        control={
+                          <Button variant="ghost" size="sm" onClick={() => handleRemoveDevice(device)}>
+                            Remove
+                          </Button>
+                        }
+                      />
                     ))}
                   </div>
                 </section>

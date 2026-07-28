@@ -213,8 +213,13 @@ export function SettingRow({
     );
   }
 
+  // `disabled` has to actually block the handler, not just dim the row. The
+  // <button> branch above gets that from the DOM attribute; a <div> does not,
+  // so a disabled control row would still fire on click while looking inert.
+  // Found by K6: the saved-devices row disables itself while a connection is in
+  // flight, and without this you could start a second one mid-connect.
   return (
-    <div className={cls} onClick={onSelect ?? onClick}>
+    <div className={cls} onClick={disabled ? undefined : (onSelect ?? onClick)}>
       {body}
     </div>
   );
