@@ -42,57 +42,68 @@ function renderMessageBody(text: string, sessionId: string, keyPrefix: string): 
   return out;
 }
 
-// Quote collapse threshold (spec 2026-07-26 inline-reply follow-up): a quoted
-// reference clamps when it exceeds ~3 lines OR ~240 characters, whichever
-// trips first. 240 chars is roughly what a bubble at max-w-[80%] wraps to in
-// 3 lines at the chat pane's default width, so the char check is the one that
-// actually fires for realistic content — see the char-vs-line note on
-// isLongQuote below for why the line check still exists.
-const COLLAPSE_CHAR_THRESHOLD = 240;
-const COLLAPSE_LINE_THRESHOLD = 3;
-
-function isLongQuote(q: string): boolean {
-  return q.length > COLLAPSE_CHAR_THRESHOLD || q.split('\n').length > COLLAPSE_LINE_THRESHOLD;
-}
-
-// Clamp to whichever bound is tighter, so a quote that's short-but-tall (many
-// short lines) and one that's long-but-flat (one giant line, the common case
-// once InputBar's sanitize has flattened embedded newlines to spaces — see
-// reference-prompt.ts's header comment) both collapse sensibly.
-function clampQuote(q: string): string {
-  const lines = q.split('\n');
-  const byLines = lines.length > COLLAPSE_LINE_THRESHOLD ? lines.slice(0, COLLAPSE_LINE_THRESHOLD).join('\n') : q;
-  return byLines.length > COLLAPSE_CHAR_THRESHOLD ? byLines.slice(0, COLLAPSE_CHAR_THRESHOLD) : byLines;
-}
-
-/** The quoted-reference strip inside a user bubble. Collapsed by default when
- *  long — the toggle is a real <Button> (design rule: every control goes
- *  through components/ui/), with its label recolored via a child <span>
- *  rather than a className override: Button's CONFLICT_GROUPS (see its own
- *  header comment) doesn't arbitrate text-color classes, so overriding the
- *  button's own `text-fg-dim` by className would race Tailwind's generation
- *  order. A child span's own explicit color always wins over an ancestor's,
- *  with no such race — CSS inheritance, not utility-class precedence. */
-function ReferenceQuote({ quote, fenced }: { quote: string; fenced: boolean }) {
+/** The quoted-reference strip inside a user bubble.
+ *
+ *  Destin picked options B+D from the dev-review mockup, which compose into one
+ *  control rather than two: D's pill IS the collapsed state, B's labelled panel
+ *  IS the expanded one. Collapsed by default so the bubble stays roughly the
+ *  size of what the user actually typed — the reference is present without
+ *  competing with their own words.
+ *
+ *  The toggle is a real <Button> (design rule: every control goes through
+ *  components/ui/). Its label colour is set on a child <span>, not via a
+ *  className override: Button's CONFLICT_GROUPS doesn't arbitrate text-colour
+ *  classes, so overriding its own `text-fg-dim` by className would race
+ *  Tailwind's generation order. A child span's explicit colour always wins over
+ *  an ancestor's by plain inheritance, with no such race. */
+function ReferenceQuote({
+  quote,
+  fenced,
+  icon = '\u275D',
+  label = 'Claude said',
+}: {
+  quote: string;
+  fenced: boolean;
+  icon?: string;
+  label?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const long = isLongQuote(quote);
-  const shown = long && !expanded ? clampQuote(quote) : quote;
+
+  if (!expanded) {
+    // Collapsed: a single pill. One line, ellipsised — never grows the bubble.
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setExpanded(true)}
+        aria-expanded={false}
+        className="reference-pill mb-1 flex items-center gap-1.5 max-w-full rounded-full px-2.5 py-0.5"
+      >
+        <span className="text-on-accent/60 shrink-0" aria-hidden="true">{icon}</span>
+        <span className="text-on-accent/75 text-2xs truncate">{quote}</span>
+      </Button>
+    );
+  }
+
+  // Expanded: the labelled inset panel.
   return (
-    <div className="border-l-2 border-on-accent/40 pl-2 mb-1">
-      <div className={`text-xs text-on-accent/70 whitespace-pre-wrap break-words ${fenced ? 'font-mono' : 'italic'}`}>
-        {shown}
-        {long && !expanded && '…'}
-      </div>
-      {long && (
+    <div className="reference-panel mb-1 rounded-md px-2.5 py-1.5">
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <span className="text-on-accent/60 text-3xs shrink-0" aria-hidden="true">{icon}</span>
+        <span className="text-on-accent/60 text-3xs uppercase tracking-wide">{label}</span>
         <Button
           variant="ghost"
           size="sm"
-          className="mt-0.5 -ml-1.5"
-          onClick={() => setExpanded((e) => !e)}
+          onClick={() => setExpanded(false)}
+          aria-expanded
+          className="ml-auto px-1 py-0"
         >
-          <span className="text-on-accent/60">{expanded ? 'Show less' : 'Show more'}</span>
+          <span className="text-on-accent/60 text-3xs">Hide</span>
         </Button>
-      )}
+      </div>
+      <div className={`text-xs text-on-accent/80 whitespace-pre-wrap break-words ${fenced ? 'font-mono' : ''}`}>
+        {quote}
+      </div>
     </div>
   );
 }
@@ -113,8 +124,14 @@ function ReferenceReplyBody({ parsed, sessionId }: { parsed: ParsedReference; se
   if (parsed.kind === 'artifact') {
     return (
       <>
-        <div className="mb-1 border-l-2 border-on-accent/40 pl-2 text-xs italic text-on-accent/70">
-          Referencing {artifactSummary(parsed.descriptor, parsed.path)}
+        {/* An artifact reference is already a short descriptor
+            ("lines 12-14 of chat-reducer.ts"), not a quoted body — it renders
+            as the same pill shape but never needs to expand. */}
+        <div className="reference-pill reference-pill--static mb-1 flex items-center gap-1.5 max-w-full rounded-full px-2.5 py-0.5">
+          <span className="text-on-accent/60 shrink-0" aria-hidden="true">&#9707;</span>
+          <span className="text-on-accent/75 text-2xs truncate">
+            {artifactSummary(parsed.descriptor, parsed.path)}
+          </span>
         </div>
         {followUp}
       </>

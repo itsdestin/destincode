@@ -5,7 +5,7 @@
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import UserMessage from './UserMessage';
 import { buildScaffold, buildArtifactScaffold, LEAD_ASSISTANT, LEAD_CODE } from './context-menu/reference-prompt';
 import type { ChatMessage } from '../../shared/types';
@@ -56,51 +56,57 @@ describe('UserMessage — chat-text reference renders as an inline reply', () =>
 });
 
 describe('UserMessage — chat-code reference renders monospaced', () => {
-  it('renders the fenced code as the quote', () => {
+  it('renders the fenced code monospaced once expanded', () => {
     const content = buildScaffold(LEAD_CODE, 'const x = 1;', true) + 'what does x do?';
     const { container } = render(<UserMessage message={msg(content)} sessionId="s1" showTimestamps={false} />);
+    // Collapsed by default (pill); the quote text is present in the pill but the
+    // monospace treatment belongs to the expanded panel.
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByText('const x = 1;')).toBeInTheDocument();
     expect(container.querySelector('.font-mono')).not.toBeNull();
   });
 });
 
 describe('UserMessage — artifact reference renders a compact descriptor line', () => {
-  it('renders "Referencing <descriptor> of <file>" with no collapsing', () => {
+  it('renders the descriptor as a static pill with no toggle', () => {
     const content = buildArtifactScaffold('lines 12-14', 'src/state/chat-reducer.ts') + 'what happens here?';
     render(<UserMessage message={msg(content)} sessionId="s1" showTimestamps={false} />);
-    expect(screen.getByText(/Referencing lines 12-14 of chat-reducer\.ts/)).toBeInTheDocument();
+    // Renders as the same pill shape as a quote, but static — an artifact
+    // reference is already a short descriptor, so it never expands.
+    expect(screen.getByText(/lines 12-14 of chat-reducer\.ts/)).toBeInTheDocument();
     expect(screen.getByText('what happens here?')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /show more/i })).toBeNull();
+    expect(screen.queryByRole('button', { expanded: false })).toBeNull();
   });
 });
 
-describe('UserMessage — long quote collapses by default with a working toggle', () => {
-  // Over the 240-char threshold (UserMessage.tsx COLLAPSE_CHAR_THRESHOLD).
+describe('UserMessage — reference collapses to a pill and expands to a panel', () => {
   const longQuote = 'x'.repeat(300);
   const content = buildScaffold(LEAD_ASSISTANT, longQuote, false) + 'ok';
 
-  it('clamps the quote and shows a Button-based toggle, default collapsed', () => {
+  it('is collapsed to a pill by default, so the bubble stays the size of what was typed', () => {
     render(<UserMessage message={msg(content)} sessionId="s1" showTimestamps={false} />);
-    const toggle = screen.getByRole('button', { name: /show more/i });
-    expect(toggle).toBeInTheDocument();
-    // The full 300-char quote should NOT be present verbatim while collapsed.
-    expect(screen.queryByText(longQuote)).toBeNull();
+    const pill = screen.getByRole('button', { expanded: false });
+    expect(pill).toBeInTheDocument();
+    expect(pill.tagName).toBe('BUTTON');   // routes through the Button primitive
+    // The panel's label only exists once expanded.
+    expect(screen.queryByText(/claude said/i)).toBeNull();
   });
 
-  it('expands to the full quote on click, then collapses again', () => {
+  it('expands into the labelled panel, then collapses again', () => {
     render(<UserMessage message={msg(content)} sessionId="s1" showTimestamps={false} />);
-    const toggle = screen.getByRole('button', { name: /show more/i });
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+
+    expect(screen.getByText(/claude said/i)).toBeInTheDocument();
     expect(screen.getByText(longQuote)).toBeInTheDocument();
-    const collapseToggle = screen.getByRole('button', { name: /show less/i });
-    fireEvent.click(collapseToggle);
-    expect(screen.queryByText(longQuote)).toBeNull();
-    expect(screen.getByRole('button', { name: /show more/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /hide/i }));
+    expect(screen.queryByText(/claude said/i)).toBeNull();
+    expect(screen.getByRole('button', { expanded: false })).toBeInTheDocument();
   });
 
-  it('the toggle is a real <button> element (routes through the Button primitive)', () => {
-    render(<UserMessage message={msg(content)} sessionId="s1" showTimestamps={false} />);
-    const toggle = screen.getByRole('button', { name: /show more/i });
-    expect(toggle.tagName).toBe('BUTTON');
+  it('a SHORT quote collapses too — the pill is unconditional, not length-gated', () => {
+    const short = buildScaffold(LEAD_ASSISTANT, 'tiny quote', false) + 'ok';
+    render(<UserMessage message={msg(short)} sessionId="s1" showTimestamps={false} />);
+    expect(screen.getByRole('button', { expanded: false })).toBeInTheDocument();
   });
 });

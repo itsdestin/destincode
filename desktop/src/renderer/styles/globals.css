@@ -2224,3 +2224,24 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
 .artifact-content-pane * {
   overflow-anchor: none;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reference reply inside a user bubble (dev review: Destin picked B+D).
+   The pill is the COLLAPSED state, the panel the EXPANDED one — one control,
+   two states. Everything tints from --on-accent so it re-themes with the
+   bubble it sits inside and never needs a literal colour.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.reference-pill {
+  background: color-mix(in oklab, var(--on-accent) 14%, transparent);
+  /* The pill must ellipsise, not wrap: its whole point is that the bubble
+     stays about the size of what the user actually typed. */
+  min-width: 0;
+}
+.reference-pill:hover:not(.reference-pill--static) {
+  background: color-mix(in oklab, var(--on-accent) 22%, transparent);
+}
+.reference-pill--static { cursor: default; }
+
+.reference-panel {
+  background: color-mix(in oklab, var(--on-accent) 12%, transparent);
+}
