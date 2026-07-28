@@ -10,14 +10,13 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, CloseButton, TextInput, Toggle, LoadingState } from './ui';
+import { Button, CloseButton, Dialog, TextInput, Toggle, LoadingState } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
 import { useScrollFade } from '../hooks/useScrollFade';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
@@ -889,14 +888,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
     return (
       <>
-        <Scrim layer={2} onClick={onClose} />
-        <OverlayPanel
-          layer={2}
-          className="fixed overflow-hidden"
-          style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(520px, 90vw)', height: 'min(640px, 85vh)' }}
-        >
+        <Dialog open onClose={onClose} aria-label="Backup & Sync" size="panel" fill scrollBody={false}>
           <LoadingState what="sync status" className="h-full" />
-        </OverlayPanel>
+        </Dialog>
       </>
     );
   }
@@ -904,15 +898,17 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   return (
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        ref={popupRef}
-        layer={2}
-        className="fixed overflow-hidden"
-        style={{
-          top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-          width: 'min(520px, 90vw)', height: 'min(640px, 85vh)',
-        }}
+      {/* fill, not a fixed 640px: this panel swaps between its main view, the
+          setup wizard and the explainer, and would otherwise resize under the
+          cursor on every step. */}
+      <Dialog
+        open
+        onClose={onClose}
+        panelRef={popupRef}
+        aria-label="Backup & Sync"
+        size="panel"
+        fill
+        scrollBody={false}
       >
         {showInfo ? (
           <SettingsExplainer
@@ -1553,7 +1549,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
           </div>
         </div>
         )}
-      </OverlayPanel>
+      </Dialog>
 
       {/* Connect-GitHub device-flow modal. Own L2 overlay so it sits above the
           sync popup. onConnected refreshes github status + re-kicks a failed
@@ -1600,18 +1596,20 @@ function ConfirmDialog({
   return createPortal(
     // Overlay layer L3 — destructive confirmations use OverlayPanel destructive variant.
     <>
-      <Scrim layer={3} onClick={onCancel} />
       {/* The `confirmColor: 'red' | 'blue'` prop is gone. There was exactly one call
           site and it passed "red", so the whole blue branch — border, header tint,
           header text, and a `bg-blue-600 hover:bg-blue-500 text-white` confirm button
           — was unreachable. It was also one of the last hardcoded-blue survivors spec
           change 55 exists to kill, so it's deleted rather than migrated. This dialog
           is now unconditionally destructive, which is what it always rendered as. */}
-      <OverlayPanel
+      <Dialog
+        open
+        onClose={onCancel}
         layer={3}
         destructive
-        className="fixed overflow-hidden"
-        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(360px, 85vw)' }}
+        size="prompt"
+        aria-label={title}
+        scrollBody={false}
       >
         <div className="px-4 py-3 border-b border-destructive/30 bg-destructive/10">
           <h3 className="text-xs font-bold text-destructive-fg">{title}</h3>
@@ -1630,7 +1628,7 @@ function ConfirmDialog({
             </Button>
           </div>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

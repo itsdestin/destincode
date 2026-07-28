@@ -123,11 +123,21 @@ const COMPONENTS = join(__dirname, '..', 'src', 'renderer', 'components');
 
 // Named, with the reason each is NOT a dialog. An exemption you cannot see is
 // how the inconsistency this test exists to stop got in.
+//
+// This list started with FOUR entries and two of them were wrong. SyncPanel and
+// QuickChips were both written off as "anchored popover positioned against its
+// trigger" on the strength of `className="fixed ..."` alone -- but their style
+// objects said `top: 50%, left: 50%, transform: translate(-50%, -50%)`. They
+// were centered modals with bespoke widths (520px, 420px) and, in SyncPanel's
+// case, exactly the fixed height the shell exists to ban.
+//
+// The lesson is not "check twice". It is that an exemption written with a
+// confident-sounding reason is MORE dangerous than a bare one: the reason is
+// what stops the next reader from re-deriving it. Anything added here needs
+// evidence from the element's computed position, not from a class string.
 const NOT_DIALOGS: Record<string, string> = {
-  'ResumeBrowser.tsx': 'L1 drawer, not a centered modal',
-  'QuickChips.tsx': 'anchored popover positioned against its trigger',
-  'SyncPanel.tsx': 'anchored popover positioned against its trigger',
-  'ZoomOverlay.tsx': 'L4 system indicator pinned top-right, no scrim dismissal',
+  'ResumeBrowser.tsx': 'L1 drawer — layer={1}, slides from the edge, never centered',
+  'ZoomOverlay.tsx': 'L4 system indicator pinned top-right (fixed top-16 right-4), no scrim',
 };
 
 describe('dialog shell adoption', () => {
