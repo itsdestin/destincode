@@ -31,6 +31,7 @@ import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
 import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport } from '../shared/types';
 import { VITE_DEV_PORT } from '../shared/ports';
+import { MOUNT_PROBE_JS } from './dev-mount-probe';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
 import { FirstRunManager } from './first-run';
@@ -458,6 +459,14 @@ const debouncedBroadcastAttention = (() => {
  *    disconnect/reconnect (ERR_NETWORK_CHANGED aborts loopback fetches too),
  *    which can outlast any fixed retry budget — hence unbounded retries with
  *    capped backoff (see retry()'s WHY comment).
+ * The watchdog is the ONLY path that covers the aborted-sub-resource case, and
+ * it silently stopped covering it between 2026-07-20 and 2026-07-26: its probe
+ * read `#root.childElementCount`, and index.html began painting the boot
+ * skeleton inside `#root`, so every stranded window reported "mounted". The
+ * probe now lives in ./dev-mount-probe.ts, pinned against the real index.html by
+ * tests/dev-load-recovery.test.tsx — do not inline a new one here. Neither
+ * sibling path can substitute: did-fail-load never fires (index.html itself
+ * loads 200) and render-process-gone never fires (the renderer stays alive).
  * Prod loads local files and is deliberately untouched (callers gate on
  * !app.isPackaged).
  */
@@ -493,7 +502,7 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
     setTimeout(() => {
       if (win.isDestroyed()) return;
       win.webContents
-        .executeJavaScript('!!document.getElementById("root")?.childElementCount')
+        .executeJavaScript(MOUNT_PROBE_JS)
         .then((mounted) => {
           if (mounted) attempts = 0; // healthy — future incidents get a fresh retry budget
           else retry('blank renderer — React never mounted');
