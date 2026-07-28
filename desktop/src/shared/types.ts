@@ -362,6 +362,14 @@ export interface SkillEntry {
   sourceType?: string;
   sourceRef?: string;
   sourceSubdir?: string;
+
+  // Absolute path to the skill's own directory (the one holding SKILL.md).
+  // Populated by scanSkills for filesystem-discovered skills. The native harness
+  // needs it because `prompt` is only the slash-command string — it carries no
+  // instructions — and the scanner otherwise discards the path it already knew
+  // in order to read the frontmatter. Absent for registry-only entries the user
+  // has not installed.
+  skillDir?: string;
 }
 
 export interface SkillDetailView extends SkillEntry {
