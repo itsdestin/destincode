@@ -1619,24 +1619,38 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 {/* Skip Permissions */}
                 <SkipPermissionsSection defaults={defaults} onDefaultsChange={onDefaultsChange} />
 
-                {/* Default Project Folder */}
-                <section>
-                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Project Folder</h3>
-                  <button
-                    onClick={handleBrowseFolder}
-                    className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge-dim rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate"
-                  >
-                    {defaults.projectFolder || 'Home directory (default)'}
-                  </button>
-                  {defaults.projectFolder && (
-                    <button
-                      onClick={() => onDefaultsChange({ projectFolder: '' })}
-                      className="text-3xs text-fg-muted hover:text-fg-2 mt-1"
-                    >
-                      Reset to home directory
-                    </button>
-                  )}
-                </section>
+                {/* Default Project Folder.
+
+                    K7: this was a <button> wearing the FIELD surface — bg-inset,
+                    border-edge-dim, rounded-md — so it read as a text box you
+                    could type into, and nothing about it said "this opens a
+                    folder picker". A value chosen ELSEWHERE (an OS dialog, a
+                    picker, another screen) is a value row plus a Change button:
+                    here is the value, here is how to change it.
+
+                    The uppercase "Project Folder" eyebrow was also a K1 section
+                    label doing a row title's job — the same violation K2 already
+                    retired at Skip Permissions and Close-session prompt. */}
+                <SettingRow
+                  variant="item"
+                  title="Project folder"
+                  // The path lives in the description, not the `value` slot: a
+                  // filesystem path is long and must wrap, and `value` is
+                  // shrink-0 so it would push the buttons off the row.
+                  description={defaults.projectFolder || 'Home directory (default)'}
+                  control={
+                    <div className="flex items-center gap-1 shrink-0">
+                      {defaults.projectFolder && (
+                        <Button variant="ghost" size="sm" onClick={() => onDefaultsChange({ projectFolder: '' })}>
+                          Reset
+                        </Button>
+                      )}
+                      <Button variant="secondary" size="sm" onClick={handleBrowseFolder}>
+                        Change
+                      </Button>
+                    </div>
+                  }
+                />
 
                 {/* Close-session prompt — toggle off to skip the tag-before-closing
                     popup and destroy sessions immediately. Mirrors the "Don't show

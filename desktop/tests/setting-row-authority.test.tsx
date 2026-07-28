@@ -246,4 +246,26 @@ describe('setting row adoption', () => {
       ).toBe(count);
     }
   });
+
+  it('no control is styled as a field it is not', () => {
+    // K7. The project folder rendered as a <button> wearing the FIELD surface —
+    // bg-inset + border-edge-dim — so it looked typeable and was not. A value
+    // chosen elsewhere (an OS picker, a dialog, another screen) is a value row
+    // plus a Change button, which says what it is and how to change it.
+    const offenders: string[] = [];
+    for (const file of inScopeFiles()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      for (const m of src.matchAll(/className="[^"]*\bbg-inset border border-edge-dim\b[^"]*"/g)) {
+        // Walk back to the element this className belongs to.
+        const openTag = src.lastIndexOf('<', m.index);
+        if (src.startsWith('<button', openTag)) {
+          offenders.push(`${file.replace(RENDERER, '')}:${src.slice(0, m.index).split('\n').length}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      'A <button> must not wear the field surface — it reads as typeable. Use a value row + Change.',
+    ).toEqual([]);
+  });
 });
