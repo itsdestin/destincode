@@ -422,15 +422,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash)
       const effectiveMessage = dispatchResult.rewritten ?? message;
 
-      // Bubble content is built from the user's own words only — never the
-      // held reference's scaffold. The chat bubble must show what the user
-      // typed, not the assembled outgoing string (spec §7). This intentionally
-      // duplicates the sanitize-and-join buildOutgoingMessage does below —
-      // see its header comment for why bubble and PTY text used to share
-      // exactly one string; TRANSCRIPT_USER_MESSAGE dedup now matches on the
-      // pending flag, not content, so the two are free to diverge here.
-      const bubbleMessage = buildOutgoingMessage(effectiveMessage, files.map((f) => f.path));
-
       // The held reference's scaffold is prepended HERE, at send — it was
       // never in the textarea. On a refused send (the gate above, or
       // `disabled` below) we return before this point, so the reference
@@ -524,16 +515,25 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               type: 'QUEUED_MESSAGE_ADDED',
               sessionId,
               queueId: result.queueId,
-              // bubbleMessage, not outgoing — see the bubbleMessage comment above.
-              content: bubbleMessage?.content ?? '',
+              // Fix (duplicate-bubble bug): must be outgoing.content, the exact
+              // string that was actually sent (scaffold included when a
+              // reference was held) — NOT the user's raw draft. chat-reducer's
+              // TRANSCRIPT_USER_MESSAGE dedup matches the confirming transcript
+              // event against this timeline entry by CONTENT EQUALITY. A raw
+              // draft here never equals what Claude echoes back (which includes
+              // the prepended scaffold), so no pending match is found and the
+              // transcript event appends a SECOND bubble — the user's own "?"
+              // in one bubble, the whole scaffold in another.
+              content: outgoing.content,
               timestamp: Date.now(),
             });
           } else {
             dispatch({
               type: 'USER_PROMPT',
               sessionId,
-              // bubbleMessage, not outgoing — see the bubbleMessage comment above.
-              content: bubbleMessage?.content ?? '',
+              // Fix (duplicate-bubble bug) — see the QUEUED_MESSAGE_ADDED
+              // comment just above; same reasoning applies here.
+              content: outgoing.content,
               timestamp: Date.now(),
               attachments: files.map((f) => f.path),
             });
@@ -548,8 +548,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
-        // bubbleMessage, not outgoing — see the bubbleMessage comment above.
-        content: bubbleMessage?.content ?? '',
+        // Fix (duplicate-bubble bug) — see the QUEUED_MESSAGE_ADDED comment
+        // in the native branch above: this must be outgoing.content, the
+        // exact string sent (scaffold included), so TRANSCRIPT_USER_MESSAGE's
+        // content-equality dedup actually finds this pending entry instead of
+        // appending a second bubble.
+        content: outgoing.content,
         timestamp: Date.now(),
         // Exact attachment paths so UserMessage can render each as a clickable
         // pill — file-picker paths routinely contain spaces, which the joined

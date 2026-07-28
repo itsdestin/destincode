@@ -726,3 +726,101 @@ describe('InputBar native send — queued ack dispatches QUEUED_MESSAGE_ADDED, n
     ]);
   });
 });
+
+// Regression: InputBar used to dispatch USER_PROMPT/QUEUED_MESSAGE_ADDED with
+// the user's raw draft (bubbleMessage.content) while the PTY/native send
+// actually carried the reference scaffold prepended (outgoing.ptyText).
+// chat-reducer.ts's TRANSCRIPT_USER_MESSAGE dedup matches the confirming
+// transcript event against a PENDING timeline entry by exact content
+// equality — so the mismatch meant no match was ever found, and the
+// transcript event appended a SECOND bubble containing the full scaffold.
+// The fix: dispatch outgoing.content (the exact string sent) instead. This
+// test drives InputBar's real send() path with a held reference, then feeds
+// the resulting content back through TRANSCRIPT_USER_MESSAGE exactly the way
+// the transcript watcher would, and asserts on the REAL reducer's timeline —
+// not a synthetic reducer-only fixture — so it actually exercises the
+// InputBar call site the bug lived in.
+describe('InputBar CC/PTY send — dispatches the true sent text so transcript dedup matches (no duplicate bubble)', () => {
+  const REF: PendingReference = {
+    kind: 'chat-text',
+    label: '"earlier text"',
+    promptText: 'In an earlier message, you said:\n"Done! Created a test file at test-temp.txt."\n\nThe user has a follow-up: ',
+    anchor: null,
+  };
+
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    capturedDispatch = null;
+    (window as any).claude = {
+      native: { supported: true, send: vi.fn() },
+      session: { sendInput: vi.fn() },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('the optimistic USER_PROMPT carries the scaffold; TRANSCRIPT_USER_MESSAGE confirms it in place (no duplicate)', () => {
+    let capturedStore: ReturnType<typeof useChatStore> | null = null;
+    function StoreCapture() { capturedStore = useChatStore(); return null; }
+
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <ReferenceProvider sessionId="sess-1">
+            <ReferenceProbe />
+            <DispatchCapture />
+            <StoreCapture />
+            <InputBar sessionId="sess-1" provider="claude" />
+          </ReferenceProvider>
+        </SkillProvider>
+      </ChatProvider>,
+    );
+    act(() => { capturedDispatch!({ type: 'SESSION_INIT', sessionId: 'sess-1' }); });
+
+    act(() => { referenceApi.setReference(REF); });
+    const textarea = screen.getByPlaceholderText('Ask Claude about "earlier text"') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "what's in it?" } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    const session = capturedStore!.getState().get('sess-1')!;
+    expect(session.timeline).toHaveLength(1);
+    const sent = session.timeline[0];
+    if (sent.kind !== 'user') throw new Error('expected a user timeline entry');
+
+    // The dispatched content must be the FULL sent text — scaffold plus
+    // draft, sanitized the same way buildOutgoingMessage sanitizes what goes
+    // to the PTY — not just the raw draft. Before the fix this was
+    // "what's in it?" alone.
+    const expectedOutgoing = (REF.promptText + "what's in it?").replace(/[\r\n]+/g, ' ').trim();
+    expect(sent.message.content).toBe(expectedOutgoing);
+    expect(sent.pending).toBe(true);
+
+    // Claude Code's transcript watcher reports back exactly what it received.
+    act(() => {
+      capturedDispatch!({
+        type: 'TRANSCRIPT_USER_MESSAGE',
+        sessionId: 'sess-1',
+        uuid: 'uuid-1',
+        text: expectedOutgoing,
+        timestamp: Date.now(),
+      });
+    });
+
+    const after = capturedStore!.getState().get('sess-1')!;
+    const userEntries = after.timeline.filter((e) => e.kind === 'user');
+    // Pre-fix, no pending entry matched this text (draft-only != scaffold+
+    // draft), so this would be 2: the raw "what's in it?" bubble plus a
+    // second bubble holding the full scaffold text.
+    expect(userEntries).toHaveLength(1);
+    if (userEntries[0].kind === 'user') expect(userEntries[0].pending).toBe(false);
+  });
+});

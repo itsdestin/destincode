@@ -1,5 +1,13 @@
 import { editorViewFor } from '../artifact-views/cm/editor-registry';
 import type { PendingReference } from '../../state/reference-context';
+import {
+  LEAD_ASSISTANT,
+  LEAD_USER,
+  LEAD_NEUTRAL,
+  LEAD_CODE,
+  buildScaffold,
+  buildArtifactScaffold,
+} from './reference-prompt';
 
 // describeArtifactSelection MOVES here from build-menu.ts:205 (with its full
 // comment block) — see Task 2 Step 1. Module-private on purpose: exporting it
@@ -76,11 +84,6 @@ export function truncateLabel(text: string, max = 42): string {
   return flat.length <= max ? flat : flat.slice(0, max) + '…';
 }
 
-function scaffold(lead: string, body: string, fenced: boolean): string {
-  const quoted = fenced ? '```\n' + body + '\n```' : `"${body}"`;
-  return `${lead}\n${quoted}\n\nThe user has a follow-up: `;
-}
-
 function selectionText(): string {
   return window.getSelection()?.toString() ?? '';
 }
@@ -115,10 +118,10 @@ export function buildChatReference(bubble: Element | null, target: HTMLElement):
   // "you said" reads right for an assistant message; flip it for the user's own
   // bubble, and stay neutral if we can't tell. (Moved verbatim from build-menu.ts.)
   const lead = bubble?.classList.contains('assistant-bubble')
-    ? 'In an earlier message, you said:'
+    ? LEAD_ASSISTANT
     : bubble?.classList.contains('user-bubble')
-      ? 'Earlier I wrote:'
-      : 'Regarding this:';
+      ? LEAD_USER
+      : LEAD_NEUTRAL;
 
   const host = (bubble ?? target) as Element;
   const range = selectionText().trim() ? captureRange() : null;
@@ -126,7 +129,7 @@ export function buildChatReference(bubble: Element | null, target: HTMLElement):
   return {
     kind: 'chat-text',
     label: `"${truncateLabel(quote)}"`,
-    promptText: scaffold(lead, quote, false),
+    promptText: buildScaffold(lead, quote, false),
     anchor: { host, range },
   };
 }
@@ -136,7 +139,7 @@ export function buildCodeReference(pre: HTMLElement): PendingReference {
   return {
     kind: 'chat-code',
     label: truncateLabel(code),
-    promptText: scaffold('Earlier, you shared this code:', code, true),
+    promptText: buildScaffold(LEAD_CODE, code, true),
     anchor: { host: pre, range: null },
   };
 }
@@ -157,7 +160,7 @@ export function buildArtifactReference(container: HTMLElement): PendingReference
     // `ref` is either "line 2" / "lines 2-4" or a quoted excerpt; only the
     // line form reads well with "of <file>".
     label: ref.startsWith('line') ? `${ref} of ${baseName(path)}` : truncateLabel(ref),
-    promptText: `The user is referencing ${ref} from "${path}". Respond to the following prompt accordingly:\n\n`,
+    promptText: buildArtifactScaffold(ref, path),
     anchor: { host: container, range: captureRange() },
   };
 }
