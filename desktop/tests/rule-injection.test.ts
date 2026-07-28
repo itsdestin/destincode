@@ -120,3 +120,56 @@ describe('path-triggered injection', () => {
     expect(body).not.toContain('x'.repeat(20_000));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Non-path subjects. Found in the 2026-07-28 branch review: the driver's rule
+// was "everything except Bash has a path subject", spelled inline. Skill's
+// subject is a skill id, so the moment it was added it silently inherited
+// file-tool treatment — canonicalized against cwd, run through the credential
+// denylist, and matched against rule globs. Benign in practice today, wrong in
+// principle, and exactly the kind of thing that stops being benign quietly.
+// ---------------------------------------------------------------------------
+// The positive case — a FILE tool DOES trigger rules — is covered by
+// 'a matched trigger reaches the model as a MESSAGE' at the top of this file,
+// which uses Read. That pairing is what keeps this exclusion narrow.
+describe('non-path tool subjects are not treated as paths', () => {
+  it('a Skill call does not trigger path-scoped rules', async () => {
+    const seen: any[] = [];
+    // A trigger index that fires for ANY input — if Skill's subject reached it,
+    // the rule would be injected.
+    const firesForAnything: TriggerIndex = { match: () => [{ id: 'r', source: 'r', body: 'RULE-MARKER' }] };
+    const skill = fakeTool('Skill', {
+      schema: (await import('zod')).z.object({ skill: (await import('zod')).z.string() }),
+      permissionSubject: (a: any) => a.skill,
+    });
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Skill', { skill: 'theme-builder' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [skill], decide: async () => ALLOW, triggers: firesForAnything, profile: CLOUD_DEFAULT }),
+      async () => model as any,
+    );
+    await session.send('go');
+    expect(JSON.stringify(seen)).not.toContain('RULE-MARKER');
+  });
+
+  it('a Bash call does not either', async () => {
+    const seen: any[] = [];
+    const firesForAnything: TriggerIndex = { match: () => [{ id: 'r', source: 'r', body: 'RULE-MARKER' }] };
+    const bash = fakeTool('Bash', {
+      schema: (await import('zod')).z.object({ command: (await import('zod')).z.string() }),
+      permissionSubject: (a: any) => a.command,
+    });
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Bash', { command: 'ls src/api' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [bash], decide: async () => ALLOW, triggers: firesForAnything, profile: CLOUD_DEFAULT }),
+      async () => model as any,
+    );
+    await session.send('go');
+    expect(JSON.stringify(seen)).not.toContain('RULE-MARKER');
+  });
+});

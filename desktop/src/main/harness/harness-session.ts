@@ -21,6 +21,17 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
+
+// Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
+// string; Skill's is a skill id. Both would be canonicalized against cwd and run
+// through the credential denylist by checkPathGuard, and matched against rule
+// globs by injectPathTriggers — neither is meaningful for a non-path.
+//
+// This used to be spelled inline as `toolName !== 'Bash'`, which silently gave
+// Skill the wrong treatment the moment it was added (found in the 2026-07-28
+// branch review). Naming the set means the next non-path-subject tool has one
+// place to declare itself instead of inheriting file-tool behavior by default.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
@@ -351,7 +362,9 @@ export class HarnessSession extends EventEmitter {
     const index = this.opts.triggers;
     if (!index) return;
     for (const call of calls) {
-      if (call.toolName === 'Bash') continue;
+      // Same reasoning as the path guard: matching a rule glob against a bash
+      // command or a skill id is a category error, not a near-miss.
+      if (NON_PATH_SUBJECT_TOOLS.has(call.toolName)) continue;
       const tool = this.toolByName.get(call.toolName);
       const subject = tool?.permissionSubject(call.input as any);
       if (!subject) continue;
@@ -801,7 +814,7 @@ export class HarnessSession extends EventEmitter {
     // Throw loudly rather than corrupt the single-slot turn state (see the
     // class-level CONCURRENCY PRECONDITION note).
     if (this.abort) {
-      throw new Error('HarnessSession.send() called while a turn is already in flight — callers must serialize sends per session.');
+      throw new Error('HarnessSession: a turn is already in flight — callers must serialize send()/runSkill() per session.');
     }
     this.interrupted = false;
     emit();
@@ -1301,11 +1314,13 @@ export class HarnessSession extends EventEmitter {
       return { text: formatAnswers(args as any, d.updatedInput) };
     }
 
-    // 3. Tool-layer guards (below ALL configuration) — file tools only. Bash's
-    //    subject is a command string (not a path); TodoWrite's is undefined.
+    // 3. Tool-layer guards (below ALL configuration) — PATH-subject tools only.
+    //    See NON_PATH_SUBJECT_TOOLS: Bash's subject is a command string and
+    //    Skill's is a skill id; TodoWrite's is undefined and skipped by the
+    //    `subject !== undefined` test.
     const subject = tool.permissionSubject(args);
     let externalAsk = false;
-    if (subject !== undefined && call.toolName !== 'Bash') {
+    if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
       const verdict = checkPathGuard(subject, this.opts.cwd);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
       if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask
