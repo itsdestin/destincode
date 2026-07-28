@@ -28,6 +28,8 @@ import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { createSkillTool } from './tools/skill';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { fitInjection } from './injection/injection-budget';
+import type { TriggerIndex } from './injection/path-triggers';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -68,6 +70,10 @@ export interface HarnessSessionOpts {
    *  no skills is an expressible state rather than an environment accident.
    *  Absent → the real filesystem catalog. */
   skillCatalog?: SkillCatalog;
+  /** Project rules + nested project instructions, indexed by path (M3 item 3).
+   *  Absent → no path-triggered injection, which is exactly the pre-M3 behavior
+   *  every existing caller and test relies on. */
+  triggers?: TriggerIndex;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -272,6 +278,9 @@ export class HarnessSession extends EventEmitter {
   // Resolved capability profile (Task 5). Drives the doom-loop window + tool
   // attachment; re-assigned by setBinding on a mid-session model swap.
   private profile: CapabilityProfile;
+  /** Trigger ids already injected in this session. Survives across turns on
+   *  purpose — a rule is a standing instruction, not a per-turn reminder. */
+  private readonly injectedTriggerIds = new Set<string>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
    *  from what this session actually runs with (setBinding can have changed it). */
@@ -321,6 +330,41 @@ export class HarnessSession extends EventEmitter {
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
     const event: TranscriptEvent = { type, sessionId: this.opts.sessionId, uuid: randomUUID(), timestamp: Date.now(), data };
     this.emit('transcript-event', event);
+  }
+
+  /** Append any project rules / nested project instructions that the paths this
+   *  step touched activate (M3 item 3).
+   *
+   *  As a MESSAGE, never a system-prompt edit. prompt-assembly.ts is byte-stable
+   *  by construction and a mid-session change would discard the KV cache prefix
+   *  every local model reuses, turning a cheap follow-up turn into a full
+   *  re-prefill of the entire conversation.
+   *
+   *  ONCE per trigger per session. A rule re-sent after every Read of a matching
+   *  file would dominate the conversation and blow the window it was sized
+   *  against — and repetition does not make a model follow a rule harder.
+   *
+   *  Bash is skipped: its permission subject is a command string, not a path,
+   *  so feeding it to a path matcher would be a category error.
+   */
+  private injectPathTriggers(calls: ToolCall[]): void {
+    const index = this.opts.triggers;
+    if (!index) return;
+    for (const call of calls) {
+      if (call.toolName === 'Bash') continue;
+      const tool = this.toolByName.get(call.toolName);
+      const subject = tool?.permissionSubject(call.input as any);
+      if (!subject) continue;
+      for (const t of index.match(subject)) {
+        if (this.injectedTriggerIds.has(t.id)) continue;
+        this.injectedTriggerIds.add(t.id);
+        const fitted = fitInjection(t.body, this.profile.injectionBudgetTokens);
+        this.history.push({
+          role: 'user',
+          content: `<project-rule source="${t.source}">\n${fitted.text}\n</project-rule>`,
+        });
+      }
+    }
   }
 
   /** Add or remove the Skill tool to match the CURRENT profile (M3 item 1).
@@ -874,6 +918,11 @@ export class HarnessSession extends EventEmitter {
           resultParts.push(this.toolResultPart(call, payload.text));
         }
         this.history.push({ role: 'tool', content: resultParts });
+        // Path-triggered content (M3 item 3): a project rule or a nested
+        // AGENTS.md/CLAUDE.md governing a path this step just touched. Appended
+        // AFTER the tool results so the model reads the rule alongside what it
+        // just learned, and before it decides the next step.
+        this.injectPathTriggers(step.toolCalls);
 
         stepsSinceApproval++;
         // Budget gate (spec §2.4) — surfaces as a permission ASK, not a new

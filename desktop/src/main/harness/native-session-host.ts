@@ -30,6 +30,7 @@ import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
+import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
 
 export interface CreateNativeSessionOpts {
@@ -272,9 +273,14 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers'> {
     return {
       tools: CORE_TOOLS,
+      // Project rules + nested project instructions, indexed ONCE per session
+      // (M3 item 3). Built here rather than in the session because it is
+      // filesystem state scoped to the session's cwd, and re-statting the tree
+      // per tool call would be a real cost on a large repo.
+      triggers: buildTriggerIndex(cwd),
       // Skill is NOT in CORE_TOOLS — it is attached per session by
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
