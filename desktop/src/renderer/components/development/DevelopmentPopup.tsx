@@ -1,11 +1,11 @@
 // desktop/src/renderer/components/development/DevelopmentPopup.tsx
 // L2 popup with three rows: Report, Contribute, Known Issues.
-// Uses <Scrim> / <OverlayPanel> primitives from Overlay.tsx so the popup
+// Uses the shared <Dialog> shell so the popup
 // picks up theme tokens automatically — no hardcoded colors, blur, or z-indexes
 // (PITFALLS overlay invariant).
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from '../overlays/Overlay';
+import { Dialog } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 
 interface Props {
@@ -19,7 +19,7 @@ const KNOWN_ISSUES_URL = 'https://github.com/itsdestin/youcoded/issues';
 
 /**
  * L2 popup with three rows: Report, Contribute, Known Issues. Uses
- * <Scrim> / <OverlayPanel> primitives so the popup picks up the active
+ * shared <Dialog> shell so the popup picks up the active
  * theme automatically via CSS tokens.
  */
 export function DevelopmentPopup({ open, onClose, onOpenBug, onOpenContribute }: Props) {
@@ -27,12 +27,7 @@ export function DevelopmentPopup({ open, onClose, onOpenBug, onOpenContribute }:
   if (!open) return null;
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-4 w-[320px] max-w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={onClose} size="prompt" aria-label="Development" scrollBody={false} className="p-4">
         <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Development</h3>
         <div className="space-y-2">
           <Row
@@ -54,7 +49,7 @@ export function DevelopmentPopup({ open, onClose, onOpenBug, onOpenContribute }:
             onClick={() => { window.open(KNOWN_ISSUES_URL, '_blank'); onClose(); }}
           />
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

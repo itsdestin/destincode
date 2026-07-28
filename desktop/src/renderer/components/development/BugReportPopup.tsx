@@ -3,13 +3,12 @@
 // Screen 1 (describe): user picks bug/feature, writes description, clicks Continue.
 // Screen 2 (review): shows AI summary, editable log tail, Submit or Let Claude Try buttons.
 // Screen 3 (result): shows submission outcome or Claude session progress.
-// Uses <Scrim> / <OverlayPanel> primitives — no hardcoded colors, blur, or z-indexes
+// Uses the shared <Dialog> shell — no hardcoded colors, blur, or z-indexes
 // (PITFALLS overlay invariant).
 import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
-import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { Button, SegmentedTabs, Textarea } from '../ui';
+import { Button, Dialog, SegmentedTabs, Textarea } from '../ui';
 
 interface Props {
   open: boolean;
@@ -137,12 +136,7 @@ export function BugReportPopup({ open, onClose }: Props) {
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-4 w-[400px] max-w-[calc(100%-2rem)] max-h-[85vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={onClose} size="panel" aria-label="Report a bug" scrollBody={false} className="p-4 overflow-y-auto">
         {screen === 'describe' && (
           <DescribeScreen
             kind={kind}
@@ -172,7 +166,7 @@ export function BugReportPopup({ open, onClose }: Props) {
             onDone={onClose}
           />
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

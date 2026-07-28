@@ -22,8 +22,8 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
   fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
-import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { AnchorTip, Button, Toast, Toggle } from './components/ui';
+import { Scrim } from './components/overlays/Overlay';
+import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
@@ -3285,13 +3285,13 @@ function AppInner() {
         );
         return (
           <>
-            <Scrim layer={2} onClick={() => resolveTakeover(false)} />
-            <OverlayPanel
-              layer={2}
-              role="dialog"
-              aria-modal
+            <Dialog
+              open
+              onClose={() => resolveTakeover(false)}
+              size="panel"
               aria-label="Take over conversation"
-              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+              scrollBody={false}
+              className="p-5"
             >
               {takeoverPrompt.phase === 'confirm' ? (
                 <p className="text-sm text-fg mb-4">
@@ -3324,7 +3324,7 @@ function AppInner() {
                   Take over
                 </Button>
               </div>
-            </OverlayPanel>
+            </Dialog>
           </>
         );
       })()}
@@ -3337,13 +3337,14 @@ function AppInner() {
           pending resume entirely (no partial/implicit resume). */}
       {pendingNativeResume && (
         <>
-          <Scrim layer={2} onClick={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }} />
-          <OverlayPanel
-            layer={2}
-            role="dialog"
-            aria-modal
+          <Dialog
+            open
+            // Dismissal stays suppressed while the resume is in flight.
+            onClose={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }}
+            size="panel"
             aria-label="Choose a model to resume with"
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+            scrollBody={false}
+            className="p-5"
           >
             <h3 className="text-sm font-semibold text-fg mb-3">Choose a model to resume with</h3>
             <NativeModelSelect onSelect={(binding) => setPendingNativeBinding(binding)} />
@@ -3377,7 +3378,7 @@ function AppInner() {
                 {pendingNativeResuming ? 'Resuming…' : 'Resume'}
               </Button>
             </div>
-          </OverlayPanel>
+          </Dialog>
         </>
       )}
       <ZoomOverlay

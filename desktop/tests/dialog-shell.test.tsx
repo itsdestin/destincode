@@ -114,12 +114,30 @@ describe('Dialog shell', () => {
 // looks fine and only shows up as another bespoke width months later. 49 files
 // did exactly that against 7 using the old shell.
 //
-// Scoped to top-level components/*.tsx -- the settings and status-bar family
-// this work is about. Marketplace, project-view, game, git, tags and
-// context-menu keep their own overlays for now; they are different surfaces
-// with their own visual language and are recorded as tranche-2 residue.
+// SCOPE. The first version of this guard read only `components/*.tsx`, which
+// could not see App.tsx or ANY subdirectory -- so it could not enforce even the
+// scope the plan declared (which named `ui/` and `development/`). Two App-level
+// confirms and all three development popups were sitting outside it, unmigrated
+// and unflagged. Scope is now explicit and walked, not implied by a glob.
+//
+// IN: App.tsx, components/*.tsx, components/development, components/ui.
+// OUT (recorded residue, different surfaces with their own visual language):
+// marketplace, project-view, game, git, tags, context-menu, buddy.
 
-const COMPONENTS = join(__dirname, '..', 'src', 'renderer', 'components');
+const RENDERER = join(__dirname, '..', 'src', 'renderer');
+
+const IN_SCOPE_DIRS = ['', 'development', 'ui'];
+
+function inScopeFiles(): string[] {
+  const files = [join(RENDERER, 'App.tsx')];
+  for (const dir of IN_SCOPE_DIRS) {
+    const abs = join(RENDERER, 'components', dir);
+    for (const f of readdirSync(abs)) {
+      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
+    }
+  }
+  return files;
+}
 
 // Named, with the reason each is NOT a dialog. An exemption you cannot see is
 // how the inconsistency this test exists to stop got in.
@@ -138,14 +156,19 @@ const COMPONENTS = join(__dirname, '..', 'src', 'renderer', 'components');
 const NOT_DIALOGS: Record<string, string> = {
   'ResumeBrowser.tsx': 'L1 drawer — layer={1}, slides from the edge, never centered',
   'ZoomOverlay.tsx': 'L4 system indicator pinned top-right (fixed top-16 right-4), no scrim',
+  // components/ui primitives that own an OverlayPanel for a NON-dialog surface.
+  'AnchorTip.tsx': 'tooltip anchored to its trigger via computed coordinates',
+  'Select.tsx': 'dropdown list anchored under its trigger',
+  'Toast.tsx': 'transient notification docked to a screen edge, no scrim',
 };
 
 describe('dialog shell adoption', () => {
-  it('no top-level component hand-rolls the shell', () => {
-    const offenders = readdirSync(COMPONENTS)
-      .filter((f) => f.endsWith('.tsx') && !f.includes('.test.'))
-      .filter((f) => !(f in NOT_DIALOGS))
-      .filter((f) => readFileSync(join(COMPONENTS, f), 'utf8').includes('<OverlayPanel'));
+  it('nothing in scope hand-rolls the shell', () => {
+    const offenders = inScopeFiles()
+      .filter((p) => !(p.split(/[\\/]/).pop()! in NOT_DIALOGS))
+      .filter((p) => !p.endsWith(join('ui', 'Dialog.tsx')))
+      .filter((p) => readFileSync(p, 'utf8').includes('<OverlayPanel'))
+      .map((p) => p.replace(RENDERER, ''));
     expect(
       offenders,
       'Centered modals go through <Dialog>. It owns scrim, centering, the width '
@@ -157,8 +180,11 @@ describe('dialog shell adoption', () => {
   it('every exempted file still exists and still hand-rolls', () => {
     // An exemption is a liability once it stops being true: if one of these is
     // migrated or deleted, this list should shrink rather than quietly rot.
+    const byName = new Map(inScopeFiles().map((p) => [p.split(/[\\/]/).pop()!, p]));
     for (const [file, why] of Object.entries(NOT_DIALOGS)) {
-      const src = readFileSync(join(COMPONENTS, file), 'utf8');
+      const abs = byName.get(file);
+      expect(abs, `${file} is exempted but no longer in scope — drop it`).toBeTruthy();
+      const src = readFileSync(abs!, 'utf8');
       expect(src.includes('<OverlayPanel'), `${file} (${why}) no longer hand-rolls — drop it from NOT_DIALOGS`).toBe(true);
     }
   });
