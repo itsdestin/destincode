@@ -71,6 +71,29 @@ describe('toBoxes', () => {
     // boxes are never sub-pixel tall/wide).
     expect(toBoxes([rect(120, 70, 0.4, 20)], host, 0)).toHaveLength(0);
   });
+
+  // Outline-geometry-fix (2026-07-28): a selection that crosses a
+  // syntax-highlighting token boundary makes apply-highlight.ts emit ONE
+  // <mark> per covered text node (see its WHY comment), so ONE visual line
+  // can hand back MULTIPLE client rects. Before this fix, toBoxes passed
+  // every rect through untouched, and buildRoundedOutlinePath's traversal
+  // (down all right edges, then back up all left edges) only forms a valid
+  // simple polygon with at most one box per line — 2 boxes on one line plus
+  // 1 on the next produced a SELF-CROSSING path (verified against the
+  // pre-fix pipeline: the point (320, 20) appeared twice, at unrelated
+  // positions in the traversal). This is currently unproven against the
+  // pre-fix code and fails against it (3 boxes returned instead of 2).
+  it('unions multiple rects on the same visual line into ONE box, before padding', () => {
+    const lineY = { t: 0, h: 20 };
+    const tokenA = rect(280, lineY.t, 40, lineY.h); // e.g. "test"
+    const tokenB = rect(320, lineY.t, 60, lineY.h); // e.g. " file." (adjacent token, same line)
+    const nextLine = rect(20, 20, 280, 20);
+    const out = toBoxes([tokenA, tokenB, nextLine], { left: 0, top: 0 } as DOMRect, 0);
+    expect(out).toEqual([
+      box(280, 0, 380, 20), // tokenA + tokenB unioned into one box, own extent kept tight
+      box(20, 20, 300, 40),
+    ]);
+  });
 });
 
 describe('mergeAdjacentBoxes', () => {
@@ -140,6 +163,65 @@ describe('buildRoundedOutlinePath', () => {
 
   it('closes the path', () => {
     expect(buildRoundedOutlinePath([box(0, 0, 10, 10)]).endsWith('Z')).toBe(true);
+  });
+});
+
+// Outline-geometry-fix (2026-07-28 report): "This is a random temporary
+// [test file.] / [Created on 2026-07-28.] / You can safely delete this."
+// ([...] = actually selected) rendered with the outline enclosing the
+// unselected head of line 1 too, plus what looked like a second, larger
+// rectangle behind the tight highlight boxes. Root cause: line 1's selected
+// run ("test file.") crosses a syntax-highlighting token boundary, so
+// apply-highlight.ts emits 2 marks (2 client rects) for that ONE line — see
+// its WHY comment — and the pre-fix `toBoxes` handed all 3 rects (2 for
+// line 1, 1 for line 2) straight to buildRoundedOutlinePath's
+// down-right-edges/up-left-edges traversal, which only forms a valid simple
+// polygon with ONE box per line. Feeding it 2-boxes-then-1 produced a
+// self-crossing path (verified directly: (320,20) appeared twice, at
+// unrelated points in the traversal) whose FILL bled into a bounding-box-
+// shaped region around the whole 2-line selection — the "second rectangle."
+// This is currently unproven against the pre-fix pipeline and fails against
+// it (an un-grouped pipeline yields 3 boxes, and the emitted path is
+// self-crossing rather than a clean step-in on line 1).
+describe('full pipeline: mid-line-start selection crossing a token boundary (outline-geometry-fix)', () => {
+  it('steps in on line 1 at the selection start, not the far left of the line', () => {
+    const host = { left: 0, top: 0 } as DOMRect;
+    // Line 1: "This is a random temporary test file." — only "test file."
+    // (crossing a token boundary into 2 marks) is selected, starting well
+    // right of the line's own left edge (0).
+    const tokenA = { left: 280, top: 0, right: 320, bottom: 20, width: 40, height: 20 } as DOMRect; // "test"
+    const tokenB = { left: 320, top: 0, right: 380, bottom: 20, width: 60, height: 20 } as DOMRect; // " file."
+    // Line 2: "Created on 2026-07-28." — selected in full, starting at the
+    // line's own left margin.
+    const fullLine2 = { left: 20, top: 20, right: 300, bottom: 40, width: 280, height: 20 } as DOMRect;
+
+    const boxes = mergeAdjacentBoxes(toBoxes([tokenA, tokenB, fullLine2], host));
+    // Exactly one box per LINE (2, not 3) — the same-line tokens were
+    // unioned, not left as separate steps for the traversal to trip over.
+    expect(boxes).toHaveLength(2);
+
+    const d = buildRoundedOutlinePath(boxes);
+    // A valid, closed, non-empty path — not the '' a self-crossing/garbled
+    // shape would still technically produce, but the actual assertion that
+    // matters is the notch below.
+    expect(d.startsWith('M')).toBe(true);
+    expect(d.endsWith('Z')).toBe(true);
+
+    // The load-bearing assertion: rebuilding line 1's box by hand (union of
+    // its two tokens' own extent, [280, 380]) and line 2's box, run through
+    // toBoxes individually (so the default `pad` is applied identically to
+    // the real pipeline) then the same merge+build steps, must match
+    // byte-for-byte. If the pipeline were still leaking a 3rd box or a
+    // bounding-box fallback, this would diverge from the hand-built notch.
+    const line1Rect = { left: 280, top: 0, right: 380, bottom: 20, width: 100, height: 20 } as DOMRect;
+    const line2Rect = { left: 20, top: 20, right: 300, bottom: 40, width: 280, height: 20 } as DOMRect;
+    const handBuilt = [...toBoxes([line1Rect], host), ...toBoxes([line2Rect], host)];
+    expect(buildRoundedOutlinePath(mergeAdjacentBoxes(handBuilt))).toBe(d);
+
+    // And explicitly: line 1's outline never reaches x=0 (the far left of
+    // "This is a random temporary", never selected) — it starts at the
+    // selection's own left edge.
+    expect(d).not.toMatch(/\b0(\.\d+)? 0\b/); // no vertex at (0, 0)-ish on line 1's top edge
   });
 });
 

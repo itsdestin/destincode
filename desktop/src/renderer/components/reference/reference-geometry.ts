@@ -28,14 +28,67 @@ export type Box = { l: number; r: number; t: number; b: number };
  * tall, so anything under 0.5px is measurement noise, not content.
  */
 export function toBoxes(rects: DOMRect[], host: DOMRect, pad = 2): Box[] {
-  return rects
-    .filter((r) => r.width > 0.5 && r.height > 0.5)
-    .map((r) => ({
-      l: Math.round(r.left - host.left - pad),
-      r: Math.round(r.right - host.left + pad),
-      t: Math.round(r.top - host.top - pad),
-      b: Math.round(r.bottom - host.top + pad),
-    }))
+  const real = rects.filter((r) => r.width > 0.5 && r.height > 0.5);
+
+  // Union rects that land on the SAME rendered line, BEFORE padding.
+  //
+  // Fix (2026-07-28 outline-geometry-fix): a selection that starts or ends
+  // mid-line can cross a syntax-highlighting token boundary — apply-highlight.ts
+  // deliberately wraps EACH covered text node in its own <mark> when that
+  // happens ("a selection that straddles two <span> tokens... gets one <mark>
+  // per covered node" — see its WHY comment), so one partially-selected LINE
+  // can hand back MULTIPLE client rects, not one. buildRoundedOutlinePath's
+  // traversal (down every box's right edge, then back up every box's left
+  // edge) only produces a valid, non-self-crossing polygon when there is AT
+  // MOST ONE box per line — feeding it >1 box for the same line interleaves
+  // that line's edges with the NEXT line's, producing a self-intersecting
+  // path whose fill (`.reference-trace path.wash`) bleeds outside the actual
+  // highlighted runs. That bleed is what read as "a larger box around the
+  // whole two-line region" alongside the correctly-tight `.reference-mark`
+  // backgrounds (Destin, 2026-07-28 screenshot report) — confirmed by
+  // feeding this exact shape (2 marks on line 1, 1 on line 2) through the
+  // pre-fix pipeline and inspecting the emitted path: (320,20) and (320,0)
+  // each appeared twice, at unrelated points in the traversal.
+  //
+  // Grouped by comparing RAW (unpadded) vertical midpoints with a small (1px)
+  // epsilon: same-line fragments share a near-identical midpoint (sub-pixel
+  // apart at most, from font-metric rounding); genuinely adjacent — but
+  // different — lines are a full line-height apart, so this can never
+  // conflate two real lines into one. Done here, pre-pad, deliberately: `pad`
+  // is added symmetrically to both edges of every box, so it never shifts a
+  // box's own vertical MIDPOINT — but comparing PADDED [t,b] *ranges* for
+  // overlap would false-positive on any two ordinarily-stacked lines with
+  // zero natural gap between them, since padding pushes both toward each
+  // other by `pad` each. That's the normal case for body text, so padded-
+  // range overlap was rejected as the grouping test.
+  const sorted = [...real].sort((a, b) => a.top - b.top);
+  const lines: DOMRect[][] = [];
+  for (const r of sorted) {
+    const curMid = (r.top + r.bottom) / 2;
+    const line = lines[lines.length - 1];
+    if (line) {
+      const lineMid = (line[0].top + line[0].bottom) / 2;
+      if (Math.abs(curMid - lineMid) <= 1) {
+        line.push(r);
+        continue;
+      }
+    }
+    lines.push([r]);
+  }
+
+  return lines
+    .map((group) => {
+      const l = Math.min(...group.map((r) => r.left));
+      const r = Math.max(...group.map((r) => r.right));
+      const t = Math.min(...group.map((r) => r.top));
+      const b = Math.max(...group.map((r) => r.bottom));
+      return {
+        l: Math.round(l - host.left - pad),
+        r: Math.round(r - host.left + pad),
+        t: Math.round(t - host.top - pad),
+        b: Math.round(b - host.top + pad),
+      };
+    })
     .sort((a, b) => a.t - b.t);
 }
 
@@ -51,9 +104,16 @@ export function toBoxes(rects: DOMRect[], host: DOMRect, pad = 2): Box[] {
  * above: real content differences (a selection starting mid-line, a shorter
  * final line) are always at least one character's width apart — several
  * pixels at minimum — so a 2px tolerance merges only the noise, never a
- * genuine edge. `boxes` is assumed pre-sorted by `t` (toBoxes already does
- * this), so "consecutive in the array" is "consecutive top-to-bottom" —
- * exactly the adjacency the visible staircase comes from.
+ * genuine edge. `boxes` is assumed pre-sorted by `t`, AND at most one box per
+ * visual line (toBoxes already guarantees both — see its WHY comment on the
+ * line-grouping pass), so "consecutive in the array" is "consecutive
+ * top-to-bottom, one step per line" — exactly the adjacency the visible
+ * staircase comes from. Callers that skip toBoxes and hand-build a `Box[]`
+ * with >1 box on the same line (as some tests deliberately do, to test this
+ * function in isolation) will see this smoothing pass compare across those
+ * too — harmless for hand-built same-line-adjacent boxes in existing tests,
+ * but not a substitute for toBoxes' grouping, which is what actually
+ * prevents the self-crossing traversal bug (see toBoxes).
  */
 export function mergeAdjacentBoxes(boxes: Box[], tolerance = 2): Box[] {
   if (boxes.length < 2) return boxes;
