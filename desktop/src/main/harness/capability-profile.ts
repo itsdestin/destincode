@@ -60,6 +60,16 @@ const FRONTIER_PROVIDERS: ReadonlySet<ProfileProviderType> = new Set(['anthropic
  *  treated as roomier than a 32k hosted one. An unmeasured window is small: we
  *  never assume room we could not verify (the same conservative posture the rest
  *  of the three-layer resolution takes). */
+/** The tool presentation this model will actually run with — registry overlay
+ *  first, then the window-tiered fallback. Extracted because injectionSizing
+ *  needs it BEFORE the profile object is assembled, and duplicating the
+ *  precedence here would be a second place for it to drift. */
+function presentationFor(d: DiscoveredModel, registry: KnownModelEntry[]): ToolPresentation {
+  if (d.providerType !== 'local-engine') return CLOUD_DEFAULT.maxToolPresentation;
+  const known = matchKnownModel(d.modelId, registry);
+  return known?.maxToolPresentation ?? localFallback(d.contextLength).maxToolPresentation;
+}
+
 function injectionSizing(d: DiscoveredModel, registry: KnownModelEntry[]): Pick<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens'> {
   if (FRONTIER_PROVIDERS.has(d.providerType)) {
     return { exposeSkillCatalog: true, injectionBudgetTokens: CLOUD_DEFAULT.injectionBudgetTokens };
@@ -67,8 +77,21 @@ function injectionSizing(d: DiscoveredModel, registry: KnownModelEntry[]): Pick<
   // The EFFECTIVE window, not the raw one — a small model loaded at a large -c
   // must not be judged roomy just because llama-server was told a big number.
   const window = effectiveContextForModel(d.contextLength, d.modelId, registry);
+  // Two DIFFERENT questions, and the window only answers one of them.
+  //
+  //   "can it AFFORD the catalog?" -> window size.
+  //   "should it be CHOOSING skills on its own?" -> model capability.
+  //
+  // Gating on window alone conflated them: a Qwen 3.5 2B launched with
+  // `-c 128000` has ample room, got the full catalog, and spent its turn
+  // reciting all twelve skills instead of doing anything (Destin, 2026-07-28).
+  // `maxToolPresentation` is the capability signal the profile already carries —
+  // 'simplified' is exactly "this model needs the schema kept small and simple" —
+  // so a model marked simplified never gets autonomous skill selection, whatever
+  // its window. Those sessions still reach every skill through /skill-name.
+  const capable = presentationFor(d, registry) === 'full';
   return {
-    exposeSkillCatalog: window != null && window >= SMALL_LOCAL_CONTEXT,
+    exposeSkillCatalog: capable && window != null && window >= SMALL_LOCAL_CONTEXT,
     injectionBudgetTokens: window == null ? 2_000
       : window >= 100_000 ? 20_000
       : window >= SMALL_LOCAL_CONTEXT ? 6_000

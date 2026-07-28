@@ -39,6 +39,19 @@ export const KNOWN_MODELS: KnownModelEntry[] = [
   // Tool calling confirmed via model card's Agentic Usage section (qwen3_coder parser).
   // source: https://huggingface.co/Qwen/Qwen3.5-9B
   { match: 'qwen\\W?3\\.?5.*9b', label: 'Qwen 3.5 9B', maxToolPresentation: 'simplified', doomLoopThreshold: 2, supportsTools: true, maxContextWindow: 262144 },
+  // Qwen 3.5 small (≤4B). Exists for a specific reason: without an entry, a 2B
+  // fell through to the window-only fallback, which read the `-c 128000` it was
+  // launched with, judged it a full-capability model, and handed it the whole
+  // skill catalog — which it spent a turn reciting (Destin, 2026-07-28).
+  // Confirmed to exist by being run here as `Qwen3.5-2B-Q8_0`.
+  // UNVERIFIED — two separate things, both needing a check against a model card:
+  //   (a) maxContextWindow is INHERITED from the 9B entry's documented 262,144,
+  //       not read for this variant. It can only ever clamp DOWN, so an
+  //       over-estimate is inert; an under-estimate would wrongly shrink a real
+  //       window, which is why it is not guessed lower.
+  //   (b) 'simplified' is a capability judgment from parameter count, not a
+  //       sourced claim about this model's tool-calling.
+  { match: 'qwen\\W?3\\.?5.*[0-4]b', label: 'Qwen 3.5 (small, ≤4B)', maxToolPresentation: 'simplified', doomLoopThreshold: 2, supportsTools: true, maxContextWindow: 262144 },
   // Qwen 3.5 "large": CORRECTED from the seed assumption of dense — research found no dense
   // Qwen 3.5 variant above 27B. The actual large-end release is 122B-A10B, an MoE model
   // (122B total / 10B active, 256 experts). Keeping "70b" in the match pattern as a tolerant

@@ -127,3 +127,42 @@ describe('capability profile — injection sizing (M3 item 5)', () => {
     expect(CLOUD_DEFAULT.injectionBudgetTokens).toBeGreaterThan(10_000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Capability vs room. Destin ran Qwen 3.5 2B with `-c 128000`, and it got the
+// full Skill catalog and spent its turn reciting all twelve skills. Window size
+// answers "can it afford the catalog?", not "should it be choosing skills?".
+// ---------------------------------------------------------------------------
+describe('capability gating — a big window does not make a small model capable', () => {
+  it('a 2B model with a 128k window does NOT get the skill catalog', () => {
+    const p = resolveProfile(local('Qwen3.5-2B-Q8_0', 128_000));
+    expect(p.maxToolPresentation).toBe('simplified');
+    expect(p.exposeSkillCatalog).toBe(false);
+  });
+
+  it('a model marked simplified never gets it, however much room it has', () => {
+    const reg = [{ match: 'weak-model', label: 'Weak', maxToolPresentation: 'simplified' as const, supportsTools: true }];
+    expect(resolveProfile(local('weak-model-q8', 1_000_000), reg).exposeSkillCatalog).toBe(false);
+  });
+
+  it('a capable local model with room still gets it', () => {
+    const reg = [{ match: 'strong-model', label: 'Strong', maxToolPresentation: 'full' as const, supportsTools: true }];
+    expect(resolveProfile(local('strong-model-q8', 128_000), reg).exposeSkillCatalog).toBe(true);
+  });
+
+  it('a capable model with a SMALL window still does not — room is still required', () => {
+    const reg = [{ match: 'strong-model', label: 'Strong', maxToolPresentation: 'full' as const, supportsTools: true }];
+    expect(resolveProfile(local('strong-model-q8', 8_192), reg).exposeSkillCatalog).toBe(false);
+  });
+
+  it('the injection BUDGET still tracks the window, not capability', () => {
+    // A weak model with a big window can still be handed a long skill body by
+    // /skill-name — it just is not trusted to pick one unprompted.
+    const p = resolveProfile(local('Qwen3.5-2B-Q8_0', 128_000));
+    expect(p.injectionBudgetTokens).toBeGreaterThan(10_000);
+  });
+
+  it('cloud models are unaffected', () => {
+    expect(resolveProfile({ providerType: 'anthropic', modelId: 'm', contextLength: null }).exposeSkillCatalog).toBe(true);
+  });
+});
