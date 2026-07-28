@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { createRef } from 'react';
 import {
-  useStickToBottom, isAtBottom, distanceFromBottom, RESTICK_THRESHOLD_PX,
+  useStickToBottom, isAtBottom, distanceFromBottom, RESTICK_THRESHOLD_PX, REARM_IDLE_MS,
 } from '../src/renderer/hooks/use-stick-to-bottom';
 
 // jsdom doesn't lay out, so scrollHeight/clientHeight are always 0 and scrollTop
@@ -14,11 +14,16 @@ const CONTENT_H = 2000;
 const VIEW_H = 500;
 const MAX_SCROLL = CONTENT_H - VIEW_H; // 1500
 
+// Counts reads of the layout-forcing properties. In a real browser each of
+// these flushes pending layout, which during a streaming turn means a full
+// forced reflow of the whole transcript — see the PERF note in the hook.
+let layoutReads = 0;
+
 function makeContainer(): HTMLDivElement {
   const el = document.createElement('div');
   let top = 0;
-  Object.defineProperty(el, 'scrollHeight', { get: () => CONTENT_H });
-  Object.defineProperty(el, 'clientHeight', { get: () => VIEW_H });
+  Object.defineProperty(el, 'scrollHeight', { get: () => { layoutReads++; return CONTENT_H; } });
+  Object.defineProperty(el, 'clientHeight', { get: () => { layoutReads++; return VIEW_H; } });
   Object.defineProperty(el, 'clientWidth', { get: () => 800 });
   Object.defineProperty(el, 'scrollTop', {
     get: () => top,
@@ -62,11 +67,20 @@ describe('useStickToBottom', () => {
   let el: HTMLDivElement;
   let ref: React.RefObject<HTMLDivElement | null>;
 
+  // Re-arming is debounced, so every test drives timers explicitly.
+  const settle = () => act(() => { vi.advanceTimersByTime(REARM_IDLE_MS + 1); });
+
   beforeEach(() => {
+    vi.useFakeTimers();
     document.body.innerHTML = '';
     el = makeContainer();
     ref = createRef<HTMLDivElement>();
     (ref as any).current = el;
+    layoutReads = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('starts stuck and follows new content', () => {
@@ -96,7 +110,9 @@ describe('useStickToBottom', () => {
 
     // A streaming delta arriving now must NOT drag the user back down.
     act(() => { if (result.current.stickRef.current) result.current.scrollToBottom(); });
+    settle();
     expect(el.scrollTop).toBe(MAX_SCROLL - 120);
+    expect(result.current.stickRef.current).toBe(false);
   });
 
   it('does not unstick on a downward wheel (it would never re-arm)', () => {
@@ -117,6 +133,7 @@ describe('useStickToBottom', () => {
     expect(result.current.stickRef.current).toBe(false);
 
     act(() => { wheel(el, 400); });
+    settle();
 
     expect(result.current.stickRef.current).toBe(true);
     expect(result.current.atBottom).toBe(true);
@@ -128,9 +145,52 @@ describe('useStickToBottom', () => {
     act(() => { wheel(el, -400); });
 
     act(() => { wheel(el, 300); }); // 100px short — beyond the re-arm threshold
+    settle();
 
     expect(result.current.stickRef.current).toBe(false);
     expect(result.current.atBottom).toBe(false);
+  });
+
+  // Perf regression guard. The first dogfood build measured the scroll position
+  // inline in the scroll handler, which forces a synchronous layout flush. While
+  // the model streams, the DOM is dirty every frame, so that turned each scroll
+  // event into a full reflow of the transcript and made scrolling feel laggy.
+  describe('does not force layout on the scroll hot path', () => {
+    it('reads nothing at all while pinned to the bottom', () => {
+      const { result } = renderHook(() => useStickToBottom(ref));
+      act(() => { result.current.scrollToBottom(); });
+
+      layoutReads = 0;
+      // A streaming turn re-pins constantly; each pin fires a scroll event.
+      act(() => {
+        for (let i = 0; i < 50; i++) {
+          el.dispatchEvent(new Event('scroll'));
+        }
+      });
+
+      expect(layoutReads).toBe(0);
+    });
+
+    it('measures once per gesture, not once per event, while unstuck', () => {
+      const { result } = renderHook(() => useStickToBottom(ref));
+      act(() => { result.current.scrollToBottom(); });
+      act(() => { wheel(el, -400); });
+
+      layoutReads = 0;
+      act(() => {
+        // 50 scroll events inside one continuous gesture.
+        for (let i = 0; i < 50; i++) {
+          el.scrollTop = el.scrollTop + 1;
+          vi.advanceTimersByTime(10); // still under the idle gap
+        }
+      });
+      expect(layoutReads).toBe(0); // nothing measured mid-gesture
+
+      settle();
+      // One check once the gesture goes quiet: distanceFromBottom reads
+      // scrollHeight + clientHeight.
+      expect(layoutReads).toBe(2);
+    });
   });
 
   it('unsticks on an upward touch drag', () => {

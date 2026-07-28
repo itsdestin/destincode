@@ -42,6 +42,13 @@ interface ScrollMetrics {
  */
 export const RESTICK_THRESHOLD_PX = 32;
 
+/**
+ * How long the scroll has to go quiet before we measure whether the user landed
+ * at the bottom. Short enough to feel immediate, long enough that a gesture
+ * costs one layout read rather than one per frame — see the PERF note below.
+ */
+export const REARM_IDLE_MS = 90;
+
 export function distanceFromBottom(m: ScrollMetrics): number {
   return m.scrollHeight - m.scrollTop - m.clientHeight;
 }
@@ -112,10 +119,27 @@ export function useStickToBottom(
 
     // Re-arm on arrival at the bottom. No "was this scroll ours?" bookkeeping is
     // needed: our own pins land at distance 0, where the flag is already true.
-    // Guarded on the ref so a streaming turn's ~60 scroll events/sec don't touch
-    // React state at all.
-    const onScroll = () => {
+    //
+    // PERF (this is load-bearing, don't inline the check back into onScroll):
+    // isAtBottom() reads scrollTop/scrollHeight/clientHeight, and reading those
+    // forces a synchronous layout flush. During a native turn the DOM is dirty
+    // continuously — the in-flight turn re-renders on every streamed delta and
+    // re-parses its markdown — so each read is a FULL forced reflow of a large
+    // transcript, not a cached lookup. Doing that once per scroll event made
+    // scrolling visibly janky while the model was generating (first dogfood
+    // pass, 2026-07-28). Two guards keep it off the hot path:
+    //   1. While pinned we return before reading anything at all.
+    //   2. While unstuck we only measure once the scroll has gone quiet, so a
+    //      gesture costs one reflow instead of one per frame.
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkRearm = () => {
+      idleTimer = undefined;
       if (!stickRef.current && isAtBottom(c)) setStick(true);
+    };
+    const onScroll = () => {
+      if (stickRef.current) return;
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      idleTimer = setTimeout(checkRearm, REARM_IDLE_MS);
     };
 
     // Upward wheel intent. Separate (passive) listener from ChatView's momentum
@@ -152,6 +176,7 @@ export function useStickToBottom(
     c.addEventListener('touchmove', onTouchMove, { passive: true });
     c.addEventListener('pointerdown', onPointerDown);
     return () => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
       c.removeEventListener('scroll', onScroll);
       c.removeEventListener('wheel', onWheel);
       c.removeEventListener('touchstart', onTouchStart);
