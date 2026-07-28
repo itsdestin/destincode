@@ -12,7 +12,12 @@ import * as path from 'path';
 import { scanSkills } from '../../skill-scanner';
 import type { SkillEntry } from '../../../shared/types';
 
-export interface LoadedSkill { id: string; displayName: string; description: string; body: string }
+export interface LoadedSkill {
+  id: string; displayName: string; description: string; body: string;
+  /** Absolute path to the SKILL.md that was read. Lets the UI open the real file
+   *  in the artifact viewer instead of dumping its text into the timeline. */
+  file: string;
+}
 
 export interface SkillCatalog {
   /** id + description only — this is what rides in the tool schema on EVERY turn,
@@ -86,7 +91,7 @@ export function createSkillCatalog(entries: SkillEntry[] = scanSkills()): SkillC
       }
       // entry.id, NOT the requested id: a bare name resolves to a qualified one,
       // and the caller labels the injected block with what actually ran.
-      return { id: entry.id, displayName: entry.displayName, description: entry.description, body: stripFrontmatter(raw).trim() };
+      return { id: entry.id, displayName: entry.displayName, description: entry.description, body: stripFrontmatter(raw).trim(), file };
     },
   };
 }

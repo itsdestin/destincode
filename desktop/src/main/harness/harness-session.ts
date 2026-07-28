@@ -769,7 +769,34 @@ export class HarnessSession extends EventEmitter {
     return text.trim();
   }
 
+  /** Run a user-invoked skill (/skill-name, M3 item 1).
+   *
+   *  Same turn machinery as send(), with ONE difference that matters: the
+   *  transcript event is `skill-invoked`, not `user-message`. The model's history
+   *  gets the full instructions; the UI gets a compact card. Sending the body as
+   *  a user message rendered 26k characters of SKILL.md as a chat bubble
+   *  (Destin, 2026-07-28) — the timeline should show what the user DID.
+   *
+   *  The body is persisted on the event so `rebuildHistory` can restore the same
+   *  model history on resume. Without it a resumed conversation would replay a
+   *  turn whose opening move has no visible cause.
+   */
+  async runSkill(inv: { skillId: string; displayName: string; body: string; args?: string; skillPath?: string }): Promise<void> {
+    const historyText = inv.args ? `${inv.body}\n\n${inv.args}` : inv.body;
+    return this.beginTurn(historyText, () => this.emitEvent('skill-invoked', {
+      skillId: inv.skillId, displayName: inv.displayName, args: inv.args,
+      body: inv.body, skillPath: inv.skillPath,
+    }));
+  }
+
   async send(text: string): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', { text }));
+  }
+
+  /** The turn driver. `emit` names how this turn ENTERED the conversation — a
+   *  typed message, or a skill invocation — which is the only thing that differs
+   *  between send() and runSkill(). Everything downstream is identical. */
+  private async beginTurn(text: string, emit: () => void): Promise<void> {
     // Re-entrancy guard: a non-null abort means a turn is already streaming.
     // Throw loudly rather than corrupt the single-slot turn state (see the
     // class-level CONCURRENCY PRECONDITION note).
@@ -777,7 +804,7 @@ export class HarnessSession extends EventEmitter {
       throw new Error('HarnessSession.send() called while a turn is already in flight — callers must serialize sends per session.');
     }
     this.interrupted = false;
-    this.emitEvent('user-message', { text });
+    emit();
     this.history.push({ role: 'user', content: text });
     this.abort = new AbortController();
     this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill

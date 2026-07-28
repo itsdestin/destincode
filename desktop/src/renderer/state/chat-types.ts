@@ -142,6 +142,11 @@ export type TimelineEntry =
   | { kind: 'usage-card'; snapshot: UsageSnapshot }
   // Thin "Conversation cleared" / "Compacted" dividers
   | { kind: 'system-marker'; marker: SystemMarker }
+  // A user-invoked skill (/skill-name). Renders as the compact card the assistant
+  // side already uses for the Skill tool — NOT as a user bubble, because the
+  // instructions can run to tens of thousands of characters. `skillPath` makes
+  // the card open the real SKILL.md in the artifact viewer.
+  | { kind: 'skill-invocation'; id: string; skillId: string; displayName: string; args?: string; skillPath?: string; timestamp: number }
   // Spinner card while /compact (or resume-from-summary) is running
   | { kind: 'compacting'; id: string; startedAt: number }
   // /copy picker when the target turn has multiple copyable blocks
@@ -502,6 +507,18 @@ export type ChatAction =
       structuredPatch?: import('../../shared/types').StructuredPatchHunk[];
       parentAgentToolUseId?: string;
       agentId?: string;
+    }
+  | {
+      // /skill-name in a native session. Appends the compact invocation card;
+      // the instructions themselves never reach the timeline.
+      type: 'TRANSCRIPT_SKILL_INVOKED';
+      sessionId: string;
+      uuid: string;
+      timestamp: number;
+      skillId: string;
+      displayName: string;
+      args?: string;
+      skillPath?: string;
     }
   | {
       type: 'TRANSCRIPT_TURN_COMPLETE';

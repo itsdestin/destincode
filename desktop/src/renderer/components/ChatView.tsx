@@ -9,6 +9,7 @@ import PromptCard, { PromptCardButton } from './PromptCard';
 import { sendPromptInput } from '../state/prompt-input';
 import UsageCard from './UsageCard';
 import SystemMarker from './SystemMarker';
+import SkillInvocationCard from './SkillInvocationCard';
 import CompactingCard from './CompactingCard';
 import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
@@ -763,6 +764,19 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                 case 'system-marker':
                   key = entry.marker.id;
                   content = <SystemMarker marker={entry.marker} />;
+                  break;
+                // /skill-name — a compact card, never the instructions themselves.
+                case 'skill-invocation':
+                  key = entry.id;
+                  content = (
+                    <SkillInvocationCard
+                      skillId={entry.skillId}
+                      displayName={entry.displayName}
+                      args={entry.args}
+                      skillPath={entry.skillPath}
+                      sessionId={sessionId}
+                    />
+                  );
                   break;
                 // /compact spinner (and resume-from-summary)
                 case 'compacting':

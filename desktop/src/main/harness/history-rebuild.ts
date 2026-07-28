@@ -84,6 +84,14 @@ export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
       // barrier must not survive into the post-barrier history, and dropping an
       // unpaired tool-call here is safe because nothing after the barrier can
       // reference it.
+      // A user-invoked skill enters model history as its INSTRUCTIONS, exactly as
+      // it did live. Rendering is a separate concern (a compact card); without
+      // this a resumed session would replay a turn whose opening move has no cause.
+      case 'skill-invoked':
+        if (e.data.body) {
+          out.push({ role: 'user', content: e.data.args ? `${e.data.body}\n\n${e.data.args}` : e.data.body });
+        }
+        break;
       case 'context-clear':
         out.length = 0;
         assistantParts = [];

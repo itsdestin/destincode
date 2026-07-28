@@ -971,6 +971,29 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    case 'TRANSCRIPT_SKILL_INVOKED': {
+      const session = state.get(action.sessionId);
+      if (!session) return state;
+      // Dedup on uuid like every other transcript-fed entry: this event replays
+      // on resume, and a second card would imply the skill ran twice.
+      if (session.seenUuids?.has(action.uuid)) return state;
+      const next = new Map(state);
+      next.set(action.sessionId, {
+        ...session,
+        seenUuids: new Set([...(session.seenUuids ?? []), action.uuid]),
+        timeline: [...session.timeline, {
+          kind: 'skill-invocation' as const,
+          id: `skill-${action.uuid}`,
+          skillId: action.skillId,
+          displayName: action.displayName,
+          ...(action.args ? { args: action.args } : {}),
+          ...(action.skillPath ? { skillPath: action.skillPath } : {}),
+          timestamp: action.timestamp,
+        }],
+      });
+      return next;
+    }
+
     case 'TRANSCRIPT_TURN_COMPLETE': {
       // A sub-agent's end_turn must NOT reach into parent state. Without
       // this guard the parent turn's `model` gets overwritten with the

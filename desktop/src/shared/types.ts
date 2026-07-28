@@ -126,7 +126,15 @@ export type TranscriptEventType =
   // identity and stays fully readable on disk while the model's memory resets.
   // Unlike session-error this IS persisted: a barrier that vanished on resume
   // would silently resurrect the context the user deliberately dropped.
-  | 'context-clear';
+  | 'context-clear'
+  // Native-runtime only: a user-invoked skill (/skill-name, M3 item 1). Persisted
+  // because the skill's instructions ARE part of the model's history — a resume
+  // that dropped them would replay a conversation whose first move makes no sense.
+  // `data.body` carries those instructions for history rebuild; the UI renders
+  // only `skillId`/`displayName`/`args` as a compact card, because a 26k-character
+  // SKILL.md as a user bubble is unreadable (Destin, 2026-07-28). `skillPath`
+  // makes the card open the real file in the artifact viewer.
+  | 'skill-invoked';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -220,6 +228,15 @@ export interface TranscriptEvent {
      * unchanged.
      */
     autoCompaction?: boolean;
+    /** `skill-invoked` only (M3 item 1). `skillId` is the resolved, qualified id
+     *  (wecoded-themes-plugin:theme-builder); `body` is the SKILL.md text that
+     *  enters model history on rebuild and is deliberately NOT rendered;
+     *  `skillPath` lets the card open the real file in the artifact viewer. */
+    skillId?: string;
+    displayName?: string;
+    args?: string;
+    body?: string;
+    skillPath?: string;
   };
 }
 

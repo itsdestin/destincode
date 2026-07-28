@@ -516,11 +516,16 @@ export class NativeSessionHost extends EventEmitter {
   // is the ONLY drain trigger — it settles strictly after turn-complete /
   // session-error / user-interrupt, and stays unsettled across a permission ask
   // (an ask pauses the turn; draining on it would hard-throw re-entrancy).
-  private async runTurns(sessionId: string, entry: LiveEntry, first: string): Promise<void> {
-    let next: string | undefined = first;
+  /** `first` is a plain string for an ordinary send, or a THUNK when the turn
+   *  starts some other way — today only /skill-name, whose opener is
+   *  `session.runSkill` (same turn machinery, different transcript event).
+   *  Queued follow-ups are always plain sends, so queue semantics are unchanged. */
+  private async runTurns(sessionId: string, entry: LiveEntry, first: string | (() => Promise<void>)): Promise<void> {
+    let next: string | (() => Promise<void>) | undefined = first;
     while (next !== undefined) {
       try {
-        await entry.session.send(next);
+        if (typeof next === 'function') await next();
+        else await entry.session.send(next);
       } catch (err) {
         log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
       }
@@ -592,14 +597,22 @@ export class NativeSessionHost extends EventEmitter {
     }
 
     const fitted = fitInjection(loaded.body, entry.session.profileSnapshot.injectionBudgetTokens);
-    // The user's own words come AFTER the instructions, so a skill that reads
-    // "act on what the user asked" has something to act on.
-    const text = `<skill-instructions name="${loaded.id}">\n${fitted.text}\n</skill-instructions>`
-      + (args ? `\n\n${args}` : '');
-    // Report send()'s own refusal rather than claiming success — the in-flight
-    // check above closes the common case, but the queue can still be full.
-    const sent = this.send(sessionId, text);
-    if (sent.status === 'failed') return { ok: false, reason: sent.reason };
+    // runSkill, NOT send: the model needs the instructions but the TIMELINE needs
+    // to show what the user did. Sending the body through send() rendered a 26k
+    // character SKILL.md as a chat bubble (Destin, 2026-07-28).
+    entry.inFlight = true;
+    // Same setImmediate defer as send(): the IPC reply must flush BEFORE the
+    // session emits its transcript event, or the confirm can beat the ack to the
+    // renderer. runTurns owns inFlight teardown and queue draining from here.
+    setImmediate(() => {
+      void this.runTurns(sessionId, entry, () => entry.session.runSkill({
+        skillId: loaded.id,
+        displayName: loaded.displayName,
+        body: `<skill-instructions name="${loaded.id}">\n${fitted.text}\n</skill-instructions>`,
+        args,
+        skillPath: loaded.file,
+      }));
+    });
     return { ok: true };
   }
 

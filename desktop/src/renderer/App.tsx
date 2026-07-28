@@ -1239,6 +1239,22 @@ function AppInner() {
             message: event.data.text ?? 'The model request failed.',
           });
           break;
+        case 'skill-invoked':
+          // /skill-name (M3 item 1). The instructions live in event.data.body and
+          // are deliberately NOT dispatched — they belong to the model's history,
+          // not the timeline. Rendering them as a user bubble put 26k characters
+          // of SKILL.md on screen (Destin, 2026-07-28).
+          dispatch({
+            type: 'TRANSCRIPT_SKILL_INVOKED',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            skillId: event.data.skillId ?? 'skill',
+            displayName: event.data.displayName ?? event.data.skillId ?? 'Skill',
+            args: event.data.args,
+            skillPath: event.data.skillPath,
+          });
+          break;
         case 'context-clear':
           // The durable /clear barrier (native runtime). This is the ONLY thing
           // that clears a native session's timeline — the dispatcher defers to
