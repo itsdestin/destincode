@@ -24,9 +24,12 @@ import { FilepathToken } from './FilepathToken';
  * Quieter than a real user bubble on purpose — bg-inset rather than bg-accent —
  * because the user typed one short command, not this content.
  *
- * The skill's own SKILL.md rides along as a standard FilepathToken, so it opens
- * in the artifact viewer like any other file reference: the instructions stay one
- * click away instead of flooding the conversation.
+ * The skill NAME itself is the link to its SKILL.md — FilepathToken's 'inline'
+ * variant, dotted-underlined. A separate file chip beside it was just repeating
+ * the same thing twice (Destin, 2026-07-28), and the name is already the most
+ * natural thing to click. Same resolve-and-open behavior as any file pill in
+ * chat, so the instructions stay one click away instead of flooding the
+ * conversation.
  */
 export default function SkillInvocationCard({
   skillId, displayName, args, skillPath, sessionId,
@@ -45,10 +48,14 @@ export default function SkillInvocationCard({
   return (
     <div className="flex justify-end px-4 py-1.5 in-view">
       <div className="max-w-[80%] bg-inset rounded-2xl rounded-br-sm px-4 py-2.5">
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
           <NoteIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
-          <span className="text-sm text-fg-2" title={displayName}>Invoked skill: {bare}</span>
-          {skillPath && <FilepathToken path={skillPath} sessionId={sessionId} />}
+          <span className="text-sm text-fg-2" title={displayName}>
+            Invoked skill:{' '}
+            {skillPath
+              ? <FilepathToken path={skillPath} sessionId={sessionId} variant="inline" label={bare} />
+              : bare}
+          </span>
         </div>
         {args && (
           <div className="mt-1 text-xs text-fg-dim break-words">{args}</div>
