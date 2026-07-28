@@ -1,75 +1,152 @@
-import { useCallback, useEffect, useState } from 'react';
-import { toBoxes, buildUnionPath } from './reference-geometry';
-import type { ReferenceAnchor } from '../../state/reference-context';
+import { useCallback, useEffect, useState, type RefObject } from 'react';
+import { toBoxes, mergeAdjacentBoxes, buildRoundedOutlinePath } from './reference-geometry';
+
+// The traced outline is `position:fixed; inset:0` (globals.css), so its own
+// coordinate space IS the viewport — no host offset to subtract.
+const VIEWPORT_ORIGIN = { left: 0, top: 0 } as DOMRect;
 
 /**
- * Live geometry for the traced outline.
+ * Live geometry for the traced outline AND (for artifact references) the
+ * clip-path — one measurement, two consumers, so they can never drift apart.
  *
- * Re-derives rects from the DOM on every measure pass rather than storing a
- * DOMRect[] snapshot — stored rects go stale the instant the transcript
- * scrolls, the window resizes, or the drawer opens (spec §3.1).
+ * Restored 2026-07-28 after a dev-review pass deleted the outline entirely.
+ * The ORIGINAL version measured `anchor.range`/`anchor.host` — the SOURCE's
+ * position — which is exactly what made the outline "uneven and janky" in a
+ * way no amount of geometry smoothing could fix on its own: for a travelling
+ * chat reference, the source is the empty space the bubble flew away from,
+ * not where the highlighted text actually is. This version anchors to the
+ * `<mark class="reference-mark">` elements INSIDE THE CLONE instead — which
+ * is wherever the highlight actually is, for BOTH a travelling chat clone and
+ * a pinned artifact clone, by construction (it's the clone's own rendered
+ * layout, transform included, that getClientRects() reads).
  *
- * Returns an empty path when the source is gone; the overlay falls back to a
- * non-anchored centred card in that case (spec §7).
+ * `containerRef` is the reference-lift node — stable across the whole
+ * held-reference lifetime (see ReferenceOverlay.tsx's liftRef comment on
+ * node reuse across reference changes) — so this hook re-queries
+ * `.reference-mark` fresh on every measure rather than holding onto element
+ * references that go stale when the clone is replaced.
+ *
+ * No marks (a whole-message/whole-file reference with no partial selection)
+ * -> empty `d`, no outline. That case already has its own "this is the
+ * reference" signal (the travelling card's own ring, or the artifact clone
+ * simply being the whole undimmed clone) — tracing a box around content that
+ * already fills the entire clone would just duplicate it, not clarify
+ * anything. See the outline-restore report for the fuller reasoning.
  */
-export function useReferenceGeometry(anchor: ReferenceAnchor | null): { d: string } {
+export function useReferenceGeometry(
+  containerRef: RefObject<HTMLElement | null>,
+  active: boolean,
+  // Identity of the CURRENT reference. Not read directly — only used to force
+  // a fresh measure() when a new reference (and therefore a freshly-cloned
+  // set of marks) replaces the old one, since containerRef's own identity
+  // never changes (the node is reused, not remounted).
+  remeasureKey: unknown,
+): { d: string; remeasure: () => void } {
   const [geom, setGeom] = useState<{ d: string }>({ d: '' });
 
   const measure = useCallback(() => {
-    if (!anchor) { setGeom({ d: '' }); return; }
-    const host = anchor.host;
-    if (!host.isConnected) { setGeom({ d: '' }); return; }
+    const container = containerRef.current;
+    if (!container || !active) {
+      setGeom((g) => (g.d === '' ? g : { d: '' }));
+      return;
+    }
+    const marks = container.querySelectorAll('.reference-mark');
+    if (marks.length === 0) {
+      setGeom((g) => (g.d === '' ? g : { d: '' }));
+      return;
+    }
+    const rects: DOMRect[] = [];
+    marks.forEach((mark) => {
+      rects.push(...(Array.from(mark.getClientRects()) as DOMRect[]));
+    });
+    const boxes = mergeAdjacentBoxes(toBoxes(rects, VIEWPORT_ORIGIN));
+    const d = buildRoundedOutlinePath(boxes);
+    // Skip the setState when nothing actually changed — the resize/scroll
+    // listeners below fire far more often than the geometry actually moves
+    // (e.g. a scroll of an unrelated pane), and an unnecessary setState would
+    // trigger a re-render (and, transitively, a re-run of the artifact clip
+    // effect that depends on `d`) for no visible change.
+    setGeom((g) => (g.d === d ? g : { d }));
+  }, [containerRef, active]);
 
-    // Trace the SELECTION when there is one (Destin's 9B call); fall back to
-    // the whole host element's box when there isn't — which is exactly the
-    // no-selection case that already references the entire message.
-    // A live Range re-measures itself as the page scrolls — no stored rects, no
-    // DOM mutation. If React ever replaces these nodes the Range yields no rects
-    // and we fall through to the whole-host outline, which is the designed
-    // fallback (spec 7).
-    //
-    // The containment check is load-bearing. The withdrawn surroundContents()
-    // design REJECTED a selection spanning element boundaries (it throws), so a
-    // cross-bubble drag produced a null anchor automatically. cloneRange()
-    // accepts it happily, so that signal is gone and we must re-derive it here:
-    // a Range escaping its host would otherwise trace an outline around content
-    // the reference does not actually cover.
-    const inHost = !!anchor.range && host.contains(anchor.range.commonAncestorContainer);
-    // Array.from, not a spread: this project's tsconfig lib list is
-    // ["ES2022", "DOM"] without "DOM.Iterable", so DOMRectList has no
-    // Symbol.iterator in the type system (tsc TS2488) even though it's
-    // array-like at runtime. Array.from works off .length/index access
-    // instead of iteration, so it needs no lib change. Matches this
-    // codebase's existing idiom for DOM collections (see
-    // html-inline-assets.ts, MascotRig.tsx).
-    const runRects = inHost ? Array.from(anchor.range!.getClientRects()) : [];
-    const rects = runRects.length ? runRects : [host.getBoundingClientRect()];
-
-    // Viewport-relative: the trace SVG is position:fixed, so the "host" origin
-    // for toBoxes is the viewport itself. Task 8's artifact clip-path also
-    // consumes `d` in this same viewport coordinate system (see the WHY
-    // comment on ReferenceOverlay.tsx's shiftPath call for how it's
-    // re-expressed relative to the clone's own box before use).
-    const origin = { left: 0, top: 0 } as DOMRect;
-    setGeom({ d: buildUnionPath(toBoxes(rects as DOMRect[], origin)) });
-  }, [anchor]);
-
+  // Baseline: mount-time measure, plus re-measure on window resize and on
+  // ANY ancestor scroller scrolling (capture: true — scroll does not
+  // bubble), same as the pre-restoration hook. Also re-runs measure() fresh
+  // whenever `remeasureKey` (the reference identity) changes, since that's
+  // when the clone — and its marks — got replaced.
   useEffect(() => {
     measure();
-    if (!anchor) return;
+    // Nothing to listen for without a real node — also keeps this a true
+    // no-op (no leaked listeners) when a caller passes `active: true` before
+    // its ref has attached, which shouldn't happen in practice (React
+    // attaches refs before effects run) but costs nothing to guard.
+    if (!active || !containerRef.current) return;
     window.addEventListener('resize', measure);
-    // capture:true so scrolling ANY ancestor scroller (chat-scroll, the artifact
-    // pane) re-measures — scroll does not bubble.
     window.addEventListener('scroll', measure, true);
-    const ro = new ResizeObserver(measure);
-    const host = anchor.host;
-    if (host) ro.observe(host);
     return () => {
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
-      ro.disconnect();
     };
-  }, [anchor, measure]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, remeasureKey, measure]);
 
-  return geom;
+  // Track the FLIP travel: `.reference-lift`'s CSS transition (globals.css)
+  // fires native `transitionrun`/`transitionend`/`transitioncancel` events on
+  // the node whenever its `transform` changes — both the entry glide-to-
+  // centre AND the cancel return-trip (ReferenceOverlay.tsx's `beginExit`)
+  // just reassign `transform`, so both are covered by the same pair of
+  // listeners, with no extra wiring needed at the call site.
+  //
+  // Deliberately native DOM events, not a React effect keyed on the
+  // transform value: this is what guarantees the polling loop below can
+  // NEVER touch node.style.transform/left/top itself — it only calls
+  // `measure()`, which is local state internal to THIS hook. ReferenceOverlay
+  // already carries a hard-won fix for a bug shaped exactly like the one this
+  // would reintroduce if `d` leaked into the FLIP effect's own dependency
+  // array (see its WHY comment on why the FLIP effect's deps are
+  // `[reference, travels]` only, never `d`) — this hook's whole design keeps
+  // that boundary intact by construction: geometry-tracking and
+  // position-setting are two different effects that share no dependency.
+  //
+  // Not testable in jsdom (no real CSS transition engine — see the file
+  // header on use-reference-geometry.test.ts for what jsdom can and can't
+  // prove here); what IS provable, and what the tests below pin, is that the
+  // listeners are attached and torn down correctly.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !active) return;
+    let rafId: number | null = null;
+    const tick = () => {
+      measure();
+      rafId = window.requestAnimationFrame(tick);
+    };
+    const start = () => {
+      if (rafId === null) tick();
+    };
+    const stop = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      measure(); // final settle measurement so the outline lands exactly, not one frame stale
+    };
+    container.addEventListener('transitionrun', start);
+    container.addEventListener('transitionend', stop);
+    container.addEventListener('transitioncancel', stop);
+    return () => {
+      container.removeEventListener('transitionrun', start);
+      container.removeEventListener('transitionend', stop);
+      container.removeEventListener('transitioncancel', stop);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, remeasureKey, measure]);
+
+  // Exposed so ReferenceOverlay's positioning effects can force an immediate
+  // re-measure right after they set left/top/transform — belt-and-braces
+  // alongside the automatic listeners above, so the FIRST paint after a
+  // reference is set (or after the entry FLIP's rAF-deferred "Last" position
+  // lands) is correct without waiting on a resize/scroll/transition event
+  // that may not come.
+  return { d: geom.d, remeasure: measure };
 }

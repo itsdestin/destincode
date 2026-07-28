@@ -910,64 +910,63 @@ body[data-reference-held] .bottom-float {
    ═══════════════════════════════════════════════════════════════════════════ */
 .reference-scrim {
   --ref-stroke: var(--accent);
+  --ref-wash: color-mix(in oklab, var(--accent) 12%, transparent);
   --ref-glow: color-mix(in oklab, var(--accent) 45%, transparent);
   /* 2.5x the standard overlay shadow: reads as lifted on light themes
      (0.2 -> 0.5) without going murky on dark ones (0.1 -> 0.25). */
   --ref-lift-shadow: 0 24px 64px rgba(0, 0, 0, calc(var(--shadow-strength, 0.15) * 2.5));
 }
 
-/* Dev-review fix C/D removed the traced SVG outline entirely (`.reference-
-   trace`, its wash/outline paths, and the `reference-trace-in`/
-   `reference-breathe` keyframes that drove it) — it was both "the weird
-   black box" around an artifact selection and "uneven and janky" as an
-   outline. `--ref-wash` (the fill it used) went with it; `--ref-stroke` and
-   `--ref-glow` survive below, reused by the travelling clone's own ring.
-   The artifact clip-path (ReferenceOverlay.tsx) still does the real work of
-   keeping only the referenced lines bright above the dim — it never rendered
-   through this SVG, just shared its `d` geometry. */
+/* Traced outline around the highlighted selection, restored 2026-07-28 after
+   a dev-review pass deleted it as "uneven and janky" / "a weird black box".
+   What's different this time (see reference-geometry.ts and
+   use-reference-geometry.ts for the full reasoning):
+     1. Anchored to the `<mark>` elements INSIDE THE CLONE, not the source —
+        so it traces wherever the highlight actually is, for a travelling
+        chat card too, instead of the empty space the source left behind.
+     2. The geometry itself is smoothed: pixel-snapped, near-identical
+        adjacent line edges merged, degenerate boxes dropped, every corner
+        rounded (clamped per-vertex) instead of a raw stepped polygon. A
+        stepped/notched shape with sharp 90° corners is what actually read as
+        "a weird black box" — a filled, hard-edged region looks heavier and
+        more like a UI glitch than a soft, rounded highlight does. */
+.reference-trace { position: fixed; inset: 0; pointer-events: none; overflow: visible; }
+.reference-trace path.wash { fill: var(--ref-wash); stroke: none; }
+.reference-trace path.outline {
+  fill: none;
+  stroke: var(--ref-stroke);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px var(--ref-glow));
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: reference-trace-in 620ms 120ms cubic-bezier(.4, 0, .2, 1) forwards,
+             reference-breathe 2800ms 740ms ease-in-out infinite;
+}
+@keyframes reference-trace-in { to { stroke-dashoffset: 0; } }
+@keyframes reference-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 
-/* Dev-review fix B: the highlighted span inside a reference clone (chat and
-   artifact both — see apply-highlight.ts). Theme tokens only: a literal
-   colour here would break every community theme, same rule as the rest of
-   this block. */
-/* Dev-review follow-up round 2: "my highlighted artifact viewer selections
-   aren't focused/selected at all." Investigated before changing anything —
-   `anchor.selection` IS captured on the artifact path too (build-reference.ts
-   ->computeSelectionOffsets, same call used by the chat path; pinned by
-   build-reference.test.ts's "artifact references also capture selection
-   offsets" case), and ReferenceOverlay.tsx's mark-application effect isn't
-   kind-gated, so applyHighlightMark DOES reach the artifact clone. clip-path
-   isn't cropping it away either — the mark's offsets and the clip's `d` are
-   both derived from the SAME captured Range, so they land in the same place.
-   The actual gap: for an ARTIFACT reference the clip-path ALREADY undims
-   almost exactly the marked span (that's the whole mechanism keeping only
-   the referenced lines bright — see the clip effect's WHY comment in
-   ReferenceOverlay.tsx), so a translucent background tint on top of a region
-   that's already "the bright part" reads as barely-there — there's nothing
-   BUT the dim/bright boundary distinguishing it, and that boundary has no
-   edge of its own. The travelling (chat) case never had this problem: its
-   clone is undimmed everywhere, so the mark was the ONLY signal — but a flat
-   tint is just as weak a signal there too, it's only less noticeable because
-   the ring+glow on the whole travelling card (`--ref-stroke`/`--ref-glow`
-   above) was already doing that job for it. Fix: give the mark its OWN edge
-   — an inset ring, independent of whatever's dimmed around it — so it reads
-   as "this text is selected" on its own terms, not by contrast alone. Not a
-   traced outline around the union bounding box (explicitly rejected as "a
-   weird black box" / "uneven and janky" — see the dev-review fix C/D block
-   below): this rides on the SAME per-run `<mark>` elements apply-highlight.ts
-   already produces, one per covered text run (naturally one per source line
-   for CM6 — each `.cm-line` is its own text node), so multi-line selections
-   get several small rings that hug each line's own text rather than one
-   rectangle spanning the whole selection. box-decoration-break: clone makes
-   a SINGLE mark that itself wraps across visual lines (a raw <pre>
-   multi-line selection is one continuous text node — MarkdownView.tsx's
-   non-CM6 path) render the ring on every line fragment too, instead of the
-   default 'slice' behavior leaving the wrap points looking open-ended. */
+/* The highlighted span inside a reference clone (chat and artifact both —
+   see apply-highlight.ts). Theme tokens only: a literal colour here would
+   break every community theme, same rule as the rest of this block.
+   Restoration note: this used to ALSO carry its own inset ring (added as a
+   stand-in while the traced outline above was deleted — "my highlighted
+   artifact viewer selections aren't focused/selected at all"). With the
+   outline restored, the ring is now a literal duplicate of it — same union
+   region, same accent colour, drawn twice — so it's removed here; the
+   background tint stays as a distinct, complementary signal (it marks the
+   EXACT covered text run character-for-character, which the smoothed/merged
+   outline geometry only approximates). See the outline-restore report for
+   the full "which treatments stay" reasoning, including why the travelling
+   card's own ring+glow (below) is judged NOT redundant with this outline:
+   the card ring means "this is the referenced message"; this outline means
+   "this is the specific span selected within it" — two different claims,
+   coincident only when the whole message is what's selected (the no-marks
+   case, where the outline doesn't render at all — see useReferenceGeometry). */
 .reference-mark {
   background: color-mix(in oklab, var(--accent) 30%, transparent);
   color: inherit;
   border-radius: var(--radius-sm);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 55%, transparent);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
@@ -1048,11 +1047,11 @@ body[data-reference-held] .bottom-float {
   overflow-y: auto;
 }
 
-/* Reduced effects (Task 9): drops the travel easing and the amplified glow —
-   leaving a static accent ring and the standard overlay shadow. Every new
-   visual effect in this app gets one of these branches; no exceptions.
-   (The trace-animation/breathing-pulse half of this comment's original scope
-   was removed along with `.reference-trace` itself — dev-review fix C/D.)
+/* Reduced effects (Task 9): static outline, no trace-in animation, no
+   breathing pulse, no glow — plus a static accent ring on the travelling
+   card and the standard (non-amplified) overlay shadow. Every new visual
+   effect in this app gets one of these branches; no exceptions. Restored
+   alongside `.reference-trace` itself (2026-07-28).
 
    Keyed off data-reduced stamped by ReferenceOverlay.tsx, NOT an html
    attribute: verified 2026-07-26 that theme-engine.ts applies reducedEffects
@@ -1067,6 +1066,12 @@ body[data-reference-held] .bottom-float {
    that wrapper the same box-shadow treatment as the card, same class of bug
    the non-reduced `.reference-lift > .reference-lift-card` rule above was
    already scoped to avoid. Scoped to `.reference-lift-card` here too. */
+.reference-trace[data-reduced="true"] path.outline {
+  animation: none;
+  stroke-dashoffset: 0;
+  stroke-width: 2;
+  filter: none;
+}
 .reference-lift[data-reduced="true"] { transition: none; }
 /* Only the travelling (chat) case gets the amplified `--ref-lift-shadow` in
    the first place (the non-travelling/artifact rule just above sets
@@ -1084,6 +1089,7 @@ body[data-reference-held] .bottom-float {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .reference-trace path.outline { animation: none; stroke-dashoffset: 0; }
   .reference-lift { transition: none; }
 }
 

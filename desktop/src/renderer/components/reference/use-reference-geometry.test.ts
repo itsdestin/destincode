@@ -3,238 +3,255 @@
 // tests under `tests/**/*.tsx`; this file lives under `src/**/*.test.ts`
 // and would otherwise run in the default `node` env with no `window`.
 //
-// What's testable here vs. not: jsdom has no real layout engine, so every
-// DOMRect it hands back (getBoundingClientRect) is zeroed and Range does not
-// even implement getClientRects() at all (confirmed empirically against this
-// repo's jsdom version) — there is no way to assert real pixel coordinates or
-// spy through the prototype in this environment. What IS provable, and what
-// these tests pin: (1) which CODE PATH the hook takes — range-in-host vs.
-// containment-fallback vs. no-anchor — proven by stubbing an own-property
-// getClientRects directly on the Range instance (spyOn can't wrap a method
-// jsdom never defines) and checking which stub the hook actually called, and
-// (2) that every listener + the ResizeObserver registered on mount is torn
-// down on unmount. A real dev-instance visual check of the traced outline
-// (does it actually wrap the selection, not the whole bubble) is still
-// required before shipping — see the task report.
+// Restored 2026-07-28 with a NEW contract: the hook used to trace
+// `anchor.range`/`anchor.host` (the SOURCE's position). It now traces the
+// `.reference-mark` elements inside a given CONTAINER (the reference-lift
+// clone) instead — see the WHY comment in use-reference-geometry.ts for why
+// (fixes the travelling-card-outlines-empty-space bug by construction). Every
+// test below exercises the new container-based contract; the old anchor-based
+// tests are gone, not just extended, because the anchor is no longer this
+// hook's input at all.
 //
-// IMPORTANT test-authoring gotcha hit while writing this file: passing
-// `useReferenceGeometry(makeAnchor(host, range))` INLINE inside the
-// `renderHook(() => ...)` callback creates a brand-new `anchor` object
-// identity on every internal re-render. The hook's effect depends on
-// `anchor` BY REFERENCE, and `measure()` always calls `setGeom({ ...new
-// object... })` even when content is unchanged — so a fresh identity each
-// render drove an unbounded render loop (reproduced as a multi-GB OOM, not a
-// hang) that has nothing to do with the hook's real behavior: production
-// `anchor` comes from stable context state. Every anchor below is therefore
-// constructed ONCE, outside the renderHook callback.
+// What's testable here vs. not: jsdom has no real layout engine, so every
+// DOMRect it hands back (getBoundingClientRect) is zeroed. What IS provable,
+// and what these tests pin: (1) which marks get queried and measured, (2)
+// that `d` reflects `reference-geometry.ts`'s pipeline (toBoxes ->
+// mergeAdjacentBoxes -> buildRoundedOutlinePath) run over their rects, (3)
+// that resize/scroll listeners and the transitionrun/transitionend tracking
+// listeners are registered and torn down correctly, and (4) the no-marks /
+// no-container / inactive fallbacks. A real dev-instance visual check (does
+// the outline actually hug the highlighted text, does it track smoothly
+// during the FLIP travel) is still required before shipping — see the task
+// report; jsdom has no CSS transition engine, so `transitionrun` never
+// actually fires here, only the listener registration is provable.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, cleanup } from '@testing-library/react';
 import { useReferenceGeometry } from './use-reference-geometry';
-import type { ReferenceAnchor } from '../../state/reference-context';
-
-// jsdom doesn't implement ResizeObserver (same stub as InputBar.test.tsx /
-// PreferencesPopup.test.tsx). Spy-able here (not a bare no-op) because the
-// cleanup test needs to prove disconnect() actually fires on unmount.
-class SpyResizeObserver {
-  static instances: SpyResizeObserver[] = [];
-  observe = vi.fn();
-  disconnect = vi.fn();
-  unobserve = vi.fn();
-  constructor(_cb: ResizeObserverCallback) {
-    SpyResizeObserver.instances.push(this);
-  }
-}
+import { toBoxes, mergeAdjacentBoxes, buildRoundedOutlinePath } from './reference-geometry';
 
 afterEach(() => {
   cleanup();
-  SpyResizeObserver.instances = [];
   vi.restoreAllMocks();
 });
 
-function makeAnchor(host: Element, range: Range | null): ReferenceAnchor {
-  return { host, range, selection: null };
+// jsdom implements Element.getClientRects() (unlike Range.getClientRects(),
+// which it does NOT implement — see the old version of this file), but
+// always returns an empty list (no layout engine) — stub it per-mark, same
+// idiom the old file used for Range.
+function stubMarkRects(mark: Element, rects: DOMRect[]) {
+  (mark as unknown as { getClientRects: () => DOMRectList }).getClientRects = () =>
+    rects as unknown as DOMRectList;
 }
 
-// jsdom's Range has no getClientRects at all (not even a no-op) — vi.spyOn
-// requires the property to already exist, so wrap it as a plain own-property
-// stub instead. Returns a vi.fn() the test can assert on directly.
-function stubGetClientRects(range: Range, rects: DOMRect[]) {
-  const stub = vi.fn(() => rects as unknown as DOMRectList);
-  (range as unknown as { getClientRects: typeof stub }).getClientRects = stub;
-  return stub;
+function makeContainerRef(container: HTMLElement | null) {
+  return { current: container };
 }
 
 describe('useReferenceGeometry', () => {
-  it('returns an empty path when anchor is null', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const { result } = renderHook(() => useReferenceGeometry(null));
+  it('returns an empty path when the container is null', () => {
+    const { result } = renderHook(() => useReferenceGeometry(makeContainerRef(null), true, 'k1'));
     expect(result.current.d).toBe('');
   });
 
-  it('uses the range rects when the range is contained in the host', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const text = document.createTextNode('hello world');
-    host.appendChild(text);
+  it('returns an empty path when inactive, even with a real container and marks', () => {
+    const container = document.createElement('div');
+    const mark = document.createElement('mark');
+    mark.className = 'reference-mark';
+    container.appendChild(mark);
+    document.body.appendChild(container);
+    stubMarkRects(mark, [{ left: 0, top: 0, right: 10, bottom: 20, width: 10, height: 20 } as DOMRect]);
 
-    const range = document.createRange();
-    range.selectNodeContents(text);
-    // Prove the range branch ran (not the host-box fallback) by checking
-    // which stub the hook actually called.
-    const rectsStub = stubGetClientRects(range, [
-      { left: 1, right: 2, top: 3, bottom: 4, width: 1, height: 1 } as DOMRect,
-    ]);
-    const hostRectSpy = vi.spyOn(host, 'getBoundingClientRect');
-
-    const anchor = makeAnchor(host, range); // constructed once — see file header
-    const { result } = renderHook(() => useReferenceGeometry(anchor));
-
-    expect(rectsStub).toHaveBeenCalled();
-    expect(hostRectSpy).not.toHaveBeenCalled();
-    // `d` is non-empty proof the range branch's rect fed the path builder —
-    // the raw rects themselves are no longer exposed (Task 8 deleted the
-    // unused `rects` field; nothing outside this hook ever consumed it once
-    // the artifact clip-path switched to reusing `d` directly).
-    expect(result.current.d).not.toBe('');
-
-    document.body.removeChild(host);
-  });
-
-  // The containment guard is the subtle, load-bearing requirement carried
-  // over from the withdrawn surroundContents() design (see the WHY comment in
-  // use-reference-geometry.ts): a Range whose commonAncestorContainer is NOT
-  // inside the host must be treated as if there were no selection at all, and
-  // the hook must fall back to the whole-host box instead of tracing the
-  // (out-of-bounds) range.
-  it('falls back to the whole-host box when the range escapes the host (containment guard)', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div');
-    host.appendChild(document.createTextNode('inside host'));
-    document.body.appendChild(host);
-
-    // A range over content that lives OUTSIDE host — host.contains(...) is false.
-    const outside = document.createElement('div');
-    const outsideText = document.createTextNode('outside host');
-    outside.appendChild(outsideText);
-    document.body.appendChild(outside);
-
-    const range = document.createRange();
-    range.selectNodeContents(outsideText);
-    expect(host.contains(range.commonAncestorContainer)).toBe(false); // sanity check on the fixture itself
-
-    const rectsStub = stubGetClientRects(range, [{ left: 999, right: 999, top: 999, bottom: 999, width: 1, height: 1 } as DOMRect]);
-    const hostRectSpy = vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
-      left: 10, right: 20, top: 30, bottom: 40, width: 10, height: 10,
-    } as DOMRect);
-
-    const anchor = makeAnchor(host, range); // constructed once — see file header
-    const { result } = renderHook(() => useReferenceGeometry(anchor));
-
-    // The range must never even be consulted once containment fails.
-    expect(rectsStub).not.toHaveBeenCalled();
-    expect(hostRectSpy).toHaveBeenCalled();
-    expect(result.current.d).not.toBe('');
-
-    document.body.removeChild(host);
-    document.body.removeChild(outside);
-  });
-
-  it('falls back to the whole-host box when anchor.range is null (whole-element reference)', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const hostRectSpy = vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
-      left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5,
-    } as DOMRect);
-
-    const anchor = makeAnchor(host, null); // constructed once — see file header
-    const { result } = renderHook(() => useReferenceGeometry(anchor));
-
-    expect(hostRectSpy).toHaveBeenCalled();
-    expect(result.current.d).not.toBe('');
-
-    document.body.removeChild(host);
-  });
-
-  it('returns an empty path when the host has been disconnected from the DOM', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div'); // never appended -> isConnected === false
-    const anchor = makeAnchor(host, null); // constructed once — see file header
-    const { result } = renderHook(() => useReferenceGeometry(anchor));
+    const { result } = renderHook(() => useReferenceGeometry(makeContainerRef(container), false, 'k1'));
     expect(result.current.d).toBe('');
+
+    document.body.removeChild(container);
   });
 
-  it('registers resize/scroll listeners and a ResizeObserver on mount, and tears every one of them down on unmount', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
-      left: 0, right: 1, top: 0, bottom: 1, width: 1, height: 1,
-    } as DOMRect);
+  it('returns an empty path when the container has no .reference-mark descendants', () => {
+    const container = document.createElement('div');
+    container.textContent = 'whole-element reference, no partial selection';
+    document.body.appendChild(container);
 
-    const addSpy = vi.spyOn(window, 'addEventListener');
-    const removeSpy = vi.spyOn(window, 'removeEventListener');
+    const { result } = renderHook(() => useReferenceGeometry(makeContainerRef(container), true, 'k1'));
+    expect(result.current.d).toBe('');
 
-    const anchor = makeAnchor(host, null); // constructed once — see file header
-    const { unmount } = renderHook(() => useReferenceGeometry(anchor));
+    document.body.removeChild(container);
+  });
 
-    expect(addSpy).toHaveBeenCalledWith('resize', expect.any(Function));
+  it('traces the .reference-mark descendants, running their rects through the same geometry pipeline reference-geometry.ts exposes', () => {
+    const container = document.createElement('div');
+    const mark = document.createElement('mark');
+    mark.className = 'reference-mark';
+    container.appendChild(mark);
+    document.body.appendChild(container);
+
+    const rect = { left: 12.4, top: 8.6, right: 92.2, bottom: 28.3, width: 79.8, height: 19.7 } as DOMRect;
+    stubMarkRects(mark, [rect]);
+
+    const { result } = renderHook(() => useReferenceGeometry(makeContainerRef(container), true, 'k1'));
+
+    const expectedD = buildRoundedOutlinePath(
+      mergeAdjacentBoxes(toBoxes([rect], { left: 0, top: 0 } as DOMRect)),
+    );
+    expect(expectedD).not.toBe('');
+    expect(result.current.d).toBe(expectedD);
+
+    document.body.removeChild(container);
+  });
+
+  it('collects rects from MULTIPLE marks (a selection spanning several text runs)', () => {
+    const container = document.createElement('div');
+    const markA = document.createElement('mark');
+    markA.className = 'reference-mark';
+    const markB = document.createElement('mark');
+    markB.className = 'reference-mark';
+    container.append(markA, markB);
+    document.body.appendChild(container);
+
+    const rectA = { left: 40, top: 0, right: 100, bottom: 20, width: 60, height: 20 } as DOMRect;
+    const rectB = { left: 0, top: 20, right: 60, bottom: 40, width: 60, height: 20 } as DOMRect;
+    stubMarkRects(markA, [rectA]);
+    stubMarkRects(markB, [rectB]);
+
+    const { result } = renderHook(() => useReferenceGeometry(makeContainerRef(container), true, 'k1'));
+
+    const expectedD = buildRoundedOutlinePath(
+      mergeAdjacentBoxes(toBoxes([rectA, rectB], { left: 0, top: 0 } as DOMRect)),
+    );
+    expect(result.current.d).toBe(expectedD);
+    expect(result.current.d).toContain('Q'); // rounded corners, not the old sharp-stepped path
+
+    document.body.removeChild(container);
+  });
+
+  it('re-measures when remeasureKey changes (a new reference replaces the clone/marks)', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const mark1 = document.createElement('mark');
+    mark1.className = 'reference-mark';
+    container.appendChild(mark1);
+    stubMarkRects(mark1, [{ left: 0, top: 0, right: 10, bottom: 20, width: 10, height: 20 } as DOMRect]);
+
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string }) => useReferenceGeometry(makeContainerRef(container), true, key),
+      { initialProps: { key: 'ref-1' } },
+    );
+    const firstD = result.current.d;
+    expect(firstD).not.toBe('');
+
+    // Simulate the clone-population effect replacing the marks for a NEW
+    // reference (same container node, reused — see ReferenceOverlay.tsx).
+    container.replaceChildren();
+    const mark2 = document.createElement('mark');
+    mark2.className = 'reference-mark';
+    container.appendChild(mark2);
+    stubMarkRects(mark2, [{ left: 200, top: 200, right: 260, bottom: 220, width: 60, height: 20 } as DOMRect]);
+
+    rerender({ key: 'ref-2' });
+
+    expect(result.current.d).not.toBe(firstD);
+    expect(result.current.d).not.toBe('');
+
+    document.body.removeChild(container);
+  });
+
+  it('exposes a stable remeasure() that recomputes on demand', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const { result, rerender } = renderHook(() => useReferenceGeometry(makeContainerRef(container), true, 'k1'));
+    expect(result.current.d).toBe(''); // no marks yet
+
+    const mark = document.createElement('mark');
+    mark.className = 'reference-mark';
+    container.appendChild(mark);
+    stubMarkRects(mark, [{ left: 0, top: 0, right: 10, bottom: 20, width: 10, height: 20 } as DOMRect]);
+
+    // Nothing in React knows the DOM changed — an explicit remeasure() call
+    // (exactly what ReferenceOverlay.tsx's positioning effects do right
+    // after setting left/top/transform) is what picks it up.
+    result.current.remeasure();
+    rerender();
+    expect(result.current.d).not.toBe('');
+
+    document.body.removeChild(container);
+  });
+
+  it('registers resize/scroll listeners AND transitionrun/transitionend/transitioncancel listeners on the container, tearing every one of them down on unmount', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const addWindowSpy = vi.spyOn(window, 'addEventListener');
+    const removeWindowSpy = vi.spyOn(window, 'removeEventListener');
+    const addContainerSpy = vi.spyOn(container, 'addEventListener');
+    const removeContainerSpy = vi.spyOn(container, 'removeEventListener');
+
+    const { unmount } = renderHook(() => useReferenceGeometry(makeContainerRef(container), true, 'k1'));
+
+    expect(addWindowSpy).toHaveBeenCalledWith('resize', expect.any(Function));
     // capture: true is load-bearing — scroll doesn't bubble, and the chat /
     // artifact panes are the actual scrollers, not window itself.
-    expect(addSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true);
-    expect(SpyResizeObserver.instances).toHaveLength(1);
-    expect(SpyResizeObserver.instances[0].observe).toHaveBeenCalledWith(host);
-    expect(SpyResizeObserver.instances[0].disconnect).not.toHaveBeenCalled();
+    expect(addWindowSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    // Native transition-tracking listeners (see the WHY comment in
+    // use-reference-geometry.ts on why these are native DOM events, not a
+    // React effect dependency on the transform value).
+    expect(addContainerSpy).toHaveBeenCalledWith('transitionrun', expect.any(Function));
+    expect(addContainerSpy).toHaveBeenCalledWith('transitionend', expect.any(Function));
+    expect(addContainerSpy).toHaveBeenCalledWith('transitioncancel', expect.any(Function));
 
     unmount();
 
-    expect(removeSpy).toHaveBeenCalledWith('resize', expect.any(Function));
-    expect(removeSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true);
-    expect(SpyResizeObserver.instances[0].disconnect).toHaveBeenCalledTimes(1);
+    expect(removeWindowSpy).toHaveBeenCalledWith('resize', expect.any(Function));
+    expect(removeWindowSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    expect(removeContainerSpy).toHaveBeenCalledWith('transitionrun', expect.any(Function));
+    expect(removeContainerSpy).toHaveBeenCalledWith('transitionend', expect.any(Function));
+    expect(removeContainerSpy).toHaveBeenCalledWith('transitioncancel', expect.any(Function));
 
-    document.body.removeChild(host);
+    document.body.removeChild(container);
   });
 
-  it('does not register any listeners when anchor is null (nothing to leak)', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const addSpy = vi.spyOn(window, 'addEventListener');
-    const { unmount } = renderHook(() => useReferenceGeometry(null));
-    expect(addSpy).not.toHaveBeenCalledWith('scroll', expect.any(Function), true);
-    expect(SpyResizeObserver.instances).toHaveLength(0);
+  it('does not register any listeners when inactive (nothing to leak)', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const addContainerSpy = vi.spyOn(container, 'addEventListener');
+
+    const { unmount } = renderHook(() => useReferenceGeometry(makeContainerRef(container), false, 'k1'));
+    expect(addContainerSpy).not.toHaveBeenCalledWith('transitionrun', expect.any(Function));
     unmount(); // must not throw with nothing to clean up
+
+    document.body.removeChild(container);
   });
 
-  it('swapping anchor from a live host to null tears down the previous listeners (no post-unmount setState leak)', () => {
-    (global as any).ResizeObserver = SpyResizeObserver;
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
-      left: 0, right: 1, top: 0, bottom: 1, width: 1, height: 1,
-    } as DOMRect);
+  it('does not register any listeners when the container is null', () => {
+    const addWindowSpy = vi.spyOn(window, 'addEventListener');
+    const { unmount } = renderHook(() => useReferenceGeometry(makeContainerRef(null), true, 'k1'));
+    expect(addWindowSpy).not.toHaveBeenCalledWith('scroll', expect.any(Function), true);
+    unmount(); // must not throw
+  });
 
-    const initialAnchor = makeAnchor(host, null); // constructed once — see file header
-    // Explicit generic args: renderHook infers its Props type param from
-    // BOTH the callback's parameter AND `initialProps` together and narrows
-    // to the non-null `{ anchor: ReferenceAnchor }` from initialProps alone
-    // even with the callback annotated `| null` — leaving the later
-    // `rerender({ anchor: null })` call failing to typecheck. Pinning the
-    // generics directly sidesteps the inference instead of fighting it.
-    const { result, rerender } = renderHook<{ d: string }, { anchor: ReferenceAnchor | null }>(
-      ({ anchor }) => useReferenceGeometry(anchor),
-      { initialProps: { anchor: initialAnchor } },
-    );
+  it('going from active to inactive tears down the previous listeners and clears the path', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const mark = document.createElement('mark');
+    mark.className = 'reference-mark';
+    container.appendChild(mark);
+    stubMarkRects(mark, [{ left: 0, top: 0, right: 10, bottom: 20, width: 10, height: 20 } as DOMRect]);
+
+    const removeContainerSpy = vi.spyOn(container, 'removeEventListener');
+
+    const { result, rerender } = renderHook<
+      { d: string; remeasure: () => void },
+      { active: boolean }
+    >(({ active }) => useReferenceGeometry(makeContainerRef(container), active, 'k1'), {
+      initialProps: { active: true },
+    });
     expect(result.current.d).not.toBe('');
-    expect(SpyResizeObserver.instances[0].disconnect).not.toHaveBeenCalled();
 
-    rerender({ anchor: null });
+    rerender({ active: false });
 
-    // The effect cleanup for the PREVIOUS (non-null) anchor must have run
-    // before the new (null) effect body — React guarantees this ordering —
-    // so the old ResizeObserver is disconnected and geometry is cleared.
-    expect(SpyResizeObserver.instances[0].disconnect).toHaveBeenCalledTimes(1);
+    expect(removeContainerSpy).toHaveBeenCalledWith('transitionrun', expect.any(Function));
     expect(result.current.d).toBe('');
 
-    document.body.removeChild(host);
+    document.body.removeChild(container);
   });
 });

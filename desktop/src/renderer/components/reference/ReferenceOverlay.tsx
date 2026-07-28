@@ -20,10 +20,10 @@ const RETURN_DURATION_MS = 460;
 /**
  * The held "Ask Claude about this" reference (spec 2026-07-26).
  *
- * One app-wide instance. Owns the window-wide dim; Task 8 adds the lifted
- * clone on top of this shell. (Task 7's traced SVG outline was removed in the
- * dev-review pass — see the WHY comment below `useReferenceGeometry` — but
- * its underlying geometry hook lives on, feeding the artifact clip-path.)
+ * One app-wide instance. Owns the window-wide dim, the lifted clone (Task 8),
+ * and the traced outline around the highlighted selection (Task 7, restored
+ * 2026-07-28 — see the WHY comment on `useReferenceGeometry` below for what
+ * changed the second time around).
  *
  * Window-wide, not pane-scoped — Destin's 10B call: "dim should apply to the
  * whole window so it's obvious what is being highlighted / what the user is
@@ -39,16 +39,6 @@ export function ReferenceOverlay() {
   const { reducedEffects } = useTheme();
   const depth = useEscStackDepth();
   const depthAtOpen = useRef<number | null>(null);
-  // Task 7 originally drew `d` as a visible traced SVG outline around the
-  // referenced content. Dev review flagged it as "the weird black box" /
-  // "uneven and janky" — that rendering is gone (see the JSX below), but the
-  // hook and `d` itself stay: Task 8 still needs `d` for the artifact
-  // clip-path (see the lift effect below), which is what actually keeps only
-  // the referenced lines bright above the dim. (The hook used to return raw
-  // `rects` too, for a redraw approach dropped in favor of clipping the
-  // clone; that field was deleted as dead code back then, unrelated to this
-  // pass.)
-  const { d } = useReferenceGeometry(reference?.anchor ?? null);
 
   // Task 8: chat references lift a clone to the viewport centre; artifact
   // references stay put and get clipped to the selection instead (spec 2.2).
@@ -113,6 +103,22 @@ export function ReferenceOverlay() {
     holder.replaceChildren(copy);
     return () => holder.replaceChildren();
   }, [reference]);
+
+  // Restored 2026-07-28 (see the file-header WHY comment): `d` traces the
+  // `.reference-mark` elements INSIDE THE CLONE (liftRef's subtree), not the
+  // original source — the fix for the travelling-card case pointing at empty
+  // space, by construction. One measurement feeds BOTH the SVG outline drawn
+  // in the JSX below AND (for the artifact, non-travelling case only) the
+  // clip-path effect further down, so they can never show two different
+  // shapes. Declared here — after the clone-population effect above, before
+  // the positioning effects below — purely so `d`/`remeasure` are in lexical
+  // scope for the clip effect's dependency array and body; the hook's OWN
+  // internal effects are independently correct regardless of call-site order
+  // (see its WHY comments), and the positioning effects below call
+  // `remeasure()` explicitly right after they set left/top/transform so the
+  // very first paint is accurate rather than racing this hook's own
+  // mount-time measurement against those styles being set.
+  const { d, remeasure } = useReferenceGeometry(liftRef, !!reference, reference);
 
   // Dev-review fix 1: "I don't like that I can see both the original message
   // and the centered message. It should be the same bubble that appears to
@@ -211,6 +217,7 @@ export function ReferenceOverlay() {
       node.style.width = 'min(90vw, 640px)';
       node.style.transform = 'translate(-50%, -50%)';
       node.style.clipPath = 'none';
+      remeasure(); // outline still needs to trace the (centred) marks even without a live FLIP
       return;
     }
     node.removeAttribute('data-detached');
@@ -226,6 +233,14 @@ export function ReferenceOverlay() {
     // park/restore in reference-context.tsx swapping straight from one
     // held reference to another.
     node.style.clipPath = 'none';
+    // Fix: this hook's own mount-time measurement (useReferenceGeometry's
+    // internal effect) can run BEFORE this positioning effect in the same
+    // commit (hook-call order isn't guaranteed the other way), which would
+    // read the marks at whatever position the REUSED node last had — an
+    // explicit remeasure() here, right after left/top/transform are set,
+    // guarantees the "First" position's outline is correct regardless of
+    // that ordering.
+    remeasure();
 
     // Next frame so the browser paints the First position before transitioning.
     const raf = requestAnimationFrame(() => {
@@ -233,8 +248,22 @@ export function ReferenceOverlay() {
       const dx = (window.innerWidth - s.width) / 2 - s.left;
       const dy = (window.innerHeight - h) / 2 - s.top;
       node.style.transform = `translate(${dx}px, ${dy}px)`;
+      // The "Last" (centred) position. `transitionrun` (see
+      // useReferenceGeometry) picks up the continuous mid-flight tracking
+      // from here — this call just guarantees the FINAL settle is correct
+      // even in an environment where the transition doesn't fire (reduced
+      // motion, transition: none).
+      remeasure();
     });
     return () => cancelAnimationFrame(raf);
+    // remeasure is NOT listed as a dep: it's useReferenceGeometry's `measure`
+    // callback, memoized on `[containerRef, active]` — containerRef (liftRef)
+    // never changes identity and `active` (`!!reference`) only flips exactly
+    // when `reference` does, which is already this effect's own dependency.
+    // Listing it would add nothing; NOT listing it is what keeps this effect
+    // inert to the geometry hook's own re-renders, same reasoning as `d`
+    // being excluded below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reference, travels]);
 
   // Artifact clip: pin the clone over the source and clip it to the
@@ -252,6 +281,17 @@ export function ReferenceOverlay() {
   // desired behaviour (this mirrors what the pre-split effect already did
   // for the non-travelling branch; only the travelling branch's re-run-on-
   // scroll was the bug).
+  //
+  // Restoration note: `d` now comes from the marks INSIDE THIS CLONE, not
+  // the source anymore (see useReferenceGeometry's WHY comment) — but since
+  // the artifact clone is pinned exactly over the source, the marks land at
+  // the same screen position the source's own range used to measure, so the
+  // clip behaves identically for the common case. The one deliberate change:
+  // a reference with NO partial selection (no marks) now clips to nothing
+  // (`d` is `''`, so `clip-path: none`) instead of the old fallback of
+  // clipping to the whole host box — a no-op clip in practice (the pinned
+  // clone's own box already IS that rect), so `none` is simpler for the
+  // exact same visible result.
   useEffect(() => {
     const node = liftRef.current;
     if (!node || !reference?.anchor || travels) return;
@@ -273,6 +313,7 @@ export function ReferenceOverlay() {
       node.style.width = 'min(90vw, 640px)';
       node.style.transform = 'translate(-50%, -50%)';
       node.style.clipPath = 'none';
+      remeasure();
       return;
     }
     node.removeAttribute('data-detached');
@@ -294,6 +335,12 @@ export function ReferenceOverlay() {
     // position — correct only for a source pinned at the viewport origin,
     // which is not the general case.
     node.style.clipPath = d ? `path('${shiftPath(d, -s.left, -s.top)}')` : 'none';
+    // `d` may still be stale here (measured against wherever this REUSED
+    // node was positioned last, if useReferenceGeometry's own mount effect
+    // ran before this one in the same commit) — remeasure() now that
+    // left/top are correct triggers a fresh `d`, which re-runs THIS effect
+    // (it's in the deps below) with the accurate clip on the very next pass.
+    remeasure();
   }, [reference, travels, d]);
 
   // Dev-review follow-up: "there is an animation to center them, but I want
@@ -483,15 +530,27 @@ export function ReferenceOverlay() {
 
   return createPortal(
     <Scrim layer={2} onClick={beginExit} className="reference-scrim">
-      {/* Dev-review fix C/D: the traced SVG outline (formerly rendered here for
-          the non-travelling/artifact case) is GONE — it was both "the weird
-          black box" around the selection and "uneven and janky" (Destin, dev
-          review). `d` and `useReferenceGeometry` stay: the artifact clone
-          below still needs `d` for its clip-path (that's what keeps only the
-          referenced lines bright above the dim), it's just no longer also
-          drawn as a visible stroke. The travelling clone already has its own
-          ring + glow in CSS, and now the selection highlight from fix B too —
-          between the two, nothing is left needing a traced outline. */}
+      {/* Traced outline around the highlighted selection (Task 7, restored
+          2026-07-28). pathLength={100} normalizes both paths' length to 100
+          units so the fixed 100-unit stroke-dasharray/breathe animation in
+          globals.css works regardless of the actual traced perimeter. Renders
+          for BOTH kinds now — unlike the original (and the since-deleted)
+          version, which only ever traced the non-travelling/artifact case,
+          this one is anchored to the `.reference-mark` elements INSIDE THE
+          CLONE (see useReferenceGeometry's WHY comment), so for a travelling
+          chat reference it tracks the marks wherever the clone currently is
+          — never the empty space the source left behind, which was the
+          original bug. Empty (nothing renders) when there's no partial
+          selection to trace — a whole-message/whole-file reference already
+          has its own "this is the reference" signal (the travelling card's
+          ring, or simply being the one undimmed clone), so an outline around
+          the entire clone would just duplicate that, not clarify it. */}
+      {d && (
+        <svg className="reference-trace" aria-hidden="true" data-reduced={reducedEffects ? 'true' : undefined}>
+          <path className="wash" d={d} />
+          <path className="outline" d={d} pathLength={100} />
+        </svg>
+      )}
       {/* Task 8: the clone. Chat kinds travel to centre (`data-travels`
           drives the CSS transition + the non-clipping shadow/scroll rules);
           artifact kinds stay pinned over the source and get clipped instead

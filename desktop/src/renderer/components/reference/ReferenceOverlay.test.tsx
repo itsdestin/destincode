@@ -12,19 +12,26 @@ import { ReferenceProvider, useReference, type PendingReference } from '../../st
 import { ThemeProvider } from '../../state/theme-context';
 import { ReferenceOverlay } from './ReferenceOverlay';
 import { REFERENCE_COMPOSER_Z } from '../overlays/Overlay';
-import { toBoxes, buildUnionPath, shiftPath } from './reference-geometry';
+import { toBoxes, mergeAdjacentBoxes, buildRoundedOutlinePath, shiftPath } from './reference-geometry';
 
-// jsdom doesn't implement ResizeObserver (same stub as
-// use-reference-geometry.test.ts). Only the Task 8 lift tests below drive a
-// real (non-null) anchor through useReferenceGeometry, which is what
-// actually constructs one — but defining it once at module scope is simpler
-// than duplicating the stub per-test for just those cases.
-class NoopResizeObserver {
-  observe() {}
-  disconnect() {}
-  unobserve() {}
+// jsdom implements Element.getClientRects() but always returns an empty list
+// (no layout engine) — the traced-outline hook (useReferenceGeometry) reads
+// it directly off every `.reference-mark` element, and those elements are
+// created INSIDE ReferenceOverlay's own clone-population effect, so a test
+// can't get a handle on them before render the way it could stub a `host`
+// element's getBoundingClientRect ahead of time. Stubbing
+// Element.prototype.getClientRects globally (keyed on the `.reference-mark`
+// class) is the only way to hand every future mark a real rect regardless of
+// when it's created. Prototype-level — MUST be restored after each test that
+// uses it (vi.restoreAllMocks() in that describe block's own afterEach), or
+// it leaks into unrelated tests elsewhere in this file.
+function stubMarkRects(rectOrGetter: DOMRect | (() => DOMRect)) {
+  const getRect = typeof rectOrGetter === 'function' ? (rectOrGetter as () => DOMRect) : () => rectOrGetter;
+  return vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (this: Element) {
+    if (this.classList.contains('reference-mark')) return [getRect()] as unknown as DOMRectList;
+    return [] as unknown as DOMRectList;
+  });
 }
-(global as any).ResizeObserver = NoopResizeObserver;
 
 // ReferenceOverlay portals straight to document.body (window-wide, not scoped
 // to RTL's per-test container), so an un-cleaned-up previous test's scrim
@@ -348,12 +355,19 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     // shift, same idiom as use-reference-geometry.test.ts.
     const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
     vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+    // The clip-path geometry now comes from the `.reference-mark` elements
+    // INSIDE THE CLONE (restoration fix — see use-reference-geometry.ts), not
+    // the source, so there must be a selection for a mark to exist at all —
+    // stub every `.reference-mark`'s rect to the clone's own on-screen
+    // position (which, for a pinned/non-travelling artifact clone, coincides
+    // with the source's rect).
+    const marksSpy = stubMarkRects(rect);
 
     renderOverlay({
       kind: 'artifact',
       label: 'lines 1-1 of x.ts',
       promptText: 'x',
-      anchor: { host, range: null, selection: null },
+      anchor: { host, range: null, selection: { start: 0, end: 'const x = 1;'.length } },
     });
     act(() => {});
 
@@ -369,16 +383,19 @@ describe('lift (Task 8: FLIP travel + artifact clip)', () => {
     // CLIPPED ELEMENT's own border box (confirmed against the CSS Shapes
     // spec), and this element's border box starts at (rect.left, rect.top),
     // not (0, 0) — so the raw viewport-relative `d` would clip the wrong
-    // region if used unshifted. This is exactly the "reuses buildUnionPath
-    // unchanged" pipeline the geometry hook already runs, recomputed here
-    // and compared against what the effect actually wrote.
-    const expectedD = buildUnionPath(toBoxes([rect], { left: 0, top: 0 } as DOMRect));
+    // region if used unshifted. This recomputes the SAME pipeline
+    // useReferenceGeometry runs (toBoxes -> mergeAdjacentBoxes ->
+    // buildRoundedOutlinePath over the mark rects) and compares against what
+    // the effect actually wrote.
+    const expectedD = buildRoundedOutlinePath(mergeAdjacentBoxes(toBoxes([rect], { left: 0, top: 0 } as DOMRect)));
     const expectedClip = `path('${shiftPath(expectedD, -rect.left, -rect.top)}')`;
     expect(lift.style.clipPath).toBe(expectedClip);
     // Sanity check that the shift is load-bearing: the unshifted path is a
     // DIFFERENT string, so a regression back to `path(d)` (no shift) would
     // fail the assertion above rather than accidentally still pass.
     expect(expectedD).not.toBe(shiftPath(expectedD, -rect.left, -rect.top));
+
+    marksSpy.mockRestore();
 
     document.body.removeChild(host);
   });
@@ -588,15 +605,18 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
 
   it('an artifact (non-travelling) reference DOES update its clip-path when `d` changes (i.e. on scroll)', async () => {
     const host = makeHost('const x = 1;');
-    const rectCtl = stubMovingRect(host, {
-      left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50,
-    } as DOMRect);
+    const initialRect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    const rectCtl = stubMovingRect(host, initialRect);
+    // The mark's rect tracks the SAME position as the host — the pinned
+    // artifact clone sits over the source, so its marks move with it.
+    let markRect = initialRect;
+    const marksSpy = stubMarkRects(() => markRect);
 
     renderOverlay({
       kind: 'artifact',
       label: 'lines 1-1 of x.ts',
       promptText: 'x',
-      anchor: { host, range: null, selection: null },
+      anchor: { host, range: null, selection: { start: 0, end: 'const x = 1;'.length } },
     });
     act(() => {});
 
@@ -615,29 +635,29 @@ describe('lift: scroll must not restart the travel animation (task-8 defect fix)
     // actually re-measured rather than coincidentally matching.
     const movedRect = { left: 400, top: 300, right: 540, bottom: 360, width: 140, height: 60 } as DOMRect;
     rectCtl.move(movedRect);
+    markRect = movedRect;
     act(() => { fireEvent.scroll(window); });
 
     // Unlike the travelling case above, the artifact clip MUST track the
     // new rect — the selection moved with the page, so a stale clip would
     // reveal the wrong lines. Recompute independently (same idiom as the
     // existing artifact test above) rather than just asserting "changed".
-    const expectedD = buildUnionPath(toBoxes([movedRect], { left: 0, top: 0 } as DOMRect));
+    const expectedD = buildRoundedOutlinePath(mergeAdjacentBoxes(toBoxes([movedRect], { left: 0, top: 0 } as DOMRect)));
     const expectedClip = `path('${shiftPath(expectedD, -movedRect.left, -movedRect.top)}')`;
     expect(lift.style.clipPath).toBe(expectedClip);
+    marksSpy.mockRestore();
     expect(lift.style.clipPath).not.toBe(firstClip);
 
     document.body.removeChild(host);
   });
 });
 
-// Dev-review fix C/D: "the artifact panel still puts a weird black box around
-// the selection" / "the traced outline is uneven and janky". The `.reference-
-// trace` SVG (wash fill + animated stroke outline) is deleted entirely — for
-// BOTH kinds, not just the travelling one it was already skipped for. The
-// artifact clip-path (still driven by the same `d` geometry) is what actually
-// keeps the selection bright; it was never rendered THROUGH this SVG, so
-// removing the SVG doesn't touch the clip.
-describe('dev-review fix C/D: no traced SVG outline for either kind', () => {
+// Restored 2026-07-28: the `.reference-trace` SVG (wash fill + animated
+// stroke outline), deleted by a dev-review pass as "the weird black box" /
+// "uneven and janky", is back — anchored to the `.reference-mark` elements
+// INSIDE THE CLONE this time (see use-reference-geometry.ts's WHY comment),
+// for BOTH kinds, not just the artifact one it was previously limited to.
+describe('traced outline (Task 7, restored 2026-07-28)', () => {
   function withHost(kind: PendingReference['kind']): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'referenced content';
@@ -648,28 +668,86 @@ describe('dev-review fix C/D: no traced SVG outline for either kind', () => {
     return { kind, label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
   }
 
-  it('a TRAVELLING (chat) reference renders no source-anchored trace', () => {
-    // The card flies to the viewport centre, so a trace measured from the
-    // source would outline the empty space the bubble left behind — the
-    // "black box around where the message bubble was originally" Destin hit
-    // in dev review. The travelling card carries its ring/glow in CSS instead.
+  it('renders no outline for a whole-message CHAT reference (no partial selection — nothing to trace)', () => {
+    // A whole-message reference has no `.reference-mark` at all (applyHighlightMark
+    // is never called without a selection), so there is nothing for the
+    // marks-based geometry to measure — the travelling card's own ring
+    // already signals "this is the reference" for this case.
     renderOverlay(withHost('chat-text'));
     act(() => {});
     expect(document.querySelector('.reference-lift')).not.toBeNull();
     expect(document.querySelector('.reference-trace')).toBeNull();
   });
 
-  it('a NON-travelling (artifact) reference ALSO renders no traced outline (the "weird black box" fix)', () => {
-    // Previously this WAS the one case that rendered `.reference-trace` — the
-    // exact "weird black box" / "uneven and janky" outline dev review flagged.
-    // It's gone now; the clip-path (asserted elsewhere) does the real work.
+  it('renders no outline for a whole-file ARTIFACT reference either', () => {
     renderOverlay(withHost('artifact'));
     act(() => {});
     expect(document.querySelector('.reference-trace')).toBeNull();
-    // Sanity: the lift itself still renders and still isn't the travelling case.
     const lift = document.querySelector('.reference-lift');
     expect(lift).not.toBeNull();
     expect(lift?.hasAttribute('data-travels')).toBe(false);
+  });
+
+  it('a CHAT (travelling) reference with a partial selection traces the CLONE\'s marks, not the source\'s (very different) position', () => {
+    const host = document.createElement('div');
+    host.textContent = 'referenced content';
+    document.body.appendChild(host);
+    // Source sits at a position FAR from where the clone's mark will be
+    // measured — this is the exact case the original (deleted) version got
+    // wrong: it measured the source, which for a travelling clone is the
+    // empty space the bubble flew away from, not where the highlight is.
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      { left: 500, top: 600, right: 600, bottom: 650, width: 100, height: 50 } as DOMRect,
+    );
+    const markRect = { left: 30, top: 40, right: 130, bottom: 60, width: 100, height: 20 } as DOMRect;
+    const marksSpy = stubMarkRects(markRect);
+
+    renderOverlay({
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: { start: 0, end: 'referenced content'.length } },
+    });
+    act(() => {});
+
+    const trace = document.querySelector('.reference-trace');
+    expect(trace).not.toBeNull();
+    const outline = trace?.querySelector('path.outline');
+    const wash = trace?.querySelector('path.wash');
+    expect(outline).not.toBeNull();
+    // Both paths share the SAME `d` — one measurement, two consumers.
+    expect(outline?.getAttribute('d')).toBe(wash?.getAttribute('d'));
+
+    const expectedD = buildRoundedOutlinePath(mergeAdjacentBoxes(toBoxes([markRect], { left: 0, top: 0 } as DOMRect)));
+    expect(outline?.getAttribute('d')).toBe(expectedD);
+
+    const sourceBasedD = buildRoundedOutlinePath(
+      mergeAdjacentBoxes(toBoxes([{ left: 500, top: 600, right: 600, bottom: 650, width: 100, height: 50 } as DOMRect], { left: 0, top: 0 } as DOMRect)),
+    );
+    // The regression this restoration fixes: the outline must NOT trace the
+    // source's rect.
+    expect(outline?.getAttribute('d')).not.toBe(sourceBasedD);
+
+    marksSpy.mockRestore();
+  });
+
+  it('an ARTIFACT (non-travelling) reference with a partial selection also gets the traced outline', () => {
+    const host = document.createElement('div');
+    host.textContent = 'const x = 1;';
+    document.body.appendChild(host);
+    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
+    const marksSpy = stubMarkRects(rect);
+
+    renderOverlay({
+      kind: 'artifact', label: 'lines 1-1 of x.ts', promptText: 'x',
+      anchor: { host, range: null, selection: { start: 0, end: 'const x = 1;'.length } },
+    });
+    act(() => {});
+
+    expect(document.querySelector('.reference-trace')).not.toBeNull();
+    const lift = document.querySelector('.reference-lift');
+    expect(lift?.hasAttribute('data-travels')).toBe(false);
+
+    marksSpy.mockRestore();
   });
 });
 
@@ -714,44 +792,59 @@ describe('reduced effects (Task 9)', () => {
 
   // A real host with a stubbed rect (jsdom's own getBoundingClientRect is
   // all-zero — no layout engine) so the lift's positioning effects have
-  // something non-degenerate to work with.
+  // something non-degenerate to work with. Shared so tests can also stub
+  // `.reference-mark` rects (via stubMarkRects) to the SAME rect, giving the
+  // restored traced outline something non-empty to render.
+  const REF_RECT = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
+
   function makeReferenceWithHost(): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'the referenced message';
     document.body.appendChild(host);
-    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
-    return { kind: 'chat-text', label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(REF_RECT);
+    return {
+      kind: 'chat-text', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: { start: 0, end: 'the referenced message'.length } },
+    };
   }
 
   function makeArtifactReferenceWithHost(): PendingReference {
     const host = document.createElement('div');
     host.textContent = 'the referenced lines';
     document.body.appendChild(host);
-    const rect = { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 } as DOMRect;
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect);
-    return { kind: 'artifact', label: 'x', promptText: 'x', anchor: { host, range: null, selection: null } };
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(REF_RECT);
+    return {
+      kind: 'artifact', label: 'x', promptText: 'x',
+      anchor: { host, range: null, selection: { start: 0, end: 'the referenced lines'.length } },
+    };
   }
 
-  // Dev-review fix C/D deleted `.reference-trace` for both kinds, so its
-  // data-reduced stamping is no longer a thing to assert — only
-  // `.reference-lift`'s remains (it still drives the reduced ring/shadow).
-  it('stamps data-reduced="true" on the lift when reducedEffects is on, for both kinds', () => {
+  // Restored 2026-07-28: the traced outline is back, so reducedEffects must
+  // strip ITS animation/glow too (static outline — see globals.css's
+  // `.reference-trace[data-reduced="true"]` rule), on top of the existing
+  // `.reference-lift` ring/shadow reduction.
+  it('stamps data-reduced="true" on both the lift AND the traced outline when reducedEffects is on, for both kinds', () => {
     localStorage.setItem(REDUCED_EFFECTS_KEY, '1'); // ThemeProvider reads this synchronously on mount (theme-context.tsx:139)
+    const marksSpy = stubMarkRects(REF_RECT);
+
     const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
-    expect(document.querySelector('.reference-trace')).toBeNull();
+    expect(document.querySelector('.reference-trace')).not.toBeNull();
+    expect(document.querySelector('.reference-trace')?.getAttribute('data-reduced')).toBe('true');
     expect(document.querySelector('.reference-lift')?.getAttribute('data-reduced')).toBe('true');
     unmount();
 
     renderOverlayWithTheme(makeArtifactReferenceWithHost());
     act(() => {});
-    expect(document.querySelector('.reference-trace')).toBeNull();
+    expect(document.querySelector('.reference-trace')?.getAttribute('data-reduced')).toBe('true');
     expect(document.querySelector('.reference-lift')?.getAttribute('data-reduced')).toBe('true');
+
+    marksSpy.mockRestore();
   });
 
-  it('leaves data-reduced entirely absent (not just falsy) on the lift when reducedEffects is off, for both kinds', () => {
+  it('leaves data-reduced entirely absent (not just falsy) on the lift and the traced outline when reducedEffects is off, for both kinds', () => {
     // No localStorage write — ThemeProvider's default is reducedEffects: false.
+    const marksSpy = stubMarkRects(REF_RECT);
     const { unmount } = renderOverlayWithTheme(makeReferenceWithHost());
     act(() => {});
 
@@ -764,11 +857,15 @@ describe('reduced effects (Task 9)', () => {
     // this selector but WOULD show up in the DOM, which is a different bug
     // than what this test is pinning.
     expect(lift?.hasAttribute('data-reduced')).toBe(false);
+    expect(document.querySelector('.reference-trace')?.hasAttribute('data-reduced')).toBe(false);
     unmount();
 
     renderOverlayWithTheme(makeArtifactReferenceWithHost());
     act(() => {});
     expect(document.querySelector('.reference-lift')?.hasAttribute('data-reduced')).toBe(false);
+    expect(document.querySelector('.reference-trace')?.hasAttribute('data-reduced')).toBe(false);
+
+    marksSpy.mockRestore();
   });
 });
 
@@ -1178,22 +1275,26 @@ describe('exit animation (dev-review follow-up: return trip on cancel)', () => {
   });
 });
 
-// Dev-review follow-up round 2: "my highlighted artifact viewer selections
-// aren't focused/selected at all." Investigation confirmed the mark WAS
-// reaching the artifact clone (applyHighlightMark isn't kind-gated, and
-// build-reference.test.ts already pins that artifact selections capture
-// `anchor.selection` too) — the gap was purely visual: a translucent
-// background on top of a clip-path region that's ALREADY the bright part of
-// the screen barely reads as anything. This test pins the CSS fix (an inset
-// ring giving the mark its own edge) the same way the composer-lift test
-// above pins its rule — a source-text assertion, since jsdom can't render
-// color-mix() or prove a ring is visually distinguishable.
-describe('reference-mark visibility (dev-review follow-up round 2)', () => {
-  it('globals.css gives .reference-mark its own ring, not just a background tint', () => {
+// Dev-review follow-up round 2 (superseded 2026-07-28): "my highlighted
+// artifact viewer selections aren't focused/selected at all" was originally
+// fixed by giving `.reference-mark` its own inset ring, since at the time
+// there was no traced outline at all — the ring was the ONLY boundary signal
+// a mark had. Now that the traced outline is restored (anchored to these same
+// mark elements — see use-reference-geometry.ts), that ring is a literal
+// duplicate of it: same union region, same accent colour, drawn twice. This
+// test pins the OUTCOME of reconciling the two — the ring is gone, the
+// background tint (a distinct signal: it marks the exact covered text,
+// character for character, vs. the outline's smoothed/merged approximation)
+// stays — the same source-text-assertion idiom as the composer-lift test
+// above, since jsdom can't render color-mix() or prove a ring is visually
+// distinguishable.
+describe('reference-mark visibility (outline restoration: ring reconciled away)', () => {
+  it('globals.css gives .reference-mark a background tint but no inset ring (redundant with the restored outline)', () => {
     const css = readFileSync(join(__dirname, '..', '..', 'styles', 'globals.css'), 'utf8');
     const rule = css.match(/\.reference-mark\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).not.toBe('');
     // Theme tokens only — a literal colour would break community themes.
-    expect(rule).toMatch(/box-shadow:\s*inset[^;]*var\(--accent\)/);
+    expect(rule).toMatch(/background:[^;]*var\(--accent\)/);
+    expect(rule).not.toMatch(/box-shadow/);
   });
 });
