@@ -65,3 +65,65 @@ describe('effectiveContextForModel', () => {
     expect(effectiveContextForModel(null, 'unknown-model', reg)).toBe(null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M3 item 5 — capability-gated injection.
+//
+// Two new fields decide how much the model may be handed mid-session: whether
+// the Skill tool's catalog (which rides the tool schema on EVERY turn) is
+// affordable at all, and how many tokens a single injection may occupy.
+// ---------------------------------------------------------------------------
+describe('capability profile — injection sizing (M3 item 5)', () => {
+  it('a large local window gets the skill catalog and a generous budget', () => {
+    const p = resolveProfile(local('qwen3.6-122b', 128_000));
+    expect(p.exposeSkillCatalog).toBe(true);
+    expect(p.injectionBudgetTokens).toBeGreaterThan(10_000);
+  });
+
+  it('a small local window does NOT — the catalog rides every single turn', () => {
+    const p = resolveProfile(local('gemma-3n', 8_192));
+    expect(p.exposeSkillCatalog).toBe(false);
+    expect(p.injectionBudgetTokens).toBeLessThan(4_000);
+  });
+
+  it('a mid local window gets the catalog but a tighter injection budget', () => {
+    const p = resolveProfile(local('some-35b', 64_000));
+    expect(p.exposeSkillCatalog).toBe(true);
+    expect(p.injectionBudgetTokens).toBeLessThan(10_000);
+  });
+
+  it('an UNMEASURED local window is treated as small — never assume room', () => {
+    const p = resolveProfile(local('mystery', null));
+    expect(p.exposeSkillCatalog).toBe(false);
+  });
+
+  it('an openai-compatible endpoint is sized like local — it is usually Ollama', () => {
+    // provider-registry documents this type as "Ollama / LM Studio run keyless".
+    // Treating an unmeasured one as roomy would hand a 4k model a skill catalog.
+    const p = resolveProfile({ providerType: 'openai-compatible', modelId: 'whatever', contextLength: null });
+    expect(p.exposeSkillCatalog).toBe(false);
+  });
+
+  it('a FRONTIER provider stays generous even with no measured window', () => {
+    // We never discover Anthropic's window, so null there means "not measured",
+    // not "small" — sizing it down would break the main use case.
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      const p = resolveProfile({ providerType, modelId: 'm', contextLength: null });
+      expect(p.exposeSkillCatalog, providerType).toBe(true);
+      expect(p.injectionBudgetTokens, providerType).toBeGreaterThan(10_000);
+    }
+  });
+
+  it('the registry ceiling sizes a model loaded past its real window', () => {
+    // A 8k model loaded at -c 128000 must not be judged roomy: sizing runs on the
+    // EFFECTIVE window, the same clamp the rest of the profile uses.
+    const reg = [{ match: 'tiny-model', label: 'Tiny', maxContextWindow: 8192, supportsTools: true }];
+    const p = resolveProfile(local('tiny-model-q4', 128_000), reg);
+    expect(p.exposeSkillCatalog).toBe(false);
+  });
+
+  it('the cloud default carries the catalog and a large budget', () => {
+    expect(CLOUD_DEFAULT.exposeSkillCatalog).toBe(true);
+    expect(CLOUD_DEFAULT.injectionBudgetTokens).toBeGreaterThan(10_000);
+  });
+});
