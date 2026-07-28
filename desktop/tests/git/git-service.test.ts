@@ -400,4 +400,43 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(review.uncommitted?.hunks.length).toBeGreaterThan(0);
     } finally { await fs.promises.rm(parent, { recursive: true, force: true }); }
   });
+
+  // Reproduces the youcoded-dev workspace shape: `worktrees/<name>` is
+  // gitignored by the outer project repo and holds a LINKED WORKTREE of a
+  // completely different repo (per CLAUDE.md's "use worktrees for non-trivial
+  // work" convention). locate() used to resolve the repo root from the fixed
+  // projectRoot, so `git status`/`git rev-list` always ran against the OUTER
+  // repo — which can never see a path it gitignores — silently hiding real
+  // changes (and the Review Changes button) for every file under a worktree.
+  it('fileStatus: a file inside a gitignored linked worktree resolves against the WORKTREE\'s own repo, not the outer project repo', async () => {
+    await fs.promises.writeFile(path.join(root, '.gitignore'), 'worktrees/\n');
+    sh(root, ['add', '.gitignore']);
+    sh(root, ['commit', '-m', 'ignore worktrees']);
+
+    const otherRepo = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-other-repo-')));
+    try {
+      sh(otherRepo, ['init', '-b', 'main']);
+      sh(otherRepo, ['config', 'core.autocrlf', 'false']);
+      await fs.promises.writeFile(path.join(otherRepo, 'c.txt'), 'one\ntwo\n');
+      sh(otherRepo, ['add', '.']);
+      sh(otherRepo, ['commit', '-m', 'other repo initial']);
+      sh(otherRepo, ['branch', 'feature']);
+
+      const worktreesDir = path.join(root, 'worktrees');
+      await fs.promises.mkdir(worktreesDir, { recursive: true });
+      const worktreeDir = path.join(worktreesDir, 'feature');
+      sh(otherRepo, ['worktree', 'add', worktreeDir, 'feature']);
+
+      await fs.promises.writeFile(path.join(worktreeDir, 'c.txt'), 'one\nTWO\nthree\n');
+
+      const r = await gitFileStatus(root, 'worktrees/feature/c.txt');
+      expect(r.ok).toBe(true);
+      expect(r.isRepo).toBe(true);
+      expect(r.counts).toEqual({ added: 2, removed: 1 });
+      expect(r.hasHistory).toBe(true);
+    } finally {
+      try { sh(otherRepo, ['worktree', 'remove', '--force', path.join(root, 'worktrees', 'feature')]); } catch { /* best effort */ }
+      await fs.promises.rm(otherRepo, { recursive: true, force: true });
+    }
+  });
 });
