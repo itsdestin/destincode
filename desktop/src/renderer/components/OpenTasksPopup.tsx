@@ -123,7 +123,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
 
   return (
     <>
-      <Dialog open onClose={onClose} title="Open Tasks" size="md" maxHeight="70vh">
+      <Dialog open onClose={onClose} title="Open Tasks" size="panel">
         <>
           {/* Empty state: nothing at all */}
           {openCount === 0 && completed.length === 0 && inactive.length === 0 && (

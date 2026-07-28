@@ -154,7 +154,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   if (!open) return null;
   return createPortal(
     <>
-      <Dialog open onClose={onClose} size="sm" aria-label="Keyboard Shortcuts" scrollBody={false} className="p-5">
+      <Dialog open onClose={onClose} size="prompt" aria-label="Keyboard Shortcuts" scrollBody={false} className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-fg">Keyboard Shortcuts</h3>
           <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors">
@@ -583,7 +583,7 @@ function SoundButton() {
         open={open}
         onClose={() => setOpen(false)}
         title="Sound & Notifications"
-        size="md"
+        size="panel"
         panelRef={popupRef}
       >
                 {/* Master volume */}
@@ -692,8 +692,8 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         open={open}
         onClose={() => setOpen(false)}
         aria-label="Appearance"
-        size="lg"
-        minHeight="min(600px, 80vh)"
+        size="document"
+        fill
         scrollBody={false}
         panelRef={popupRef}
       >
@@ -858,8 +858,7 @@ function BuddyButton() {
         open={open}
         onClose={() => setOpen(false)}
         title="Buddy Floater"
-        size="sm"
-        maxHeight="none"
+        size="prompt"
         scrollBody={false}
         panelRef={popupRef}
       >
@@ -996,8 +995,8 @@ function RemoteButton({
         open={open}
         onClose={() => setOpen(false)}
         aria-label="Remote Access"
-        size="lg"
-        minHeight="min(600px, 80vh)"
+        size="panel"
+        fill
         scrollBody={false}
         panelRef={popupRef}
       >
@@ -1434,7 +1433,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                 onClose={() => setConfirmOpen(false)}
                 layer={3}
                 destructive
-                size="sm"
+                size="prompt"
                 aria-label="This is extremely dangerous"
                 scrollBody={false}
               >
@@ -1538,7 +1537,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
         open={open}
         onClose={() => setOpen(false)}
         title="Session Defaults"
-        size="md"
+        size="panel"
         panelRef={popupRef}
       >
                 {/* Default Model */}
@@ -1668,7 +1667,7 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
         open={open}
         onClose={() => setOpen(false)}
         title="Package Tier"
-        size="sm"
+        size="prompt"
         panelRef={popupRef}
       >
               {TIER_OPTIONS.map(t => {
@@ -1848,7 +1847,7 @@ function ConnectToDesktopButton() {
         open={open}
         onClose={() => setOpen(false)}
         title="Connect to Desktop"
-        size="md"
+        size="panel"
         panelRef={popupRef}
       >
 

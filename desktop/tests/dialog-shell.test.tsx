@@ -5,7 +5,7 @@ import { render, screen, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { Dialog, DIALOG_WIDTHS } from '../src/renderer/components/ui/Dialog';
+import { Dialog, DIALOG_WIDTHS, DIALOG_MAX_HEIGHT } from '../src/renderer/components/ui/Dialog';
 
 // Guard for D1 — the one dialog shell.
 //
@@ -70,23 +70,40 @@ describe('Dialog shell', () => {
     expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
   });
 
-  it('exposes exactly the four width rungs', () => {
-    // No bespoke widths. 18 distinct ones shipped before this.
-    expect(Object.keys(DIALOG_WIDTHS).sort()).toEqual(['lg', 'md', 'sm', 'xl']);
+  it('widths are named for what drives them, not t-shirt sizes', () => {
+    // The names carry the derivation: a dialog is one of three CONTENT kinds,
+    // and each kind's width falls out of reading measure or a control floor.
+    // The previous sm/md/lg/xl ladder was fitted to the old values instead,
+    // which is how `lg` ended up at 560px -- a width nothing had ever used.
+    expect(Object.keys(DIALOG_WIDTHS).sort()).toEqual(['document', 'panel', 'prompt']);
     expect(DIALOG_WIDTHS).toEqual({
-      sm: 'min(340px, 88vw)',
-      md: 'min(420px, 88vw)',
-      lg: 'min(560px, 88vw)',
-      xl: 'min(820px, 88vw)',
+      prompt: 'min(340px, 88vw)',    // two action buttons side by side: 322px floor
+      panel: 'min(420px, 88vw)',     // 59ch at text-2xs, 51ch beside a control
+      document: 'min(600px, 88vw)',  // 67ch at text-sm — long-form measure
     });
   });
 
-  it('height is a ceiling, never fixed', () => {
-    // A fixed `h-` is what makes ContextPopup jump to full height when its
-    // explainer opens. Dialog makes it inexpressible: there is only maxHeight.
+  it('height is one absolute rule, not a share of the viewport', () => {
+    // 80vh was ~700px on a laptop and ~1730px on a 4K display -- a different
+    // object per monitor. The cap is absolute (a scrolling column stops being
+    // useful past ~700px) with a constant scrim margin, not a ratio.
+    expect(DIALOG_MAX_HEIGHT).toBe('min(680px, calc(100vh - 6rem))');
+    expect(DIALOG_MAX_HEIGHT).not.toMatch(/\d+vh\)/);
     render(<Dialog open onClose={() => {}} title="X">body</Dialog>);
-    expect(panel().style.maxHeight).toBe('80vh');
-    expect(panel().style.height).toBe('');
+    expect(panel().style.maxHeight).toBe(DIALOG_MAX_HEIGHT);
+    // Hugs content by default: no height unless `fill` is asked for.
+    expect(panel().getAttribute('style')).not.toContain(`; height:`);
+  });
+
+  it('fill holds the full height for dialogs hosting sub-views', () => {
+    // Appearance and Remote Access swap between an index and a detail view and
+    // would otherwise resize under the cursor. "Always maximum" is the honest
+    // version of the invented pixel height they used to set.
+    // Read the style ATTRIBUTE, not .style.height: jsdom's cssstyle has a strict
+    // parser for `height` that drops min()/calc() values, though it accepts the
+    // same string for `max-height`. The attribute is what actually ships.
+    render(<Dialog open onClose={() => {}} title="X" fill>body</Dialog>);
+    expect(panel().getAttribute('style')).toContain(`height: ${DIALOG_MAX_HEIGHT}`);
   });
 });
 

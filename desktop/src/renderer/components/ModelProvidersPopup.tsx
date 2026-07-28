@@ -91,7 +91,7 @@ function ModelProvidersPopupInner({
 
   return createPortal(
     <>
-      <Dialog open onClose={onClose} title="Model Providers" size="md">
+      <Dialog open onClose={onClose} title="Model Providers" size="panel">
             <p className="text-2xs text-fg-dim leading-relaxed">
               Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
               local models are optional alternatives.
@@ -363,7 +363,7 @@ function ConnectOpenRouterModal({
         open
         onClose={onClose}
         layer={3}
-        size="sm"
+        size="prompt"
         title={hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
         scrollBody={false}
       >

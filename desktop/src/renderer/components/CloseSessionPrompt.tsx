@@ -116,7 +116,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
 
   return (
     <>
-      <Dialog open onClose={onCancel} size="sm" aria-label="Close session" scrollBody={false}>
+      <Dialog open onClose={onCancel} size="prompt" aria-label="Close session" scrollBody={false}>
           <div className="px-4 pt-4 pb-3 border-b border-edge">
             <h2 className="text-sm font-bold text-fg">Close session</h2>
             {sessionName && (

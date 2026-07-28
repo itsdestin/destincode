@@ -192,7 +192,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
       <Dialog
         open
         onClose={handleClose}
-        size="md"
+        size="panel"
         aria-label="Connect GitHub"
         scrollBody={false}
         className="p-5"

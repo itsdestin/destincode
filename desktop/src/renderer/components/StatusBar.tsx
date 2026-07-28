@@ -529,7 +529,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
           "No flex-1" workaround is gone too: that was needed because its body
           was a bare overflow-y-auto div with no min-height:0, which .scroll-fade
           supplies. */}
-      <Dialog open onClose={onClose} title="Status Bar Widgets" size="md">
+      <Dialog open onClose={onClose} title="Status Bar Widgets" size="panel">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
                 <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">

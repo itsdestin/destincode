@@ -113,8 +113,7 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
       <Dialog
         open
         onClose={onClose}
-        size="md"
-        maxHeight="85vh"
+        size="panel"
         title={page === 'connections' ? 'Connected accounts' : 'Account'}
         onBack={page === 'connections' ? () => setPage('main') : undefined}
       >

@@ -94,7 +94,7 @@ function HandlePromptPopup({
   return createPortal(
     <>
       {/* Skip on scrim click so the prompt is genuinely skippable. */}
-      <Dialog open onClose={skip} size="sm" aria-label="Choose a handle" scrollBody={false}>
+      <Dialog open onClose={skip} size="prompt" aria-label="Choose a handle" scrollBody={false}>
         <div className="p-5 space-y-4">
           <div className="space-y-1.5">
             <h3 id="handle-prompt-title" className="text-sm font-semibold text-fg">Pick a handle</h3>

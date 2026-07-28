@@ -317,7 +317,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
     };
     return createPortal(
       <>
-        <Dialog open onClose={onClose} title="Model" size="md" scrollBody={false}>
+        <Dialog open onClose={onClose} title="Model" size="panel" scrollBody={false}>
           <div className="px-5 pt-3">
             {/* Change 20: the shared field surface. No submit button belongs
                 inside it — the list below filters as you type. */}
@@ -377,7 +377,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   return createPortal(
     // Overlay layer L2 — theme-driven scrim/surface via Scrim/OverlayPanel.
     <>
-      <Dialog open onClose={onClose} title="Model & Effort" size="md" scrollBody={false}>
+      <Dialog open onClose={onClose} title="Model & Effort" size="panel" scrollBody={false}>
 
         {!loaded ? (
           <LoadingState what="models" />
@@ -469,7 +469,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             onClose={() => setFastConfirmOpen(false)}
             layer={3}
             destructive
-            size="sm"
+            size="prompt"
             aria-label="Enable Fast mode?"
             scrollBody={false}
           >

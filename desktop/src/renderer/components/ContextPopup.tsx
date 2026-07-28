@@ -104,8 +104,7 @@ export default function ContextPopup({
       <Dialog
         open
         onClose={onClose}
-        size="sm"
-        maxHeight="85vh"
+        size="prompt"
         title={showInfo ? undefined : 'Context'}
         aria-label={showInfo ? 'About Context' : undefined}
         headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}

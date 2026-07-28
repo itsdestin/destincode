@@ -102,7 +102,7 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
         // Dismissal stays suppressed mid-import: an interrupted move would
         // leave the folder half-relocated.
         onClose={busy ? () => {} : dismiss}
-        size="md"
+        size="panel"
         aria-label="Import project"
         scrollBody={false}
         className="p-4"

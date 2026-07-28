@@ -250,7 +250,7 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
       <Dialog
         open
         onClose={onClose}
-        size="xl"
+        size="document"
         title={updateStatus.update_available ? 'Update available' : "What's new"}
         scrollBody={false}
       >

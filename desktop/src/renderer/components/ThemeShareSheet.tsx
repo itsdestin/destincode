@@ -81,7 +81,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
   return (
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
     <>
-      <Dialog open onClose={onClose} size="md" aria-label="Publish theme" scrollBody={false} className="p-5">
+      <Dialog open onClose={onClose} size="panel" aria-label="Publish theme" scrollBody={false} className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-bold text-fg">
             Publish: {theme.name}

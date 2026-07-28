@@ -25,7 +25,7 @@ export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () =>
         open
         onClose={onClose}
         layer={3}
-        size="sm"
+        size="prompt"
         aria-label="Confirm opening the donation link"
         scrollBody={false}
         className="p-6 text-center"

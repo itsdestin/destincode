@@ -33,15 +33,62 @@ import { useScrollFade } from '../../hooks/useScrollFade';
  *    the moment its explainer opens.
  */
 
-/** The width ladder. No bespoke widths — round to the nearest rung. */
+/**
+ * Dialog widths, DERIVED — not a ladder fitted to whatever the old values were.
+ *
+ * The first version of this was `sm 340 / md 420 / lg 560 / xl 820`, chosen to
+ * fit the clusters already in the codebase. That was circular: the old widths
+ * were arbitrary, so a ladder fitted to them just launders the arbitrariness.
+ * `lg` was the tell — nothing had ever been 560px wide, so three dialogs got
+ * widened 17% to reach a rung that existed only to make the progression look
+ * tidy.
+ *
+ * These come from the content instead. The app is ALL MONOSPACE (--font-sans
+ * and --font-mono are both Cascadia Mono, globals.css), so character advance is
+ * a constant 0.6em and reading measure converts to exact pixels:
+ *
+ *     text-3xs 10px -> 6.0px/ch    text-xs 12px -> 7.2px/ch
+ *     text-2xs 11px -> 6.6px/ch    text-sm  14px -> 8.4px/ch
+ *
+ * PROMPT 340 — floored by two action buttons side by side without wrapping.
+ *   The widest real pair is "Close session" (13ch) + "Cancel": 13ch x 8.4 + 32px
+ *   padding = 141px per button, x2 + 8px gap + 32px panel padding = 322px.
+ *
+ * PANEL 420 — set by reading measure for UI prose. Content is 420 - 32 = 388px:
+ *   59ch at text-2xs full width, and 51ch for a description sitting beside a
+ *   toggle (-48px for control + gap). Both inside the 45-75ch comfort band, and
+ *   the median dialog string (measured: 54ch across 130 of them) fits one line.
+ *
+ * DOCUMENT 600 — set by long-form measure. Content 600 - 40 = 560px = 67ch at
+ *   text-sm, which is the classic optimum. Markdown code blocks do NOT drive
+ *   this: they already carry overflow-x-auto, so they scroll rather than widen
+ *   the dialog.
+ *
+ * Each is capped at 88vw so a narrow window shrinks it rather than clipping.
+ */
 export const DIALOG_WIDTHS = {
-  sm: 'min(340px, 88vw)',
-  md: 'min(420px, 88vw)',
-  lg: 'min(560px, 88vw)',
-  xl: 'min(820px, 88vw)',
+  prompt: 'min(340px, 88vw)',
+  panel: 'min(420px, 88vw)',
+  document: 'min(600px, 88vw)',
 } as const;
 
 export type DialogSize = keyof typeof DIALOG_WIDTHS;
+
+/**
+ * ONE height rule for every dialog. There is no per-dialog height.
+ *
+ * The previous rule was `80vh`, which is wrong because it scales with the
+ * monitor: 80vh is ~700px on a laptop and ~1730px on a 4K display. That is not
+ * one design, it is a different object per screen — a settings list nearly two
+ * thousand pixels tall, whose top scrolls out of sight.
+ *
+ * Two things actually bound a dialog's height, neither of them proportional:
+ *   - A scrolling column stops being useful past ~700px; beyond that you have
+ *     lost the top of the list and should have scrolled anyway. Absolute cap.
+ *   - A modal must leave visible scrim to read as an overlay rather than a
+ *     takeover. That is a constant margin (3rem top and bottom), not a ratio.
+ */
+export const DIALOG_MAX_HEIGHT = 'min(680px, calc(100vh - 6rem))';
 
 export type DialogProps = {
   open: boolean;
@@ -67,16 +114,16 @@ export type DialogProps = {
   /** Marks the panel destructive, which the theme uses to tint its border. */
   destructive?: boolean;
   size?: DialogSize;
-  /** Ceiling only. Defaults to 80vh. There is deliberately no `height`. */
-  maxHeight?: string;
   /**
-   * Floor, for dialogs that must not collapse as the user moves between
-   * sub-views (Appearance, Remote Access). This is the honest version of the
-   * fixed height those two used to set: it stops the panel shrinking without
-   * letting it ignore the viewport. The banned case is a height that changes
-   * with the view — that is the ContextPopup jump.
+   * Hold the full height instead of hugging content. For dialogs that host
+   * sub-views and would otherwise resize as you navigate between them
+   * (Appearance, Remote Access). This is the honest version of the fixed height
+   * those two used to set: "always maximum", not an invented pixel count.
+   *
+   * There is no `height` or `maxHeight` prop. Height is DIALOG_MAX_HEIGHT for
+   * every dialog — a per-dialog height is what made ContextPopup jump.
    */
-  minHeight?: string;
+  fill?: boolean;
   /** For callers wiring their own outside-click detection. */
   panelRef?: React.Ref<HTMLDivElement>;
   /** Extra classes on the panel. Layout classes are owned here — prefer not to. */
@@ -101,9 +148,8 @@ export function Dialog({
   onBack,
   layer = 2,
   destructive,
-  size = 'md',
-  maxHeight = '80vh',
-  minHeight,
+  size = 'panel',
+  fill,
   panelRef,
   className = '',
   scrollBody = true,
@@ -140,8 +186,8 @@ export function Dialog({
             position: 'relative',
             zIndex: 'auto',
             maxWidth: DIALOG_WIDTHS[size],
-            maxHeight,
-            ...(minHeight ? { minHeight } : {}),
+            maxHeight: DIALOG_MAX_HEIGHT,
+            ...(fill ? { height: DIALOG_MAX_HEIGHT } : {}),
           }}
         >
           {title && (
