@@ -4,7 +4,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
-import { Button, Dialog, InputGroup, SettingRow } from './ui';
+import { Button, Dialog, InputGroup, SettingRow, Callout } from './ui';
 import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
@@ -658,7 +658,12 @@ function EditAccountBody({
 
       {/* Danger zone — 2-step: expand, then typed confirm + explicit button. */}
       <section className="space-y-2">
-        <h4 className="text-3xs font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
+        {/* K9: was an <h4> at `text-3xs font-medium text-red-500 uppercase
+            tracking-wider` — a retired class ORDER that the K1 guard could not
+            catch precisely because it was red, so it sat outside the recipe the
+            guard matches on. It is the K1 label now; the danger signal lives in
+            the callout and the button variant below, where it belongs. */}
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Danger zone</h3>
         {!deleteExpanded ? (
           // Arming step -> danger-outline. red-500 becomes the --destructive
           // token so packs can restyle it (#C62828 today — no longer identical
@@ -668,17 +673,20 @@ function EditAccountBody({
           </Button>
         ) : (
           <div className="space-y-2">
-            <p className="text-2xs text-fg-dim leading-relaxed">
+            {/* K9: the consequence goes in a danger callout, kept with the
+                control it describes. Copy unchanged — it was already specific,
+                plain, and explicit about the irreversibility. */}
+            <Callout tone="danger">
               Deleting your account removes everything attached to it immediately — your likes,
               reviews, and install history are all gone. This cannot be undone.
-            </p>
-            {/* The freed-handle lock only applies when there IS a handle to free. */}
-            {currentHandle.length > 0 && (
-              <p className="text-2xs text-fg-dim leading-relaxed">
-                Your handle @{currentHandle} is freed, but locked for 30 days before anyone else can
-                claim it.
-              </p>
-            )}
+              {/* The freed-handle lock only applies when there IS a handle to free. */}
+              {currentHandle.length > 0 && (
+                <span className="block mt-2">
+                  Your handle @{currentHandle} is freed, but locked for 30 days before anyone else can
+                  claim it.
+                </span>
+              )}
+            </Callout>
             <label htmlFor="account-delete-confirm" className="block text-3xs text-fg-muted">
               Type <span className="font-semibold text-fg">delete</span> to confirm
             </label>

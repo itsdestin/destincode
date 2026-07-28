@@ -28,7 +28,7 @@ import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout, StatusStrip, ErrorState } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -961,6 +961,14 @@ interface RemoteButtonProps {
   onCopyLink: () => void;
   onSetShowSetupQR: (v: boolean) => void;
   onSetShowAddDevice: (v: boolean) => void;
+  /**
+   * Opens the app's existing bug-report surface (BugReportPopup, which wraps
+   * dev:summarize-issue + dev:submit-issue). Both actions on a general
+   * ErrorState land here: "Report bug" files it, "Diagnose with Claude" is the
+   * same popup's summarize path, which collects the logs. One destination, no
+   * invented flow.
+   */
+  onReportIssue: () => void;
 }
 
 function RemoteButton({
@@ -968,7 +976,7 @@ function RemoteButton({
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
   onSetNewPassword, onSetPassword, onToggleEnabled, enableError, onToggleTailscaleTrust,
   onSetKeepAwake, onRunSetup, onConfirmSetup, onCancelSetup, setupStatus, setupError, onDisconnectClient, onCopyLink,
-  onSetShowSetupQR, onSetShowAddDevice,
+  onSetShowSetupQR, onSetShowAddDevice, onReportIssue,
 }: RemoteButtonProps) {
   const [open, setOpen] = useState(false);
   // showInfo flips the popup body to the plain-language explainer view.
@@ -1109,38 +1117,67 @@ function RemoteButton({
                             </div>
                           </div>
                         ) : setupStatus === 'installing' ? (
-                          <div className="text-center py-1">
-                            <LoadingState what="Tailscale" variant="inline" className="justify-center" />
-                            <p className="text-3xs text-fg-muted mt-1">This may take a few minutes</p>
-                          </div>
+                          // K5. Every branch below was its own shape: centred
+                          // green text, centred muted text, a bare button with no
+                          // message at all. The WORDS were mostly fine — seven of
+                          // eleven carry over verbatim. It was eleven shapes.
+                          <StatusStrip tone="busy" detail="This may take a few minutes">
+                            Installing Tailscale…
+                          </StatusStrip>
                         ) : setupStatus === 'authenticating' ? (
-                          <div className="text-center py-1">
-                            <LoadingState what="the Tailscale sign-in" variant="inline" className="justify-center" />
-                            <p className="text-3xs text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
-                          </div>
+                          <StatusStrip tone="busy" detail="Check your browser to sign in to Tailscale">
+                            Waiting for Tailscale sign-in…
+                          </StatusStrip>
                         ) : setupStatus === 'done' ? (
-                          <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
+                          // Was "Tailscale installed and connected!" — the only
+                          // exclamation mark in the settings family. A status
+                          // strip says what you can do next (Destin, 2026-07-28).
+                          <StatusStrip tone="ok">Tailscale is connected. You can pair a device now.</StatusStrip>
                         ) : setupStatus === 'error' ? (
-                          <div className="space-y-2">
-                            <p className="text-xs text-destructive-fg text-center">{setupError || 'Setup failed'}</p>
-                            <Button onClick={onRunSetup} className="w-full">Retry</Button>
-                          </div>
+                          // `{setupError || 'Setup failed'}` replaced a missing
+                          // reason with a hardcoded guess and left the user two
+                          // words and no next step — the exact pattern
+                          // docs/error-message-standards.md forbids. When we HAVE
+                          // the real reason we show it with Retry; when we do not,
+                          // we say so without inventing a cause and hand over the
+                          // two actions the standard mandates.
+                          setupError ? (
+                            <ErrorState
+                              mode="recoverable"
+                              message={setupError}
+                              onRetry={onRunSetup}
+                              variant="inline"
+                            />
+                          ) : (
+                            <ErrorState
+                              mode="general"
+                              title="Unable to set up remote access."
+                              explainer="The Tailscale installer didn't report a reason. Diagnosing will collect the setup log so Claude can look at what happened."
+                              onReportBug={onReportIssue}
+                              onDiagnose={onReportIssue}
+                            />
+                          )
                         ) : tailscale?.installed && !tailscale.connected ? (
                           // Fix: Tailscale is installed but VPN is off — tailscale.url is null in this state,
                           // so we used to fall through to the install-button branch and pretend it wasn't installed.
-                          <p className="text-2xs text-fg-2 text-center py-1">
-                            Tailscale is installed, but the VPN isn't active. Open the Tailscale app and turn it on, then come back here.
-                          </p>
+                          <StatusStrip tone="warn">
+                            Tailscale is installed, but the VPN isn&apos;t active. Open the Tailscale app and turn it on, then come back here.
+                          </StatusStrip>
                         ) : tailscale?.installed && !config?.hasPassword ? (
                           // Installed + connected but no password yet — guide the user down to the password field
                           // rather than re-prompting to install.
-                          <p className="text-2xs text-fg-2 text-center py-1">
+                          <StatusStrip tone="warn">
                             Set a password below to finish enabling remote access.
-                          </p>
+                          </StatusStrip>
                         ) : (
-                          <Button onClick={onRunSetup} className="w-full">
-                            Set Up Remote Access
-                          </Button>
+                          // Was a bare button with no message. A status strip
+                          // says what state you are in, then offers the way out.
+                          <StatusStrip
+                            tone="idle"
+                            action={<Button size="sm" onClick={onRunSetup}>Set up</Button>}
+                          >
+                            Not set up yet.
+                          </StatusStrip>
                         )}
                       </div>
                     )}
@@ -1414,20 +1451,29 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
           label, it is this row's title. The consequence line was the other
           retired shape (a <p> below the whole row); it belongs in the left
           column under the title, where every other description lives. */}
+      {/* K9 — danger zone. One shape: a "Danger zone" K1 label, the consequence
+          in a K4 danger callout, and the control, callout and control kept
+          together.
+
+          TWO DOCUMENTED DEVIATIONS, both approved 2026-07-28:
+
+          1. PLACEMENT. K9 says a danger zone is always LAST in its menu; this
+             one stays mid-menu. The rule exists so you cannot stumble into a
+             destructive ACTION, and a toggle you must deliberately flip is a
+             different risk from a Delete button — moving the most important
+             setting in Session Defaults to the bottom would de-emphasise it to
+             buy consistency that protects against nothing here.
+
+          2. ORDER. The callout sits AFTER the control, not before it. K9's
+             order assumes a button ("read this, then press"); for a toggle the
+             sentence is a consequence of the state you just turned on, and it
+             only exists while the toggle is on. Above the row it would push the
+             control down every time you flipped it. */}
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Danger zone</h3>
       <SettingRow
         variant="item"
         title="Skip Permissions"
-        description={
-          <>
-            New sessions will skip tool approval
-            {defaults.skipPermissions && (
-              <>
-                <br />
-                <span className="text-[#DD4444]">Claude will execute tools without asking for approval.</span>
-              </>
-            )}
-          </>
-        }
+        description="New sessions will skip tool approval"
         control={
           <Toggle
             enabled={defaults.skipPermissions}
@@ -1437,6 +1483,14 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
           />
         }
       />
+      {defaults.skipPermissions && (
+        // Was a raw `text-[#DD4444]` span inside the row's description — the
+        // fixed status red, which theme packs cannot restyle. The Callout's
+        // danger tone rides the destructive token instead (change 17).
+        <Callout tone="danger" className="mt-2">
+          Claude will execute tools without asking for approval.
+        </Callout>
+      )}
       {defaults.skipPermissions && (
         <>
           {/* Advanced expandable section */}
@@ -1501,18 +1555,28 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                 layer={3}
                 destructive
                 size="prompt"
-                aria-label="This is extremely dangerous"
+                // The `&#9888;` glyph goes with the hand-rolled header the spec
+                // named. HTML entities do not decode inside a string PROP (only
+                // in JSX text), so carrying it here would have rendered the
+                // literal characters — and Dialog's `destructive` already tints
+                // the whole panel, which is the same signal without the glyph.
+                title="This is extremely dangerous"
                 scrollBody={false}
               >
-                <div className="px-4 py-3 border-b border-red-600/30 bg-red-600/10">
-                  {/* Warning: extreme danger header */}
-                  <h3 className="text-xs font-bold text-[#DD4444]">&#9888; This is extremely dangerous</h3>
-                </div>
                 <div className="px-4 py-3 space-y-2">
-                  <p className="text-3xs text-fg-dim leading-relaxed">
-                    <strong className="text-[#DD4444]">This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
+                  {/* K9: this was the hand-rolled block the spec named — a
+                      `bg-red-600/10` header strip carrying a `&#9888;` glyph and
+                      an `text-[#DD4444]` heading, which is a FOURTH red beside
+                      the destructive token, the fixed status red, and the
+                      red-600 the strip itself used. The title is Dialog's now
+                      (with `destructive`, which already tints the panel) and the
+                      consequence is a danger Callout. Copy is unchanged
+                      throughout — it was specific, it was accurate, and it is
+                      the strongest warning in the app for good reason. */}
+                  <Callout tone="danger">
+                    <strong>This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
                     Do not enable this unless you fully understand the consequences.
-                  </p>
+                  </Callout>
                   <p className="text-3xs text-fg-dim leading-relaxed">
                     Full auto-approve silently grants <strong>every</strong> remaining permission request with zero human review. Claude will be able to:
                   </p>
@@ -1523,7 +1587,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     <li>Execute compound commands that bypass path resolution safety checks</li>
                     <li>Execute compound commands that bypass bare repository attack protections</li>
                   </ul>
-                  <p className="text-3xs text-[#DD4444]/80 leading-relaxed font-medium">
+                  <p className="text-3xs text-destructive-fg/80 leading-relaxed font-medium">
                     These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
                   </p>
                   <div className="flex gap-2 pt-2">
@@ -2493,6 +2557,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           onCopyLink={handleCopyLink}
           onSetShowSetupQR={setShowSetupQR}
           onSetShowAddDevice={setShowAddDevice}
+          onReportIssue={() => setShowBugReport(true)}
         />
 
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />

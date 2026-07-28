@@ -65,3 +65,6 @@ export type { SettingRowProps, SettingRowVariant } from './SettingRow';
 
 export { Callout } from './Callout';
 export type { CalloutProps, CalloutTone } from './Callout';
+
+export { StatusStrip } from './StatusStrip';
+export type { StatusStripProps, StatusTone } from './StatusStrip';
