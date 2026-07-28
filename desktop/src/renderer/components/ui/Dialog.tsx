@@ -75,20 +75,40 @@ export const DIALOG_WIDTHS = {
 export type DialogSize = keyof typeof DIALOG_WIDTHS;
 
 /**
- * ONE height rule for every dialog. There is no per-dialog height.
+ * Height caps. No per-dialog height — the cap is a function of the SIZE.
  *
- * The previous rule was `80vh`, which is wrong because it scales with the
- * monitor: 80vh is ~700px on a laptop and ~1730px on a 4K display. That is not
- * one design, it is a different object per screen — a settings list nearly two
- * thousand pixels tall, whose top scrolls out of sight.
+ * Two earlier versions, both wrong in different ways:
  *
- * Two things actually bound a dialog's height, neither of them proportional:
- *   - A scrolling column stops being useful past ~700px; beyond that you have
- *     lost the top of the list and should have scrolled anyway. Absolute cap.
- *   - A modal must leave visible scrim to read as an overlay rather than a
- *     takeover. That is a constant margin (3rem top and bottom), not a ratio.
+ * 1. `80vh`. Wrong because it scales with the monitor: ~700px on a laptop,
+ *    ~1730px on a 4K display. Not one design, a different object per screen.
+ *
+ * 2. A flat `min(680px, …)` for everything. Better, but it silently gave each
+ *    size a DIFFERENT proportion — a 340px prompt could run 2.0x as tall as it
+ *    is wide, a 420px panel 1.62x, a 600px document only 1.13x. So the one
+ *    number was least appropriate exactly where dialogs are narrowest, letting
+ *    them become tall thin strips. Destin called the panels too tall; that is
+ *    the reason.
+ *
+ * The cap is now 1.4x the size's own width, so every dialog holds the same
+ * proportion instead of the same pixel count:
+ *
+ *     prompt    340 x 1.4 = 476     panel  420 x 1.4 = 588
+ *     document  600 x 1.4 = 840
+ *
+ * Then clamped by `calc(100vh - 6rem)` so a modal always leaves visible scrim
+ * (a constant 3rem margin, not a ratio) and shrinks on a short window.
+ *
+ * HONEST NOTE: the 1.4 is a design judgment, not a derivation — it is roughly
+ * where a dialog stops reading as a card and starts reading as a column. What
+ * IS principled is tying the cap to width at all; a flat number cannot be
+ * right for 340px and 600px simultaneously. Change the ratio here and all
+ * three move together.
  */
-export const DIALOG_MAX_HEIGHT = 'min(680px, calc(100vh - 6rem))';
+export const DIALOG_MAX_HEIGHTS = {
+  prompt: 'min(476px, calc(100vh - 6rem))',
+  panel: 'min(588px, calc(100vh - 6rem))',
+  document: 'min(840px, calc(100vh - 6rem))',
+} as const;
 
 export type DialogProps = {
   open: boolean;
@@ -120,8 +140,8 @@ export type DialogProps = {
    * (Appearance, Remote Access). This is the honest version of the fixed height
    * those two used to set: "always maximum", not an invented pixel count.
    *
-   * There is no `height` or `maxHeight` prop. Height is DIALOG_MAX_HEIGHT for
-   * every dialog — a per-dialog height is what made ContextPopup jump.
+   * There is no `height` or `maxHeight` prop. The cap comes from the size — a
+   * per-dialog height is what made ContextPopup jump.
    */
   fill?: boolean;
   /** For callers wiring their own outside-click detection. */
@@ -186,8 +206,8 @@ export function Dialog({
             position: 'relative',
             zIndex: 'auto',
             maxWidth: DIALOG_WIDTHS[size],
-            maxHeight: DIALOG_MAX_HEIGHT,
-            ...(fill ? { height: DIALOG_MAX_HEIGHT } : {}),
+            maxHeight: DIALOG_MAX_HEIGHTS[size],
+            ...(fill ? { height: DIALOG_MAX_HEIGHTS[size] } : {}),
           }}
         >
           {title && (

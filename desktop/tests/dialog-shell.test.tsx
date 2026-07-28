@@ -5,7 +5,7 @@ import { render, screen, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { Dialog, DIALOG_WIDTHS, DIALOG_MAX_HEIGHT } from '../src/renderer/components/ui/Dialog';
+import { Dialog, DIALOG_WIDTHS, DIALOG_MAX_HEIGHTS } from '../src/renderer/components/ui/Dialog';
 
 // Guard for D1 — the one dialog shell.
 //
@@ -83,15 +83,25 @@ describe('Dialog shell', () => {
     });
   });
 
-  it('height is one absolute rule, not a share of the viewport', () => {
-    // 80vh was ~700px on a laptop and ~1730px on a 4K display -- a different
-    // object per monitor. The cap is absolute (a scrolling column stops being
-    // useful past ~700px) with a constant scrim margin, not a ratio.
-    expect(DIALOG_MAX_HEIGHT).toBe('min(680px, calc(100vh - 6rem))');
-    expect(DIALOG_MAX_HEIGHT).not.toMatch(/\d+vh\)/);
-    render(<Dialog open onClose={() => {}} title="X">body</Dialog>);
-    expect(panel().style.maxHeight).toBe(DIALOG_MAX_HEIGHT);
-    // Hugs content by default: no height unless `fill` is asked for.
+  it('every size holds the same proportion, not the same pixel height', () => {
+    // Height is never a share of the viewport (80vh was ~700px on a laptop and
+    // ~1730px on a 4K display -- a different object per monitor), and never one
+    // flat number either: a flat cap gives a 340px prompt a 2.0x aspect and a
+    // 600px document 1.13x, so it is least right where dialogs are narrowest.
+    const RATIO = 1.4;
+    for (const size of Object.keys(DIALOG_WIDTHS) as (keyof typeof DIALOG_WIDTHS)[]) {
+      const w = Number(DIALOG_WIDTHS[size].match(/(\d+)px/)![1]);
+      const h = Number(DIALOG_MAX_HEIGHTS[size].match(/(\d+)px/)![1]);
+      expect(h, `${size}: cap should be ${RATIO}x its ${w}px width`).toBe(Math.round(w * RATIO));
+      // Always a constant scrim margin, never a viewport fraction.
+      expect(DIALOG_MAX_HEIGHTS[size]).toContain('calc(100vh - 6rem)');
+      expect(DIALOG_MAX_HEIGHTS[size]).not.toMatch(/\d+vh\)/);
+    }
+  });
+
+  it('applies the cap for its own size and hugs content by default', () => {
+    render(<Dialog open onClose={() => {}} title="X" size="prompt">body</Dialog>);
+    expect(panel().style.maxHeight).toBe(DIALOG_MAX_HEIGHTS.prompt);
     expect(panel().getAttribute('style')).not.toContain(`; height:`);
   });
 
@@ -103,7 +113,7 @@ describe('Dialog shell', () => {
     // parser for `height` that drops min()/calc() values, though it accepts the
     // same string for `max-height`. The attribute is what actually ships.
     render(<Dialog open onClose={() => {}} title="X" fill>body</Dialog>);
-    expect(panel().getAttribute('style')).toContain(`height: ${DIALOG_MAX_HEIGHT}`);
+    expect(panel().getAttribute('style')).toContain(`height: ${DIALOG_MAX_HEIGHTS.panel}`);
   });
 });
 
