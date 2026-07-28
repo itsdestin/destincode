@@ -14,7 +14,7 @@
 // itself.
 import type React from 'react';
 import type { ChatAction } from './chat-types';
-import type { NativeSlashAction } from './slash-command-dispatcher';
+import type { NativeSlashAction, DispatcherResult } from './slash-command-dispatcher';
 
 /** User-facing copy per refusal reason. Specific and accurate — never a guessed
  *  cause (docs/error-message-standards.md). Keys mirror NativeSessionHost.compact
@@ -173,4 +173,43 @@ async function runNativeSkill(
       (result.detail ? `Couldn't run /${skill}: ${result.detail}` : `Couldn't run /${skill}.`),
   );
   return false;
+}
+
+/** Where a dispatcher result should go, given the session's provider.
+ *
+ *  WHY this is a function and not two inline branches: InputBar and
+ *  App.runSlashResult each made this decision themselves, and both checked
+ *  `handled` BEFORE `nativeAction`. That was correct while every native action
+ *  was also a recognized command — and became a silent bug the moment
+ *  /skill-name started riding the `handled: false` branch (so that Claude Code
+ *  sessions keep forwarding unknown commands to the PTY untouched). One place
+ *  owns the ordering now, and it is unit-tested.
+ */
+export type SlashRoute =
+  | { via: 'native'; action: NativeSlashAction }
+  | { via: 'pty'; text: string }
+  /** Fully handled in the renderer; nothing further to do. */
+  | { via: 'none' }
+  /** Handled, and it WOULD have forwarded to a PTY — but this session has none.
+   *  Carries the command so the caller can say so instead of dropping it. */
+  | { via: 'none-native-no-pty'; command: string }
+  /** Not a command we handle: the caller sends the text as a normal message. */
+  | { via: 'passthrough' };
+
+export function routeSlashResult(provider: string | undefined, result: DispatcherResult): SlashRoute {
+  // Anything not explicitly native is treated as Claude Code. Routing to a
+  // harness a session may not have would strand the input entirely.
+  const isNative = provider === 'native';
+
+  // BEFORE the `handled` check on purpose — see the WHY above.
+  if (isNative && result.nativeAction) return { via: 'native', action: result.nativeAction };
+  if (!result.handled) return { via: 'passthrough' };
+  if (result.alsoSendToPty) {
+    // A native session has no PTY, and this command has no harness equivalent
+    // yet. Return the command so the caller can TELL the user — the pre-M3
+    // behavior was `guardedPtySend` returning false into a discarded value.
+    if (isNative) return { via: 'none-native-no-pty', command: result.alsoSendToPty.trim() };
+    return { via: 'pty', text: result.alsoSendToPty };
+  }
+  return { via: 'none' };
 }

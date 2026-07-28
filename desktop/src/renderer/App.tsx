@@ -35,7 +35,7 @@ import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
-import { runNativeSlashAction } from './state/native-slash-actions';
+import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
@@ -574,22 +574,35 @@ function AppInner() {
   // Reads the provider from sessionsRef rather than the `isNativeSession` value
   // declared later in this component — a ref lookup can't be caught out by
   // declaration order, and this helper is called from several places.
-  const runSlashResult = useCallback((sid: string, result: DispatcherResult) => {
-    if (!result.handled) return;
-    if (sessionsRef.current.find((x) => x.id === sid)?.provider === 'native' && result.nativeAction) {
-      void runNativeSlashAction(result.nativeAction, {
-        sessionId: sid,
-        dispatch,
-        // Dismissal is <Toast>'s job since master's change 44 (3s default, which
-        // is what this call site rolled by hand before the merge).
-        onToast: (msg: string) => setToast(msg),
-      });
-      return;
+  // Returns true when the result was consumed here, so callers know whether to
+  // fall through to their own send path.
+  const runSlashResult = useCallback((sid: string, result: DispatcherResult): boolean => {
+    const provider = sessionsRef.current.find((x) => x.id === sid)?.provider;
+    const route = routeSlashResult(provider, result);
+    switch (route.via) {
+      case 'native':
+        void runNativeSlashAction(route.action, {
+          sessionId: sid,
+          dispatch,
+          // Dismissal is <Toast>'s job since master's change 44 (3s default, which
+          // is what this call site rolled by hand before the merge).
+          onToast: (msg: string) => setToast(msg),
+        });
+        return true;
+      case 'pty':
+        guardedPtySend(sid, route.text);
+        return true;
+      case 'none-native-no-pty':
+        // Was a silent drop: guardedPtySend refuses for native sessions and its
+        // own toast only fires for the pending-interaction case, so a native user
+        // choosing this command got no feedback at all (handoff §2.3).
+        setToast(`${route.command} isn't available in YouCoded-runtime sessions yet.`);
+        return true;
+      case 'none':
+        return true;
+      case 'passthrough':
+        return false;
     }
-    // Claude Code path. guardedPtySend refuses for native sessions, which is the
-    // correct outcome for a command with no harness equivalent yet — and it
-    // toasts on the pending-interaction case rather than dropping silently.
-    if (result.alsoSendToPty) guardedPtySend(sid, result.alsoSendToPty);
   }, [guardedPtySend, dispatch]);
 
   // Task 11 (cancel/edit queued messages), rewired for Task 12's docked strip
@@ -2131,10 +2144,10 @@ function AppInner() {
           // Native /clear is durable-first — see deferUiEffectsToRuntime.
           deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
-        if (result.handled) {
-          runSlashResult(sessionId, result);
-          return;
-        }
+        // Not gated on `result.handled`: an unrecognized command is handled:false
+        // yet still carries an invoke-skill intent for native sessions (see
+        // routeSlashResult). Returning true means it was consumed here.
+        if (runSlashResult(sessionId, result)) return;
         // Dispatcher declined (e.g. missing callback) — fall through to raw PTY send.
       }
 
@@ -2143,7 +2156,13 @@ function AppInner() {
       // optimistic user prompt so the chat timeline shows the action.
       // Send first, guarded (pending-prompt gate) — dispatching the bubble for
       // a refused send would leave a stale pending entry in the timeline.
-      if (!guardedPtySend(sessionId, `${entry.name}\r`)) return;
+      if (!guardedPtySend(sessionId, `${entry.name}\r`)) {
+        // Was a bare `return`: guardedPtySend refuses for native sessions and
+        // toasts only for the pending-interaction case, so a native user clicking
+        // a drawer command got nothing at all (handoff §2.3).
+        setToast(`${entry.name} isn't available in YouCoded-runtime sessions yet.`);
+        return;
+      }
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -2187,10 +2206,10 @@ function AppInner() {
           // Native /clear is durable-first — see deferUiEffectsToRuntime.
           deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
-        if (result.handled) {
-          runSlashResult(sessionId, result);
-          return;
-        }
+        // Same reasoning as the drawer path: not gated on `result.handled`,
+        // because a skill whose prompt is /<another-skill> lands on the
+        // unhandled branch carrying an invoke-skill intent.
+        if (runSlashResult(sessionId, result)) return;
       }
 
       // Sanitize through the same one-source helper InputBar uses: skill
@@ -2202,7 +2221,13 @@ function AppInner() {
       if (!outgoing) return;
       // Send first, guarded (pending-prompt gate) — dispatching the bubble for
       // a refused send would leave a stale pending entry in the timeline.
-      if (!guardedPtySend(sessionId, outgoing.ptyText + '\r')) return;
+      if (!guardedPtySend(sessionId, outgoing.ptyText + '\r')) {
+        // Native sessions have no PTY. A skill's natural-language prompt has no
+        // harness path yet (that is the Skill tool's job, model-invoked), so say
+        // so rather than dropping it silently (handoff §2.3).
+        setToast("That skill can't be started from here in a YouCoded-runtime session yet.");
+        return;
+      }
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -3159,6 +3184,30 @@ function AppInner() {
           // Guarded: with a permission/question pending, the text would land on
           // CC's live Ink menu and the trailing \r would answer it.
           if (sessionId) guardedPtySend(sessionId, text + '\r');
+        }}
+        // Slash commands from settings (currently only "Build New Theme with
+        // Claude") route through the dispatcher instead of raw PTY text. In a
+        // native session onSendInput reached guardedPtySend, which refuses and
+        // whose return value was discarded — so that button did NOTHING at all
+        // (handoff §2.3). Per Q5 this runs in the CURRENT session.
+        onRunCommand={(command) => {
+          if (!sessionId) { setToast('Open a conversation first, then try again.'); return; }
+          const result = dispatchSlashCommand({
+            raw: command,
+            sessionId,
+            view: viewModes.get(sessionId) || 'chat',
+            files: [],
+            dispatch,
+            timeline: [],
+            callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+            deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
+          });
+          if (runSlashResult(sessionId, result)) return;
+          // Claude Code fallback: not a dispatcher command, so hand the raw text
+          // to the PTY the way this button always did.
+          if (!guardedPtySend(sessionId, `${command} \r`)) {
+            setToast(`${command} isn't available in YouCoded-runtime sessions yet.`);
+          }
         }}
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}

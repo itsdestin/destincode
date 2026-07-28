@@ -108,6 +108,10 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
+  /** Run a slash command through the slash dispatcher — the path that reaches a
+   *  native session's harness. onSendInput pipes raw text at a PTY those
+   *  sessions do not have, which is why the theme-build button was dead there. */
+  onRunCommand?: (command: string) => void;
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
@@ -186,7 +190,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: Props) {
   useEscClose(open, onClose);
   // Slide polish: track animation window so CSS can reduce backdrop-filter cost
   // and suppress scrollbar-thumb while the 300ms transform is running. Also
@@ -279,12 +283,13 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
 
           <div ref={outerScrollRef} className="scroll-fade flex-1 min-h-0">
             {isAndroid() ? (
-              <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} syncAutoOpen={syncAutoOpen} onSyncAutoOpenHandled={onSyncAutoOpenHandled} />
+              <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onRunCommand={onRunCommand} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} syncAutoOpen={syncAutoOpen} onSyncAutoOpenHandled={onSyncAutoOpenHandled} />
             ) : (
               <DesktopSettings
                 open={open}
                 onClose={onClose}
                 onSendInput={onSendInput}
+                onRunCommand={onRunCommand}
                 hasActiveSession={hasActiveSession}
                 onOpenThemeMarketplace={onOpenThemeMarketplace}
                 onPublishTheme={onPublishTheme}
@@ -623,7 +628,7 @@ function SoundButton() {
 // ─── Theme popup button ────────────────────────────────────────────────────
 
 /** Compact "Appearance" row — opens ThemeScreen in a centered popup modal */
-function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSendInput?: (text: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
+function ThemeButton({ onSendInput, onRunCommand, onOpenMarketplace, onPublishTheme }: { onSendInput?: (text: string) => void; onRunCommand?: (command: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
   const { activeTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -663,7 +668,7 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
         height="min(600px, 80vh)"
         panelRef={popupRef}
       >
-        <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
+        <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onRunCommand={onRunCommand} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
       </SettingsPopup>
     </>
   );
@@ -1999,7 +2004,7 @@ function ConnectToDesktopButton() {
   );
 }
 
-function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
+function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onRunCommand?: (command: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
@@ -2073,7 +2078,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
         {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
         <AccountSection />
 
-        <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
+        <ThemeButton onSendInput={onSendInput} onRunCommand={onRunCommand} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         {/* No <BuddyButton /> on Android — the floater relies on an Electron always-on-top window that Android doesn't support yet */}
 
@@ -2161,10 +2166,11 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
+function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
+  onRunCommand?: (command: string) => void;
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
@@ -2332,7 +2338,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             sign-in (Destin feedback, 2026-07-22). */}
         <AccountSection />
 
-        <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
+        <ThemeButton onSendInput={onSendInput} onRunCommand={onRunCommand} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         <BuddyButton />
 
