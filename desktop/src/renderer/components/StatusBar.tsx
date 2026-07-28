@@ -148,17 +148,24 @@ export interface NativeUsageInput {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   tokensPerSecond?: number;
+  /** How full the window is: the LAST step's prompt + its output. Distinct from
+   *  inputTokens, which sums every step and so re-counts history once per step.
+   *  Absent on records written before 2026-07-28. */
+  contextUsedTokens?: number;
 }
 
 export interface NativeStatusChips {
   /** Percent of the model's context window REMAINING (100 = empty, 0 = full).
-   *  null when the real context window is unknown — the other two chips still show. */
+   *  null when the real context window is unknown — the other chips still show. */
   contextPct: number | null;
-  totalTokens: number;
+  /** Tokens OCCUPYING the window (what the pill shows in "tokens" mode). */
+  contextUsedTokens: number;
+  inputTokens: number;
+  outputTokens: number;
   tokensPerSecond: number;
 }
 
-/** Derive the native context/tokens/speed chips from a turn's usage + the
+/** Derive the native context/in/out/speed chips from a turn's usage + the
  *  session's REAL context window (resolved in main, Task 4/5). Returns null when
  *  there's no usage yet so CC / idle sessions render nothing extra. */
 export function selectNativeStatusChips(
@@ -166,16 +173,27 @@ export function selectNativeStatusChips(
   contextLength: number | undefined | null,
 ): NativeStatusChips | null {
   if (!usage) return null;
-  const totalTokens = usage.inputTokens + usage.outputTokens;
   const tokensPerSecond = usage.tokensPerSecond ?? 0;
+  // Fix: the gauge asks "how close is the user to filling the window?", which is
+  // OCCUPANCY — the last prompt plus its reply. It used to sum in+out across
+  // every step of the turn, which both re-counted history per step AND reset to
+  // near-zero each turn (Destin, 2026-07-28). Older records carry no
+  // contextUsedTokens; the in+out sum is the closest thing they have.
+  const contextUsedTokens = usage.contextUsedTokens ?? (usage.inputTokens + usage.outputTokens);
   // contextPct is REMAINING context. Falsy contextLength (unknown window) → null
-  // so we never fabricate a percentage; tokens + speed chips remain valid.
+  // so we never fabricate a percentage; the token + speed chips remain valid.
   let contextPct: number | null = null;
   if (contextLength) {
-    const remaining = Math.round(((contextLength - totalTokens) / contextLength) * 100);
+    const remaining = Math.round(((contextLength - contextUsedTokens) / contextLength) * 100);
     contextPct = Math.max(0, Math.min(100, remaining)); // clamp to [0,100]
   }
-  return { contextPct, totalTokens, tokensPerSecond };
+  return {
+    contextPct,
+    contextUsedTokens,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    tokensPerSecond,
+  };
 }
 
 function utilizationColor(pct: number): string {
@@ -827,6 +845,21 @@ export default function StatusBar({
   // context % is accurate for the local model, not a hardcoded guess.
   const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
 
+  // In/Out come from the CC statusline for CC sessions and from turn-complete
+  // usage for native ones. Native used to render its OWN "Tokens" chip (just
+  // in+out summed) while these two sat at "--" forever, because sessionStats is
+  // only ever written by CC — two dead chips beside a redundant third
+  // (Destin, 2026-07-28). One concept, one chip, whichever runtime feeds it.
+  const inTokens = ss?.inputTokens ?? nativeChips?.inputTokens ?? null;
+  const outTokens = ss?.outputTokens ?? nativeChips?.outputTokens ?? null;
+  // Speed had the identical problem: a CC chip stuck at "--" for native sessions
+  // beside a native chip that duplicated it AND ignored show('output-speed'), so
+  // hiding Speed in settings didn't hide it. CC derives it from the statusline's
+  // apiDuration; native's provider already reports tokens/sec on turn-complete.
+  const speedTokPerSec = ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
+    ? Math.round(ss.outputTokens / ss.apiDuration)
+    : nativeChips?.tokensPerSecond ?? null;
+
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-[10px] text-fg-muted">
       {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
@@ -971,10 +1004,10 @@ export default function StatusBar({
         );
       })()}
 
-      {/* Native-runtime chips (Task 12) — context %, total tokens, tokens/sec
-          derived from the local model's last turn-complete usage. These populate
-          the same conceptual slots as the CC context/token/speed chips but are
-          fed from `nativeUsage` (turn-complete) instead of the CC statusline.
+      {/* Native-runtime context chip (Task 12) — derived from the local model's
+          last turn-complete usage. Tokens and speed no longer render here: they
+          feed the shared In:/Out:/Speed: chips further down, which are otherwise
+          dead in native sessions (nothing writes the CC statusline).
           The CC context chip above renders from `contextPercent`, which is always
           null for native sessions (they write no .context-* file), so there is no
           duplicate context chip. Reuses the exact CC chip markup — no restyle.
@@ -991,7 +1024,7 @@ export default function StatusBar({
             // the CC chip above, which has to derive "used" from a rounded percent.
             const pill = formatContextPill(
               nativeChips.contextPct,
-              nativeChips.totalTokens,
+              nativeChips.contextUsedTokens,
               nativeContextLength,
               contextDisplay,
             );
@@ -1007,7 +1040,7 @@ export default function StatusBar({
                 aria-label={`Context: ${nativeChips.contextPct}% remaining. Click to manage context.`}
                 className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
                 title={`Context: ${nativeChips.contextPct}% of the model's window remaining${
-                  nativeContextLength ? ` (${nativeChips.totalTokens.toLocaleString()} of ${nativeContextLength.toLocaleString()} tokens used)` : ''
+                  nativeContextLength ? ` (${nativeChips.contextUsedTokens.toLocaleString()} of ${nativeContextLength.toLocaleString()} tokens used)` : ''
                 }`}
               >
                 <span>Context:</span>
@@ -1017,23 +1050,10 @@ export default function StatusBar({
             );
           })()}
 
-          {/* Total tokens this turn — reuses the input-tokens chip style. */}
-          <span
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={`Tokens this turn: ${nativeChips.totalTokens.toLocaleString()} (input + output)`}
-          >
-            <span className="text-fg-faint">Tokens:</span>
-            <span className="text-fg-2">{formatTokens(nativeChips.totalTokens)}</span>
-          </span>
-
-          {/* Output speed — reuses the output-speed chip style. */}
-          <span
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title="Output tokens per second on the last turn"
-          >
-            <span className="text-fg-faint">Speed:</span>
-            <span className="text-fg-2">{nativeChips.tokensPerSecond} tok/s</span>
-          </span>
+          {/* No "Tokens" or "Speed" chip here — native in/out/speed feed the
+              shared In:/Out:/Speed: chips below (see the inTokens/outTokens/
+              speedTokPerSec derivations), so each concept has exactly one chip
+              and each honors its own show() toggle. */}
         </>
       )}
 
@@ -1067,10 +1087,10 @@ export default function StatusBar({
       {show('tokens-in') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.inputTokens != null ? `Input tokens: ${ss.inputTokens.toLocaleString()}` : 'Input tokens'}
+          title={inTokens != null ? `Input tokens: ${inTokens.toLocaleString()}` : 'Input tokens'}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{ss?.inputTokens != null ? formatTokens(ss.inputTokens) : '--'}</span>
+          <span className="text-fg-2">{inTokens != null ? formatTokens(inTokens) : '--'}</span>
         </span>
       )}
 
@@ -1078,10 +1098,10 @@ export default function StatusBar({
       {show('tokens-out') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null ? `Output tokens: ${ss.outputTokens.toLocaleString()}` : 'Output tokens'}
+          title={outTokens != null ? `Output tokens: ${outTokens.toLocaleString()}` : 'Output tokens'}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{ss?.outputTokens != null ? formatTokens(ss.outputTokens) : '--'}</span>
+          <span className="text-fg-2">{outTokens != null ? formatTokens(outTokens) : '--'}</span>
         </span>
       )}
 
@@ -1133,13 +1153,11 @@ export default function StatusBar({
       {show('output-speed') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output speed'}
+          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
-            {ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
-              ? `${Math.round(ss.outputTokens / ss.apiDuration)} tok/s`
-              : '--'}
+            {speedTokPerSec != null ? `${speedTokPerSec} tok/s` : '--'}
           </span>
         </span>
       )}

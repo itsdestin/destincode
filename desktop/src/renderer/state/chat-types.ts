@@ -53,6 +53,10 @@ export interface TurnUsage {
    *  Task 4/5), carried on the turn-complete payload. Feeds the StatusBar native
    *  context % chip (Task 12). Constant per session; absent for CC turns. */
   contextLength?: number | null;
+  /** Native runtime only: tokens OCCUPYING the window after this turn (last
+   *  step's prompt + its output). Drives the context pill; inputTokens cannot,
+   *  because it sums across steps and re-counts history each time. */
+  contextUsedTokens?: number;
 }
 
 export interface AssistantTurn {

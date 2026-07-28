@@ -164,6 +164,10 @@ export interface TranscriptEvent {
        *  Task 4/5). Carried on the per-turn payload so the renderer's StatusBar can
        *  compute context % without a separate IPC. Constant per session; CC omits it. */
       contextLength?: number | null;
+      /** Native runtime only: tokens OCCUPYING the window after this turn — the
+       *  last step's prompt plus its output. Distinct from inputTokens, which
+       *  sums every step and therefore re-counts the history once per step. */
+      contextUsedTokens?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies

@@ -208,6 +208,12 @@ export class ProviderRegistry {
           name: 'local',
           baseURL: base,
           fetch: localFetch,
+          // Fix: without this the SDK omits `stream_options:{include_usage:true}`
+          // and an OpenAI-compatible STREAMING response carries no usage block at
+          // all — every turn reported inputTokens:0 and fell back to a chars/4
+          // guess for output. That silently starved both the context chip and the
+          // compaction trigger, which is fed the same number (Destin, 2026-07-28).
+          includeUsage: true,
           // Serial-only for small local models (spec §4.2): llama-server honors
           // parallel_tool_calls:false; --jinja already grammar-constrains the args.
           // NEVER a top-level json_schema — that would force JSON on every reply.
@@ -245,6 +251,7 @@ export class ProviderRegistry {
           baseURL: p.baseUrl ?? OPENROUTER_BASE_URL,
           apiKey,
           headers: OPENROUTER_HEADERS,
+          includeUsage: true,   // see the local-engine branch — off by default in the SDK
         })(binding.modelId);
       }
       case 'openai-compatible': {
@@ -252,7 +259,10 @@ export class ProviderRegistry {
         // Key is OPTIONAL here: Ollama / LM Studio run keyless; a hosted
         // compatible endpoint may have one saved.
         const apiKey = await this.keyFor(p);
-        return createOpenAICompatible({ name: p.label, baseURL: p.baseUrl, apiKey })(binding.modelId);
+        // includeUsage: same reason as the local-engine branch. A server that
+        // doesn't understand stream_options ignores it (it's standard OpenAI), so
+        // this degrades to the previous no-usage behavior rather than failing.
+        return createOpenAICompatible({ name: p.label, baseURL: p.baseUrl, apiKey, includeUsage: true })(binding.modelId);
       }
       case 'anthropic': {
         const apiKey = await this.keyFor(p);

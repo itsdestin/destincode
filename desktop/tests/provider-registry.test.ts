@@ -179,5 +179,20 @@ describe('ProviderRegistry', () => {
       // No hook configured → the SDK leaves the body untouched (default parallel).
       expect((model as any).config.transformRequestBody).toBeUndefined();
     });
+
+    // The bug this pins: @ai-sdk/openai-compatible only sends
+    // `stream_options:{include_usage:true}` when includeUsage is configured, and
+    // a STREAMING OpenAI-compatible response without it carries no usage block at
+    // all. We shipped without it, so every native turn recorded inputTokens:0 and
+    // fell back to a chars/4 guess for output — starving both the context gauge
+    // and the compaction trigger, which reads the same number. Nothing asserted
+    // token counts were real, which is exactly why it survived to dogfooding
+    // (Destin, 2026-07-28).
+    it('languageModel(local): asks the server for real token counts', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook());
+      await reg.init();
+      const model = await reg.languageModel({ providerId: 'local', modelId: 'm' });
+      expect((model as any).config.includeUsage).toBe(true);
+    });
   });
 });

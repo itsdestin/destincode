@@ -299,6 +299,14 @@ export class HarnessSession extends EventEmitter {
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
   private get systemText(): string { return this.opts.systemPrompt ?? this.opts.harness.systemPrompt; }
 
+  /** Chars/4 estimate of everything the model currently holds — system prompt plus
+   *  the whole history. ONLY a fallback for when the provider reports no usage;
+   *  a measured prompt-token count is always preferred. */
+  private estimateContextTokens(): number {
+    return Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN)
+      + Math.ceil(JSON.stringify(this.history).length / APPROX_CHARS_PER_TOKEN);
+  }
+
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
     const event: TranscriptEvent = { type, sessionId: this.opts.sessionId, uuid: randomUUID(), timestamp: Date.now(), data };
     this.emit('transcript-event', event);
@@ -714,6 +722,13 @@ export class HarnessSession extends EventEmitter {
       // rather than a chars/4 estimate. 0 on the first iteration → maybeCompact
       // falls back to an estimate (usually well under trigger for a fresh turn).
       let lastInputTokens = 0;
+      // Paired with lastInputTokens to answer "how full is the window?". The LAST
+      // step's prompt already contains the whole conversation (system + every
+      // prior message + every tool result), so lastIn + lastOut is what the next
+      // turn's prompt starts from. The summed turnUsage below CANNOT answer this:
+      // it re-counts the entire history once per step, so a 5-step turn reports
+      // roughly 5x the real occupancy (Destin, 2026-07-28).
+      let lastOutputTokens = 0;
       turnLoop: while (true) {
         // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
         // pruning can't get under budget. Inert (returns immediately) below the
@@ -733,6 +748,7 @@ export class HarnessSession extends EventEmitter {
         );
 
         lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
+        lastOutputTokens = step.usage.outputTokens;
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
@@ -835,6 +851,14 @@ export class HarnessSession extends EventEmitter {
           ...turnUsage,
           tokensPerSecond: Math.round(turnUsage.outputTokens / seconds),
           contextLength: this.opts.contextLength ?? null,
+          // How full the window actually is — NOT the same as turnUsage (see the
+          // lastOutputTokens declaration). Falls back to a chars/4 estimate when
+          // the provider reports nothing, so a server that ignores
+          // stream_options still drives a roughly-right gauge instead of
+          // reporting an empty window forever.
+          contextUsedTokens: lastInputTokens > 0
+            ? lastInputTokens + lastOutputTokens
+            : this.estimateContextTokens(),
         },
       });
     } catch (err: any) {
