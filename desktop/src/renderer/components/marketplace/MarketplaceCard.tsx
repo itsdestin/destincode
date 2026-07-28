@@ -204,7 +204,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
         <div className="shrink-0 flex flex-col items-end gap-1.5">
           {compactStatus && (
             <span
-              className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[compactStatus.tone]}`}
+              className={`text-3xs uppercase tracking-wide px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[compactStatus.tone]}`}
             >
               {compactStatus.text}
             </span>
@@ -305,7 +305,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             {author && <p className="hidden sm:block text-xs text-fg-dim truncate">{author}</p>}
             {isLocalTheme && (
               <div className="mt-1 inline-flex items-center gap-1 group relative">
-                <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
+                <span className="text-3xs uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
                   Local
                 </span>
                 <button
@@ -342,13 +342,13 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             soon" can surface instead of just "Installed". */}
         {statusBadge ? (
           <span
-            className={`relative z-10 text-[10px] uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[statusBadge.tone]}`}
+            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[statusBadge.tone]}`}
           >
             {statusBadge.text}
           </span>
         ) : (isInstalling || updateAvailable || isInstalled) && (
           <span
-            className={`relative z-10 text-[10px] uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${
+            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${
               isInstalling
                 ? 'text-accent border border-accent/50 bg-accent/10 animate-pulse'
                 : 'text-fg-dim'
@@ -367,7 +367,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           type="button"
           onClick={(e) => { e.stopPropagation(); pluginBadge.onClick(); }}
           title={`Open ${pluginBadge.name}`}
-          className="self-start text-[10px] font-medium px-2 py-0.5 rounded-full shrink-0 bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors truncate max-w-full"
+          className="self-start text-3xs font-medium px-2 py-0.5 rounded-full shrink-0 bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors truncate max-w-full"
         >
           {pluginBadge.name}
         </button>

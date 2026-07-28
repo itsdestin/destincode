@@ -72,7 +72,7 @@ export default React.memo(function UserMessage({ message, sessionId, showTimesta
       <div className="user-bubble max-w-[80%] break-words rounded-2xl rounded-br-sm bg-accent px-5 py-3 text-sm text-on-accent whitespace-pre-wrap">
         {body}
         {showTimestamps && (
-          <div className="bubble-timestamp text-[9px] text-on-accent/50 text-right mt-1 -mb-0.5 select-none leading-none">
+          <div className="bubble-timestamp text-4xs text-on-accent/50 text-right mt-1 -mb-0.5 select-none leading-none">
             {formatBubbleTime(message.timestamp)}
           </div>
         )}

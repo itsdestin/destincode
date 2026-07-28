@@ -23,7 +23,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { AnchorTip, Button, Toggle } from './components/ui';
+import { AnchorTip, Button, Toast, Toggle } from './components/ui';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
@@ -457,7 +457,15 @@ function AppInner() {
   // A toast is either a plain message or a message with one action button
   // (used by the pending-prompt "Send anyway" override). Keeping the string
   // form means the ~8 plain setToast('…') call sites need no change.
-  type ToastState = string | { message: string; action: { label: string; onClick: () => void } };
+  //
+  // Change 44: `durationMs` moved ONTO the state because the dismiss timer now
+  // lives in the <Toast> primitive, and the call sites did not all agree — they
+  // ran 3s/4s/6s/8s depending on how much text there was to read. A single
+  // primitive default would have silently cut the 8s handoff-failure messages to
+  // 3s. Omit it for the common 3s case; the primitive supplies that default.
+  type ToastState =
+    | string
+    | { message: string; durationMs?: number; action?: { label: string; onClick: () => void } };
   const [toast, setToast] = useState<ToastState | null>(null);
   // Zoom state + handlers extracted to useZoomControls (tranche 1).
   const { zoomPercent, zoomVisible, handleZoomIn, handleZoomOut, handleZoomReset } = useZoomControls();
@@ -544,7 +552,6 @@ function AppInner() {
     const session = chatStateMapRef.current.get(sid);
     if (session && hasPendingInteraction(session)) {
       setToast('Claude is waiting for your response — answer the prompt first.');
-      setTimeout(() => setToast(null), 3000);
       return true;
     }
     return false;
@@ -573,7 +580,9 @@ function AppInner() {
       void runNativeSlashAction(result.nativeAction, {
         sessionId: sid,
         dispatch,
-        onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); },
+        // Dismissal is <Toast>'s job since master's change 44 (3s default, which
+        // is what this call site rolled by hand before the merge).
+        onToast: (msg: string) => setToast(msg),
       });
       return;
     }
@@ -599,7 +608,6 @@ function AppInner() {
     const removed = await window.claude.native.queueRemove(sid, queueId);
     if (!removed) {
       setToast('Already sending — too late to cancel.');
-      setTimeout(() => setToast(null), 3000);
       dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
       return;
     }
@@ -617,14 +625,12 @@ function AppInner() {
   // host and refilling would duplicate it if the user re-sent.
   const handleEditQueued = useCallback(async (sid: string, queueId: string, text: string) => {
     if (inputBarRef.current?.hasDraft()) {
-      setToast('Finish or clear your current draft first, then edit the queued message.');
-      setTimeout(() => setToast(null), 4000);
+      setToast({ message: 'Finish or clear your current draft first, then edit the queued message.', durationMs: 4000 });
       return;
     }
     const removed = await window.claude.native.queueRemove(sid, queueId);
     if (!removed) {
       setToast('Already sending — too late to cancel.');
-      setTimeout(() => setToast(null), 3000);
       dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
       return;
     }
@@ -1992,11 +1998,10 @@ function AppInner() {
         consecutiveFailures.current = failures;
         setPendingModel(null);
         if (failures >= 2) {
-          setToast("Model switch failed again. Ask Claude to diagnose with /model, or report a bug.");
+          setToast({ message: "Model switch failed again. Ask Claude to diagnose with /model, or report a bug.", durationMs: 4000 });
         } else {
-          setToast("Couldn't switch to " + pendingModel.charAt(0).toUpperCase() + pendingModel.slice(1));
+          setToast({ message: "Couldn't switch to " + pendingModel.charAt(0).toUpperCase() + pendingModel.slice(1), durationMs: 4000 });
         }
-        setTimeout(() => setToast(null), 4000);
       }
     });
 
@@ -2119,7 +2124,10 @@ function AppInner() {
           files: [],
           dispatch,
           timeline: [],
-          callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // onToast: master's change 44 moved the dismiss timer INTO <Toast>, so
+          // the hand-rolled setTimeout this branch carried would now be a second,
+          // competing timer. Take master's plain form.
+          callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
           // Native /clear is durable-first — see deferUiEffectsToRuntime.
           deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
@@ -2172,7 +2180,10 @@ function AppInner() {
           files: [],
           dispatch,
           timeline: [],
-          callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); }, getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // onToast: master's change 44 moved the dismiss timer INTO <Toast>, so
+          // the hand-rolled setTimeout this branch carried would now be a second,
+          // competing timer. Take master's plain form.
+          callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
           // Native /clear is durable-first — see deferUiEffectsToRuntime.
           deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
@@ -2300,14 +2311,12 @@ function AppInner() {
           // but say so: the user is about to have two writers on one transcript and
           // recent turns may be missing. Silent here was the 2026-07-18 bug's mask.
           if (fr && fr.ok === false) {
-            setToast(`Couldn't confirm the handoff from ${device} — it may still be editing this conversation, and recent turns may be missing.`);
-            setTimeout(() => setToast(null), 8000);
+            setToast({ message: `Couldn't confirm the handoff from ${device} — it may still be editing this conversation, and recent turns may be missing.`, durationMs: 8000 });
           }
         } else if (r?.outcome === 'error') {
           // The takeover request itself failed (hub error / exception). Same deal:
           // proceed (never-block) but warn that the other device may still be live.
-          setToast(`Couldn't reach ${device} to hand off this conversation — it may still be editing, and recent turns may be missing.`);
-          setTimeout(() => setToast(null), 8000);
+          setToast({ message: `Couldn't reach ${device} to hand off this conversation — it may still be editing, and recent turns may be missing.`, durationMs: 8000 });
         }
         // 'acquired' -> clean handoff, fall through and resume.
       }
@@ -2338,8 +2347,7 @@ function AppInner() {
         // missing REFUSAL cases (those DO return an id, so they don't land here);
         // this covers a create that returned nothing at all. Non-committal per
         // error standards — the exact cause isn't known on this side.
-        setToast("Couldn't resume this conversation.");
-        setTimeout(() => setToast(null), 6000);
+        setToast({ message: "Couldn't resume this conversation.", durationMs: 6000 });
         return false;
       }
       // I1 fix (resume path): same invoke-result patch as createSession — the
@@ -2372,8 +2380,7 @@ function AppInner() {
     });
     if (!newSession?.id) {
       // Honest failure instead of a silent return (Task 6 review — the CC ack-gap).
-      setToast("Couldn't resume this conversation.");
-      setTimeout(() => setToast(null), 6000);
+      setToast({ message: "Couldn't resume this conversation.", durationMs: 6000 });
       return false;
     }
 
@@ -2912,7 +2919,7 @@ function AppInner() {
                 {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} onSendBlocked={(retry) => { setToast({ message: 'Claude is waiting for your response — answer the prompt first.', action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } }); setTimeout(() => setToast(null), 8000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => setToast({ message: 'Claude is waiting for your response — answer the prompt first.', durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } })} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
@@ -2960,7 +2967,7 @@ function AppInner() {
                         onResumeCommand: () => setResumeRequested(true),
                         getUsageSnapshot,
                         onOpenPreferences: () => setPreferencesOpen(true),
-                        onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); },
+                        onToast: (msg: string) => setToast(msg),
                         getSessionState: (sid: string) => chatStateMapRef.current.get(sid),
                         onOpenModelPicker: () => setModelPickerOpen(true),
                       },
@@ -2991,7 +2998,7 @@ function AppInner() {
                 /* Expanded new-session form with toggles */
                 <div className="layer-surface w-full p-3 flex flex-col gap-2">
                   <div>
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                    <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                     {/* Match SessionStrip: the picker's "Manage projects…"
                         footer opens Project View (where adding lives). */}
                     <FolderSwitcher
@@ -3014,13 +3021,13 @@ function AppInner() {
                       picks its model via the binding picker above. */}
                   {welcomeRuntime !== 'native' && (
                     <div>
-                      <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                       <div className="flex gap-1">
                         {MODELS.map((m) => (
                           <button
                             key={m}
                             onClick={() => setWelcomeModel(m)}
-                            className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                            className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
                               welcomeModel === m
                                 ? 'bg-accent text-on-accent font-medium'
                                 : 'bg-inset text-fg-dim hover:bg-edge'
@@ -3033,7 +3040,7 @@ function AppInner() {
                     </div>
                   )}
                   <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                    <label className="text-3xs uppercase tracking-wider text-fg-muted">Skip Permissions</label>
                     {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
                         the shared Toggle on the danger tone, so theme packs can restyle
                         it (changes 15/17). The <label> beside it isn't bound to this
@@ -3050,7 +3057,7 @@ function AppInner() {
                       others). Change 17 puts it on the destructive token so it
                       tracks the toggle above it under a community theme. */}
                   {welcomeDangerous && (
-                    <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                    <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
                     {/* secondary, not ghost: this was the filled-grey family
@@ -3292,20 +3299,24 @@ function AppInner() {
       {shareSkillId && (
         <ShareSheet skillId={shareSkillId} onClose={() => setShareSkillId(null)} />
       )}
+      {/* Change 44: the hand-rolled strip (its own bg-panel/border-edge/shadow-lg
+          AND its own z-50, outside Overlay.tsx's authority) is now the shared
+          <Toast>. The primitive owns auto-dismiss, which is why 14 setTimeout
+          calls came out of this file — every one of them was a chance to leak a
+          timer past unmount. */}
       {toast && (
-        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg flex items-center gap-3">
-          <span>{typeof toast === 'string' ? toast : toast.message}</span>
-          {typeof toast !== 'string' && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="shrink-0"
-              onClick={toast.action.onClick}
-            >
-              {toast.action.label}
-            </Button>
-          )}
-        </div>
+        <Toast
+          message={typeof toast === 'string' ? toast : toast.message}
+          durationMs={typeof toast === 'string' ? undefined : toast.durationMs}
+          onDismiss={() => setToast(null)}
+          action={
+            typeof toast !== 'string' && toast.action ? (
+              <Button variant="secondary" size="sm" onClick={toast.action.onClick}>
+                {toast.action.label}
+              </Button>
+            ) : undefined
+          }
+        />
       )}
       {/* Plan 2b Task 9 — conversation-lease takeover dialog (3-state redesign,
           Destin sign-off 2026-07-23). L2 popup via the shared Scrim/OverlayPanel

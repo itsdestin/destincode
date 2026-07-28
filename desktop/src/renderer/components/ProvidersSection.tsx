@@ -151,12 +151,12 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
   return (
     <section>
       {!embedded && (
-        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Providers</h3>
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Providers</h3>
       )}
 
       {visibleRows === null ? (
         // Loading — quiet skeleton (a single muted line) rather than a spinner.
-        <p className="text-[11px] text-fg-muted px-1">Loading…</p>
+        <p className="text-2xs text-fg-muted px-1">Loading…</p>
       ) : (
         <div className="space-y-2">
           {/* Load/refresh error — shown inline with a Retry so a transient
@@ -165,7 +165,7 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
               still renders, and Retry re-runs list(). */}
           {listError && (
             <div className="flex items-center gap-2 px-1">
-              <p className="text-[11px] text-destructive-fg flex-1">
+              <p className="text-2xs text-destructive-fg flex-1">
                 {visibleRows.length === 0
                   ? `Couldn't load providers — ${listError}`
                   : `Couldn't refresh — ${listError}`}
@@ -273,7 +273,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
           <p className="text-xs text-fg font-medium truncate">{provider.label}</p>
-          <p className="text-[10px] text-fg-muted">{stateWord(provider)}</p>
+          <p className="text-3xs text-fg-muted">{stateWord(provider)}</p>
         </div>
 
         {/* Enable/disable toggle — hidden for the dormant local engine (nothing
@@ -346,7 +346,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       {/* Remove confirm — plain-language consequence (the key is deleted). */}
       {confirmingRemove && (
         <div className="mt-2 space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-          <p className="text-[11px] text-fg-dim leading-relaxed">
+          <p className="text-2xs text-fg-dim leading-relaxed">
             Remove {provider.label}? Its API key is deleted from this computer.
           </p>
           <div className="flex gap-2">
@@ -366,7 +366,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       {/* Inline result — green-ish tone for ok, destructive for a failure.
           Plain words only. */}
       {note && (
-        <p className={`text-[10px] mt-2 ${note.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
+        <p className={`text-3xs mt-2 ${note.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
           {note.text}
         </p>
       )}
@@ -374,7 +374,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       {/* Local engine install/status/restart controls moved to the Local Models
           section (Plan C) — the local row just points there now. */}
       {isLocal && (
-        <p className="text-[10px] text-fg-muted mt-2">Managed in Local Models below.</p>
+        <p className="text-3xs text-fg-muted mt-2">Managed in Local Models below.</p>
       )}
     </div>
   );
@@ -423,14 +423,14 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
 
   return (
     <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-      <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Add provider</h4>
+      <h4 className="text-3xs font-medium text-fg-muted uppercase tracking-wider">Add provider</h4>
 
       {/* Type — change 21: the native <select> is gone. A native option list is
           drawn by the OS, so a themed app dropped an OS-blue menu out of it;
           <Select> renders the list itself. The old <label htmlFor> can't point at
           a <button> trigger, so the name moves onto the control as aria-label. */}
       <div className="space-y-1">
-        <p className="text-[10px] text-fg-muted">Type</p>
+        <p className="text-3xs text-fg-muted">Type</p>
         <Select
           options={ADD_TYPE_SELECT_OPTIONS}
           value={type}
@@ -441,7 +441,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
 
       {/* Label */}
       <div className="space-y-1">
-        <label htmlFor="add-provider-label" className="text-[10px] text-fg-muted">Name</label>
+        <label htmlFor="add-provider-label" className="text-3xs text-fg-muted">Name</label>
         <TextInput
           id="add-provider-label"
           value={label}
@@ -454,7 +454,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       {/* Base URL — custom endpoints only. */}
       {needsBaseUrl && (
         <div className="space-y-1">
-          <label htmlFor="add-provider-baseurl" className="text-[10px] text-fg-muted">Base URL</label>
+          <label htmlFor="add-provider-baseurl" className="text-3xs text-fg-muted">Base URL</label>
           <TextInput
             id="add-provider-baseurl"
             value={baseUrl}
@@ -467,7 +467,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
 
       {/* Optional key */}
       <div className="space-y-1">
-        <label htmlFor="add-provider-key" className="text-[10px] text-fg-muted">API key (optional)</label>
+        <label htmlFor="add-provider-key" className="text-3xs text-fg-muted">API key (optional)</label>
         <TextInput
           id="add-provider-key"
           type="password"
@@ -478,7 +478,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
         />
       </div>
 
-      {error && <p className="text-[10px] text-destructive-fg">{error}</p>}
+      {error && <p className="text-3xs text-destructive-fg">{error}</p>}
 
       <div className="flex gap-2 pt-1">
         <Button variant="secondary" onClick={onCancel} className="flex-1 py-2">

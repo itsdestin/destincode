@@ -193,7 +193,7 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
         // First ~8 lines, monospace, very small — readable enough to identify
         // a plan / walkthrough / note at a glance. whitespace-pre-wrap so long
         // lines wrap inside the card instead of overflowing horizontally.
-        <pre className="absolute inset-0 m-0 p-2 text-[8px] leading-tight font-mono text-fg-2 overflow-hidden whitespace-pre-wrap break-words">
+        <pre className="absolute inset-0 m-0 p-2 text-4xs leading-tight font-mono text-fg-2 overflow-hidden whitespace-pre-wrap break-words">
           {content.split('\n').slice(0, 8).join('\n')}
         </pre>
       )}

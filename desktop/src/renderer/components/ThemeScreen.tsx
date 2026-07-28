@@ -154,7 +154,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         {/* Theme grid — pencil on each card opens the per-theme edit view.
             Cycle membership moved to the status bar widget editor. */}
         <div>
-          <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Your Themes</p>
+          <p className="text-4xs text-fg-muted uppercase tracking-wider mb-2">Your Themes</p>
           <div className="grid grid-cols-2 gap-2">
             {gridThemes.map(t => {
               const isActive = t.slug === activeSlug;
@@ -179,15 +179,23 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                   <div style={{ height: 6, background: `linear-gradient(90deg, ${t.tokens.canvas}, ${t.tokens.accent})` }} />
                   <div className="px-2 py-1.5" style={{ background: t.tokens.canvas }}>
                     {/* Leave room on right for the pencil and star icons */}
-                    <p className="text-[10px] font-medium truncate pr-8" style={{ color: t.tokens.fg }}>{t.name}</p>
-                    {isActive && <span className="text-[8px]" style={{ color: t.tokens.accent }}>active</span>}
+                    <p className="text-3xs font-medium truncate pr-8" style={{ color: t.tokens.fg }}>{t.name}</p>
+                    {isActive && <span className="text-4xs" style={{ color: t.tokens.accent }}>active</span>}
                   </div>
                   {/* Pencil — opens the per-theme edit menu. Positioned bottom-right
                       to avoid overlap with the star which occupies top-right. */}
                   <button
                     type="button"
                     onClick={e => { e.stopPropagation(); openEditor(t.slug); }}
-                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-black/20 transition-colors"
+                    // Change 41: retires the app's last raw `hover:bg-black/20`.
+                    // The obvious swap — the ghost Button's hover:bg-inset — would
+                    // be WRONG here: this button floats on a swatch painted in the
+                    // PREVIEWED theme's colours, so an app-theme hover fill can land
+                    // invisible (or garish) on any given swatch. `bg-current` resolves
+                    // to the inline `color` below, i.e. that theme's own fg, so the
+                    // hover is legible on a light and a dark swatch alike. 20% black
+                    // could not do that — it vanished on dark themes.
+                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-current/15 coarse-hit transition-colors"
                     style={{ color: t.tokens.fg }}
                     title="Edit theme"
                     aria-label={`Edit ${t.name}`}
@@ -260,7 +268,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs text-fg-2">Reduce Visual Effects</p>
-            <p className="text-[10px] text-fg-muted">Disables particles, blur, and animations</p>
+            <p className="text-3xs text-fg-muted">Disables particles, blur, and animations</p>
           </div>
           {/* Was a hand-rolled 36x20 switch (change 15): same geometry, but the
               shared Toggle also carries role="switch" + aria-checked, which this
@@ -276,7 +284,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs text-fg-2">Message Timestamps</p>
-            <p className="text-[10px] text-fg-muted">Show time sent in each chat bubble</p>
+            <p className="text-3xs text-fg-muted">Show time sent in each chat bubble</p>
           </div>
           {/* Same migration as the toggle above (change 15). */}
           <Toggle
@@ -399,7 +407,7 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
         <div className="p-3 space-y-4">
         {/* Locked banner for non-user themes so it's clear why most controls are absent */}
         {!isUserTheme && (
-          <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
+          <p className="text-3xs text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
             {isCommunityTheme
               ? 'Marketplace themes are kept in sync with their author\u2019s updates. Glass + terminal transparency sliders are customizable per-theme. Use "Build New Theme with Claude" to fork an editable copy.'
               : 'Built-in themes are locked. Only glass + terminal transparency sliders are customizable. Use "Build New Theme with Claude" to make an editable copy.'}
@@ -418,20 +426,20 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
                   onChange={e => updateAccent(e.target.value)}
                   className="w-6 h-6 rounded-sm cursor-pointer border-0 bg-transparent"
                 />
-                <span className="text-[10px] text-fg-muted font-mono">{theme.tokens.accent}</span>
+                <span className="text-3xs text-fg-muted font-mono">{theme.tokens.accent}</span>
               </div>
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-fg-2">Roundness</span>
               <div className="flex items-center gap-2 flex-1">
-                <span className="text-[10px] text-fg-faint">□</span>
+                <span className="text-3xs text-fg-faint">□</span>
                 <input
                   type="range" min="0" max="1" step="0.05"
                   value={roundnessDraft}
                   onChange={e => { const v = parseFloat(e.target.value); setRoundnessDraft(v); updateRoundness(v); }}
                   className="flex-1 accent-accent"
                 />
-                <span className="text-[10px] text-fg-faint">◯</span>
+                <span className="text-3xs text-fg-faint">◯</span>
               </div>
             </div>
             <div className="flex items-center justify-between">
@@ -461,9 +469,9 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             are greyed when Reduce Visual Effects is on (the engine forces blur:0). */}
         {(hasWallpaper || hasGradient) && (
           <div>
-            <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Glass</p>
+            <p className="text-4xs text-fg-muted uppercase tracking-wider mb-2">Glass</p>
             {reducedEffects && (
-              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-3xs text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 Reduce Visual Effects is active — blur is disabled. Opacity still applies.
               </p>
             )}
@@ -509,14 +517,14 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             those values) or when there's no wallpaper to blur. */}
         {canTuneTerminalOpacity && (
           <div>
-            <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Terminal</p>
+            <p className="text-4xs text-fg-muted uppercase tracking-wider mb-2">Terminal</p>
             {canTuneTerminalFilter && reducedEffects && (
-              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-3xs text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 Reduce Visual Effects is active — wallpaper blur is disabled. Opacity + brightness still apply.
               </p>
             )}
             {hasBakedTerminalBg && (
-              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-3xs text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 This theme ships a pre-blurred terminal wallpaper — blur + brightness are baked in. Only opacity is adjustable here.
               </p>
             )}
@@ -593,7 +601,7 @@ function GlassSlider({
           onChange={e => onChange(parseFloat(e.target.value))}
           className="flex-1 accent-accent"
         />
-        <span className="text-[10px] text-fg-muted w-9 text-right">{format(value)}</span>
+        <span className="text-3xs text-fg-muted w-9 text-right">{format(value)}</span>
       </div>
     </div>
   );

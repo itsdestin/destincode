@@ -128,7 +128,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
               <div style={{ height: 6, background: `linear-gradient(90deg, ${theme.tokens.canvas}, ${theme.tokens.accent})` }} />
               <div className="px-3 py-2.5" style={{ background: theme.tokens.canvas }}>
                 <p className="text-xs font-medium" style={{ color: theme.tokens.fg }}>{theme.name}</p>
-                <p className="text-[10px] mt-0.5" style={{ color: theme.tokens['fg-muted'] }}>
+                <p className="text-3xs mt-0.5" style={{ color: theme.tokens['fg-muted'] }}>
                   {theme.dark ? 'Dark' : 'Light'} theme
                   {theme.effects?.particles && theme.effects.particles !== 'none' ? ` \u00b7 ${theme.effects.particles} particles` : ''}
                   {theme.font?.family ? ` \u00b7 ${theme.font.family.split(',')[0].replace(/'/g, '')}` : ''}
@@ -139,14 +139,14 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
         </div>
 
         {/* Info */}
-        <p className="text-[11px] text-fg-muted mb-4 leading-relaxed">
+        <p className="text-2xs text-fg-muted mb-4 leading-relaxed">
           This will create a pull request to the{' '}
           <span className="text-fg-2 font-medium">wecoded-themes</span>{' '}
           repository on GitHub. Your theme will be reviewed and, if approved, added to the marketplace for all users.
           {previewPath && ' A preview image will be included in the submission.'}
         </p>
 
-        <p className="text-[10px] text-fg-muted mb-4">
+        <p className="text-3xs text-fg-muted mb-4">
           Requires the <span className="font-mono">gh</span> CLI to be installed and authenticated.
         </p>
 
@@ -228,7 +228,7 @@ function renderPublishButton(args: {
         >
           {publishing ? 'Publishing update…' : 'Publish update'}
         </Button>
-        <p className="text-[10px] text-fg-muted text-center mt-1.5">
+        <p className="text-3xs text-fg-muted text-center mt-1.5">
           Local changes not yet published
         </p>
       </>
@@ -246,7 +246,7 @@ function renderPublishButton(args: {
         >
           {publishing ? 'Publishing…' : previewLoading ? 'Generating preview…' : '⚠ Publish to Marketplace'}
         </Button>
-        <p className="text-[10px] text-fg-muted text-center mt-1.5">
+        <p className="text-3xs text-fg-muted text-center mt-1.5">
           Could not verify status: {state.reason}
         </p>
       </>

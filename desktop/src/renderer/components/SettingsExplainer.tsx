@@ -73,7 +73,7 @@ export default function SettingsExplainer({ title, intro, sections, onBack, onCl
 
         {sections.map((section, i) => (
           <section key={i}>
-            <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
               {section.heading}
             </h3>
             {section.paragraphs?.map((p, j) => (

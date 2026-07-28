@@ -188,6 +188,18 @@
     // hence the separate token. Synthesized in evaluate() when undeclared.
     { name: 'destructive-fg on canvas', tier: 'HARD', type: 'contrast', fg: 'destructive-fg', bg: 'canvas', threshold: 4.5, description: 'Destructive TEXT on content (AA)' },
     { name: 'destructive-fg on panel',  tier: 'HARD', type: 'contrast', fg: 'destructive-fg', bg: 'panel',  threshold: 4.5, description: 'Destructive TEXT on popups/headers (AA)' },
+    // Hyperlinks. `link` is OPTIONAL — most packs never declare it and the app
+    // derives one from accent, so auditing only declared tokens skipped every
+    // community theme. Synthesized in evaluate() to match theme-engine.ts.
+    //
+    // Three surfaces, not the full TEXT_RULES sweep: `inset` is the assistant
+    // bubble and is where MarkdownContent actually paints links, `panel` covers
+    // tool cards and popups, `canvas` covers loose prose. `well` is excluded on
+    // purpose — it is the command-drawer search surface and renders no links, so
+    // gating on it would fail packs over a combination that never appears.
+    { name: 'link on canvas', tier: 'HARD', type: 'contrast', fg: 'link', bg: 'canvas', threshold: 4.5, description: 'Hyperlinks in content must be readable (AA)' },
+    { name: 'link on panel',  tier: 'HARD', type: 'contrast', fg: 'link', bg: 'panel',  threshold: 4.5, description: 'Hyperlinks on tool cards and popups must be readable (AA)' },
+    { name: 'link on inset',  tier: 'HARD', type: 'contrast', fg: 'link', bg: 'inset',  threshold: 4.5, description: 'Hyperlinks inside assistant bubbles must be readable (AA)' },
 
     // ── SURFACE: Elements disappear if these fail ──
     { name: 'panel vs canvas',      tier: 'SURFACE', type: 'distinction', fg: 'panel',     bg: 'canvas',  threshold: 1.07, description: 'Chrome (headers, drawers, popups) must separate from the content behind it' },
@@ -353,6 +365,48 @@
           if (worst(c) >= 4.5) { picked = c; break; }
         }
         parsed['destructive-fg'] = picked;
+      }
+    }
+
+    // ── Synthesize the link colour ──
+    // `link` is optional and almost no pack declares it, so without this the
+    // three link rules silently skipped every community theme — the same way
+    // the danger pair used to be skipped. Mirrors theme-engine.ts: pick accent
+    // when it is far enough from fg (else fg-2), then nudge toward white/black
+    // until it clears AA against the WORST of canvas, panel and inset. `inset`
+    // is in the set because it is the assistant bubble, where links live.
+    //
+    // Only DERIVED links are nudged. A declared `link` is the pack author's
+    // explicit choice and stays exactly as written, so the HARD rules can still
+    // fail it — which is the point of having them.
+    if (!parsed.link && parsed.accent && parsed.fg && parsed.canvas && parsed.panel && parsed.inset) {
+      const d = (a, b) => Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+      const base = d(parsed.accent, parsed.fg) > 40 ? parsed.accent : parsed['fg-2'];
+      if (base) {
+        const worst = (c) => Math.min(
+          contrastRatio(luminance(c), luminance(parsed.canvas)),
+          contrastRatio(luminance(c), luminance(parsed.panel)),
+          contrastRatio(luminance(c), luminance(parsed.inset)),
+        );
+        if (worst(base) >= 4.5) {
+          parsed.link = base;
+        } else {
+          const target = luminance(parsed.canvas) < 0.5 ? parseHex('#FFFFFF') : parseHex('#000000');
+          let picked = target;
+          for (let t = 0.02; t <= 1.0001; t += 0.02) {
+            // Math.round for the same reason as destructive-fg above: the engine
+            // serialises to hex at every step, so the two must round identically
+            // or they can straddle the threshold on the same input.
+            const c = {
+              r: Math.round(base.r + (target.r - base.r) * t),
+              g: Math.round(base.g + (target.g - base.g) * t),
+              b: Math.round(base.b + (target.b - base.b) * t),
+              a: 1,
+            };
+            if (worst(c) >= 4.5) { picked = c; break; }
+          }
+          parsed.link = picked;
+        }
       }
     }
 

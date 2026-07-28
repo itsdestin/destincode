@@ -67,13 +67,13 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
       <div className="w-16 h-16 rounded-full bg-red-900/30 flex items-center justify-center">
         <span className="text-2xl">!</span>
       </div>
-      <p className="text-sm text-red-400 text-center">{state.partyError}</p>
+      <p className="text-sm text-destructive-fg text-center">{state.partyError}</p>
       <p className="text-xs text-fg-muted text-center max-w-xs">{hint}</p>
       <div className="flex gap-2 mt-1 items-center">
         <button
           onClick={handleRetry}
           disabled={retrying}
-          className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors disabled:opacity-50"
+          className="text-xs text-link hover:text-link-hover transition-colors disabled:opacity-50"
         >
           {retrying ? 'Retrying…' : 'Retry'}
         </button>
@@ -193,7 +193,7 @@ function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => voi
                 type="button"
                 role="menuitem"
                 onClick={() => setConfirmingBlock(true)}
-                className="w-full text-left px-2 py-1.5 rounded text-red-400 hover:bg-inset transition-colors"
+                className="w-full text-left px-2 py-1.5 rounded text-destructive-fg hover:bg-inset transition-colors"
               >
                 Block
               </button>
@@ -339,12 +339,12 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
               green/faint dot was removed 2026-07-09). This screen only renders
               when connected or incognito (the parent gates the rest), so the
               two reachable states are exactly these words. */}
-          <span className="text-[10px] text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
+          <span className="text-3xs text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
         </div>
         {onToggleIncognito && (
           <button
             onClick={onToggleIncognito}
-            className={`text-[10px] px-1.5 py-0.5 rounded-sm transition-colors ${
+            className={`text-3xs px-1.5 py-0.5 rounded-sm transition-colors ${
               incognito
                 ? 'bg-inset text-fg-2 hover:bg-edge'
                 : 'text-fg-muted hover:text-fg-2'
@@ -365,9 +365,9 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
           (Destin: friends/handles cover the real use case); challenges are the
           only way into a game now. */}
       {state.challengeFrom && (
-        <div className="px-3 py-2 border-b border-edge bg-indigo-950/50">
+        <div className="px-3 py-2 border-b border-edge bg-inset">
           <p className="text-sm text-fg mb-2">
-            <span className="font-medium text-[#66AAFF]">{state.challengeFrom.name}</span>
+            <span className="font-medium text-link">{state.challengeFrom.name}</span>
             {state.challengeFrom.handle && (
               <span className="text-fg-muted text-xs ml-1">@{state.challengeFrom.handle}</span>
             )}
@@ -408,7 +408,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
         <div className="px-3 py-2 border-b border-edge">
           <p className="text-xs text-fg-dim">
             <span className="text-fg-2">{state.challengeDeclinedBy.name}</span> declined your challenge.
-            <button onClick={() => dispatch({ type: 'CLEAR_CHALLENGE' })} className="text-[#66AAFF] ml-1">Dismiss</button>
+            <button onClick={() => dispatch({ type: 'CLEAR_CHALLENGE' })} className="text-link hover:text-link-hover ml-1">Dismiss</button>
           </p>
         </div>
       )}
@@ -416,7 +416,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Incoming friend requests */}
       {incoming.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
           <ul className="flex flex-col gap-2">
             {incoming.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -428,22 +428,32 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   {/* Touch target: px-1.5 py-1.5 keeps these row actions ≥32px
                       tall on the Android WebView — the 10px text alone is a
                       ~14px hit box. Applies to every row button in this screen. */}
-                  <button
+                  {/* Change 47, DECIDED 2026-07-16 as option A: Accept is the
+                      primary action, NOT semantic green. `text-green-400` here
+                      meant "yes" by colour alone, which is exactly the pairing
+                      rule 5 retires — and it read as a status, not a button, on
+                      a row whose other action was grey text. Button's `sm` size
+                      carries `coarse-hit`, so the ≥32px touch box the old
+                      px-1.5/py-1.5 was hand-building is now the primitive's job. */}
+                  <Button
+                    size="sm"
                     onClick={() => runMutation(() => window.claude.social.acceptRequest(req.id), req.id, "Couldn't accept — try again")}
                     disabled={pendingRows.has(req.id)}
-                    className="text-[10px] px-1.5 py-1.5 text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors shrink-0"
+                    className="shrink-0"
                   >
                     Accept
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => runMutation(() => window.claude.social.declineRequest(req.id), req.id, "Couldn't decline — try again")}
                     disabled={pendingRows.has(req.id)}
-                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                    className="shrink-0"
                   >
                     Decline
-                  </button>
+                  </Button>
                 </div>
-                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+                {rowError[req.id] && <p className="text-xs text-destructive-fg">{rowError[req.id]}</p>}
               </li>
             ))}
           </ul>
@@ -452,7 +462,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
       {/* Add a friend by handle */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-fg-muted">Add a friend</div>
+        <div className="text-3xs uppercase tracking-wider text-fg-muted">Add a friend</div>
         {/* Change 77: "Send request" moves INSIDE the field. It was left
             `variant="secondary" size="lg"` purely so it would height-match the
             input sitting beside it — inside the field there is nothing to
@@ -480,14 +490,14 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
           </Button>
         </InputGroup>
         {addFeedback && (
-          <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-red-400'}`}>{addFeedback.text}</p>
+          <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-destructive-fg'}`}>{addFeedback.text}</p>
         )}
       </div>
 
       {/* Friends list */}
       {merged.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
           <ul className="flex flex-col gap-2">
             {merged.map((row) => (
               <li key={row.id} className="flex flex-col gap-0.5">
@@ -499,13 +509,22 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   {/* Challenge only when the friend is actually online (has a live
                       presence entry). row.id is the account id challengePlayer wants. */}
                   {row.online && (
-                    <button
+                    // Change 47: this is an ACTION, not a link. Recolouring it to
+                    // the link tokens (the first pass) left the lobby arguing with
+                    // itself — the friend-request row right above has real Buttons
+                    // for Accept/Decline while this row styled its only action as
+                    // text. `secondary` rather than `primary`: Challenge appears on
+                    // every online friend, and a filled accent button per row would
+                    // read as a list of alerts. Button's `sm` carries `coarse-hit`,
+                    // which replaces the hand-rolled px/py-1.5 touch padding.
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => connection.challengePlayer(row.id)}
-                      // px/py-1.5 = touch-target padding (see the Accept button note).
-                      className="text-[10px] px-1.5 py-1.5 text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
+                      className="shrink-0"
                     >
                       Challenge
-                    </button>
+                    </Button>
                   )}
                   <FriendRowMenu
                     pending={pendingRows.has(row.id)}
@@ -514,8 +533,8 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   />
                 </div>
                 {/* Plain-word status — never glyphs (workspace rule). */}
-                <span className="text-[10px] text-fg-muted">{statusLabel(row, Date.now())}</span>
-                {rowError[row.id] && <p className="text-xs text-red-400">{rowError[row.id]}</p>}
+                <span className="text-3xs text-fg-muted">{statusLabel(row, Date.now())}</span>
+                {rowError[row.id] && <p className="text-xs text-destructive-fg">{rowError[row.id]}</p>}
               </li>
             ))}
           </ul>
@@ -525,7 +544,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Sent (outgoing) requests — dim, collapsed-feeling */}
       {outgoing.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
           <ul className="flex flex-col gap-1">
             {outgoing.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -537,12 +556,12 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     onClick={() => runMutation(() => window.claude.social.cancelRequest(req.id), req.id, "Couldn't cancel — try again")}
                     disabled={pendingRows.has(req.id)}
                     // px/py-1.5 = touch-target padding (see the Accept button note).
-                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                    className="text-3xs px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Cancel
                   </button>
                 </div>
-                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+                {rowError[req.id] && <p className="text-xs text-destructive-fg">{rowError[req.id]}</p>}
               </li>
             ))}
           </ul>
@@ -651,7 +670,7 @@ function SignInScreen() {
       </Button>
       {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
       {signInError && !signInPending && (
-        <p className="text-xs text-red-400 text-center max-w-xs">Sign-in failed: {signInError}. Try again.</p>
+        <p className="text-xs text-destructive-fg text-center max-w-xs">Sign-in failed: {signInError}. Try again.</p>
       )}
     </div>
   );

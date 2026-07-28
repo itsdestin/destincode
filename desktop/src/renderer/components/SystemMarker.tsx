@@ -30,7 +30,7 @@ export default function SystemMarker({ marker }: Props) {
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
-            className="text-[11px] uppercase tracking-wider whitespace-nowrap inline-flex items-center gap-1.5 hover:text-fg-2 transition-colors cursor-pointer"
+            className="text-2xs uppercase tracking-wider whitespace-nowrap inline-flex items-center gap-1.5 hover:text-fg-2 transition-colors cursor-pointer"
           >
             <svg
               width="8"
@@ -48,7 +48,7 @@ export default function SystemMarker({ marker }: Props) {
             </span>
           </button>
         ) : (
-          <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">
+          <span className="text-2xs uppercase tracking-wider whitespace-nowrap">
             {marker.label}
             <span className="ml-2 text-fg-faint normal-case tracking-normal">· {time}</span>
           </span>
@@ -60,7 +60,7 @@ export default function SystemMarker({ marker }: Props) {
         // summaries. Pre-wrap preserves CC's numbered-list formatting;
         // break-words so long paths/URLs wrap rather than overflow.
         <div className="mt-2 mx-auto max-w-3xl rounded-md border border-edge-dim bg-inset/60 px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">
+          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-2">
             Compaction summary
           </div>
           <pre className="text-xs text-fg-2 whitespace-pre-wrap break-words font-sans leading-relaxed max-h-96 overflow-y-auto">

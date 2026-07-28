@@ -362,11 +362,11 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           Always allow this exact command{folderName ? ` in ${folderName}` : ''}?
         </p>
         {command && (
-          <p className="text-[11px] leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
+          <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
             {command}
           </p>
         )}
-        <p className="text-[11px] text-fg-dim leading-relaxed">
+        <p className="text-2xs text-fg-dim leading-relaxed">
           It can delete files or change published code, and you won't be asked again.
         </p>
         <div className="flex items-center gap-2">

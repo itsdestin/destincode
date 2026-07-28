@@ -77,7 +77,7 @@ export function ContributePopup({ open, onClose }: Props) {
           <>
             <h3 className="text-sm font-medium text-fg mb-2">Contribute to YouCoded</h3>
             <p className="text-xs text-fg-2 mb-2">
-              <code className="text-[11px] bg-inset/60 px-1 rounded">youcoded-dev</code> is the workspace scaffold
+              <code className="text-2xs bg-inset/60 px-1 rounded">youcoded-dev</code> is the workspace scaffold
               that clones all five YouCoded sub-repos side by side, with shared docs and the <code>/audit</code> command.
             </p>
             <p className="text-xs text-fg-2 mb-3">
@@ -106,7 +106,7 @@ export function ContributePopup({ open, onClose }: Props) {
         {done && (
           <>
             <div className="text-xs text-fg mb-3">
-              Workspace installed at <code className="text-[11px]">{done.path}</code>. Added to your project folders.
+              Workspace installed at <code className="text-2xs">{done.path}</code>. Added to your project folders.
             </div>
             <div className="flex gap-2">
               <Button variant="secondary" onClick={onClose} className="flex-1 py-2.5">Done</Button>

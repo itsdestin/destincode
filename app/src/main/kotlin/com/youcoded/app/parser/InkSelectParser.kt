@@ -1,7 +1,10 @@
 package com.youcoded.app.parser
 
-/** A button in an interactive terminal prompt. */
-data class PromptButton(val label: String, val input: String)
+/** A button in an interactive terminal prompt.
+ *  [submitInput] is a rare SECOND pty write, sent ~120ms after [input], used only
+ *  by the arrow-navigation fallback: arrows and "\r" must never share one write
+ *  (see [InkSelectParser.toPromptButtons]). */
+data class PromptButton(val label: String, val input: String, val submitInput: String? = null)
 
 data class ParsedMenu(
     val id: String,
@@ -9,6 +12,9 @@ data class ParsedMenu(
     val options: List<String>,
     val selectedIndex: Int,  // which option is currently highlighted by ❯
     val description: String? = null, // Contextual text above menu (e.g., resume trade-offs)
+    // The number CC prints in front of each option ("1. Yes" -> 1), index-aligned
+    // with [options]. This is what toPromptButtons sends.
+    val optionNumbers: List<Int?> = emptyList(),
 )
 
 object InkSelectParser {
@@ -22,6 +28,12 @@ object InkSelectParser {
     private val UNSELECTED_LINE = Regex("""^\s{2,}(?:\d+[.:]\s+)?(.+)$""")
     // Detects a new option (has a number prefix like "1. " or "1: ")
     private val NUMBERED_PREFIX = Regex("""^\s*\d+[.:]\s+""")
+    // Same prefix, capturing the number itself ("2. Resume full session" -> 2)
+    private val OPTION_NUMBER = Regex("""^(\d+)[.:]\s+""")
+    // A horizontal rule / box border — the top edge of CC's prompt box, and the
+    // boundary between the prompt's own body and earlier session output. "│" is
+    // deliberately absent: it is a SIDE border that appears on body lines.
+    private val PROMPT_BOUNDARY = Regex("""^[─═━┌┐└┘╭╮╯╰├┤┬┴┼╔╗╚╝]{8,}$""")
 
     // Title overrides for known prompts — keyed by lowercase keyword found in context.
     // Keys are matched as bare substrings against screen text that includes arbitrary
@@ -32,10 +44,21 @@ object InkSelectParser {
     // Note: bypass permissions prompt is handled by a hardcoded handler in ManagedSession,
     // not by the generic InkSelectParser, because it uses Enter/Esc (not arrow navigation).
     private val TITLE_OVERRIDES = mapOf(
-        // Folder-trust prompt — anchored on its security-note body line ("Important:
-        // Only use Claude Code with files you trust. …"), the same line the old bare
-        // "trust" key matched.
-        "files you trust" to "Trust This Folder?",
+        // Folder-trust prompt — anchored on the "Quick safety check:" opener of the
+        // CC ~2.1.2xx rewrite. The previous anchor ("files you trust", from the old
+        // "Important: Only use Claude Code with files you trust…" note) no longer
+        // appears in this dialog at all; in the 2.1.220 bundle that sentence survives
+        // only in the external-CLAUDE.md-imports dialog below, so keeping it here both
+        // missed the real prompt and hijacked the wrong one (2026-07-26).
+        "quick safety check" to "Trust This Folder?",
+        // Same dialog, second anchor — the body varies (optional "This folder
+        // pre-approves N tool permissions" / "This folder adds …" lines), and this
+        // sentence sits closer to the options, inside extractTitle's lookback window.
+        "execute files here" to "Trust This Folder?",
+        // External CLAUDE.md imports — the dialog that inherited the old
+        // "…files you trust…" security note. Anchored on its own body sentence
+        // because the generic heuristic would otherwise title it "security risks".
+        "imports files outside the current working directory" to "Allow External Imports?",
         // Model-safeguard fallback prompt — "This model's safeguards flagged this
         // message…" with Switch-model / Edit-and-retry options.
         "safeguards flagged this message" to "Message Flagged",
@@ -50,6 +73,20 @@ object InkSelectParser {
         // Key on "limit to reset" (unique to option 1) rather than the generic
         // "What do you want to do?" title to avoid false matches on future menus.
         "limit to reset" to "Usage Limit Reached",
+    )
+
+    // Overrides keyed on an OPTION LABEL rather than on body text above the menu.
+    // Body text is fragile: extractTitle only looks 10 lines up, and CC's dialogs grow
+    // and shrink optional body lines (the folder-trust dialog adds "This folder
+    // pre-approves N tool permissions" / "This folder adds …" when the project ships
+    // settings), which can push the distinctive phrase out of range. Option labels are
+    // the prompt's own vocabulary and survive every body rewrite, so they must be exact
+    // whole-label matches — a substring would be as collision-prone as the old bare
+    // "trust" key. Keep in sync with desktop's ink-select-parser.ts.
+    private val OPTION_TITLE_OVERRIDES = mapOf(
+        // Present in BOTH the old ("Do you trust the files in this folder?") and the
+        // CC ~2.1.2xx ("Accessing workspace: … Quick safety check:") trust dialogs.
+        "yes, i trust this folder" to "Trust This Folder?",
     )
 
     /**
@@ -128,18 +165,56 @@ object InkSelectParser {
         // Filter out noise — each option should be relatively short (< 120 chars)
         if (options.any { it.length > 120 }) return null
 
-        // Extract title from context above the menu
-        val title = extractTitle(lines, optionIndices.first(), screenText)
+        val firstOptionLine = optionIndices.first()
+
+        // The number CC printed for each option — read from that option's own line
+        // (optionIndices is index-aligned with options). This is what
+        // toPromptButtons sends, so it must come from the screen, never be assumed
+        // from list position.
+        val optionNumbers = optionIndices.map { idx ->
+            OPTION_NUMBER.find(stripAnsi(cleanLines[idx]).trim().removePrefix("❯").trim())
+                ?.groupValues?.get(1)?.toIntOrNull()
+        }
+
+        // Where the prompt's OWN body starts. CC draws its prompt inside a box whose
+        // top edge is a horizontal rule; above that rule is unrelated session output
+        // (on a resumed session, the whole replayed transcript tail). Bounding both
+        // extractors at the rule is what stops that output being rendered as the
+        // prompt's description, and stops TITLE_OVERRIDES matching conversation text
+        // (2026-07-26). Keep in sync with desktop's findBodyStart.
+        val bodyStart = findBodyStart(lines, firstOptionLine)
+
+        // Extract title from the prompt's own body
+        val title = extractTitle(lines, firstOptionLine, screenText, options, bodyStart)
 
         // Generate a stable ID from the options
         val id = "menu_" + options.joinToString("_") { it.take(10) }
             .lowercase().replace(Regex("[^a-z0-9_]"), "")
 
-        // Extract contextual description from lines above the menu (e.g., resume
+        // Extract contextual description from the prompt's own body (e.g., resume
         // session trade-off text: session age, token count, usage warning)
-        val description = extractDescription(lines, optionIndices.first(), title)
+        val description = extractDescription(lines, firstOptionLine, title, bodyStart)
 
-        return ParsedMenu(id = id, title = title, options = options, selectedIndex = selectedIndex, description = description)
+        return ParsedMenu(
+            id = id,
+            title = title,
+            options = options,
+            selectedIndex = selectedIndex,
+            description = description,
+            optionNumbers = optionNumbers,
+        )
+    }
+
+    /**
+     * First line of the prompt's own body: one past the nearest box border above the
+     * options, or a 15-line window when the prompt is not boxed.
+     */
+    private fun findBodyStart(lines: List<String>, firstOptionLine: Int): Int {
+        val floor = maxOf(0, firstOptionLine - 15)
+        for (i in (firstOptionLine - 1) downTo floor) {
+            if (PROMPT_BOUNDARY.matches(stripAnsi(lines[i]).trim())) return i + 1
+        }
+        return floor
     }
 
     /**
@@ -147,8 +222,13 @@ object InkSelectParser {
      * title region and the first option. Used to surface contextual info like
      * the resume prompt's session-age and usage-limit trade-off explanation.
      */
-    private fun extractDescription(lines: List<String>, firstOptionLine: Int, title: String): String? {
-        val searchStart = maxOf(0, firstOptionLine - 15)
+    private fun extractDescription(
+        lines: List<String>,
+        firstOptionLine: Int,
+        title: String,
+        bodyStart: Int = maxOf(0, firstOptionLine - 15),
+    ): String? {
+        val searchStart = bodyStart
         val descLines = mutableListOf<String>()
         val titleNorm = title.trimEnd(':', '?').trim()
         val boxDrawing = Regex("""^[─┌┐└┘│╭╮╯╰┬┴├┤┼╔╗╚╝║═━]+$""")
@@ -171,12 +251,24 @@ object InkSelectParser {
      * Look for a title/question in the lines above the menu.
      * First checks TITLE_OVERRIDES, then scans for the nearest question or heading.
      */
-    private fun extractTitle(lines: List<String>, firstOptionLine: Int, fullText: String): String {
+    private fun extractTitle(
+        lines: List<String>,
+        firstOptionLine: Int,
+        fullText: String,
+        options: List<String> = emptyList(),
+        bodyStart: Int = maxOf(0, firstOptionLine - 10),
+    ): String {
+        // Option-label overrides win: they don't depend on how far the prompt's body
+        // text happens to sit above the menu (see OPTION_TITLE_OVERRIDES).
+        for (option in options) {
+            OPTION_TITLE_OVERRIDES[option.trim().lowercase()]?.let { return it }
+        }
         // Check title overrides against only the ~10 lines ABOVE the menu, not the
         // full screen text — matches desktop's ink-select-parser.ts. Full-screen
         // matching let stale content from earlier prompts (still in the buffer)
         // relabel every subsequent menu.
-        val searchStart = maxOf(0, firstOptionLine - 10)
+        // Never look above the prompt's own box, and never further than 10 lines.
+        val searchStart = maxOf(bodyStart, firstOptionLine - 10)
         val nearby = lines.subList(searchStart, firstOptionLine.coerceAtLeast(searchStart))
             .joinToString(" ") { stripAnsi(it) }.lowercase()
         for ((keyword, title) in TITLE_OVERRIDES) {
@@ -200,26 +292,39 @@ object InkSelectParser {
     }
 
     /**
-     * Generate PromptButtons from a parsed menu.
+     * Generate PromptButtons from a parsed menu: each one types the option's NUMBER.
      *
-     * Anchor-then-navigate: always overshoot UP to snap Ink's cursor to the top
-     * of the menu (Ink clamps arrow-up at index 0), THEN press DOWN to reach the
-     * target. This makes the keystroke sequence independent of cursor state at
-     * click time — previously we computed a relative offset from the parsed
-     * selectedIndex, which went stale the moment the user arrowed in the
-     * terminal view or Ink re-rendered (same menu.id, so the prompt detector
-     * doesn't re-emit SHOW_PROMPT). Stale offset was the root cause of
-     * "clicked option N, got option M" bugs on the Resume Session menu.
+     * Why not arrow keys — two facts measured against the real CC CLI (2.1.220) on
+     * 2026-07-26:
+     *
+     *  1. Arrows in a write that ends with "\r" are DISCARDED. CC acts on the Enter
+     *     alone, confirming whatever option is highlighted — so every button on the
+     *     Resume Session card confirmed option 1 ("Resume from summary"), which runs
+     *     /compact. Every option compacted the session.
+     *  2. These menus WRAP, they do not clamp. UP×5 on the 3-option resume prompt
+     *     moves index 0 → 1, not → 0, so the old "anchor to the top by overshooting
+     *     UP" trick was wrong on its own terms.
+     *
+     * A bare digit selects AND submits in one byte with no dependency on cursor
+     * position. Verified on /model, the real Resume Session prompt, and the
+     * folder-trust prompt.
      *
      * Ported from desktop (youcoded/desktop/src/renderer/parser/ink-select-parser.ts)
-     * so both platforms emit identical keystroke sequences.
+     * so both platforms emit identical keystrokes.
      */
     fun toPromptButtons(menu: ParsedMenu): List<PromptButton> {
-        val up = "\u001b[A"
         val down = "\u001b[B"
-        val anchorUps = up.repeat(menu.options.size + 2)
+        val count = menu.options.size
         return menu.options.mapIndexed { index, label ->
-            PromptButton(label = label, input = anchorUps + down.repeat(index) + "\r")
+            val number = menu.optionNumbers.getOrNull(index)
+            if (number != null && number in 1..9) {
+                PromptButton(label = label, input = number.toString())
+            } else {
+                // Fallback for a menu whose options carry no usable digit: relative
+                // DOWN steps (wrap-correct), with the Enter as a SEPARATE write.
+                val steps = ((index - menu.selectedIndex) % count + count) % count
+                PromptButton(label = label, input = down.repeat(steps), submitInput = "\r")
+            }
         }
     }
 }

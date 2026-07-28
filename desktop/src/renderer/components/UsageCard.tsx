@@ -1,5 +1,6 @@
 import React from 'react';
 import type { UsageSnapshot } from '../state/chat-types';
+import { ProgressBar } from './ui';
 
 // Permanent inline card rendered when user types /cost or /usage. Snapshot-only —
 // we deliberately don't subscribe to live stats here; the status bar handles the
@@ -57,12 +58,19 @@ function utilizationColor(pct: number | null): string {
   return '#10b981';
 }
 
+// Change 46: the shared bar, keeping this card's status hue via the `color` prop
+// (§1.8 explicitly preserved UsageCard's inline threshold colors — they are
+// status, not theme, so rule 5 does not apply). `pct` arrives as a 0..1 ratio
+// here, not a percentage; the primitive clamps but does not scale, so the ×100
+// stays. The bar also gains role="progressbar" + aria-valuenow.
 function UsageBar({ pct, color }: { pct: number | null; color: string }) {
-  const width = pct == null ? 0 : Math.min(100, Math.max(0, pct * 100));
   return (
-    <div className="h-1.5 w-full rounded-full bg-inset overflow-hidden">
-      <div className="h-full rounded-full transition-all" style={{ width: `${width}%`, backgroundColor: color }} />
-    </div>
+    <ProgressBar
+      percent={pct == null ? 0 : pct * 100}
+      color={color}
+      className="w-full"
+      aria-label="Usage"
+    />
   );
 }
 

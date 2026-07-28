@@ -93,7 +93,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs text-fg font-medium">Local engine (llama.cpp)</p>
-          <p className="text-[10px] text-fg-muted">{stateLabel}</p>
+          <p className="text-3xs text-fg-muted">{stateLabel}</p>
         </div>
         {/* Primary row action via the shared primitive — drops the hand-rolled
             accent fill + hover:brightness-110 (invisible on near-black accents). */}
@@ -119,14 +119,14 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
         )}
       </div>
       {busy && progress?.kind === 'download' && (
-        <p className="mt-2 text-[10px] text-fg-dim">
+        <p className="mt-2 text-3xs text-fg-dim">
           Downloading… {mb(progress.receivedBytes)}{progress.totalBytes ? ` of ${mb(progress.totalBytes)}` : ''}
         </p>
       )}
       {busy && (progress?.kind === 'verify' || progress?.kind === 'unpack') && (
-        <p className="mt-2 text-[10px] text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
+        <p className="mt-2 text-3xs text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
-      {error && <p className="mt-2 text-[10px] text-destructive-fg">{error}</p>}
+      {error && <p className="mt-2 text-3xs text-destructive-fg">{error}</p>}
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
           engine is installed — nothing to configure before that. */}
@@ -134,7 +134,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
         <div className="mt-3 pt-3 border-t border-edge-dim space-y-2.5">
           {/* Backend line + optional CUDA switch (Windows only). */}
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] text-fg-dim">Using: {status.backend ?? 'default'}</p>
+            <p className="text-2xs text-fg-dim">Using: {status.backend ?? 'default'}</p>
             {isWindows && status.backend !== 'cuda' && (
               <Button
                 variant="secondary"
@@ -150,7 +150,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
 
           {/* Context-length knob. Commits on Enter or blur. */}
           <div className="flex items-center justify-between gap-2">
-            <label htmlFor="engine-context-size" className="text-[11px] text-fg-dim">Context length (tokens)</label>
+            <label htmlFor="engine-context-size" className="text-2xs text-fg-dim">Context length (tokens)</label>
             {/* Change 20: the shared field surface. type="number" (plus min/step
                 and the busy-disabled state) passes straight through — TextInput is
                 deliberately not restricted to type="text". size="sm" matches the
@@ -172,8 +172,8 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
 
           {/* Cache location — read-only. */}
           <div>
-            <p className="text-[10px] text-fg-muted mb-0.5">Models are stored in</p>
-            <p className="text-[10px] text-fg-dim font-mono break-all">{status.cacheDir}</p>
+            <p className="text-3xs text-fg-muted mb-0.5">Models are stored in</p>
+            <p className="text-3xs text-fg-dim font-mono break-all">{status.cacheDir}</p>
           </div>
         </div>
       )}

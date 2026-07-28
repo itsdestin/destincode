@@ -107,7 +107,7 @@ function HandlePromptPopup({
         <div className="p-5 space-y-4">
           <div className="space-y-1.5">
             <h3 id="handle-prompt-title" className="text-sm font-semibold text-fg">Pick a handle</h3>
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               Friends will find you by your handle — like a username. You can change it later in Settings → Account.
             </p>
           </div>
@@ -137,7 +137,7 @@ function HandlePromptPopup({
             </Button>
           </InputGroup>
           {/* Plain words for status, never glyphs. */}
-          {error && <p className="text-[10px] text-destructive-fg">{error}</p>}
+          {error && <p className="text-3xs text-destructive-fg">{error}</p>}
 
           <Button variant="secondary" onClick={skip} className="w-full py-2">
             Skip for now

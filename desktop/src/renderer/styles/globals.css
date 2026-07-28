@@ -28,8 +28,10 @@
   --scrollbar-thumb: #C0C0C0;
   --scrollbar-hover: #999999;
   /* --code is computed per-theme by theme-engine.ts from --accent / --fg-2 so community themes get a palette-matched inline-code color instead of inheriting a hardcoded yellow from :root. */
-  --link: #2563EB;
-  --link-hover: #1D4ED8;
+  /* Darkened from #2563EB/#1D4ED8 (change 36): the old pair scored 3.59:1 on
+     --inset, and --inset is the assistant bubble, where most links render. */
+  --link: #2055CA;
+  --link-hover: #1E4395;
   --hl-theme: light;
   color-scheme: light;
   --radius: 4px;
@@ -229,6 +231,14 @@
   --text-2xs: 11px;
   --text-3xs: 10px;
   --text-4xs: 9px;
+
+  /* 13px — the one real step Tailwind's scale is missing, sitting between
+     text-xs (12) and text-sm (14). Named rather than folded because all 22
+     sites are Project View body copy (ProjectHero sync rows, AddProjectModal,
+     HowContextWorksPopup, the tab pills), a screen whose type was reviewed and
+     signed off at 13px; folding to 14 would resize the whole screen for no
+     benefit. Approved 2026-07-24 as the change-35 straggler exception. */
+  --text-sm-tight: 13px;
 
   /* Label color for filled --destructive surfaces (danger buttons/toggles).
      Derived per-theme in theme-engine.ts rather than hardcoded white, because
@@ -1080,7 +1090,14 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* Settings drawer sits at window top-left — same spot as the macOS traffic
    lights. Left-padding is a bad fit here (drawer is only 320px wide, which
    would crowd the ✕ button), so push the header row down instead to clear
-   the lights vertically. */
+   the lights vertically.
+
+   Briefly moved to `.settings-drawer-body` when change 50 deleted the header;
+   moved back when that change was reversed on 2026-07-24. The two must always
+   travel together — the header is the only thing holding this clearance, so
+   deleting it without relocating this rule puts the first row under the native
+   window buttons on macOS, which no Linux or Windows session would ever notice.
+   tests/primitive-adoption.test.ts pins the pair. */
 .mac-titlebar-inset .settings-drawer-header {
   padding-top: 28px;
 }

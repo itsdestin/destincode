@@ -21,27 +21,24 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useAccount } from '../../state/account-context';
 import SignInPromptModal from './SignInPromptModal';
+import { Toast } from '../ui';
 
-// ── Mini local toast (no global toast context available inside the modal) ──────
+// ── Local toast state (no global toast context available inside the modal) ────
+//
+// Change 44: this used to be a whole hand-rolled toast — its own setTimeout, its
+// own unmount cleanup, its own bg-panel/border/shadow at text-3xs, and its own
+// z-index. The <Toast> primitive owns all of that now, so what is left here is
+// just "which message, if any". The `nonce` exists because the primitive re-arms
+// its timer when the MESSAGE changes: both call sites below show the same string,
+// so without it a second failure inside the 3s window would inherit whatever was
+// left of the first one's timer instead of getting a fresh read.
 
 function useLocalToast() {
-  const [message, setMessage] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = useCallback((msg: string) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setMessage(msg);
-    timerRef.current = setTimeout(() => setMessage(null), 3000);
+  const [toast, setToast] = useState<{ message: string; nonce: number } | null>(null);
+  const showToast = useCallback((message: string) => {
+    setToast((prev) => ({ message, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  return { toastMessage: message, showToast };
+  return { toast, showToast, clearToast: useCallback(() => setToast(null), []) };
 }
 
 // ── Heart SVG icons ───────────────────────────────────────────────────────────
@@ -94,7 +91,7 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
   // had no actual sign-in button and was widely missed.
   const [signInPromptOpen, setSignInPromptOpen] = useState(false);
 
-  const { toastMessage, showToast } = useLocalToast();
+  const { toast, showToast, clearToast } = useLocalToast();
 
   // cancelledRef — prevents setState after unmount if a slow API call returns late
   const cancelledRef = useRef(false);
@@ -188,7 +185,7 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
         title={title}
         aria-label={liked ? `Unlike (${count})` : `Like (${count})`}
         aria-pressed={liked}
-        className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors disabled:opacity-50 ${
+        className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-3xs font-medium transition-colors disabled:opacity-50 ${
           liked
             ? 'text-red-400 hover:text-red-300'
             : 'text-fg-muted hover:text-red-400'
@@ -199,21 +196,22 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
       </button>
 
       {/* Inline toast — shown briefly on non-auth errors only. Auth errors now
-          open the SignInPromptModal below instead of using this toast. */}
-      {toastMessage && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-[10px] text-fg shadow-md"
-          // zIndex 62 = one above CONTENT_Z[2] (61, L2 content). The toast anchors inline
-          // beside the button inside an OverlayPanel, so it needs to clear the panel's
-          // own surface. Not L3 (70) — destructive confirmations only. Not using the
-          // layer primitives because this is an ephemeral position:absolute sibling,
-          // not a full overlay surface.
-          style={{ zIndex: 62 }}
-        >
-          {toastMessage}
-        </div>
+          open the SignInPromptModal below instead of using this toast.
+
+          Change 44: the `anchored` variant IS this site — the primitive was built
+          with it in mind. The hand-rolled `zIndex: 62` is gone with it: that
+          number was reverse-engineered from CONTENT_Z[2] + 1 to clear the parent
+          OverlayPanel, which is exactly the kind of magic z-index design rule 11
+          exists to stop. It also grows text-3xs -> text-sm, matching every other
+          toast in the app instead of being a third size. */}
+      {toast && (
+        <Toast
+          key={toast.nonce}
+          variant="anchored"
+          tone="error"
+          message={toast.message}
+          onDismiss={clearToast}
+        />
       )}
 
       <SignInPromptModal

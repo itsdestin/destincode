@@ -110,7 +110,7 @@ function ModelProvidersPopupInner({
 
         <div ref={scrollRef} className="scroll-fade">
           <div className="p-5 space-y-6">
-            <p className="text-[11px] text-fg-dim leading-relaxed">
+            <p className="text-2xs text-fg-dim leading-relaxed">
               Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
               local models are optional alternatives.
             </p>
@@ -220,10 +220,10 @@ function ClaudeCodeBlock({
 
       <div className="bg-inset/50 rounded-lg px-3 py-2.5">
         <p className="text-xs text-fg font-medium">Default engine</p>
-        <p className={`text-[11px] mt-0.5 ${statusTone === 'ok' ? 'text-green-600' : 'text-fg-muted'}`}>
+        <p className={`text-2xs mt-0.5 ${statusTone === 'ok' ? 'text-green-600' : 'text-fg-muted'}`}>
           {statusText}
         </p>
-        <p className="text-[10px] text-fg-muted mt-1.5 leading-relaxed">
+        <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
           Every session runs through Claude Code unless you pick another provider below.
         </p>
 
@@ -304,7 +304,7 @@ function OpenRouterBlock() {
         <div className="flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <p className="text-xs text-fg font-medium">OpenRouter</p>
-            <p className="text-[10px] text-fg-muted">
+            <p className="text-3xs text-fg-muted">
               {openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
             </p>
           </div>
@@ -323,7 +323,7 @@ function OpenRouterBlock() {
           </div>
         )}
         {testNote && (
-          <p className={`text-[10px] mt-2 ${testNote.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
+          <p className={`text-3xs mt-2 ${testNote.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
             {testNote.text}
           </p>
         )}
@@ -400,7 +400,7 @@ function ConnectOpenRouterModal({
         </div>
 
         <div className="p-4 space-y-3">
-          <ol className="text-[11px] text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
+          <ol className="text-2xs text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
             <li>
               Create a free account at{' '}
               <button
@@ -430,7 +430,7 @@ function ConnectOpenRouterModal({
           />
 
           {note && (
-            <p className={`text-[10px] ${note.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>{note.text}</p>
+            <p className={`text-3xs ${note.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>{note.text}</p>
           )}
 
           <div className="flex gap-2 pt-1">
@@ -587,7 +587,7 @@ function SearchProvidersBlock() {
         }}
       />
 
-      <p className="text-[10px] text-fg-muted mb-2.5 leading-relaxed">
+      <p className="text-3xs text-fg-muted mb-2.5 leading-relaxed">
         Web search works for free with no setup. Add an optional key to make it faster and more reliable.
       </p>
 
@@ -601,11 +601,11 @@ function SearchProvidersBlock() {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-xs text-fg font-medium">{row.label}</p>
-                  <p className="text-[10px] text-fg-muted">{meta.hint}</p>
+                  <p className="text-3xs text-fg-muted">{meta.hint}</p>
                 </div>
                 {row.hasKey ? (
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="text-[10px] font-medium text-green-600">Key saved</span>
+                    <span className="text-3xs font-medium text-green-600">Key saved</span>
                     {/* danger-outline per spec change 68: "Remove" reads the same
                         everywhere. This one was the neutral half of the
                         ProvidersSection(red)-vs-here(neutral) contradiction; it
@@ -646,7 +646,7 @@ function SearchProvidersBlock() {
                   <div className="flex items-center justify-between gap-2">
                     <button
                       onClick={() => void (window as any).claude.shell.openExternal(meta.url)}
-                      className="text-[10px] text-accent hover:underline"
+                      className="text-3xs text-accent hover:underline"
                     >
                       Get a free key
                     </button>
@@ -658,7 +658,7 @@ function SearchProvidersBlock() {
               )}
 
               {note && (
-                <p className={`text-[10px] mt-2 ${note.ok ? 'text-fg-muted' : 'text-red-500'}`}>
+                <p className={`text-3xs mt-2 ${note.ok ? 'text-fg-muted' : 'text-red-500'}`}>
                   {note.text}
                 </p>
               )}

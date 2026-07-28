@@ -7,7 +7,10 @@ export interface InteractivePrompt {
   promptId: string;
   title: string;
   description?: string; // Contextual text explaining the prompt (e.g., resume trade-offs)
-  buttons: { label: string; input: string }[];
+  // `input` is the keystroke(s) that pick this option — a bare digit for CC's
+  // numbered menus. `submitInput` is a rare SECOND write (arrow fallback only);
+  // arrows and `\r` must never share one write. See parser/ink-select-parser.
+  buttons: { label: string; input: string; submitInput?: string }[];
   completed?: string; // label of the selected option, if completed
 }
 
@@ -342,7 +345,7 @@ export type ChatAction =
       promptId: string;
       title: string;
       description?: string;
-      buttons: { label: string; input: string }[];
+      buttons: { label: string; input: string; submitInput?: string }[];
     }
   | {
       type: 'COMPLETE_PROMPT';

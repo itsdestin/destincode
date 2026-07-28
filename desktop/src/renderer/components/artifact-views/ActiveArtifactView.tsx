@@ -427,7 +427,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           diff at all (spec §6.2). */}
       {showDiff && conflict && (
         <div className="border-b border-edge shrink-0 overflow-auto max-h-[40%] p-2">
-          <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">
+          <div className="text-3xs text-fg-muted mb-1 font-semibold uppercase tracking-wide">
             What keeping yours changes (disk → your draft)
           </div>
           <UnifiedDiff oldStr={conflict.disk} newStr={draft} />

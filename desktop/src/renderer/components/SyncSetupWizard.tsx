@@ -211,9 +211,9 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-fg font-medium">{BACKEND_LABELS[type]}</div>
-                  <div className="text-[10px] text-fg-muted mt-0.5">{desc}</div>
+                  <div className="text-3xs text-fg-muted mt-0.5">{desc}</div>
                   {existing > 0 && (
-                    <div className="text-[9px] text-fg-muted mt-1">
+                    <div className="text-4xs text-fg-muted mt-1">
                       {disabled
                         ? `Already connected — ${BACKEND_LABELS[type]} only supports one backup`
                         : `(${existing} already connected)`}
@@ -350,7 +350,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           <div className="px-4 py-4 space-y-4">
           {/* Name */}
           <div>
-            <label className="block text-[10px] text-fg-muted mb-1">Give this backup a name</label>
+            <label className="block text-3xs text-fg-muted mb-1">Give this backup a name</label>
             {/* Migrated to the shared TextInput (spec change 20): the hand-rolled
                 bg-inset/rounded-md/focus recipe is now the one FIELD surface, so
                 every text box in the app focuses and rounds the same way. The
@@ -364,13 +364,13 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               className="w-full"
               autoFocus
             />
-            <div className="text-[10px] text-fg-muted mt-0.5">This is just for you — to tell your backups apart.</div>
+            <div className="text-3xs text-fg-muted mt-0.5">This is just for you — to tell your backups apart.</div>
           </div>
 
           {/* Drive: folder name */}
           {backendType === 'drive' && (
             <div>
-              <label className="block text-[10px] text-fg-muted mb-1">Folder in Google Drive</label>
+              <label className="block text-3xs text-fg-muted mb-1">Folder in Google Drive</label>
               {/* Shared FIELD surface (spec change 20). aria-label mirrors the
                   visible label, which isn't linked via htmlFor. */}
               <TextInput
@@ -380,7 +380,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                 aria-label="Folder in Google Drive"
                 className="w-full"
               />
-              <div className="text-[10px] text-fg-muted mt-0.5">
+              <div className="text-3xs text-fg-muted mt-0.5">
                 We'll create a folder called "{driveFolder || 'Claude'}" in your Drive if it doesn't exist.
               </div>
             </div>
@@ -422,7 +422,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                         className="w-full"
                       />
                       {ghUsername && (
-                        <div className="text-[10px] text-fg-muted mt-0.5">
+                        <div className="text-3xs text-fg-muted mt-0.5">
                           This will be created as {ghUsername}/{repoName || 'claude-sync'}
                         </div>
                       )}
@@ -453,7 +453,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                         aria-label="Existing repository URL"
                         className="w-full"
                       />
-                      <div className="text-[10px] text-fg-muted mt-0.5">Paste the full URL of your private repository.</div>
+                      <div className="text-3xs text-fg-muted mt-0.5">Paste the full URL of your private repository.</div>
                     </div>
                   )}
                 </div>
@@ -463,9 +463,9 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
 
           {/* iCloud: show detected path */}
           {backendType === 'icloud' && icloudPath && (
-            <div className="px-3 py-2.5 rounded-lg bg-inset/50 text-[11px] text-fg-dim">
+            <div className="px-3 py-2.5 rounded-lg bg-inset/50 text-2xs text-fg-dim">
               Your data will be stored in iCloud Drive at:<br />
-              <span className="text-fg font-mono text-[10px]">{icloudPath}</span>
+              <span className="text-fg font-mono text-3xs">{icloudPath}</span>
             </div>
           )}
 
@@ -485,14 +485,14 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               />
               <span className="text-xs text-fg">Back up automatically after changes</span>
             </label>
-            <div className="text-[10px] text-fg-muted mt-0.5 ml-10">
+            <div className="text-3xs text-fg-muted mt-0.5 ml-10">
               Turn off to only sync when you choose to.
             </div>
           </div>
 
           {/* Error message */}
           {error && (
-            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-[11px] text-red-400">
+            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-2xs text-red-400">
               {error}
             </div>
           )}
@@ -525,7 +525,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               isDup = dupes.some(b => (b.config.ICLOUD_PATH || '') === icloudPath);
             }
             return isDup ? (
-              <div className="px-3 py-2 rounded-lg bg-inset/50 text-[11px] text-fg-dim">
+              <div className="px-3 py-2 rounded-lg bg-inset/50 text-2xs text-fg-dim">
                 Heads up: you already have a backup pointing to this exact destination (same account and folder). Adding another is safe, but it'll just duplicate what the existing one does. If you meant a different account, cancel and sign into that account first.
               </div>
             ) : null;
@@ -569,7 +569,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
             <span className="text-green-400 text-3xl">{'\u2713'}</span>
           </div>
           <div className="text-fg font-medium text-sm mb-2">You're all set!</div>
-          <div className="text-fg-muted text-[11px] mb-6 max-w-xs">
+          <div className="text-fg-muted text-2xs mb-6 max-w-xs">
             Your first backup is syncing now. Backups happen automatically every 15 minutes.
             You can manage them anytime from the Sync panel.
           </div>
@@ -681,7 +681,7 @@ function PrereqCheckStep({
         {/* Action: install rclone */}
         {needsRclone && !checking && (
           <div className="pt-2 space-y-2">
-            <div className="text-[11px] text-fg-dim">
+            <div className="text-2xs text-fg-dim">
               YouCoded needs a small helper tool to connect to Google Drive.
             </div>
             {/* Another hardcoded blue survivor (spec change 55) — now the theme accent.
@@ -695,7 +695,7 @@ function PrereqCheckStep({
               )}
               {installing ? 'Installing...' : 'Install Now'}
             </Button>
-            <div className="text-[10px] text-fg-muted">This usually takes about a minute.</div>
+            <div className="text-3xs text-fg-muted">This usually takes about a minute.</div>
           </div>
         )}
 
@@ -711,7 +711,7 @@ function PrereqCheckStep({
 
         {/* Install error */}
         {installError && (
-          <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-[11px] text-red-400">
+          <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-2xs text-red-400">
             {installError}
             <div className="mt-1">
               <button className="text-accent underline" onClick={() => claude.openExternal('https://rclone.org/install/')}>
@@ -735,17 +735,17 @@ function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
   const os: DesktopOS = checkIsAndroid() ? 'other' : detectDesktopOS();
   return (
     <div className="pt-2 space-y-2">
-      <div className="text-[11px] text-fg-dim">
+      <div className="text-2xs text-fg-dim">
         iCloud Drive wasn't found on this computer.
       </div>
       {os === 'mac' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>On macOS, enable it in <span className="text-fg-dim">System Settings &gt; Apple ID &gt; iCloud &gt; iCloud Drive</span>.</div>
           <div>Make sure iCloud Drive is turned on and has finished its first sync, then check again.</div>
         </div>
       )}
       {os === 'windows' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>On Windows, iCloud isn't built in — you need to install <span className="text-fg-dim">iCloud for Windows</span> from the Microsoft Store or Apple's website.</div>
           <div className="flex flex-wrap gap-2 pt-1">
             <button className="text-accent underline" onClick={() => claude.openExternal('https://apps.microsoft.com/detail/9PKTQ5699M62')}>
@@ -760,13 +760,13 @@ function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
         </div>
       )}
       {os === 'linux' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>iCloud Drive isn't officially supported on Linux — Apple doesn't provide a client.</div>
           <div>Use <span className="text-fg-dim">Google Drive</span> or <span className="text-fg-dim">GitHub</span> for backup on this computer instead.</div>
         </div>
       )}
       {os === 'other' && (
-        <div className="text-[10px] text-fg-muted">
+        <div className="text-3xs text-fg-muted">
           Couldn't detect your operating system. iCloud Drive works best on macOS and Windows. If you're on Linux, try Google Drive or GitHub instead.
         </div>
       )}
@@ -823,7 +823,7 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
 
   return (
     <div className="pt-2 space-y-2">
-      <div className="text-[11px] text-fg-dim">
+      <div className="text-2xs text-fg-dim">
         YouCoded needs GitHub's command-line tool (gh) to connect your account.
       </div>
 
@@ -837,12 +837,12 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
             )}
             {installing ? 'Installing...' : 'Install Now'}
           </Button>
-          <div className="text-[10px] text-fg-muted">This usually takes about a minute.</div>
+          <div className="text-3xs text-fg-muted">This usually takes about a minute.</div>
         </div>
       )}
 
       {installError && (
-        <div className="text-[10px] text-destructive-fg">
+        <div className="text-3xs text-destructive-fg">
           Couldn't install it automatically: {installError}
         </div>
       )}
@@ -850,21 +850,21 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
       {/* Manual instructions: only after an automated attempt failed (or on a
           platform where we can't run one). */}
       {(installError || !canAutoInstall) && os === 'mac' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>On macOS, the easiest way is Homebrew. In Terminal, run:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">brew install gh</div>
           <div>No Homebrew? Download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
         </div>
       )}
       {(installError || !canAutoInstall) && os === 'windows' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>On Windows, download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
           <div>Or, if you use winget, open PowerShell and run:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">winget install GitHub.cli</div>
         </div>
       )}
       {(installError || !canAutoInstall) && os === 'linux' && (
-        <div className="text-[10px] text-fg-muted space-y-1">
+        <div className="text-3xs text-fg-muted space-y-1">
           <div>On Linux, install with your package manager:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">sudo apt install gh  # Debian/Ubuntu</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">sudo dnf install gh  # Fedora</div>
@@ -872,12 +872,12 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
         </div>
       )}
       {(installError || !canAutoInstall) && os === 'other' && (
-        <div className="text-[10px] text-fg-muted">
+        <div className="text-3xs text-fg-muted">
           Install from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>, then come back and tap "Check Again".
         </div>
       )}
       {(installError || !canAutoInstall) && (
-        <div className="text-[10px] text-fg-muted">After installing, come back and tap "Check Again".</div>
+        <div className="text-3xs text-fg-muted">After installing, come back and tap "Check Again".</div>
       )}
       {/* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */}
       <Button variant="secondary" onClick={onRecheck}>
@@ -894,7 +894,7 @@ function PrereqRow({ label, status }: { label: string; status: 'checking' | 'rea
     <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/30">
       <StatusIcon status={status} />
       <span className="text-xs text-fg">{label}</span>
-      <span className="text-[10px] text-fg-muted ml-auto">
+      <span className="text-3xs text-fg-muted ml-auto">
         {status === 'checking' ? 'checking...' : status === 'ready' ? 'ready' : 'needed'}
       </span>
     </div>
@@ -972,15 +972,15 @@ function AuthStep({
 
         {!waiting ? (
           <>
-            <div className="text-fg-dim text-[11px] mb-6 max-w-xs space-y-2">
+            <div className="text-fg-dim text-2xs mb-6 max-w-xs space-y-2">
               <div>A browser window will open for you to sign in. After you sign in, come back here — it'll update automatically.</div>
               {isReconnect && backendType === 'drive' && (
-                <div className="text-amber-400 text-[10px] pt-1">
+                <div className="text-amber-400 text-3xs pt-1">
                   Important: sign in with the <strong>same Google account</strong> you originally connected. Picking a different account would start a new backup instead of restoring the existing one.
                 </div>
               )}
               {isAdditionalDrive && (
-                <div className="text-amber-400 text-[10px] pt-1">
+                <div className="text-amber-400 text-3xs pt-1">
                   Tip: make sure you pick the <strong>other</strong> Google account (e.g., work vs. personal vs. school) in the browser — not the same one you already connected. You may need to sign out of Google in your browser first, or use an incognito window.
                 </div>
               )}
@@ -993,11 +993,11 @@ function AuthStep({
           </>
         ) : (
           <>
-            <div className="flex items-center gap-2 text-blue-400 text-[11px] mb-4">
+            <div className="flex items-center gap-2 text-blue-400 text-2xs mb-4">
               <span className="w-4 h-4 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
               Waiting for sign-in...
             </div>
-            <div className="text-fg-muted text-[10px] max-w-xs">
+            <div className="text-fg-muted text-3xs max-w-xs">
               Complete the sign-in in your browser, then come back here. This page will update automatically.
             </div>
           </>
@@ -1006,7 +1006,7 @@ function AuthStep({
         {/* Error + retry */}
         {error && (
           <div className="mt-4 space-y-2 text-center">
-            <div className="text-[11px] text-fg-dim">
+            <div className="text-2xs text-fg-dim">
               Looks like the sign-in didn't complete. No worries — try again when you're ready.
             </div>
             {/* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */}

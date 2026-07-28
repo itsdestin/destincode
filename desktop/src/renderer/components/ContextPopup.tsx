@@ -167,7 +167,7 @@ export default function ContextPopup({
                   thinking about the number the pill shows. Presentation only —
                   the color band is driven by the percentage in BOTH modes. */}
               <div className="pt-1">
-                <div className="text-[11px] font-medium text-fg-muted tracking-wider uppercase mb-1.5">
+                <div className="text-2xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">
                   Status bar shows
                 </div>
                 <div role="radiogroup" aria-label="Context pill display" className="flex w-full rounded-lg overflow-hidden border border-edge-dim">
@@ -187,7 +187,7 @@ export default function ContextPopup({
                     </button>
                   ))}
                 </div>
-                <p className="text-[11px] text-fg-muted mt-1 leading-snug">
+                <p className="text-2xs text-fg-muted mt-1 leading-snug">
                   {contextDisplay === 'percent'
                     ? 'Pill reads “Context: 45% Remaining”.'
                     : 'Pill reads “Context: 35.2k / 64k” — tokens used out of the window.'}
@@ -301,7 +301,7 @@ export default function ContextPopup({
                     >
                       Clear and start over
                     </Button>
-                    <p className="text-[11px] text-fg-muted mt-1 leading-snug">
+                    <p className="text-2xs text-fg-muted mt-1 leading-snug">
                       Erases the visible timeline and resets Claude's memory for this session. No summary is kept.
                     </p>
                   </div>

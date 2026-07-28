@@ -401,6 +401,9 @@ class ManagedSession(
         "Usage Limit Reached", // /rate-limit-options menu — Upgrade / Stop and wait
         "Enable auto mode?", // CC v2.1.83+ first-run opt-in — 4-option auto-mode confirmation
         "Message Flagged", // Model-safeguard fallback — Switch model / Edit prompt and retry
+        // Startup dialog when CLAUDE.md imports files outside the cwd. Previously it was
+        // mislabeled "Trust This Folder?" by the stale trust anchor (2026-07-26).
+        "Allow External Imports?",
     )
 
     /** Detect permission mode from visible screen only (not raw buffer).
@@ -446,20 +449,19 @@ class ManagedSession(
             absentPollCounts.remove("auth")
             if ("auth" !in activePrompts && "auth" !in completedPromptIds) {
                 activePrompts.add("auth")
-                // Anchor-then-navigate: overshoot UP to snap Ink's cursor to
-                // the top of the menu, THEN press DOWN to the target index.
-                // Cursor-independent — survives user arrowing in the terminal
-                // before clicking a button. Matches desktop InkSelectParser.
-                val up = "\u001b[A"
-                val down = "\u001b[B"
+                // Type the option's NUMBER — the only cursor-independent way to
+                // pick one. Arrows in a write that ends with "\r" are discarded by
+                // CC, which then acts on the Enter alone and confirms whatever is
+                // highlighted; and these menus wrap rather than clamp, so the old
+                // "overshoot UP to anchor at the top" trick was wrong too. Measured
+                // 2026-07-26 — see InkSelectParser.toPromptButtons.
                 val options = listOf(
                     "Claude Account (Pro/Max/Team)",
                     "Anthropic Console (API)",
                     "3rd-Party Platform",
                 )
-                val anchorUps = up.repeat(options.size + 2)
                 broadcastPrompt("auth", "Select Login Method", options.mapIndexed { idx, label ->
-                    PromptButton(label, anchorUps + down.repeat(idx) + "\r")
+                    PromptButton(label, (idx + 1).toString())
                 })
             }
             return
@@ -475,22 +477,20 @@ class ManagedSession(
 
         // --- Hardcoded: Bypass permissions warning ---
         // Two-option menu: "No, exit" (index 0, default selected) and
-        // "Yes, accept" (index 1). Use anchor-then-navigate so "Accept" works
-        // regardless of current ❯ position (previously we read ❯ and chose
-        // between "\r" and "DOWN\r", which was brittle if the user had arrowed
-        // in the terminal view). Exit still sends just ESC.
+        // "Yes, accept" (index 1). This one is hardcoded rather than parsed, so we
+        // don't know whether CC numbers its options — it therefore uses the arrow
+        // FALLBACK: one DOWN, then the Enter as a SEPARATE write. Arrows and "\r"
+        // in the same write are not both honoured (CC drops the arrows and acts on
+        // the Enter alone, which here would pick "No, exit"). Exit still sends ESC.
         if ("bypass permission" in screenLower && "enter to confirm" in screenLower) {
             absentPollCounts.remove("bypass_warning")
             if ("bypass_warning" !in activePrompts && "bypass_warning" !in completedPromptIds) {
                 activePrompts.add("bypass_warning")
-                val up = "\u001b[A"
                 val down = "\u001b[B"
-                // 2 options → 4 UP presses (options.size + 2) anchors at top.
-                val anchorUps = up.repeat(4)
                 broadcastPrompt("bypass_warning",
                     "Bypass Permissions Mode — Claude will run tools without asking for approval.",
                     listOf(
-                        PromptButton("Accept the Risks", anchorUps + down.repeat(1) + "\r"),
+                        PromptButton("Accept the Risks", input = down, submitInput = "\r"),
                         PromptButton("Exit", "\u001b"),
                     ))
             }
@@ -610,6 +610,9 @@ class ManagedSession(
                         arr.put(JSONObject().apply {
                             put("label", btn.label)
                             put("input", btn.input)
+                            // Second write for the arrow fallback only — arrows and
+                            // "\r" must never share one pty write (see InkSelectParser).
+                            btn.submitInput?.let { put("submitInput", it) }
                         })
                     }
                 })

@@ -62,7 +62,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
       {/* How this page relates to the WeCoded sign-in the user just came from —
           the exact confusion this layout exists to prevent: both use GitHub,
           for two different jobs. */}
-      <p className="text-[11px] text-fg-dim leading-relaxed">
+      <p className="text-2xs text-fg-dim leading-relaxed">
         Services YouCoded connects to on your behalf. These are separate from
         your YouCoded account sign-in.
       </p>
@@ -75,7 +75,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
             <div className="text-xs text-fg font-medium">
               GitHub{connected && status?.login ? ` · @${status.login}` : ''}
             </div>
-            <div className="text-[10px] text-fg-muted">
+            <div className="text-3xs text-fg-muted">
               {connected
                 ? 'Stores your synced data and publishes your themes, skills, and bug reports.'
                 : 'Needed for cross-device sync and publishing themes & skills.'}
@@ -96,7 +96,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
         {/* Keychain-less Linux stores the token as a plain 0600 file — the
             degraded policy is explicit everywhere, including here. */}
         {connected && status?.degradedStorage && (
-          <p className="text-[11px] text-amber-500 leading-relaxed">
+          <p className="text-2xs text-amber-500 leading-relaxed">
             Your sign-in is stored without system-keychain encryption on this
             computer (no keychain service was available). It is protected only
             by file permissions.
@@ -104,7 +104,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
         )}
 
         {viaGhCli && (
-          <p className="text-[11px] text-fg-muted leading-relaxed">
+          <p className="text-2xs text-fg-muted leading-relaxed">
             Connected through the GitHub CLI installed on this computer, so
             there's nothing for YouCoded to disconnect here — to sign out, run{' '}
             <code className="font-mono">gh auth logout</code> in a terminal.
@@ -113,7 +113,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
 
         {confirming && (
           <div className="space-y-2">
-            <p className="text-[11px] text-fg-2 leading-relaxed">
+            <p className="text-2xs text-fg-2 leading-relaxed">
               This removes the saved GitHub sign-in from this device. Sync will
               pause until you reconnect; your data on GitHub is not deleted.
             </p>
@@ -128,7 +128,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
           </div>
         )}
 
-        {error && <p className="text-[11px] text-destructive-fg">{error}</p>}
+        {error && <p className="text-2xs text-destructive-fg">{error}</p>}
       </div>
 
       {showConnect && (

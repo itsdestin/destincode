@@ -64,7 +64,7 @@ export default function SignInPromptModal({ open, onClose, title, message }: Pro
             </svg>
             {signInPending ? "Waiting for browser…" : "Sign in to YouCoded"}
           </Button>
-          <p className="text-[10px] text-fg-muted text-center">
+          <p className="text-3xs text-fg-muted text-center">
             Uses your GitHub profile to sign in — GitHub only shares your public info.
           </p>
           {signInPending && (

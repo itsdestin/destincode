@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { EngineModelState } from '../../shared/engine-types';
-import { Button } from './ui';
+import { Button, ProgressBar } from './ui';
+import BrailleSpinner from './BrailleSpinner';
 
 // Centered status strip that floats just ABOVE the input area for a NATIVE
 // (local-model) session. States (2026-07-14 memory-lifecycle UX):
@@ -111,7 +112,12 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
       <div className="layer-surface px-4 py-3">
         {loading ? (
           <div className="flex flex-col gap-2">
-            <div className="flex items-baseline justify-center gap-1.5 text-sm text-fg-2">
+            {/* Change 49 (requested by Destin 2026-07-16): a spinner at the head of
+                the line, matching the §1.6 state-family anatomy — spinner means
+                working. items-center rather than items-baseline: the braille glyph
+                has no meaningful baseline to align text against. */}
+            <div className="flex items-center justify-center gap-1.5 text-sm text-fg-2">
+              <BrailleSpinner size="sm" />
               {finalizing ? (
                 <>
                   <span className="italic">Preparing</span>
@@ -144,16 +150,17 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
               // initializing. Never sits frozen at 100%.
               <div className="model-load-finalize h-1.5 rounded-full" />
             ) : hasProgress ? (
-              // Determinate: fill tracks resident bytes / total size.
-              <div className="h-1.5 rounded-full bg-well overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
+              // Determinate: fill tracks resident bytes / total size. Change 46 —
+              // this is the only one of the three states that is a real progress
+              // bar, so it is the only one the primitive can own. It also gains a
+              // role="progressbar" + aria-valuenow it never had.
+              <ProgressBar percent={pct} aria-label={`Loading ${name}`} />
             ) : (
               // Indeterminate: no byte measurement (non-Linux / racing) — sweep.
-              <div className="model-load-track h-1.5 rounded-full bg-well" />
+              // Track moved bg-well -> bg-inset to match the primitive above:
+              // leaving it on bg-well would make the SAME strip change track colour
+              // depending on whether byte progress happened to be available.
+              <div className="model-load-track h-1.5 rounded-full bg-inset" />
             )}
           </div>
         ) : (

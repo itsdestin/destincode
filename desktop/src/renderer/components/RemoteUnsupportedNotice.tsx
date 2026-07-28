@@ -43,7 +43,7 @@ export default function RemoteUnsupportedNotice() {
       aria-live="polite"
       // Bottom-center, above the input chrome. --vvp-offset keeps it clear of
       // the soft keyboard on a phone, the same way .jump-to-bottom does.
-      className="fixed left-1/2 -translate-x-1/2 z-[9500] max-w-[min(28rem,calc(100vw-2rem))] px-3 py-2 rounded-lg bg-panel border border-edge shadow-lg text-[13px] text-fg-2 flex items-start gap-2"
+      className="fixed left-1/2 -translate-x-1/2 z-[9500] max-w-[min(28rem,calc(100vw-2rem))] px-3 py-2 rounded-lg bg-panel border border-edge shadow-lg text-sm-tight text-fg-2 flex items-start gap-2"
       style={{ bottom: `calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px) + 0.75rem)` }}
     >
       <span className="shrink-0 mt-0.5 text-fg-muted" aria-hidden>

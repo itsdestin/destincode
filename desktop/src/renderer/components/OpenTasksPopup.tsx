@@ -57,13 +57,13 @@ function Row({ t, group, onMarkInactive, onUnhide }: {
       <div className="pt-1.5"><StatusDot group={group} /></div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-1.5">
-          <span className="text-[11px] font-mono text-fg-muted">#{t.id}</span>
+          <span className="text-2xs font-mono text-fg-muted">#{t.id}</span>
           <span className={`text-xs ${group === 'in_progress' ? 'text-blue-400 italic' : 'text-fg'} ${group === 'completed' ? 'line-through' : ''}`}>
             {title}
           </span>
-          {isDeleted && <span className="text-[10px] px-1 rounded bg-inset text-fg-muted">deleted</span>}
+          {isDeleted && <span className="text-3xs px-1 rounded bg-inset text-fg-muted">deleted</span>}
         </div>
-        {showDesc && <div className="text-[11px] text-fg-muted mt-0.5 leading-tight">{t.description}</div>}
+        {showDesc && <div className="text-2xs text-fg-muted mt-0.5 leading-tight">{t.description}</div>}
       </div>
       {group === 'inactive' ? (
         <Button
@@ -96,7 +96,7 @@ function Row({ t, group, onMarkInactive, onUnhide }: {
 
 function SectionHeader({ label }: { label: string }) {
   return (
-    <div className="text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1">
+    <div className="text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1">
       {label}
     </div>
   );
@@ -180,7 +180,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
             <>
               <button
                 aria-expanded={completedOpen}
-                className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
+                className="w-full text-left text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
                 onClick={() => setCompletedOpen(v => !v)}
               >
                 <span>Completed</span>
@@ -197,7 +197,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
             <>
               <button
                 aria-expanded={inactiveOpen}
-                className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
+                className="w-full text-left text-3xs uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
                 onClick={() => setInactiveOpen(v => !v)}
               >
                 <span>Marked Inactive</span>

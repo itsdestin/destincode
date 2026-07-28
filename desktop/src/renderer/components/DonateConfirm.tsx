@@ -41,7 +41,7 @@ export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () =>
           </svg>
           <span className="text-sm font-bold text-fg">Buy Me a Coffee</span>
         </div>
-        <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
+        <p className="text-2xs text-fg-dim mb-5">Okay to open donation link?</p>
         <div className="flex gap-2">
           {/* py-2.5 kept as a deliberate override: this two-button footer is
               the whole modal, so md's py-1.5 reads too slight here. */}

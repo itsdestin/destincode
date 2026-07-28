@@ -48,7 +48,7 @@ export function ProjectDetailOverlay({ title, onClose, tools, meta, children }: 
             overlay could not be closed. CloseButton is deliberately outside
             the wrapping group so it stays reachable on the first line. */}
         <header className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-edge shrink-0">
-          <span className="text-[15px] font-semibold text-fg truncate min-w-0 flex-1">{title}</span>
+          <span className="text-base font-semibold text-fg truncate min-w-0 flex-1">{title}</span>
           {/* order flips the close button: narrow keeps it on the title line
               (tools wrap underneath); sm+ restores the original title · tools ·
               close reading order. */}

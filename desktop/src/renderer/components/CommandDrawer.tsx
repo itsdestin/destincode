@@ -312,7 +312,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* Favorites section */}
               {favsSorted.length > 0 && (
                 <section className="px-2 pt-2">
-                  <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
+                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {favsSorted.map(renderSkillCard)}
                   </div>
@@ -322,7 +322,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on */}
               {!favoritesOnly && othersSorted.length > 0 && (
                 <section className="px-2 pt-3">
-                  <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
+                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {othersSorted.map(renderSkillCard)}
                   </div>
@@ -358,7 +358,7 @@ function AddSkillsCard({ onClick }: { onClick: () => void }) {
     >
       <span className="text-lg font-medium leading-none">+</span>
       <span className="text-sm font-medium mt-1">Add Skills</span>
-      <span className="text-[11px] text-fg-muted mt-1">Browse marketplace</span>
+      <span className="text-2xs text-fg-muted mt-1">Browse marketplace</span>
     </button>
   );
 }

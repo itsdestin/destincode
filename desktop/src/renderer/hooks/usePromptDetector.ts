@@ -22,6 +22,10 @@ const SETUP_PROMPT_TITLES = new Set([
   'Usage Limit Reached', // /rate-limit-options menu — Upgrade / Stop and wait
   'Enable auto mode?', // CC v2.1.83+ first-run opt-in: 4-option auto-mode confirmation
   'Message Flagged', // Fable 5 model-safeguard fallback — Switch model / Edit prompt and retry
+  // Startup dialog when CLAUDE.md imports files outside the cwd. Previously it
+  // was mislabeled 'Trust This Folder?' by the stale trust anchor and hijacked
+  // TrustGate's full-screen takeover; now it gets its own card (2026-07-26).
+  'Allow External Imports?',
 ]);
 
 // After a permission response (PERMISSION_RESPONDED/EXPIRED clears
@@ -191,7 +195,11 @@ export function usePromptDetector() {
               promptId: menu.id,
               title: menu.title,
               description: menu.description,
-              buttons: buttons.map((b) => ({ label: b.label, input: b.input })),
+              buttons: buttons.map((b) => ({
+                label: b.label,
+                input: b.input,
+                submitInput: b.submitInput,
+              })),
             });
           }, PROMPT_DEBOUNCE_MS);
 

@@ -801,7 +801,7 @@ export default function SessionStrip({
                     never clutters a collapsed dot-only pill. */}
                 {s.provider === 'native' && showName && (
                   <span
-                    className="shrink-0 text-[9px] px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
+                    className="shrink-0 text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
                     title="YouCoded native session"
                   >
                     {`YouCoded · ${s.harnessId === 'coder' ? 'Coder' : 'Assistant'}`}
@@ -818,7 +818,7 @@ export default function SessionStrip({
         {sessions.length - visibleSessions.length > 0 && (
           <button
             onClick={handleMenuToggle}
-            className="inline-flex items-center justify-center min-w-[18px] h-[16px] px-1 ml-1 rounded-full bg-inset text-fg-2 text-[10px] font-semibold leading-none hover:bg-well transition-colors"
+            className="inline-flex items-center justify-center min-w-[18px] h-[16px] px-1 ml-1 rounded-full bg-inset text-fg-2 text-3xs font-semibold leading-none hover:bg-well transition-colors"
             title={`${sessions.length - visibleSessions.length} more session${sessions.length - visibleSessions.length === 1 ? '' : 's'}`}
             aria-label={`${sessions.length - visibleSessions.length} more sessions`}
           >
@@ -867,7 +867,7 @@ export default function SessionStrip({
           {/* Android only ever has one window, so the "in this window" scoping label is meaningless there */}
           {sessions.length > 0 && !isAndroid() && (
             <>
-              <div className="px-3 pt-1.5 text-[10px] uppercase tracking-wider text-fg-muted">
+              <div className="px-3 pt-1.5 text-3xs uppercase tracking-wider text-fg-muted">
                 Sessions in this window
               </div>
             </>
@@ -915,11 +915,11 @@ export default function SessionStrip({
                       <SessionName name={s.name} />
                       <span className="shrink-0 flex flex-col items-end gap-0.5 ml-auto">
                         {s.permissionMode === 'bypass' && (
-                          <span className="text-[9px] font-medium px-1 py-0.5 rounded-sm bg-[#DD4444]/20 text-[#DD4444]">
+                          <span className="text-4xs font-medium px-1 py-0.5 rounded-sm bg-[#DD4444]/20 text-[#DD4444]">
                             DANGER
                           </span>
                         )}
-                        <span className="text-[10px] text-fg-muted whitespace-nowrap">
+                        <span className="text-3xs text-fg-muted whitespace-nowrap">
                           {s.cwd.replace(/\\/g, '/').split('/').pop()}
                         </span>
                       </span>
@@ -963,7 +963,7 @@ export default function SessionStrip({
             return (
               <>
                 <div className="border-t border-edge" />
-                <div className="px-3 pt-1.5 text-[10px] uppercase tracking-wider text-fg-muted">
+                <div className="px-3 pt-1.5 text-3xs uppercase tracking-wider text-fg-muted">
                   Sessions in other windows
                 </div>
                 <div className="py-1">
@@ -981,7 +981,7 @@ export default function SessionStrip({
                         >
                           <SessionDot color={color} isActive={false} />
                           <SessionName name={s.name} />
-                          <span className="ml-auto shrink-0 text-[10px] text-fg-muted whitespace-nowrap flex items-center gap-1">
+                          <span className="ml-auto shrink-0 text-3xs text-fg-muted whitespace-nowrap flex items-center gap-1">
                             <span>→</span>
                             <span>{g.label}</span>
                           </span>
@@ -999,7 +999,7 @@ export default function SessionStrip({
           {showNewForm ? (
             <div className="p-3 flex flex-col gap-2 rounded-b-lg overflow-hidden">
               <div>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                 <FolderSwitcher
                   value={newCwd}
                   onChange={setNewCwd}
@@ -1022,13 +1022,13 @@ export default function SessionStrip({
                   which chooses a model via the provider/model binding picker above. */}
               {runtime !== 'native' && (
                 <div>
-                  <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                  <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                   <div className="flex gap-1">
                     {MODELS.map((m) => (
                       <button
                         key={m}
                         onClick={() => setNewModel(m)}
-                        className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
+                        className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors flex items-center justify-center ${
                           newModel === m
                             ? 'bg-accent text-on-accent font-medium'
                             : 'bg-inset text-fg-dim hover:bg-edge'
@@ -1043,7 +1043,7 @@ export default function SessionStrip({
               )}
               {/* Skip Permissions */}
               <div className="flex items-center justify-between">
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
+                <label className="text-3xs uppercase tracking-wider text-fg-muted inline-flex items-center">
                   Skip Permissions
                   <SkipPermissionsInfoTooltip />
                 </label>
@@ -1062,12 +1062,12 @@ export default function SessionStrip({
                   the same token as the toggle beside it, so a community theme
                   restyling its red doesn't leave the two out of sync. */}
               {dangerous && (
-                <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
               )}
               {/* Launch in new window — hidden on platforms without multi-window support */}
               {detachAvailable && (
                 <div className="flex items-center justify-between">
-                  <label className="text-[10px] uppercase tracking-wider text-fg-muted">Launch in New Window</label>
+                  <label className="text-3xs uppercase tracking-wider text-fg-muted">Launch in New Window</label>
                   {/* Shared Toggle (change 15) — same accent on-state as before. */}
                   <Toggle
                     checked={launchInNewWindow}

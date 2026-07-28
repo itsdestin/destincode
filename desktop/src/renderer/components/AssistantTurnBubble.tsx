@@ -53,7 +53,7 @@ function ReasoningSection({ content }: { content: string }) {
     <div className="mb-2">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-1 text-[11px] text-fg-muted hover:text-fg-dim select-none"
+        className="flex items-center gap-1 text-2xs text-fg-muted hover:text-fg-dim select-none"
         title="Show the model's reasoning"
       >
         <ChevronIcon className="w-3 h-3" expanded={expanded} />
@@ -420,7 +420,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   carries no abnormal signal worth surfacing to the user. */}
               {isLastBubble && turn.stopReason && turn.stopReason !== 'end_turn' && <StopReasonFooter reason={turn.stopReason} provider={provider} />}
               {showTimestamps && isLastBubble && turn.timestamp && (
-                <div className="bubble-timestamp text-[9px] text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
+                <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
                   {formatBubbleTime(turn.timestamp)}
                 </div>
               )}
@@ -466,13 +466,13 @@ function PlanBubbleContent({
         <div className="mt-2 pt-2 border-t border-edge-dim">
           <button
             onClick={() => setShowPrompts((v) => !v)}
-            className="text-[11px] text-fg-muted hover:text-fg-dim flex items-center gap-1"
+            className="text-2xs text-fg-muted hover:text-fg-dim flex items-center gap-1"
           >
             <ChevronIcon className="w-3 h-3" expanded={showPrompts} />
             {prompts.length} allowed {prompts.length === 1 ? 'action' : 'actions'} if approved
           </button>
           {showPrompts && (
-            <pre className="mt-1 text-[11px] text-fg-dim bg-panel rounded-sm p-2 overflow-auto max-h-40">
+            <pre className="mt-1 text-2xs text-fg-dim bg-panel rounded-sm p-2 overflow-auto max-h-40">
               {JSON.stringify(prompts, null, 2)}
             </pre>
           )}

@@ -70,7 +70,7 @@ export default function BrailleBurst({ children, onTrigger, disabled, className,
         return (
           <span
             key={p.id}
-            className="absolute pointer-events-none text-[10px]"
+            className="absolute pointer-events-none text-3xs"
             style={{
               color: p.color,
               left: '50%',

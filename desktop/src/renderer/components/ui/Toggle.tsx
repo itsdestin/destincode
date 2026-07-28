@@ -35,8 +35,13 @@ const TRACK_ON: Record<ToggleTone, string> = {
  * constant means there's nothing to verify: the two states are geometrically
  * identical by construction.)
  */
+// Change 48: coarse-hit. The 36x20 geometry was chosen FOR Android touch, but
+// 20px tall is still less than half the ~44dp guideline on the short axis — the
+// size that made it look right for a phone did not make it easy to hit on one.
+// `.coarse-hit` paints an invisible centred 44x44 target under `pointer: coarse`
+// only, so desktop is byte-identical. The `relative` it needs is already here.
 const TRACK_BASE =
-  'relative w-9 h-5 rounded-full border transition-colors shrink-0 ' +
+  'relative coarse-hit w-9 h-5 rounded-full border transition-colors shrink-0 ' +
   'disabled:opacity-60 disabled:cursor-not-allowed ' +
   FOCUS_RING;
 

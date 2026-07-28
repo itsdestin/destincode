@@ -175,8 +175,8 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
         <div className="space-y-1.5">
           {SHORTCUTS.map(({ keys, description }) => (
             <div key={keys} className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-[11px] text-fg-dim">{description}</span>
-              <kbd className="shrink-0 text-[10px] font-mono text-fg-2 bg-inset border border-edge-dim rounded px-1.5 py-0.5">{keys}</kbd>
+              <span className="text-2xs text-fg-dim">{description}</span>
+              <kbd className="shrink-0 text-3xs font-mono text-fg-2 bg-inset border border-edge-dim rounded px-1.5 py-0.5">{keys}</kbd>
             </div>
           ))}
         </div>
@@ -253,16 +253,28 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
           {/* Header — sits outside the scrolling body so it doesn't fade when
               content scrolls. `settings-drawer-header` adds extra top padding
               on macOS so the title clears the native traffic lights (which
-              sit at window top-left and can't be moved). */}
+              sit at window top-left and can't be moved).
+
+              Change 50 REVERSED (Destin, 2026-07-24, after seeing it in dev): the
+              headerless drawer was approved on 2026-07-16 and built, then rejected
+              on sight. Esc and click-outside do work, but the title row is what
+              tells you WHICH drawer this is, and the ✕ is the affordance a
+              non-technical user actually looks for. Design rule 12 therefore gets
+              NO Settings-drawer exception — the drawer keeps its header like every
+              other overlay. Do not re-delete this without asking.
+
+              The ✕ itself does not revert: it comes back as the shared
+              <CloseButton> rather than the bare `text-lg w-8 h-8` button it was,
+              because every other closer in the app went through that component in
+              tranche 2 (change 76). It also gains a focus ring and an accessible
+              name — the old one announced as just "✕". */}
           <div className="settings-drawer-header shrink-0 flex items-center justify-between px-4 py-3 border-b border-edge">
             <h2 className="text-sm font-bold text-fg">Settings</h2>
-            <button
+            <CloseButton
               onClick={onClose}
-              className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset"
+              label="Close settings"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            >
-              ✕
-            </button>
+            />
           </div>
 
           <div ref={outerScrollRef} className="scroll-fade flex-1 min-h-0">
@@ -340,7 +352,7 @@ function PresetSelector({ category, selectedId, onSelect, customName }: {
         <button
           key={p.id}
           onClick={() => { onSelect(p.id); playPreview(p.id); }}
-          className={`px-2 py-1 rounded text-[10px] transition-colors ${
+          className={`px-2 py-1 rounded text-3xs transition-colors ${
             selectedId === p.id
               ? 'bg-accent text-on-accent font-medium'
               : 'bg-inset text-fg-dim hover:bg-edge'
@@ -353,7 +365,7 @@ function PresetSelector({ category, selectedId, onSelect, customName }: {
       {customName ? (
         <button
           onClick={() => { onSelect(CUSTOM_SOUND_ID); playPreview(CUSTOM_SOUND_ID, category); }}
-          className={`px-2 py-1 rounded text-[10px] transition-colors ${
+          className={`px-2 py-1 rounded text-3xs transition-colors ${
             selectedId === CUSTOM_SOUND_ID
               ? 'bg-accent text-on-accent font-medium'
               : 'bg-inset text-fg-dim hover:bg-edge'
@@ -429,7 +441,7 @@ function SoundCategorySection({ category, label, description, dotColor }: {
         </div>
         <Toggle enabled={enabled} onToggle={handleToggle} label={label} />
       </div>
-      <p className="text-[10px] text-fg-muted mb-2">{description}</p>
+      <p className="text-3xs text-fg-muted mb-2">{description}</p>
       {enabled && (
         <>
           <PresetSelector
@@ -547,7 +559,7 @@ function SoundButton() {
                 <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
                 <section>
-                  <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Volume</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Volume</h3>
                   <div className="flex items-center gap-3">
                     {/* Mute toggle */}
                     <button onClick={handleToggleMute} className="text-fg-muted hover:text-fg shrink-0">
@@ -575,7 +587,7 @@ function SoundButton() {
                       onChange={handleVolumeChange}
                       className="flex-1 h-1 accent-accent"
                     />
-                    <span className="text-[10px] text-fg-muted w-8 text-right">{Math.round(volume * 100)}%</span>
+                    <span className="text-3xs text-fg-muted w-8 text-right">{Math.round(volume * 100)}%</span>
                   </div>
                 </section>
 
@@ -821,9 +833,9 @@ function BuddyButton() {
                 <span className="text-xs text-fg font-medium">Show buddy floater</span>
                 <Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />
               </div>
-              <p className="text-[10px] text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
+              <p className="text-3xs text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
               {enabled && dismissed && (
-                <p className="text-[10px] text-fg-muted mt-2">
+                <p className="text-3xs text-fg-muted mt-2">
                   Hidden until restart{' · '}
                   <button onClick={showNow} className="text-accent hover:underline">Show now</button>
                 </p>
@@ -835,12 +847,12 @@ function BuddyButton() {
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-edge">
                   <div>
                     <span className="text-xs text-fg font-medium block">Pin buddy above other windows (KDE only)</span>
-                    <p className="text-[10px] text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
+                    <p className="text-3xs text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
                     {/* Honest, non-committal per-action feedback — NOT the toggle's
                         own state (that's the preference, above). Only appears right
                         after a click that couldn't reach KWin; see toggleKeepAbove. */}
                     {keepAboveHint && (
-                      <p className="text-[10px] text-fg-muted mt-1">{keepAboveHint}</p>
+                      <p className="text-3xs text-fg-muted mt-1">{keepAboveHint}</p>
                     )}
                   </div>
                   <Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />
@@ -993,14 +1005,14 @@ function RemoteButton({
                             <div className="mt-2">
                               {/* Remind users that Tailscale must be installed + running on the receiving device too */}
                               <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                                <p className="text-[10px] text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                                <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
+                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
+                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
                               </div>
-                              <p className="text-[10px] text-fg-muted mb-2">Then scan to connect:</p>
+                              <p className="text-3xs text-fg-muted mb-2">Then scan to connect:</p>
                               <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                                 <QRCodeSVG value={tailscale.url} size={140} />
                               </div>
-                              <p className="text-[10px] text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
+                              <p className="text-3xs text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
                               <Button variant="secondary" size="sm" onClick={onCopyLink} className="w-full mt-2">
                                 {copied ? 'Copied!' : 'Copy link'}
                               </Button>
@@ -1009,8 +1021,8 @@ function RemoteButton({
                             <div className="space-y-2">
                               {/* Persistent reminder — visible whenever Tailscale is ready but no device has connected yet */}
                               <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2">
-                                <p className="text-[10px] text-amber-400 font-medium mb-0.5">Other device setup required:</p>
-                                <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
+                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Other device setup required:</p>
+                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
                               </div>
                               {/* Was bg-blue-600 with NO text-color class, so the
                                   label inherited the theme fg — near-black on blue
@@ -1022,7 +1034,7 @@ function RemoteButton({
                           )
                         ) : setupStatus === 'confirm' ? (
                           <div className="space-y-2">
-                            <p className="text-[10px] text-fg-2 text-center">This will download and install Tailscale (~50MB) for secure remote access.</p>
+                            <p className="text-3xs text-fg-2 text-center">This will download and install Tailscale (~50MB) for secure remote access.</p>
                             <div className="flex gap-2">
                               <Button variant="secondary" onClick={onCancelSetup} className="flex-1">Cancel</Button>
                               <Button onClick={onConfirmSetup} className="flex-1">Install</Button>
@@ -1031,12 +1043,12 @@ function RemoteButton({
                         ) : setupStatus === 'installing' ? (
                           <div className="text-center py-1">
                             <p className="text-xs text-fg-2 animate-pulse">Installing Tailscale...</p>
-                            <p className="text-[10px] text-fg-muted mt-1">This may take a few minutes</p>
+                            <p className="text-3xs text-fg-muted mt-1">This may take a few minutes</p>
                           </div>
                         ) : setupStatus === 'authenticating' ? (
                           <div className="text-center py-1">
                             <p className="text-xs text-fg-2 animate-pulse">Authenticating...</p>
-                            <p className="text-[10px] text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
+                            <p className="text-3xs text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
                           </div>
                         ) : setupStatus === 'done' ? (
                           <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
@@ -1048,13 +1060,13 @@ function RemoteButton({
                         ) : tailscale?.installed && !tailscale.connected ? (
                           // Fix: Tailscale is installed but VPN is off — tailscale.url is null in this state,
                           // so we used to fall through to the install-button branch and pretend it wasn't installed.
-                          <p className="text-[11px] text-fg-2 text-center py-1">
+                          <p className="text-2xs text-fg-2 text-center py-1">
                             Tailscale is installed, but the VPN isn't active. Open the Tailscale app and turn it on, then come back here.
                           </p>
                         ) : tailscale?.installed && !config?.hasPassword ? (
                           // Installed + connected but no password yet — guide the user down to the password field
                           // rather than re-prompting to install.
-                          <p className="text-[11px] text-fg-2 text-center py-1">
+                          <p className="text-2xs text-fg-2 text-center py-1">
                             Set a password below to finish enabling remote access.
                           </p>
                         ) : (
@@ -1067,7 +1079,7 @@ function RemoteButton({
 
                     {/* Server settings */}
                     <section>
-                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Server</h3>
+                      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Server</h3>
 
                       <label className="flex items-center justify-between py-2 cursor-pointer">
                         <span className="text-xs text-fg-2">Enabled</span>
@@ -1077,14 +1089,14 @@ function RemoteButton({
                           (port already bound, permission denied). Show the real
                           reason here — the toggle has already snapped back off. */}
                       {enableError && (
-                        <p className="text-[11px] text-destructive-fg pb-2">{enableError}</p>
+                        <p className="text-2xs text-destructive-fg pb-2">{enableError}</p>
                       )}
 
                       <div className="py-2">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-fg-2">Password</span>
                           {config?.hasPassword && (
-                            <span className="text-[10px] text-green-400">Set</span>
+                            <span className="text-3xs text-green-400">Set</span>
                           )}
                         </div>
                         {/* The Set button moves INSIDE the field (change 77): this is a
@@ -1120,7 +1132,7 @@ function RemoteButton({
                             <button
                               key={opt.value}
                               onClick={() => onSetKeepAwake(opt.value)}
-                              className={`flex-1 px-1.5 py-1 rounded-sm text-[10px] transition-colors ${
+                              className={`flex-1 px-1.5 py-1 rounded-sm text-3xs transition-colors ${
                                 config?.keepAwakeHours === opt.value
                                   ? 'bg-accent text-on-accent font-medium'
                                   : 'bg-inset text-fg-dim hover:bg-edge'
@@ -1154,14 +1166,14 @@ function RemoteButton({
                     {/* Remote Clients section */}
                     {hasClients && (
                       <section>
-                        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Connected Devices</h3>
+                        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Connected Devices</h3>
 
                         <div className="space-y-1">
                           {clients.map(client => (
                             <div key={client.id} className="flex items-center justify-between py-1.5 px-2 rounded-sm bg-inset/50">
                               <div>
                                 <span className="text-xs text-fg-2 font-mono">{client.ip}</span>
-                                <span className="text-[10px] text-fg-muted ml-2">{timeAgo(client.connectedAt)}</span>
+                                <span className="text-3xs text-fg-muted ml-2">{timeAgo(client.connectedAt)}</span>
                               </div>
                               <button
                                 onClick={() => onDisconnectClient(client.id)}
@@ -1190,14 +1202,14 @@ function RemoteButton({
                         </div>
                         {/* Remind users that Tailscale must be installed + running on the receiving device too */}
                         <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                          <p className="text-[10px] text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                          <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
+                          <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
+                          <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
                         </div>
-                        <p className="text-[10px] text-fg-muted mb-2">Then scan QR or copy link to connect:</p>
+                        <p className="text-3xs text-fg-muted mb-2">Then scan QR or copy link to connect:</p>
                         <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                           <QRCodeSVG value={tailscale.url} size={140} />
                         </div>
-                        <p className="text-[10px] text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
+                        <p className="text-3xs text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
                         <Button variant="secondary" onClick={onCopyLink} className="w-full mt-2">
                           {copied ? 'Copied!' : 'Copy Link'}
                         </Button>
@@ -1206,7 +1218,7 @@ function RemoteButton({
 
                     {/* Tailscale section */}
                     <section>
-                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Tailscale</h3>
+                      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Tailscale</h3>
 
                       {tailscale?.installed ? (
                         <>
@@ -1215,11 +1227,11 @@ function RemoteButton({
                           <div className="py-2 flex items-center justify-between">
                             <span className="text-xs text-fg-2">Status</span>
                             {tailscale.connected ? (
-                              <span className="text-[10px] text-green-400">
+                              <span className="text-3xs text-green-400">
                                 Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
                               </span>
                             ) : (
-                              <span className="text-[10px] text-fg-muted">VPN not active</span>
+                              <span className="text-3xs text-fg-muted">VPN not active</span>
                             )}
                           </div>
 
@@ -1318,8 +1330,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
     <section>
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
-          <p className="text-[10px] text-fg-muted mt-0.5">New sessions will skip tool approval</p>
+          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
+          <p className="text-3xs text-fg-muted mt-0.5">New sessions will skip tool approval</p>
         </div>
         <Toggle
           enabled={defaults.skipPermissions}
@@ -1330,7 +1342,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
       </div>
       {defaults.skipPermissions && (
         <>
-          <p className="text-[10px] text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
+          <p className="text-3xs text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
 
           {/* Advanced expandable section */}
           <button
@@ -1345,7 +1357,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
             >
               <path d="M9 5l7 7-7 7" />
             </svg>
-            <span className="text-[10px] text-fg-muted group-hover:text-fg-2 transition-colors">Advanced</span>
+            <span className="text-3xs text-fg-muted group-hover:text-fg-2 transition-colors">Advanced</span>
           </button>
 
           {advancedOpen && (
@@ -1353,8 +1365,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
               {/* Approve All toggle */}
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] text-fg-dim font-medium">Auto-approve all</p>
-                  <p className="text-[9px] text-fg-muted">Silently approve all protected requests</p>
+                  <p className="text-3xs text-fg-dim font-medium">Auto-approve all</p>
+                  <p className="text-4xs text-fg-muted">Silently approve all protected requests</p>
                 </div>
                 <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />
               </div>
@@ -1362,7 +1374,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
               {/* Separator */}
               <div className="flex items-center gap-2">
                 <div className="flex-1 border-t border-edge-dim" />
-                <span className="text-[9px] text-fg-muted">or approve by category</span>
+                <span className="text-4xs text-fg-muted">or approve by category</span>
                 <div className="flex-1 border-t border-edge-dim" />
               </div>
 
@@ -1370,8 +1382,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
               {OVERRIDE_CATEGORIES.map(({ key, label, description }) => (
                 <div key={key} className={`flex items-center justify-between ${overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div>
-                    <p className="text-[10px] text-fg-dim font-medium">{label}</p>
-                    <p className="text-[9px] text-fg-muted">{description}</p>
+                    <p className="text-3xs text-fg-dim font-medium">{label}</p>
+                    <p className="text-4xs text-fg-muted">{description}</p>
                   </div>
                   <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />
                 </div>
@@ -1394,21 +1406,21 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                   <h3 className="text-xs font-bold text-[#DD4444]">&#9888; This is extremely dangerous</h3>
                 </div>
                 <div className="px-4 py-3 space-y-2">
-                  <p className="text-[10px] text-fg-dim leading-relaxed">
+                  <p className="text-3xs text-fg-dim leading-relaxed">
                     <strong className="text-[#DD4444]">This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
                     Do not enable this unless you fully understand the consequences.
                   </p>
-                  <p className="text-[10px] text-fg-dim leading-relaxed">
+                  <p className="text-3xs text-fg-dim leading-relaxed">
                     Full auto-approve silently grants <strong>every</strong> remaining permission request with zero human review. Claude will be able to:
                   </p>
-                  <ul className="text-[10px] text-fg-muted space-y-1 ml-3 list-disc">
+                  <ul className="text-3xs text-fg-muted space-y-1 ml-3 list-disc">
                     <li>Overwrite your <code className="text-fg-dim">.git/</code> history and repository internals</li>
                     <li>Modify shell config files (<code className="text-fg-dim">.bashrc</code>, <code className="text-fg-dim">.gitconfig</code>, <code className="text-fg-dim">.zshrc</code>)</li>
                     <li>Rewrite <code className="text-fg-dim">.claude/</code> configuration and MCP settings</li>
                     <li>Execute compound commands that bypass path resolution safety checks</li>
                     <li>Execute compound commands that bypass bare repository attack protections</li>
                   </ul>
-                  <p className="text-[10px] text-[#DD4444]/80 leading-relaxed font-medium">
+                  <p className="text-3xs text-[#DD4444]/80 leading-relaxed font-medium">
                     These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
                   </p>
                   <div className="flex gap-2 pt-2">
@@ -1498,13 +1510,13 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
                 <section>
-                  <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
                   <div className="flex gap-1">
                     {MODELS.map((m) => (
                       <button
                         key={m}
                         onClick={() => onDefaultsChange({ model: m })}
-                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-[11px] transition-colors flex items-center justify-center ${
+                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-2xs transition-colors flex items-center justify-center ${
                           defaults.model === m
                             ? 'bg-accent text-on-accent font-medium'
                             : 'bg-inset text-fg-dim hover:bg-edge'
@@ -1522,7 +1534,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
 
                 {/* Default Project Folder */}
                 <section>
-                  <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Project Folder</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Project Folder</h3>
                   <button
                     onClick={handleBrowseFolder}
                     className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge-dim rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate"
@@ -1532,7 +1544,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                   {defaults.projectFolder && (
                     <button
                       onClick={() => onDefaultsChange({ projectFolder: '' })}
-                      className="text-[10px] text-fg-muted hover:text-fg-2 mt-1"
+                      className="text-3xs text-fg-muted hover:text-fg-2 mt-1"
                     >
                       Reset to home directory
                     </button>
@@ -1545,8 +1557,8 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 <section>
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
-                      <p className="text-[10px] text-fg-muted mt-0.5">Show tag options when closing a session</p>
+                      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
+                      <p className="text-3xs text-fg-muted mt-0.5">Show tag options when closing a session</p>
                     </div>
                     {/* Was a hand-rolled 32x18 track with an inline var(--accent)
                         background; one geometry now (change 16). The state is stored
@@ -1647,9 +1659,9 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className={`text-xs font-medium ${isActive ? 'text-fg' : 'text-fg-2'}`}>{t.name}</span>
-                        {isActive && <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-sm bg-accent text-on-accent">Active</span>}
+                        {isActive && <span className="text-4xs font-medium px-1.5 py-0.5 rounded-sm bg-accent text-on-accent">Active</span>}
                       </div>
-                      <p className="text-[10px] text-fg-muted mt-0.5">{t.desc}</p>
+                      <p className="text-3xs text-fg-muted mt-0.5">{t.desc}</p>
                     </div>
                   </button>
                 );
@@ -1829,7 +1841,7 @@ function ConnectToDesktopButton() {
                     </svg>
                     <span className="text-xs text-amber-400 font-medium">Tailscale not connected</span>
                   </div>
-                  <p className="text-[10px] text-fg-dim">Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.</p>
+                  <p className="text-3xs text-fg-dim">Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.</p>
                 </div>
               )}
 
@@ -1856,14 +1868,14 @@ function ConnectToDesktopButton() {
               {/* Error */}
               {connectError && (
                 <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2">
-                  <p className="text-[10px] text-destructive-fg">{connectError}</p>
+                  <p className="text-3xs text-destructive-fg">{connectError}</p>
                 </div>
               )}
 
               {/* Saved devices — always listed */}
               {pairedDevices.length > 0 && (
                 <section>
-                  <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Saved Devices</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Saved Devices</h3>
                   <div className="space-y-1">
                     {pairedDevices.map(device => (
                       <div key={`${device.host}:${device.port}`} className="flex items-center justify-between py-2 px-3 rounded-sm bg-inset/50">
@@ -1873,7 +1885,7 @@ function ConnectToDesktopButton() {
                           className="min-w-0 flex-1 text-left disabled:opacity-50"
                         >
                           <span className="text-xs text-fg block">{device.name}</span>
-                          <span className="text-[10px] text-fg-muted font-mono block">{device.host}:{device.port}</span>
+                          <span className="text-3xs text-fg-muted font-mono block">{device.host}:{device.port}</span>
                         </button>
                         <button
                           onClick={() => handleRemoveDevice(device)}
@@ -1897,7 +1909,7 @@ function ConnectToDesktopButton() {
               {!remoteConnected && !connecting && (
                 <section>
                   {pairedDevices.length > 0 && (
-                    <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Add Device</h3>
+                    <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Add Device</h3>
                   )}
                   {!showConnectForm ? (
                     <div className="space-y-2">
@@ -1918,7 +1930,7 @@ function ConnectToDesktopButton() {
                           form footer — it sits under the whole form, not beside one
                           field, so it is NOT an InputGroup. */}
                       <div>
-                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
+                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
                         <TextInput
                           size="sm"
                           value={formName}
@@ -1929,7 +1941,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
+                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
                         <TextInput
                           size="sm"
                           value={formHost}
@@ -1940,7 +1952,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Port</label>
+                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Port</label>
                         <TextInput
                           size="sm"
                           value={formPort}
@@ -1951,7 +1963,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Password</label>
+                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Password</label>
                         <TextInput
                           size="sm"
                           type="password"
@@ -1977,7 +1989,7 @@ function ConnectToDesktopButton() {
                 </section>
               )}
 
-              <p className="text-[10px] text-fg-muted">
+              <p className="text-3xs text-fg-muted">
                 Connect to the YouCoded desktop app on your computer. Set up remote access in the desktop app's settings first.
               </p>
               </div>

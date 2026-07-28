@@ -214,7 +214,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
                 aria-label="Output Style"
                 className="w-full"
               />
-              <p className="text-[11px] text-fg-muted mt-1.5">Preset name that tunes Claude's response style. Leave blank for default.</p>
+              <p className="text-2xs text-fg-muted mt-1.5">Preset name that tunes Claude's response style. Leave blank for default.</p>
             </section>
 
             {/* Toggles */}
@@ -254,7 +254,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
                 aria-label="System Prompt"
                 className="w-full"
               />
-              <p className="text-[11px] text-fg-muted mt-1.5">Applied globally. Leave blank to use Claude Code defaults.</p>
+              <p className="text-2xs text-fg-muted mt-1.5">Applied globally. Leave blank to use Claude Code defaults.</p>
             </section>
 
             {/* Advanced escape hatch — opens Claude Code's native TUI for any option not covered here */}
@@ -272,7 +272,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAd
               >
                 Advanced (terminal) →
               </Button>
-              <p className="text-[11px] text-fg-muted mt-1.5 text-center">
+              <p className="text-2xs text-fg-muted mt-1.5 text-center">
                 Switches to terminal view and runs Claude Code's full <code>/config</code>
               </p>
             </section>

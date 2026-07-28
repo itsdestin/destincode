@@ -87,7 +87,7 @@ function FilterPill({
       aria-pressed={active}
       aria-haspopup={hasPopup ? 'listbox' : undefined}
       aria-expanded={hasPopup ? !!expanded : undefined}
-      className={`px-2.5 py-1 rounded-full text-[11px] flex items-center gap-1.5 transition-colors duration-75 ${
+      className={`px-2.5 py-1 rounded-full text-2xs flex items-center gap-1.5 transition-colors duration-75 ${
         active
           ? 'bg-accent/10 border border-accent/40 text-fg'
           : 'bg-inset border border-edge-dim text-fg-muted hover:text-fg'
@@ -520,13 +520,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <>
             {/* Model selector */}
             <div>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+              <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
               <div className="flex gap-1">
                 {MODELS.map((m) => (
                   <button
                     key={m}
                     onClick={() => setResumeModel(m)}
-                    className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
                       resumeModel === m
                         ? 'bg-accent text-on-accent font-medium'
                         : 'bg-inset text-fg-dim hover:bg-edge'
@@ -540,7 +540,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
             {/* Skip Permissions */}
             <div className="flex items-center justify-between">
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
+              <label className="text-3xs uppercase tracking-wider text-fg-muted inline-flex items-center">
                 Skip Permissions
                 <SkipPermissionsInfoTooltip />
               </label>
@@ -559,12 +559,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 the same token as the toggle beside it, so a community theme
                 restyling its red doesn't leave the two out of sync. */}
             {resumeDangerous && (
-              <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
+              <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
             )}
           </>
         ) : (
           <div>
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
             {/* Task 6 — native resume ALWAYS offers this selector (never
                 auto-launches a binding). Prefilled from the conversation's
                 synced lastUsedModel when it matches a model available on
@@ -583,7 +583,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         {/* Launch in new window — hidden on remote/Android (single-window) */}
         {detachAvailable && (
           <div className="flex items-center justify-between">
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted">Launch in New Window</label>
+            <label className="text-3xs uppercase tracking-wider text-fg-muted">Launch in New Window</label>
             {/* Shared Toggle (change 15) — same accent on-state as before. */}
             <Toggle
               checked={resumeLaunchInNewWindow}
@@ -601,7 +601,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         <>
           {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
           <div>
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
+            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
             <div className="flex gap-1">
               {FLAG_ORDER.map((flag) => {
                 const active = !!s.flags?.[flag];
@@ -609,7 +609,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   <button
                     key={flag}
                     onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-                    className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
                       active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
                     }`}
                     aria-pressed={active}
@@ -623,7 +623,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
           {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
           <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
+            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
             <TagPicker
               appliedIds={new Set(s.tags ?? [])}
               onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
@@ -633,7 +633,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
           {/* Note — stopPropagation so editing doesn't collapse the row. */}
           <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
             <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
           </div>
         </>
@@ -690,7 +690,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 word, no glyph; distinguishes them from Claude Code transcripts. */}
             {s.provider === 'native' && (
               <span
-                className="text-[9px] px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
+                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
                 title="YouCoded native session"
               >YouCoded</span>
             )}
@@ -698,7 +698,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 as. Legacy 'chat' (and any unknown id) falls back to Assistant. */}
             {s.provider === 'native' && (
               <span
-                className="text-[9px] px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
+                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
                 title="YouCoded native session"
               >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
             )}
@@ -707,13 +707,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           {/* Reserved-flag indicators + custom-tag chips, AFTER the name. */}
           {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
             <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-              {s.flags?.priority && <span className="text-[9px] text-accent" title="Priority">Priority</span>}
-              {s.flags?.complete && <span className="text-[9px] text-fg-muted" title="Complete">Complete</span>}
+              {s.flags?.priority && <span className="text-4xs text-accent" title="Priority">Priority</span>}
+              {s.flags?.complete && <span className="text-4xs text-fg-muted" title="Complete">Complete</span>}
               {(s.tags ?? []).map((id) => {
                 const t = registry.byId.get(id);
                 return t ? <TagChip key={id} tag={t} /> : null;
               })}
-              {s.note && <span className="text-[9px] text-fg-muted" title={s.note}>📝 note</span>}
+              {s.note && <span className="text-4xs text-fg-muted" title={s.note}>📝 note</span>}
             </div>
           )}
           {/* Second line: in flat (chronological) mode each row carries its
@@ -724,18 +724,18 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             // Plain words, no glyphs (house rule). The conversation is visible
             // everywhere; resume needs the project folder AND its transcript
             // present on this device — the two notes say which one is missing.
-            <div className="text-[10px] text-fg-muted truncate">
+            <div className="text-3xs text-fg-muted truncate">
               {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
             </div>
           ) : (
-            <div className="text-[10px] text-fg-muted truncate">
+            <div className="text-3xs text-fg-muted truncate">
               {showPath
                 ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
                 : formatSize(s.size)}
             </div>
           )}
         </div>
-        <span className="text-[10px] text-fg-muted shrink-0">
+        <span className="text-3xs text-fg-muted shrink-0">
           {formatRelativeTime(s.lastModified)}
         </span>
       </button>
@@ -761,7 +761,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {/* Show Complete — same toggle pattern as Skip Permissions
                   in SessionStrip, but accent-colored to signal "on" rather than "danger". */}
               <div className="flex items-center gap-2">
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted">Show Complete</label>
+                <label className="text-3xs uppercase tracking-wider text-fg-muted">Show Complete</label>
                 {/* Shared Toggle (change 15). role="switch" + aria-checked comes
                     from the primitive, which is strictly better than the
                     aria-pressed this used to carry. */}
@@ -810,7 +810,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 }}
               >
                 <span>{projectsLabel}</span>
-                <span className="text-fg-faint text-[9px]">▾</span>
+                <span className="text-fg-faint text-4xs">▾</span>
               </FilterPill>
               {openPill === 'projects' && projectsDropdownPos && createPortal(
                 <div
@@ -830,7 +830,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   <button
                     type="button"
                     onClick={() => setSelectedProjects(new Set())}
-                    className="w-full text-left px-2.5 py-1.5 text-[11px] uppercase tracking-wider text-fg-muted hover:text-fg hover:bg-inset transition-colors"
+                    className="w-full text-left px-2.5 py-1.5 text-2xs uppercase tracking-wider text-fg-muted hover:text-fg hover:bg-inset transition-colors"
                   >
                     Clear
                   </button>
@@ -853,7 +853,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                         >
                           <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
                           <span className="flex-1 truncate" title={p.path}>{p.label}</span>
-                          <span className="text-[10px] text-fg-muted shrink-0">{p.count}</span>
+                          <span className="text-3xs text-fg-muted shrink-0">{p.count}</span>
                         </button>
                       );
                     })}
@@ -876,7 +876,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 }}
               >
                 <span>{selectedTagIds.size === 0 ? 'Tags' : `${selectedTagIds.size} tag${selectedTagIds.size > 1 ? 's' : ''}`}</span>
-                <span className="text-fg-faint text-[9px]">▾</span>
+                <span className="text-fg-faint text-4xs">▾</span>
               </FilterPill>
               {openPill === 'tags' && tagsDropdownPos && createPortal(
                 <div
@@ -939,7 +939,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 [...grouped.entries()].map(([projectPath, items]) => (
                   <div key={projectPath} className="mb-2">
                     <div className="px-4 py-1">
-                      <span className="text-[10px] uppercase tracking-wider text-fg-muted">
+                      <span className="text-3xs uppercase tracking-wider text-fg-muted">
                         {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
                       </span>
                     </div>

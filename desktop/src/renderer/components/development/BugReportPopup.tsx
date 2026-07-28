@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { Button, Textarea } from '../ui';
+import { Button, SegmentedTabs, Textarea } from '../ui';
 
 interface Props {
   open: boolean;
@@ -181,17 +181,18 @@ export function BugReportPopup({ open, onClose }: Props) {
 function DescribeScreen({ kind, setKind, description, setDescription, onContinue, busy }: any) {
   return (
     <>
-      <div className="flex gap-1 mb-3 p-1 bg-inset/50 rounded-lg">
-        {(['bug', 'feature'] as Kind[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => setKind(k)}
-            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${kind === k ? 'bg-accent text-on-accent' : 'text-fg-2 hover:bg-inset'}`}
-          >
-            {k === 'bug' ? 'Bug' : 'Feature'}
-          </button>
-        ))}
-      </div>
+      {/* Change 45: this row already used the approved inactive style (transparent
+          + hover tint), so the primitive is a de-duplication here rather than a
+          restyle. It also gains role="tablist" and arrow-key navigation, which a
+          pair of plain <button>s never had. */}
+      <SegmentedTabs
+        variant="contained"
+        aria-label="Report type"
+        className="mb-3"
+        value={kind}
+        onChange={(id) => setKind(id as Kind)}
+        tabs={[{ id: 'bug', label: 'Bug' }, { id: 'feature', label: 'Feature' }]}
+      />
       {/* Change 42: this was already the target recipe (border-edge-dim, rounded-lg,
           focus:border-accent), so migrating it is mostly a de-duplication —
           bg-inset/50 becomes the shared bg-inset and the padding picks up the one
@@ -222,16 +223,16 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
       <div className="text-xs text-fg mb-3">{summary.summary}</div>
       {kind === 'bug' && (
         <details className="mb-3">
-          <summary className="text-[10px] text-fg-muted cursor-pointer">Logs to include (editable)</summary>
+          <summary className="text-3xs text-fg-muted cursor-pointer">Logs to include (editable)</summary>
           {summary.flagged_strings.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {summary.flagged_strings.map((s: string) => (
-                <span key={s} className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">⚠ {s.slice(0, 30)}</span>
+                <span key={s} className="text-4xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">⚠ {s.slice(0, 30)}</span>
               ))}
             </div>
           )}
           {/* Change 42: same migration as the describe screen. `sm` (11px) is the
-              nearest field size to the old text-[10px] — the scale has no 10px
+              nearest field size to the old raw 10px — the scale has no 10px
               field step, and arbitrary text-[Npx] is retired (see globals.css).
               font-mono is kept: this is a log tail and column alignment matters. */}
           <Textarea
@@ -261,8 +262,8 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
         >
           {ctaLabel}
         </Button>
-        <p className="text-[10px] text-amber-400/80 text-center">⚠ High Claude usage — not recommended for Pro plans</p>
-        <button onClick={onEdit} className="text-[10px] text-fg-muted hover:text-fg underline">Edit description</button>
+        <p className="text-3xs text-amber-400/80 text-center">⚠ High Claude usage — not recommended for Pro plans</p>
+        <button onClick={onEdit} className="text-3xs text-fg-muted hover:text-fg underline">Edit description</button>
       </div>
     </>
   );
