@@ -30,6 +30,15 @@ export class SkillNotFound extends Error {
   }
 }
 
+export class SkillAmbiguous extends Error {
+  constructor(public readonly name: string, public readonly matches: string[]) {
+    // Picking one silently would run the wrong plugin's skill. Naming both lets
+    // the user qualify it, which the exact-match path already accepts.
+    super(`Several plugins provide a skill called '${name}': ${matches.join(', ')}. Use the full name to pick one.`);
+    this.name = 'SkillAmbiguous';
+  }
+}
+
 export class SkillUnreadable extends Error {
   constructor(public readonly id: string, public readonly cause: string) {
     // Specific and accurate per docs/error-message-standards.md — surface the
@@ -53,7 +62,19 @@ export function createSkillCatalog(entries: SkillEntry[] = scanSkills()): SkillC
   return {
     list: () => entries.map((e) => ({ id: e.id, description: e.description })),
     load(id: string): LoadedSkill {
-      const entry = byId.get(id);
+      // Exact id first, then BARE NAME. scanSkills namespaces plugin skills as
+      // `<plugin>:<skill>` (wecoded-themes-plugin:theme-builder), but users — and
+      // ThemeScreen's own button — type `/theme-builder`, which is what Claude
+      // Code accepts. Without this, a correctly-installed skill reported as
+      // missing (Destin, 2026-07-28).
+      let entry = byId.get(id);
+      if (!entry) {
+        const qualified = entries.filter((e) => e.id.slice(e.id.lastIndexOf(':') + 1) === id);
+        // Ambiguity is refused, never guessed: two plugins can ship the same
+        // skill name, and silently picking one runs the wrong plugin's code.
+        if (qualified.length > 1) throw new SkillAmbiguous(id, qualified.map((e) => e.id));
+        entry = qualified[0];
+      }
       if (!entry) throw new SkillNotFound(id, [...byId.keys()]);
       if (!entry.skillDir) throw new SkillUnreadable(id, 'it has no installed directory on this machine');
       const file = path.join(entry.skillDir, 'SKILL.md');
@@ -63,7 +84,9 @@ export function createSkillCatalog(entries: SkillEntry[] = scanSkills()): SkillC
       } catch (err: any) {
         throw new SkillUnreadable(id, `${file} could not be read (${err?.code ?? err?.message ?? 'unknown error'})`);
       }
-      return { id, displayName: entry.displayName, description: entry.description, body: stripFrontmatter(raw).trim() };
+      // entry.id, NOT the requested id: a bare name resolves to a qualified one,
+      // and the caller labels the injected block with what actually ran.
+      return { id: entry.id, displayName: entry.displayName, description: entry.description, body: stripFrontmatter(raw).trim() };
     },
   };
 }

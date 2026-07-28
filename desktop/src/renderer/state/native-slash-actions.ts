@@ -142,6 +142,10 @@ const SKILL_REFUSAL: Record<string, string> = {
     "That isn't an installed skill, and it isn't a command YouCoded-runtime sessions support yet. Browse the marketplace to install skills.",
   'unreadable':
     "That skill is installed, but its instructions couldn't be read. Reinstalling it from the marketplace usually fixes this.",
+  // Deliberately falls through to the error's own detail below, which names the
+  // conflicting ids — a generic sentence here would hide the one thing the user
+  // needs in order to pick.
+  'ambiguous': '',
   'turn-in-flight':
     "Can't start a skill while Claude is still working. Stop the current turn (or wait for it to finish) and try again.",
   'not-live': "This session isn't running, so there's nothing to run the skill in.",
@@ -167,7 +171,8 @@ async function runNativeSkill(
 
   if (result.ok) return true;
 
-  const known = SKILL_REFUSAL[result.reason];
+  // An empty entry means "prefer the specific detail" (see 'ambiguous').
+  const known = SKILL_REFUSAL[result.reason] || undefined;
   onToast?.(
     known ??
       (result.detail ? `Couldn't run /${skill}: ${result.detail}` : `Couldn't run /${skill}.`),

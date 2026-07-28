@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createSkillCatalog, SkillNotFound, SkillUnreadable } from '../src/main/harness/skills/skill-catalog';
+import { createSkillCatalog, SkillNotFound, SkillUnreadable, SkillAmbiguous } from '../src/main/harness/skills/skill-catalog';
 import type { SkillEntry } from '../src/shared/types';
 
 function entryFor(id: string, skillDir?: string): SkillEntry {
@@ -60,6 +60,47 @@ describe('skill catalog', () => {
     expect(err).toBeInstanceOf(SkillNotFound);
     expect((err as SkillNotFound).known).toEqual(['demo']);
     expect((err as SkillNotFound).message).toContain('demo');
+  });
+
+  it('resolves a BARE name against a plugin-qualified id', () => {
+    // The bug Destin hit 2026-07-28: scanSkills ids plugin skills as
+    // `<plugin>:<skill>` (wecoded-themes-plugin:theme-builder), but the user —
+    // and ThemeScreen's own button — types `/theme-builder`. Exact-match lookup
+    // reported a correctly-installed skill as missing. Claude Code accepts the
+    // bare command name, so we must too.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-q-'));
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), 'Build a theme.', 'utf8');
+    const entry = { ...entryFor('wecoded-themes-plugin:theme-builder', dir) } as SkillEntry;
+    const skill = createSkillCatalog([entry]).load('theme-builder');
+    expect(skill.body).toBe('Build a theme.');
+    expect(skill.id).toBe('wecoded-themes-plugin:theme-builder');
+  });
+
+  it('an exact id still wins over bare-name resolution', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-x-'));
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), 'exact', 'utf8');
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-x2-'));
+    fs.writeFileSync(path.join(dir2, 'SKILL.md'), 'suffix', 'utf8');
+    const catalog = createSkillCatalog([entryFor('build', dir), entryFor('plugin:build', dir2)]);
+    expect(catalog.load('build').body).toBe('exact');
+  });
+
+  it('an AMBIGUOUS bare name refuses and names the qualified ids', () => {
+    // Two plugins shipping the same skill name must not silently pick one.
+    const mk = (body: string) => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-a-'));
+      fs.writeFileSync(path.join(d, 'SKILL.md'), body, 'utf8');
+      return d;
+    };
+    const catalog = createSkillCatalog([
+      entryFor('alpha:build', mk('a')),
+      entryFor('beta:build', mk('b')),
+    ]);
+    let err: unknown;
+    try { catalog.load('build'); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(SkillAmbiguous);
+    expect((err as SkillAmbiguous).matches).toEqual(['alpha:build', 'beta:build']);
+    expect((err as SkillAmbiguous).message).toContain('alpha:build');
   });
 
   it('an entry with no directory is unreadable, not silently empty', () => {

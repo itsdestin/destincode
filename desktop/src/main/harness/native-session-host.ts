@@ -586,6 +586,7 @@ export class NativeSessionHost extends EventEmitter {
       // or a skill they haven't installed — so it is a coded refusal, not an error.
       const reason = err?.name === 'SkillNotFound' ? 'not-a-skill'
         : err?.name === 'SkillUnreadable' ? 'unreadable'
+        : err?.name === 'SkillAmbiguous' ? 'ambiguous'
         : 'error';
       return { ok: false, reason, detail: err?.message ?? String(err) };
     }
