@@ -981,6 +981,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session,
         seenUuids: new Set([...(session.seenUuids ?? []), action.uuid]),
+        // A skill invocation IS a turn start, so it must set the same state
+        // TRANSCRIPT_USER_MESSAGE does — otherwise nothing tells the UI a turn
+        // began and the thinking indicator, prompt-processing progress and stall
+        // watchdog all stay dormant while the model works (Destin, 2026-07-28:
+        // "needs to act as a user message and begin the thinking indicator").
+        isThinking: true,
+        currentGroupId: null,
+        currentTurnId: null,
+        attentionState: 'ok',
+        // Cleared here, unlike TRANSCRIPT_USER_MESSAGE, because a typed message
+        // gets these cleared a beat earlier by USER_PROMPT's optimistic dispatch.
+        // A skill has no optimistic path, so without this a stale error banner or
+        // stall warning would sit on top of a healthy new turn.
+        errorMessage: null,
+        stallWarning: null,
+        // Belt-and-braces: a previous turn's prefill progress must not be
+        // mistaken for this turn's (the next assistant-thinking event replaces it).
+        promptProcessing: null,
         timeline: [...session.timeline, {
           kind: 'skill-invocation' as const,
           id: `skill-${action.uuid}`,
