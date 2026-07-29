@@ -227,7 +227,7 @@ describe('prefill progress re-arms the stall watchdog', () => {
     });
 
     const session = new HarnessSession(
-      {
+      { skillCatalog: EMPTY_SKILL_CATALOG,
         sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET,
         binding: { providerId: 'local', modelId: 'Qwen3.5-122B' },
         // Deliberately shorter than the total first-token wait above.
@@ -321,6 +321,7 @@ describe('toReport — measures the work actually being done', () => {
 // indicator then pinned it there until the real final reading arrived.
 // ---------------------------------------------------------------------------
 import { prefillLabel } from '../src/renderer/components/ThinkingIndicator';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
 describe('prefillLabel — 100% is reserved for actually finished', () => {
   it('the real captured 5515/5519 reading does NOT read as 100%', () => {

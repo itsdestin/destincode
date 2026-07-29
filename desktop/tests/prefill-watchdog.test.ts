@@ -61,8 +61,9 @@ import { HarnessSession } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { TranscriptEvent } from '../src/shared/types';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
-const OPTS = { sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' } };
+const OPTS = { skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' } };
 
 /** A stream that waits `delayMs` before its first part, then optionally emits text. */
 function slowFirstChunk(delayMs: number, thenEmit: boolean) {

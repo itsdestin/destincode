@@ -22,6 +22,7 @@ import { HarnessSession } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { ModelMessage } from 'ai';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
 // A realistically-sized assembled system prompt. prompt-assembly.ts appends the
 // nearest AGENTS.md/CLAUDE.md truncated at 20_000 chars on top of the preamble,
@@ -31,7 +32,7 @@ const REALISTIC_SYSTEM_PROMPT = 'S'.repeat(24_000);
 
 function session(contextLength: number) {
   return new HarnessSession(
-    { sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' }, contextLength, systemPrompt: REALISTIC_SYSTEM_PROMPT } as any,
+    { skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' }, contextLength, systemPrompt: REALISTIC_SYSTEM_PROMPT } as any,
     async () => new MockLanguageModelV4({ doStream: async () => ({ stream: new ReadableStream({ start(c) { c.close(); } }) as any }) }) as any,
   );
 }

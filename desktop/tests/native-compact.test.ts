@@ -9,8 +9,9 @@ import { HarnessSession } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { TranscriptEvent } from '../src/shared/types';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
-const OPTS = { sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
+const OPTS = { skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
 
 function textModel(text: string) {
   return new MockLanguageModelV4({

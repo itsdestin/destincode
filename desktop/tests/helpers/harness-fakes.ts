@@ -40,11 +40,27 @@ export function fakeTool(name: string, over: Partial<NativeTool> & { schema?: z.
   return t;
 }
 
+/** An installed-skill source that finds nothing.
+ *
+ *  DEFAULT for every test session, because without it `syncSkillTool` falls back
+ *  to `createSkillCatalog()` — which scans the REAL `~/.claude`. That makes the
+ *  attached tool set depend on the machine running the suite: it passed locally
+ *  and on macOS/Windows CI (where the scan found nothing) and failed on Ubuntu CI
+ *  with "expected 10 tools, got 11" (2026-07-29). A test that reaches the
+ *  developer's home directory is not a test of the code.
+ *
+ *  Tests that care about skills pass their own catalog and override this. */
+export const EMPTY_SKILL_CATALOG = {
+  list: () => [],
+  load: (id: string) => { throw new Error(`no skills installed (test catalog): ${id}`); },
+};
+
 export function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
   return {
     sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],   // test hook: near-zero backoff so the suite stays fast
+    skillCatalog: EMPTY_SKILL_CATALOG,
     ...over,
   } as HarnessSessionOpts;
 }
@@ -142,6 +158,9 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],
     tools,
+    // Same reason as makeOpts: without this, buildAiTools scans the real
+    // ~/.claude and the tool set becomes machine-dependent.
+    skillCatalog: EMPTY_SKILL_CATALOG,
     decide: over.decide ?? (async () => ({ action: 'allow', denyListed: false })),
     ...(over.askUser ? { askUser: over.askUser } : {}),
     ...(over.profile ? { profile: over.profile } : {}),

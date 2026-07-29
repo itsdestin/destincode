@@ -13,6 +13,7 @@ import { HarnessSession } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { TranscriptEvent } from '../src/shared/types';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
 let seq = 0;
 const ev = (type: string, data: any = {}): TranscriptEvent =>
@@ -87,7 +88,7 @@ describe('rebuildHistory — context-clear barrier', () => {
 });
 
 describe('HarnessSession.clearHistory', () => {
-  const OPTS = { sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
+  const OPTS = { skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
 
   function session() {
     const s = new HarnessSession(OPTS as any, async () => new MockLanguageModelV4({ doStream: async () => ({ stream: new ReadableStream({ start(c) { c.close(); } }) as any }) }) as any);
