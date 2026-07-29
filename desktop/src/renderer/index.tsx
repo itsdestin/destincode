@@ -183,4 +183,30 @@ function Root() {
   return <LoginScreen onLogin={handleLogin} />;
 }
 
-createRoot(document.getElementById('root')!).render(<Root />);
+// Workbench boot. `import.meta.env.DEV` is statically replaced with `false` in
+// production, so Vite drops this whole branch and never emits the chunk.
+//
+// WHY it renders <App/> and not <Root/>: Root exists only to own remote
+// connection state, and its `isElectron` (line 112) is a module-eval-time
+// const — an async mock install lands too late for it, so going through Root
+// would mean converting that const to a function and updating its six readers
+// in a file every launch goes through. The workbench has no connection state;
+// skipping Root costs nothing and touches no production boot code.
+//
+// It also does NOT route through App.tsx: WorkbenchFrame renders <App/>, so an
+// App-side route would recurse and need a `workbenchChild` prop threaded
+// through App purely to break it. `?mode=workbench` matches none of App's
+// existing buddyMode branches, so <App/> falls through to the main app.
+const __mount = createRoot(document.getElementById('root')!);
+// @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+if (import.meta.env.DEV && __buddyMode === 'workbench') {
+  import('./dev/workbench/install-mock').then(({ installMock }) => {
+    installMock();
+    // Task 7 swaps this for <WorkbenchFrame/>; until then the bare app proves
+    // the mock boots. App is already statically imported above (Root renders
+    // it), so there is nothing to load here beyond the mock itself.
+    __mount.render(<App />);
+  });
+} else {
+  __mount.render(<Root />);
+}
