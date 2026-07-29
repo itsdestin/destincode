@@ -232,7 +232,15 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   // Extrapolate the reading forward for display only; the next real report snaps
   // it back to truth. `since` is 0 until the effect above has stamped a reading,
   // which simply means no extrapolation on that first paint.
-  const since = prefillSeenAt.current ? Date.now() - prefillSeenAt.current.at : 0;
+  // Elapsed time for THIS reading. The key comparison is load-bearing: effects
+  // run AFTER render, so on the render that receives a new report the ref still
+  // holds the PREVIOUS reading's stamp. Measuring against it projected every new
+  // report a full batch forward the instant it arrived — latent and
+  // self-correcting until the monotonic clamp latched that overshoot, which is
+  // what turned smooth counting into 27 -> 52 -> 70 -> 85 -> 100
+  // (Destin, 2026-07-28). The `key` field was stored for exactly this and never
+  // compared.
+  const since = prefillSeenAt.current?.key === ppKey ? Date.now() - prefillSeenAt.current.at : 0;
   const smoothedPrefill = promptProcessing
     ? {
       ...promptProcessing,

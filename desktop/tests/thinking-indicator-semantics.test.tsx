@@ -11,7 +11,7 @@
 // streaming case had no signal at all until `lastOutputAt` was added, so a
 // spinner sat under a bubble that was actively filling.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, act } from '@testing-library/react';
 import React from 'react';
 import ThinkingIndicator from '../src/renderer/components/ThinkingIndicator';
 
@@ -295,5 +295,49 @@ describe('ThinkingIndicator — the displayed percentage never counts down', () 
     rerender(<ThinkingIndicator promptProcessing={null} />);           // run ends
     rerender(<ThinkingIndicator promptProcessing={reading(100)} />);   // next turn
     expect(screen.getByText(/10% of 1,000 tokens/)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The stale-stamp bug. `prefillSeenAt` has always stored `{ key, at }` — but the
+// elapsed-time calculation never compared the key, so the render that RECEIVES a
+// new report measured elapsed time from the PREVIOUS report's stamp (effects run
+// after render, so the new stamp isn't written yet).
+//
+// That made every new reading project a full batch ahead on arrival. Latent and
+// self-correcting until the monotonic clamp latched the overshoot — which is
+// what turned smooth counting into "27 -> 52 -> 70 -> 85 -> 100"
+// (Destin, 2026-07-28).
+// ---------------------------------------------------------------------------
+describe('ThinkingIndicator — a new reading is not projected forward on arrival', () => {
+  const reading = (processed: number, timeMs: number) => ({
+    promptTokens: 10_000, budgetMs: 0, source: 'prompt' as const, processed, timeMs, etaMs: null,
+  });
+
+  it('shows the new report\'s OWN value, not one batch past it', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<ThinkingIndicator promptProcessing={reading(2_000, 4_000)} />);
+      // Long enough for the extrapolation to saturate its one-batch ceiling.
+      act(() => { vi.advanceTimersByTime(6_000); });
+      // A new report lands. Elapsed time for THIS reading is zero.
+      rerender(<ThinkingIndicator promptProcessing={reading(4_000, 8_000)} />);
+      expect(screen.getByText(/40% of 10,000 tokens/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still extrapolates forward once time passes on the CURRENT reading', () => {
+    // The fix must not disable smoothing — only stop it double-counting.
+    vi.useFakeTimers();
+    try {
+      render(<ThinkingIndicator promptProcessing={reading(2_000, 4_000)} />);
+      act(() => { vi.advanceTimersByTime(2_000); });
+      // 0.5 tok/ms over 2s ≈ +1,000 tokens → past 20%, still under the ceiling.
+      expect(screen.queryByText(/20% of 10,000 tokens/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
