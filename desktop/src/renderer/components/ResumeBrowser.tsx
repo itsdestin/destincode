@@ -520,7 +520,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <>
             {/* Model selector */}
             <div>
-              <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
               <div className="flex gap-1">
                 {MODELS.map((m) => (
                   <button
@@ -540,7 +540,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
             {/* Skip Permissions */}
             <div className="flex items-center justify-between">
-              <label className="text-3xs uppercase tracking-wider text-fg-muted inline-flex items-center">
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
                 Skip Permissions
                 <SkipPermissionsInfoTooltip />
               </label>
@@ -564,7 +564,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </>
         ) : (
           <div>
-            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
             {/* Task 6 — native resume ALWAYS offers this selector (never
                 auto-launches a binding). Prefilled from the conversation's
                 synced lastUsedModel when it matches a model available on
@@ -583,7 +583,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         {/* Launch in new window — hidden on remote/Android (single-window) */}
         {detachAvailable && (
           <div className="flex items-center justify-between">
-            <label className="text-3xs uppercase tracking-wider text-fg-muted">Launch in New Window</label>
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Launch in New Window</label>
             {/* Shared Toggle (change 15) — same accent on-state as before. */}
             <Toggle
               checked={resumeLaunchInNewWindow}
@@ -601,7 +601,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         <>
           {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
           <div>
-            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Flags</label>
             <div className="flex gap-1">
               {FLAG_ORDER.map((flag) => {
                 const active = !!s.flags?.[flag];
@@ -623,7 +623,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
           {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
           <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
             <TagPicker
               appliedIds={new Set(s.tags ?? [])}
               onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
@@ -633,7 +633,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
           {/* Note — stopPropagation so editing doesn't collapse the row. */}
           <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
             <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
           </div>
         </>
@@ -761,7 +761,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {/* Show Complete — same toggle pattern as Skip Permissions
                   in SessionStrip, but accent-colored to signal "on" rather than "danger". */}
               <div className="flex items-center gap-2">
-                <label className="text-3xs uppercase tracking-wider text-fg-muted">Show Complete</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Show Complete</label>
                 {/* Shared Toggle (change 15). role="switch" + aria-checked comes
                     from the primitive, which is strictly better than the
                     aria-pressed this used to carry. */}
@@ -830,7 +830,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   <button
                     type="button"
                     onClick={() => setSelectedProjects(new Set())}
-                    className="w-full text-left px-2.5 py-1.5 text-2xs uppercase tracking-wider text-fg-muted hover:text-fg hover:bg-inset transition-colors"
+                    className="w-full text-left px-2.5 py-1.5 text-2xs text-fg-muted tracking-wider uppercase hover:text-fg hover:bg-inset transition-colors"
                   >
                     Clear
                   </button>
@@ -939,7 +939,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 [...grouped.entries()].map(([projectPath, items]) => (
                   <div key={projectPath} className="mb-2">
                     <div className="px-4 py-1">
-                      <span className="text-3xs uppercase tracking-wider text-fg-muted">
+                      <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
                         {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
                       </span>
                     </div>

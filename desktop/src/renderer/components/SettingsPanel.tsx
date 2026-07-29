@@ -12,10 +12,10 @@ import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { Scrim } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import AboutPopup from './AboutPopup';
 import { DevelopmentPopup } from './development/DevelopmentPopup';
@@ -24,13 +24,11 @@ import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
-import SettingsRow from './SettingsRow';
-import { SettingsPopup } from './SettingsPopup';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout, StatusStrip, ErrorState } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -67,7 +65,7 @@ const REMOTE_ACCESS_EXPLAINER: { intro: string; sections: ExplainerSection[] } =
         { term: "Phone can't connect", text: 'Make sure Tailscale is also installed on your phone and signed in to the same account. Both devices need it running at the same time.' },
         { term: "QR code won't scan", text: 'Tap "Copy link" instead, send the link to your phone (text it to yourself), and open it in your phone\'s browser.' },
         { term: 'Forgot the password', text: 'Just type a new one into the password box and hit "Set". The old one is replaced — there\'s nothing to recover.' },
-        { term: 'Connected device should be removed', text: 'Use the ✕ next to a device under "Connected Devices" to disconnect it. They\'ll need the password again to reconnect.' },
+        { term: 'Connected device should be removed', text: 'Use the Disconnect button next to a device under "Connected Devices". They\'ll need the password again to reconnect.' },
       ],
     },
   ],
@@ -158,16 +156,8 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   useEscClose(open, onClose);
   if (!open) return null;
   return createPortal(
-    // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-5 max-w-sm w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={onClose} size="prompt" aria-label="Keyboard Shortcuts" scrollBody={false} className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-fg">Keyboard Shortcuts</h3>
           <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors">
@@ -184,7 +174,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
             </div>
           ))}
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body
   );
@@ -344,43 +334,63 @@ import {
   type SoundCategory,
 } from '../utils/sounds';
 
-/** Preset selector — stock sounds + custom sound file option */
-function PresetSelector({ category, selectedId, onSelect, customName }: {
-  category: SoundCategory;
+/** Preset selector — stock sounds + custom sound file option.
+ *
+ *  Selecting a sound PLAYS it. That is deliberate (Destin's call 2026-07-26):
+ *  with one shared list behind a category toggle, "assign" and "audition" are
+ *  the same intent, so a separate play button was just a second thing to aim
+ *  at. The whole tile is the hit target — the radio is a visual mark, not the
+ *  only place you can click. */
+function PresetSelector({ selectedId, onSelect, customName }: {
   selectedId: string;
   onSelect: (id: string) => void;
   customName: string | null; // display name of the custom sound file, if set
 }) {
+  // Option ids in visual order, so RadioGroup's arrow keys walk the same list
+  // the user sees. The custom entry only exists once a file has been picked.
+  const optionIds = customName
+    ? [...STOCK_PRESETS.map((p) => p.id), CUSTOM_SOUND_ID]
+    : STOCK_PRESETS.map((p) => p.id);
+
+  // K2: these are `item` rows — one of N being chosen between — with the Radio
+  // in the icon slot (K3's "any option needs a description" form). SettingRow
+  // renders the Radio and keeps the whole tile as the hit target.
   return (
-    <div className="flex flex-wrap gap-1">
+    <RadioGroup
+      options={optionIds}
+      value={selectedId}
+      onChange={onSelect}
+      aria-label="Notification sound"
+      className="space-y-1"
+    >
       {STOCK_PRESETS.map((p) => (
-        <button
+        <SettingRow
           key={p.id}
-          onClick={() => { onSelect(p.id); playPreview(p.id); }}
-          className={`px-2 py-1 rounded text-3xs transition-colors ${
-            selectedId === p.id
-              ? 'bg-accent text-on-accent font-medium'
-              : 'bg-inset text-fg-dim hover:bg-edge'
-          }`}
-        >
-          {p.label}
-        </button>
+          variant="item"
+          title={p.label}
+          // The tone signature is data, not prose — font-mono keeps the note
+          // names aligned down the list.
+          description={p.desc}
+          descriptionClassName="text-fg-muted font-mono"
+          selected={selectedId === p.id}
+          onSelect={() => onSelect(p.id)}
+          radioTabIndex={selectedId === p.id ? 0 : -1}
+        />
       ))}
-      {/* Custom sound — shown as a button when set, or as a "+" to pick one */}
+      {/* Custom sound — only present once the user has picked a file. */}
       {customName ? (
-        <button
-          onClick={() => { onSelect(CUSTOM_SOUND_ID); playPreview(CUSTOM_SOUND_ID, category); }}
-          className={`px-2 py-1 rounded text-3xs transition-colors ${
-            selectedId === CUSTOM_SOUND_ID
-              ? 'bg-accent text-on-accent font-medium'
-              : 'bg-inset text-fg-dim hover:bg-edge'
-          }`}
+        <SettingRow
+          variant="item"
           title={customName}
-        >
-          {customName}
-        </button>
+          // The only unbounded title in the app — a filename the user chose.
+          truncateTitle
+          description="Custom sound"
+          selected={selectedId === CUSTOM_SOUND_ID}
+          onSelect={() => onSelect(CUSTOM_SOUND_ID)}
+          radioTabIndex={selectedId === CUSTOM_SOUND_ID ? 0 : -1}
+        />
       ) : null}
-    </div>
+    </RadioGroup>
   );
 }
 
@@ -403,9 +413,13 @@ function SoundCategorySection({ category, label, description, dotColor }: {
     });
   }, [category]);
 
+  // Selecting auditions it. Previously the only way to hear a stock sound was
+  // to assign it, which was the bug; the fix is that assigning is now also how
+  // you listen, rather than adding a second control to aim at.
   const handleSelect = useCallback((id: string) => {
     setPresetId(id);
     setSelectedPresetId(category, id);
+    playPreview(id, category);
   }, [category]);
 
   // Pick a custom sound file via the system file picker
@@ -439,18 +453,18 @@ function SoundCategorySection({ category, label, description, dotColor }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          {dotColor && <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />}
-          <span className="text-xs text-fg font-medium">{label}</span>
+      {/* The category's name lives in the tab above; this row carries only its
+          on/off switch and what it does. */}
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2 min-w-0">
+          {dotColor && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />}
+          <p className="text-3xs text-fg-muted">{description}</p>
         </div>
         <Toggle enabled={enabled} onToggle={handleToggle} label={label} />
       </div>
-      <p className="text-3xs text-fg-muted mb-2">{description}</p>
       {enabled && (
         <>
           <PresetSelector
-            category={category}
             selectedId={presetId}
             onSelect={handleSelect}
             customName={customName}
@@ -483,11 +497,27 @@ function SoundCategorySection({ category, label, description, dotColor }: {
   );
 }
 
+/** Per-category copy for the sound popup's toggle. Keyed so the tab, the
+ *  description and the status dot can never drift apart. */
+const SOUND_CATEGORY_META: Record<SoundCategory, { label: string; description: string; dotColor: string }> = {
+  attention: {
+    label: 'Needs Attention',
+    description: 'Plays when a session needs approval',
+    dotColor: 'bg-red-400',
+  },
+  ready: {
+    label: 'Response Ready',
+    description: 'Plays when a background session has a new response',
+    dotColor: 'bg-blue-400',
+  },
+};
+
 /** Sound settings — compact row that opens a popout modal (matches ThemeButton pattern) */
 function SoundButton() {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
+  // Which notification the shared sound list is currently editing.
+  const [soundCategory, setSoundCategory] = useState<SoundCategory>('attention');
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem(SOUND_MUTED_KEY) === '1'; } catch { return false; }
   });
@@ -529,7 +559,7 @@ function SoundButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
             {muted ? (
@@ -548,20 +578,17 @@ function SoundButton() {
           </svg>
         }
         title="Sound"
-        subtitle={summaryParts.join(' · ')}
+        description={summaryParts.join(' · ')}
         onClick={() => setOpen(true)}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Sound & Notifications"
-        width="min(380px, 88vw)"
+        size="panel"
         panelRef={popupRef}
       >
-            <div className="flex flex-col h-full">
-              <div ref={scrollRef} className="scroll-fade">
-                <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
                 <section>
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Volume</h3>
@@ -596,29 +623,32 @@ function SoundButton() {
                   </div>
                 </section>
 
-                <div className="border-t border-edge-dim" />
-
-                {/* Attention sound — red status dot */}
-                <SoundCategorySection
-                  category="attention"
-                  label="Needs Attention"
-                  description="Plays when a session needs approval"
-                  dotColor="bg-red-400"
-                />
-
-                <div className="border-t border-edge-dim" />
-
-                {/* Ready sound — blue status dot */}
-                <SoundCategorySection
-                  category="ready"
-                  label="Response Ready"
-                  description="Plays when a background session has a new response"
-                  dotColor="bg-blue-400"
-                />
-                </div>
-              </div>
-            </div>
-      </SettingsPopup>
+                {/* One shared sound list behind a category toggle, rather than
+                    two independent lists of the same 15 presets stacked on top
+                    of each other. `key` remounts the section on switch so its
+                    useState initializers re-read that category's saved values. */}
+                <section>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Notification</h3>
+                  <SegmentedTabs
+                    variant="contained"
+                    aria-label="Notification type"
+                    value={soundCategory}
+                    onChange={(id) => setSoundCategory(id as SoundCategory)}
+                    tabs={[
+                      { id: 'attention', label: 'Needs Attention' },
+                      { id: 'ready', label: 'Response Ready' },
+                    ]}
+                    className="mb-3"
+                  />
+                  <SoundCategorySection
+                    key={soundCategory}
+                    category={soundCategory}
+                    label={SOUND_CATEGORY_META[soundCategory].label}
+                    description={SOUND_CATEGORY_META[soundCategory].description}
+                    dotColor={SOUND_CATEGORY_META[soundCategory].dotColor}
+                  />
+                </section>
+      </Dialog>
     </>
   );
 }
@@ -629,8 +659,15 @@ function SoundButton() {
 
 /** Compact "Appearance" row — opens ThemeScreen in a centered popup modal */
 function ThemeButton({ onSendInput, onRunCommand, onOpenMarketplace, onPublishTheme }: { onSendInput?: (text: string) => void; onRunCommand?: (command: string) => void; onOpenMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
-  const { activeTheme } = useTheme();
+  const { activeTheme, allThemes } = useTheme();
   const [open, setOpen] = useState(false);
+  // ThemeScreen fills this Dialog but does not own it, so it cannot reach the
+  // shell's header. Both view flags live here and drive title/onBack; the
+  // component gets them back as props. Same lift K12 did for `showInfo`,
+  // extended to the theme editor so its header can go too.
+  const [showInfo, setShowInfo] = useState(false);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const editingTheme = editingSlug ? (allThemes.find((t) => t.slug === editingSlug) ?? null) : null;
   const popupRef = useRef<HTMLDivElement>(null);
 
   const { canvas, panel, inset, accent } = activeTheme.tokens;
@@ -646,7 +683,7 @@ function ThemeButton({ onSendInput, onRunCommand, onOpenMarketplace, onPublishTh
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <div className="flex rounded-sm overflow-hidden w-full h-full">
             <div style={{ flex: 1, background: canvas }} />
@@ -656,20 +693,47 @@ function ThemeButton({ onSendInput, onRunCommand, onOpenMarketplace, onPublishTh
           </div>
         }
         title="Appearance"
-        subtitle={activeTheme.name}
+        description={activeTheme.name}
         onClick={() => setOpen(true)}
       />
 
-      {/* No `title`: ThemeScreen renders its own header (including its own ✕). */}
-      <SettingsPopup
+      {/* D1: one header for all three of ThemeScreen's views. */}
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        width="min(480px, 88vw)"
-        height="min(600px, 80vh)"
+        title={
+          showInfo ? 'About Appearance'
+            : editingTheme ? `Edit: ${editingTheme.name}`
+              : 'Themes'
+        }
+        onBack={
+          showInfo ? () => setShowInfo(false)
+            : editingTheme ? () => setEditingSlug(null)
+              : undefined
+        }
+        headerActions={!showInfo && !editingTheme ? <InfoIconButton onClick={() => setShowInfo(true)} /> : undefined}
+        aria-label="Appearance"
+        // A panel, not a document. Its theme cards are a 6px gradient strip and
+        // a truncated name -- there is no canvas to size for, so the grid sets
+        // no meaningful width floor. At panel width the 2-up cards are 194px,
+        // which is ample for a strip plus a label and two 20px icons. Sizing it
+        // as a document made it 600px wide for content that needed none of it.
+        size="panel"
+        fill
         panelRef={popupRef}
       >
-        <ThemeScreen onClose={() => setOpen(false)} onSendInput={onSendInput} onRunCommand={onRunCommand} onOpenMarketplace={onOpenMarketplace} onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }} />
-      </SettingsPopup>
+        <ThemeScreen
+          onClose={() => setOpen(false)}
+          onSendInput={onSendInput}
+          onRunCommand={onRunCommand}
+          onOpenMarketplace={onOpenMarketplace}
+          onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }}
+          showInfo={showInfo}
+          onShowInfo={setShowInfo}
+          editingSlug={editingSlug}
+          onEditSlug={setEditingSlug}
+        />
+      </Dialog>
     </>
   );
 }
@@ -814,10 +878,10 @@ function BuddyButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={<BuddyIcon />}
         title="Buddy Floater"
-        subtitle={status}
+        description={status}
         onClick={() => setOpen(true)}
       />
 
@@ -825,46 +889,64 @@ function BuddyButton() {
           popup of the seven with no height ceiling, and it has no scroll container,
           so inheriting the shell's 80vh default would silently CLIP the Linux
           keep-above row instead of letting the popup grow. */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Buddy Floater"
-        width="min(340px, 85vw)"
-        maxHeight="none"
+        size="prompt"
+        scrollBody={false}
         panelRef={popupRef}
       >
-            <div className="px-4 py-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-fg font-medium">Show buddy floater</span>
-                <Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />
-              </div>
-              <p className="text-3xs text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
-              {enabled && dismissed && (
-                <p className="text-3xs text-fg-muted mt-2">
-                  Hidden until restart{' · '}
-                  <button onClick={showNow} className="text-accent hover:underline">Show now</button>
-                </p>
-              )}
+            {/* K2: this popup was the worst offender in the app — it used TWO
+                different description placements within itself (one <p> below the
+                row, one <p> inside the left column). Both are left-column
+                descriptions now, and the border-t between them goes: the rows
+                are carded, so the rule was drawing a line between two things
+                that were already separated. */}
+            <div className="px-4 py-4 space-y-2">
+              <SettingRow
+                variant="item"
+                title="Show buddy floater"
+                description={
+                  <>
+                    A small always-on-top mascot that stays visible even when the app is minimized.
+                    {enabled && dismissed && (
+                      <>
+                        <br />
+                        Hidden until restart{' · '}
+                        <button onClick={showNow} className="text-accent hover:underline">Show now</button>
+                      </>
+                    )}
+                  </>
+                }
+                control={<Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />}
+              />
               {/* Task 8: Linux-only — Electron's setAlwaysOnTop is a no-op on
                   Wayland; this opt-in runs a KWin scripting DBus call instead,
                   which only does anything on KDE Plasma (see kwin-keep-above.ts). */}
               {platform === 'linux' && (
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-edge">
-                  <div>
-                    <span className="text-xs text-fg font-medium block">Pin buddy above other windows (KDE only)</span>
-                    <p className="text-3xs text-fg-muted mt-1">Requires KDE Plasma. No effect on other desktops.</p>
-                    {/* Honest, non-committal per-action feedback — NOT the toggle's
-                        own state (that's the preference, above). Only appears right
-                        after a click that couldn't reach KWin; see toggleKeepAbove. */}
-                    {keepAboveHint && (
-                      <p className="text-3xs text-fg-muted mt-1">{keepAboveHint}</p>
-                    )}
-                  </div>
-                  <Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />
-                </div>
+                <SettingRow
+                  variant="item"
+                  title="Pin buddy above other windows (KDE only)"
+                  description={
+                    <>
+                      Requires KDE Plasma. No effect on other desktops.
+                      {/* Honest, non-committal per-action feedback — NOT the toggle's
+                          own state (that's the preference, above). Only appears right
+                          after a click that couldn't reach KWin; see toggleKeepAbove. */}
+                      {keepAboveHint && (
+                        <>
+                          <br />
+                          {keepAboveHint}
+                        </>
+                      )}
+                    </>
+                  }
+                  control={<Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />}
+                />
               )}
             </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -898,6 +980,14 @@ interface RemoteButtonProps {
   onCopyLink: () => void;
   onSetShowSetupQR: (v: boolean) => void;
   onSetShowAddDevice: (v: boolean) => void;
+  /**
+   * Opens the app's existing bug-report surface (BugReportPopup, which wraps
+   * dev:summarize-issue + dev:submit-issue). Both actions on a general
+   * ErrorState land here: "Report bug" files it, "Diagnose with Claude" is the
+   * same popup's summarize path, which collects the logs. One destination, no
+   * invented flow.
+   */
+  onReportIssue: () => void;
 }
 
 function RemoteButton({
@@ -905,7 +995,7 @@ function RemoteButton({
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
   onSetNewPassword, onSetPassword, onToggleEnabled, enableError, onToggleTailscaleTrust,
   onSetKeepAwake, onRunSetup, onConfirmSetup, onCancelSetup, setupStatus, setupError, onDisconnectClient, onCopyLink,
-  onSetShowSetupQR, onSetShowAddDevice,
+  onSetShowSetupQR, onSetShowAddDevice, onReportIssue,
 }: RemoteButtonProps) {
   const [open, setOpen] = useState(false);
   // showInfo flips the popup body to the plain-language explainer view.
@@ -913,7 +1003,8 @@ function RemoteButton({
   // main settings, not whichever screen they last viewed.
   const [showInfo, setShowInfo] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
+  // No scroll ref here any more — Dialog owns the scroll region and its edge
+  // fades for both views.
 
   useEffect(() => {
     if (!open) setShowInfo(false);
@@ -951,46 +1042,37 @@ function RemoteButton({
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         // Status indicator dot — green when remote + Tailscale VPN fully active, gray otherwise
         icon={<div className={`w-2.5 h-2.5 rounded-full ${isFullyConnected ? 'bg-green-500' : 'bg-fg-muted/40'}`} />}
         title="Remote Access"
-        subtitle={subtitle}
+        description={subtitle}
         onClick={() => setOpen(true)}
       />
 
-      {/* No `title` prop: this popup owns its own header because it swaps the
-          WHOLE surface for SettingsExplainer when (i) is pressed. The shell's
-          header would still be painted behind that. */}
-      <SettingsPopup
+      {/* D1, finished: BOTH views use the shell's header and scroll body now.
+          The main view used to paint its own — an h2, a CloseButton, and a
+          `.scroll-fade flex-1` wrapper — which is the exact set of things D1
+          exists to own, and the exact set two of SettingsPopup's seven callers
+          got wrong. `space-y-6` rather than Dialog's default `space-y-5`, so
+          the section rhythm here is unchanged. */}
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        width="min(480px, 88vw)"
-        height="min(600px, 80vh)"
+        title={showInfo ? 'About Remote Access' : 'Remote Access'}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
+        size="panel"
+        fill
         panelRef={popupRef}
       >
             {showInfo ? (
               <SettingsExplainer
-                title="Remote Access"
                 intro={REMOTE_ACCESS_EXPLAINER.intro}
                 sections={REMOTE_ACCESS_EXPLAINER.sections}
-                onBack={() => setShowInfo(false)}
-                onClose={() => setOpen(false)}
               />
             ) : (
-            <div className="flex flex-col h-full">
-              {/* Header — info icon (left of close) reveals the explainer view */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-                <h2 className="text-sm font-bold text-fg">Remote Access</h2>
-                <div className="flex items-center gap-1">
-                  <InfoIconButton onClick={() => setShowInfo(true)} />
-                  <CloseButton onClick={() => setOpen(false)} label="Close Remote Access" />
-                </div>
-              </div>
-
-              {/* Scrollable content */}
-              <div ref={scrollRef} className="scroll-fade flex-1">
-                <div className="px-4 py-4 space-y-6">
+            <div className="space-y-6">
                 {loading ? (
                   <LoadingState what="remote access" />
                 ) : (
@@ -1009,10 +1091,9 @@ function RemoteButton({
                           showSetupQR ? (
                             <div className="mt-2">
                               {/* Remind users that Tailscale must be installed + running on the receiving device too */}
-                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
-                              </div>
+                              <Callout tone="warning" title="Before scanning:" className="mb-2">
+                                Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running. The page won&apos;t load without it.
+                              </Callout>
                               <p className="text-3xs text-fg-muted mb-2">Then scan to connect:</p>
                               <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                                 <QRCodeSVG value={tailscale.url} size={140} />
@@ -1025,10 +1106,9 @@ function RemoteButton({
                           ) : (
                             <div className="space-y-2">
                               {/* Persistent reminder — visible whenever Tailscale is ready but no device has connected yet */}
-                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2">
-                                <p className="text-3xs text-amber-400 font-medium mb-0.5">Other device setup required:</p>
-                                <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
-                              </div>
+                              <Callout tone="warning" title="Other device setup required:">
+                                Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running before scanning. The page won&apos;t load without it.
+                              </Callout>
                               {/* Was bg-blue-600 with NO text-color class, so the
                                   label inherited the theme fg — near-black on blue
                                   on Creme. Button primary carries text-on-accent. */}
@@ -1046,38 +1126,67 @@ function RemoteButton({
                             </div>
                           </div>
                         ) : setupStatus === 'installing' ? (
-                          <div className="text-center py-1">
-                            <p className="text-xs text-fg-2 animate-pulse">Installing Tailscale...</p>
-                            <p className="text-3xs text-fg-muted mt-1">This may take a few minutes</p>
-                          </div>
+                          // K5. Every branch below was its own shape: centred
+                          // green text, centred muted text, a bare button with no
+                          // message at all. The WORDS were mostly fine — seven of
+                          // eleven carry over verbatim. It was eleven shapes.
+                          <StatusStrip tone="busy" detail="This may take a few minutes">
+                            Installing Tailscale…
+                          </StatusStrip>
                         ) : setupStatus === 'authenticating' ? (
-                          <div className="text-center py-1">
-                            <p className="text-xs text-fg-2 animate-pulse">Authenticating...</p>
-                            <p className="text-3xs text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
-                          </div>
+                          <StatusStrip tone="busy" detail="Check your browser to sign in to Tailscale">
+                            Waiting for Tailscale sign-in…
+                          </StatusStrip>
                         ) : setupStatus === 'done' ? (
-                          <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
+                          // Was "Tailscale installed and connected!" — the only
+                          // exclamation mark in the settings family. A status
+                          // strip says what you can do next (Destin, 2026-07-28).
+                          <StatusStrip tone="ok">Tailscale is connected. You can pair a device now.</StatusStrip>
                         ) : setupStatus === 'error' ? (
-                          <div className="space-y-2">
-                            <p className="text-xs text-destructive-fg text-center">{setupError || 'Setup failed'}</p>
-                            <Button onClick={onRunSetup} className="w-full">Retry</Button>
-                          </div>
+                          // `{setupError || 'Setup failed'}` replaced a missing
+                          // reason with a hardcoded guess and left the user two
+                          // words and no next step — the exact pattern
+                          // docs/error-message-standards.md forbids. When we HAVE
+                          // the real reason we show it with Retry; when we do not,
+                          // we say so without inventing a cause and hand over the
+                          // two actions the standard mandates.
+                          setupError ? (
+                            <ErrorState
+                              mode="recoverable"
+                              message={setupError}
+                              onRetry={onRunSetup}
+                              variant="inline"
+                            />
+                          ) : (
+                            <ErrorState
+                              mode="general"
+                              title="Unable to set up remote access."
+                              explainer="The Tailscale installer didn't report a reason. Diagnosing will collect the setup log so Claude can look at what happened."
+                              onReportBug={onReportIssue}
+                              onDiagnose={onReportIssue}
+                            />
+                          )
                         ) : tailscale?.installed && !tailscale.connected ? (
                           // Fix: Tailscale is installed but VPN is off — tailscale.url is null in this state,
                           // so we used to fall through to the install-button branch and pretend it wasn't installed.
-                          <p className="text-2xs text-fg-2 text-center py-1">
-                            Tailscale is installed, but the VPN isn't active. Open the Tailscale app and turn it on, then come back here.
-                          </p>
+                          <StatusStrip tone="warn">
+                            Tailscale is installed, but the VPN isn&apos;t active. Open the Tailscale app and turn it on, then come back here.
+                          </StatusStrip>
                         ) : tailscale?.installed && !config?.hasPassword ? (
                           // Installed + connected but no password yet — guide the user down to the password field
                           // rather than re-prompting to install.
-                          <p className="text-2xs text-fg-2 text-center py-1">
+                          <StatusStrip tone="warn">
                             Set a password below to finish enabling remote access.
-                          </p>
+                          </StatusStrip>
                         ) : (
-                          <Button onClick={onRunSetup} className="w-full">
-                            Set Up Remote Access
-                          </Button>
+                          // Was a bare button with no message. A status strip
+                          // says what state you are in, then offers the way out.
+                          <StatusStrip
+                            tone="idle"
+                            action={<Button size="sm" onClick={onRunSetup}>Set up</Button>}
+                          >
+                            Not set up yet.
+                          </StatusStrip>
                         )}
                       </div>
                     )}
@@ -1086,10 +1195,15 @@ function RemoteButton({
                     <section>
                       <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Server</h3>
 
-                      <label className="flex items-center justify-between py-2 cursor-pointer">
-                        <span className="text-xs text-fg-2">Enabled</span>
-                        <Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />
-                      </label>
+                      {/* onClick keeps the whole-row hit target the <label> used
+                          to give this; SettingRow stops the toggle's own click
+                          from bubbling back into it. */}
+                      <SettingRow
+                        variant="item"
+                        title="Enabled"
+                        onClick={onToggleEnabled}
+                        control={<Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />}
+                      />
                       {/* The server is started from the toggle now, so it can fail
                           (port already bound, permission denied). Show the real
                           reason here — the toggle has already snapped back off. */}
@@ -1132,21 +1246,19 @@ function RemoteButton({
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-fg-2">Keep awake</span>
                         </div>
-                        <div className="flex gap-1">
-                          {KEEP_AWAKE_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.value}
-                              onClick={() => onSetKeepAwake(opt.value)}
-                              className={`flex-1 px-1.5 py-1 rounded-sm text-3xs transition-colors ${
-                                config?.keepAwakeHours === opt.value
-                                  ? 'bg-accent text-on-accent font-medium'
-                                  : 'bg-inset text-fg-dim hover:bg-edge'
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
+                        {/* K3: four short options -> segmented. SegmentedTabs keys
+                            on string ids and keepAwakeHours is a number, so both
+                            directions convert at the boundary. */}
+                        <SegmentedTabs
+                          variant="contained"
+                          aria-label="Keep awake"
+                          value={String(config?.keepAwakeHours ?? 0)}
+                          onChange={(id) => onSetKeepAwake(Number(id))}
+                          tabs={KEEP_AWAKE_OPTIONS.map((opt) => ({
+                            id: String(opt.value),
+                            label: opt.label,
+                          }))}
+                        />
                       </div>
                     </section>
 
@@ -1175,19 +1287,24 @@ function RemoteButton({
 
                         <div className="space-y-1">
                           {clients.map(client => (
-                            <div key={client.id} className="flex items-center justify-between py-1.5 px-2 rounded-sm bg-inset/50">
-                              <div>
-                                <span className="text-xs text-fg-2 font-mono">{client.ip}</span>
-                                <span className="text-3xs text-fg-muted ml-2">{timeAgo(client.connectedAt)}</span>
-                              </div>
-                              <button
-                                onClick={() => onDisconnectClient(client.id)}
-                                className="text-fg-faint hover:text-red-400 text-sm leading-none px-1"
-                                title="Disconnect"
-                              >
-                                ✕
-                              </button>
-                            </div>
+                            // K6: an item list is a K2 row with a status dot in
+                            // the icon slot. The action was a bare ✕ with no
+                            // accessible name and no focus ring — change 41
+                            // banned those app-wide and this one survived the
+                            // sweep, announcing itself to a screen reader as
+                            // the literal character.
+                            <SettingRow
+                              key={client.id}
+                              variant="item"
+                              icon={<span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />}
+                              title={client.ip}
+                              description={timeAgo(client.connectedAt)}
+                              control={
+                                <Button variant="ghost" size="sm" onClick={() => onDisconnectClient(client.id)}>
+                                  Disconnect
+                                </Button>
+                              }
+                            />
                           ))}
                         </div>
                       </section>
@@ -1198,18 +1315,15 @@ function RemoteButton({
                       <section className="bg-inset/50 rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
                           <h3 className="text-xs font-medium text-fg-2">Add Device</h3>
-                          <button
-                            onClick={() => onSetShowAddDevice(false)}
-                            className="text-fg-muted hover:text-fg-2 text-sm leading-none"
-                          >
-                            ✕
-                          </button>
+                          {/* NOT a K6 action — this dismisses the whole
+                              sub-panel, so it is a CloseButton, which already
+                              carries a label and a focus ring. */}
+                          <CloseButton onClick={() => onSetShowAddDevice(false)} label="Close Add Device" />
                         </div>
                         {/* Remind users that Tailscale must be installed + running on the receiving device too */}
-                        <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
-                          <p className="text-3xs text-amber-400 font-medium mb-0.5">Before scanning:</p>
-                          <p className="text-3xs text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
-                        </div>
+                        <Callout tone="warning" title="Before scanning:" className="mb-2">
+                          Download Tailscale on your other device, sign in to the same account, and make sure it&apos;s running. The page won&apos;t load without it.
+                        </Callout>
                         <p className="text-3xs text-fg-muted mb-2">Then scan QR or copy link to connect:</p>
                         <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                           <QRCodeSVG value={tailscale.url} size={140} />
@@ -1226,30 +1340,37 @@ function RemoteButton({
                       <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Tailscale</h3>
 
                       {tailscale?.installed ? (
-                        <>
+                        // space-y-1 replaces the py-2 each bare row used to carry
+                        // its own spacing with — the rows are carded now, so the
+                        // gap belongs between them, not inside them.
+                        <div className="space-y-1">
                           {/* Distinguish "installed and connected" from "installed but VPN off" —
                               previously detection conflated the two and forced the not-installed branch. */}
-                          <div className="py-2 flex items-center justify-between">
-                            <span className="text-xs text-fg-2">Status</span>
-                            {tailscale.connected ? (
-                              <span className="text-3xs text-green-400">
-                                Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
-                              </span>
-                            ) : (
-                              <span className="text-3xs text-fg-muted">VPN not active</span>
-                            )}
-                          </div>
-
-                          <div className="py-2 flex items-center justify-between">
-                            <span className="text-xs text-fg-2">IP</span>
-                            <span className="text-xs text-fg-dim font-mono">{tailscale.ip ?? '—'}</span>
-                          </div>
-
-                          <label className="flex items-center justify-between py-2 cursor-pointer">
-                            <span className="text-xs text-fg-2">Skip password on Tailscale</span>
-                            <Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} label="Skip password on Tailscale" />
-                          </label>
-                        </>
+                          {/* K2 value rows. Status keeps its green/muted colour —
+                              that is state, not chrome — but takes the value
+                              slot's size so it lines up with the IP below it
+                              instead of sitting a step smaller. */}
+                          <SettingRow
+                            variant="item"
+                            title="Status"
+                            value={
+                              tailscale.connected ? (
+                                <span className="text-green-400">
+                                  Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-fg-muted">VPN not active</span>
+                              )
+                            }
+                          />
+                          <SettingRow variant="item" title="IP" value={tailscale.ip ?? '—'} />
+                          <SettingRow
+                            variant="item"
+                            title="Skip password on Tailscale"
+                            onClick={onToggleTailscaleTrust}
+                            control={<Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} label="Skip password on Tailscale" />}
+                          />
+                        </div>
                       ) : (
                         <div className="py-2">
                           <p className="text-xs text-fg-muted mb-2">
@@ -1267,11 +1388,9 @@ function RemoteButton({
                     </section>
                   </>
                 )}
-                </div>
-              </div>
             </div>
             )}
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1333,22 +1452,54 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
   return (
     <section>
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
-          <p className="text-3xs text-fg-muted mt-0.5">New sessions will skip tool approval</p>
-        </div>
-        <Toggle
-          enabled={defaults.skipPermissions}
-          onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
-          color="red"
-          label="Skip Permissions"
-        />
-      </div>
+      {/* K2: "Skip Permissions" was a K1 SECTION LABEL doing a row title's job —
+          an uppercase eyebrow heading labelling a single control. K1's rule is
+          that a section label never labels one control; if a control needs a
+          label, it is this row's title. The consequence line was the other
+          retired shape (a <p> below the whole row); it belongs in the left
+          column under the title, where every other description lives. */}
+      {/* K9 — danger zone. One shape: a "Danger zone" K1 label, the consequence
+          in a K4 danger callout, and the control, callout and control kept
+          together.
+
+          TWO DOCUMENTED DEVIATIONS, both approved 2026-07-28:
+
+          1. PLACEMENT. K9 says a danger zone is always LAST in its menu; this
+             one stays mid-menu. The rule exists so you cannot stumble into a
+             destructive ACTION, and a toggle you must deliberately flip is a
+             different risk from a Delete button — moving the most important
+             setting in Session Defaults to the bottom would de-emphasise it to
+             buy consistency that protects against nothing here.
+
+          2. ORDER. The callout sits AFTER the control, not before it. K9's
+             order assumes a button ("read this, then press"); for a toggle the
+             sentence is a consequence of the state you just turned on, and it
+             only exists while the toggle is on. Above the row it would push the
+             control down every time you flipped it. */}
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Danger zone</h3>
+      <SettingRow
+        variant="item"
+        title="Skip Permissions"
+        description="New sessions will skip tool approval"
+        control={
+          <Toggle
+            enabled={defaults.skipPermissions}
+            onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
+            color="red"
+            label="Skip Permissions"
+          />
+        }
+      />
+      {defaults.skipPermissions && (
+        // Was a raw `text-[#DD4444]` span inside the row's description — the
+        // fixed status red, which theme packs cannot restyle. The Callout's
+        // danger tone rides the destructive token instead (change 17).
+        <Callout tone="danger" className="mt-2">
+          Claude will execute tools without asking for approval.
+        </Callout>
+      )}
       {defaults.skipPermissions && (
         <>
-          <p className="text-3xs text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
-
           {/* Advanced expandable section */}
           <button
             onClick={() => setAdvancedOpen(!advancedOpen)}
@@ -1367,14 +1518,16 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
           {advancedOpen && (
             <div className="mt-2 ml-1 border-l border-edge-dim pl-3 space-y-3">
-              {/* Approve All toggle */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-3xs text-fg-dim font-medium">Auto-approve all</p>
-                  <p className="text-4xs text-fg-muted">Silently approve all protected requests</p>
-                </div>
-                <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />
-              </div>
+              {/* Approve All toggle. K2: these were text-3xs/text-4xs — a third
+                  and fourth type size used to signal nesting depth. The indent
+                  rail to the left already says "nested"; the rows take the one
+                  item density like every other in-menu row. */}
+              <SettingRow
+                variant="item"
+                title="Auto-approve all"
+                description="Silently approve all protected requests"
+                control={<Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />}
+              />
 
               {/* Separator */}
               <div className="flex items-center gap-2">
@@ -1385,13 +1538,17 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 
               {/* Per-category toggles */}
               {OVERRIDE_CATEGORIES.map(({ key, label, description }) => (
-                <div key={key} className={`flex items-center justify-between ${overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}`}>
-                  <div>
-                    <p className="text-3xs text-fg-dim font-medium">{label}</p>
-                    <p className="text-4xs text-fg-muted">{description}</p>
-                  </div>
-                  <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />
-                </div>
+                <SettingRow
+                  key={key}
+                  variant="item"
+                  title={label}
+                  description={description}
+                  // 40% + pointer-events-none, not the row's own `disabled`: this
+                  // is "superseded by approve-all", not "unavailable", and the
+                  // existing resting opacity is what the spec approved.
+                  className={overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}
+                  control={<Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />}
+                />
               ))}
             </div>
           )}
@@ -1399,22 +1556,34 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
           {/* Confirmation popup for Approve All — L3 destructive, theme-driven glass */}
           {confirmOpen && createPortal(
             <>
-              <Scrim layer={3} onClick={() => setConfirmOpen(false)} />
-              <OverlayPanel
+              <Dialog
+                open
+                onClose={() => setConfirmOpen(false)}
                 layer={3}
                 destructive
-                className="fixed overflow-hidden"
-                style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(340px, 85vw)' }}
+                size="prompt"
+                // The `&#9888;` glyph goes with the hand-rolled header the spec
+                // named. HTML entities do not decode inside a string PROP (only
+                // in JSX text), so carrying it here would have rendered the
+                // literal characters — and Dialog's `destructive` already tints
+                // the whole panel, which is the same signal without the glyph.
+                title="This is extremely dangerous"
+                scrollBody={false}
               >
-                <div className="px-4 py-3 border-b border-red-600/30 bg-red-600/10">
-                  {/* Warning: extreme danger header */}
-                  <h3 className="text-xs font-bold text-[#DD4444]">&#9888; This is extremely dangerous</h3>
-                </div>
                 <div className="px-4 py-3 space-y-2">
-                  <p className="text-3xs text-fg-dim leading-relaxed">
-                    <strong className="text-[#DD4444]">This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
+                  {/* K9: this was the hand-rolled block the spec named — a
+                      `bg-red-600/10` header strip carrying a `&#9888;` glyph and
+                      an `text-[#DD4444]` heading, which is a FOURTH red beside
+                      the destructive token, the fixed status red, and the
+                      red-600 the strip itself used. The title is Dialog's now
+                      (with `destructive`, which already tints the panel) and the
+                      consequence is a danger Callout. Copy is unchanged
+                      throughout — it was specific, it was accurate, and it is
+                      the strongest warning in the app for good reason. */}
+                  <Callout tone="danger">
+                    <strong>This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
                     Do not enable this unless you fully understand the consequences.
-                  </p>
+                  </Callout>
                   <p className="text-3xs text-fg-dim leading-relaxed">
                     Full auto-approve silently grants <strong>every</strong> remaining permission request with zero human review. Claude will be able to:
                   </p>
@@ -1425,7 +1594,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     <li>Execute compound commands that bypass path resolution safety checks</li>
                     <li>Execute compound commands that bypass bare repository attack protections</li>
                   </ul>
-                  <p className="text-3xs text-[#DD4444]/80 leading-relaxed font-medium">
+                  <p className="text-3xs text-destructive-fg/80 leading-relaxed font-medium">
                     These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
                   </p>
                   <div className="flex gap-2 pt-2">
@@ -1444,7 +1613,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     </Button>
                   </div>
                 </div>
-              </OverlayPanel>
+              </Dialog>
             </>,
             document.body,
           )}
@@ -1462,7 +1631,6 @@ interface DefaultsButtonProps {
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   // Close-session prompt suppression — reads/writes localStorage directly since
   // this is a UI preference, not a session default backed by sessionDefaults.
   const [closePromptDisabled, setClosePromptDisabled] = useState(
@@ -1491,7 +1659,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
             <line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" />
@@ -1499,76 +1667,90 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
           </svg>
         }
         title="Defaults"
-        subtitle={summaryParts.join(' · ')}
+        description={summaryParts.join(' · ')}
         onClick={() => setOpen(true)}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Session Defaults"
-        width="min(380px, 88vw)"
+        size="panel"
         panelRef={popupRef}
       >
-            <div className="flex flex-col h-full">
-              <div ref={scrollRef} className="scroll-fade">
-                <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
                 <section>
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
-                  <div className="flex gap-1">
-                    {MODELS.map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => onDefaultsChange({ model: m })}
-                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-2xs transition-colors flex items-center justify-center ${
-                          defaults.model === m
-                            ? 'bg-accent text-on-accent font-medium'
-                            : 'bg-inset text-fg-dim hover:bg-edge'
-                        }`}
-                      >
-                        {MODEL_LABELS[m] || m}
-                        <ModelInfoTooltip model={m} />
-                      </button>
-                    ))}
-                  </div>
+                  {/* K3: three short options -> segmented. The info tooltip
+                      rides in the label, which is a ReactNode. */}
+                  <SegmentedTabs
+                    variant="contained"
+                    aria-label="Default Model"
+                    value={defaults.model}
+                    onChange={(id) => onDefaultsChange({ model: id })}
+                    tabs={MODELS.map((m) => ({
+                      id: m,
+                      label: (
+                        <>
+                          {MODEL_LABELS[m] || m}
+                          <ModelInfoTooltip model={m} />
+                        </>
+                      ),
+                    }))}
+                  />
                 </section>
 
                 {/* Skip Permissions */}
                 <SkipPermissionsSection defaults={defaults} onDefaultsChange={onDefaultsChange} />
 
-                {/* Default Project Folder */}
-                <section>
-                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Project Folder</h3>
-                  <button
-                    onClick={handleBrowseFolder}
-                    className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge-dim rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate"
-                  >
-                    {defaults.projectFolder || 'Home directory (default)'}
-                  </button>
-                  {defaults.projectFolder && (
-                    <button
-                      onClick={() => onDefaultsChange({ projectFolder: '' })}
-                      className="text-3xs text-fg-muted hover:text-fg-2 mt-1"
-                    >
-                      Reset to home directory
-                    </button>
-                  )}
-                </section>
+                {/* Default Project Folder.
+
+                    K7: this was a <button> wearing the FIELD surface — bg-inset,
+                    border-edge-dim, rounded-md — so it read as a text box you
+                    could type into, and nothing about it said "this opens a
+                    folder picker". A value chosen ELSEWHERE (an OS dialog, a
+                    picker, another screen) is a value row plus a Change button:
+                    here is the value, here is how to change it.
+
+                    The uppercase "Project Folder" eyebrow was also a K1 section
+                    label doing a row title's job — the same violation K2 already
+                    retired at Skip Permissions and Close-session prompt. */}
+                <SettingRow
+                  variant="item"
+                  title="Project folder"
+                  // The path lives in the description, not the `value` slot: a
+                  // filesystem path is long and must wrap, and `value` is
+                  // shrink-0 so it would push the buttons off the row.
+                  description={defaults.projectFolder || 'Home directory (default)'}
+                  control={
+                    <div className="flex items-center gap-1 shrink-0">
+                      {defaults.projectFolder && (
+                        <Button variant="ghost" size="sm" onClick={() => onDefaultsChange({ projectFolder: '' })}>
+                          Reset
+                        </Button>
+                      )}
+                      <Button variant="secondary" size="sm" onClick={handleBrowseFolder}>
+                        Change
+                      </Button>
+                    </div>
+                  }
+                />
 
                 {/* Close-session prompt — toggle off to skip the tag-before-closing
                     popup and destroy sessions immediately. Mirrors the "Don't show
                     again" checkbox inside the prompt itself. */}
-                <section>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
-                      <p className="text-3xs text-fg-muted mt-0.5">Show tag options when closing a session</p>
-                    </div>
-                    {/* Was a hand-rolled 32x18 track with an inline var(--accent)
-                        background; one geometry now (change 16). The state is stored
-                        INVERTED (closePromptDisabled), so `checked` is the negation —
-                        the switch reads as "show the prompt". */}
+                {/* K2: the other K1-label-as-row-title violation, and the one the
+                    spec called out by name. "Close-session prompt" was an
+                    uppercase section eyebrow labelling exactly one switch. */}
+                <SettingRow
+                  variant="item"
+                  title="Close-session prompt"
+                  description="Show tag options when closing a session"
+                  control={
+                    // Was a hand-rolled 32x18 track with an inline var(--accent)
+                    // background; one geometry now (change 16). The state is stored
+                    // INVERTED (closePromptDisabled), so `checked` is the negation —
+                    // the switch reads as "show the prompt".
                     <UiToggle
                       checked={!closePromptDisabled}
                       onChange={(show) => {
@@ -1582,12 +1764,9 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       }}
                       aria-label="Close-session prompt"
                     />
-                  </div>
-                </section>
-                </div>
-              </div>
-            </div>
-      </SettingsPopup>
+                  }
+                />
+      </Dialog>
     </>
   );
 }
@@ -1605,7 +1784,6 @@ const TIER_OPTIONS = [
 function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string) => void }) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   useEffect(() => {
     if (!open) return;
@@ -1626,10 +1804,10 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
           is the current tier's name (was reversed: the tier name used to be
           the title with no static label, the one anti-pattern this component
           shared with pre-redesign Appearance/Remote Access/Buddy Floater). */}
-      <SettingsRow
+      <SettingRow
         icon={<span className="text-sm leading-none text-fg-dim">⬡</span>}
         title="Package Tier"
-        subtitle={currentTier.name}
+        description={currentTier.name}
         onClick={() => setOpen(true)}
       />
 
@@ -1639,15 +1817,13 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
           via transform/backdrop-filter, which is why an inline-rendered popup
           ends up centered inside the panel instead of the viewport. ThemeButton
           above uses the same portal pattern for the same reason. */}
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Package Tier"
-        width="min(340px, 85vw)"
+        size="prompt"
         panelRef={popupRef}
       >
-            <div ref={scrollRef} className="scroll-fade" style={{ maxHeight: 'calc(80vh - 52px)' }}>
-              <div className="p-3 space-y-2">
               {TIER_OPTIONS.map(t => {
                 const isActive = tier === t.id;
                 return (
@@ -1671,9 +1847,7 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
                   </button>
                 );
               })}
-              </div>
-            </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -1689,7 +1863,6 @@ interface PairedDevice {
 
 function ConnectToDesktopButton() {
   const [open, setOpen] = useState(false);
-  const scrollRef = useScrollFade<HTMLDivElement>();
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [connectedDeviceName, setConnectedDeviceName] = useState('');
@@ -1805,7 +1978,7 @@ function ConnectToDesktopButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={
           <div className="relative flex items-center justify-center">
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -1819,35 +1992,39 @@ function ConnectToDesktopButton() {
           </div>
         }
         title="Connect to Desktop"
-        subtitle={subtitle}
-        subtitleClassName={remoteConnected ? 'text-green-400' : undefined}
+        description={subtitle}
+        descriptionClassName={remoteConnected ? 'text-green-400' : undefined}
         onClick={() => { setOpen(true); setShowConnectForm(false); }}
       />
 
-      <SettingsPopup
+      <Dialog
         open={open}
         onClose={() => setOpen(false)}
         title="Connect to Desktop"
-        width="min(380px, 88vw)"
+        size="panel"
         panelRef={popupRef}
-        className="flex flex-col"
       >
-            <div ref={scrollRef} className="scroll-fade">
-              <div className="px-4 py-4 space-y-4">
 
               {/* Tailscale warning */}
               {!tailscaleLoading && tailscaleStatus !== null && !tailscaleStatus.connected && (
-                <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                      <line x1="12" y1="9" x2="12" y2="13" />
-                      <line x1="12" y1="17" x2="12.01" y2="17" />
-                    </svg>
-                    <span className="text-xs text-amber-400 font-medium">Tailscale not connected</span>
-                  </div>
-                  <p className="text-3xs text-fg-dim">Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.</p>
-                </div>
+                <Callout
+                  tone="warning"
+                  title={
+                    // The glyph rides in the title node rather than getting its
+                    // own slot: it is the ONLY callout in the app that has one,
+                    // so a slot would be a prop that exists for a single caller.
+                    <span className="flex items-center gap-2">
+                      <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                        <line x1="12" y1="9" x2="12" y2="13" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                      </svg>
+                      Tailscale not connected
+                    </span>
+                  }
+                >
+                  Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.
+                </Callout>
               )}
 
               {/* Connected banner */}
@@ -1872,9 +2049,11 @@ function ConnectToDesktopButton() {
 
               {/* Error */}
               {connectError && (
-                <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2">
-                  <p className="text-3xs text-destructive-fg">{connectError}</p>
-                </div>
+                // Was raw `red-500` around text that already used the destructive
+                // TOKEN — the surface and its own body disagreed about which red
+                // they were. Change 17 moved the app's reds onto the token so
+                // theme packs can restyle them; this one survived that sweep.
+                <Callout tone="danger">{connectError}</Callout>
               )}
 
               {/* Saved devices — always listed */}
@@ -1883,22 +2062,26 @@ function ConnectToDesktopButton() {
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Saved Devices</h3>
                   <div className="space-y-1">
                     {pairedDevices.map(device => (
-                      <div key={`${device.host}:${device.port}`} className="flex items-center justify-between py-2 px-3 rounded-sm bg-inset/50">
-                        <button
-                          onClick={() => doConnect(device)}
-                          disabled={connecting || remoteConnected}
-                          className="min-w-0 flex-1 text-left disabled:opacity-50"
-                        >
-                          <span className="text-xs text-fg block">{device.name}</span>
-                          <span className="text-3xs text-fg-muted font-mono block">{device.host}:{device.port}</span>
-                        </button>
-                        <button
-                          onClick={() => handleRemoveDevice(device)}
-                          className="text-fg-faint hover:text-red-400 text-sm leading-none px-1 shrink-0 ml-2"
-                        >
-                          ✕
-                        </button>
-                      </div>
+                      // K6. The row was already two controls in a flex box: a
+                      // borderless <button> wrapping the name so the whole thing
+                      // connects, plus a bare ✕. SettingRow expresses exactly
+                      // that — onClick makes the row the hit target and stops the
+                      // control's click from bubbling into it, so Remove no
+                      // longer risks also firing Connect.
+                      <SettingRow
+                        key={`${device.host}:${device.port}`}
+                        variant="item"
+                        title={device.name}
+                        description={`${device.host}:${device.port}`}
+                        descriptionClassName="text-fg-muted font-mono"
+                        onClick={() => doConnect(device)}
+                        disabled={connecting || remoteConnected}
+                        control={
+                          <Button variant="ghost" size="sm" onClick={() => handleRemoveDevice(device)}>
+                            Remove
+                          </Button>
+                        }
+                      />
                     ))}
                   </div>
                 </section>
@@ -1935,7 +2118,7 @@ function ConnectToDesktopButton() {
                           form footer — it sits under the whole form, not beside one
                           field, so it is NOT an InputGroup. */}
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Device Name</label>
                         <TextInput
                           size="sm"
                           value={formName}
@@ -1946,7 +2129,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Host / IP</label>
                         <TextInput
                           size="sm"
                           value={formHost}
@@ -1957,7 +2140,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Port</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Port</label>
                         <TextInput
                           size="sm"
                           value={formPort}
@@ -1968,7 +2151,7 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div>
-                        <label className="text-3xs text-fg-muted uppercase tracking-wider block mb-1">Password</label>
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mb-1">Password</label>
                         <TextInput
                           size="sm"
                           type="password"
@@ -1997,9 +2180,7 @@ function ConnectToDesktopButton() {
               <p className="text-3xs text-fg-muted">
                 Connect to the YouCoded desktop app on your computer. Set up remote access in the desktop app's settings first.
               </p>
-              </div>
-            </div>
-      </SettingsPopup>
+      </Dialog>
     </>
   );
 }
@@ -2098,7 +2279,7 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         {/* Development — bug reports, contributions, known issues */}
-        <SettingsRow
+        <SettingRow
           icon={
             // {YC} — curly braces with YC monogram in Cascadia Mono (matches
             // the "Development" label's font size).
@@ -2109,7 +2290,7 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
             </svg>
           }
           title="Development"
-          subtitle="Report a bug, contribute, or browse known issues"
+          description="Report a bug, contribute, or browse known issues"
           onClick={() => setShowDevMenu(true)}
         />
         <DevelopmentPopup
@@ -2123,14 +2304,14 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
 
         {/* Keyboard shortcuts intentionally omitted on Android — no physical keyboard. */}
 
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
             </svg>
           }
           title="Donate"
-          subtitle="Support YouCoded development"
+          description="Support YouCoded development"
           onClick={() => setShowDonateConfirm(true)}
         />
 
@@ -2138,7 +2319,7 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
 
         {aboutInfo && (
           <>
-            <SettingsRow
+            <SettingRow
               icon={
                 <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10" />
@@ -2147,7 +2328,7 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
                 </svg>
               }
               title="About"
-              subtitle={formatVersionLine({ version: aboutInfo.version, build: aboutInfo.build })}
+              description={formatVersionLine({ version: aboutInfo.version, build: aboutInfo.build })}
               onClick={() => setShowAbout(true)}
             />
             <AboutPopup
@@ -2384,12 +2565,13 @@ function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSe
           onCopyLink={handleCopyLink}
           onSetShowSetupQR={setShowSetupQR}
           onSetShowAddDevice={setShowAddDevice}
+          onReportIssue={() => setShowBugReport(true)}
         />
 
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         {/* Development — bug reports, contributions, known issues */}
-        <SettingsRow
+        <SettingRow
           icon={
             // {YC} — curly braces with YC monogram in Cascadia Mono (matches
             // the "Development" label's font size).
@@ -2400,7 +2582,7 @@ function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSe
             </svg>
           }
           title="Development"
-          subtitle="Report a bug, contribute, or browse known issues"
+          description="Report a bug, contribute, or browse known issues"
           onClick={() => setShowDevMenu(true)}
         />
         <DevelopmentPopup
@@ -2413,7 +2595,7 @@ function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSe
         <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
 
         {/* Keyboard Shortcuts */}
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2" />
@@ -2421,26 +2603,26 @@ function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSe
             </svg>
           }
           title="Keyboard Shortcuts"
-          subtitle="View all hotkeys"
+          description="View all hotkeys"
           onClick={() => setShowShortcuts(true)}
         />
         <ShortcutsPopup open={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
             </svg>
           }
           title="Donate"
-          subtitle="Support YouCoded development"
+          description="Support YouCoded development"
           onClick={() => setShowDonateConfirm(true)}
         />
 
         <DonateConfirm open={showDonateConfirm} onClose={() => setShowDonateConfirm(false)} />
 
         {/* About — popup on click, styled like other settings popups */}
-        <SettingsRow
+        <SettingRow
           icon={
             <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" />
@@ -2449,7 +2631,7 @@ function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSe
             </svg>
           }
           title="About"
-          subtitle={formatVersionLine({ version: desktopVersion, channel: desktopChannel })}
+          description={formatVersionLine({ version: desktopVersion, channel: desktopChannel })}
           onClick={() => setShowAbout(true)}
         />
         <AboutPopup

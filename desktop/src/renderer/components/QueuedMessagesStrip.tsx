@@ -67,7 +67,7 @@ const QueuedMessagesStrip = React.forwardRef<HTMLDivElement, Props>(function Que
           key={q.queueId}
           className="layer-surface flex items-center gap-2 rounded-xl px-3 py-2 shadow-lg"
         >
-          <div className="text-4xs uppercase tracking-wider text-fg-muted select-none shrink-0">
+          <div className="text-4xs text-fg-muted tracking-wider uppercase select-none shrink-0">
             Queued
           </div>
           <div className="flex-1 min-w-0 truncate text-sm text-fg-2">{q.content}</div>

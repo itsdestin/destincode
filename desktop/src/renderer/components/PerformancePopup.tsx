@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
-import { Button, CloseButton, Toggle } from './ui';
+import { Button, Dialog, Toggle, SettingRow } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -73,7 +71,6 @@ export default function PerformancePopup({
 }: Props) {
   // Always mounted when open (parent uses {open && <PerformancePopup>}) — so open=true is correct here.
   useEscClose(true, onClose);
-  const bodyRef = useScrollFade<HTMLDivElement>();
   const [restarting, setRestarting] = useState(false);
 
   const handleToggle = () => {
@@ -98,18 +95,7 @@ export default function PerformancePopup({
 
   return (
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel layer={2} className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-h-[80vh] overflow-hidden flex flex-col">
-        {/* Header — matches the SettingsExplainer header so the popup
-            visually fits with the rest of the settings UI. */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-          <h2 className="text-sm font-bold text-fg">Performance</h2>
-          <CloseButton onClick={onClose} label="Close performance settings" />
-        </div>
-
-        {/* Scrollable body. Controls at top, explainer below. */}
-        <div ref={bodyRef} className="scroll-fade flex-1">
-          <div className="px-4 py-4 space-y-4">
+      <Dialog open onClose={onClose} title="Performance" size="panel">
             <p className="text-xs text-fg-2">GPU choice affects performance.</p>
 
             {/* Toggle row. This was a whole-row <button role="switch"> whose
@@ -118,31 +104,22 @@ export default function PerformancePopup({
                 (change 15), on the right like every other settings row.
 
                 The row stays clickable (bigger touch target — this renderer is also
-                the Android UI), but a <button> can't legally contain another one, so
-                the wrapper is a div. The guard below drops clicks that originated on
-                the Toggle itself, which would otherwise fire handleToggle twice and
-                cancel out. */}
-            <div
-              onClick={(e) => {
-                if ((e.target as HTMLElement).closest('[role="switch"]')) return;
-                handleToggle();
-              }}
-              className="w-full text-left flex items-start gap-3 p-3 rounded-lg hover:bg-inset transition-colors cursor-pointer"
-            >
-              <span className="flex-1">
-                <span className="block text-sm text-fg">Prefer power saving</span>
-                <span className="block text-xs text-fg-muted mt-0.5">
-                  Use the integrated GPU instead of the discrete one. Saves battery,
-                  but UI animations may stutter.
-                </span>
-              </span>
-              <Toggle
-                checked={saved}
-                onChange={handleToggle}
-                aria-label="Prefer power saving"
-                className="mt-0.5"
-              />
-            </div>
+                the Android UI). SettingRow owns the "don't fire twice" problem now:
+                it stops the control's own click from bubbling, replacing the
+                closest('[role="switch"]') guard this row used to hand-roll. */}
+            <SettingRow
+              variant="item"
+              title="Prefer power saving"
+              description="Use the integrated GPU instead of the discrete one. Saves battery, but UI animations may stutter."
+              onClick={handleToggle}
+              control={
+                <Toggle
+                  checked={saved}
+                  onChange={handleToggle}
+                  aria-label="Prefer power saving"
+                />
+              }
+            />
 
             {needsRestart && (
               <div className="px-3 py-2 rounded-lg bg-inset flex items-center justify-between gap-3">
@@ -162,9 +139,6 @@ export default function PerformancePopup({
                 Detected GPUs: {gpuList.join(', ')}
               </p>
             )}
-
-            {/* Visual divider between controls and explainer. */}
-            <hr className="border-edge-dim" />
 
             <p className="text-xs text-fg-2 leading-relaxed">{PERFORMANCE_EXPLAINER.intro}</p>
 
@@ -189,9 +163,7 @@ export default function PerformancePopup({
                 )}
               </section>
             ))}
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

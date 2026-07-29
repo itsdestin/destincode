@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
+import { Button, CloseButton, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState, SettingRow } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -318,18 +317,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
     };
     return createPortal(
       <>
-        <Scrim layer={2} onClick={onClose} />
-        <OverlayPanel
-          layer={2}
-          role="dialog"
-          aria-modal={true}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[80vh] flex flex-col"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
-            <h3 className="text-sm font-semibold text-fg">Model</h3>
-            <CloseButton onClick={onClose} label="Close model picker" />
-          </div>
+        <Dialog open onClose={onClose} title="Model" size="panel" scrollBody={false}>
           <div className="px-5 pt-3">
             {/* Change 20: the shared field surface. No submit button belongs
                 inside it — the list below filters as you type. */}
@@ -352,7 +340,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             ) : (
               [...groups.entries()].map(([label, models]) => (
                 <section key={label}>
-                  <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
+                  <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">{label}</div>
                   <div className="flex flex-col gap-1">
                     {models.map((m) => {
                       // Prefer App's live SessionInfo.model (updated on every swap)
@@ -377,7 +365,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
               ))
             )}
           </div>
-        </OverlayPanel>
+        </Dialog>
       </>,
       document.body,
     );
@@ -389,18 +377,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   return createPortal(
     // Overlay layer L2 — theme-driven scrim/surface via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
-          <h3 className="text-sm font-semibold text-fg">Model &amp; Effort</h3>
-          <CloseButton onClick={onClose} label="Close model picker" />
-        </div>
+      <Dialog open onClose={onClose} title="Model & Effort" size="panel" scrollBody={false}>
 
         {!loaded ? (
           <LoadingState what="models" />
@@ -408,7 +385,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
           <div className="p-5 space-y-5">
             {/* Model */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</label>
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</h3>
               <div className="flex gap-2">
                 {MODELS.map((m) => (
                   <button
@@ -429,9 +406,9 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
             {/* Effort */}
             <section>
-              <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Effort Level
-              </label>
+              </h3>
               <div className="grid grid-cols-5 gap-1.5">
                 {EFFORT_LEVELS.map((level) => {
                   const disabled = level === 'max' && !maxAllowed;
@@ -461,40 +438,43 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
             {/* Fast mode toggle */}
             <section>
-              <div className="flex items-start justify-between gap-3 p-2 rounded hover:bg-inset">
-                <div className="flex-1">
-                  <div className="text-sm text-fg flex items-center gap-1.5">
-                    <FastIcon className="w-3.5 h-3.5 text-yellow-500" /> Fast mode
-                  </div>
-                  <div className="text-xs text-fg-muted">Same model, faster output streaming</div>
-                </div>
-                {/* Was a fifth hand-rolled toggle geometry (32x16) with a
-                    hardcoded green-600 on-state. One geometry now, and the
-                    on-state is the theme's accent (changes 15/16). It already
-                    had role="switch" but no accessible name. */}
-                <Toggle
-                  checked={fast}
-                  onChange={handleFastToggle}
-                  aria-label="Fast mode"
-                />
-              </div>
+              {/* K2: the icon moves out of the title and into the icon slot,
+                  which is what that slot is for — inline, it was pushing the
+                  title text off the alignment every other row shares. */}
+              <SettingRow
+                variant="item"
+                icon={<FastIcon className="w-3.5 h-3.5 text-yellow-500" />}
+                title="Fast mode"
+                description="Same model, faster output streaming"
+                control={
+                  // Was a fifth hand-rolled toggle geometry (32x16) with a
+                  // hardcoded green-600 on-state. One geometry now, and the
+                  // on-state is the theme's accent (changes 15/16). It already
+                  // had role="switch" but no accessible name.
+                  <Toggle
+                    checked={fast}
+                    onChange={handleFastToggle}
+                    aria-label="Fast mode"
+                  />
+                }
+              />
             </section>
           </div>
         )}
-      </OverlayPanel>
+      </Dialog>
 
       {/* Fast mode confirmation — L3 (critical/destructive) because enabling
          Fast mode bills per-token on top of any Pro/Max subscription. */}
       {fastConfirmOpen && (
         <>
-          <Scrim layer={3} onClick={() => setFastConfirmOpen(false)} />
-          <OverlayPanel
+          <Dialog
+            open
+            onClose={() => setFastConfirmOpen(false)}
             layer={3}
             destructive
-            role="alertdialog"
-            aria-modal={true}
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
-            onClick={(e) => e.stopPropagation()}
+            size="prompt"
+            aria-label="Enable Fast mode?"
+            scrollBody={false}
           >
             <div className="p-5 space-y-4">
               <div className="flex items-start gap-3">
@@ -551,7 +531,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                 </button>
               </div>
             </div>
-          </OverlayPanel>
+          </Dialog>
         </>
       )}
     </>,

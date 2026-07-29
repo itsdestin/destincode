@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, CloseButton, Textarea } from './ui';
+import { Button, Dialog, Textarea } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import { useTheme } from '../state/theme-context';
@@ -104,37 +103,28 @@ export default function ContextPopup({
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby={showInfo ? undefined : 'context-popup-title'}
-        aria-label={showInfo ? 'About Context' : undefined}
-        className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px] flex flex-col overflow-hidden ${showInfo ? 'h-[85vh]' : 'max-h-[85vh]'}`}
-        onClick={(e) => e.stopPropagation()}
+      {/* The explainer used to swap max-h-[85vh] for a hard h-[85vh], so opening
+          it made the panel JUMP to full height and closing it snapped back.
+          Dialog cannot express a fixed height, so both views now hug their
+          content up to the same ceiling. */}
+      <Dialog
+        open
+        onClose={onClose}
+        size="prompt"
+        // K12: the explainer no longer paints a header — Dialog does, and the
+        // back chevron is Dialog's `onBack`, which tranche 2 added for exactly
+        // this and which nothing had used until now.
+        title={showInfo ? 'About Context' : 'Context'}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
+        // The explainer takes the shell's scroll body (and its edge fades); the
+        // main view still owns its own surface.
+        scrollBody={showInfo}
       >
         {showInfo ? (
-          // Explainer takes over the full panel frame; has its own header with Back + Close.
-          <SettingsExplainer
-            title="Context"
-            intro={INFO_INTRO}
-            sections={INFO_SECTIONS}
-            onBack={() => setShowInfo(false)}
-            onClose={onClose}
-          />
+          <SettingsExplainer intro={INFO_INTRO} sections={INFO_SECTIONS} />
         ) : (
           <>
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-              <h3 id="context-popup-title" className="text-sm font-semibold text-fg">Context</h3>
-              <div className="flex items-center gap-1">
-                {/* (i) button — opens the explainer view explaining what context percentage means */}
-                <InfoIconButton onClick={() => setShowInfo(true)} />
-                <CloseButton onClick={onClose} label="Close context panel" />
-              </div>
-            </div>
-
             {/* Current state */}
             <div className="px-4 py-4 space-y-3">
               <div className="text-center">
@@ -199,7 +189,7 @@ export default function ContextPopup({
             <div className="px-4 pb-4 pt-2 space-y-3 border-t border-edge">
               {customizing ? (
                 <div className="space-y-2">
-                  <label htmlFor="compact-instructions" className="block text-xs font-medium text-fg-muted tracking-wider uppercase">
+                  <label htmlFor="compact-instructions" className="block text-3xs font-medium text-fg-muted tracking-wider uppercase">
                     Keep these priorities (optional)
                   </label>
                   {/* Change 42: this was the `border-edge rounded-sm focus:ring-1`
@@ -310,7 +300,7 @@ export default function ContextPopup({
             </div>
           </>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

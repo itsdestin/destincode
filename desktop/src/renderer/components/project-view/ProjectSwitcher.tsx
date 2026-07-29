@@ -138,7 +138,7 @@ export function ProjectSwitcher({
 
         {/* Recent micro-label */}
         <div className="px-2 pt-2">
-          <span className="px-2 text-3xs tracking-wider text-fg-muted uppercase">
+          <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase px-2">
             Recent
           </span>
         </div>

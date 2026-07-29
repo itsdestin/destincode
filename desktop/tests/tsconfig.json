@@ -1,0 +1,34 @@
+// Editor / language-server config ONLY — nothing in the build reads this file.
+//
+// Why it exists: the root tsconfig.json is the BUILD config (`npm run build` runs
+// bare `tsc`, and its "rootDir": "src" / "include": ["src/**/*"] must stay that way
+// or tests would be type-checked and emitted into dist/). That left tests/ outside
+// every TypeScript program, so the language server never indexed it — and Serena's
+// find_referencing_symbols silently reported ZERO references for symbols that tests
+// use heavily (verified 2026-07-28 on ErrorState: 3 real call sites in
+// tests/ui-primitives.test.tsx, none of them returned).
+//
+// A "no references" answer that omits tests is exactly the false negative the
+// "never assert a negative from a single search" rule in CLAUDE.md exists to prevent,
+// so this file closes that hole rather than leaving it as a documented trap.
+//
+// "include" deliberately pulls in ../src as well: tsserver searches for references
+// across every loaded project that CONTAINS the file being queried, so the tests
+// project must contain src/ too, not just import from it.
+//
+// "module": "esnext" overrides the build's commonjs — tests legitimately use
+// top-level await and import.meta, which commonjs rejects (TS1378 / TS1343).
+// esbuild/vitest ignore "module" entirely, so this cannot change test runtime behavior.
+//
+// Pre-existing type errors in tests (partial mock objects) are NOT fixed here and are
+// NOT gated by CI; this config exists to make tests visible to the indexer, not to
+// typecheck them. Do not wire it into a CI gate without fixing those first.
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "module": "esnext"
+  },
+  "include": ["**/*", "../src/**/*"]
+}

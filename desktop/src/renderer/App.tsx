@@ -22,8 +22,8 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
   fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
-import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { AnchorTip, Button, Toast, Toggle } from './components/ui';
+import { Scrim } from './components/overlays/Overlay';
+import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
@@ -3039,7 +3039,7 @@ function AppInner() {
                 /* Expanded new-session form with toggles */
                 <div className="layer-surface w-full p-3 flex flex-col gap-2">
                   <div>
-                    <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Project Folder</label>
                     {/* Match SessionStrip: the picker's "Manage projects…"
                         footer opens Project View (where adding lives). */}
                     <FolderSwitcher
@@ -3062,7 +3062,7 @@ function AppInner() {
                       picks its model via the binding picker above. */}
                   {welcomeRuntime !== 'native' && (
                     <div>
-                      <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
                       <div className="flex gap-1">
                         {MODELS.map((m) => (
                           <button
@@ -3081,7 +3081,7 @@ function AppInner() {
                     </div>
                   )}
                   <div className="flex items-center justify-between">
-                    <label className="text-3xs uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</label>
                     {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
                         the shared Toggle on the danger tone, so theme packs can restyle
                         it (changes 15/17). The <label> beside it isn't bound to this
@@ -3417,13 +3417,13 @@ function AppInner() {
         );
         return (
           <>
-            <Scrim layer={2} onClick={() => resolveTakeover(false)} />
-            <OverlayPanel
-              layer={2}
-              role="dialog"
-              aria-modal
+            <Dialog
+              open
+              onClose={() => resolveTakeover(false)}
+              size="panel"
               aria-label="Take over conversation"
-              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+              scrollBody={false}
+              className="p-5"
             >
               {takeoverPrompt.phase === 'confirm' ? (
                 <p className="text-sm text-fg mb-4">
@@ -3456,7 +3456,7 @@ function AppInner() {
                   Take over
                 </Button>
               </div>
-            </OverlayPanel>
+            </Dialog>
           </>
         );
       })()}
@@ -3469,13 +3469,14 @@ function AppInner() {
           pending resume entirely (no partial/implicit resume). */}
       {pendingNativeResume && (
         <>
-          <Scrim layer={2} onClick={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }} />
-          <OverlayPanel
-            layer={2}
-            role="dialog"
-            aria-modal
+          <Dialog
+            open
+            // Dismissal stays suppressed while the resume is in flight.
+            onClose={() => { if (pendingNativeResuming) return; setPendingNativeResume(null); setPendingNativeBinding(null); }}
+            size="panel"
             aria-label="Choose a model to resume with"
-            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+            scrollBody={false}
+            className="p-5"
           >
             <h3 className="text-sm font-semibold text-fg mb-3">Choose a model to resume with</h3>
             <NativeModelSelect onSelect={(binding) => setPendingNativeBinding(binding)} />
@@ -3509,7 +3510,7 @@ function AppInner() {
                 {pendingNativeResuming ? 'Resuming…' : 'Resume'}
               </Button>
             </div>
-          </OverlayPanel>
+          </Dialog>
         </>
       )}
       <ZoomOverlay

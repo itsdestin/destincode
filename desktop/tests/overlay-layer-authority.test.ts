@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { RENDERER } from './helpers/guard-scope';
 
 // Guards for tranche 4 (changes 26 + 30): Overlay.tsx is the ONLY place a layer
 // number is decided (design rule 11).
@@ -11,7 +12,6 @@ import { describe, it, expect } from 'vitest';
 // system-wide ordering. A render test of one component cannot see that; grepping
 // the source can.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 
 // Match a z-index utility only where it is APPLIED — inside a className string.
 // The first draft of this test grepped raw source and failed on its own WHY

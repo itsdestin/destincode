@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePerformanceConfig } from '../hooks/usePerformanceConfig';
 import PerformancePopup from './PerformancePopup';
-import SettingsRow from './SettingsRow';
+import { SettingRow } from './ui';
 
 // Performance settings entry. Mirrors the chip+popup pattern used by Sound,
 // Appearance, and Sync — a small row in the settings list that opens a popup
@@ -28,7 +28,7 @@ export default function PerformanceButton() {
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         // Simple CPU/chip glyph — no real semantic image fits "GPU pref" cleanly,
         // so a generic chip icon is the cleanest visual cue.
         icon={
@@ -46,7 +46,7 @@ export default function PerformanceButton() {
           </svg>
         }
         title="Performance"
-        subtitle={`${stateLabel}${cfg.needsRestart ? ' · restart pending' : ''}`}
+        description={`${stateLabel}${cfg.needsRestart ? ' · restart pending' : ''}`}
         onClick={() => setOpen(true)}
       />
 

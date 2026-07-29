@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { stripComments, RENDERER } from './helpers/guard-scope';
 
 // Guards for tranche 8 (changes 44-51). Two distinct invariants:
 //
@@ -14,7 +15,6 @@ import { describe, it, expect } from 'vitest';
 // overlay-layer-authority: a re-hand-rolled toast renders perfectly and only
 // shows up as system-wide inconsistency much later.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 const UI_DIR = join(RENDERER, 'components', 'ui');
 
 // WHY comments necessarily quote the idioms they replaced, so a raw grep flags
@@ -22,14 +22,6 @@ const UI_DIR = join(RENDERER, 'components', 'ui');
 // `{/* ... */}`) and whole-line `//` before asserting — the invariant is about
 // what ships in a class list, not what the prose may mention. Same trap that bit
 // overlay-layer-authority and type-scale-authority; third time, same fix.
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-}
-
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);
@@ -71,11 +63,15 @@ describe('primitive adoption', () => {
     // guards against happens in the first place. Do NOT add to this list to make
     // the bar green.
     //
-    //   ErrorState — unadopted BY DECISION. Change 33 of the UI-consistency
-    //     ledger was held: choosing `recoverable` (specific message + Retry) vs
-    //     `general` (two-action fallback) at each site is the error-message
-    //     audit's own core decision, so adopting it early prejudges every one.
-    //     Remove this entry when that audit lands.
+    //   ErrorState — REMOVED from this list 2026-07-28 (K5). It was unadopted by
+    //     decision: choosing `recoverable` vs `general` at each site is the
+    //     error-message audit's own core call, so adopting it early would have
+    //     prejudged every one. K5 gave it its first two call sites, and both
+    //     modes were chosen deliberately for one verified failure rather than
+    //     swept in — the Tailscale install shows the real error with Retry when
+    //     it has one, and the two-action fallback when it does not.
+    //     THE v1.3.1 AUDIT IS STILL OUTSTANDING. This exemption had to go because
+    //     it asserts NON-adoption and would now rot, not because the audit landed.
     //
     //   FieldError — unadopted BY OVERSIGHT, found the moment this test started
     //     scanning `states.tsx` (a lowercase filename the first version skipped).
@@ -85,7 +81,7 @@ describe('primitive adoption', () => {
     //     6 of those sites are text-2xs and the primitive hardcodes text-3xs, so
     //     a blind swap shrinks them. Tracked on the ROADMAP; remove this entry
     //     when it is done.
-    const INTENTIONALLY_UNADOPTED = new Set(['ErrorState', 'FieldError']);
+    const INTENTIONALLY_UNADOPTED = new Set(['FieldError']);
 
     const unused = primitives.filter(
       (name) =>

@@ -117,7 +117,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
                 into overlapping text at ~326px. ml-auto on the button still
                 right-aligns it on the first line. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-2 px-1">
-              <span className="text-3xs font-medium tracking-wider uppercase text-fg-muted">
+              <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
                 {meta.label}
               </span>
               <span className="text-[11.5px] text-fg-muted min-w-0">{meta.desc}</span>

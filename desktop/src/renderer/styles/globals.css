@@ -569,16 +569,25 @@ body[data-mode="buddy-chat"] #theme-bg {
    (published by ChatView.tsx's measurement effect, 0px when the queued strip
    isn't showing) lifts this ABOVE the strip instead of overlapping it —
    offset coordination, not z-index, since both this and the strip are
-   legitimately visible/interactive at once. */
+   legitimately visible/interactive at once.
+   Fix (2026-07-28): + --model-status-height, same idiom, lifts this ABOVE
+   .model-status-strip too — the two previously used the identical formula
+   below and rendered on top of each other whenever both were visible
+   (model asleep + scrolled up). Only THIS float consumes the var, so the
+   two bands stack (queued strip → model status strip → jump-to-bottom)
+   instead of jump-to-bottom sharing model-status-strip's exact offset. */
 .jump-to-bottom {
   /* Includes --vvp-offset so the button stays above the soft keyboard
      when it's open (same treatment as .bottom-float). */
-  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
+  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + var(--model-status-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
 }
 
 /* Native local-model loading / unloaded strip — floats centered just above the
-   input chrome (same offset math as .jump-to-bottom). 2026-07-14. Task 12
-   review fix: + --queued-strip-height, same reasoning as .jump-to-bottom above. */
+   input chrome (same offset math as .jump-to-bottom's own base). 2026-07-14.
+   Task 12 review fix: + --queued-strip-height, same reasoning as .jump-to-bottom
+   above. Does NOT add --model-status-height to its own offset (that would push
+   it up above itself) — only .jump-to-bottom, the other float sharing this
+   band, consumes that var. */
 .model-status-strip {
   bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
 }

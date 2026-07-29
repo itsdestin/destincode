@@ -19,11 +19,19 @@ export type StateVariant = 'block' | 'inline';
 export type LoadingStateProps = {
   /** What is loading. Always name it — "Loading sessions…", not "Loading…". */
   what: string;
+  /**
+   * The verb. Defaults to "Loading", which is right for a fetch and WRONG for
+   * everything else — the Tailscale install read "Loading Tailscale…" while it
+   * was downloading 50MB, and the sign-in wait read "Loading the Tailscale
+   * sign-in…" while it was waiting on a browser. Name the actual operation:
+   * "Installing", "Waiting for", "Saving".
+   */
+  verb?: string;
   variant?: StateVariant;
   className?: string;
 };
 
-export function LoadingState({ what, variant = 'block', className = '' }: LoadingStateProps) {
+export function LoadingState({ what, verb = 'Loading', variant = 'block', className = '' }: LoadingStateProps) {
   const block = variant === 'block';
   return (
     <div
@@ -37,7 +45,7 @@ export function LoadingState({ what, variant = 'block', className = '' }: Loadin
         .join(' ')}
     >
       <BrailleSpinner size={block ? 'sm' : 'xs'} />
-      <span>Loading {what}…</span>
+      <span>{verb} {what}…</span>
     </div>
   );
 }

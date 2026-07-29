@@ -7,9 +7,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { UpdateLaunchResult } from '../../shared/update-install-types';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import MarkdownContent from './MarkdownContent';
-import { Button, CloseButton, LoadingState, ProgressBar } from './ui';
+import { Button, Dialog, LoadingState, ProgressBar } from './ui';
 
 // Error codes where a fresh download might succeed (transient or file-level).
 // The complement (dmg-corrupt, appimage-not-writable, unsupported-platform,
@@ -248,21 +247,14 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="update-panel-title"
-        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[720px] max-w-[90vw] max-h-[80vh] flex flex-col"
+      <Dialog
+        open
+        onClose={onClose}
+        size="document"
+        title={updateStatus.update_available ? 'Update available' : "What's new"}
+        scrollBody={false}
       >
-        <header className="flex items-center justify-between px-5 py-3 border-b border-edge-dim">
-          <h1 id="update-panel-title" className="text-base font-medium">
-            {updateStatus.update_available ? 'Update available' : "What's new"}
-          </h1>
-          <CloseButton onClick={onClose} />
-        </header>
-        <div className="flex-1 overflow-y-auto px-5 py-4">{body}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">{body}</div>
         {updateStatus.update_available && (
           <footer className="px-5 py-3 border-t border-edge-dim flex flex-col items-end">
             {/* Change 46: download progress gets a real bar. It used to live only
@@ -317,7 +309,7 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
             )}
           </footer>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

@@ -1,14 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useScrollFade } from '../hooks/useScrollFade';
 import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
-import SettingsRow from './SettingsRow';
-import { AnchorTip, Button, CloseButton, InputGroup, TextInput } from './ui';
+import { AnchorTip, Button, CloseButton, Dialog, InputGroup, TextInput, SettingRow } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -57,7 +54,7 @@ export default function ModelProvidersSection({
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         // Simple stacked-layers glyph — "choose your engine".
         icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -66,7 +63,7 @@ export default function ModelProvidersSection({
           </svg>
         }
         title="Model Providers"
-        subtitle="Claude Code, OpenRouter, and local models"
+        description="Claude Code, OpenRouter, and local models"
         onClick={() => setOpen(true)}
       />
 
@@ -90,26 +87,10 @@ function ModelProvidersPopupInner({
   onOpenClaudePreferences?: () => void;
 }) {
   useEscClose(true, onClose);
-  const scrollRef = useScrollFade<HTMLDivElement>();
 
   return createPortal(
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="model-providers-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 id="model-providers-title" className="text-sm font-semibold text-fg">Model Providers</h3>
-          <CloseButton onClick={onClose} />
-        </div>
-
-        <div ref={scrollRef} className="scroll-fade">
-          <div className="p-5 space-y-6">
+      <Dialog open onClose={onClose} title="Model Providers" size="panel">
             <p className="text-2xs text-fg-dim leading-relaxed">
               Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
               local models are optional alternatives.
@@ -117,20 +98,12 @@ function ModelProvidersPopupInner({
 
             <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
 
-            <hr className="border-edge-dim" />
-
             <OpenRouterBlock />
-
-            <hr className="border-edge-dim" />
 
             <LocalModelsBlock />
 
-            <hr className="border-edge-dim" />
-
             <SearchProvidersBlock />
-          </div>
-        </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
@@ -140,7 +113,9 @@ function ModelProvidersPopupInner({
 function SectionHeader({ title, info }: { title: string; info: { label: string; body: React.ReactNode } }) {
   return (
     <div className="flex items-center gap-1.5 mb-2.5">
-      <h4 className="text-sm font-semibold text-fg">{title}</h4>
+      {/* K1: was the app's only text-sm/font-semibold section header, which read
+          as a second dialog title rather than a section label. */}
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">{title}</h3>
       <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>
     </div>
   );
@@ -383,22 +358,14 @@ function ConnectOpenRouterModal({
 
   return createPortal(
     <>
-      <Scrim layer={3} onClick={onClose} />
-      <OverlayPanel
+      <Dialog
+        open
+        onClose={onClose}
         layer={3}
-        role="dialog"
-        aria-modal={true}
-        aria-labelledby="connect-openrouter-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
+        size="prompt"
+        title={hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
+        scrollBody={false}
       >
-        <div className="shrink-0 border-b border-edge flex items-center justify-between px-4 py-3">
-          <h3 id="connect-openrouter-title" className="text-sm font-semibold text-fg">
-            {hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
-          </h3>
-          <CloseButton onClick={onClose} />
-        </div>
-
         <div className="p-4 space-y-3">
           <ol className="text-2xs text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
             <li>
@@ -448,7 +415,7 @@ function ConnectOpenRouterModal({
             </Button>
           </div>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );

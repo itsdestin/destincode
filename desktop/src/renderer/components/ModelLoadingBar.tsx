@@ -54,7 +54,17 @@ const FINALIZE_PCT = 99;
 // as finalizing too — covers models whose peak RSS plateaus below FINALIZE_PCT.
 const PLATEAU_MS = 2500;
 
-export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, everResident, isThinking, onReload }: Props) {
+// forwardRef (fix: jump-to-bottom/model-status-strip overlap): ChatView needs
+// this component's OWN rendered height to publish `--model-status-height`
+// (mirrors QueuedMessagesStrip's `--queued-strip-height`) so `.jump-to-bottom`
+// can lift above this strip instead of sharing its exact bottom offset. The
+// ref targets the root div directly, not a ChatView-side wrapper — this root
+// is `position: absolute`, so a plain static wrapper around it would not size
+// itself to the absolutely-positioned child and would always measure 0.
+const ModelLoadingBar = React.forwardRef<HTMLDivElement, Props>(function ModelLoadingBar(
+  { modelState, modelInfo, loadedBytes, everResident, isThinking, onReload },
+  ref,
+) {
   const notResident = modelState === 'sleeping' || modelState === 'unloaded';
   // The model is coming up if it's explicitly loading, OR a turn is in flight
   // while it's still asleep/unloaded (the send is waking it), OR it's a fresh
@@ -108,7 +118,7 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
   // shadow-lg that .layer-surface already supplies (globals.css:861-862), so the
   // surface recipe stays in exactly one place.
   return (
-    <div className="model-status-strip absolute left-1/2 -translate-x-1/2 z-10 w-[min(88%,26rem)]">
+    <div ref={ref} className="model-status-strip absolute left-1/2 -translate-x-1/2 z-10 w-[min(88%,26rem)]">
       <div className="layer-surface px-4 py-3">
         {loading ? (
           <div className="flex flex-col gap-2">
@@ -178,4 +188,6 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
       </div>
     </div>
   );
-}
+});
+
+export default ModelLoadingBar;

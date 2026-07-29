@@ -10,18 +10,16 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, CloseButton, TextInput, Toggle, LoadingState } from './ui';
+import { Button, Dialog, TextInput, Toggle, LoadingState, SettingRow } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
 import { useScrollFade } from '../hooks/useScrollFade';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
-import SettingsRow from './SettingsRow';
 import { latestUnresolvedError, deriveSyncBoxState, type SyncStatusData } from './sync-dot-state';
 // relativeMs is co-located in the pure device-activity-label module (single
 // wording ladder, shared by the device recency label and the fallback below).
@@ -405,11 +403,11 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
 
   return (
     <>
-      <SettingsRow
+      <SettingRow
         icon={<div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />}
         title="Backup & Sync"
-        subtitle={counts ? `${primaryLabel} \u00B7 ${counts}` : primaryLabel}
-        rightAccessory={badge}
+        description={counts ? `${primaryLabel} \u00B7 ${counts}` : primaryLabel}
+        accessory={badge}
         onClick={() => setOpen(true)}
       />
 
@@ -448,6 +446,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const [view, setView] = useState<'main' | 'add-type' | 'add-config' | 'edit'>('main');
   const [addType, setAddType] = useState<'drive' | 'github' | 'icloud' | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Derived once, so the Dialog header and the body below cannot disagree about
+  // which view is showing.
+  const isWizard = view === 'add-type' || view === 'add-config';
+  const isEdit = view === 'edit' && !!editingId;
+  // Looked up ONCE and shared by the header and the form, so the title cannot
+  // name a different backend from the one being edited.
+  const editingBackend = editingId ? (status?.backends.find((b) => b.id === editingId) ?? null) : null;
   // Overflow menu state
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   // Count-tabs (Devices/Projects/Conversations) — which pill's list shows below the header.
@@ -468,7 +474,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // lets the master toggle reveal the inline Drive/iCloud picker on an empty list
   // without persisting anything. Reset whenever the master is turned back off.
   const [additionalIntent, setAdditionalIntent] = useState(false);
-  const mainScrollRef = useScrollFade<HTMLDivElement>();
   const logScrollRef = useScrollFade<HTMLDivElement>();
   // Per-backend action feedback
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
@@ -889,14 +894,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
     return (
       <>
-        <Scrim layer={2} onClick={onClose} />
-        <OverlayPanel
-          layer={2}
-          className="fixed overflow-hidden"
-          style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(520px, 90vw)', height: 'min(640px, 85vh)' }}
-        >
+        <Dialog open onClose={onClose} aria-label="Backup & Sync" size="panel" fill scrollBody={false}>
           <LoadingState what="sync status" className="h-full" />
-        </OverlayPanel>
+        </Dialog>
       </>
     );
   }
@@ -904,23 +904,40 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   return (
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        ref={popupRef}
-        layer={2}
-        className="fixed overflow-hidden"
-        style={{
-          top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-          width: 'min(520px, 90vw)', height: 'min(640px, 85vh)',
-        }}
+      {/* fill, not a fixed 640px: this panel swaps between its main view, the
+          setup wizard and the explainer, and would otherwise resize under the
+          cursor on every step. */}
+      {/* D1: ONE header for every view this panel switches between. Title, back
+          affordance and scroll body are all derived from the same state that
+          picks the body below, so they cannot disagree about which view you are
+          on — which is what four separately-maintained headers could. */}
+      <Dialog
+        open
+        onClose={onClose}
+        panelRef={popupRef}
+        title={
+          showInfo ? 'About Backup & Sync'
+            : isWizard ? undefined
+              : isEdit ? `Edit ${editingBackend?.label ?? 'backup'}`
+                : 'Backup & Sync'
+        }
+        onBack={
+          showInfo ? () => setShowInfo(false)
+            : isEdit ? () => { setView('main'); setEditingId(null); }
+              : undefined
+        }
+        headerActions={!showInfo && !isWizard && !isEdit ? <InfoIconButton onClick={() => setShowInfo(true)} /> : undefined}
+        aria-label="Backup & Sync"
+        size="panel"
+        fill
+        // The wizard still owns its whole surface — it is the one view whose
+        // header text changes per STEP, and its step state lives inside it.
+        scrollBody={!isWizard}
       >
         {showInfo ? (
           <SettingsExplainer
-            title="Backup & Sync"
             intro={SYNC_EXPLAINER.intro}
             sections={SYNC_EXPLAINER.sections}
-            onBack={() => setShowInfo(false)}
-            onClose={onClose}
           />
         ) : (view === 'add-type' || view === 'add-config') ? (
           // Guided setup wizard handles type selection, prereq check, OAuth, and config
@@ -941,7 +958,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
           />
         ) : view === 'edit' && editingId ? (
           <EditBackendForm
-            backend={status?.backends.find(b => b.id === editingId) ?? null}
+            backend={editingBackend}
             onSave={async (updates) => {
               try {
                 await claude.sync.updateBackend(editingId, updates);
@@ -950,23 +967,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               setView('main');
               setEditingId(null);
             }}
-            onBack={() => { setView('main'); setEditingId(null); }}
-            onClose={onClose}
           />
         ) : (
-        <div className="flex flex-col h-full">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-            <h2 className="text-sm font-bold text-fg">Backup &amp; Sync</h2>
-            <div className="flex items-center gap-1">
-              <InfoIconButton onClick={() => setShowInfo(true)} />
-              <CloseButton onClick={onClose} label="Close backup and sync" />
-            </div>
-          </div>
-
-          {/* Scrollable content — padding on inner wrapper so sticky fades sit flush. */}
-          <div ref={mainScrollRef} className="scroll-fade flex-1">
-            <div className="px-4 py-4 space-y-6">
+        // D1: header, close and scroll body all come from the shell now.
+        // `space-y-6` rather than Dialog's default `space-y-5`, so this panel's
+        // section rhythm is unchanged.
+        <div className="space-y-6">
 
             {/* ============================================================
                 PRIMARY — Cross-Device Backup & Sync box (redesign 2026-07-15).
@@ -1549,11 +1555,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 <div className="text-fg-muted text-2xs">Sync hasn't run yet. Configure a backup destination to get started.</div>
               </div>
             )}
-            </div>
-          </div>
         </div>
         )}
-      </OverlayPanel>
+      </Dialog>
 
       {/* Connect-GitHub device-flow modal. Own L2 overlay so it sits above the
           sync popup. onConnected refreshes github status + re-kicks a failed
@@ -1600,22 +1604,27 @@ function ConfirmDialog({
   return createPortal(
     // Overlay layer L3 — destructive confirmations use OverlayPanel destructive variant.
     <>
-      <Scrim layer={3} onClick={onCancel} />
       {/* The `confirmColor: 'red' | 'blue'` prop is gone. There was exactly one call
           site and it passed "red", so the whole blue branch — border, header tint,
           header text, and a `bg-blue-600 hover:bg-blue-500 text-white` confirm button
           — was unreachable. It was also one of the last hardcoded-blue survivors spec
           change 55 exists to kill, so it's deleted rather than migrated. This dialog
           is now unconditionally destructive, which is what it always rendered as. */}
-      <OverlayPanel
+      <Dialog
+        open
+        onClose={onCancel}
         layer={3}
         destructive
-        className="fixed overflow-hidden"
-        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(360px, 85vw)' }}
+        size="prompt"
+        title={title}
+        scrollBody={false}
       >
-        <div className="px-4 py-3 border-b border-destructive/30 bg-destructive/10">
-          <h3 className="text-xs font-bold text-destructive-fg">{title}</h3>
-        </div>
+        {/* The hand-rolled tinted header is gone. Tranche 2 recorded the confirm
+            cards as residue — "titling them is a copy decision, not a mechanical
+            one" — but that is not true of THIS one: it already receives a
+            `title` prop and was only passing it as an aria-label while drawing
+            the visible heading itself. Dialog's `destructive` already tints the
+            panel, so the header tint was saying the same thing twice. */}
         <div className="px-4 py-3 space-y-3">
           <p className="text-2xs text-fg-dim leading-relaxed">{message}</p>
           <div className="flex gap-2 pt-1">
@@ -1630,7 +1639,7 @@ function ConfirmDialog({
             </Button>
           </div>
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>,
     document.body,
   );
@@ -1833,39 +1842,23 @@ function MenuButton({ children, onClick, danger }: { children: React.ReactNode; 
   );
 }
 
-// --- Sub-view header (shared by add/edit flows) ---
-
-function SubViewHeader({ title, onBack, onClose }: { title: string; onBack: () => void; onClose: () => void }) {
-  return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="text-fg-muted hover:text-fg-2 w-6 h-6 flex items-center justify-center rounded hover:bg-inset">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <h2 className="text-sm font-bold text-fg">{title}</h2>
-      </div>
-      <CloseButton onClick={onClose} label="Close backup and sync" />
-    </div>
-  );
-}
-
 // (AddBackendTypePicker and AddBackendConfigForm removed — replaced by SyncSetupWizard)
 
 // --- Edit backend settings ---
 
+/**
+ * D1: header, back and scroll body come from the Dialog this renders inside.
+ * SyncPanel derives the title from the same `editingId` that selects this view,
+ * so the two cannot disagree about which backend you are editing.
+ */
 function EditBackendForm({
-  backend, onSave, onBack, onClose,
+  backend, onSave,
 }: {
   backend: BackendInstanceStatus | null;
   onSave: (updates: { label?: string }) => void;
-  onBack: () => void;
-  onClose: () => void;
 }) {
   const [label, setLabel] = useState(backend?.label ?? '');
   const [saving, setSaving] = useState(false);
-  const actionsScrollRef = useScrollFade<HTMLDivElement>();
 
   if (!backend) return null;
 
@@ -1879,10 +1872,7 @@ function EditBackendForm({
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <SubViewHeader title={`Edit ${backend.label}`} onBack={onBack} onClose={onClose} />
-      <div ref={actionsScrollRef} className="scroll-fade flex-1">
-        <div className="px-4 py-4 space-y-4">
+    <div className="space-y-4">
         <div>
           <label className="block text-3xs text-fg-muted mb-1">Name</label>
           {/* Shared FIELD surface (spec change 20). The visible label above isn't
@@ -1921,8 +1911,6 @@ function EditBackendForm({
         >
           {saving ? 'Saving...' : 'Save'}
         </Button>
-        </div>
-      </div>
     </div>
   );
 }
