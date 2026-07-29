@@ -56,6 +56,29 @@ export function interpolateProcessed(
 }
 
 /**
+ * A high-water mark. Prefill only ever moves FORWARD, so the display must too.
+ *
+ * Two things can hand us a lower number than last time, and neither is fully
+ * eliminable: interpolateProcessed extrapolates between the server's sparse
+ * per-batch reports and can overshoot the next real one, and toReport's
+ * warm-cache origin is unverified so a reading can legitimately come in low.
+ * Rather than chase both, the DISPLAY refuses to go backwards — a percentage
+ * that jumps up and then down reads as broken whatever caused it
+ * (Destin, 2026-07-28).
+ *
+ * A closure rather than a ref hook so it is testable on its own; the component
+ * makes a fresh one per prefill run, which is what resets it between turns.
+ */
+export function monotonic(): (v: number | undefined) => number | undefined {
+  let high = -Infinity;
+  return (v) => {
+    if (v == null || !Number.isFinite(v)) return v;
+    high = Math.max(high, v);
+    return high;
+  };
+}
+
+/**
  * What the indicator says while the model is reading. Upgrades in place: with no
  * live progress it states the size; once llama.cpp reports progress it becomes a
  * percentage, and an ETA joins once one can be projected.
@@ -133,6 +156,11 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   const [, forceTick] = useState(0);
   const [, setPrefillTick] = useState(0);
   const prefillSeenAt = useRef<{ key: string; at: number } | null>(null);
+  // One high-water clamp per prefill RUN. Held in a ref so it survives re-renders
+  // (a fresh closure each render would reset the mark every 250ms tick and defeat
+  // the whole point) and reset when the run ends, so the next turn starts at zero
+  // rather than inheriting the last turn's ceiling.
+  const clampRef = useRef<((v: number | undefined) => number | undefined) | null>(null);
 
   // Rotate the playful words only while NOT stalled — a stall shows fixed copy.
   useEffect(() => {
@@ -166,7 +194,11 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   // what produced React's "Cannot update a component while rendering a
   // different component" warning.
   useEffect(() => {
-    if (!promptProcessing) { prefillSeenAt.current = null; return; }
+    if (!promptProcessing) {
+      prefillSeenAt.current = null;
+      clampRef.current = null;   // run over — the next turn starts from zero
+      return;
+    }
     prefillSeenAt.current = { key: ppKey, at: Date.now() };
   }, [ppKey, promptProcessing]);
 
@@ -204,7 +236,11 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   const smoothedPrefill = promptProcessing
     ? {
       ...promptProcessing,
-      processed: interpolateProcessed(promptProcessing, since),
+      // Clamped so the number never counts DOWN. interpolateProcessed can
+      // overshoot the next real report, and toReport's warm-cache origin is
+      // unverified — either can hand us a lower value than last render, and a
+      // percentage that jumps up then back reads as broken whatever caused it.
+      processed: (clampRef.current ??= monotonic())(interpolateProcessed(promptProcessing, since)),
       // Count the extrapolated time down too, so the ETA doesn't sit frozen
       // between reports the way the percentage used to.
       etaMs: promptProcessing.etaMs != null ? Math.max(0, promptProcessing.etaMs - since) : promptProcessing.etaMs,

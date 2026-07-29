@@ -617,16 +617,19 @@ export class HarnessSession extends EventEmitter {
     // still reset the stall clock, or the throttle itself could cause a stall.
     this.rearmStallWatchdog?.();
     const report = toReport(p);
-    const isFinal = report.processed >= report.total;
+    const isFinal = report.newProcessed >= report.newTotal;
     const now = Date.now();
     if (!isFinal && now - this.lastPrefillEmitAt < 400) return;
     this.lastPrefillEmitAt = now;
     this.emitEvent('assistant-thinking', {
       promptProcessing: {
-        promptTokens: report.total,
+        // NEW work, not the whole prompt — matching the pre-progress notice's own
+        // `newTokens` estimate, so the denominator does not jump (and the
+        // percentage fall) the moment the first live report replaces it.
+        promptTokens: report.newTotal,
         budgetMs: 0,
         source: this.prefillSource,
-        processed: report.processed,
+        processed: report.newProcessed,
         cached: report.cache,
         etaMs: report.etaMs,
         // The renderer extrapolates between these sparse per-batch reports and

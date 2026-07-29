@@ -36,7 +36,11 @@ export interface PrefillProgress {
 
 /** Progress plus a projected remaining time, when one can be computed. */
 export interface PrefillProgressReport extends PrefillProgress {
-  /** 0..1 across the whole prompt. */
+  /** Tokens of real work in THIS step: total minus the cached prefix. */
+  newTotal: number;
+  /** How many of `newTotal` are done. */
+  newProcessed: number;
+  /** 0..1 across the NEW work — not the whole prompt. */
   fraction: number;
   /**
    * Projected milliseconds remaining, or null when there is nothing to project
@@ -53,10 +57,34 @@ export interface PrefillProgressReport extends PrefillProgress {
 }
 
 export function toReport(p: PrefillProgress): PrefillProgressReport {
-  const fraction = p.total > 0 ? Math.min(1, p.processed / p.total) : 0;
-  const rate = p.timeMs > 0 && p.processed > 0 ? p.processed / p.timeMs : null;
-  const remaining = Math.max(0, p.total - p.processed);
-  return { ...p, fraction, etaMs: rate ? Math.round(remaining / rate) : null };
+  // Measure THIS STEP'S work, not the whole prompt. `total` is every token in the
+  // request; `cache` is the prefix llama.cpp reused for free. On turn 2+ the cache
+  // is most of the prompt, so a percentage against `total` reads as "almost done"
+  // before any real work has started (Destin, 2026-07-28).
+  const newTotal = Math.max(0, p.total - p.cache);
+
+  // UNVERIFIED, and written to be correct either way: every progress capture we
+  // have is cache:0 (a cold prompt), so we have never observed whether `processed`
+  // counts from zero or from the cached position on a WARM prompt. If it counts
+  // from the cache, subtracting it gives the new work; if it already counts only
+  // new work, it is below `cache` and passes through. One warm capture would
+  // settle this — see tests/prefill-progress.test.ts.
+  //
+  // Residual ambiguity: when the new work processed so far EXCEEDS the cache size
+  // under the counts-from-zero reading, this under-reports by `cache`. Bounded,
+  // always in the conservative direction (progress looks behind, never ahead),
+  // and the renderer's monotonic clamp keeps it from reading as a regression.
+  const rawNew = p.processed >= p.cache ? p.processed - p.cache : p.processed;
+  const newProcessed = Math.max(0, Math.min(newTotal, rawNew));
+
+  // A fully cached prompt has no work to do, so it is complete — not 0/0.
+  const fraction = newTotal > 0 ? Math.min(1, newProcessed / newTotal) : 1;
+  // Rate over the NEW work only. Counting cached tokens as processed would
+  // inflate it wildly — 9,000 free tokens in a second is not 9,000 tok/s — and
+  // promise a finish that cannot happen.
+  const rate = p.timeMs > 0 && newProcessed > 0 ? newProcessed / p.timeMs : null;
+  const remaining = Math.max(0, newTotal - newProcessed);
+  return { ...p, newTotal, newProcessed, fraction, etaMs: rate ? Math.round(remaining / rate) : null };
 }
 
 /** Pull a progress reading out of one parsed SSE payload, if it carries one. */

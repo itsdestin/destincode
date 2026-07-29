@@ -210,3 +210,90 @@ describe('ThinkingIndicator — hook order survives every transition', () => {
     expect(container.innerHTML).not.toBe('');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Monotonic display. Destin, 2026-07-28: "the percentage constantly jumps up and
+// then back down, which doesn't make any sense (it should only be able to count
+// upward)."
+//
+// Two things could move it backwards, and the fix has to survive BOTH because
+// neither is fully eliminable:
+//   - interpolateProcessed extrapolates between the server's sparse per-batch
+//     reports; when the next real report lands lower than the projection, the
+//     raw value drops.
+//   - toReport's warm-cache origin is unverified, so a reading can legitimately
+//     come in below the previous one.
+// Prefill only ever moves forward, so the DISPLAY refuses to go backwards.
+// ---------------------------------------------------------------------------
+import { monotonic } from '../src/renderer/components/ThinkingIndicator';
+
+describe('monotonic', () => {
+  it('passes an increasing sequence through untouched', () => {
+    const m = monotonic();
+    expect([10, 20, 55, 100].map((v) => m(v))).toEqual([10, 20, 55, 100]);
+  });
+
+  it('holds at the high-water mark instead of going backwards', () => {
+    const m = monotonic();
+    m(60);
+    expect(m(45)).toBe(60);
+  });
+
+  it('resumes climbing once the real value passes the mark again', () => {
+    const m = monotonic();
+    m(60); m(45);
+    expect(m(70)).toBe(70);
+  });
+
+  it('a fresh instance starts over — a new turn is not the old turn', () => {
+    const m1 = monotonic();
+    m1(90);
+    expect(monotonic()(5)).toBe(5);
+  });
+
+  it('ignores null/undefined rather than latching them as a floor', () => {
+    const m = monotonic();
+    m(40);
+    expect(m(undefined)).toBeUndefined();
+    expect(m(50)).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The clamp has to be WIRED, not merely exported. `monotonic` had five green
+// tests while nothing in the component called it — coverage that proved nothing
+// about the pixels (caught in the 2026-07-28 review).
+// ---------------------------------------------------------------------------
+describe('ThinkingIndicator — the displayed percentage never counts down', () => {
+  const reading = (processed: number) => ({
+    promptTokens: 1000, budgetMs: 0, source: 'prompt' as const,
+    processed, timeMs: 0, etaMs: null,
+  });
+
+  it('holds the high-water mark when a later reading comes in lower', () => {
+    const { rerender } = render(<ThinkingIndicator promptProcessing={reading(600)} />);
+    expect(screen.getByText(/60% of 1,000 tokens/)).toBeTruthy();
+
+    // A lower reading — exactly what an overshooting extrapolation or the
+    // unverified warm-cache origin can produce.
+    rerender(<ThinkingIndicator promptProcessing={reading(450)} />);
+    expect(screen.getByText(/60% of 1,000 tokens/)).toBeTruthy();
+    expect(screen.queryByText(/45% of/)).toBeNull();
+  });
+
+  it('resumes climbing once a reading passes the mark', () => {
+    const { rerender } = render(<ThinkingIndicator promptProcessing={reading(600)} />);
+    rerender(<ThinkingIndicator promptProcessing={reading(450)} />);
+    rerender(<ThinkingIndicator promptProcessing={reading(800)} />);
+    expect(screen.getByText(/80% of 1,000 tokens/)).toBeTruthy();
+  });
+
+  it('a NEW prefill run starts from zero, not the last run\'s ceiling', () => {
+    // Without the reset a second turn would open at 100% and stay there.
+    const { rerender } = render(<ThinkingIndicator promptProcessing={reading(900)} />);
+    expect(screen.getByText(/90% of 1,000 tokens/)).toBeTruthy();
+    rerender(<ThinkingIndicator promptProcessing={null} />);           // run ends
+    rerender(<ThinkingIndicator promptProcessing={reading(100)} />);   // next turn
+    expect(screen.getByText(/10% of 1,000 tokens/)).toBeTruthy();
+  });
+});

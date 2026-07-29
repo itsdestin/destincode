@@ -253,3 +253,62 @@ describe('prefill progress re-arms the stall watchdog', () => {
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Progress is about THIS STEP'S work, not the whole prompt.
+//
+// Destin, 2026-07-28: "it seems to use the cumulative total for the entire
+// session, where it should only show the percent processed of the total count
+// being additionally processed in that turn."
+//
+// llama.cpp's `total` is the WHOLE prompt and `cache` is the prefix it reused
+// for free. On turn 2+ the cache is most of the prompt, so a percentage against
+// `total` reads as "almost done" before any real work has happened — and the
+// denominator also jumps the moment the first live report replaces our own
+// new-tokens estimate, which is what made the number fall.
+// ---------------------------------------------------------------------------
+describe('toReport — measures the work actually being done', () => {
+  it('a cold prompt is unchanged: no cache, so new work IS the whole prompt', () => {
+    const r = toReport({ total: 5519, cache: 0, processed: 2048, timeMs: 5838 });
+    expect(r.newTotal).toBe(5519);
+    expect(r.newProcessed).toBe(2048);
+    expect(r.fraction).toBeCloseTo(2048 / 5519, 5);
+  });
+
+  it('a warm prompt measures against the UNCACHED remainder', () => {
+    // 9,000 of a 10,000-token prompt reused → only 1,000 tokens of real work.
+    const r = toReport({ total: 10_000, cache: 9_000, processed: 9_500, timeMs: 1_000 });
+    expect(r.newTotal).toBe(1_000);
+    expect(r.newProcessed).toBe(500);
+    expect(r.fraction).toBeCloseTo(0.5, 5);
+  });
+
+  it('handles `processed` counting from ZERO rather than from the cache', () => {
+    // We have never captured a WARM reading, so which origin llama.cpp counts
+    // from is unverified. Under this reading, processed(500) < cache(9000) means
+    // it is already relative to the new work.
+    const r = toReport({ total: 10_000, cache: 9_000, processed: 500, timeMs: 1_000 });
+    expect(r.newTotal).toBe(1_000);
+    expect(r.newProcessed).toBe(500);
+  });
+
+  it('never exceeds 100% of the new work', () => {
+    const r = toReport({ total: 10_000, cache: 9_000, processed: 10_000, timeMs: 1_000 });
+    expect(r.newProcessed).toBe(1_000);
+    expect(r.fraction).toBe(1);
+  });
+
+  it('a fully cached prompt is complete, not a divide-by-zero', () => {
+    const r = toReport({ total: 10_000, cache: 10_000, processed: 10_000, timeMs: 0 });
+    expect(r.fraction).toBe(1);
+    expect(Number.isFinite(r.newTotal)).toBe(true);
+  });
+
+  it('the ETA projects the remaining NEW work at the rate that work was done', () => {
+    // Rating cached tokens as "processed" would inflate the rate and promise an
+    // impossible finish: 9,000 free tokens in 1s is not 9,000 tokens/sec of work.
+    const r = toReport({ total: 10_000, cache: 9_000, processed: 9_500, timeMs: 1_000 });
+    // 500 new tokens in 1000ms = 0.5/ms; 500 remaining → ~1000ms.
+    expect(r.etaMs).toBe(1_000);
+  });
+});
