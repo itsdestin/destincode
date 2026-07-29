@@ -13,6 +13,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
   'on.sessionMetaChanged',
+  'theme.list', 'theme.readFile', 'theme.writeFile', 'theme.onReload',
 ];
 
 const warned = new Set<string>();
@@ -159,6 +160,17 @@ export function createMockShim(store: MockStore): Window['claude'] {
     // Same reasoning as withCatchAll: no `has` trap.
   }) as unknown as Window['claude'];
 }
+
+// Community theme packs, vendored so the workbench never opens a socket (§2).
+// The four builtins need nothing — theme-context.tsx imports them directly.
+// @ts-ignore TS1343 — Vite rewrites import.meta.glob at build time.
+const themeRaw = import.meta.glob('./fixtures/themes/*.json', {
+  query: '?raw', import: 'default', eager: true,
+}) as Record<string, string>;
+
+const THEME_FIXTURES: Record<string, string> = Object.fromEntries(
+  Object.entries(themeRaw).map(([p, raw]) => [p.split('/').pop()!.replace('.json', ''), raw]),
+);
 
 /** Each namespace is typed against the real consumer contract, so `tsc` rejects
  *  a wrong method name or signature. `Partial` is what lets the mock implement
@@ -354,7 +366,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     sessionMetaChanged: (cb) => { subs.meta.add(cb); return () => { subs.meta.delete(cb); }; },
   };
 
+  // `theme` is absent from useIpc.ts entirely, so NONE of this is
+  // compiler-checked — the contract test is the only guard. Typed as a plain
+  // object rather than Ns<'theme'> because there is no 'theme' key on
+  // Window['claude'] to index; that is an exception, not an oversight.
+  //
+  // FIDELITY GAP, stated rather than hidden (spec §4): theme-asset-resolver.ts
+  // rewrites a pack's asset paths to `theme-asset://<slug>/<path>`, an Electron
+  // custom protocol. A browser tab has no such scheme, so Halftone Dimension's
+  // pattern, mascots and icons render as broken images here — colors, radii,
+  // fonts and the glass cascade are all faithful. Making assets load would mean
+  // teaching theme-asset-resolver.ts a second scheme, which is a production
+  // change for a dev-only gain; left undone deliberately.
+  const theme = {
+    list: async () => Object.keys(THEME_FIXTURES),
+    readFile: async (slug: string) => THEME_FIXTURES[slug] ?? '{}',
+    // Writes never touch disk. Editing a fixture + Vite HMR is the reload path.
+    writeFile: async () => ({ ok: true }),
+    onReload: (_cb: (slug: string) => void) => () => {},
+  };
+
   return {
-    session, providers, models, defaults, native, detach, tags, on,
+    session, providers, models, defaults, native, detach, tags, on, theme,
   } as unknown as Record<string, Record<string, unknown>>;
 }

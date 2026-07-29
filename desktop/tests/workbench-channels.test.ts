@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createStore } from '../src/renderer/dev/workbench/mock-store';
 import { createMockShim, setLatency } from '../src/renderer/dev/workbench/mock-shim';
+import { validateTheme } from '../src/renderer/themes/theme-validator';
 
 // Latency is real, so it would add 150ms to every awaited call in this file.
 // The default is asserted in workbench-shim-semantics.test.ts instead.
@@ -127,5 +128,25 @@ describe('workbench channels', () => {
   it('models.memoryCheck returns a verdict from the real union', async () => {
     const res = await shim().models.memoryCheck('qwen2.5-coder:14b');
     expect(['ok', 'tight', 'too-large']).toContain(res.verdict);
+  });
+
+  // theme-context.tsx does `validateTheme(JSON.parse(raw))` and swallows the
+  // failure with a console.warn — so a corrupt vendored pack would just quietly
+  // never appear in the picker. Catch it here instead.
+  it('serves a vendored community theme that parses and validates', async () => {
+    const c = shim();
+    const slugs = await c.theme.list();
+    expect(slugs).toContain('halftone-dimension');
+
+    const raw = await c.theme.readFile('halftone-dimension');
+    const parsed = JSON.parse(raw);
+    expect(parsed.slug).toBe('halftone-dimension');
+    expect(parsed.source).toBe('community');
+    expect(validateTheme(parsed)).toBeTruthy();
+  });
+
+  it('an unknown theme slug returns parseable JSON rather than undefined', async () => {
+    const raw = await shim().theme.readFile('nope');
+    expect(() => JSON.parse(raw)).not.toThrow();
   });
 });
