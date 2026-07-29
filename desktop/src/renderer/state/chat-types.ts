@@ -193,8 +193,16 @@ export interface SessionChatState {
   stallWarning: { retryInMs: number; willRetry: boolean } | null;
   /**
    * Native runtime: the model is READING the prompt (prefill), not hanging. Set
-   * by a `promptProcessing`-bearing heartbeat and cleared by any other event, so
-   * it lives exactly as long as the pre-first-token wait. Local models can spend
+   * by a `promptProcessing`-bearing heartbeat and cleared the moment prefill ends
+   * — by the first assistant text or reasoning, by a new user turn, and by
+   * endTurn() — so it lives exactly as long as the pre-first-token wait. It
+   * deliberately SURVIVES a stall-warning heartbeat, because that warning is
+   * about this prefill and nulling it would blank the progress readout at the
+   * moment the user most needs to see it advancing.
+   *
+   * (This comment used to claim "cleared by any other event", which was never
+   * true: only two reducer cases ever wrote the field. The stale value resurfaced
+   * mid-generation. Corrected with the fix, 2026-07-28.) Local models can spend
    * minutes here on a long prompt, and an idle spinner is indistinguishable from
    * a hang — which is what made the stall watchdog's false alarm so alarming.
    */

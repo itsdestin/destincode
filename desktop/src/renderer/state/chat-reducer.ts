@@ -182,6 +182,11 @@ function endTurn(
   return {
     toolCalls,
     isThinking: false,
+    // Prefill is over the moment the turn is. Leaving it set meant the next
+    // generation pause longer than ThinkingIndicator's 2s streaming window
+    // re-rendered the PREVIOUS turn's "Reading your prompt — N%" line while the
+    // model was mid-generation (2026-07-28 audit).
+    promptProcessing: null,
     streamingText: '',
     currentGroupId: null,
     currentTurnId: null,
@@ -348,6 +353,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         errorMessage: null,
         stallWarning: null,
+        // Parity with TRANSCRIPT_SKILL_INVOKED: a new turn must not inherit the
+        // previous one's prefill percentage.
+        promptProcessing: null,
       });
       return next;
     }
@@ -745,6 +753,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        // Output means PREFILL IS OVER. Leaving the readout set let it resurface
+        // during any generation pause longer than the indicator's 2s streaming
+        // window, showing "Reading your prompt — N%" mid-generation — the exact
+        // thing that copy is not supposed to do (2026-07-28 audit).
+        promptProcessing: null,
       });
       return next;
     }
@@ -789,6 +802,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        // Same as the text path: reasoning IS output, so prefill has ended.
+        promptProcessing: null,
       });
       return next;
     }
