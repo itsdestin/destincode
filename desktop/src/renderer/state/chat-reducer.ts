@@ -1430,7 +1430,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session,
         ...endTurn(session),
+        // APPEND the boundary — do not replace the timeline. Clearing resets the
+        // MODEL'S context, not the user's ability to read what they said
+        // (Destin, 2026-07-28: "/clear ... seems to completely wipe the visible
+        // timeline ... we should ensure it works like /compact and leaves the
+        // messages visible but faded"). /compact already had the right shape:
+        // keep everything, mark the boundary, fade what is no longer in context.
+        // ChatView renders entries above a 'clear' marker exactly as it renders
+        // entries above a 'compact' one.
+        //
+        // This also de-fangs the reason CLEAR_TIMELINE was called irreversible:
+        // nothing is destroyed, so a clear the runtime later refuses costs a
+        // stray marker rather than a conversation.
         timeline: [
+          ...session.timeline,
           {
             kind: 'system-marker',
             marker: {
