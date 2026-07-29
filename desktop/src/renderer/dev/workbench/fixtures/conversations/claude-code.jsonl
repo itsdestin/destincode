@@ -1,0 +1,7 @@
+{"type":"user_message","text":"the chat view sticks to the bottom while I'm scrolling up"}
+{"type":"assistant_text","text":"Let me look at the scroll re-arm logic."}
+{"type":"tool_use","id":"c1","name":"Read","input":{"file_path":"/home/destin/youcoded-dev/youcoded/desktop/src/renderer/components/ChatView.tsx"}}
+{"type":"tool_result","tool_use_id":"c1","content":"1  import React from 'react';\n2  // ..."}
+{"type":"assistant_text","text":"The re-arm check runs on every scroll event. Moving it off the hot path."}
+{"type":"tool_use","id":"c2","name":"Edit","input":{"file_path":"/home/destin/youcoded-dev/youcoded/desktop/src/renderer/components/ChatView.tsx","old_string":"onScroll={check}","new_string":"onScroll={throttled}"}}
+{"type":"tool_result","tool_use_id":"c2","content":"Applied 1 edit."}

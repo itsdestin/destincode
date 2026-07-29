@@ -8,23 +8,26 @@
 // tools out of `session.toolCalls.values()` at the end would lose that interleaving
 // order — so we track insertion order explicitly as we walk the fixture.
 //
-// Text lines are fixture-only annotations — they are NOT dispatched to the reducer
-// (no assistant-text action is needed; the reducer stays reserved for the real
-// tool state transitions it was designed for).
+// Two kinds of prose line, and the difference matters:
+//   `text`           — a fixture-only annotation for the tool gallery. NOT dispatched;
+//                      it exists to label a tool card, not to be part of a timeline.
+//   `assistant_text` — a real assistant turn. Dispatched as TRANSCRIPT_ASSISTANT_TEXT,
+//                      alongside `user_message` -> USER_PROMPT, so a conversation
+//                      fixture replays the same action sequence a live session
+//                      produces (spec §3.3).
+// `loadFixture` returns those dispatched actions in `LoadResult.actions` for the
+// workbench to replay into the live reducer on boot.
 
-import { chatReducer } from '../state/chat-reducer';
-import type { ChatState, ChatAction, ToolCallState } from '../state/chat-types';
+import { chatReducer } from '../../state/chat-reducer';
+import type { ChatState, ChatAction, ToolCallState } from '../../state/chat-types';
 
 const SANDBOX_SESSION_ID = 'sandbox';
 
 // ChatState is a Map<string, SessionChatState> (chat-types.ts:357), so an
-// empty Map is the initial state. SESSION_INIT seeds the sandbox session —
-// without it, TRANSCRIPT_TOOL_USE/RESULT bail out because `session` is missing.
-function makeInitialState(): ChatState {
-  return chatReducer(new Map(), {
-    type: 'SESSION_INIT',
-    sessionId: SANDBOX_SESSION_ID,
-  });
+// empty Map is the initial state. SESSION_INIT seeds the session — without it,
+// TRANSCRIPT_TOOL_USE/RESULT bail out because `session` is missing.
+function makeInitialState(sessionId: string): ChatState {
+  return chatReducer(new Map(), { type: 'SESSION_INIT', sessionId });
 }
 
 export type FixtureBlock =
@@ -33,15 +36,34 @@ export type FixtureBlock =
 
 export interface LoadResult {
   blocks: FixtureBlock[];
+  /** Every action this loader dispatched, in order. The workbench replays these
+   *  into the live reducer on boot (seed-chat.ts) — the same action sequence a
+   *  real session produces, so reducer drift surfaces here automatically
+   *  (spec §3.3). Must stay complete: an action dispatched but not pushed makes
+   *  the replayed timeline differ from the one built here. */
+  actions: ChatAction[];
   error?: string;
 }
 
-export function loadFixture(name: string, raw: string): LoadResult {
+// Fixed base timestamp, not Date.now(): fixtures must replay identically on
+// every load, and a moving clock makes bubble grouping non-reproducible.
+const FIXTURE_T0 = 1_753_800_000_000;
+
+/**
+ * @param sessionId Which session the emitted actions target. Defaults to the
+ *   sandbox id for the tool gallery; the workbench passes a real seeded session
+ *   so the replayed actions land on the timeline the strip is showing. Stamping
+ *   it here rather than rewriting actions afterwards keeps each action a
+ *   well-typed member of the ChatAction union — a `{...a, sessionId}` spread
+ *   widens it into something TS will not accept.
+ */
+export function loadFixture(name: string, raw: string, sessionId: string = SANDBOX_SESSION_ID): LoadResult {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
 
   try {
-    let state = makeInitialState();
+    let state = makeInitialState(sessionId);
     const blocks: FixtureBlock[] = [];
+    const actions: ChatAction[] = [];
 
     for (const line of lines) {
       const parsed = JSON.parse(line);
@@ -49,16 +71,40 @@ export function loadFixture(name: string, raw: string): LoadResult {
       if (parsed.type === 'text' && typeof parsed.text === 'string') {
         // Text lines are fixture annotations only — append directly, no reducer.
         blocks.push({ kind: 'text', text: parsed.text });
+      } else if (parsed.type === 'user_message' && typeof parsed.text === 'string') {
+        // WHY USER_PROMPT and not TRANSCRIPT_USER_MESSAGE: the optimistic path
+        // is the one a live session takes first, and it is what puts the bubble
+        // on the timeline. See desktop/CLAUDE.md "Chat View Data Flow" #3.
+        // Field is `content`, not `text` (chat-types.ts:319-326).
+        const action: ChatAction = {
+          type: 'USER_PROMPT',
+          sessionId,
+          content: parsed.text,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'assistant_text' && typeof parsed.text === 'string') {
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_ASSISTANT_TEXT',
+          sessionId,
+          uuid: `${name}-txt-${actions.length}`,
+          text: parsed.text,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
       } else if (parsed.type === 'tool_use') {
         const action: ChatAction = {
           type: 'TRANSCRIPT_TOOL_USE',
-          sessionId: SANDBOX_SESSION_ID,
+          sessionId,
           uuid: `${name}-use-${parsed.id}`,
           toolUseId: parsed.id,
           toolName: parsed.name,
           toolInput: parsed.input ?? {},
         };
         state = chatReducer(state, action);
+        actions.push(action);
         // Do NOT emit a block here — wait for the matching tool_result so the
         // block reflects the tool's final state (complete/failed + response).
       } else if (parsed.type === 'tool_result') {
@@ -70,15 +116,16 @@ export function loadFixture(name: string, raw: string): LoadResult {
           : JSON.stringify(parsed.content);
         const action: ChatAction = {
           type: 'TRANSCRIPT_TOOL_RESULT',
-          sessionId: SANDBOX_SESSION_ID,
+          sessionId,
           uuid: `${name}-res-${parsed.tool_use_id}`,
           toolUseId: parsed.tool_use_id,
           result: content,
           isError: parsed.is_error === true,
         };
         state = chatReducer(state, action);
+        actions.push(action);
         // Emit the tool block in fixture source order (not reducer-map order).
-        const session = state.get(SANDBOX_SESSION_ID);
+        const session = state.get(sessionId);
         const tool = session?.toolCalls.get(parsed.tool_use_id);
         if (tool) blocks.push({ kind: 'tool', tool });
       } else if (parsed.type === 'permission_request') {
@@ -90,11 +137,11 @@ export function loadFixture(name: string, raw: string): LoadResult {
         // The reducer pairs a request to a RUNNING tool by name+input (not by
         // id), so we recover those from the tool_use line the fixture just
         // dispatched (looked up by tool_use_id) and hand them to the action.
-        const before = state.get(SANDBOX_SESSION_ID);
+        const before = state.get(sessionId);
         const pending = before?.toolCalls.get(parsed.tool_use_id);
         const action: ChatAction = {
           type: 'PERMISSION_REQUEST',
-          sessionId: SANDBOX_SESSION_ID,
+          sessionId,
           toolName: pending?.toolName ?? parsed.tool_name ?? 'Bash',
           input: (pending?.input as Record<string, unknown>) ?? {},
           requestId: parsed.requestId,
@@ -103,20 +150,22 @@ export function loadFixture(name: string, raw: string): LoadResult {
           denyListed: parsed.denyListed === true,
         };
         state = chatReducer(state, action);
+        actions.push(action);
         // awaiting-approval is a TERMINAL fixture state (no tool_result
         // follows), so emit the block here — the tool keeps its original
         // tool_use_id when a running tool is matched in place.
-        const after = state.get(SANDBOX_SESSION_ID);
+        const after = state.get(sessionId);
         const tool = after?.toolCalls.get(parsed.tool_use_id);
         if (tool) blocks.push({ kind: 'tool', tool });
       }
       // Unknown types are silently skipped (same policy as before).
     }
 
-    return { blocks };
+    return { blocks, actions };
   } catch (err) {
     return {
       blocks: [],
+      actions: [],
       error: `parse error in ${name}: ${(err as Error).message}`,
     };
   }

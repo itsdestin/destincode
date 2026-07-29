@@ -9,7 +9,7 @@
 import React from 'react';
 import { ChatProvider } from '../state/chat-context';
 import ToolCard from '../components/ToolCard';
-import { loadFixture, type FixtureBlock } from './fixture-loader';
+import { loadFixture, type FixtureBlock } from './workbench/fixture-loader';
 import type { ToolCallState } from '../../shared/types';
 
 // Vite's import.meta.glob eagerly reads every fixture as a raw string at build
@@ -18,7 +18,7 @@ import type { ToolCallState } from '../../shared/types';
 // statically during bundling, so the literal syntax must be preserved. Only
 // Vite ever bundles this file; the Electron main process never loads it.
 // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
-const fixtures = import.meta.glob('./fixtures/*.jsonl', {
+const fixtures = import.meta.glob('./workbench/fixtures/tools/*.jsonl', {
   query: '?raw',
   import: 'default',
   eager: true,
