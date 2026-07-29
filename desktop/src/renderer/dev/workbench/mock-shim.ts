@@ -1,4 +1,5 @@
 import type { MockStore } from './mock-store';
+import { buildHydratePayload } from './seed-chat';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -14,6 +15,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
   'on.sessionMetaChanged',
   'theme.list', 'theme.readFile', 'theme.writeFile', 'theme.onReload',
+  // Real, but served by remote-shim.ts rather than preload.ts — Electron
+  // clients get their timelines from the transcript watcher instead. The
+  // contract test checks both files for exactly this reason.
+  'on.chatHydrate',
 ];
 
 const warned = new Set<string>();
@@ -364,6 +369,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     sessionDestroyed: (cb) => { subs.destroyed.add(cb); return () => { subs.destroyed.delete(cb); }; },
     sessionRenamed: (cb) => { subs.renamed.add(cb); return () => { subs.renamed.delete(cb); }; },
     sessionMetaChanged: (cb) => { subs.meta.add(cb); return () => { subs.meta.delete(cb); }; },
+
+    // Seeds the chat timelines the moment App subscribes (App.tsx:1465), the
+    // same way remote-shim delivers a snapshot to a remote browser on connect.
+    // Fires synchronously rather than on a timer: App's subscribe happens in an
+    // effect, so dispatching here lands in the same commit and the timeline is
+    // present on first paint instead of flashing empty.
+    chatHydrate: (cb) => {
+      cb(buildHydratePayload());
+      return () => {};
+    },
   };
 
   // `theme` is absent from useIpc.ts entirely, so NONE of this is

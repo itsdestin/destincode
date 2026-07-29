@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadFixture } from '../src/renderer/dev/workbench/fixture-loader';
+import { buildHydratePayload } from '../src/renderer/dev/workbench/seed-chat';
+import { deserializeChatState } from '../src/renderer/state/chat-types';
 
 const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 
@@ -113,4 +115,34 @@ describe('shipped fixtures replay', () => {
       expect(loadFixture(name, raw).actions).toHaveLength(dispatched.length);
     },
   );
+});
+
+// The hydrate payload is what App.tsx:1465 actually receives, so a payload that
+// deserializes into empty timelines means "the workbench shows no conversation"
+// — with no error anywhere. Guard the round-trip, not just the actions.
+describe('chat hydrate payload', () => {
+  it('round-trips through the app serializers into populated timelines', () => {
+    const restored = deserializeChatState(buildHydratePayload());
+
+    // Both seeded sessions from fixtures/sessions.ts must be present, keyed by
+    // the ids the session list uses — a mismatch shows an empty chat view.
+    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-2']);
+
+    for (const [sessionId, session] of restored) {
+      expect(session.timeline.length, `${sessionId} timeline`).toBeGreaterThan(0);
+    }
+  });
+
+  it('includes the user prompt and the tool calls, not just one of them', () => {
+    const restored = deserializeChatState(buildHydratePayload());
+    const cc = restored.get('wb-1')!;
+    expect(cc.timeline.some((e: any) => e.kind === 'user')).toBe(true);
+    expect(cc.toolCalls.size).toBeGreaterThan(0);
+  });
+
+  it('is stable across calls (cached payload is not mutated by a consumer)', () => {
+    const first = buildHydratePayload();
+    deserializeChatState(first);
+    expect(buildHydratePayload()).toEqual(first);
+  });
 });

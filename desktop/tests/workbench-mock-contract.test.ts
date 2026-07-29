@@ -5,6 +5,11 @@ import { HAND_WRITTEN } from '../src/renderer/dev/workbench/mock-shim';
 import { MOCK_ONLY } from '../src/renderer/dev/workbench/mock-only';
 
 const preload = readFileSync(join(__dirname, '../src/main/preload.ts'), 'utf8');
+// remote-shim is the OTHER real implementation of window.claude — a handful of
+// channels (on.chatHydrate) exist only there, because Electron clients get the
+// same data from the transcript watcher. "Mirrors something real" has to mean
+// either file, or the mock would be forced to declare a real channel MOCK_ONLY.
+const remoteShim = readFileSync(join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
 const mockOnly = new Set(MOCK_ONLY.map((m) => m.channel));
 
 // WHY namespace-scoped and not a bare `\blist\s*:` over the whole file: `list:`
@@ -33,6 +38,18 @@ function existsInPreload(path: string): boolean {
   return !!block && new RegExp(`^    ${parts[1]}\\s*[:(]`, 'm').test(block);
 }
 
+/** remote-shim is a flatter file than preload, so scope by nothing and match the
+ *  leaf. Looser than the preload scan on purpose — it is the fallback for the
+ *  few channels preload legitimately lacks, not the primary check. */
+function existsInRemoteShim(path: string): boolean {
+  const leaf = path.split('.').pop()!;
+  return new RegExp(`\\b${leaf}\\s*:`).test(remoteShim);
+}
+
+function existsSomewhereReal(path: string): boolean {
+  return existsInPreload(path) || existsInRemoteShim(path);
+}
+
 describe('workbench mock contract', () => {
   // Sanity: if the scan itself breaks (preload reformatted, object moved), every
   // other assertion in this file silently passes. Pin known-real channels.
@@ -50,14 +67,22 @@ describe('workbench mock contract', () => {
   // The rule that keeps UI-first development honest: a hand-written channel
   // either mirrors something real, or is registered as not-yet-built.
   it('every hand-written channel is real or registered MOCK_ONLY', () => {
-    const orphans = HAND_WRITTEN.filter((p) => !mockOnly.has(p) && !existsInPreload(p));
+    const orphans = HAND_WRITTEN.filter((p) => !mockOnly.has(p) && !existsSomewhereReal(p));
     expect(orphans).toEqual([]);
+  });
+
+  // The preload scan is the strict one, so record which channels rely on the
+  // looser remote-shim fallback. If this list grows unexpectedly, something is
+  // passing on a leaf match that the namespace-scoped scan would have caught.
+  it('only the known channels fall back to remote-shim', () => {
+    const shimOnly = HAND_WRITTEN.filter((p) => !existsInPreload(p) && existsInRemoteShim(p));
+    expect(shimOnly).toEqual(['on.chatHydrate']);
   });
 
   // A stale registry is worse than none — it would keep claiming a feature is
   // unbuilt after it shipped.
-  it('no MOCK_ONLY entry has since gained a real preload channel', () => {
-    expect(MOCK_ONLY.filter((m) => existsInPreload(m.channel))).toEqual([]);
+  it('no MOCK_ONLY entry has since gained a real channel', () => {
+    expect(MOCK_ONLY.filter((m) => existsSomewhereReal(m.channel))).toEqual([]);
   });
 
   it('every MOCK_ONLY entry names the feature it belongs to', () => {

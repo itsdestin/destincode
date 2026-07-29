@@ -200,12 +200,23 @@ function Root() {
 const __mount = createRoot(document.getElementById('root')!);
 // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
 if (import.meta.env.DEV && __buddyMode === 'workbench') {
-  import('./dev/workbench/install-mock').then(({ installMock }) => {
+  // `child=1` is the iframe the workbench frame hosts (see WorkbenchFrame.tsx
+  // for why it is an iframe): it renders the app itself, at the iframe's own
+  // viewport width, so useNarrowViewport() sees a real narrow viewport. The
+  // outer document renders the toolbar frame around it.
+  const isChild = new URLSearchParams(location.search).get('child') === '1';
+  import('./dev/workbench/install-mock').then(async ({ installMock }) => {
+    // The mock installs in BOTH documents: the child needs it to run the app,
+    // and the parent frame would otherwise fall through to Root's login path if
+    // anything there ever reads the bridge.
     installMock();
-    // Task 7 swaps this for <WorkbenchFrame/>; until then the bare app proves
-    // the mock boots. App is already statically imported above (Root renders
-    // it), so there is nothing to load here beyond the mock itself.
-    __mount.render(<App />);
+    if (isChild) {
+      // App is already statically imported above (Root renders it).
+      __mount.render(<App />);
+      return;
+    }
+    const { WorkbenchFrame } = await import('./dev/workbench/WorkbenchFrame');
+    __mount.render(<WorkbenchFrame />);
   });
 } else {
   __mount.render(<Root />);
