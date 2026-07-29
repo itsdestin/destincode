@@ -211,6 +211,18 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
     // anything there ever reads the bridge.
     installMock();
     if (isChild) {
+      // The tool gallery is a separate surface, not part of the app shell, so it
+      // renders in place of <App/> rather than inside it. It DOES get a real
+      // ThemeProvider — the ?mode=tool-sandbox route it replaces rendered
+      // outside the provider tree and so was never themed.
+      if (new URLSearchParams(location.search).get('view') === 'tools') {
+        const [{ ToolGallery }, { ThemeProvider }] = await Promise.all([
+          import('./dev/workbench/ToolGallery'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><ToolGallery /></ThemeProvider>);
+        return;
+      }
       // App is already statically imported above (Root renders it).
       __mount.render(<App />);
       return;

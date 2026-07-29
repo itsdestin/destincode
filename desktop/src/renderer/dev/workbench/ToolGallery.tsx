@@ -1,16 +1,17 @@
 // Dev-only page: renders every fixture through the real ToolCard/ToolBody so
-// we can iterate on compact views with Vite HMR. Gated behind a query-param
-// in App.tsx in dev builds — must not be reachable in prod builds.
+// we can iterate on compact views with Vite HMR. Reached via the workbench's
+// view switcher (?mode=workbench&view=tools) — must not be reachable in prod
+// builds. Absorbed from the former ?mode=tool-sandbox route.
 //
 // Why ChatProvider: ToolCard internally calls useChatDispatch() for click
 // handlers (expand/collapse, approval), so it crashes outside the provider
 // even though the fixtures don't actually drive the store's session state.
 
 import React from 'react';
-import { ChatProvider } from '../state/chat-context';
-import ToolCard from '../components/ToolCard';
-import { loadFixture, type FixtureBlock } from './workbench/fixture-loader';
-import type { ToolCallState } from '../../shared/types';
+import { ChatProvider } from '../../state/chat-context';
+import ToolCard from '../../components/ToolCard';
+import { loadFixture, type FixtureBlock } from './fixture-loader';
+import type { ToolCallState } from '../../../shared/types';
 
 // Vite's import.meta.glob eagerly reads every fixture as a raw string at build
 // time. We silence tsc because our tsconfig uses `module: "commonjs"` which
@@ -18,7 +19,7 @@ import type { ToolCallState } from '../../shared/types';
 // statically during bundling, so the literal syntax must be preserved. Only
 // Vite ever bundles this file; the Electron main process never loads it.
 // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
-const fixtures = import.meta.glob('./workbench/fixtures/tools/*.jsonl', {
+const fixtures = import.meta.glob('./fixtures/tools/*.jsonl', {
   query: '?raw',
   import: 'default',
   eager: true,
@@ -110,7 +111,7 @@ function compareGroups(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-export function ToolSandbox() {
+export function ToolGallery() {
   const entries = Object.entries(fixtures).map(([path, raw]) => {
     const name = path.split('/').pop()!.replace(/\.jsonl$/, '');
     return { name, result: loadFixture(name, raw) };
@@ -134,11 +135,12 @@ export function ToolSandbox() {
           we opt the scroll back in on this outer container. */}
       <div style={{ height: '100vh', overflowY: 'auto' }}>
       <div style={{ padding: 24, maxWidth: 960, margin: '0 auto' }}>
-        <h1 style={{ fontSize: 20, marginBottom: 16 }}>ToolCard Sandbox</h1>
+        <h1 style={{ fontSize: 20, marginBottom: 16 }}>Tool Gallery</h1>
         <p style={{ opacity: 0.7, marginBottom: 24, fontSize: 13 }}>
           Dev-only. Each card renders a real &lt;ToolCard&gt; against a fixture
           tool_use/tool_result pair. Edit ToolBody.tsx and save to see changes
-          via HMR.
+          via HMR. Unlike the sandbox this replaces, it runs inside the real
+          ThemeProvider, so theme switching applies here too.
         </p>
         {sortedGroups.map(([groupName, fixturesInGroup]) => (
           <section key={groupName} style={{ marginBottom: 40 }}>

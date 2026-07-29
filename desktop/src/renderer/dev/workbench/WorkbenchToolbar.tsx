@@ -10,9 +10,16 @@ const LATENCIES = [
   { value: '2000', label: '2s (slow)' },
 ];
 
+const VIEWS = [
+  { value: 'app', label: 'app' },
+  { value: 'tools', label: 'tool gallery' },
+];
+
 export interface WorkbenchToolbarProps {
   narrow: boolean;
   onNarrow: (v: boolean) => void;
+  view: string;
+  onView: (v: string) => void;
 }
 
 /**
@@ -32,7 +39,7 @@ export interface WorkbenchToolbarProps {
  * This is also what resolves spec §11's "where does the toolbar mount" question:
  * because it needs no app context, it can sit cleanly outside the app frame.
  */
-export function WorkbenchToolbar({ narrow, onNarrow }: WorkbenchToolbarProps) {
+export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchToolbarProps) {
   const scenario = new URLSearchParams(location.search).get('scenario') ?? 'default';
   const [latency, setLatencyState] = React.useState(String(getLatency()));
 
@@ -47,6 +54,17 @@ export function WorkbenchToolbar({ narrow, onNarrow }: WorkbenchToolbarProps) {
       <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
         Workbench
       </span>
+
+      <label className="flex items-center gap-1.5 text-3xs text-fg-muted">
+        View
+        <Select
+          size="sm"
+          aria-label="View"
+          value={view}
+          options={VIEWS}
+          onChange={onView}
+        />
+      </label>
 
       {/* Scenario reseeds the store, so it reloads rather than mutating live —
           most surfaces have already read their data by the time you change it. */}

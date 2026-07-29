@@ -29,29 +29,39 @@ const NARROW_WIDTH = 390;
  */
 export function WorkbenchFrame() {
   const [narrow, setNarrow] = React.useState(false);
+  const [view, setView] = React.useState(
+    () => new URLSearchParams(location.search).get('view') ?? 'app',
+  );
 
-  // Carry the parent's current scenario/latency into the child so a reload of
-  // the workbench keeps its settings, and so the child never re-renders the
-  // frame (child=1 routes it straight to <App/>).
+  // Carry the parent's current settings into the child so a reload of the
+  // workbench keeps them, and so the child never re-renders the frame (child=1
+  // routes it straight to the app or the gallery).
   const src = React.useMemo(() => {
     const params = new URLSearchParams(location.search);
     const child = new URLSearchParams();
     child.set('mode', 'workbench');
     child.set('child', '1');
+    child.set('view', view);
     child.set('scenario', params.get('scenario') ?? 'default');
     child.set('latency', String(getLatency()));
     return `${location.pathname}?${child.toString()}`;
-  }, []);
+  }, [view]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-well">
-      <WorkbenchToolbar narrow={narrow} onNarrow={setNarrow} />
+      <WorkbenchToolbar
+        narrow={narrow}
+        onNarrow={setNarrow}
+        view={view}
+        onView={setView}
+      />
       <div className="flex-1 min-h-0 flex justify-center overflow-hidden">
         <iframe
           // Remounting on width change is deliberate: the app reads the viewport
           // on FIRST render (use-narrow-viewport.ts's lazy useState), so a live
           // resize would leave first-paint decisions made at the old width.
-          key={narrow ? 'narrow' : 'wide'}
+          // `view` is in the key too so switching surface remounts cleanly.
+          key={`${view}-${narrow ? 'narrow' : 'wide'}`}
           title="YouCoded (workbench)"
           src={src}
           className="h-full border-0 bg-canvas"
