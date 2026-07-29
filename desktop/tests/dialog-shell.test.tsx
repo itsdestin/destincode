@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { Dialog, DIALOG_WIDTHS, DIALOG_MAX_HEIGHTS } from '../src/renderer/components/ui/Dialog';
+import { inScopeFiles, RENDERER, assertScopeIsPopulated } from './helpers/guard-scope';
 
 // Guard for D1 — the one dialog shell.
 //
@@ -134,20 +135,7 @@ describe('Dialog shell', () => {
 // OUT (recorded residue, different surfaces with their own visual language):
 // marketplace, project-view, game, git, tags, context-menu, buddy.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
 
 // Named, with the reason each is NOT a dialog. An exemption you cannot see is
 // how the inconsistency this test exists to stop got in.
@@ -173,6 +161,12 @@ const NOT_DIALOGS: Record<string, string> = {
 };
 
 describe('dialog shell adoption', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+  });
+
   it('nothing in scope hand-rolls the shell', () => {
     const offenders = inScopeFiles()
       .filter((p) => !(p.split(/[\\/]/).pop()! in NOT_DIALOGS))

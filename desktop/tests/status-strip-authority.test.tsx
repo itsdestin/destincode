@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { StatusStrip } from '../src/renderer/components/ui/StatusStrip';
+import { inScopeFiles, stripComments, RENDERER, assertScopeIsPopulated } from './helpers/guard-scope';
 
 // Guard for K5 (status strip) and K9 (danger zone).
 //
@@ -58,25 +59,6 @@ describe('StatusStrip', () => {
 
 // ── Adoption ────────────────────────────────────────────────────────────────
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
-
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-}
 
 /**
  * Debt this tranche did NOT pay, counted per file so it cannot grow silently.
@@ -157,6 +139,12 @@ describe('status adoption', () => {
 });
 
 describe('danger zones', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+  });
+
   const COMPONENTS = join(RENDERER, 'components');
 
   it('every danger zone states its consequence in a danger callout', () => {

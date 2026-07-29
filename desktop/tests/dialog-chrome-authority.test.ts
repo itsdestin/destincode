@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { inScopeFiles, stripComments, assertScopeIsPopulated, assertPatternMatches } from './helpers/guard-scope';
 
 // Guard: nothing inside a dialog paints its own header.
 //
@@ -20,25 +21,6 @@ import { join } from 'path';
 // "three". It was written from memory instead of a search, which is the same
 // mistake this suite exists to make impossible for class recipes.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
-
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-}
 
 /**
  * The header recipe: a full-width bar with the shell's own padding and bottom
@@ -67,6 +49,14 @@ const OWNS_ITS_HEADER: Record<string, { count: number; why: string }> = {
 };
 
 describe('dialog chrome', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+    assertPatternMatches(HAND_ROLLED_HEADER, "flex items-center justify-between px-4 py-3 border-b border-edge shrink-0",
+      'a dialog header bar');
+  });
+
   it('no view inside a dialog paints its own header', () => {
     const drift: string[] = [];
     for (const file of inScopeFiles()) {

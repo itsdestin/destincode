@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { SettingRow } from '../src/renderer/components/ui/SettingRow';
+import { inScopeFiles, stripComments, RENDERER, assertScopeIsPopulated } from './helpers/guard-scope';
 
 // Guard for K2 — the setting row.
 //
@@ -128,34 +129,14 @@ describe('SettingRow structure', () => {
 
 // ── The adoption guard ──────────────────────────────────────────────────────
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
-const IN_SCOPE_DIRS = ['', 'development', 'ui'];
-
-function inScopeFiles(): string[] {
-  const files = [join(RENDERER, 'App.tsx')];
-  for (const dir of IN_SCOPE_DIRS) {
-    const abs = join(RENDERER, 'components', dir);
-    for (const f of readdirSync(abs)) {
-      if (f.endsWith('.tsx') && !f.includes('.test.')) files.push(join(abs, f));
-    }
-  }
-  return files;
-}
-
-/**
- * Blank out comments, preserving offsets and line count.
- *
- * Mandatory for every source-text guard in this suite: the WHY comments these
- * migrations leave behind QUOTE the idiom they replaced, so a guard reading raw
- * text fails on the explanation of its own fix.
- */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
-}
 
 describe('setting row adoption', () => {
+  it('this guard can see what it claims to cover', () => {
+    // A source-text guard that matches nothing PASSES and reads as clean.
+    // Three of this workstream's worst misses were exactly that.
+    assertScopeIsPopulated(inScopeFiles());
+  });
+
   it('the retired row recipes are gone', () => {
     // Verbatim class strings from the five shapes K2 replaced. A string match is
     // enough HERE (unlike K1, which had to match on the class SET) because these

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { stripComments, RENDERER } from './helpers/guard-scope';
 
 // Guard for K1 (menu-internals tranche 1): a section label has ONE spelling.
 //
@@ -28,17 +29,8 @@ import { describe, it, expect } from 'vitest';
 //     eyebrow headings, which are a distinct heading scale
 // Both are recorded as tranche-1 residue rather than silently absorbed here.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 
 const CANONICAL = 'text-3xs font-medium text-fg-muted tracking-wider uppercase';
-
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-}
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {

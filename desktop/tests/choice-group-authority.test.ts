@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
+import { stripComments, RENDERER } from './helpers/guard-scope';
 
 // Guard for K3: "pick one of N" has one implementation.
 //
@@ -13,7 +14,6 @@ import { describe, it, expect } from 'vitest';
 // non-choice uses (badges, the InputBar send button), so the assertion is the
 // full retired class fragments.
 
-const RENDERER = join(__dirname, '..', 'src', 'renderer');
 
 const RETIRED = [
   'flex-1 px-1.5 py-1 rounded-sm',
@@ -21,14 +21,6 @@ const RETIRED = [
   'flex-1 py-1.5 px-3 text-sm rounded',
   'px-2 py-1 rounded text-3xs',
 ];
-
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n');
-}
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
