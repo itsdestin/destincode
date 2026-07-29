@@ -101,7 +101,15 @@ interface ToolCall { toolCallId: string; toolName: string; input: any }
 // transcript usage shape).
 interface StepUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }
 // What one consumed step returns to the loop.
-interface StepResult { text: string; toolCalls: ToolCall[]; usage: StepUsage; finishReason: string | undefined; interrupted: boolean }
+interface StepResult {
+  text: string; toolCalls: ToolCall[]; usage: StepUsage;
+  finishReason: string | undefined; interrupted: boolean;
+  /** Milliseconds from this step's FIRST real output chunk to the end of its
+   *  stream — i.e. time actually spent generating. Excludes prefill (before the
+   *  first chunk) and everything outside the stream (tool execution, permission
+   *  waits). 0 when the step produced no output. */
+  generationMs: number;
+}
 
 // v7 stream parts carry the chunk in .text (verified against ai@7.0.22:
 // TextStreamTextDeltaPart / TextStreamReasoningDeltaPart both expose `.text`).
@@ -827,6 +835,11 @@ export class HarnessSession extends EventEmitter {
 
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    // Time spent GENERATING, summed over the turn's steps. Not wall-clock: a turn
+    // includes prefill, tool execution and permission waits, and dividing output
+    // tokens by all of that reports a decode speed several times slower than the
+    // model's real one (found in the 2026-07-28 audit).
+    let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
     // Budget precedence: an explicit harness override wins; otherwise the step
     // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
@@ -890,6 +903,7 @@ export class HarnessSession extends EventEmitter {
         turnUsage.outputTokens += step.usage.outputTokens;
         turnUsage.cacheReadTokens += step.usage.cacheReadTokens;
         turnUsage.cacheCreationTokens += step.usage.cacheCreationTokens;
+        generationMs += step.generationMs;
 
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
         // (An interrupted turn NEVER completes as a normal turn-complete.)
@@ -979,7 +993,10 @@ export class HarnessSession extends EventEmitter {
         }
       }
 
-      const seconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
+      // Denominator is GENERATION time, not the turn's wall-clock. Falls back to
+      // wall-clock only when no step ever produced output, where the ratio is 0
+      // either way and the fallback just avoids dividing by zero.
+      const seconds = Math.max((generationMs || (Date.now() - startedAt)) / 1000, 0.001);
       this.emitEvent('turn-complete', {
         model: this.binding.modelId,
         stopReason,
@@ -1117,6 +1134,7 @@ export class HarnessSession extends EventEmitter {
     this.prefillSource = source;
     this.lastPrefillEmitAt = 0;   // fresh throttle window per step
     let sawFirstChunk = false;
+    let firstChunkAt = 0;   // when generation actually began (see StepResult.generationMs)
     let warned = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
@@ -1192,7 +1210,12 @@ export class HarnessSession extends EventEmitter {
         // local model even after the prefill budget was added (Destin, 2026-07-26):
         // the budget was never actually in force. Verified by logging fullStream
         // part timings against a mock that delays its first real part by 800ms.
-        if (chunk.value?.type !== 'start' && chunk.value?.type !== 'start-step') sawFirstChunk = true;
+        if (chunk.value?.type !== 'start' && chunk.value?.type !== 'start-step') {
+          // Stamp the first REAL chunk: generation starts here. Everything before
+          // it is prefill, and tok/s must not be diluted by it.
+          if (!sawFirstChunk) firstChunkAt = Date.now();
+          sawFirstChunk = true;
+        }
         // A real chunk arrived → clear any shown warning and re-arm the watchdog.
         if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
         armWatchdog();
@@ -1247,7 +1270,7 @@ export class HarnessSession extends EventEmitter {
     if (interrupted || this.interrupted || abortSignal.aborted) {
       // Don't await usage/finishReason on the interrupt path — the stream was
       // torn down; those promises may never settle.
-      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true };
+      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0 };
     }
 
     const usage = await result.usage;
@@ -1264,6 +1287,7 @@ export class HarnessSession extends EventEmitter {
       },
       finishReason,
       interrupted: false,
+      generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0,
     };
   }
 

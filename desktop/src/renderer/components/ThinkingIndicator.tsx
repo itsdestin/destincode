@@ -92,7 +92,14 @@ export function prefillLabel(p: {
   // A percentage is more legible than raw counts once we have real progress;
   // without it, the token count is the only honest thing we can say.
   if (p.processed != null && p.promptTokens > 0) {
-    parts.push(`${Math.min(100, Math.round((p.processed / p.promptTokens) * 100))}% of ${p.promptTokens.toLocaleString()} tokens`);
+    // 100% is reserved for actually-done. Rounding gets there at 99.5%, and the
+    // project's own captured llama.cpp trace contains a NON-final reading of
+    // 5,515/5,519 (99.93%) — so the label read "100%" while prefill was still
+    // running, and the monotonic clamp then held it there. Anything short of the
+    // full count floors to 99.
+    const done = p.processed >= p.promptTokens;
+    const pct = done ? 100 : Math.min(99, Math.floor((p.processed / p.promptTokens) * 100));
+    parts.push(`${pct}% of ${p.promptTokens.toLocaleString()} tokens`);
   } else {
     parts.push(`${p.promptTokens.toLocaleString()} tokens`);
   }

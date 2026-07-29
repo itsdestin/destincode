@@ -312,3 +312,36 @@ describe('toReport — measures the work actually being done', () => {
     expect(r.etaMs).toBe(1_000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 100% means DONE. Found by the 2026-07-28 audit using this file's own captured
+// llama.cpp trace: REAL_SEQUENCE contains a NON-final reading of 5,515/5,519 —
+// 99.93%, which Math.round turns into 100%. The label therefore read "100% of
+// 5,519 tokens" while prefill was still running, and the monotonic clamp in the
+// indicator then pinned it there until the real final reading arrived.
+// ---------------------------------------------------------------------------
+import { prefillLabel } from '../src/renderer/components/ThinkingIndicator';
+
+describe('prefillLabel — 100% is reserved for actually finished', () => {
+  it('the real captured 5515/5519 reading does NOT read as 100%', () => {
+    const label = prefillLabel({ promptTokens: 5519, processed: 5515, source: 'prompt' });
+    expect(label).toContain('99% of 5,519 tokens');
+    expect(label).not.toContain('100%');
+  });
+
+  it('the genuinely final reading DOES read as 100%', () => {
+    expect(prefillLabel({ promptTokens: 5519, processed: 5519, source: 'prompt' }))
+      .toContain('100% of 5,519 tokens');
+  });
+
+  it('floors rather than rounds, so it never overstates progress', () => {
+    // 1999/2000 = 99.95% — one token short is not "done".
+    expect(prefillLabel({ promptTokens: 2000, processed: 1999, source: 'prompt' })).toContain('99%');
+    // 1/2000 = 0.05% — half a percent of work is not 1% done either.
+    expect(prefillLabel({ promptTokens: 2000, processed: 1, source: 'prompt' })).toContain('0%');
+  });
+
+  it('over-reporting still clamps to 100, not 103', () => {
+    expect(prefillLabel({ promptTokens: 100, processed: 130, source: 'prompt' })).toContain('100% of 100 tokens');
+  });
+});
