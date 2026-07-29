@@ -51,6 +51,8 @@ export const AskUserQuestionTool: NativeTool<AskUserQuestionInput> = {
   name: 'AskUserQuestion',
   description:
     'Ask the user 1-4 multiple-choice questions when you genuinely need their input to proceed (preferences, ambiguous requirements, a decision only they can make). Each question needs a short header (max 12 chars) and 2-4 options. Do not use it for questions you can answer yourself.',
+  // Compact form for small local models (simplified presentation).
+  shortDescription: 'Ask the user 1-4 multiple-choice questions when you need their input to proceed.',
   inputSchema,
   // interactive:true bypasses ALL permission gating (guards + decide + execute) —
   // safe ONLY because asking a question has no side effect. NEVER set it on a tool

@@ -1,0 +1,128 @@
+// The Skill tool's description carries every installed skill's id and one-liner
+// on EVERY turn. That is noise on a 128k window and unaffordable on an 8k one, so
+// whether it is attached is a profile decision — the same three-layer profile
+// Plan C landed. A small model still reaches skills through /skill-name.
+import { describe, it, expect } from 'vitest';
+import { HarnessSession } from '../src/main/harness/harness-session';
+import { makeOpts } from './helpers/harness-fakes';
+import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
+import type { SkillCatalog } from '../src/main/harness/skills/skill-catalog';
+
+const catalog: SkillCatalog = {
+  list: () => [{ id: 'journal', description: 'Write a journal entry' }, { id: 'theme-builder', description: 'Build a theme' }],
+  load: (id) => ({ id, displayName: id, description: 'd', body: 'do the thing' }),
+};
+const emptyCatalog: SkillCatalog = { list: () => [], load: () => { throw new Error('none'); } };
+
+function sessionWith(profileOver: Partial<typeof CLOUD_DEFAULT>, skillCatalog: SkillCatalog = catalog, harnessOver: any = {}) {
+  return new HarnessSession(
+    makeOpts({
+      profile: { ...CLOUD_DEFAULT, ...profileOver },
+      skillCatalog,
+      harness: { schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [], permissionPolicy: 'ask', ...harnessOver },
+    }),
+    async () => ({} as any),
+  );
+}
+const toolNames = (s: HarnessSession) => Object.keys((s as any).buildAiTools());
+
+describe('Skill attachment is profile-gated', () => {
+  it('a window that can afford the catalog gets Skill', () => {
+    expect(toolNames(sessionWith({ exposeSkillCatalog: true }))).toContain('Skill');
+  });
+
+  it('a small window does NOT — /skill-name still reaches skills there', () => {
+    expect(toolNames(sessionWith({ exposeSkillCatalog: false }))).not.toContain('Skill');
+  });
+
+  it('a tool-less model gets no tools at all, Skill included', () => {
+    expect(toolNames(sessionWith({ supportsTools: false, exposeSkillCatalog: true }))).toEqual([]);
+  });
+
+  it('no skills installed means no tool — a catalog listing nothing invites invented ids', () => {
+    expect(toolNames(sessionWith({ exposeSkillCatalog: true }, emptyCatalog))).not.toContain('Skill');
+  });
+});
+
+describe('Skill attachment tracks a model swap', () => {
+  it('swapping to a smaller model REMOVES Skill', () => {
+    // Plan C re-resolves the profile on setBinding. A tool attached under the old
+    // profile must not survive into a session that can no longer afford it —
+    // otherwise the model keeps a catalog the new window has no room for.
+    const s = sessionWith({ exposeSkillCatalog: true });
+    expect(toolNames(s)).toContain('Skill');
+    s.setBinding({ providerId: 'local', modelId: 'tiny' }, 8_192, { ...CLOUD_DEFAULT, exposeSkillCatalog: false });
+    expect(toolNames(s)).not.toContain('Skill');
+  });
+
+  it('swapping to a larger model ADDS it back', () => {
+    const s = sessionWith({ exposeSkillCatalog: false });
+    expect(toolNames(s)).not.toContain('Skill');
+    s.setBinding({ providerId: 'openrouter', modelId: 'big' }, 200_000, { ...CLOUD_DEFAULT, exposeSkillCatalog: true });
+    expect(toolNames(s)).toContain('Skill');
+  });
+});
+
+describe('the manifest skills allowlist scopes the catalog', () => {
+  it('an allowlist restricts which skills the model is told about', () => {
+    const names = (s: HarnessSession) => (s as any).buildAiTools().Skill.description as string;
+    const scoped = sessionWith({ exposeSkillCatalog: true }, catalog, { skills: ['journal'] });
+    expect(names(scoped)).toContain('journal');
+    expect(names(scoped)).not.toContain('theme-builder');
+  });
+
+  it('an allowlist that matches nothing installed attaches no tool', () => {
+    const scoped = sessionWith({ exposeSkillCatalog: true }, catalog, { skills: ['not-installed'] });
+    expect(toolNames(scoped)).not.toContain('Skill');
+  });
+
+  it('no allowlist offers everything installed', () => {
+    const d = (sessionWith({ exposeSkillCatalog: true }) as any).buildAiTools().Skill.description as string;
+    expect(d).toContain('journal');
+    expect(d).toContain('theme-builder');
+  });
+});
+
+describe('gating Skill leaves the other tools alone', () => {
+  it('the core set is unaffected either way', () => {
+    for (const expose of [true, false]) {
+      const s = sessionWith({ exposeSkillCatalog: expose });
+      // makeOpts passes no tools, so the set is exactly {} or {Skill} — the point
+      // is that gating never DROPS something, only adds or withholds Skill.
+      expect(toolNames(s).filter((n) => n !== 'Skill')).toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permission posture. Skill is a READ — narrower than Read itself, which is
+// already free at the baseline — and every action a skill INSTRUCTS is performed
+// by some other tool that is gated on its own terms.
+// ---------------------------------------------------------------------------
+import { rulesForMode, DESTRUCTIVE_DENY_LIST } from '../src/shared/permission-types';
+import { decidePermission } from '../src/main/harness/permission-engine';
+
+const layers = (mode: 'ask' | 'auto-edit' | 'full-auto', remembered = [] as any[]) => ({
+  presetRules: [], modeRules: rulesForMode(mode),
+  denyList: DESTRUCTIVE_DENY_LIST, rememberedRules: remembered,
+});
+
+describe('Skill permission posture', () => {
+  it('does not prompt in ask mode — it is a read, and a narrow one', () => {
+    expect(decidePermission('Skill', 'journal', layers('ask')).action).toBe('allow');
+  });
+
+  it('is allowed in auto-edit and full-auto too', () => {
+    for (const mode of ['auto-edit', 'full-auto'] as const) {
+      expect(decidePermission('Skill', 'journal', layers(mode)).action, mode).toBe('allow');
+    }
+  });
+
+  it('a remembered DENY still wins — last-match-wins is not bypassed', () => {
+    // The baseline allow is a default posture, never a hard grant. A user who
+    // denied a specific skill must stay denied.
+    const v = decidePermission('Skill', 'journal',
+      layers('ask', [{ tool: 'Skill', pattern: 'journal', action: 'deny' }]));
+    expect(v.action).toBe('deny');
+  });
+});

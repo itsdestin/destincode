@@ -21,8 +21,26 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
+
+// Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
+// string; Skill's is a skill id. Both would be canonicalized against cwd and run
+// through the credential denylist by checkPathGuard, and matched against rule
+// globs by injectPathTriggers — neither is meaningful for a non-path.
+//
+// This used to be spelled inline as `toolName !== 'Bash'`, which silently gave
+// Skill the wrong treatment the moment it was added (found in the 2026-07-28
+// branch review). Naming the set means the next non-path-subject tool has one
+// place to declare itself instead of inheriting file-tool behavior by default.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
+import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
+import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
+import { toReport, type PrefillProgress } from '../providers/prefill-progress';
+import { createSkillTool } from './tools/skill';
+import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { fitInjection } from './injection/injection-budget';
+import type { TriggerIndex } from './injection/path-triggers';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -51,8 +69,30 @@ export interface HarnessSessionOpts {
    *  triggers the auto-retry / session-error. Default 60_000 / 15_000. */
   stallWarningMs?: number;
   stallCountdownMs?: number;
+  /** Test hook: the TIME-TO-FIRST-TOKEN budget, which is separate from (and much
+   *  larger than) `stallWarningMs` because prefill on a local model legitimately
+   *  runs to minutes. Defaults to prefillBudgetMs(promptTokens). */
+  prefillWarningMs?: number;
+  /** Resolved capability profile (Task 5): steers the doom-loop window and
+   *  whether tools are attached at all. Absent → CLOUD_DEFAULT (full posture). */
+  profile?: CapabilityProfile;
+  /** Installed-skill source for the Skill tool (M3 item 1). Injected so tests can
+   *  supply a fake instead of scanning the real ~/.claude — and so a machine with
+   *  no skills is an expressible state rather than an environment accident.
+   *  Absent → the real filesystem catalog. */
+  skillCatalog?: SkillCatalog;
+  /** Project rules + nested project instructions, indexed by path (M3 item 3).
+   *  Absent → no path-triggered injection, which is exactly the pre-M3 behavior
+   *  every existing caller and test relies on. */
+  triggers?: TriggerIndex;
 }
-export type ModelFactory = (binding: ModelBinding) => Promise<LanguageModel>;
+// The opts second arg carries per-turn model construction hints. `serialToolCalls`
+// (Task 10 / spec §4.2) tells the local-engine factory to inject
+// parallel_tool_calls:false; cloud factories ignore it.
+export type ModelFactory = (
+  binding: ModelBinding,
+  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+) => Promise<LanguageModel>;
 
 // One collected tool-call from a step's stream (input already PARSED to an
 // object by streamText — see the ai@7 contract test).
@@ -61,7 +101,15 @@ interface ToolCall { toolCallId: string; toolName: string; input: any }
 // transcript usage shape).
 interface StepUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }
 // What one consumed step returns to the loop.
-interface StepResult { text: string; toolCalls: ToolCall[]; usage: StepUsage; finishReason: string | undefined; interrupted: boolean }
+interface StepResult {
+  text: string; toolCalls: ToolCall[]; usage: StepUsage;
+  finishReason: string | undefined; interrupted: boolean;
+  /** Milliseconds from this step's FIRST real output chunk to the end of its
+   *  stream — i.e. time actually spent generating. Excludes prefill (before the
+   *  first chunk) and everything outside the stream (tool execution, permission
+   *  waits). 0 when the step produced no output. */
+  generationMs: number;
+}
 
 // v7 stream parts carry the chunk in .text (verified against ai@7.0.22:
 // TextStreamTextDeltaPart / TextStreamReasoningDeltaPart both expose `.text`).
@@ -82,6 +130,36 @@ function mapStopReason(finishReason: string | undefined): string {
   }
 }
 const APPROX_CHARS_PER_TOKEN = 4;
+
+// Shrink a role:'tool' message's result text to fit `maxChars`, splitting the
+// allowance evenly when one message carries several results. Used only by
+// fitToContext's oversized-tail salvage — the ordinary path never rewrites
+// content. The trailing notice matters: without it a model reads a hard-cut
+// file as complete and confidently answers from a fragment.
+function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
+  if (msg.role !== 'tool' || !Array.isArray(msg.content)) return msg;
+  const parts = msg.content as any[];
+  const results = parts.filter((p) => p?.type === 'tool-result');
+  if (results.length === 0) return msg;
+  const per = Math.max(500, Math.floor(maxChars / results.length));
+  return {
+    ...msg,
+    content: parts.map((p: any) => {
+      if (p?.type !== 'tool-result') return p;
+      const value = p.output?.value;
+      if (typeof value !== 'string' || value.length <= per) return p;
+      const dropped = value.length - per;
+      return {
+        ...p,
+        output: {
+          ...p.output,
+          value: value.slice(0, per) +
+            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window. Re-run with offset/limit, or use Grep, to see the rest.]`,
+        },
+      };
+    }),
+  } as ModelMessage;
+}
 
 // Turn a caught provider/SDK error into the most ACTIONABLE message we can show
 // (docs/error-message-standards.md — surface the real detail, never a generic
@@ -134,14 +212,59 @@ const STALL_RETRY = Symbol('stall-retry');
 // already streamed, or the one allowed retry was already spent). Routes through
 // send()'s catch → session-error. Message is specific + accurate (we KNOW it's a
 // timeout — docs/error-message-standards.md: never guess an unverified cause).
-class StreamStallError extends Error {
-  constructor(totalMs: number) {
+export class StreamStallError extends Error {
+  /** `phase` distinguishes the two very different silences this watchdog sees.
+   *  Saying "stopped responding" while a local model is still reading a large
+   *  prompt is a guessed cause — it never started, and nothing is wrong. */
+  constructor(totalMs: number, phase: 'prefill' | 'streaming' = 'streaming', promptTokens = 0) {
+    const secs = Math.round(totalMs / 1000);
     super(
-      `The model stopped responding — no data received for ${Math.round(totalMs / 1000)} seconds. `
-      + `The provider may be stalled; send your message again to retry.`,
+      phase === 'prefill'
+        ? `The model didn't begin responding within ${secs} seconds while reading a `
+          + `${promptTokens.toLocaleString()}-token prompt. Local models process long prompts slowly; `
+          + `a shorter prompt (read less of the file, or use Grep) will start faster.`
+        : `The model stopped responding — no data received for ${secs} seconds. `
+          + `The provider may be stalled; send your message again to retry.`,
     );
     this.name = 'StreamStallError';
   }
+}
+
+// Time-to-FIRST-token is a different animal from a mid-stream gap, and conflating
+// them is what made a healthy local model look dead (Destin, 2026-07-26: a 25k-token
+// ROADMAP.md prompt tripped the 75s watchdog while llama.cpp was still doing prefill).
+//
+// Prefill cost scales with prompt size and hardware. Rather than guess a throughput
+// per backend, allow a floor plus a conservative per-token budget: PREFILL_MS_PER_TOKEN
+// assumes only ~50 tokens/sec of prompt processing, far below what any real setup
+// manages, so the watchdog stays a genuine liveness check without ever calling a
+// working model dead. Bounded so a truly hung server still surfaces.
+//
+// Applied to EVERY provider, not just local: a cloud model with a small prompt lands
+// at ~the old timeout anyway, and a huge cloud prompt legitimately takes longer too.
+// One rule beats a provider branch that has to be kept in sync.
+// Only ANNOUNCE prompt processing when the prompt is big enough that the wait
+// could plausibly look like a hang. Emitting a "reading your prompt" heartbeat
+// for a 30-token turn would flicker for a few hundred milliseconds and tell the
+// user nothing, while adding an event to every single step of the FROZEN emit
+// surface (pinned by harness-session-loop.test.ts's ordering contract).
+const PROMPT_PROCESSING_NOTICE_TOKENS = 2_000;
+// Covers the silent window BEFORE prefill even starts: llama-server loads the
+// model on the first request, and a 122B Q4 is tens of gigabytes off disk. The
+// harness gets no signal for that (nothing in here knows about model residency),
+// so the base has to be generous enough to sit through it — Destin hit the
+// watchdog on a 122B while it was still loading (2026-07-26).
+//
+// A generous base costs little now that ANY prefill progress re-arms the clock:
+// the only genuinely silent window left is the load itself, and a truly dead
+// server still surfaces once this elapses with nothing at all having happened.
+const PREFILL_BASE_MS = 240_000;
+const PREFILL_MS_PER_TOKEN = 20;          // ≈50 tok/s of prompt processing
+const PREFILL_MAX_MS = 15 * 60_000;       // a hung server must still surface
+
+export function prefillBudgetMs(promptTokens: number): number {
+  const scaled = PREFILL_BASE_MS + Math.max(0, promptTokens) * PREFILL_MS_PER_TOKEN;
+  return Math.min(scaled, PREFILL_MAX_MS);
 }
 
 // CONCURRENCY PRECONDITION: `send()` is NOT re-entrant. `abort`, `interrupted`,
@@ -153,6 +276,12 @@ export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
   private interrupted = false;
+  // Prompt tokens as of the PREVIOUS step of this turn. Used to report how much
+  // context is genuinely NEW — llama.cpp reuses the cached prefix, so only the
+  // appended messages actually get prefilled. Reset per turn; 0 means "next step
+  // is a full prefill" (first step, or history rewritten by compaction, which
+  // invalidates the cached prefix).
+  private lastStepPromptTokens = 0;
   binding: ModelBinding;
 
   // Tool runtime state (Task 9). readRegistry + todos are per-SESSION runtime
@@ -165,12 +294,23 @@ export class HarnessSession extends EventEmitter {
    *  never persisted to the transcript, so it resets on resume. */
   private shellCwd: string | null = null;
   private retryDelays: number[];
+  // Resolved capability profile (Task 5). Drives the doom-loop window + tool
+  // attachment; re-assigned by setBinding on a mid-session model swap.
+  private profile: CapabilityProfile;
+  /** Trigger ids already injected in this session. Survives across turns on
+   *  purpose — a rule is a standing instruction, not a per-turn reminder. */
+  private readonly injectedTriggerIds = new Set<string>();
+  /** Read-only view of the resolved profile. The host needs the injection budget
+   *  to size a /skill-name body, and re-resolving it there would risk drifting
+   *  from what this session actually runs with (setBinding can have changed it). */
+  get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
     super();
     this.binding = opts.binding;
     this.toolByName = new Map((opts.tools ?? []).map((t) => [t.name, t]));
     this.retryDelays = opts.retryDelays ?? [1000, 2000, 4000];
+    this.profile = opts.profile ?? CLOUD_DEFAULT;
   }
 
   /** Resume path: NativeSessionHost rebuilds history from stored events. */
@@ -186,27 +326,121 @@ export class HarnessSession extends EventEmitter {
     this.shellCwd = null; // a resumed session starts back at the workspace root
   }
 
-  /** Mid-session model swap (next turn uses the new binding). */
-  setBinding(binding: ModelBinding, contextLength?: number | null): void {
+  /** Mid-session model swap (next turn uses the new binding). A swap can cross
+   *  capability tiers (e.g. cloud → small local), so the host re-resolves the
+   *  profile and passes it in; applied only when provided. */
+  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile): void {
     this.binding = binding;
     if (contextLength !== undefined) this.opts.contextLength = contextLength;
+    if (profile) this.profile = profile;
   }
 
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
   private get systemText(): string { return this.opts.systemPrompt ?? this.opts.harness.systemPrompt; }
+
+  /** Chars/4 estimate of everything the model currently holds — system prompt plus
+   *  the whole history. ONLY a fallback for when the provider reports no usage;
+   *  a measured prompt-token count is always preferred. */
+  private estimateContextTokens(): number {
+    return Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN)
+      + Math.ceil(JSON.stringify(this.history).length / APPROX_CHARS_PER_TOKEN);
+  }
 
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
     const event: TranscriptEvent = { type, sessionId: this.opts.sessionId, uuid: randomUUID(), timestamp: Date.now(), data };
     this.emit('transcript-event', event);
   }
 
+  /** Append any project rules / nested project instructions that the paths this
+   *  step touched activate (M3 item 3).
+   *
+   *  As a MESSAGE, never a system-prompt edit. prompt-assembly.ts is byte-stable
+   *  by construction and a mid-session change would discard the KV cache prefix
+   *  every local model reuses, turning a cheap follow-up turn into a full
+   *  re-prefill of the entire conversation.
+   *
+   *  ONCE per trigger per session. A rule re-sent after every Read of a matching
+   *  file would dominate the conversation and blow the window it was sized
+   *  against — and repetition does not make a model follow a rule harder.
+   *
+   *  Bash is skipped: its permission subject is a command string, not a path,
+   *  so feeding it to a path matcher would be a category error.
+   */
+  private injectPathTriggers(calls: ToolCall[]): void {
+    const index = this.opts.triggers;
+    if (!index) return;
+    for (const call of calls) {
+      // Same reasoning as the path guard: matching a rule glob against a bash
+      // command or a skill id is a category error, not a near-miss.
+      if (NON_PATH_SUBJECT_TOOLS.has(call.toolName)) continue;
+      const tool = this.toolByName.get(call.toolName);
+      const subject = tool?.permissionSubject(call.input as any);
+      if (!subject) continue;
+      for (const t of index.match(subject)) {
+        if (this.injectedTriggerIds.has(t.id)) continue;
+        this.injectedTriggerIds.add(t.id);
+        const fitted = fitInjection(t.body, this.profile.injectionBudgetTokens);
+        this.history.push({
+          role: 'user',
+          content: `<project-rule source="${t.source}">\n${fitted.text}\n</project-rule>`,
+        });
+      }
+    }
+  }
+
+  /** Add or remove the Skill tool to match the CURRENT profile (M3 item 1).
+   *
+   *  Skill is the one conditional tool: its description lists every offered
+   *  skill's id and one-liner, and that rides the schema on every turn, so a
+   *  small window cannot afford it. Those sessions still reach skills through
+   *  the user-invoked /skill-name path.
+   *
+   *  Run per buildAiTools rather than once in the constructor because
+   *  setBinding() re-resolves the profile on a model swap: a tool attached under
+   *  a 128k model must come back OFF when the user switches to an 8k one, and
+   *  back on when they switch back. The has()/delete() pair makes both
+   *  directions idempotent, so the filesystem scan happens once per attachment,
+   *  not once per turn.
+   */
+  private syncSkillTool(): void {
+    const wanted = this.profile.exposeSkillCatalog;
+    if (!wanted) { this.toolByName.delete('Skill'); return; }
+    if (this.toolByName.has('Skill')) return;
+
+    const catalog = this.opts.skillCatalog ?? createSkillCatalog();
+    const allow = this.opts.harness.skills;
+    // Per-preset allowlist (the manifest's `skills` field, dead until now):
+    // Assistant may offer fewer skills than Coder. load() stays unscoped — an
+    // allowlist decides what the model is TOLD about, and a request for anything
+    // outside it can't arrive because it was never advertised.
+    const scoped: SkillCatalog = allow
+      ? { list: () => catalog.list().filter((s) => allow.includes(s.id)), load: (id) => catalog.load(id) }
+      : catalog;
+
+    // No offerable skills → no tool. A catalog that lists nothing still reads as
+    // "you may load a skill", which invites the model to invent an id and burn a
+    // step discovering it doesn't exist.
+    if (scoped.list().length === 0) return;
+    this.toolByName.set('Skill', createSkillTool(scoped));
+  }
+
   /** NativeTool → ai `tool({description, inputSchema})` WITHOUT execute, keyed by
    *  name. No execute => the SDK emits 'tool-call' parts and finishes with
    *  'tool-calls' WITHOUT looping (verified ai@7 contract) — WE own the loop. */
   private buildAiTools(): Record<string, any> {
+    // Plain-chat model (profile.supportsTools === false): attach NO tools so the
+    // SDK never sends a tool schema. WHY: a small local model the registry marks
+    // tool-less would otherwise emit malformed tool-calls we can't honor.
+    if (!this.profile.supportsTools) return {};
+    this.syncSkillTool();
+    // Simplified presentation (spec §4.2): small local models get each tool's
+    // compact shortDescription (falling back to the full description when a tool
+    // defines none) so the schema stays small enough for a weak model to follow.
+    // The tool SET is identical either way — we only shrink the wording.
+    const simplified = this.profile.maxToolPresentation === 'simplified';
     const out: Record<string, any> = {};
     for (const t of this.toolByName.values()) {
-      out[t.name] = tool({ description: t.description, inputSchema: zodSchema(t.inputSchema) });
+      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: zodSchema(t.inputSchema) });
     }
     return out;
   }
@@ -237,7 +471,8 @@ export class HarnessSession extends EventEmitter {
     // regardless of budget, so history collapses to that single message rather
     // than erroring. That's intentional — one turn through a tiny model beats a
     // hard failure — so no clamp is applied here.
-    let total = Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    const total0 = Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    let total = total0;
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
       const size = Math.ceil(JSON.stringify(messages[i].content).length / APPROX_CHARS_PER_TOKEN);
@@ -260,23 +495,351 @@ export class HarnessSession extends EventEmitter {
       if (isOrphanToolResult || isToolCallOpener) { kept.shift(); continue; }
       break;
     }
+    // The two rules above are individually right and together could return NOTHING:
+    // the size loop always keeps the newest message even when it alone blows the
+    // budget ("history collapses to that single message rather than erroring"),
+    // but if that survivor is a tool result, the pair-aware trim then drops it as
+    // an orphan — and the driver sends an empty prompt, which providers reject
+    // with "Invalid prompt: messages must not be empty".
+    //
+    // Found 2026-07-26 dogfooding: asking a local model to read ROADMAP.md
+    // returned a 100 KB tool result (read.ts raises its own cap to 100_000 chars)
+    // that exceeded the window on its own, and the turn died. Latent on master,
+    // not introduced by Plan C — Plan C just made big local reads routine.
+    if (kept.length === 0) return this.salvageOversizedTail(messages, budgetTokens, total0);
     return kept;
   }
 
+  /** Last resort for fitToContext: the newest exchange doesn't fit even alone.
+   *
+   *  Rather than dropping the tool result (which leaves the model staring at its
+   *  own unanswered request — it just re-runs the same call until the doom-loop
+   *  guard trips) we keep the PAIR intact and shrink the result's text to the
+   *  budget. Truncating tool output to fit is exactly what compaction's
+   *  pruneToolOutputs does, so this is the established shape, not a new idea.
+   *
+   *  Returns [user?, assistant(tool-call), tool(truncated)] — a valid window that
+   *  preserves the pairing invariant the front trim exists to protect. */
+  private salvageOversizedTail(messages: ModelMessage[], budgetTokens: number, systemTokens: number): ModelMessage[] {
+    const toolIdx = messages.map((m) => m.role).lastIndexOf('tool');
+    // No tool message means the oversized survivor was a plain user/assistant
+    // message, which the front trim never drops — keep the newest and move on.
+    if (toolIdx < 0) return messages.slice(-1);
+
+    const call = messages[toolIdx - 1];
+    const hasCall = !!call && call.role === 'assistant';
+    // The user turn that started this exchange, when there is one — it is what
+    // tells the model WHY the tool ran, and it is small.
+    let userIdx = -1;
+    for (let i = (hasCall ? toolIdx - 2 : toolIdx - 1); i >= 0; i--) {
+      if (messages[i].role === 'user') { userIdx = i; break; }
+    }
+    const head: ModelMessage[] = [];
+    if (userIdx >= 0) head.push(messages[userIdx]);
+    if (hasCall) head.push(call);
+
+    // Whatever budget is left after the system prompt and the head goes to the
+    // tool output. Floored at a usable amount so a hostile budget still yields a
+    // readable fragment rather than an empty string.
+    const usedTokens = systemTokens + head.reduce((n, m) => n + Math.ceil(JSON.stringify(m.content).length / APPROX_CHARS_PER_TOKEN), 0);
+    const availableChars = Math.max(2_000, (budgetTokens - usedTokens) * APPROX_CHARS_PER_TOKEN);
+    return [...head, truncateToolMessage(messages[toolIdx], availableChars)];
+  }
+
+  // Below this many tokens a span isn't worth a model round-trip to summarize
+  // (spends a call to save almost nothing). Also the thrash floor — see I3 note
+  // in maybeCompact.
+  private static readonly MIN_SUMMARIZE_SPAN_TOKENS = 500;
+
+  /** Compaction thresholds scaled to the model window. Big models protect ~40k
+   *  and only prune when it saves ≥20k; tiny local windows scale those down so
+   *  the trigger/prune/protect bands are actually REACHABLE in an 8k (or smaller)
+   *  window — otherwise a small model would never compact until it 400'd.
+   *  CAVEAT (very small windows, ctx ~4–8k): fitToContext's own budget
+   *  (ctx − maxTokens − 1024) can land at or below protectedTokens here, so a
+   *  freshly-written summary may be largely re-truncated by fitToContext anyway.
+   *  Accepted — one degraded turn beats a hard 400 — but documented so it isn't
+   *  mistaken for a bug. */
+  private compactionConfig(): CompactionConfig {
+    const ctx = this.opts.contextLength ?? 32_768;
+    const big = ctx >= 100_000;
+    return { contextLength: ctx, triggerRatio: 0.75, protectedTokens: big ? 40_000 : Math.floor(ctx * 0.4), minPruneSavings: big ? 20_000 : Math.floor(ctx * 0.1), pruneToChars: 2000 };
+  }
+
+  /** Two-stage compaction (spec §4.4). PRUNE first (nearly lossless, shrinks the
+   *  summarize span too); if pruning can't get under budget, SUMMARIZE the condensed
+   *  span, keeping the last 2 user-delimited turns verbatim, and emit compact-summary.
+   *  FAIL-SAFE: a summary that throws or comes back empty leaves the pruned history —
+   *  fitToContext (in consumeStep) is the hard floor, so the turn never bricks. */
+  private async maybeCompact(model: LanguageModel, lastInputTokens: number): Promise<void> {
+    const cfg = this.compactionConfig();
+    const decision = planCompaction(this.history, cfg, lastInputTokens);
+    if (decision.action === 'none') return;
+    this.history = pruneToolOutputs(this.history, cfg);   // always prune first
+    if (decision.action === 'prune') return;
+    const cut = this.summarizeCutIndex();
+    if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
+    const keep = this.history.slice(cut);
+    const span = this.history.slice(0, cut);              // already pruned
+    // I3 thrash guard: if the last-2-turns `keep` span ALONE exceeds the trigger
+    // (e.g. a fresh 6k-token tool result in an 8k window), the condensable `span`
+    // is tiny yet planCompaction keeps saying 'summarize' every step. Re-summarizing
+    // a near-empty span burns a model call + emits a dead compact-summary each step
+    // (~25/turn). Bail when the span is trivial — the pruned history stands and
+    // fitToContext remains the floor.
+    if (span.length <= 1 || estimateTokens(span) < HarnessSession.MIN_SUMMARIZE_SPAN_TOKENS) return;
+    let summary = '';
+    try { summary = await this.generateSummary(model, span); } catch { summary = ''; }
+    if (!summary.trim()) return;                          // FAIL-SAFE: no summary → leave pruned history
+    // Existing frozen event (no new type). `summary` is the canonical field the
+    // renderer reads (types.ts / App.tsx / BubbleFeed.tsx). `autoCompaction` tags
+    // this as a SPONTANEOUS native compaction so the renderer surfaces the marker
+    // even though the manual-/compact `compactionPending` flag was never set —
+    // CC's own compact-summary events never carry it, so the manual path is
+    // untouched.
+    this.emitEvent('compact-summary', { summary, autoCompaction: true });
+    this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
+  }
+
+  // Live prefill progress from llama.cpp, forwarded onto the SAME
+  // assistant-thinking notice the size-only estimate already drives — the UI
+  // upgrades in place from "reading N tokens" to a real fraction + countdown.
+  //
+  // Throttled: llama-server reports roughly once per batch, but a small batch on
+  // fast hardware can produce a burst, and every emit crosses IPC and re-renders
+  // the indicator. One update per 400ms is well past the eye's ability to read a
+  // changing number. The FINAL reading always goes through, so the bar cannot be
+  // left stranded at 87%.
+  private lastPrefillEmitAt = 0;
+  /** Re-arm hook for the CURRENT step's stall watchdog, installed by
+   *  runStreamOnce. Prefill progress is proof of life and must reset the clock —
+   *  without this a slow-but-healthy prefill trips the watchdog, gets KILLED and
+   *  RETRIED from scratch, which is what made progress appear to reset itself
+   *  (Destin, 2026-07-26). */
+  private rearmStallWatchdog: (() => void) | null = null;
+  private emitPrefillProgress(p: PrefillProgress): void {
+    // Prefill progress after the first token would be describing work the user
+    // can already see the result of; the notice is a pre-output affordance only.
+    if (this.abort == null) return;
+    // Proof of life FIRST, before any throttling — a throttled-away report must
+    // still reset the stall clock, or the throttle itself could cause a stall.
+    this.rearmStallWatchdog?.();
+    const report = toReport(p);
+    const isFinal = report.newProcessed >= report.newTotal;
+    const now = Date.now();
+    if (!isFinal && now - this.lastPrefillEmitAt < 400) return;
+    this.lastPrefillEmitAt = now;
+    this.emitEvent('assistant-thinking', {
+      promptProcessing: {
+        // NEW work, not the whole prompt — matching the pre-progress notice's own
+        // `newTokens` estimate, so the denominator does not jump (and the
+        // percentage fall) the moment the first live report replaces it.
+        promptTokens: report.newTotal,
+        budgetMs: 0,
+        source: this.prefillSource,
+        processed: report.newProcessed,
+        cached: report.cache,
+        etaMs: report.etaMs,
+        // The renderer extrapolates between these sparse per-batch reports and
+        // needs the measured rate, which is processed/timeMs.
+        timeMs: report.timeMs,
+      },
+    });
+  }
+
+  /** What grew the context for the CURRENT step — set when the step opens so the
+   *  async progress callbacks can label themselves without re-deriving it. */
+  private prefillSource: 'prompt' | 'tool-output' = 'prompt';
+
+  /** USER-INITIATED compaction (the /compact command and the Context popup's
+   *  "Compact conversation" button), as opposed to maybeCompact's automatic,
+   *  threshold-driven one.
+   *
+   *  Differences from maybeCompact, all deliberate:
+   *   - No `planCompaction` trigger check and no MIN_SUMMARIZE_SPAN thrash guard.
+   *     Those exist to stop the AUTOMATIC path burning model calls on its own
+   *     initiative; when the user explicitly asks, "you're not full enough yet"
+   *     would be the app second-guessing an explicit instruction.
+   *   - Emits `compact-summary` WITHOUT `autoCompaction`. That flag exists purely
+   *     to let a spontaneous compaction bypass the renderer's `compactionPending`
+   *     guard. The manual path already sets `compactionPending` (the dispatcher
+   *     does it before calling us), so it must take the ORDINARY route — setting
+   *     `auto` here would make the manual marker skip its own pending state.
+   *   - Returns a REASON on refusal rather than resolving silently, so the caller
+   *     can tell the user why nothing happened (docs/error-message-standards.md).
+   *     A silent no-op is what this whole milestone exists to delete.
+   *
+   *  Takes `this.abort` for the duration: that makes the summary stream
+   *  interruptible via interrupt() exactly like a turn's, and makes a concurrent
+   *  send() hit the existing re-entrancy guard instead of mutating history
+   *  underneath us. Cleared in a finally so a throw can't brick the session. */
+  async compactNow(): Promise<{ ok: true } | { ok: false; reason: 'turn-in-flight' | 'nothing-to-compact' | 'summary-failed' }> {
+    if (this.abort) return { ok: false, reason: 'turn-in-flight' };
+    this.abort = new AbortController();
+    try {
+      const cfg = this.compactionConfig();
+      // Prune first — same order as the automatic path, and it shrinks the span
+      // the model has to read before we pay for a summary.
+      this.history = pruneToolOutputs(this.history, cfg);
+      const cut = this.summarizeCutIndex();
+      // <2 user turns means there is no boundary we can cut on without risking
+      // splitting a tool-call/result pair, so there is genuinely nothing to do.
+      if (cut <= 0) return { ok: false, reason: 'nothing-to-compact' };
+      const keep = this.history.slice(cut);
+      const span = this.history.slice(0, cut);
+      if (span.length === 0) return { ok: false, reason: 'nothing-to-compact' };
+      let summary = '';
+      try {
+        const model = await this.modelFactory(this.binding, {
+          serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+        });
+        summary = await this.generateSummary(model, span);
+      } catch {
+        summary = '';
+      }
+      // FAIL-SAFE, same as the automatic path: a failed or empty summary leaves
+      // the PRUNED history in place rather than discarding anything. The user
+      // still gets a real (if smaller) reduction, and never a lost conversation.
+      if (!summary.trim()) return { ok: false, reason: 'summary-failed' };
+      this.emitEvent('compact-summary', { summary });
+      this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
+      return { ok: true };
+    } finally {
+      this.abort = null;
+    }
+  }
+
+  /** /clear as a CONTEXT BARRIER (M3 item 2, Destin's call 2026-07-26).
+   *
+   *  The session JSONL is append-only with a write-once header, so "clear"
+   *  genuinely cannot erase history. Instead it drops the model's in-memory
+   *  history and appends a `context-clear` marker; `rebuildHistory` treats that
+   *  marker as a barrier on resume, so the model never sees anything before it
+   *  while the conversation keeps its file, its id and its full readable
+   *  scrollback. Chosen over "start a new session" so a reset doesn't scatter
+   *  half-conversations through the user's history.
+   *
+   *  Refuses while a turn is in flight rather than yanking history out from
+   *  under a running turn — the same reasoning (and the same honest coded
+   *  refusal) as compactNow. */
+  clearHistory(): { ok: true } | { ok: false; reason: 'turn-in-flight' } {
+    if (this.abort) return { ok: false, reason: 'turn-in-flight' };
+    this.history = [];
+    // Emitted (not just persisted) so the store appends it through the host's
+    // normal chain AND every attached surface — other windows, the remote web
+    // client — learns the conversation was cleared. On replay this same event
+    // resets the visible timeline, keeping what the user sees after a restart
+    // identical to what they saw when they cleared.
+    this.emitEvent('context-clear', {});
+    return { ok: true };
+  }
+
+  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
+  private summarizeCutIndex(): number {
+    const userIdx: number[] = [];
+    this.history.forEach((m, i) => { if ((m as any).role === 'user') userIdx.push(i); });
+    return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
+  }
+
+  /** Model-generated summary of the condensed span. Bounds the span first so the
+   *  summary call itself can't overflow (hard-trim oldest messages until it fits ~60%
+   *  of the window). The caller wraps this in try/catch (fail-safe).
+   *
+   *  C1 — the summary runs on the SAME (possibly stalled) local model this whole
+   *  branch targets, so we consume it EXACTLY like consumeStep does: an explicit
+   *  iterator raced against BOTH the turn's abort signal AND a wall-clock timeout.
+   *  A plain `for await` would block forever on a provider that stops emitting
+   *  without honoring abort — ESC could not break it, send() would never resolve,
+   *  and this.abort would stay non-null, bricking every future send() via the
+   *  re-entrancy guard. On abort OR timeout we stop consuming and return whatever
+   *  partial text we have (the fail-safe tolerates ''): the summary never wedges
+   *  the turn. */
+  private async generateSummary(model: LanguageModel, span: ModelMessage[]): Promise<string> {
+    const cfg = this.compactionConfig();
+    let bounded = span;
+    while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
+    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
+
+    // Race iterator.next() against the abort signal AND a 30s wall-clock floor —
+    // the same hardening consumeStep uses, since a stalled local stream honors
+    // neither on its own.
+    const iterator = (result.textStream as AsyncIterable<string>)[Symbol.asyncIterator]();
+    const abortSignal = this.abort!.signal;
+    const stopPromise = new Promise<'stop'>((resolve) => {
+      if (abortSignal.aborted) { resolve('stop'); return; }
+      const timer = setTimeout(() => resolve('stop'), 30_000);
+      abortSignal.addEventListener('abort', () => { clearTimeout(timer); resolve('stop'); }, { once: true });
+    });
+
+    let text = '';
+    while (true) {
+      const nextPromise = iterator.next();
+      const chunk = await Promise.race([nextPromise, stopPromise]);
+      if (chunk === 'stop') {
+        // Abort or timeout won: release the reader/socket (a provider that ignores
+        // abort would otherwise leak it) and stop with the partial text so far.
+        nextPromise.catch(() => {});
+        iterator.return?.().catch(() => {});
+        break;
+      }
+      if (chunk.done) break;
+      if (chunk.value) text += chunk.value;
+    }
+    // WHY the summary call's tokens are NOT folded into turnUsage: awaiting
+    // result.usage would only settle once the stream ends cleanly — on the
+    // abort/timeout break above it may never settle, which would reintroduce the
+    // exact hang C1 exists to prevent. Under-reporting the (small) summary-call
+    // tokens is the accepted trade for a summary that can never wedge the turn.
+    return text.trim();
+  }
+
+  /** Run a user-invoked skill (/skill-name, M3 item 1).
+   *
+   *  Same turn machinery as send(), with ONE difference that matters: the
+   *  transcript event is `skill-invoked`, not `user-message`. The model's history
+   *  gets the full instructions; the UI gets a compact card. Sending the body as
+   *  a user message rendered 26k characters of SKILL.md as a chat bubble
+   *  (Destin, 2026-07-28) — the timeline should show what the user DID.
+   *
+   *  The body is persisted on the event so `rebuildHistory` can restore the same
+   *  model history on resume. Without it a resumed conversation would replay a
+   *  turn whose opening move has no visible cause.
+   */
+  async runSkill(inv: { skillId: string; displayName: string; body: string; args?: string; skillPath?: string }): Promise<void> {
+    const historyText = inv.args ? `${inv.body}\n\n${inv.args}` : inv.body;
+    return this.beginTurn(historyText, () => this.emitEvent('skill-invoked', {
+      skillId: inv.skillId, displayName: inv.displayName, args: inv.args,
+      body: inv.body, skillPath: inv.skillPath,
+    }));
+  }
+
   async send(text: string): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', { text }));
+  }
+
+  /** The turn driver. `emit` names how this turn ENTERED the conversation — a
+   *  typed message, or a skill invocation — which is the only thing that differs
+   *  between send() and runSkill(). Everything downstream is identical. */
+  private async beginTurn(text: string, emit: () => void): Promise<void> {
     // Re-entrancy guard: a non-null abort means a turn is already streaming.
     // Throw loudly rather than corrupt the single-slot turn state (see the
     // class-level CONCURRENCY PRECONDITION note).
     if (this.abort) {
-      throw new Error('HarnessSession.send() called while a turn is already in flight — callers must serialize sends per session.');
+      throw new Error('HarnessSession: a turn is already in flight — callers must serialize send()/runSkill() per session.');
     }
     this.interrupted = false;
-    this.emitEvent('user-message', { text });
+    emit();
     this.history.push({ role: 'user', content: text });
     this.abort = new AbortController();
+    this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    // Time spent GENERATING, summed over the turn's steps. Not wall-clock: a turn
+    // includes prefill, tool execution and permission waits, and dividing output
+    // tokens by all of that reports a decode speed several times slower than the
+    // model's real one (found in the 2026-07-28 audit).
+    let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
     // Budget precedence: an explicit harness override wins; otherwise the step
     // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
@@ -290,10 +853,35 @@ export class HarnessSession extends EventEmitter {
     let partialAssistantText = '';
 
     try {
-      const model = await this.modelFactory(this.binding);
+      // Serial-only when the profile constrains args AND the model can't do parallel
+      // tool calls (spec §4.2 — small local models): the factory injects
+      // parallel_tool_calls:false on the local-engine branch. Cloud factories ignore it.
+      const model = await this.modelFactory(this.binding, {
+        serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+        // Live prefill progress → the same assistant-thinking notice the estimate
+        // already drives, so the UI upgrades from "reading N tokens" to a real
+        // percentage and countdown without a second event type.
+        onPrefillProgress: (p) => this.emitPrefillProgress(p),
+      });
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 
+      // Tracks the LAST step's real input-token count (from provider usage) so
+      // the next iteration's compaction check triggers on ACTUAL context pressure
+      // rather than a chars/4 estimate. 0 on the first iteration → maybeCompact
+      // falls back to an estimate (usually well under trigger for a fresh turn).
+      let lastInputTokens = 0;
+      // Paired with lastInputTokens to answer "how full is the window?". The LAST
+      // step's prompt already contains the whole conversation (system + every
+      // prior message + every tool result), so lastIn + lastOut is what the next
+      // turn's prompt starts from. The summed turnUsage below CANNOT answer this:
+      // it re-counts the entire history once per step, so a 5-step turn reports
+      // roughly 5x the real occupancy (Destin, 2026-07-28).
+      let lastOutputTokens = 0;
       turnLoop: while (true) {
+        // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
+        // pruning can't get under budget. Inert (returns immediately) below the
+        // trigger, so the existing loop behavior is unchanged for normal turns.
+        await this.maybeCompact(model, lastInputTokens);
         // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
         // retry after content was already emitted can cosmetically duplicate that
         // partial in a session-error's history push — accepted, since the
@@ -307,11 +895,15 @@ export class HarnessSession extends EventEmitter {
           this.consumeStep(model, aiTools, (t) => { partialAssistantText = t; }),
         );
 
+        lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
+        lastOutputTokens = step.usage.outputTokens;
+
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
         turnUsage.outputTokens += step.usage.outputTokens;
         turnUsage.cacheReadTokens += step.usage.cacheReadTokens;
         turnUsage.cacheCreationTokens += step.usage.cacheCreationTokens;
+        generationMs += step.generationMs;
 
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
         // (An interrupted turn NEVER completes as a normal turn-complete.)
@@ -383,6 +975,11 @@ export class HarnessSession extends EventEmitter {
           resultParts.push(this.toolResultPart(call, payload.text));
         }
         this.history.push({ role: 'tool', content: resultParts });
+        // Path-triggered content (M3 item 3): a project rule or a nested
+        // AGENTS.md/CLAUDE.md governing a path this step just touched. Appended
+        // AFTER the tool results so the model reads the rule alongside what it
+        // just learned, and before it decides the next step.
+        this.injectPathTriggers(step.toolCalls);
 
         stepsSinceApproval++;
         // Budget gate (spec §2.4) — surfaces as a permission ASK, not a new
@@ -396,11 +993,30 @@ export class HarnessSession extends EventEmitter {
         }
       }
 
-      const seconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
+      // Denominator is GENERATION time, not the turn's wall-clock. Falls back to
+      // wall-clock only when no step ever produced output, where the ratio is 0
+      // either way and the fallback just avoids dividing by zero.
+      const seconds = Math.max((generationMs || (Date.now() - startedAt)) / 1000, 0.001);
       this.emitEvent('turn-complete', {
         model: this.binding.modelId,
         stopReason,
-        usage: { ...turnUsage, tokensPerSecond: Math.round(turnUsage.outputTokens / seconds) },
+        // Carry the session's REAL context window (Task 4/5) on the usage payload so
+        // the renderer's StatusBar can compute context % without a separate IPC. It's
+        // a session constant, but co-locating it with per-turn usage keeps the whole
+        // native-chip payload on one existing event (Task 12). null when unknown.
+        usage: {
+          ...turnUsage,
+          tokensPerSecond: Math.round(turnUsage.outputTokens / seconds),
+          contextLength: this.opts.contextLength ?? null,
+          // How full the window actually is — NOT the same as turnUsage (see the
+          // lastOutputTokens declaration). Falls back to a chars/4 estimate when
+          // the provider reports nothing, so a server that ignores
+          // stream_options still drives a roughly-right gauge instead of
+          // reporting an empty window forever.
+          contextUsedTokens: lastInputTokens > 0
+            ? lastInputTokens + lastOutputTokens
+            : this.estimateContextTokens(),
+        },
       });
     } catch (err: any) {
       // v0's catch, unchanged: push any in-flight partial, then split
@@ -490,6 +1106,35 @@ export class HarnessSession extends EventEmitter {
     // genuinely silent stream — an actively-streaming reasoning model never trips it.
     const warnMs = this.opts.stallWarningMs ?? STALL_WARNING_MS;
     const countdownMs = this.opts.stallCountdownMs ?? STALL_RETRY_COUNTDOWN_MS;
+    // PREFILL vs MID-STREAM: until the first chunk arrives the model is reading the
+    // prompt, which on a local model legitimately takes minutes. Only once tokens
+    // have started does a 60s gap mean something is actually wrong. A test that
+    // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
+    const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
+      + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
+    // How much of that is genuinely NEW work. llama.cpp reuses the cached prefix,
+    // so a step that appends a 100 KB tool result only prefills the tool result —
+    // reporting the whole context would wildly overstate the wait. A SHRINKING
+    // total means compaction rewrote history, which invalidates the cached prefix,
+    // so that step really is a full prefill again.
+    const newTokens = this.lastStepPromptTokens > 0 && promptTokens >= this.lastStepPromptTokens
+      ? promptTokens - this.lastStepPromptTokens
+      : promptTokens;
+    this.lastStepPromptTokens = promptTokens;
+    // The BUDGET deliberately scales on the TOTAL, not the increment: cache reuse
+    // is an optimistic assumption (a busy slot can evict it), and being generous
+    // here only risks a late stall report, whereas being tight risks resurrecting
+    // the false "model stopped responding" this whole change exists to kill.
+    const firstChunkMs = this.opts.prefillWarningMs ?? this.opts.stallWarningMs ?? prefillBudgetMs(promptTokens);
+    // Name what is actually being read, so the copy is true at any step. After a
+    // tool call the new context IS the tool output — "your prompt" would be plain
+    // wrong there (Destin, 2026-07-26).
+    const lastMsg = (streamArgs.messages as ModelMessage[])[streamArgs.messages.length - 1];
+    const source: 'prompt' | 'tool-output' = lastMsg?.role === 'tool' ? 'tool-output' : 'prompt';
+    this.prefillSource = source;
+    this.lastPrefillEmitAt = 0;   // fresh throttle window per step
+    let sawFirstChunk = false;
+    let firstChunkAt = 0;   // when generation actually began (see StepResult.generationMs)
     let warned = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
@@ -503,8 +1148,20 @@ export class HarnessSession extends EventEmitter {
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
         stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
-      }, warnMs);
+      }, sawFirstChunk ? warnMs : firstChunkMs);
     };
+    this.rearmStallWatchdog = armWatchdog;
+    // Tell the UI the model is READING, not hanging. Without this the user stares
+    // at an idle spinner for minutes with nothing to distinguish it from a hang —
+    // which is exactly what made the false stall so alarming. Gated on prompt size
+    // so ordinary turns keep their existing event sequence exactly.
+    // Gate on the NEW tokens: a step that adds almost nothing to a huge cached
+    // context returns instantly and needs no explanation, however big the total.
+    if (newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+      this.emitEvent('assistant-thinking', {
+        promptProcessing: { promptTokens: newTokens, budgetMs: firstChunkMs, source },
+      });
+    }
     armWatchdog();
 
     try {
@@ -531,9 +1188,34 @@ export class HarnessSession extends EventEmitter {
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
           if (!emittedAny && isFirstAttempt) return STALL_RETRY;
-          throw new StreamStallError(warnMs + countdownMs);
+          // Name the phase honestly: a model that never STARTED (prefill) has not
+          // "stopped responding", and telling the user it did sends them chasing a
+          // provider fault that isn't there.
+          throw new StreamStallError(
+            (sawFirstChunk ? warnMs : firstChunkMs) + countdownMs,
+            sawFirstChunk ? 'streaming' : 'prefill',
+            promptTokens,
+          );
         }
         if (chunk.done) break;
+        // A real chunk arrived → the model is past prefill, so every LATER gap is
+        // judged by the strict mid-stream budget rather than the generous one.
+        //
+        // "Real" EXCLUDES the SDK's synthetic lifecycle parts. streamText emits
+        // `start` about 8ms after the stream opens — before the provider has done
+        // anything at all — and `start-step` likewise. Counting those flipped this
+        // flag almost immediately, which abandoned the prefill budget on every
+        // stream and left prompt processing judged by the strict 60s mid-stream
+        // window. That is why the stall warning kept firing mid-prefill on a slow
+        // local model even after the prefill budget was added (Destin, 2026-07-26):
+        // the budget was never actually in force. Verified by logging fullStream
+        // part timings against a mock that delays its first real part by 800ms.
+        if (chunk.value?.type !== 'start' && chunk.value?.type !== 'start-step') {
+          // Stamp the first REAL chunk: generation starts here. Everything before
+          // it is prefill, and tok/s must not be diluted by it.
+          if (!sawFirstChunk) firstChunkAt = Date.now();
+          sawFirstChunk = true;
+        }
         // A real chunk arrived → clear any shown warning and re-arm the watchdog.
         if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
         armWatchdog();
@@ -580,12 +1262,15 @@ export class HarnessSession extends EventEmitter {
     } finally {
       // Always release the watchdog timers — on done/throw/return alike.
       clearTimeout(stageTimer);
+      // Stop late progress callbacks from re-arming a watchdog for a step that
+      // has already ended (the tee outlives the iterator on an interrupt).
+      this.rearmStallWatchdog = null;
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {
       // Don't await usage/finishReason on the interrupt path — the stream was
       // torn down; those promises may never settle.
-      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true };
+      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0 };
     }
 
     const usage = await result.usage;
@@ -602,6 +1287,7 @@ export class HarnessSession extends EventEmitter {
       },
       finishReason,
       interrupted: false,
+      generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0,
     };
   }
 
@@ -625,12 +1311,19 @@ export class HarnessSession extends EventEmitter {
     //    `args` is parsed.data (zod-NORMALIZED), so the signature is canonical:
     //    two calls that differ only in JSON key order still count as identical.
     const sig = `${call.toolName}:${JSON.stringify(args)}`;
+    // Window length = the profile's doom-loop threshold (Task 5): small local
+    // models (threshold 2) trip sooner than cloud models (default 3). Trip when
+    // the last `threshold` calls are all identical; an allow resets the window.
+    const threshold = this.profile.doomLoopThreshold;
     recentCalls.push(sig);
-    if (recentCalls.length > 3) recentCalls.shift();
-    if (recentCalls.length === 3 && recentCalls.every((s) => s === sig)) {
+    if (recentCalls.length > threshold) recentCalls.shift();
+    if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
       const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
       if (d?.behavior === 'canceled') return 'interrupted';
-      if (d?.behavior !== 'allow') return { text: 'Stopped: this exact call has been repeated three times. Try a different approach.', isError: true };
+      // Threshold-accurate: the doom-loop window length varies by profile (2 for
+      // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
+      // hardcoded "three". Model-facing corrective text, not a user-facing error.
+      if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
       recentCalls.length = 0;   // allow resets the window
     }
 
@@ -648,11 +1341,13 @@ export class HarnessSession extends EventEmitter {
       return { text: formatAnswers(args as any, d.updatedInput) };
     }
 
-    // 3. Tool-layer guards (below ALL configuration) — file tools only. Bash's
-    //    subject is a command string (not a path); TodoWrite's is undefined.
+    // 3. Tool-layer guards (below ALL configuration) — PATH-subject tools only.
+    //    See NON_PATH_SUBJECT_TOOLS: Bash's subject is a command string and
+    //    Skill's is a skill id; TodoWrite's is undefined and skipped by the
+    //    `subject !== undefined` test.
     const subject = tool.permissionSubject(args);
     let externalAsk = false;
-    if (subject !== undefined && call.toolName !== 'Bash') {
+    if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
       const verdict = checkPathGuard(subject, this.opts.cwd);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
       if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask

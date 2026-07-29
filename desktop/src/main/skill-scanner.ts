@@ -30,6 +30,13 @@ export function scanSkills(): SkillEntry[] {
     fallbackDesc: string,
     inferredSource: 'youcoded-core' | 'self' | 'plugin',
     pluginName?: string,
+    // The directory holding this skill's SKILL.md. Every call site already
+    // computed it to find the skill at all; keeping it lets the native harness
+    // LOAD the instructions instead of re-deriving the on-disk layout in a
+    // second place. Curated metadata never supplies it — it describes the
+    // registry entry, not where this machine installed it — so it is applied
+    // AFTER the spread in both branches.
+    skillDir?: string,
   ) {
     if (discoveredIds.has(id)) return;
     discoveredIds.add(id);
@@ -42,6 +49,7 @@ export function scanSkills(): SkillEntry[] {
         type: curated.type || 'plugin',
         visibility: curated.visibility || 'published',
         pluginName,
+        skillDir,
       } as SkillEntry);
     } else {
       skills.push({
@@ -54,6 +62,7 @@ export function scanSkills(): SkillEntry[] {
         type: 'plugin',
         visibility: 'published',
         pluginName,
+        skillDir,
       });
     }
   }
@@ -87,7 +96,7 @@ export function scanSkills(): SkillEntry[] {
               ? e.name
               : `${pluginEntry.name}:${e.name}`;
             const source = pluginEntry.name.startsWith('youcoded') ? 'youcoded-core' : 'plugin';
-            addSkill(skillId, e.name, '', source, pluginEntry.name);
+            addSkill(skillId, e.name, '', source, pluginEntry.name, path.join(skillsDir, e.name));
           }
         }
       } catch {}
@@ -114,7 +123,7 @@ export function scanSkills(): SkillEntry[] {
         for (const entry of skillEntries) {
           if (entry.isDirectory()) {
             const skillId = `${pluginSlug}:${entry.name}`;
-            addSkill(skillId, entry.name, '', 'plugin', pluginSlug);
+            addSkill(skillId, entry.name, '', 'plugin', pluginSlug, path.join(skillsDir, entry.name));
           }
         }
       } catch {}
@@ -125,7 +134,11 @@ export function scanSkills(): SkillEntry[] {
         for (const entry of cmdEntries) {
           if (entry.isDirectory()) {
             const cmdId = `${pluginSlug}:${entry.name}`;
-            addSkill(cmdId, entry.name, '', 'plugin', pluginSlug);
+            // A commands/ entry is a slash command, not a skill — it may hold no
+            // SKILL.md at all. Recording the directory anyway is honest: the
+            // catalog reports "installed but unreadable" rather than pretending
+            // the entry has no home on disk.
+            addSkill(cmdId, entry.name, '', 'plugin', pluginSlug, path.join(commandsDir, entry.name));
           }
         }
       } catch {}
@@ -174,6 +187,8 @@ export function scanSkills(): SkillEntry[] {
         source: 'self',
         type: 'plugin',
         visibility: 'private',
+        // Already in scope — readSkillMeta just read SKILL.md out of it.
+        skillDir,
       });
     }
   } catch {}

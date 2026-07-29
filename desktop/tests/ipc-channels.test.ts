@@ -700,6 +700,8 @@ describe('native:*/provider:* channel parity', () => {
     'native:get-permission-mode', 'native:sessions-list',
     // Task 11 — cancel/edit a queued-but-not-yet-sent message.
     'native:queue-remove',
+    // M3 item 2 — user-initiated /compact for a native session.
+    'native:compact', 'native:clear',
     'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
   ];
   const CHANNEL_TO_CONST: Record<string, string> = {
@@ -708,6 +710,8 @@ describe('native:*/provider:* channel parity', () => {
     'native:get-permission-mode': 'IPC.NATIVE_GET_PERMISSION_MODE',
     'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
     'native:queue-remove': 'IPC.NATIVE_QUEUE_REMOVE',
+    'native:compact': 'IPC.NATIVE_COMPACT',
+    'native:clear': 'IPC.NATIVE_CLEAR',
     'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
     'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
     'provider:set-key': 'IPC.PROVIDER_SET_KEY', 'provider:catalog': 'IPC.PROVIDER_CATALOG',
@@ -882,6 +886,11 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
   });
 });
 
+// (The native:usage-report channel + its four-surface parity net were removed in
+// the Phase 2 Plan C whole-branch review: the renderer→main usage cache
+// (nativeUsageMap) was dead — nothing read it. Native StatusBar chips are sourced
+// from the reducer's turn-complete usage via selectNativeStatusChips instead.)
+
 // Model memory lifecycle (2026-07-14): per-model residency push + memory guard
 // + [Reload Model]. Same self-contained parity shape as the Plan B/C describes.
 describe('model memory lifecycle channel parity (2026-07-14)', () => {
@@ -946,5 +955,55 @@ describe('git:* IPC parity (git surface, spec 2026-07-22)', () => {
   it('git:changed push channel present in preload + remote-shim', () => {
     expect(preload).toContain(`'git:changed'`);
     expect(shim).toContain(`'git:changed'`);
+  });
+});
+
+// Four-surface parity for the native:* channels.
+//
+// GAP THIS CLOSES (found 2026-07-28): shim/Android coverage in this file is
+// per-PREFIX — dev:* and account:* each got their own block, and native:* never
+// did. So "four-surface parity, pinned by ipc-channels.test.ts" (workspace
+// CLAUDE.md, M3 handoff §2.7) was only two-thirds true for the native runtime:
+// preload↔types drift was caught, but a channel missing from remote-shim.ts or
+// SessionService.kt passed silently. Verified by deleting the native:invoke-skill
+// line from remote-shim.ts — the whole file still went green.
+//
+// The consequence that matters: a native command that works on desktop and dies
+// on the remote web client is exactly what program §9 exit criterion (c) forbids,
+// and nothing would have told us.
+describe('native:* channel parity', () => {
+  const NATIVE_CHANNELS = [
+    'native:send',
+    'native:queue-remove',
+    'native:interrupt',
+    'native:compact',
+    'native:clear',
+    'native:invoke-skill',
+    'native:set-binding',
+    'native:set-permission-mode',
+    'native:get-permission-mode',
+    'native:sessions-list',
+  ];
+
+  it('every native:* channel is declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`'${t}'`);
+  });
+
+  it('every native:* channel is referenced in remote-shim.ts', () => {
+    // The remote web client is in scope for every milestone (program §9 (c)).
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`'${t}'`);
+  });
+
+  it('every native:* channel is answered by SessionService.kt (Android)', () => {
+    // Android's native runtime is M8, so these are honest not-implemented
+    // replies rather than implementations — but a channel absent from the list
+    // gets NO reply at all, which hangs the shared React UI instead of degrading it.
+    const src = fs.readFileSync(path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    ), 'utf8');
+    for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`"${t}"`);
   });
 });

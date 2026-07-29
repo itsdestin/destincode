@@ -5,6 +5,15 @@ import { findBestMatch, buildArtifactifyArgs } from './filepath-match';
 interface Props {
   path: string;
   sessionId: string;
+  /** 'pill' (default) is the recessed file chip used inline in prose.
+   *  'inline' renders `label` as dotted-underlined text instead — for places
+   *  where the file IS the thing already named, and a second chip beside it
+   *  would just repeat itself (the skill-invocation card, Destin 2026-07-28).
+   *  Both variants share every bit of the resolve-and-open behavior below,
+   *  which is the whole reason this is a variant and not a second component. */
+  variant?: 'pill' | 'inline';
+  /** Text for the 'inline' variant. Defaults to the basename. */
+  label?: string;
 }
 
 // Inline SVG glyphs (not emoji) so the icon inherits `currentColor` and matches
@@ -46,7 +55,7 @@ function resolveForMenu(p: string, cwd?: string): string {
   return p;
 }
 
-export function FilepathToken({ path, sessionId }: Props) {
+export function FilepathToken({ path, sessionId, variant = 'pill', label }: Props) {
   // Optional: the buddy window / sandbox render this without ArtifactProvider.
   // When absent, the pill still renders (so prose isn't disrupted) but the
   // click is a no-op — there's no drawer to open in those roots.
@@ -134,6 +143,22 @@ export function FilepathToken({ path, sessionId }: Props) {
       if (!selected) failed();
     } catch { failed(); }
   };
+
+  if (variant === 'inline') {
+    return (
+      <button
+        type="button"
+        // Dotted underline rather than a solid link: it reads as "there is more
+        // behind this word" without turning the label into prose-styled link text.
+        className="underline decoration-dotted underline-offset-2 decoration-fg-muted hover:decoration-fg transition-colors"
+        onClick={onClick}
+        title={path}
+        data-file-path={menuPath || undefined}
+      >
+        {label ?? name}
+      </button>
+    );
+  }
 
   return (
     <button

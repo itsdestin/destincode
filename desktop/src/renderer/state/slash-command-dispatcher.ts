@@ -45,11 +45,43 @@ export interface DispatcherInput {
   dispatch: React.Dispatch<ChatAction>;
   timeline: TimelineEntry[];         // Current session timeline, for commands that need history
   callbacks: DispatcherCallbacks;
+  /** Caller-supplied: this session's UI effects are driven by the RUNTIME, not
+   *  optimistically here. Set for native sessions, whose /clear is a durable
+   *  context barrier — the harness echoes a `context-clear` event that clears the
+   *  timeline once the barrier actually lands.
+   *
+   *  WHY it matters: CLEAR_TIMELINE is irreversible in practice. `seenUuids`
+   *  survives it, so a transcript replay after a clear is deduped away to
+   *  nothing — there is no restoring a timeline cleared in error. Clearing
+   *  optimistically and then having the runtime REFUSE (a turn is in flight)
+   *  would leave an empty-looking conversation the model still fully remembers.
+   *  This is data the caller knows, not a provider branch inside the dispatcher. */
+  deferUiEffectsToRuntime?: boolean;
 }
 
+/** A command that has a REAL native-runtime implementation, named so callers can
+ *  route it to the harness instead of a PTY that doesn't exist. The dispatcher
+ *  stays provider-agnostic on purpose — it names the intent, and the caller (who
+ *  is the one that knows the session's provider) picks the transport. */
+export type NativeSlashAction =
+  | { kind: 'compact' }
+  | { kind: 'clear' }
+  /** M3 item 1. `skill` is the command word; `args` is whatever followed it, so a
+   *  skill can act on what the user typed rather than only on its own body. */
+  | { kind: 'invoke-skill'; skill: string; args?: string };
+
+/** `nativeAction` rides BOTH branches on purpose.
+ *
+ *  A recognized command (/compact, /clear) is handled:true and names its action.
+ *  An UNRECOGNIZED slash command is handled:false — so a Claude Code session
+ *  forwards it to the PTY exactly as before — while still naming an invoke-skill
+ *  intent for a native session, whose harness owns the skill catalog and can
+ *  resolve it. That keeps the dispatcher provider-agnostic (it names intent; the
+ *  caller, who knows the provider, picks the transport) and avoids plumbing the
+ *  installed-skill list into two renderer components that have no other use for it. */
 export type DispatcherResult =
-  | { handled: false; rewritten?: string }
-  | { handled: true; alsoSendToPty?: string };
+  | { handled: false; rewritten?: string; nativeAction?: NativeSlashAction }
+  | { handled: true; alsoSendToPty?: string; nativeAction?: NativeSlashAction };
 
 /**
  * Route a slash command through the central dispatcher.
@@ -97,8 +129,11 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
         beforeContextTokens: snapshot?.contextTokens ?? null,
       });
       // Forward original command (with any optional focus args) to PTY.
-      // Claude Code parses /compact [instructions] itself.
-      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r` };
+      // Claude Code parses /compact [instructions] itself. A native session has
+      // no PTY — `nativeAction` tells the caller to drive the harness's own
+      // two-stage compaction instead. Both are returned; the caller picks by
+      // provider, so this stays a pure function of the input text.
+      return { handled: true, alsoSendToPty: `/compact${args ? ' ' + args : ''}\r`, nativeAction: { kind: 'compact' } };
     }
 
     case '/clear':
@@ -114,13 +149,20 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       if (input.files.length > 0 && input.callbacks.onToast) {
         input.callbacks.onToast('Attachments ignored with /clear');
       }
-      input.dispatch({
-        type: 'CLEAR_TIMELINE',
-        sessionId: input.sessionId,
-        markerId: `clear-${Date.now()}`,
-        timestamp: Date.now(),
-      });
-      return { handled: true, alsoSendToPty: '/clear\r' };
+      // See deferUiEffectsToRuntime: for a runtime-driven session the clear is
+      // applied when the durable barrier echoes back, not before.
+      if (!input.deferUiEffectsToRuntime) {
+        input.dispatch({
+          type: 'CLEAR_TIMELINE',
+          sessionId: input.sessionId,
+          markerId: `clear-${Date.now()}`,
+          timestamp: Date.now(),
+        });
+      }
+      // Native sessions have no PTY. `clear` drives the harness's context
+      // BARRIER instead: the append-only log keeps every line, but the model
+      // stops seeing anything before the marker.
+      return { handled: true, alsoSendToPty: '/clear\r', nativeAction: { kind: 'clear' } };
     }
 
     case '/model':
@@ -226,7 +268,20 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
       return { handled: true };
     }
 
-    default:
-      return { handled: false };
+    default: {
+      // Unrecognized slash command. For Claude Code this is unchanged — handled:
+      // false, forwarded to the PTY. For a native session it is the /skill-name
+      // path (M3 item 1): the harness owns the catalog, so it decides whether
+      // `cmd` names an installed skill, and reports honestly when it does not.
+      //
+      // Resolving LAST means an installed skill can never shadow a built-in — a
+      // marketplace skill called `clear` cannot take over the /clear barrier,
+      // because that case returned several branches above.
+      //
+      // `/` alone carries no command word and is left alone.
+      const skill = cmd.slice(1);
+      if (!skill) return { handled: false };
+      return { handled: false, nativeAction: { kind: 'invoke-skill', skill, ...(args ? { args } : {}) } };
+    }
   }
 }

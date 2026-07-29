@@ -37,6 +37,11 @@ const SHOW_TURN_METADATA_KEY = 'youcoded-show-turn-metadata';
 // Artifact viewer: include "deleted" artifacts in the list. Default OFF —
 // deleted artifacts (explicit deletes + files missing from disk) are hidden.
 const SHOW_DELETED_ARTIFACTS_KEY = 'youcoded-show-deleted-artifacts';
+// StatusBar context pill: render the remaining window as a PERCENTAGE ('percent',
+// the long-standing default) or as an absolute "used / window" token count
+// ('tokens'). Purely presentational — the color band is driven by the same
+// percentage in BOTH modes, so green/amber/red never changes meaning.
+const CONTEXT_DISPLAY_KEY = 'youcoded-context-display';
 const GLASS_OVERRIDES_KEY = 'youcoded-glass-overrides';
 const DEFAULT_THEME = 'midnight';
 const DEFAULT_CYCLE = ['midnight', 'dark'];
@@ -54,6 +59,15 @@ export type GlassOverrides = {
   'terminal-blur'?: number;
   'terminal-brightness'?: number;
 };
+/** How the StatusBar context pill renders the window: '45% Remaining' vs
+ *  '35.2k / 64k'. Both are colored by the same percentage. */
+export type ContextDisplay = 'percent' | 'tokens';
+/** Anything not exactly 'tokens' reads back as 'percent' — a corrupt or
+ *  hand-edited localStorage value must not produce a third, undefined mode. */
+export function parseContextDisplay(raw: string | null | undefined): ContextDisplay {
+  return raw === 'tokens' ? 'tokens' : 'percent';
+}
+
 /** Reserved slug for live-preview during /theme-builder — auto-switches on write, reverts on delete. */
 const PREVIEW_SLUG = '_preview';
 
@@ -72,6 +86,10 @@ interface ThemeContextValue {
   setShowTurnMetadata: (v: boolean) => void;
   showDeletedArtifacts: boolean;
   setShowDeletedArtifacts: (v: boolean) => void;
+  /** StatusBar context pill: '%' remaining vs an absolute "used / window" count.
+   *  Presentation only — the color band uses the percentage in both modes. */
+  contextDisplay: ContextDisplay;
+  setContextDisplay: (v: ContextDisplay) => void;
   /** Artifact drawer width in px (youcoded#105). Committed value — the live
    *  drag previews via the <html> CSS var and commits here on pointer-up. */
   drawerWidth: number;
@@ -99,6 +117,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   showTimestamps: true, setShowTimestamps: () => {},
   showTurnMetadata: false, setShowTurnMetadata: () => {},
   showDeletedArtifacts: false, setShowDeletedArtifacts: () => {},
+  contextDisplay: 'percent', setContextDisplay: () => {},
   drawerWidth: DEFAULT_DRAWER_WIDTH, setDrawerWidth: () => {}, resetDrawerWidth: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
   setGlassOverride: () => {},
@@ -147,6 +166,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Artifact viewer "Show deleted" toggle. Default OFF — hide both explicit
   // delete versions AND artifacts whose underlying file has gone missing.
   const [showDeletedArtifacts, setShowDeletedArtifactsState] = useState(() => getStored(SHOW_DELETED_ARTIFACTS_KEY, '') === '1');
+  const [contextDisplay, setContextDisplayState] = useState<ContextDisplay>(() => parseContextDisplay(getStored(CONTEXT_DISPLAY_KEY, 'percent')));
   // Artifact drawer width (youcoded#105). Clamped at load so a pref saved on
   // a big monitor can't overflow a smaller window on next launch.
   const [drawerWidth, setDrawerWidthState] = useState(() =>
@@ -292,6 +312,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
           setShowDeletedArtifactsState(prefs.showDeletedArtifacts);
           try { localStorage.setItem(SHOW_DELETED_ARTIFACTS_KEY, prefs.showDeletedArtifacts ? '1' : '0'); } catch {}
         }
+        if (typeof prefs.contextDisplay === 'string') {
+          const mode = parseContextDisplay(prefs.contextDisplay);
+          setContextDisplayState(mode);
+          try { localStorage.setItem(CONTEXT_DISPLAY_KEY, mode); } catch {}
+        }
         // Load per-theme glass overrides from disk (same pattern as theme/cycle)
         if (prefs.glassOverrides && typeof prefs.glassOverrides === 'object') {
           setGlassOverrides(prefs.glassOverrides);
@@ -333,6 +358,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       if (typeof prefs.showDeletedArtifacts === 'boolean') {
         setShowDeletedArtifactsState(prefs.showDeletedArtifacts);
         try { localStorage.setItem(SHOW_DELETED_ARTIFACTS_KEY, prefs.showDeletedArtifacts ? '1' : '0'); } catch {}
+      }
+      if (typeof prefs.contextDisplay === 'string') {
+        const mode = parseContextDisplay(prefs.contextDisplay);
+        setContextDisplayState(mode);
+        try { localStorage.setItem(CONTEXT_DISPLAY_KEY, mode); } catch {}
       }
       if (prefs.glassOverrides && typeof prefs.glassOverrides === 'object') {
         setGlassOverrides(prefs.glassOverrides);
@@ -504,6 +534,14 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     persistAppearance({ showDeletedArtifacts: v });
   }, []);
 
+  // StatusBar context pill: percentage vs absolute token counts. Persists across
+  // reloads and syncs to peer windows (same pattern as the prefs above).
+  const setContextDisplay = useCallback((v: ContextDisplay) => {
+    setContextDisplayState(v);
+    try { localStorage.setItem(CONTEXT_DISPLAY_KEY, v); } catch {}
+    persistAppearance({ contextDisplay: v });
+  }, []);
+
   // Update a glass field for a non-user theme. Persists per-slug so the
   // user's glass preferences survive theme switches and app restarts.
   const setGlassOverride = useCallback((slug: string, field: string, value: number) => {
@@ -550,6 +588,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     showTimestamps, setShowTimestamps,
     showTurnMetadata, setShowTurnMetadata,
     showDeletedArtifacts, setShowDeletedArtifacts,
+    contextDisplay, setContextDisplay,
     drawerWidth, setDrawerWidth, resetDrawerWidth,
     allThemes, activeTheme, bgStyle, patternStyle,
     setGlassOverride, reloadUserThemes,
@@ -557,6 +596,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
        reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps,
        showTurnMetadata, setShowTurnMetadata,
        showDeletedArtifacts, setShowDeletedArtifacts,
+       contextDisplay, setContextDisplay,
        // drawerWidth is the only new dep — the two setters are recreated per
        // render but close over nothing stale (clamp reads window at call time),
        // so listing them would defeat the memo for no correctness gain.

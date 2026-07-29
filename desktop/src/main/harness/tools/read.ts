@@ -32,6 +32,8 @@ export const ReadTool = defineTool({
   name: 'Read',
   description:
     'Read a file from the filesystem. Returns numbered lines. Use offset and limit for large files — output is capped at 2000 lines.',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  shortDescription: "Read a file's contents by path, with optional line offset/limit.",
   inputSchema: z.object({
     file_path: z.string().describe('Absolute or workspace-relative path'),
     offset: z.number().int().min(1).optional().describe('1-based first line to read'),

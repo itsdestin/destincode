@@ -11,6 +11,7 @@ import { isTypingTarget } from '../utils/is-typing-target';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
+import { runNativeSlashAction, routeSlashResult } from '../state/native-slash-actions';
 import type { UsageSnapshot } from '../state/chat-types';
 import { hasPendingInteraction } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
@@ -365,22 +366,35 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         dispatch,
         timeline: [], // Day 1: unused; will wire per-session timeline on Day 2 when commands need it
         callbacks: { onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker },
+        // Native /clear is durable-first — see deferUiEffectsToRuntime.
+        deferUiEffectsToRuntime: provider === 'native',
       });
-      if (dispatchResult.handled) {
-        if (dispatchResult.alsoSendToPty) {
-          if (provider === 'native') {
-            // Native sessions have no PTY to forward to, and the harness has no
-            // slash-command layer yet. Tell the user rather than silently dropping.
-            onToast?.("Slash commands aren't available for YouCoded-runtime sessions yet.");
-          } else {
-            // For commands like /clear and /compact that still need Claude Code's own state to change.
-            window.claude.session.sendInput(sessionId, dispatchResult.alsoSendToPty);
-          }
-        }
+      // routeSlashResult owns the ordering: nativeAction is consulted BEFORE
+      // `handled`, because an unrecognized slash command is handled:false — so
+      // Claude Code still forwards it to the PTY untouched — while carrying an
+      // invoke-skill intent for native sessions (M3 item 1).
+      const route = routeSlashResult(provider, dispatchResult);
+      if (route.via === 'native') {
+        void runNativeSlashAction(route.action, { sessionId, dispatch, onToast });
         return true;
       }
-      // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash)
-      const effectiveMessage = dispatchResult.rewritten ?? message;
+      if (route.via === 'pty') {
+        // For commands like /clear and /compact that still need Claude Code's own state to change.
+        window.claude.session.sendInput(sessionId, route.text);
+        return true;
+      }
+      if (route.via === 'none-native-no-pty') {
+        // Native sessions have no PTY to forward to, and this command has no
+        // harness equivalent yet. Tell the user rather than silently dropping.
+        onToast?.(`${route.command} isn't available in YouCoded-runtime sessions yet.`);
+        return true;
+      }
+      if (route.via === 'none') return true;
+      // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash).
+      // The `handled` test is what narrows the union for TS — reaching here means
+      // routeSlashResult returned 'passthrough', which only the unhandled branch
+      // produces, but the compiler can't see that through the route value.
+      const effectiveMessage = (!dispatchResult.handled && dispatchResult.rewritten) || message;
 
       // One sanitized source string for BOTH the optimistic bubble and the PTY
       // send. The transcript confirms the bubble by EXACT content match, so if

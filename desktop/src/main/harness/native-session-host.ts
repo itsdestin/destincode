@@ -25,8 +25,13 @@ import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
 import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
+import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
+import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { fitInjection } from './injection/injection-budget';
+import { frameSkillInvocation } from './skills/skill-invocation';
+import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
 
 export interface CreateNativeSessionOpts {
@@ -124,6 +129,12 @@ export class NativeSessionHost extends EventEmitter {
     private store: SessionStore,
     private modelFactory: ModelFactory,
     private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
+    // Resolves a binding's provider TYPE (local-engine / openrouter / anthropic /
+    // …) so the host can pick the right CapabilityProfile (Task 5). A binding
+    // whose provider is unknown returns null → resolveContextAndProfile falls back
+    // to a cloud-safe default. Positioned right after contextLengthFor because the
+    // two are resolved together for every create/resume/swap.
+    private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 3-arg test constructions still compile; the
     // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
@@ -137,6 +148,11 @@ export class NativeSessionHost extends EventEmitter {
     // test constructions still compile; the real wiring (ipc-handlers) injects
     // { search: searchService }.
     private toolServices?: ToolServices,
+    // Installed-skill source for /skill-name and the Skill tool (M3 item 1).
+    // Injected + LAST so existing constructions still compile, and so a test can
+    // supply a fake instead of scanning the real ~/.claude — which makes "no
+    // skills installed" an expressible state rather than an environment accident.
+    private skillCatalog?: SkillCatalog,
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -229,14 +245,48 @@ export class NativeSessionHost extends EventEmitter {
     });
   }
 
+  /** Resolve BOTH the clamped context window AND the capability profile for a
+   *  binding, together (create/resume/swap all need the pair). The context is the
+   *  engine's real loaded window (Task 4) clamped to a known model's trained
+   *  ceiling (Task 5's registry clamp); the profile is resolved from the binding's
+   *  provider type + model id + that clamped context. An unknown provider type
+   *  falls back to 'openrouter' — the cloud-safe default (full posture). */
+  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
+    const raw = await this.contextLengthFor(binding);
+    const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
+    // The registry ceiling (effectiveContextForModel) is a LOCAL-model concern: it
+    // caps a small GGUF loaded at a too-large -c to its real trained window. But
+    // matchKnownModel keys ONLY on the model-id regex, so a HOSTED model whose id
+    // happens to match a local family (e.g. OpenRouter `qwen/qwen3.5-9b` matching
+    // the local Qwen entry) would be wrongly clamped, capping a cloud window that
+    // may be far larger. So resolve the provider type FIRST and only clamp locals;
+    // cloud/hosted bindings pass their real window through unchanged.
+    const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
+    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength });
+    return { contextLength, profile };
+  }
+
   /** Tool + permission + prompt wiring shared by create() and resume(). Both v1
    *  presets (Assistant, Coder) are personality profiles, not capability tiers
    *  (spec decisions 8/9): EVERY native session carries the full CORE_TOOLS
    *  suite — presets differ only in prompt body (preset.body) and permission
-   *  posture (preset.presetRules + the seeded starting mode). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
+   *  posture (preset.presetRules + the seeded starting mode). The resolved
+   *  `profile` is accepted here so Task 6 can add a prompt variant without another
+   *  signature change; this task doesn't use it yet (the session itself carries it
+   *  via opts.profile). */
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers'> {
     return {
       tools: CORE_TOOLS,
+      // Project rules + nested project instructions, indexed ONCE per session
+      // (M3 item 3). Built here rather than in the session because it is
+      // filesystem state scoped to the session's cwd, and re-statting the tree
+      // per tool call would be a real cost on a large repo.
+      triggers: buildTriggerIndex(cwd),
+      // Skill is NOT in CORE_TOOLS — it is attached per session by
+      // buildAiTools when the profile can afford its catalog. Threading the
+      // catalog (rather than letting the session scan on its own) means the host
+      // and the session agree on one source, and a test can inject a fake.
+      ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
       // Thread injected runtime services (WebSearch's SearchService) into the
@@ -249,7 +299,10 @@ export class NativeSessionHost extends EventEmitter {
       // accepted sync cost sits off the hot loop. Threading an await through here
       // would ripple through every construction site for no per-turn benefit
       // (Task 11 review ruling — the sync cost is deliberate and bounded).
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion }),
+      // profile.promptVariant selects the capability-steering overlay (local-small only in v1).
+      // hasTools mirrors buildAiTools()'s gate: a tool-less profile (supportsTools === false)
+      // gets NO tools attached, so the prompt must also drop the tool-guidance line + overlay.
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools }),
     };
   }
 
@@ -308,7 +361,7 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(opts.sessionId);
     }
     const preset = resolvePreset(opts.presetId);
-    const contextLength = await this.contextLengthFor(opts.binding);
+    const { contextLength, profile } = await this.resolveContextAndProfile(opts.binding);
     await this.store.create({
       v: 1,
       sessionId: opts.sessionId,
@@ -321,8 +374,8 @@ export class NativeSessionHost extends EventEmitter {
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength,
-        ...this.toolWiring(opts.sessionId, opts.cwd, preset) },
+      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+        ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
       this.modelFactory,
     );
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
@@ -361,14 +414,20 @@ export class NativeSessionHost extends EventEmitter {
     // resolves to Assistant. The stored header is NEVER rewritten (spec
     // decision 8) — the mapping lives only here + in presetIdFor.
     const preset = resolvePreset(header.harnessId);
+    // MERGE RECONCILIATION (Plan C × M2): the capability profile must be resolved
+    // for the binding we are ACTUALLY going to run, which is the resume-time
+    // override when the user picked a model in the picker — not the one frozen in
+    // the header. Profiling header.binding here would size the context window and
+    // tool posture for the wrong model on every overridden resume.
     const binding = bindingOverride ?? header.binding;
-    const contextLength = await this.contextLengthFor(binding);
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId, cwd, harness: preset.manifest, binding, contextLength,
-        ...this.toolWiring(sessionId, cwd, preset) },
+      // `binding` (not header.binding) — same override reason as above.
+      { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+        ...this.toolWiring(sessionId, cwd, preset, profile) },
       this.modelFactory,
     );
     this.presetIdFor.set(sessionId, preset.manifest.id);
@@ -458,11 +517,16 @@ export class NativeSessionHost extends EventEmitter {
   // is the ONLY drain trigger — it settles strictly after turn-complete /
   // session-error / user-interrupt, and stays unsettled across a permission ask
   // (an ask pauses the turn; draining on it would hard-throw re-entrancy).
-  private async runTurns(sessionId: string, entry: LiveEntry, first: string): Promise<void> {
-    let next: string | undefined = first;
+  /** `first` is a plain string for an ordinary send, or a THUNK when the turn
+   *  starts some other way — today only /skill-name, whose opener is
+   *  `session.runSkill` (same turn machinery, different transcript event).
+   *  Queued follow-ups are always plain sends, so queue semantics are unchanged. */
+  private async runTurns(sessionId: string, entry: LiveEntry, first: string | (() => Promise<void>)): Promise<void> {
+    let next: string | (() => Promise<void>) | undefined = first;
     while (next !== undefined) {
       try {
-        await entry.session.send(next);
+        if (typeof next === 'function') await next();
+        else await entry.session.send(next);
       } catch (err) {
         log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
       }
@@ -473,6 +537,89 @@ export class NativeSessionHost extends EventEmitter {
       next = entry.queue.shift()?.text;
     }
     entry.inFlight = false;
+  }
+
+  /** User-initiated /compact for a native session (M3 item 2). Returns a coded
+   *  result rather than a bare boolean so the renderer can say WHY nothing
+   *  happened — this path exists specifically to replace a silent no-op.
+   *
+   *  Refuses while a turn is in flight (including one still draining the M1
+   *  queue): compaction rewrites `history`, and doing that underneath a running
+   *  turn would corrupt the tool-call/result pairing the whole driver depends on.
+   *  The session's own re-entrancy guard is the backstop, but refusing here means
+   *  the user gets a real explanation instead of a thrown error. */
+  async compact(sessionId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+    return entry.session.compactNow();
+  }
+
+  /** User-initiated /clear for a native session (M3 item 2) — a context BARRIER,
+   *  not a deletion. Same refusal discipline as compact(): a clear that landed
+   *  mid-turn would drop the history the running turn is still appending to. */
+  clear(sessionId: string): { ok: true } | { ok: false; reason: string } {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+    return entry.session.clearHistory();
+  }
+
+  /** User-initiated /skill-name for a native session (M3 item 1).
+   *
+   *  The path that works on EVERY model: the Skill TOOL is withheld from small
+   *  windows because its catalog would ride every turn, but one explicit
+   *  invocation costs a single injection and is affordable anywhere.
+   *
+   *  Sends the skill's body as an ordinary turn, so it persists to the session
+   *  JSONL through the normal `send` path — no new event type, and a resume
+   *  replays it like any other message (Global Constraint 2).
+   *
+   *  Bounded by the profile's injection budget: a long SKILL.md on a small model
+   *  would otherwise crowd out the conversation it is meant to act on. */
+  async invokeSkill(sessionId: string, skill: string, args?: string): Promise<{ ok: true } | { ok: false; reason: string; detail?: string }> {
+    const entry = this.live.get(sessionId);
+    if (!entry) return { ok: false, reason: 'not-live' };
+    // Same refusal discipline as compact/clear: queueing this would land the
+    // instructions after work that was started without them.
+    if (entry.inFlight || entry.queue.length > 0) return { ok: false, reason: 'turn-in-flight' };
+
+    let loaded;
+    try {
+      loaded = (this.skillCatalog ?? createSkillCatalog()).load(skill);
+    } catch (err: any) {
+      // SkillNotFound is the ordinary case — the user typed a Claude Code command
+      // or a skill they haven't installed — so it is a coded refusal, not an error.
+      const reason = err?.name === 'SkillNotFound' ? 'not-a-skill'
+        : err?.name === 'SkillUnreadable' ? 'unreadable'
+        : err?.name === 'SkillAmbiguous' ? 'ambiguous'
+        : 'error';
+      return { ok: false, reason, detail: err?.message ?? String(err) };
+    }
+
+    const fitted = fitInjection(loaded.body, entry.session.profileSnapshot.injectionBudgetTokens);
+    // runSkill, NOT send: the model needs the instructions but the TIMELINE needs
+    // to show what the user did. Sending the body through send() rendered a 26k
+    // character SKILL.md as a chat bubble (Destin, 2026-07-28).
+    // frameSkillInvocation owns the wording, which IS the mechanism here — see
+    // its header. It also places the user's own args last.
+    const body = frameSkillInvocation(loaded.id, fitted.text, args);
+
+    entry.inFlight = true;
+    // Same setImmediate defer as send(): the IPC reply must flush BEFORE the
+    // session emits its transcript event, or the confirm can beat the ack to the
+    // renderer. runTurns owns inFlight teardown and queue draining from here.
+    setImmediate(() => {
+      void this.runTurns(sessionId, entry, () => entry.session.runSkill({
+        skillId: loaded.id,
+        displayName: loaded.displayName,
+        body,
+        // NOT passed to runSkill: frameSkillInvocation already placed them last
+        // inside `body`. Passing them here too would repeat the user's words.
+        skillPath: loaded.file,
+      }));
+    });
+    return { ok: true };
   }
 
   interrupt(sessionId: string): boolean {
@@ -529,7 +676,11 @@ export class NativeSessionHost extends EventEmitter {
     const entry = this.live.get(sessionId);
     if (!entry) return false;
     const oldModelId = entry.session.binding.modelId;
-    entry.session.setBinding(binding, await this.contextLengthFor(binding));
+    // Re-resolve BOTH context + profile on a swap: a cloud → small-local swap
+    // (or vice versa) crosses capability tiers, so the driver must pick up the
+    // new doom-loop window / tool posture on the next turn.
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    entry.session.setBinding(binding, contextLength, profile);
     if (oldModelId !== binding.modelId) {
       // Swap the ref-count: releasing the old model may unload it if this was
       // its last session (#1); retain the new one so it isn't unloaded.

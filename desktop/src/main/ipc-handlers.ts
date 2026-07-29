@@ -35,6 +35,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
+import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
 // WebSearch provider stack (Phase 2 Plan B): keyed Tavily/Exa upgrades + the
 // chain-walking SearchService injected into the native tool framework.
@@ -1876,6 +1877,11 @@ export function registerIpcHandlers(
   // is registered further down where the handler block begins.
   const lastAttentionBySession = new Map<string, string>();
 
+  // (Native StatusBar chips are sourced from the reducer's turn-complete usage
+  // via the renderer's `nativeStatusUsage` memo → selectNativeStatusChips, which
+  // serves desktop AND remote. The old native:usage-report → status:data cache
+  // was dead — nothing read it — and was removed in the whole-branch review.)
+
   function buildStatusData() {
     const usage = readJsonFile(usageCachePath);
     const announcement = readJsonFile(announcementCachePath);
@@ -2111,8 +2117,25 @@ export function registerIpcHandlers(
   );
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
-    (binding) => providerRegistry.languageModel(binding),
-    async (binding) => modelCatalog.contextLengthFor(binding, await providerRegistry.list()),
+    // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
+    (binding, opts) => providerRegistry.languageModel(binding, opts),
+    // Context-window sizing. For LOCAL models, prefer the engine's REAL loaded
+    // window (min of llama-server /props and the GGUF-trained max) over the
+    // catalog's configured -c — the catalog value is a guess that overflows small
+    // models. Remote/API models keep the catalog number.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return engineManager.effectiveContextWindow(binding.modelId);
+      return modelCatalog.contextLengthFor(binding, providers);
+    },
+    // Provider TYPE resolver (Task 5): the host picks a CapabilityProfile from
+    // this. Unknown provider → null, so the host falls back to a cloud-safe
+    // default. ProviderType and ProfileProviderType are the same union today.
+    async (binding) => {
+      const p = (await providerRegistry.list()).find((x) => x.id === binding.providerId);
+      return (p?.type as ProfileProviderType) ?? null;
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
@@ -2255,6 +2278,33 @@ export function registerIpcHandlers(
   // Fire-and-forget I/O (no response): interrupt only. The host never throws for unknown ids.
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
+  });
+  // User-initiated /compact for a native session. Never throws across IPC: a
+  // failure returns a coded reason so the renderer can surface a specific,
+  // accurate message instead of a guessed one (docs/error-message-standards.md).
+  ipcMain.handle(IPC.NATIVE_COMPACT, async (_e, { sessionId }: { sessionId: string }) => {
+    try {
+      return await nativeHost.compact(sessionId);
+    } catch (err: any) {
+      return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+    }
+  });
+  // /clear as a context BARRIER — appends a marker; the log is never rewritten.
+  ipcMain.handle(IPC.NATIVE_CLEAR, (_e, { sessionId }: { sessionId: string }) => {
+    try {
+      return nativeHost.clear(sessionId);
+    } catch (err: any) {
+      return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+    }
+  });
+  // /skill-name — loads one skill's instructions as a turn (M3 item 1). Works on
+  // every model, unlike the Skill TOOL, which small windows never get.
+  ipcMain.handle(IPC.NATIVE_INVOKE_SKILL, async (_e, { sessionId, skill, args }: { sessionId: string; skill: string; args?: string }) => {
+    try {
+      return await nativeHost.invokeSkill(sessionId, skill, args);
+    } catch (err: any) {
+      return { ok: false, reason: 'error', detail: err?.message ?? String(err) };
+    }
   });
   ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => {
     const ok = await nativeHost.setBinding(sessionId, binding);

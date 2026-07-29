@@ -111,6 +111,8 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
   name: 'WebFetch',
   description:
     'Fetch a web page and return its main content as Markdown. Only public http/https URLs — private and local addresses are blocked. Large pages are truncated.',
+  // Compact form for small local models (simplified presentation).
+  shortDescription: 'Fetch a public web page (http/https) and return its main content as Markdown.',
   inputSchema,
   permissionSubject: (args) => args.url,
   async execute(args, ctx) {

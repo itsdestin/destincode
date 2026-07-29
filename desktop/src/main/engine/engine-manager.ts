@@ -45,6 +45,36 @@ export function selectInstallAsset(
   return null;
 }
 
+// The REAL effective context window for a local model = min(what llama-server
+// actually loaded, the GGUF-trained max). Guessing this overflows small models:
+// a 4k-trained model driven at a configured 32k -c silently corrupts once history
+// crosses the file's real ceiling. Take the smaller of the two known numbers;
+// with neither known, fall back to a conservative default that nothing overruns.
+/** Resolve the window from a RAW /props reading plus our own configured -c.
+ *
+ *  Extracted as a pure function because the bug this exists to prevent lived in
+ *  an inline expression that no test could reach: `loaded ?? configured` does
+ *  NOT fall back when loaded is 0, because `??` only catches null/undefined. In
+ *  router mode /props reports a literal `n_ctx: 0`, so the fallback added on
+ *  2026-07-26 was inert in precisely the case it was written for — and the unit
+ *  tests passed anyway, because they exercised clampContextWindow directly with
+ *  the values I ASSUMED reached it. Test the seam, not the collaborator.
+ *
+ *  A non-positive reading means "unknown", never "zero context". */
+export function resolveEffectiveContext(
+  loadedRaw: unknown,
+  configured: number | null,
+  trainedMax: number | null,
+): number {
+  const loaded = typeof loadedRaw === 'number' && Number.isFinite(loadedRaw) && loadedRaw > 0 ? loadedRaw : null;
+  return clampContextWindow(loaded ?? configured, trainedMax);
+}
+
+export function clampContextWindow(loaded: number | null, trainedMax: number | null): number {
+  const vals = [loaded, trainedMax].filter((n): n is number => typeof n === 'number' && n > 0);
+  return vals.length ? Math.min(...vals) : 32_768;   // conservative default
+}
+
 export class EngineManager extends EventEmitter {
   private acquisition: EngineAcquisition;
   private supervisor: EngineSupervisor | null = null;
@@ -252,6 +282,81 @@ export class EngineManager extends EventEmitter {
       contextLength: cfg.contextSize,
       local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
     }));
+  }
+
+  /** The REAL context window HarnessSession should size its history + compaction
+   *  from for a local model: the minimum of what llama-server actually loaded
+   *  (its /props n_ctx) and the model's GGUF-trained max. This replaces trusting
+   *  the configured -c blindly — a small model overflows if we size to a -c larger
+   *  than its trained ceiling. Boots the engine if needed (single-flight; it would
+   *  boot on the first send anyway) to read the live number. NEVER throws — a
+   *  status read must not break session create; on any failure we return the same
+   *  conservative default clampContextWindow uses. */
+  async effectiveContextWindow(modelId: string): Promise<number> {
+    try {
+      const inst = this.currentInstall();
+      // Engine not installed yet → no live number to read; fall through to the
+      // trained max (also null today) → conservative default.
+      if (!inst) return clampContextWindow(null, this.trainedContextFor(modelId));
+      await this.rebuildSupervisor(inst);
+      await this.supervisor!.ensureRunning();
+      // /props is a llama-server management endpoint at ROOT (not the /v1 OpenAI
+      // namespace) — same 127.0.0.1:port convention as /models and /health. Plain
+      // fetch, not trackedFetch: a status read must not bump the idle-shutdown clock.
+      const res = await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.port}/props`, { method: 'GET' });
+      const props: any = await res.json();
+      // The field carrying the loaded context has drifted across llama.cpp builds
+      // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
+      const loadedRaw = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
+      const trained = this.trainedContextFor(modelId);
+      // Fall back to the -c WE spawned the server with, not a blind constant.
+      //
+      // WHY (found 2026-07-26 dogfooding): in `--models-dir` ROUTER mode — the
+      // default — /props answers `{model_path: "none", n_ctx: 0}` whenever no
+      // model is currently resident. clampContextWindow discards any value <= 0,
+      // so it fell through to its hardcoded 32_768 and every local session
+      // believed it had half the window it was actually given. A read of
+      // ROADMAP.md that fits comfortably in 64k then overflowed a phantom 32k
+      // budget and killed the turn ("messages must not be empty").
+      //
+      // The configured contextSize is strictly better than a constant: it is the
+      // exact number this app passed to llama-server on the command line, so it
+      // is right whenever /props is merely UNINFORMATIVE. A live /props reading
+      // still wins when present — it catches the case where the server clamped
+      // our -c down to what the model or VRAM actually allowed.
+      //
+      // ADDRESSING this function's own doc comment above ("replaces trusting the
+      // configured -c blindly — a small model overflows if we size to a -c larger
+      // than its trained ceiling"): that concern is real but it does NOT argue for
+      // the old behavior, because the constant it fell back to was 32_768 — itself
+      // far larger than the 4k-trained model the warning describes. The old default
+      // over-sized that model too; it just over-sized everything else DOWNWARD as
+      // well. Three things bound the risk here:
+      //   - /props only reports 0 when NOTHING is resident. Once a model loads, the
+      //     live reading wins and any server-side clamp is respected.
+      //   - effectiveContextForModel then clamps to the registry's documented
+      //     maxContextWindow for every known family.
+      //   - trainedContextFor() is inert today (no GGUF header reader), so the
+      //     "trained max" guard the comment relies on provides nothing either way.
+      // Closing the gap properly means parsing <arch>.context_length from the GGUF
+      // — tracked as the trainedContextFor TODO below, not solved by guessing low.
+      const configured = readEngineConfig(this.home).contextSize ?? null;
+      return resolveEffectiveContext(loadedRaw, configured, trained);
+    } catch {
+      // Same reasoning on the error path — prefer our own -c over a guess.
+      try { return resolveEffectiveContext(null, readEngineConfig(this.home).contextSize ?? null, null); } catch { return 32_768; }
+    }
+  }
+
+  /** The model's GGUF-trained max context, if known. CONCERN: today the cache
+   *  scan (scanGgufCache → EngineModel) carries no trained-context field — that
+   *  value lives in the GGUF header (<arch>.context_length), which nothing here
+   *  parses yet — so this returns null and clampContextWindow falls back to the
+   *  loaded /props value alone. When a GGUF-metadata reader lands, surface the
+   *  trained max here so a model whose file was trained smaller than the loaded
+   *  -c can't be over-driven. */
+  private trainedContextFor(_modelId: string): number | null {
+    return null;
   }
 
   /** Plan C: switch GPU backend. Downloads that backend's build if missing

@@ -30,6 +30,8 @@ export const GrepTool = defineTool({
   name: 'Grep',
   description:
     'Search file contents with a regex (ripgrep). output_mode: "content" (matching lines), "files_with_matches" (default), or "count".',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  shortDescription: 'Search file contents with a regular expression.',
   inputSchema: z.object({
     pattern: z.string(),
     path: z.string().optional(),

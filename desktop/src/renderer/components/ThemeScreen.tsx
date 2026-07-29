@@ -64,6 +64,11 @@ function roundnessToShape(value: number) {
 interface Props {
   onClose: () => void;
   onSendInput?: (text: string) => void;
+  /** Run a slash command through the dispatcher rather than piping raw text at a
+   *  PTY. Native sessions have no PTY, so onSendInput silently did nothing there
+   *  — this button was fully dead in a YouCoded-runtime session (handoff §2.3,
+   *  "the single most visible instance of the gap M3 closes"). */
+  onRunCommand?: (command: string) => void;
   onOpenMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
   /**
@@ -93,7 +98,7 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
   </svg>
 );
 
-export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo, editingSlug, onEditSlug }: Props) {
+export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo, editingSlug, onEditSlug }: Props) {
   // Always mounted when open (parent conditionally renders) — so open=true is correct here.
   useEscClose(true, onClose);
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();
@@ -240,7 +245,13 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             which is the hierarchy the tinted outline was there to create. */}
         <Button
           onClick={() => {
-            onSendInput?.('/theme-builder ');
+            // Per Q5 (Destin, 2026-07-28): run in the CURRENT session, not a new
+            // one. onRunCommand routes through the slash dispatcher, which knows
+            // how to reach a native session's harness; onSendInput is the legacy
+            // raw-PTY path and is kept only as a fallback for callers that have
+            // not been rewired.
+            if (onRunCommand) onRunCommand('/theme-builder');
+            else onSendInput?.('/theme-builder ');
             onClose();
           }}
           className="w-full py-2"

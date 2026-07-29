@@ -34,7 +34,8 @@ import { categorizeArtifact } from '../shared/artifacts/categorization';
 import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
-import { dispatchSlashCommand } from './state/slash-command-dispatcher';
+import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
+import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
@@ -48,6 +49,7 @@ import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
+import { useNativeSessionUsage } from './hooks/useNativeSessionUsage';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -563,6 +565,45 @@ function AppInner() {
     window.claude.session.sendInput(sid, text);
     return true;
   }, [notifyIfPtyBlocked]);
+
+  // Route a handled slash-command result to the transport this session actually
+  // has (M3 item 2). A command can carry BOTH a PTY string (Claude Code's path)
+  // and a `nativeAction` (the harness's); the dispatcher stays provider-agnostic
+  // and the choice is made here, where the provider is known.
+  //
+  // Reads the provider from sessionsRef rather than the `isNativeSession` value
+  // declared later in this component — a ref lookup can't be caught out by
+  // declaration order, and this helper is called from several places.
+  // Returns true when the result was consumed here, so callers know whether to
+  // fall through to their own send path.
+  const runSlashResult = useCallback((sid: string, result: DispatcherResult): boolean => {
+    const provider = sessionsRef.current.find((x) => x.id === sid)?.provider;
+    const route = routeSlashResult(provider, result);
+    switch (route.via) {
+      case 'native':
+        void runNativeSlashAction(route.action, {
+          sessionId: sid,
+          dispatch,
+          // Dismissal is <Toast>'s job since master's change 44 (3s default, which
+          // is what this call site rolled by hand before the merge).
+          onToast: (msg: string) => setToast(msg),
+        });
+        return true;
+      case 'pty':
+        guardedPtySend(sid, route.text);
+        return true;
+      case 'none-native-no-pty':
+        // Was a silent drop: guardedPtySend refuses for native sessions and its
+        // own toast only fires for the pending-interaction case, so a native user
+        // choosing this command got no feedback at all (handoff §2.3).
+        setToast(`${route.command} isn't available in YouCoded-runtime sessions yet.`);
+        return true;
+      case 'none':
+        return true;
+      case 'passthrough':
+        return false;
+    }
+  }, [guardedPtySend, dispatch]);
 
   // Task 11 (cancel/edit queued messages), rewired for Task 12's docked strip
   // (was UserMessage's Cancel/Edit affordances — now QueuedMessagesStrip's):
@@ -1158,6 +1199,11 @@ function AppInner() {
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
+          // Native StatusBar chips (context/tokens/speed) are sourced from THIS
+          // turn-complete usage via the reducer (App.tsx `nativeStatusUsage` memo →
+          // selectNativeStatusChips), which serves both desktop and remote. The old
+          // reportUsage → native:usage-report → status:data cache path was dead
+          // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
@@ -1179,6 +1225,7 @@ function AppInner() {
               // Native watchdog: a stall-warning payload drives the countdown; a
               // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
               stallWarning: event.data?.stallWarning,
+              promptProcessing: event.data?.promptProcessing,
             });
           }
           break;
@@ -1192,23 +1239,58 @@ function AppInner() {
             message: event.data.text ?? 'The model request failed.',
           });
           break;
+        case 'skill-invoked':
+          // /skill-name (M3 item 1). The instructions live in event.data.body and
+          // are deliberately NOT dispatched — they belong to the model's history,
+          // not the timeline. Rendering them as a user bubble put 26k characters
+          // of SKILL.md on screen (Destin, 2026-07-28).
+          dispatch({
+            type: 'TRANSCRIPT_SKILL_INVOKED',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            skillId: event.data.skillId ?? 'skill',
+            displayName: event.data.displayName ?? event.data.skillId ?? 'Skill',
+            args: event.data.args,
+            skillPath: event.data.skillPath,
+          });
+          break;
+        case 'context-clear':
+          // The durable /clear barrier (native runtime). This is the ONLY thing
+          // that clears a native session's timeline — the dispatcher defers to
+          // it rather than clearing optimistically, so a refused clear leaves
+          // the conversation untouched. It also fires during transcript REPLAY,
+          // which is what makes a resumed session show the same post-clear view
+          // the user left behind instead of resurrecting the old conversation.
+          dispatch({
+            type: 'CLEAR_TIMELINE',
+            sessionId: event.sessionId,
+            markerId: `clear-${event.uuid}`,
+            timestamp: event.timestamp,
+          });
+          break;
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works
           // for both in-session /compact (appends to same JSONL, so shrink
           // never fires) and resume-from-summary (first entry of new JSONL).
           const sessionState = chatStateMapRef.current.get(event.sessionId);
-          if (sessionState?.compactionPending) {
+          // event.data.autoCompaction marks a SPONTANEOUS native compaction —
+          // it has no compactionPending flag (that's only set by /compact), yet
+          // the user must still see a marker since ~all their history was just
+          // summarized away. Render it in that case too, bypassing the guard.
+          if (sessionState?.compactionPending || event.data.autoCompaction) {
             const contextTokens = statusData.sessionStatsMap[event.sessionId]?.contextTokens ?? null;
             dispatch({
               type: 'COMPACTION_COMPLETE',
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: contextTokens,
-              // Forward CC's summary text so the SystemMarker can offer
+              // Forward the summary text so the SystemMarker can offer
               // click-to-expand (replaces the dead "ctrl+o to see full summary"
               // affordance from CC's TUI, which never worked inside YouCoded).
               ...(event.data.summary ? { summary: event.data.summary } : {}),
+              ...(event.data.autoCompaction ? { auto: true } : {}),
             });
           }
           break;
@@ -2071,14 +2153,17 @@ function AppInner() {
           files: [],
           dispatch,
           timeline: [],
+          // onToast: master's change 44 moved the dismiss timer INTO <Toast>, so
+          // the hand-rolled setTimeout this branch carried would now be a second,
+          // competing timer. Take master's plain form.
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // Native /clear is durable-first — see deferUiEffectsToRuntime.
+          deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
-        if (result.handled) {
-          if (result.alsoSendToPty) {
-            guardedPtySend(sessionId, result.alsoSendToPty);
-          }
-          return;
-        }
+        // Not gated on `result.handled`: an unrecognized command is handled:false
+        // yet still carries an invoke-skill intent for native sessions (see
+        // routeSlashResult). Returning true means it was consumed here.
+        if (runSlashResult(sessionId, result)) return;
         // Dispatcher declined (e.g. missing callback) — fall through to raw PTY send.
       }
 
@@ -2087,7 +2172,13 @@ function AppInner() {
       // optimistic user prompt so the chat timeline shows the action.
       // Send first, guarded (pending-prompt gate) — dispatching the bubble for
       // a refused send would leave a stale pending entry in the timeline.
-      if (!guardedPtySend(sessionId, `${entry.name}\r`)) return;
+      if (!guardedPtySend(sessionId, `${entry.name}\r`)) {
+        // Was a bare `return`: guardedPtySend refuses for native sessions and
+        // toasts only for the pending-interaction case, so a native user clicking
+        // a drawer command got nothing at all (handoff §2.3).
+        setToast(`${entry.name} isn't available in YouCoded-runtime sessions yet.`);
+        return;
+      }
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -2124,14 +2215,17 @@ function AppInner() {
           files: [],
           dispatch,
           timeline: [],
+          // onToast: master's change 44 moved the dismiss timer INTO <Toast>, so
+          // the hand-rolled setTimeout this branch carried would now be a second,
+          // competing timer. Take master's plain form.
           callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+          // Native /clear is durable-first — see deferUiEffectsToRuntime.
+          deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
         });
-        if (result.handled) {
-          if (result.alsoSendToPty) {
-            guardedPtySend(sessionId, result.alsoSendToPty);
-          }
-          return;
-        }
+        // Same reasoning as the drawer path: not gated on `result.handled`,
+        // because a skill whose prompt is /<another-skill> lands on the
+        // unhandled branch carrying an invoke-skill intent.
+        if (runSlashResult(sessionId, result)) return;
       }
 
       // Sanitize through the same one-source helper InputBar uses: skill
@@ -2143,7 +2237,13 @@ function AppInner() {
       if (!outgoing) return;
       // Send first, guarded (pending-prompt gate) — dispatching the bubble for
       // a refused send would leave a stale pending entry in the timeline.
-      if (!guardedPtySend(sessionId, outgoing.ptyText + '\r')) return;
+      if (!guardedPtySend(sessionId, outgoing.ptyText + '\r')) {
+        // Native sessions have no PTY. A skill's natural-language prompt has no
+        // harness path yet (that is the Skill tool's job, model-invoked), so say
+        // so rather than dropping it silently (handoff §2.3).
+        setToast("That skill can't be started from here in a YouCoded-runtime session yet.");
+        return;
+      }
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -2463,6 +2563,13 @@ function AppInner() {
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.
   const modelChip = modelChipFor(currentSession, currentModel);
+  // Native StatusBar chips (Plan C Task 12): the active native session's
+  // most-recent completed-turn usage. MERGE RECONCILIATION — this was originally
+  // a useMemo over `chatStateMap`, but AppInner perf tranche 1 replaced that
+  // reactive value with `chatStateMapRef` (a ref fed by a store subscription), so
+  // the memo no longer compiles and a ref would never re-render the chips. It is
+  // re-expressed here as a cached store selector, mirroring useActiveSessionModel.
+  const nativeStatusUsage = useNativeSessionUsage(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2905,17 +3012,18 @@ function AppInner() {
                         getSessionState: (sid: string) => chatStateMapRef.current.get(sid),
                         onOpenModelPicker: () => setModelPickerOpen(true),
                       },
+                      deferUiEffectsToRuntime: currentSession?.provider === 'native',
                     });
                     // Forward alsoSendToPty so Claude Code itself runs the command. We deliberately skip the
                     // USER_PROMPT optimistic bubble that InputBar dispatches — for /compact and /clear, the
                     // COMPACTION_PENDING / CLEAR_TIMELINE reducer actions already update the timeline, so a
                     // USER_PROMPT bubble would render redundantly alongside them.
-                    if (result.handled && result.alsoSendToPty) {
-                      guardedPtySend(sessionId, result.alsoSendToPty);
-                    }
+                    runSlashResult(sessionId, result);
                   }}
                   openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
+                  nativeUsage={nativeStatusUsage}
+                  nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                 />
               </div>
           </>
@@ -3092,6 +3200,30 @@ function AppInner() {
           // Guarded: with a permission/question pending, the text would land on
           // CC's live Ink menu and the trailing \r would answer it.
           if (sessionId) guardedPtySend(sessionId, text + '\r');
+        }}
+        // Slash commands from settings (currently only "Build New Theme with
+        // Claude") route through the dispatcher instead of raw PTY text. In a
+        // native session onSendInput reached guardedPtySend, which refuses and
+        // whose return value was discarded — so that button did NOTHING at all
+        // (handoff §2.3). Per Q5 this runs in the CURRENT session.
+        onRunCommand={(command) => {
+          if (!sessionId) { setToast('Open a conversation first, then try again.'); return; }
+          const result = dispatchSlashCommand({
+            raw: command,
+            sessionId,
+            view: viewModes.get(sessionId) || 'chat',
+            files: [],
+            dispatch,
+            timeline: [],
+            callbacks: { onResumeCommand: () => setResumeRequested(true), getUsageSnapshot, onOpenPreferences: () => setPreferencesOpen(true), onToast: (msg: string) => setToast(msg), getSessionState: (sid: string) => chatStateMapRef.current.get(sid), onOpenModelPicker: () => setModelPickerOpen(true) },
+            deferUiEffectsToRuntime: sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'native',
+          });
+          if (runSlashResult(sessionId, result)) return;
+          // Claude Code fallback: not a dispatcher command, so hand the raw text
+          // to the PTY the way this button always did.
+          if (!guardedPtySend(sessionId, `${command} \r`)) {
+            setToast(`${command} isn't available in YouCoded-runtime sessions yet.`);
+          }
         }}
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}

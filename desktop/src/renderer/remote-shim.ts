@@ -1527,6 +1527,11 @@ export function installShim(): void {
       queueRemove: (sessionId: string, queueId: string) => invoke('native:queue-remove', { sessionId, queueId }),
       // Fire-and-forget: no response expected
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
+      // Request/response (mirrors preload.ts) — the remote UI needs the same
+      // {ok, reason} so a refused compaction explains itself over remote too.
+      compact: (sessionId: string) => invoke('native:compact', { sessionId }),
+      clear: (sessionId: string) => invoke('native:clear', { sessionId }),
+      invokeSkill: (sessionId: string, skill: string, args?: string) => invoke('native:invoke-skill', { sessionId, skill, args }),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
       setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),
       getPermissionMode: (sessionId: string) => invoke('native:get-permission-mode', { sessionId }),

@@ -7,9 +7,8 @@
 // and doom_loop surface as permission ASKS (askUser), never as new events.
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { HarnessSession, type HarnessSessionOpts } from '../src/main/harness/harness-session';
+import { HarnessSession } from '../src/main/harness/harness-session';
 import type { HarnessManifest } from '../src/shared/harness-manifest';
-import type { NativeTool } from '../src/main/harness/tools/types';
 import type { TranscriptEvent } from '../src/shared/types';
 import type { PermissionDecision } from '../src/shared/permission-types';
 import type { AskRequest, AskDecision } from '../src/main/harness/permission-broker';
@@ -17,26 +16,9 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
 import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
-
-// A permissive fake tool that RECORDS executions. subject undefined by default
-// (so the tool-layer guards are skipped and decide() is the sole gate — the
-// happy-path guard behavior is covered elsewhere).
-function fakeTool(name: string, over: Partial<NativeTool> & { schema?: z.ZodType; onExecute?: (args: any, ctx: any) => any } = {}): NativeTool {
-  const calls: any[] = [];
-  const t: NativeTool = {
-    name,
-    description: `fake ${name}`,
-    inputSchema: over.schema ?? z.object({ file_path: z.string() }),
-    permissionSubject: over.permissionSubject ?? (() => undefined),
-    async execute(args, ctx) {
-      calls.push(args);
-      if (over.onExecute) return over.onExecute(args, ctx);
-      return { text: `${name} ran` };
-    },
-  };
-  (t as any).calls = calls;
-  return t;
-}
+// Session-construction scaffolding (HARNESS/makeOpts/fakeTool) lives in a shared
+// helper so the profile-driven driver test (Task 5) reuses the exact same setup.
+import { HARNESS, makeOpts, fakeTool } from './helpers/harness-fakes';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
   const events: TranscriptEvent[] = [];
@@ -44,20 +26,6 @@ function collect(session: HarnessSession): TranscriptEvent[] {
   return events;
 }
 function types(events: TranscriptEvent[]) { return events.map((e) => e.type); }
-
-const HARNESS: HarnessManifest = {
-  schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [],
-  permissionPolicy: 'ask', limits: { maxTokens: 256 },
-};
-
-function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
-  return {
-    sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
-    binding: { providerId: 'openrouter', modelId: 'm' },
-    retryDelays: [1, 1, 1],   // test hook: near-zero backoff so the suite stays fast
-    ...over,
-  } as HarnessSessionOpts;
-}
 
 const ALLOW: PermissionDecision = { action: 'allow', denyListed: false };
 
@@ -246,7 +214,7 @@ describe('HarnessSession — multi-step turn driver', () => {
       const results = events.filter((e) => e.type === 'tool-result');
       const last = results[results.length - 1];
       expect(last.data.isError).toBe(true);
-      expect(last.data.toolResult).toMatch(/repeated three times/);
+      expect(last.data.toolResult).toMatch(/repeated 3 times/);   // threshold-accurate (default profile → 3)
       expect((read as any).calls).toHaveLength(2);       // 3rd never executed (doom denied)
     }
     // allow path: doom ask allows, window resets, tool executes.
@@ -608,5 +576,46 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'tool-use')).toBe(false);
     expect(decide).not.toHaveBeenCalled();
     expect(askUser).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tok/s measures GENERATION, not the turn's wall-clock. Found by the 2026-07-28
+// audit: `startedAt` is stamped at the top of the turn and the denominator was
+// (now - startedAt), so prefill, tool execution and permission waits all diluted
+// it. A turn that generated 300 tokens in 10s of decoding but spent 30s in a
+// Bash call reported ~7 tok/s instead of ~30.
+// ---------------------------------------------------------------------------
+describe('turn-complete tokensPerSecond', () => {
+  it('excludes time spent OUTSIDE the stream (tool execution)', async () => {
+    const slowTool = fakeTool('Read', {
+      onExecute: async () => { await new Promise((r) => setTimeout(r, 120)); return { text: 'done' }; },
+    });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'x'.repeat(80)), toolCallChunk('c1', 'Read', { file_path: 'a.ts' }), finishChunk('tool-calls', 10, 100)),
+      stream(...textChunks('b', 'y'.repeat(80)), finishChunk('stop', 10, 100)),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [slowTool], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    const usage = events.find((e) => e.type === 'turn-complete')!.data.usage as any;
+    // 200 output tokens. The tool alone burned 120ms of wall-clock; if that were
+    // in the denominator the rate would be dragged toward ~1,600 tok/s or below.
+    // Generation time is a small fraction of the turn, so the rate must be HIGHER
+    // than the wall-clock rate would give.
+    expect(usage.tokensPerSecond).toBeGreaterThan(0);
+    const wallClockRate = 200 / 0.12;   // an upper bound on what wall-clock could yield
+    expect(usage.tokensPerSecond).toBeGreaterThan(wallClockRate);
+  });
+
+  it('a turn with no output reports 0 rather than dividing by zero', async () => {
+    const model = scriptedModel([stream(finishChunk('stop', 10, 0))]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    const usage = events.find((e) => e.type === 'turn-complete')!.data.usage as any;
+    expect(Number.isFinite(usage.tokensPerSecond)).toBe(true);
+    expect(usage.tokensPerSecond).toBe(0);
   });
 });

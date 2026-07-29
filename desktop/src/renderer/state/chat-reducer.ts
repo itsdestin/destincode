@@ -182,6 +182,11 @@ function endTurn(
   return {
     toolCalls,
     isThinking: false,
+    // Prefill is over the moment the turn is. Leaving it set meant the next
+    // generation pause longer than ThinkingIndicator's 2s streaming window
+    // re-rendered the PREVIOUS turn's "Reading your prompt — N%" line while the
+    // model was mid-generation (2026-07-28 audit).
+    promptProcessing: null,
     streamingText: '',
     currentGroupId: null,
     currentTurnId: null,
@@ -348,6 +353,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         errorMessage: null,
         stallWarning: null,
+        // Parity with TRANSCRIPT_SKILL_INVOKED: a new turn must not inherit the
+        // previous one's prefill percentage.
+        promptProcessing: null,
       });
       return next;
     }
@@ -542,6 +550,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         lastActivityAt: Date.now(),
         attentionState: 'ok',
         stallWarning: action.stallWarning ?? null,
+        // Same lifetime rule as stallWarning: present on the announcing heartbeat,
+        // cleared by the next plain one (which the first real chunk triggers).
+        //
+        // EXCEPT when this heartbeat is a stall WARNING: that carries no
+        // promptProcessing of its own, and nulling it there wiped the progress
+        // readout mid-prefill, so the percentage appeared to reset itself
+        // (Destin, 2026-07-26). A stall warning means "still waiting", not
+        // "prefill ended" — the reading it was showing is still the truth.
+        promptProcessing: action.promptProcessing ?? (action.stallWarning ? session.promptProcessing : null),
       });
       return next;
     }
@@ -729,9 +746,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session, assistantTurns, timeline, currentTurnId, seenUuids,
         currentGroupId: null, // next tool_use creates a new group
         lastActivityAt: Date.now(),
+        // Visible OUTPUT arrived (not merely activity). The thinking indicator
+        // suppresses itself while this is fresh — a filling bubble is already proof
+        // the model is alive, so a spinner beside it is noise.
+        lastOutputAt: Date.now(),
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        // Output means PREFILL IS OVER. Leaving the readout set let it resurface
+        // during any generation pause longer than the indicator's 2s streaming
+        // window, showing "Reading your prompt — N%" mid-generation — the exact
+        // thing that copy is not supposed to do (2026-07-28 audit).
+        promptProcessing: null,
       });
       return next;
     }
@@ -769,9 +795,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session, assistantTurns, timeline, currentTurnId,
         currentGroupId: null,
         lastActivityAt: Date.now(),
+        // Visible OUTPUT arrived (not merely activity). The thinking indicator
+        // suppresses itself while this is fresh — a filling bubble is already proof
+        // the model is alive, so a spinner beside it is noise.
+        lastOutputAt: Date.now(),
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        // Same as the text path: reasoning IS output, so prefill has ended.
+        promptProcessing: null,
       });
       return next;
     }
@@ -950,6 +982,47 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session, toolCalls, lastActivityAt: Date.now(),
         attentionState: 'ok',
+      });
+      return next;
+    }
+
+    case 'TRANSCRIPT_SKILL_INVOKED': {
+      const session = state.get(action.sessionId);
+      if (!session) return state;
+      // Dedup on uuid like every other transcript-fed entry: this event replays
+      // on resume, and a second card would imply the skill ran twice.
+      if (session.seenUuids?.has(action.uuid)) return state;
+      const next = new Map(state);
+      next.set(action.sessionId, {
+        ...session,
+        seenUuids: new Set([...(session.seenUuids ?? []), action.uuid]),
+        // A skill invocation IS a turn start, so it must set the same state
+        // TRANSCRIPT_USER_MESSAGE does — otherwise nothing tells the UI a turn
+        // began and the thinking indicator, prompt-processing progress and stall
+        // watchdog all stay dormant while the model works (Destin, 2026-07-28:
+        // "needs to act as a user message and begin the thinking indicator").
+        isThinking: true,
+        currentGroupId: null,
+        currentTurnId: null,
+        attentionState: 'ok',
+        // Cleared here, unlike TRANSCRIPT_USER_MESSAGE, because a typed message
+        // gets these cleared a beat earlier by USER_PROMPT's optimistic dispatch.
+        // A skill has no optimistic path, so without this a stale error banner or
+        // stall warning would sit on top of a healthy new turn.
+        errorMessage: null,
+        stallWarning: null,
+        // Belt-and-braces: a previous turn's prefill progress must not be
+        // mistaken for this turn's (the next assistant-thinking event replaces it).
+        promptProcessing: null,
+        timeline: [...session.timeline, {
+          kind: 'skill-invocation' as const,
+          id: `skill-${action.uuid}`,
+          skillId: action.skillId,
+          displayName: action.displayName,
+          ...(action.args ? { args: action.args } : {}),
+          ...(action.skillPath ? { skillPath: action.skillPath } : {}),
+          timestamp: action.timestamp,
+        }],
       });
       return next;
     }
@@ -1284,8 +1357,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'COMPACTION_COMPLETE': {
       const session = next.get(action.sessionId);
       if (!session) return state;
-      if (!session.compactionPending) return state; // Stale event — ignore
-      const before = session.compactionPending.beforeContextTokens;
+      // Native auto-compaction (action.auto) has no compactionPending to satisfy —
+      // it fired spontaneously, not from /compact — so it bypasses this guard. For
+      // the manual/CC path the guard still drops stale/spurious events (notably CC
+      // resume-from-summary, which must NOT insert a marker).
+      if (!session.compactionPending && !action.auto) return state; // Stale event — ignore
+      const before = session.compactionPending?.beforeContextTokens ?? null;
       const after = action.afterContextTokens;
       let label: string;
       if (action.aborted) {
@@ -1353,7 +1430,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session,
         ...endTurn(session),
+        // APPEND the boundary — do not replace the timeline. Clearing resets the
+        // MODEL'S context, not the user's ability to read what they said
+        // (Destin, 2026-07-28: "/clear ... seems to completely wipe the visible
+        // timeline ... we should ensure it works like /compact and leaves the
+        // messages visible but faded"). /compact already had the right shape:
+        // keep everything, mark the boundary, fade what is no longer in context.
+        // ChatView renders entries above a 'clear' marker exactly as it renders
+        // entries above a 'compact' one.
+        //
+        // This also de-fangs the reason CLEAR_TIMELINE was called irreversible:
+        // nothing is destroyed, so a clear the runtime later refuses costs a
+        // stray marker rather than a conversation.
         timeline: [
+          ...session.timeline,
           {
             kind: 'system-marker',
             marker: {

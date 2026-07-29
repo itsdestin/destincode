@@ -49,6 +49,17 @@ export interface TurnUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Native runtime only: output tokens / stream seconds (from turn-complete).
+   *  Absent for CC turns. Feeds the StatusBar native speed chip (Task 12). */
+  tokensPerSecond?: number;
+  /** Native runtime only: the session's REAL context window (resolved in main,
+   *  Task 4/5), carried on the turn-complete payload. Feeds the StatusBar native
+   *  context % chip (Task 12). Constant per session; absent for CC turns. */
+  contextLength?: number | null;
+  /** Native runtime only: tokens OCCUPYING the window after this turn (last
+   *  step's prompt + its output). Drives the context pill; inputTokens cannot,
+   *  because it sums across steps and re-counts history each time. */
+  contextUsedTokens?: number;
 }
 
 export interface AssistantTurn {
@@ -131,6 +142,11 @@ export type TimelineEntry =
   | { kind: 'usage-card'; snapshot: UsageSnapshot }
   // Thin "Conversation cleared" / "Compacted" dividers
   | { kind: 'system-marker'; marker: SystemMarker }
+  // A user-invoked skill (/skill-name). Renders as the compact card the assistant
+  // side already uses for the Skill tool — NOT as a user bubble, because the
+  // instructions can run to tens of thousands of characters. `skillPath` makes
+  // the card open the real SKILL.md in the artifact viewer.
+  | { kind: 'skill-invocation'; id: string; skillId: string; displayName: string; args?: string; skillPath?: string; timestamp: number }
   // Spinner card while /compact (or resume-from-summary) is running
   | { kind: 'compacting'; id: string; startedAt: number }
   // /copy picker when the target turn has multiple copyable blocks
@@ -175,6 +191,30 @@ export interface SessionChatState {
    * subsequent activity (a plain heartbeat, reasoning/text delta) and by endTurn().
    */
   stallWarning: { retryInMs: number; willRetry: boolean } | null;
+  /**
+   * Native runtime: the model is READING the prompt (prefill), not hanging. Set
+   * by a `promptProcessing`-bearing heartbeat and cleared the moment prefill ends
+   * — by the first assistant text or reasoning, by a new user turn, and by
+   * endTurn() — so it lives exactly as long as the pre-first-token wait. It
+   * deliberately SURVIVES a stall-warning heartbeat, because that warning is
+   * about this prefill and nulling it would blank the progress readout at the
+   * moment the user most needs to see it advancing.
+   *
+   * (This comment used to claim "cleared by any other event", which was never
+   * true: only two reducer cases ever wrote the field. The stale value resurfaced
+   * mid-generation. Corrected with the fix, 2026-07-28.) Local models can spend
+   * minutes here on a long prompt, and an idle spinner is indistinguishable from
+   * a hang — which is what made the stall watchdog's false alarm so alarming.
+   */
+  promptProcessing: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number } | null;
+  /**
+   * When visible assistant OUTPUT last arrived (text or reasoning delta) — as
+   * distinct from lastActivityAt, which any event bumps. The thinking indicator
+   * hides while this is fresh: a bubble filling with tokens already proves the
+   * model is alive, and a spinner next to it is noise. null until the first
+   * output of the session.
+   */
+  lastOutputAt: number | null;
   /**
    * Wall-clock of the last non-spinner buffer change (set by classifier).
    * Used to distinguish "spinner is ticking but nothing else is changing"
@@ -254,6 +294,8 @@ export function createSessionChatState(): SessionChatState {
     attentionState: 'ok',
     errorMessage: null,
     stallWarning: null,
+    promptProcessing: null,
+    lastOutputAt: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
     modelState: null,
@@ -388,6 +430,7 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
+      promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
@@ -474,6 +517,18 @@ export type ChatAction =
       agentId?: string;
     }
   | {
+      // /skill-name in a native session. Appends the compact invocation card;
+      // the instructions themselves never reach the timeline.
+      type: 'TRANSCRIPT_SKILL_INVOKED';
+      sessionId: string;
+      uuid: string;
+      timestamp: number;
+      skillId: string;
+      displayName: string;
+      args?: string;
+      skillPath?: string;
+    }
+  | {
       type: 'TRANSCRIPT_TURN_COMPLETE';
       sessionId: string;
       uuid: string;
@@ -538,6 +593,10 @@ export type ChatAction =
       afterContextTokens: number | null;
       aborted?: boolean;       // true when watchdog fires — marker text differs
       summary?: string;        // Full compaction summary, surfaced as expandable section under the marker
+      // Native spontaneous compaction (no manual /compact): there is no
+      // compactionPending flag to satisfy the stale-event guard, so this bypasses
+      // it to insert the marker. CC's paths never set it.
+      auto?: boolean;
     }
   // /copy picker for multi-block turns
   | {
@@ -656,6 +715,13 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       errorMessage: ser.errorMessage ?? null,
       // Older hosts predate stallWarning — default null so a pre-field snapshot hydrates.
       stallWarning: ser.stallWarning ?? null,
+      // Deliberately NOT serialized: prefill is an in-flight condition of THIS
+      // client's stream. A hydrating client (remote reconnect, window restore) is
+      // not mid-prefill, and restoring a stale "Reading your prompt…" would be a
+      // lie that never clears — nothing would arrive to reset it.
+      promptProcessing: null,
+      // Transient like promptProcessing — a hydrating client is not mid-stream.
+      lastOutputAt: null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
       // Older hosts predate these — default null so a pre-field snapshot hydrates.

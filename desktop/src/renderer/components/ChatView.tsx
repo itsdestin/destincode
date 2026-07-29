@@ -9,6 +9,8 @@ import PromptCard, { PromptCardButton } from './PromptCard';
 import { sendPromptInput } from '../state/prompt-input';
 import UsageCard from './UsageCard';
 import SystemMarker from './SystemMarker';
+import SkillInvocationCard from './SkillInvocationCard';
+import { findArchiveBoundary } from '../state/archive-boundary';
 import CompactingCard from './CompactingCard';
 import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
@@ -726,16 +728,14 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               // entries above it — Claude's context is just the post-compaction
               // summary, so pre-compaction messages are "archived" from its POV.
               // Fading signals this without hiding history the user may want to re-read.
-              let lastCompactIdx = -1;
-              for (let i = state.timeline.length - 1; i >= 0; i--) {
-                const e = state.timeline[i];
-                if (e.kind === 'system-marker' && e.marker.variant === 'compact') {
-                  lastCompactIdx = i;
-                  break;
-                }
-              }
+              // /clear is treated exactly like /compact here. Both draw a line
+              // under the conversation: everything above is out of the model's
+              // context but still the user's to re-read. /clear used to WIPE the
+              // timeline instead, which threw away readable history to express a
+              // context reset (Destin, 2026-07-28).
+              const { index: lastArchiveIdx, kind: archiveKind } = findArchiveBoundary(state.timeline);
               return state.timeline.map((entry, idx) => {
-                const isPreCompaction = lastCompactIdx >= 0 && idx < lastCompactIdx;
+                const isPreCompaction = lastArchiveIdx >= 0 && idx < lastArchiveIdx;
               let key: string;
               let content: React.ReactNode;
               switch (entry.kind) {
@@ -793,6 +793,19 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                   key = entry.marker.id;
                   content = <SystemMarker marker={entry.marker} />;
                   break;
+                // /skill-name — a compact card, never the instructions themselves.
+                case 'skill-invocation':
+                  key = entry.id;
+                  content = (
+                    <SkillInvocationCard
+                      skillId={entry.skillId}
+                      displayName={entry.displayName}
+                      args={entry.args}
+                      skillPath={entry.skillPath}
+                      sessionId={sessionId}
+                    />
+                  );
+                  break;
                 // /compact spinner (and resume-from-summary)
                 case 'compacting':
                   key = entry.id;
@@ -824,7 +837,11 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                   key={key!}
                   ref={observeEntry}
                   className={`timeline-entry in-view${isPreCompaction ? ' opacity-60 transition-opacity' : ''}`}
-                  title={isPreCompaction ? 'Archived by compaction — not in Claude\'s active context' : undefined}
+                  title={isPreCompaction
+                    ? (archiveKind === 'clear'
+                      ? 'Cleared — still here to read, but not in Claude\'s context'
+                      : 'Archived by compaction — not in Claude\'s active context')
+                    : undefined}
                 >
                   {content}
                 </div>
@@ -872,7 +889,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       </div>
                     </div>
                   )
-                  : <ThinkingIndicator stallWarning={state.stallWarning} />;
+                  : <ThinkingIndicator stallWarning={state.stallWarning} promptProcessing={state.promptProcessing} lastOutputAt={state.lastOutputAt} />;
               }
               if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
                 return (
