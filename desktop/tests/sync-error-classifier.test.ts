@@ -5,6 +5,10 @@ import {
   extractStderr,
   truncateStderr,
   TIMEOUT_SENTINEL,
+  matchGitCorruption,
+  isNetworkFailureStderr,
+  stderrTail,
+  REPO_CORRUPT_ERROR_CODE,
 } from '../src/main/sync-error-classifier';
 import type { BackendInstance } from '../src/main/sync-state';
 
@@ -291,5 +295,45 @@ describe('decidePersonalSyncRemoteAction', () => {
     expect(decidePersonalSyncRemoteAction('personal-syncro\n', REPO)).toEqual([
       'remote', 'add', 'personal-sync', REPO,
     ]);
+  });
+});
+
+describe('classifyGitFailure primitives', () => {
+  it('recognizes the crash-corruption signatures', () => {
+    // Real stderr captured from the 2026-07-27 Z13 incident.
+    expect(matchGitCorruption('error: object file .git/objects/32/5153…bf8b94c is empty\nfatal: bad object HEAD')).toContain('is empty');
+    expect(matchGitCorruption('fatal: bad object refs/heads/main')).toContain('bad object');
+    expect(matchGitCorruption('error: unable to read 3251535497a31d0436ae0f81533468121bf8b94c')).toContain('unable to read');
+    expect(matchGitCorruption('fatal: index file corrupt')).toContain('index file corrupt');
+    expect(matchGitCorruption('fatal: not a git repository: /x/.youcoded/sync.git')).toContain('not a git repository');
+    expect(matchGitCorruption('error: Unknown object type for 12ac40…')).toContain('Unknown object type');
+    expect(matchGitCorruption('fatal: bad ref for refs/heads/main')).toContain('bad ref');
+    expect(matchGitCorruption('error: loose object 99d1… is corrupt')).toContain('corrupt');
+  });
+
+  it('does NOT flag benign / unrelated failures as corruption', () => {
+    // First push: origin/main doesn't exist yet — the ahead-probe's expected failure.
+    expect(matchGitCorruption('fatal: Invalid revision range origin/main..main')).toBeNull();
+    expect(matchGitCorruption("fatal: couldn't find remote ref main")).toBeNull();
+    expect(matchGitCorruption('nothing to commit, working tree clean')).toBeNull();
+    expect(matchGitCorruption("fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com")).toBeNull();
+    expect(matchGitCorruption('')).toBeNull();
+  });
+
+  it('recognizes network failures (the silent-offline allowlist)', () => {
+    expect(isNetworkFailureStderr('fatal: unable to access …: Could not resolve host: github.com')).toBe(true);
+    expect(isNetworkFailureStderr('fatal: unable to access …: Connection timed out')).toBe(true);
+    expect(isNetworkFailureStderr('ssh: connect to host github.com port 22: Network is unreachable')).toBe(true);
+    expect(isNetworkFailureStderr("fatal: couldn't find remote ref main")).toBe(true); // empty remote: first device, pre-first-push
+    expect(isNetworkFailureStderr('fatal: bad object HEAD')).toBe(false);
+    expect(isNetworkFailureStderr('remote: Repository not found.')).toBe(false);
+  });
+
+  it('stderrTail keeps the end of long stderr (where git puts the fatal line)', () => {
+    const s = 'error: line1\n'.repeat(200) + 'fatal: the actual cause';
+    expect(stderrTail(s)).toContain('fatal: the actual cause');
+    expect(stderrTail(s).length).toBeLessThanOrEqual(300);
+    expect(stderrTail('short')).toBe('short');
+    expect(REPO_CORRUPT_ERROR_CODE).toBe('repo-corrupt');
   });
 });

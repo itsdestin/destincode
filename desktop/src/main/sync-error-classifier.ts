@@ -386,3 +386,73 @@ export function classifyPushError(
     createdEpoch: Math.floor(Date.now() / 1000),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Git failure primitives (2026-07-30 corruption self-heal spec).
+// WHY these live here: pure, no-import string classifiers beside the existing
+// stderr→SyncWarning patterns, unit-tested without a GitTransport. The
+// transport (git-transport.ts) consumes them to invert its failure default —
+// benign is an explicit allowlist, never the silent fallthrough that let a
+// crash-corrupted repo report "synced" for three days (2026-07-27 incident).
+// ---------------------------------------------------------------------------
+
+/** Machine-readable marker for a corrupt hidden sync repo — same mechanism as
+ *  GITHUB_AUTH_ERROR_CODE: the engine copies it onto the 'error' event, and it
+ *  is what triggers the transport's repair() path. Never string-match prose. */
+export const REPO_CORRUPT_ERROR_CODE = 'repo-corrupt';
+
+// Crash signatures: what git prints when loose objects / refs / the index were
+// truncated by power loss. Sources: the 2026-07-27 Z13 forensics (zero-byte
+// objects → "object file … is empty", "bad object", "Unknown object type",
+// "unable to read") plus git's other integrity fatals. Deliberately NOT a
+// generic /corrupt/ match — "corrupt" appears in unrelated advice text.
+const CORRUPTION_PATTERNS: RegExp[] = [
+  /object file .* is empty/i,
+  /bad object/i,
+  /unable to read/i,
+  /index file corrupt/i,
+  /index file smaller than expected/i,
+  /not a git repository/i,
+  /unknown object type/i,
+  /bad ref/i,
+  /loose object .* is corrupt/i,
+  /missing (blob|tree|commit|object)/i,
+];
+
+/** The first stderr line evidencing repo corruption, or null. The line (not a
+ *  boolean) so error messages can carry the real detail per
+ *  docs/error-message-standards.md. */
+export function matchGitCorruption(stderr: string): string | null {
+  if (!stderr) return null;
+  for (const line of stderr.split('\n')) {
+    if (CORRUPTION_PATTERNS.some(p => p.test(line))) return line.trim();
+  }
+  return null;
+}
+
+// The silent-offline allowlist (spec §13 of the sync design: offline must
+// never block or alarm). "couldn't find remote ref" is here because a freshly
+// provisioned EMPTY remote fails `fetch origin main` with it — the normal
+// first-device state, healed by the first push.
+const NETWORK_PATTERNS: RegExp[] = [
+  /could not resolve host/i,
+  /unable to access/i,
+  /connection timed out/i,
+  /connection refused/i,
+  /network is unreachable/i,
+  /could not read from remote repository/i,
+  /couldn't find remote ref/i,
+  /operation timed out/i,
+];
+
+/** True when stderr looks like a network/offline failure (or an empty remote
+ *  awaiting its first push) — the cases the transport keeps silent by design. */
+export function isNetworkFailureStderr(stderr: string): boolean {
+  return NETWORK_PATTERNS.some(p => p.test(stderr || ''));
+}
+
+/** Last `max` chars of stderr — git puts the fatal line at the END. */
+export function stderrTail(stderr: string, max = 300): string {
+  const s = (stderr || '').trim();
+  return s.length <= max ? s : s.slice(s.length - max);
+}
