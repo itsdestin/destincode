@@ -104,6 +104,29 @@ describe('mock shim Proxy semantics', () => {
     await expect(c.someOtherFuture.nested()).resolves.toEqual([]);
   });
 
+  // Nested namespaces under a HAND-WRITTEN namespace are the dangerous case:
+  // `theme` has an impl, so `theme.marketplace` misses it and hits the
+  // catch-all. A plain function there makes `.list` undefined, and calling it
+  // throws SYNCHRONOUSLY — before the caller's `.catch()` is even attached.
+  // marketplace-context.tsx:171 does exactly that inside a Promise.all, so one
+  // missing nested channel rejected the whole marketplace load and left theme
+  // favourites empty. The visible symptom was "Appearance offers one theme".
+  it('nested namespaces resolve to any depth, including under a real impl', async () => {
+    const c = shim();
+    await expect(c.theme.marketplace.list()).resolves.toEqual([]);
+    await expect(c.skills.getFeatured()).resolves.toEqual([]);
+    await expect(c.a.b.c.d()).resolves.toEqual([]);
+    // And the hand-written members of that same namespace still work.
+    await expect(c.theme.list()).resolves.toContain('halftone-dimension');
+  });
+
+  it('a nested namespace expression does not throw synchronously', () => {
+    const c = shim();
+    // The throw that mattered happened while BUILDING the expression, which is
+    // why a .catch() on the promise could not save it.
+    expect(() => c.theme.marketplace.list().catch(() => [])).not.toThrow();
+  });
+
   // Function targets carry own properties; consulting them instead of the impl
   // would make `claude.session.name` return "" rather than a channel stub.
   it('does not leak the function target\'s own properties', () => {

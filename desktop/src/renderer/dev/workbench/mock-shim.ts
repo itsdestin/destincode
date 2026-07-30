@@ -29,6 +29,8 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
+  'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
+  'appearance.set', 'appearance.broadcast',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
@@ -137,28 +139,22 @@ function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<
         return cache.get(key);
       }
 
+      // An unknown member may itself be a NESTED NAMESPACE, not a leaf channel:
+      // `claude.theme.marketplace.list()`, `claude.skills.getFeatured`. Returning
+      // a plain function makes `.list` undefined, and calling it throws
+      // SYNCHRONOUSLY — before any `.catch()` in the caller's expression is
+      // attached. That is how one unimplemented nested channel rejected the
+      // whole marketplace load and left theme favourites empty, which showed up
+      // as "the Appearance panel only offers one theme". Recursing keeps the
+      // member callable AND indexable to any depth.
       if (!cache.has(key)) {
-        cache.set(key, (...args: unknown[]) => {
-          const id = `${namespace}.${key}`;
-          if (!warned.has(id)) {
-            warned.add(id);
-            console.warn(`[workbench] unimplemented channel ${id}`, args);
-          }
-          // WHY [] and not null: the dominant consumer shape is
-          // `const rows = await claude.x.list(); rows.map(...)`, and null throws
-          // there — turning a missing stub into a crash in the surface under
-          // design. [] satisfies list consumers, reads as "no properties" to
-          // object consumers exactly as {} would, and never trips a
-          // `res.ok === false` check. A fresh array each call so a consumer
-          // that mutates the result cannot poison the next one.
-          return delay([] as unknown);
-        });
+        cache.set(key, withCatchAll(`${namespace}.${key}`, {}));
       }
       return cache.get(key);
     },
 
     // Reached when the member is used as a bare callable rather than a
-    // namespace — `claude.getIncognito()`. Same warn-once + empty contract.
+    // namespace — `claude.getIncognito()`, or `claude.theme.marketplace()`.
     apply(_target, _thisArg, args: unknown[]) {
       if (!warned.has(namespace)) {
         warned.add(namespace);
@@ -509,6 +505,31 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     refresh: async () => null,
   };
 
+  // Settings → Appearance shows FAVOURITED themes plus the active one as a
+  // fallback (ThemeScreen.tsx:111-117) — the full list lives behind "Browse all
+  // themes". With no favourites the panel renders exactly one card, which reads
+  // as "only one theme exists" rather than "you have not starred any". Seeding
+  // favourites is what actually puts a choice in front of a reviewer.
+  //
+  // Held in the store so starring/unstarring in the panel behaves like the real
+  // thing instead of snapping back on the next read.
+  let favouriteThemes = ['midnight', 'dark', 'creme', 'halftone-dimension', 'meadow-mist'];
+  const appearance = {
+    getFavoriteThemes: async () => [...favouriteThemes],
+    favoriteTheme: async (slug: string, favorited: boolean) => {
+      favouriteThemes = favorited
+        ? [...new Set([...favouriteThemes, slug])]
+        : favouriteThemes.filter((s) => s !== slug);
+      return [...favouriteThemes];
+    },
+    // Appearance prefs live in localStorage in the workbench (ThemeProvider
+    // already persists there), so the IPC mirror is a no-op rather than a
+    // second source of truth that could disagree with it.
+    get: async () => null,
+    set: async () => true,
+    broadcast: () => {},
+  };
+
   // Project View and the artifact panel. Without these both render as empty
   // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer
   // bails on the `res?.ok` guard and shows nothing. An empty surface is not a
@@ -656,6 +677,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account,
+    terminal, artifacts, syncSpaces, project, account, appearance,
   } as unknown as Record<string, Record<string, unknown>>;
 }
