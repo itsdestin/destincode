@@ -6,6 +6,8 @@ import { buildHydratePayload } from './seed-chat';
  *  (tests/workbench-mock-contract.test.ts) checks each against preload.ts. */
 export const HAND_WRITTEN: ReadonlyArray<string> = [
   'devLabel', 'getPlatform', 'getHomePath', 'getFavorites', 'setFavorites',
+  'getIncognito', 'setIncognito', 'onChatExportSnapshot',
+  'sendChatSnapshotResponse', 'fireRemoteAttentionChanged',
   'off', 'removeAllListeners',
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote',
@@ -15,6 +17,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
   'on.sessionMetaChanged',
   'theme.list', 'theme.readFile', 'theme.writeFile', 'theme.onReload',
+  'firstRun.getState', 'terminal.getScreenText',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
@@ -66,15 +69,30 @@ function withLatency(fn: (...a: any[]) => any) {
 
 /** Wraps a namespace so unimplemented members warn once and resolve empty,
  *  instead of throwing "not a function". This is what keeps a few-hundred
- *  channel surface from becoming a stubbing project (spec §3.2). */
+ *  channel surface from becoming a stubbing project (spec §3.2).
+ *
+ *  WHY THE TARGET IS A FUNCTION: an unknown member of the bridge may be either a
+ *  NAMESPACE (`claude.session.list()`) or a BARE CALLABLE
+ *  (`claude.getIncognito()`), and nothing about the property access
+ *  distinguishes them — by the time you know, you have already had to return
+ *  something. A plain object target makes every bare callable throw "is not a
+ *  function", which is how `window.claude?.getIncognito is not a function` took
+ *  the whole app down at boot even though six other top-level callables were
+ *  hand-written. A callable target satisfies both shapes, so the failure mode
+ *  cannot come back for the seventh. */
 function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<string, unknown> {
   // Memoized so a given member is always the SAME function object. Minting a
   // fresh wrapper per property read would break `off(handler)` unsubscribes and
   // silently defeat every React dependency array that holds one.
   const cache = new Map<string, unknown>();
 
-  return new Proxy(impl, {
-    get(target, prop) {
+  // Named for readable stack traces. Its own properties (name/length/prototype)
+  // are deliberately NOT consulted below — `hasOwnProperty(impl)` is the check,
+  // not `in target`, or `claude.session.name` would return "" instead of a stub.
+  const target = function workbenchChannel() {} as unknown as Record<string, unknown>;
+
+  return new Proxy(target, {
+    get(_target, prop) {
       // Symbols and `then` must be undefined. If a namespace answers `then`
       // with a function it looks thenable, so `await claude.session` hangs
       // forever instead of resolving to the object — a hang with no error, in
@@ -82,16 +100,28 @@ function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<
       if (typeof prop === 'symbol' || prop === 'then') return undefined;
       const key = prop as string;
 
-      if (key in target) {
-        const value = (target as any)[key];
+      if (Object.prototype.hasOwnProperty.call(impl, key)) {
+        const value = impl[key];
         if (typeof value !== 'function') return value;
         if (!cache.has(key)) cache.set(key, withLatency(value as (...a: any[]) => any));
         return cache.get(key);
       }
 
-      // `on.*` members are subscription registrars — they must return an
-      // unsubscribe function synchronously, not a promise.
-      if (namespace === 'on') {
+      // Subscription registrars must return an unsubscribe function
+      // SYNCHRONOUSLY, not a promise. Two shapes qualify, and missing the
+      // second one is what produced `cleanupDir is not a function` at boot:
+      //
+      //   1. everything in the `on` namespace  (claude.on.sessionCreated)
+      //   2. any `on[A-Z]…` member of ANY namespace — claude.detach.onDirectoryUpdated,
+      //      claude.theme.onReload, claude.window.onFullscreenChanged, …
+      //
+      // Callers routinely do `const cleanup = ns.onThing(cb)` inside a
+      // useEffect and return it, so handing back a Promise makes React call a
+      // Promise as the cleanup and take the whole app down via
+      // RootErrorBoundary. `on[A-Z]` is a consistent convention in preload.ts
+      // (verified 2026-07-29: onDirectoryUpdated, onReload, onInstallProgress,
+      // onFullscreenChanged, onLeaderChanged, …).
+      if (namespace === 'on' || /^on[A-Z]/.test(key)) {
         if (!cache.has(key)) cache.set(key, () => () => {});
         return cache.get(key);
       }
@@ -115,9 +145,24 @@ function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<
       }
       return cache.get(key);
     },
-    // NOTE: deliberately no `has` trap. One returning true for everything makes
-    // `'x' in claude.y` lie, and optional chaining never consults `has`, so it
-    // would cost correctness and buy nothing.
+
+    // Reached when the member is used as a bare callable rather than a
+    // namespace — `claude.getIncognito()`. Same warn-once + empty contract.
+    apply(_target, _thisArg, args: unknown[]) {
+      if (!warned.has(namespace)) {
+        warned.add(namespace);
+        console.warn(`[workbench] unimplemented channel ${namespace}`, args);
+      }
+      return delay([] as unknown);
+    },
+
+    // The trap must delegate to `impl`, NOT to the function target: the default
+    // would report `name`, `length` and `prototype` as present. It still answers
+    // honestly for real members, which is the point — a trap returning true for
+    // everything makes `'x' in claude.y` lie.
+    has(_target, prop) {
+      return Object.prototype.hasOwnProperty.call(impl, prop);
+    },
   });
 }
 
@@ -137,16 +182,29 @@ export function createMockShim(store: MockStore): Window['claude'] {
   const bridge: Record<string, unknown> = {
     devLabel: 'Workbench',
 
-    // Top-level CALLABLE bridge members. These are NOT namespaces, and the
-    // bridge catch-all below would hand back a namespace Proxy — an object, not
-    // a function. platform.ts:17 guards on `w.claude?.getPlatform` (a Proxy
-    // passes that guard), then :23 calls it: TypeError inside an async
-    // function, so platform detection never resolves and the rejection is
-    // swallowed. All six are hand-written for exactly that reason.
+    // Top-level CALLABLE bridge members — NOT namespaces. The catch-all is
+    // callable now, so a missing one degrades instead of crashing; these are
+    // hand-written anyway because a bare `[]` is the wrong ANSWER for most of
+    // them (getIncognito must be a boolean, getHomePath a string).
+    //
+    // Enumerated from preload.ts, which is the authority — deriving this list
+    // from useIpc.ts instead is what missed getIncognito/setIncognito and the
+    // three chat-snapshot members, and a missing getIncognito took the whole
+    // app down at boot with "is not a function".
+    // Verified 2026-07-29: preload.ts:372,518,523,525,586,808,810,900-905.
     getPlatform: async () => 'linux' as const,
     getHomePath: async () => '/home/destin',
     getFavorites: async () => [],
     setFavorites: async () => undefined,
+    getIncognito: async () => false,
+    setIncognito: async () => undefined,
+    // Desktop's chat-snapshot export path. The workbench hydrates via
+    // on.chatHydrate instead (seed-chat.ts), so these are inert by design:
+    // registering a callback that never fires is what a browser tab with no
+    // main process actually offers.
+    onChatExportSnapshot: () => () => {},
+    sendChatSnapshotResponse: () => undefined,
+    fireRemoteAttentionChanged: () => undefined,
     off: () => {},
     removeAllListeners: () => {},
   };
@@ -317,6 +375,36 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   const native: Ns<'native'> = { supported: true };
 
+  // The attention classifier polls this every second while a turn is in flight
+  // and does `raw.split('\n')` (useAttentionClassifier.ts:126,133). The catch-all
+  // `[]` has no .split, so the workbench threw once per second — non-fatal, but
+  // it buries real errors in the console during a design review, which is the
+  // console you are actually reading. An empty STRING is the honest answer:
+  // there is no PTY here, so the screen is blank.
+  const terminal: Ns<'terminal'> = {
+    getScreenText: async () => '',
+  };
+
+  // MUST be hand-written, and this is the sharpest example of why the []
+  // catch-all default is a compromise rather than a solution: App.tsx:458 does
+  // `resolve(!!(state && state.currentStep !== 'COMPLETE'))`. A stubbed `[]` is
+  // truthy and `[].currentStep` is undefined, so the app concluded it WAS a
+  // first run and routed to the onboarding wizard — which then crashed on
+  // `prerequisites.some(...)`. Any channel that gates app-level routing has to
+  // return a real shape; the catch-all can only ever be right about SHAPE, not
+  // MEANING. Shape from shared/first-run-types.ts.
+  const firstRun = {
+    getState: async () => ({
+      currentStep: 'COMPLETE',
+      prerequisites: [],
+      overallProgress: 100,
+      statusMessage: '',
+      authMode: 'none',
+      authComplete: true,
+      needsDevMode: false,
+    }),
+  };
+
   // `openDetached` is real (preload:959) but missing from useIpc.ts's `detach`
   // block, so it cannot come from Ns<'detach'>. Note the real signature takes an
   // OBJECT, not a positional sessionId.
@@ -402,6 +490,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   return {
-    session, providers, models, defaults, native, detach, tags, on, theme,
+    session, providers, models, defaults, native, detach, tags, on, theme, firstRun,
+    terminal,
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -88,4 +88,25 @@ describe('workbench mock contract', () => {
   it('every MOCK_ONLY entry names the feature it belongs to', () => {
     expect(MOCK_ONLY.filter((m) => !m.feature.trim())).toEqual([]);
   });
+
+  // DERIVED from preload.ts rather than hand-listed, because a hand-list is
+  // exactly what failed: the mock's top-level members were enumerated from
+  // useIpc.ts, which omits getIncognito — and `window.claude?.getIncognito is
+  // not a function` took the app down at boot. A new top-level callable in
+  // preload now fails this test instead of the workbench.
+  it('implements every top-level callable preload exposes', () => {
+    const exposed = preload.slice(preload.indexOf("exposeInMainWorld('claude'"));
+    // Filter in JS, not with a lookahead: `(?!\{)` after `\s*` backtracks the
+    // whitespace to zero-width and then passes, so namespaces match too.
+    const topLevel = [...exposed.matchAll(/^ {2}([a-zA-Z_]\w*):(.*)$/gm)]
+      .filter(([, , rest]) => !rest.trim().startsWith('{'))
+      .map(([, name]) => name);
+
+    // Sanity: if this scan returns nothing the assertion below is vacuous.
+    expect(topLevel).toContain('getIncognito');
+    expect(topLevel.length).toBeGreaterThanOrEqual(10);
+
+    const written = new Set(HAND_WRITTEN);
+    expect(topLevel.filter((m) => !written.has(m))).toEqual([]);
+  });
 });

@@ -87,10 +87,78 @@ describe('mock shim Proxy semantics', () => {
     await expect(shim().someFutureNamespace.someFutureCall()).resolves.toEqual([]);
   });
 
+  // The regression that took the app down at boot: `getIncognito` is a bare
+  // top-level callable, but the catch-all handed back a namespace object, so
+  // `window.claude?.getIncognito()` threw "is not a function" inside App's
+  // startup path and RootErrorBoundary replaced the entire UI. An unknown
+  // member must work as EITHER shape, since the property access cannot tell
+  // which one the caller wants.
+  it('an unknown top-level member is callable as a bare function', async () => {
+    const c = shim();
+    expect(typeof c.someFutureTopLevelCall).toBe('function');
+    await expect(c.someFutureTopLevelCall()).resolves.toEqual([]);
+  });
+
+  it('the same unknown member also works as a namespace', async () => {
+    const c = shim();
+    await expect(c.someOtherFuture.nested()).resolves.toEqual([]);
+  });
+
+  // Function targets carry own properties; consulting them instead of the impl
+  // would make `claude.session.name` return "" rather than a channel stub.
+  it('does not leak the function target\'s own properties', () => {
+    const c = shim();
+    expect(typeof c.session.name).toBe('function');
+    expect(typeof c.session.length).toBe('function');
+    expect('name' in c.session).toBe(false);
+  });
+
+  it('the top-level callables preload exposes all resolve sensibly', async () => {
+    const c = shim();
+    await expect(c.getIncognito()).resolves.toBe(false);
+    await expect(c.getHomePath()).resolves.toContain('/');
+    expect(typeof c.onChatExportSnapshot(() => {})).toBe('function');
+    expect(() => c.fireRemoteAttentionChanged({})).not.toThrow();
+  });
+
   it('on.* registrars return an unsubscribe synchronously', () => {
     const off = shim().on.somethingNobodyImplemented(() => {});
     expect(typeof off).toBe('function');
     expect(() => off()).not.toThrow();
+  });
+
+  // `on[A-Z]` registrars exist on MANY namespaces, not just `on`. Callers do
+  // `const cleanup = ns.onThing(cb)` inside a useEffect and return it, so a
+  // Promise here makes React call a Promise as the cleanup — which is exactly
+  // how `cleanupDir is not a function` took the whole app down at boot.
+  it.each([
+    ['detach', 'onDirectoryUpdated'],
+    ['theme', 'onReload'],
+    ['window', 'onFullscreenChanged'],
+    ['engine', 'onInstallProgress'],
+    ['someUnknownNamespace', 'onSomethingNew'],
+  ])('%s.%s returns an unsubscribe synchronously, not a promise', (ns, member) => {
+    const cleanup = (shim() as any)[ns][member](() => {});
+    expect(typeof cleanup).toBe('function');
+    expect(cleanup).not.toBeInstanceOf(Promise);
+    expect(() => cleanup()).not.toThrow();
+  });
+
+  // The catch-all can only ever be right about SHAPE, not MEANING. These two
+  // gate app-level behaviour, so `[]` is actively wrong for them:
+  //   - firstRun: `[]` is truthy and `[].currentStep !== 'COMPLETE'`, so the app
+  //     routed to the onboarding wizard and crashed in it.
+  //   - terminal: the attention classifier does raw.split('\n') once a second.
+  it('firstRun.getState reports a completed first run', async () => {
+    const state = await shim().firstRun.getState();
+    expect(state.currentStep).toBe('COMPLETE');
+    expect(Array.isArray(state.prerequisites)).toBe(true);
+  });
+
+  it('terminal.getScreenText resolves a string, not an array', async () => {
+    const raw = await shim().terminal.getScreenText('wb-1');
+    expect(typeof raw).toBe('string');
+    expect(() => raw.split('\n')).not.toThrow();
   });
 
   it('defaults to non-zero latency so loading states are visible', () => {
