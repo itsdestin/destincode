@@ -1,5 +1,9 @@
 import type { MockStore } from './mock-store';
 import { buildHydratePayload } from './seed-chat';
+import {
+  projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
+  CONTENT as ARTIFACT_CONTENT, contextGroups,
+} from './fixtures/artifacts';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -18,6 +22,13 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'on.sessionMetaChanged',
   'theme.list', 'theme.readFile', 'theme.writeFile', 'theme.onReload',
   'firstRun.getState', 'terminal.getScreenText',
+  'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
+  'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
+  'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
+  'syncSpaces.status',
+  'project.listConversations', 'project.listContext', 'project.readContextFile',
+  'project.writeContextFile', 'project.repoInfo',
+  'account.signedIn', 'account.user', 'account.refresh',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
@@ -208,7 +219,15 @@ export function createMockShim(store: MockStore): Window['claude'] {
     off: () => {},
     removeAllListeners: () => {},
   };
-  for (const ns of NAMESPACES) bridge[ns] = withCatchAll(ns, impls[ns] ?? {});
+  // Union, NOT just NAMESPACES: a hand-written namespace missing from that list
+  // would otherwise be silently REPLACED by an empty catch-all, and the symptom
+  // is not "channel missing" but "channel returns []" — which is how a
+  // hand-written syncSpaces.status still crashed Project View with
+  // "Cannot read properties of undefined (reading 'find')". Driving the impl
+  // keys means a new namespace works the moment it is written.
+  for (const ns of new Set([...NAMESPACES, ...Object.keys(impls)])) {
+    bridge[ns] = withCatchAll(ns, impls[ns] ?? {});
+  }
 
   const unknownNs = new Map<string, unknown>();
   return new Proxy(bridge, {
@@ -385,6 +404,96 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     getScreenText: async () => '',
   };
 
+  // Another routing-shaped gate the `[]` default gets WRONG rather than merely
+  // empty: sync-dot-state.ts:38 does `status.spaces.find(...)` behind a
+  // `if (!status) return null` guard. `[]` is not null, so it sails past the
+  // guard and `[].spaces` is undefined — opening Project View threw
+  // "Cannot read properties of undefined (reading 'find')".
+  // Shape from sync-spaces/service.ts:420. Sync off is the honest state here:
+  // there is no sync engine behind a browser tab.
+  const syncSpaces = {
+    status: async () => ({
+      enabled: false,
+      spaces: [] as unknown[],
+      recentEvents: [] as unknown[],
+      syncHub: 'off',
+    }),
+  };
+
+  // Project View's Conversations and Context tabs. Conversations reuse the same
+  // seeded past sessions the Resume browser shows, filtered by project, so the
+  // two surfaces cannot disagree about what exists.
+  const project = {
+    listConversations: async (projectPath: string) => ({
+      ok: true,
+      conversations: store.getState().past
+        .filter((p) => p.projectPath === projectPath)
+        .map((p) => ({ ...p, preview: p.note ?? `Session in ${p.projectSlug}` })),
+    }),
+    listContext: async (projectPath: string) => ({
+      ok: true,
+      groups: contextGroups(projectPath),
+    }),
+    readContextFile: async (_root: string, absolutePath: string) => ({
+      ok: true,
+      content: ARTIFACT_CONTENT[absolutePath.split('/').pop() ?? ''] ?? `# ${absolutePath}\n`,
+    }),
+    writeContextFile: async () => ({ ok: true }),
+    repoInfo: async () => ({ ok: true, branch: 'master', dirty: false }),
+  };
+
+  // Signed OUT is the honest default, and the `[]` catch-all gets it backwards:
+  // account.signedIn() returning `[]` is TRUTHY, and account.user() returning
+  // `[]` is a truthy object with no `handle` — so HandlePrompt concluded the
+  // user had just signed in without a handle and threw a modal over the whole
+  // app on every load.
+  const account: Ns<'account'> = {
+    signedIn: async () => false,
+    user: async () => null,
+    refresh: async () => null,
+  };
+
+  // Project View and the artifact panel. Without these both render as empty
+  // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer
+  // bails on the `res?.ok` guard and shows nothing. An empty surface is not a
+  // reviewable mockup, which is the whole point of the workbench.
+  const artifacts = {
+    listProjectsIndex: async (opts?: { withCounts?: boolean }) => ({
+      ok: true,
+      projects: opts?.withCounts ? projectsWithCounts() : artifactProjects(),
+    }),
+    listSession: async (sessionId: string) => ({
+      ok: true, artifacts: sessionArtifacts(sessionId),
+    }),
+    listProject: async (projectId: string) => ({
+      ok: true, artifacts: allFiles(projectId),
+    }),
+    listAllFiles: async (projectId: string) => ({
+      ok: true, files: allFiles(projectId), truncated: false,
+    }),
+    get: async (_projectRoot: string, artifactId: string) => {
+      const content = ARTIFACT_CONTENT[artifactId];
+      if (content === undefined) {
+        // Honest miss rather than a fabricated body: the reader renders its
+        // own empty state, which is a state worth being able to see.
+        return { ok: true, content: null, binary: false, tooLarge: false, sizeBytes: 0 };
+      }
+      return {
+        ok: true, content, binary: false, tooLarge: false, sizeBytes: content.length,
+      };
+    },
+    // Nothing is missing from disk here — every fixture "exists" by construction.
+    checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
+    searchContent: async (_root: string, query: string) => ({
+      ok: true,
+      matches: Object.entries(ARTIFACT_CONTENT)
+        .filter(([, body]) => body.toLowerCase().includes(query.toLowerCase()))
+        .map(([id]) => ({ artifactId: id })),
+    }),
+    watchProject: async () => ({ ok: true }),
+    unwatchProject: async () => ({ ok: true }),
+  };
+
   // MUST be hand-written, and this is the sharpest example of why the []
   // catch-all default is a compromise rather than a solution: App.tsx:458 does
   // `resolve(!!(state && state.currentStep !== 'COMPLETE'))`. A stubbed `[]` is
@@ -491,6 +600,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal,
+    terminal, artifacts, syncSpaces, project, account,
   } as unknown as Record<string, Record<string, unknown>>;
 }
