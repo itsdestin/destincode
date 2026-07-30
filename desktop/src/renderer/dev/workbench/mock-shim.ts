@@ -246,12 +246,68 @@ export function createMockShim(store: MockStore): Window['claude'] {
 // Community theme packs, vendored so the workbench never opens a socket (§2).
 // The four builtins need nothing — theme-context.tsx imports them directly.
 // @ts-ignore TS1343 — Vite rewrites import.meta.glob at build time.
-const themeRaw = import.meta.glob('./fixtures/themes/*.json', {
+const themeRaw = import.meta.glob('./fixtures/themes/*/manifest.json', {
   query: '?raw', import: 'default', eager: true,
 }) as Record<string, string>;
 
+// Asset URLs, resolved by Vite. `?url` gives a real servable path, which is the
+// whole point: a pack's manifest references its assets RELATIVELY
+// ("assets/pattern.svg"), and theme-asset-resolver.ts would turn that into a
+// theme-asset:// URI — an Electron custom protocol a browser tab cannot load,
+// so every pattern, mascot and wallpaper rendered broken. Rewriting the relative
+// paths to Vite URLs before the resolver sees them makes the pack render exactly
+// as it does in the app. (The resolver passes root-absolute paths through
+// unchanged — that is the contract its docblock always claimed.)
+// @ts-ignore TS1343 — Vite rewrites import.meta.glob at build time.
+const themeAssets = import.meta.glob('./fixtures/themes/*/assets/**/*', {
+  query: '?url', import: 'default', eager: true,
+}) as Record<string, string>;
+
+const slugOf = (path: string) => path.split('/fixtures/themes/')[1].split('/')[0];
+
+/** `halftone-dimension` -> { 'assets/pattern.svg': '/…/pattern.svg', … } */
+const ASSET_URLS: Record<string, Record<string, string>> = {};
+for (const [path, url] of Object.entries(themeAssets)) {
+  const slug = slugOf(path);
+  const rel = path.split(`/fixtures/themes/${slug}/`)[1];
+  (ASSET_URLS[slug] ??= {})[rel] = url;
+}
+
+/** Deep-walks a parsed manifest and swaps every relative asset reference for its
+ *  Vite URL. Walks values rather than string-replacing the raw JSON so a path
+ *  appearing inside custom_css or a nested mascot map is handled the same way. */
+function withResolvedAssets(value: unknown, urls: Record<string, string>): unknown {
+  if (typeof value === 'string') {
+    // Exact match first (the common case), then substring for custom_css blocks
+    // that embed url(assets/…) inside a larger declaration.
+    if (urls[value]) return urls[value];
+    let out = value;
+    for (const [rel, url] of Object.entries(urls)) {
+      if (out.includes(rel)) out = out.split(rel).join(url);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) return value.map((v) => withResolvedAssets(v, urls));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, withResolvedAssets(v, urls)]),
+    );
+  }
+  return value;
+}
+
 const THEME_FIXTURES: Record<string, string> = Object.fromEntries(
-  Object.entries(themeRaw).map(([p, raw]) => [p.split('/').pop()!.replace('.json', ''), raw]),
+  Object.entries(themeRaw).map(([path, raw]) => {
+    const slug = slugOf(path);
+    const urls = ASSET_URLS[slug] ?? {};
+    try {
+      return [slug, JSON.stringify(withResolvedAssets(JSON.parse(raw), urls))];
+    } catch {
+      // A corrupt vendored manifest should surface as theme-context's own
+      // validation warning, not as a crash inside the mock.
+      return [slug, raw];
+    }
+  }),
 );
 
 /** Each namespace is typed against the real consumer contract, so `tsc` rejects

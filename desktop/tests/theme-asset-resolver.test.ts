@@ -24,6 +24,30 @@ describe('resolveAssetPath', () => {
   it('returns the input unchanged for hex color values', () => {
     expect(resolveAssetPath('#1a1a2e', 'test')).toBe('#1a1a2e');
   });
+
+  // The docblock has always promised to pass through "already-resolved URIs",
+  // but only theme-asset:// was actually handled — everything else got the
+  // relative-path treatment and came back as `theme-asset://slug/data:image/...`,
+  // which resolves to nothing. A theme shipping an inline data URI, a remote
+  // image, or a root-absolute path was silently broken.
+  it.each([
+    ['data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='],
+    ['data:image/png;base64,iVBORw0KGgo='],
+    ['https://example.com/pattern.svg'],
+    ['http://localhost:5233/dev/workbench/fixtures/themes/x/assets/pattern.svg'],
+    ['/dev/workbench/fixtures/themes/x/assets/pattern.svg'],
+  ])('returns %s unchanged — it is already resolved', (value) => {
+    expect(resolveAssetPath(value, 'test')).toBe(value);
+  });
+
+  // The inverse still has to hold, or the fix would turn every real asset path
+  // into a dead link.
+  it('still resolves genuinely relative paths', () => {
+    expect(resolveAssetPath('assets/pattern.svg', 'halftone'))
+      .toBe('theme-asset://halftone/assets/pattern.svg');
+    expect(resolveAssetPath('mascot.png', 'halftone'))
+      .toBe('theme-asset://halftone/mascot.png');
+  });
 });
 
 describe('resolveAllAssetPaths', () => {

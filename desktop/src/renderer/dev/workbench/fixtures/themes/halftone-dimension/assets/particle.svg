@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- CMY halftone orb — overlapping color circles like misregistered print dots -->
+  <circle cx="6" cy="9" r="4.5" fill="#e8234a" opacity="0.7"/>
+  <circle cx="10" cy="9" r="4.5" fill="#00b8ff" opacity="0.5"/>
+  <circle cx="8" cy="5.5" r="3" fill="#ffea00" opacity="0.35"/>
+</svg>

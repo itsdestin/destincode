@@ -149,4 +149,61 @@ describe('workbench channels', () => {
     const raw = await shim().theme.readFile('nope');
     expect(() => JSON.parse(raw)).not.toThrow();
   });
+
+  it('ships more than one community theme so the picker has real choices', async () => {
+    const slugs = await shim().theme.list();
+    expect(slugs).toEqual(expect.arrayContaining(['halftone-dimension', 'meadow-mist']));
+    expect(slugs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // The gap this closes: a pack references its assets relatively
+  // ("assets/pattern.svg"), theme-asset-resolver turns that into a
+  // theme-asset:// URI, and a browser tab has no such scheme — so every
+  // pattern, mascot and wallpaper rendered broken. The mock rewrites them to
+  // Vite URLs first. If this regresses the themes still "work", just without
+  // their artwork, which is exactly the kind of silent degradation the
+  // workbench is supposed to make impossible.
+  it.each(['halftone-dimension', 'meadow-mist'])(
+    '%s has every asset reference rewritten to a servable URL',
+    async (slug) => {
+      const raw = await shim().theme.readFile(slug);
+      expect(() => JSON.parse(raw)).not.toThrow();
+
+      // No bare relative reference may survive: `"assets/x.svg"` or
+      // `url(assets/x.svg)` would both resolve to theme-asset:// at render time.
+      const leftovers = raw.match(/["(]assets\//g) ?? [];
+      expect(leftovers).toEqual([]);
+    },
+  );
+
+  // Vite inlines assets under its 4KB limit as `data:` URIs and serves larger
+  // ones as paths, so a rewritten manifest legitimately contains BOTH shapes —
+  // which is why theme-asset-resolver has to pass through both. Asserting on a
+  // filename would be wrong: pattern.svg is inlined, so its name is gone.
+  // The real invariant is "the resolver will leave every one of these alone".
+  it.each(['halftone-dimension', 'meadow-mist'])(
+    '%s asset values are all shapes resolveAssetPath passes through',
+    async (slug) => {
+      const parsed = JSON.parse(await shim().theme.readFile(slug));
+      const values: string[] = [];
+      const walk = (v: unknown) => {
+        if (typeof v === 'string') values.push(v);
+        else if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+      };
+      walk(parsed);
+
+      // Anything that still looks like a bare relative asset path would become
+      // a theme-asset:// URI and render as a broken image.
+      const unresolved = values.filter((v) => /^assets\//.test(v));
+      expect(unresolved).toEqual([]);
+
+      // And at least one asset actually resolved, or this passes vacuously on a
+      // manifest that references no assets at all.
+      const resolved = values.filter(
+        (v) => v.startsWith('data:') || (v.startsWith('/') && /\.(svg|jpg|webp|png)$/.test(v)),
+      );
+      expect(resolved.length).toBeGreaterThan(0);
+    },
+  );
 });
