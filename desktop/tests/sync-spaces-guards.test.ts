@@ -35,6 +35,25 @@ describe('DEFAULT_IGNORES', () => {
   });
 });
 
+describe('DEFAULT_IGNORES — ephemeral lease heartbeats', () => {
+  // Leases are a 30s-per-open-session heartbeat (lease-client RENEW_MS). They
+  // used to live INSIDE the personal sync space, so every renew became a git
+  // commit: 93% of all file-changes in the real Personal repo were lease writes,
+  // driving it to 30k commits / 673 MB and starving genuine conversation syncs.
+  // The writer now targets userData, and this entry is the belt-and-braces guard
+  // so a legacy or stray Leases/ dir under a space can never be shipped again.
+  it('ignores lease heartbeat files under a space', () => {
+    expect(DEFAULT_IGNORES).toContain('Leases/');
+    expect(isIgnoredPath('Leases/8f3a-1234.json')).toBe(true);
+    expect(isIgnoredPath('Personal/Leases/8f3a-1234.json')).toBe(true);
+  });
+
+  it('does NOT ignore a user file or folder merely NAMED like it', () => {
+    expect(isIgnoredPath('Leases.md')).toBe(false);
+    expect(isIgnoredPath('docs/Leases-2026.xlsx')).toBe(false);
+  });
+});
+
 describe('DEFAULT_IGNORES — import temps', () => {
   // Two INDEPENDENT ignore lists cover the "+ Add file" import temp: discovery's
   // isNoiseFile (hides it from Project Files) and this one (stops sync shipping

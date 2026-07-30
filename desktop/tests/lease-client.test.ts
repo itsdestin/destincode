@@ -39,7 +39,12 @@ describe('lease-client', () => {
     client = createLeaseClient({
       deviceId: DEVICE_ID,
       deviceName: DEVICE_NAME,
-      personalRoot: () => tmpRoot,
+      // leaseDir is the DIRECTORY holding lease files, and in production it
+      // resolves under userData — NOT under the personal sync space. Leases are a
+      // 30s heartbeat; writing them into a synced folder made every renew a git
+      // commit (2026-07-30 churn fix). The tests keep the same on-disk shape so
+      // the existing fallback assertions still describe real layout.
+      leaseDir: () => path.join(tmpRoot, 'Leases'),
       hubRequest: hubRequest as any,
       onTakeoverRequest: takeoverSpy as any,
     });
