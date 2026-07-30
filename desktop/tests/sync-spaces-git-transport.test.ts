@@ -179,6 +179,73 @@ describe('GitTransport specifics', () => {
     expect(await t.gitDirSizeBytes(empty)).toBe(0);
     await h.cleanup();
   });
+
+  // ---- Honest failures (2026-07-30 spec §1). Pins the 2026-07-27 bug: a
+  // crash-truncated loose object made every git op fail while push() returned
+  // {pushed:false} ("nothing to push") — sync dead 3 days, panel green. ----
+
+  /** Zero-byte-truncate the loose object HEAD points at — the exact artifact a
+   *  power loss leaves (rename landed, content never flushed). */
+  function corruptHeadObject(root: string): void {
+    const gd = path.join(root, '.youcoded', 'sync.git');
+    const env = { ...process.env, GIT_DIR: gd };
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { env }).toString().trim();
+    const objectPath = path.join(gd, 'objects', head.slice(0, 2), head.slice(2));
+    // Git writes loose objects read-only (mode 0444) — truncateSync needs
+    // write permission first, or it fails EACCES before it can corrupt anything.
+    fs.chmodSync(objectPath, 0o644);
+    fs.truncateSync(objectPath, 0);
+  }
+
+  it('push() on a crash-corrupted repo throws coded repo-corrupt — never a silent {pushed:false}', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');           // HEAD + origin/main now exist
+    corruptHeadObject(a.root);
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second');
+    await expect(h.transport.push(a, 'after crash')).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
+    await h.cleanup();
+  });
+
+  it('pull() on a crash-corrupted repo throws coded repo-corrupt — never a silent {updated:false}', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');
+    corruptHeadObject(a.root);
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second'); // dirty → pull's snapshot commit must run
+    await expect(h.transport.pull(a)).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
+    await h.cleanup();
+  });
+
+  it('benign paths stay silent: first push against an empty remote still works end-to-end', async () => {
+    // Guards the allowlist: unborn origin/main ("Invalid revision range"),
+    // empty-remote fetch ("couldn't find remote ref") must NOT throw.
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    const pulled = await h.transport.pull(a);          // empty remote — benign
+    expect(pulled.updated).toBe(false);
+    const r = await h.transport.push(a, 'first push'); // no origin/main yet — benign probe failure
+    expect(r.pushed).toBe(true);
+    await h.cleanup();
+  });
+
+  it('an unexplained local git failure surfaces the real stderr, not a guess', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');
+    // Make the repo unwritable in a NON-corruption way: replace the objects dir
+    // with a file → git add fails with an EACCES/ENOTDIR-flavored error.
+    const objects = path.join(a.root, '.youcoded', 'sync.git', 'objects');
+    fs.rmSync(objects, { recursive: true, force: true });
+    fs.writeFileSync(objects, 'not a directory');
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second');
+    await expect(h.transport.push(a, 'x')).rejects.toThrow(/Sync failed for|needs repair/);
+    await h.cleanup();
+  });
 });
 
 // Stale git-lock recovery: a git write killed mid-operation (5-min timeout

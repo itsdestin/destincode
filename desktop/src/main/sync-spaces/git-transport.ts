@@ -13,6 +13,7 @@ import { promisify } from 'util';
 import { DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES, conflictCopyName } from './guards';
 import { nextGcCounter } from './gc-policy';
 import { GITHUB_AUTH_ERROR_CODE } from '../github-client';
+import { matchGitCorruption, isNetworkFailureStderr, stderrTail, REPO_CORRUPT_ERROR_CODE } from '../sync-error-classifier';
 import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -90,6 +91,15 @@ function throwAuthFailure(auth: { message: string; code: string }): never {
   e.syncErrorCode = auth.code;
   throw e;
 }
+
+/** Throw the corruption as a coded error. The engine matches the CODE (never
+ *  prose) to trigger repair(); the message still carries the real git line per
+ *  docs/error-message-standards.md. */
+function throwRepoCorrupt(spaceId: string, op: string, detail: string): never {
+  const e: any = new Error(`Sync data for ${spaceId} needs repair (git ${op}: ${detail})`);
+  e.syncErrorCode = REPO_CORRUPT_ERROR_CODE;
+  throw e;
+}
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
 const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
 // Bound the recursive size walk so a pathological repo can never hang the probe.
@@ -100,6 +110,23 @@ const SIZE_WALK_MAX_ENTRIES = 200_000;
 const SIZE_WALK_MAX_DEPTH = 100;
 
 interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: boolean; }
+
+// Benign for local WRITE ops (add/commit/checkout — anything that takes a git
+// lock): a *.lock already held by a genuinely-live writer (a second app
+// instance, or this same process's prior sync cycle still finishing under
+// contention). This is transient and self-resolving — reapStaleLocks heals it
+// once it goes stale, or the other writer simply finishes — so throwing here
+// would alarm the user over a condition the very next poll cycle clears on its
+// own. Distinct from corruption: git created the lock file itself; nothing is
+// damaged.
+const LOCK_CONTENDED = /Unable to create .*\.lock['"]?: File exists/i;
+
+// Benign for a push: the local branch has NEVER had a commit (a fresh space
+// with zero history) — git refuses "push -u origin main" with this exact
+// message since there is no local `main` ref to push at all. Equivalent to
+// "nothing to push", just via a different git code path than the
+// already-handled ahead-count===0 case (which requires origin/main to exist).
+const NOTHING_TO_PUSH_YET = /src refspec .* does not match any/i;
 
 export class GitTransport implements SyncTransport {
   private deviceName: string;
@@ -199,6 +226,29 @@ export class GitTransport implements SyncTransport {
     }
   }
 
+  /** Guard for LOCAL git ops (add/diff/commit/checkout/rev-parse…): exit 0
+   *  passes; corruption throws coded repo-corrupt; anything else throws with
+   *  the REAL stderr. WHY (2026-07-27 incident): the old shape returned benign
+   *  results on failure — a corrupt repo reported "nothing to push" for three
+   *  days while the panel showed green. Benign is now an explicit allowlist
+   *  via the `benign` predicate, never the fallthrough. */
+  private assertLocalOk(space: SyncSpace, op: string, r: ExecResult, benign?: (r: ExecResult) => boolean): void {
+    if (r.code === 0) return;
+    if (benign?.(r)) return;
+    const corrupt = matchGitCorruption(r.stderr);
+    if (corrupt) throwRepoCorrupt(space.id, op, corrupt);
+    throw new Error(`Sync failed for ${space.id} (git ${op}): ${stderrTail(r.stderr)}`);
+  }
+
+  /** Corruption-only guard for PROBE ops whose non-zero exit is often expected
+   *  (ahead/behind rev-list before origin/main exists). Keeps the probe's
+   *  benign fallthrough but refuses to let corruption ride it. */
+  private throwIfCorrupt(space: SyncSpace, op: string, r: ExecResult): void {
+    if (r.code === 0) return;
+    const corrupt = matchGitCorruption(r.stderr);
+    if (corrupt) throwRepoCorrupt(space.id, op, corrupt);
+  }
+
   /** Read one side of a conflicted file (stage 2 = ours, 3 = theirs) as raw
    *  BYTES. The string-returning git() helper must never be used for file
    *  CONTENT: utf8 decoding mangles binary files, and a too-small buffer cap
@@ -255,18 +305,28 @@ export class GitTransport implements SyncTransport {
   /** Stage everything, unstage+exclude oversize files, commit, push. */
   async push(space: SyncSpace, message: string): Promise<PushResult> {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
-    await this.git(space, ['add', '-A']);
+    const add = await this.git(space, ['add', '-A']);
+    this.assertLocalOk(space, 'add', add, (r) => LOCK_CONTENDED.test(r.stderr));
     const oversize = await this.unstageOversize(space);
     const staged = await this.git(space, ['diff', '--cached', '--name-only']);
+    this.assertLocalOk(space, 'diff', staged);
     let commit: string | undefined;
     if (staged.stdout.trim().length > 0) {
       const c = await this.git(space, ['commit', '-m', message]);
-      if (c.code !== 0) return { pushed: false, oversize };
-      commit = (await this.git(space, ['rev-parse', 'HEAD'])).stdout.trim();
+      // THE 2026-07-27 bug site: this used to `return {pushed:false}` on ANY
+      // failure — indistinguishable from "nothing to push", so a corrupt repo
+      // synced "green" forever. Benign allowlist: a commit race where another
+      // cycle already committed the staged set ("nothing to commit").
+      this.assertLocalOk(space, 'commit', c, (r) => /nothing to commit/i.test(r.stdout + r.stderr));
+      const head = await this.git(space, ['rev-parse', 'HEAD']);
+      this.assertLocalOk(space, 'rev-parse', head);
+      commit = head.stdout.trim();
     }
     if (!(await this.hasRemote(space))) return { pushed: false, commit, oversize };
     const ahead = await this.git(space, ['rev-list', '--count', 'origin/main..main']);
-    // origin/main may not exist yet (first push) — rev-list fails; push anyway.
+    // origin/main may not exist yet (first push) — rev-list fails benignly;
+    // push anyway. Corruption must not ride that fallthrough.
+    this.throwIfCorrupt(space, 'rev-list', ahead);
     if (ahead.code === 0 && ahead.stdout.trim() === '0' && !commit) return { pushed: false, oversize };
     const p = await this.git(space, ['push', '-u', 'origin', 'main']);
     if (p.code !== 0) {
@@ -284,6 +344,15 @@ export class GitTransport implements SyncTransport {
         // token would otherwise look like "nothing to push" forever.
         const auth = classifyGitAuthFailure(retry.stderr, retry.tokenUsed);
         if (auth) throwAuthFailure(auth);
+        this.throwIfCorrupt(space, 'push', retry);
+        // Offline stays silent by design (spec §13), and so does "nothing to
+        // push yet" (a fresh space with zero commits ever — git refuses the
+        // push because local `main` doesn't exist as a ref at all). Every
+        // OTHER push refusal (deleted repo, server-side hook, …) surfaces with
+        // the real stderr.
+        if (!isNetworkFailureStderr(retry.stderr) && !NOTHING_TO_PUSH_YET.test(retry.stderr)) {
+          throw new Error(`Sync push failed for ${space.id}: ${stderrTail(retry.stderr)}`);
+        }
       }
       return { pushed: retry.code === 0, commit, oversize, updated: recovery.updated, conflictCopies: recovery.conflictCopies };
     }
@@ -320,31 +389,43 @@ export class GitTransport implements SyncTransport {
   async pull(space: SyncSpace): Promise<PullResult> {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     // Snapshot local changes first so merge never runs on a dirty tree.
-    await this.git(space, ['add', '-A']);
+    const add = await this.git(space, ['add', '-A']);
+    this.assertLocalOk(space, 'add', add, (r) => LOCK_CONTENDED.test(r.stderr));
     await this.unstageOversize(space);
-    const dirty = (await this.git(space, ['diff', '--cached', '--name-only'])).stdout.trim();
-    if (dirty) await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
+    const dirtyR = await this.git(space, ['diff', '--cached', '--name-only']);
+    this.assertLocalOk(space, 'diff', dirtyR);
+    const dirty = dirtyR.stdout.trim();
+    if (dirty) {
+      const snap = await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
+      this.assertLocalOk(space, 'commit', snap, (r) => /nothing to commit/i.test(r.stdout + r.stderr));
+    }
 
     if (!(await this.hasRemote(space))) return { updated: false, conflictCopies: [] };
     const fetch = await this.git(space, ['fetch', 'origin', 'main']);
     if (fetch.code !== 0) {
       // Auth refusals must NOT masquerade as offline: "offline" is silent by
       // design (spec §13), so an expired/revoked credential would read as a
-      // healthy-but-idle device forever. Only classified AUTH failures throw;
-      // every other fetch failure keeps the never-block offline contract.
+      // healthy-but-idle device forever. Same for corruption (2026-07-30 spec).
+      // Every remaining fetch failure keeps the never-block offline contract.
       const auth = classifyGitAuthFailure(fetch.stderr, fetch.tokenUsed);
       if (auth) throwAuthFailure(auth);
+      this.throwIfCorrupt(space, 'fetch', fetch);
       return { updated: false, conflictCopies: [] }; // offline — never block (spec §13)
     }
     // Fix: a fresh device has no local `main` yet (nothing committed). `main..origin/main`
     // errors on an unborn branch, so adopt the remote wholesale on first sync — this is
     // what lets a second device actually receive the first device's push.
     const localMain = await this.git(space, ['rev-parse', '--verify', '--quiet', 'main']);
+    this.throwIfCorrupt(space, 'rev-parse', localMain);
     if (localMain.code !== 0) {
       const co = await this.git(space, ['checkout', '-B', 'main', 'origin/main']);
-      return { updated: co.code === 0, conflictCopies: [] };
+      // Used to return {updated:false} on failure — silent. A failed remote
+      // adoption is a real error (corrupt local objects, unreadable remote tip).
+      this.assertLocalOk(space, 'checkout', co);
+      return { updated: true, conflictCopies: [] };
     }
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);
+    this.throwIfCorrupt(space, 'rev-list', behind);
     if (behind.code !== 0 || behind.stdout.trim() === '0') return { updated: false, conflictCopies: [] };
 
     // Fix: --allow-unrelated-histories covers the mainline "second device" case —
