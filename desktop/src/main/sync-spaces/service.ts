@@ -46,6 +46,25 @@ let lastSyncByDevice: Record<string, number> = {};
 // (the status:data push) — the two paths SyncPanel reads recency from.
 export function getLastSyncByDevice(): Record<string, number> { return lastSyncByDevice; }
 
+/** Max persisted last-successful-sync across this device's spaces (ms), or
+ *  null when sync is off / has never succeeded. Evidence-grade: recordSyncSuccess
+ *  stamps only on real 'synced' events (transport failures now THROW — spec §1),
+ *  so this can no longer advance while sync is broken. */
+export function getSelfLastSyncEpochMs(): number | null {
+  if (!manager || !roots) return null;
+  let max: number | null = null;
+  for (const s of roots.spaces()) {
+    const t = manager.lastSyncFor(s.id);
+    if (t != null && (max === null || t > max)) max = t;
+  }
+  return max;
+}
+
+/** Live: any space's sync currently in flight. */
+export function isSyncSpacesSyncing(): boolean {
+  return engine?.anySyncing() ?? false;
+}
+
 // Auth store facade (marketplace token) wired from main.ts. Read lazily per
 // connect so a mid-session sign-in/out takes effect without an app restart.
 // Kept as a narrow facade so service.ts doesn't import the whole auth store.

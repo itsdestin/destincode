@@ -233,6 +233,12 @@ export class SpaceSyncEngine {
     return [...this.states.keys()];
   }
 
+  /** True while any space's sync chain is in flight — feeds the self row's
+   *  live "Syncing…" band (the legacy .sync-lock stat never fires for spaces). */
+  anySyncing(): boolean {
+    return [...this.states.values()].some(s => s.syncing);
+  }
+
   /** Detach ONE space (Stop-syncing) without touching the folder or the others.
    *  Delete from the map FIRST so a finishing sync's queued rerun early-returns
    *  in syncSpace (same ordering as stop()); then close the watcher and await any
