@@ -671,6 +671,29 @@ body[data-mode="buddy-chat"] #theme-bg {
   contain: layout style;
 }
 
+/* Perf: give perpetually-animating elements their own compositor layer.
+   Tailwind's `animate-pulse` / `animate-spin` are infinite, so anything wearing
+   them animates for as long as it is on screen. Without layer promotion
+   Chromium repaints and re-rasterizes the WHOLE WINDOW on every frame of that
+   animation — the cost is per-frame, not per-element, so ONE small pulsing dot
+   is enough to pay it in full.
+   Measured 2026-07-30 on a 2560x1600@180Hz panel: a single 64px `animate-pulse`
+   div took the idle app from 4% to 43% of one CPU core; adding seven more cost
+   only ~9% on top (confirming the cost is the frame, not the element). Adding
+   `will-change` here drops that same animation back to ~3.5% — a 12x saving —
+   with the animation still running and visually identical.
+   opacity/transform are both compositor-driven, so promotion moves the work off
+   the main thread entirely. Scoped to these two utility classes (not a blanket
+   rule) because `will-change` permanently costs GPU memory for the promoted
+   layer, and these classes are only ever present while something is animating.
+   No stacking-context risk: an element mid-animation on opacity (<1) or
+   transform ALREADY establishes a stacking context and containing block, so
+   `will-change` on those same two properties changes no layering or layout —
+   it only tells the compositor earlier, which is what buys the promotion.
+   Full investigation: docs/active/investigations/2026-07-30-idle-cpu-burn.md */
+.animate-pulse { will-change: opacity; }
+.animate-spin { will-change: transform; }
+
 /* Status bar — transparent in framed mode (chrome-glass behind provides
    the visible chrome surface). Floating-chrome themes add the pill
    background back via the [data-chrome-style='floating'] rules below. */
