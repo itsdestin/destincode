@@ -17,8 +17,13 @@ import path from 'path';
  * deleting it makes the next `add` regenerate the object. (16 of these across
  * three crashes in the 2026-07-27 Z13 incident.)
  *
- * Best-effort per file; one-level walk matching git's objects/<2-hex>/<38-hex>
- * layout (pack/ and info/ contain no zero-byte hazards worth recursing for).
+ * Best-effort per file; walks `objects/<entry>/` one level deep. That level
+ * covers both the loose-object hash dirs (`objects/<2-hex>/<38-hex>`) AND
+ * `objects/pack/` and `objects/info/` themselves — a zero-byte `.pack`,
+ * `.idx`, or `commit-graph` file in those dirs is equally poison (same
+ * name-exists-but-empty trap as a loose object), so this loop stats and
+ * deletes zero-byte files inside them too. It does not recurse past that one
+ * level — nothing in git's objects layout sits deeper.
  */
 export function deleteZeroByteObjects(gitDir: string): number {
   const objects = path.join(gitDir, 'objects');

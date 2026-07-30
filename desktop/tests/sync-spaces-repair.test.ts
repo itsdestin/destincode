@@ -95,9 +95,28 @@ describe('GitTransport.repair (real git)', () => {
     execFileSync('git', ['--git-dir', w.bare, 'update-ref', 'refs/heads/main', prev]);       // remote never saw the crash commit
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', prev], { env: w.gitEnv }); // local mirror agrees
 
+    // Pin BOTH the tier and the worktree-untouched property before repairing:
+    // Tier 1 must not create a `.broken-*` backup sibling (that's Tier 2's
+    // signature — it renames gitDir aside then re-inits, which recreates
+    // gitDir and would make a bare fs.existsSync(gitDir) check pass under
+    // EITHER tier), and Tier 1 must not write to worktree files at all.
+    const strandedBefore = fs.statSync(path.join(w.root, 'stranded.md'));
+
     await expect(w.transport.push(w.space, 'x')).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
     await w.transport.repair!(w.space);
-    expect(fs.existsSync(w.gitDir)).toBe(true);                    // Tier 1 — repo NOT moved aside
+    expect(fs.existsSync(w.gitDir)).toBe(true);
+    // Tier 1 discriminator: no `sync.git.broken-*` sibling in .youcoded. Only
+    // Tier 2 creates one (brokenBackupName + rename), so this fails if repair
+    // silently took the Tier 2 path instead.
+    const siblings = fs.readdirSync(path.join(w.root, '.youcoded'));
+    expect(siblings.some(e => e.startsWith('sync.git.broken-'))).toBe(false);
+    // Worktree-untouched discriminator, pinned specifically to Tier 1 (the
+    // riskier tier — it manipulates refs and deletes the index in place;
+    // Tier 2's rename+init never goes near the worktree by construction, so
+    // this file's mtime would survive Tier 2 regardless of a worktree-write
+    // bug). If Tier 1 ever grew a checkout/reset --hard, this fails.
+    expect(fs.readFileSync(path.join(w.root, 'stranded.md'), 'utf8')).toBe('local only');
+    expect(fs.statSync(path.join(w.root, 'stranded.md')).mtimeMs).toBe(strandedBefore.mtimeMs);
     fs.writeFileSync(path.join(w.root, 'after-heal.md'), 'post');
     const r = await w.transport.push(w.space, 'healed snapshot');
     expect(r.pushed).toBe(true);
@@ -139,7 +158,14 @@ describe('GitTransport.repair (real git)', () => {
     w.cleanup();
   });
 
-  it('worktree files are NEVER touched by repair', async () => {
+  // NOTE: this exercises Tier 2 only. The seed push makes HEAD == origin/main,
+  // so truncating HEAD's object also destroys origin/main's closure, which
+  // fails Tier 1's cat-file verification and falls through to Tier 2 every
+  // time. The Tier-1-specific worktree-untouched pin lives in the Tier 1 test
+  // above — Tier 1 is the riskier path (it manipulates refs and deletes the
+  // index in place) and needs its own coverage rather than inheriting this
+  // one by coincidence.
+  it('worktree files are NEVER touched by repair (Tier 2 path)', async () => {
     const w = makeWorld();
     await w.transport.init(w.space);
     await w.transport.setRemote(w.space, w.bare);

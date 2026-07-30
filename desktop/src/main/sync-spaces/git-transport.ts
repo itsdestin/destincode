@@ -636,6 +636,15 @@ export class GitTransport implements SyncTransport {
     const gd = this.gitDir(space);
     // ---- Tier 1: surgical, offline-capable ----
     if (fs.existsSync(path.join(gd, 'HEAD'))) {
+      // Reap first: assertLocalOk's own comment above notes that a power-loss
+      // crash's classic signature is an orphaned *.lock (not yet past
+      // lockStaleMs) sitting alongside a truncated object — exactly the state
+      // repair() is called to fix. Without this, the update-ref below hits
+      // "Unable to create '...refs/heads/main.lock': File exists" against a
+      // repo that's otherwise perfectly repairable, and a stale-but-provably-
+      // dead lock (reapStaleLocks only removes locks older than lockStaleMs)
+      // sends a Tier-1-fixable repo down the more destructive Tier 2 path.
+      this.reapStaleLocks(space);
       deleteZeroByteObjects(gd);
       const tip = await this.git(space, ['rev-parse', '--verify', '--quiet', 'origin/main']);
       if (tip.code === 0) {
