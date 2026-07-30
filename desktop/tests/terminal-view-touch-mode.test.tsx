@@ -28,6 +28,13 @@ vi.mock('@xterm/xterm', () => {
       this.focus = vi.fn();
       this.blur = vi.fn();
       this.dispose = vi.fn();
+      // Every render-path terminal must expose clearTextureAtlas: TerminalView
+      // calls it on hidden → visible and on the debounced resize to heal a
+      // corrupt WebGL glyph atlas. Omitting it here throws inside the
+      // visibility effect and fails every test in this file, not just a
+      // glyph-related one. Behaviour is pinned in
+      // terminal-glyph-atlas-heal.test.tsx.
+      this.clearTextureAtlas = vi.fn();
       this.hasSelection = vi.fn().mockReturnValue(false);
       this.getSelection = vi.fn().mockReturnValue('');
       this.paste = vi.fn();
