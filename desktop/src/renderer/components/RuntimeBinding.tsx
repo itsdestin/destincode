@@ -206,6 +206,73 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
   };
 }
 
+// The native-only extras that are NOT model selection: the harness preset and
+// the local-engine memory-fit warning. Split out so the unified <ModelPicker>
+// can host them without dragging in the Runtime toggle and the provider/model
+// <Select> pair it replaces. RuntimeBindingFields below renders this too, so
+// there is one copy while both paths exist.
+export function NativeExtras({ nb, preset, onPreset }: {
+  nb: NativeBinding & { setBinding: (b: Binding) => void };
+  preset: PresetId;
+  onPreset: (p: PresetId) => void;
+}) {
+  return (
+    <>
+      {/* Preset picker (spec §3.4): the native harness personality —
+          Assistant (asks first) vs Coder (agentic, auto-edits). Both carry
+          the full tool suite; they differ in prompt + starting permission
+          posture. Stamped at create; drives the resolved harnessId. */}
+      <div>
+        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Preset</label>
+        <div className="flex gap-2">
+          {PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onPreset(p.id as PresetId)}
+              aria-pressed={preset === p.id}
+              className={`flex-1 text-left rounded border px-2 py-1.5 ${preset === p.id ? 'border-accent bg-inset' : 'border-edge bg-panel hover:bg-inset'}`}
+            >
+              <div className="text-xs text-fg">{p.name}</div>
+              <div className="text-3xs text-fg-muted leading-snug">{p.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Memory guard (#2): block only when clearly too large; otherwise a
+          warning with a "Show more" detail (overflow + LRU eviction).
+          local-engine models only. */}
+      {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
+        <div
+          className={`text-2xs rounded-sm px-2 py-1.5 border ${
+            nb.memVerdict.verdict === 'too-large'
+              ? 'border-[var(--destructive)] text-fg-2'
+              : 'border-edge bg-well text-fg-dim'
+          }`}
+        >
+          <div className="flex items-start gap-1.5">
+            <span aria-hidden>{nb.memVerdict.verdict === 'too-large' ? '⛔' : '⚠️'}</span>
+            <div className="flex-1 min-w-0">
+              <span>{nb.memVerdict.headline}</span>{' '}
+              <button
+                type="button"
+                onClick={() => nb.setMemDetailOpen((o) => !o)}
+                className="underline text-fg-muted hover:text-fg whitespace-nowrap"
+              >
+                {nb.memDetailOpen ? 'Show less' : 'Show more'}
+              </button>
+              {nb.memDetailOpen && (
+                <p className="mt-1 text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // The Runtime toggle + (when native is chosen) the provider/model picker.
 // Self-gates on native support — renders nothing when there's only one runtime.
 export function RuntimeBindingFields({

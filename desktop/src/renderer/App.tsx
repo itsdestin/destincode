@@ -227,6 +227,17 @@ function AppInner() {
   // Deep-link flag for the Model Providers popup — set by a provider-error
   // bubble's "Open Settings" jump so Settings opens straight to that section.
   const [providersAutoOpen, setProvidersAutoOpen] = useState(false);
+
+  // "Manage models…" in the unified ModelPicker. The picker renders inside
+  // SessionStrip (which HeaderBar owns) and inside ResumeBrowser, so a prop
+  // would have to drill through HeaderBar for a rarely-used escape hatch.
+  // Follows the existing deep-component→top-level-destination pattern
+  // (`youcoded:open-library`, ThemeScreen.tsx:229).
+  useEffect(() => {
+    const open = () => { setProvidersAutoOpen(true); setSettingsOpen(true); };
+    window.addEventListener('youcoded:open-model-providers', open);
+    return () => window.removeEventListener('youcoded:open-model-providers', open);
+  }, []);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
@@ -3055,25 +3066,34 @@ function AppInner() {
                       </div>
                     </div>
                   )}
-                  <div className="flex items-center justify-between">
-                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</label>
-                    {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
-                        the shared Toggle on the danger tone, so theme packs can restyle
-                        it (changes 15/17). The <label> beside it isn't bound to this
-                        control, so it carries its own aria-label. */}
-                    <Toggle
-                      checked={welcomeDangerous}
-                      onChange={setWelcomeDangerous}
-                      tone="danger"
-                      aria-label="Skip Permissions"
-                    />
-                  </div>
-                  {/* Warning text was a raw text-[#DD4444] hex — the THIRD copy of
-                      this same string (ResumeBrowser and SessionStrip have the
-                      others). Change 17 puts it on the destructive token so it
-                      tracks the toggle above it under a community theme. */}
-                  {welcomeDangerous && (
-                    <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                  {/* Skip Permissions is CLAUDE-CODE ONLY — it bypasses the CLI's
+                      permission flow, and a native session has neither a PTY nor
+                      that flow, so on a native runtime the control did nothing.
+                      Same gate as SessionStrip's create form and the Resume
+                      Browser's per-row one. */}
+                  {welcomeRuntime !== 'native' && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</label>
+                        {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
+                            the shared Toggle on the danger tone, so theme packs can restyle
+                            it (changes 15/17). The <label> beside it isn't bound to this
+                            control, so it carries its own aria-label. */}
+                        <Toggle
+                          checked={welcomeDangerous}
+                          onChange={setWelcomeDangerous}
+                          tone="danger"
+                          aria-label="Skip Permissions"
+                        />
+                      </div>
+                      {/* Warning text was a raw text-[#DD4444] hex — the THIRD copy of
+                          this same string (ResumeBrowser and SessionStrip have the
+                          others). Change 17 puts it on the destructive token so it
+                          tracks the toggle above it under a community theme. */}
+                      {welcomeDangerous && (
+                        <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                      )}
+                    </>
                   )}
                   <div className="flex gap-2">
                     {/* secondary, not ghost: this was the filled-grey family
@@ -3102,7 +3122,9 @@ function AppInner() {
                         }
                         createSession(
                           welcomeCwd,
-                          welcomeDangerous,
+                          // Hidden for native (see the gate above), so a value left
+                          // over from an earlier Claude pick must not ride along.
+                          welcomeRuntime === 'native' ? false : welcomeDangerous,
                           welcomeModel,
                           welcomeRuntime,
                           undefined, // welcome form has no launch-in-new-window toggle
@@ -3113,11 +3135,11 @@ function AppInner() {
                         setWelcomeRuntime('claude');
                       }}
                       disabled={welcomeNb.nativeCreateBlocked}
-                      variant={welcomeDangerous ? 'danger' : 'primary'}
+                      variant={welcomeDangerous && welcomeRuntime !== 'native' ? 'danger' : 'primary'}
                       size="lg"
                       className="flex-1 py-1.5"
                     >
-                      {welcomeDangerous ? 'Create (Dangerous)' : 'Create Session'}
+                      {welcomeDangerous && welcomeRuntime !== 'native' ? 'Create (Dangerous)' : 'Create Session'}
                     </Button>
                   </div>
                 </div>

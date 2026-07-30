@@ -83,22 +83,37 @@ async function expandRow(name: string) {
   fireEvent.click(await screen.findByText(name));
 }
 
+/** The model list moved behind a dropdown (2026-07-30, unified ModelPicker), so
+ *  reaching a model row now takes a click on the trigger first. Every
+ *  BEHAVIOURAL assertion below is unchanged — what moved is the DOM path to it.
+ *  In particular "prefill enables Resume without any click" still asserts
+ *  exactly that: it checks the button BEFORE opening the dropdown. */
+async function openModelPicker() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Model' }));
+  return screen.findByPlaceholderText('Search all models…');
+}
+
 describe('ResumeBrowser — native resume model selector (Task 6)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders NativeModelSelect for a native row (search box + grouped models), not the CC model/skip-permissions controls', async () => {
+  it('offers the model picker for a native row, listing every native model, and no CC skip-permissions control', async () => {
     mockWindowClaude([nativeRow()]);
     render(<ResumeBrowser open={true} onClose={() => {}} onResume={() => {}} />);
     await expandRow('Native Chat');
 
-    // NativeModelSelect's search box + both provider groups' models render.
-    expect(await screen.findByPlaceholderText('Search models…')).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.getByText('GPT-5')).toBeInTheDocument();
-      expect(screen.getByText('Claude X')).toBeInTheDocument();
-    });
+    // Searching (not the default favourites view) is what lists the catalogue.
+    // Queried by ROLE because each row's text is split across two elements —
+    // the model label and the " · <source>" span — so a text matcher misses it.
+    await openModelPicker();
+    const field = screen.getByPlaceholderText('Search all models…');
+
+    fireEvent.change(field, { target: { value: 'GPT' } });
+    expect(await screen.findByText(/GPT-5/)).toBeInTheDocument();
+
+    fireEvent.change(field, { target: { value: 'Claude X' } });
+    expect(await screen.findByText(/Claude X/)).toBeInTheDocument();
     // CC-only controls must NOT appear for a native row.
     expect(screen.queryByText('Skip Permissions')).not.toBeInTheDocument();
   });
@@ -110,15 +125,13 @@ describe('ResumeBrowser — native resume model selector (Task 6)', () => {
     })]);
     render(<ResumeBrowser open={true} onClose={() => {}} onResume={onResume} />);
     await expandRow('Native Chat');
-    await screen.findByPlaceholderText('Search models…');
 
-    // Auto-selected: the matching row shows selected (aria-pressed) and Resume enables.
-    await waitFor(() => {
-      const gpt5 = screen.getByText('GPT-5').closest('button')!;
-      expect(gpt5).toHaveAttribute('aria-pressed', 'true');
-    });
+    // THE point of this test: no interaction at all. The prefill resolves and
+    // Resume enables without the dropdown ever being opened.
     const resumeBtn = await screen.findByRole('button', { name: 'Resume Session' });
     await waitFor(() => expect(resumeBtn).not.toBeDisabled());
+    // And the trigger names the resolved model, so the pick is visible unopened.
+    await waitFor(() => expect(screen.getByText(/GPT-5/)).toBeInTheDocument());
 
     fireEvent.click(resumeBtn);
     expect(onResume).toHaveBeenCalledWith(
@@ -137,16 +150,15 @@ describe('ResumeBrowser — native resume model selector (Task 6)', () => {
     })]);
     render(<ResumeBrowser open={true} onClose={() => {}} onResume={onResume} />);
     await expandRow('Native Chat');
-    await screen.findByPlaceholderText('Search models…');
-    await waitFor(() => expect(screen.getByText('GPT-5')).toBeInTheDocument());
 
-    // Nothing pre-selected — Resume stays disabled.
+    // Nothing pre-selected — Resume stays disabled, unopened.
     const resumeBtn = await screen.findByRole('button', { name: 'Resume Session' });
     expect(resumeBtn).toBeDisabled();
-    expect(screen.getByText('GPT-5').closest('button')).toHaveAttribute('aria-pressed', 'false');
 
     // Manual pick enables Resume and flows through onResume as the 8th arg.
-    fireEvent.click(screen.getByText('Claude X'));
+    await openModelPicker();
+    fireEvent.change(screen.getByPlaceholderText('Search all models…'), { target: { value: 'Claude X' } });
+    fireEvent.click(await screen.findByText(/Claude X/));
     await waitFor(() => expect(resumeBtn).not.toBeDisabled());
     fireEvent.click(resumeBtn);
     expect(onResume).toHaveBeenCalledWith(
@@ -163,7 +175,8 @@ describe('ResumeBrowser — native resume model selector (Task 6)', () => {
     await expandRow('CC Chat');
 
     expect(await screen.findByText('Skip Permissions')).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('Search models…')).not.toBeInTheDocument();
+    // The picker is closed by default, so its search field is absent until opened.
+    expect(screen.queryByPlaceholderText('Search all models…')).not.toBeInTheDocument();
     // CC Resume never gates on a native binding.
     const resumeBtn = screen.getByRole('button', { name: 'Resume Session' });
     expect(resumeBtn).not.toBeDisabled();

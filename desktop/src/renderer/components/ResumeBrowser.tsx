@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { Button, Toggle, LoadingState, EmptyState } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -18,15 +17,8 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
-import NativeModelSelect from './NativeModelSelect';
+import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
-
-const MODEL_LABELS: Record<string, string> = {
-  sonnet: 'Sonnet',
-  'opus[1m]': 'Opus',
-  haiku: 'Haiku',
-  fable: 'Fable',
-};
 
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
@@ -487,6 +479,24 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   };
 
+  // Bridge the unified <ModelPicker> onto the two pieces of resume state that
+  // already existed: `resumeModel` (a Claude alias) and `nativeResumeBinding`.
+  // Which one a row uses is decided by its own provider, so the picker is
+  // scoped and only one can ever be in play.
+  const resumeChoice = (s: PastSession): ModelChoice | null => {
+    if (s.provider === 'native') {
+      return nativeResumeBinding
+        ? { runtime: 'native', providerId: nativeResumeBinding.providerId, modelId: nativeResumeBinding.modelId }
+        : null;
+    }
+    return resumeModel ? { runtime: 'claude', alias: resumeModel } : null;
+  };
+
+  const applyResumeChoice = (s: PastSession, c: ModelChoice) => {
+    if (c.runtime === 'native') setNativeResumeBinding({ providerId: c.providerId, modelId: c.modelId });
+    else setResumeModel(c.alias);
+  };
+
   const handleConfirmResume = async (s: PastSession) => {
     // Native sessions: the CC-only model / skip-permissions choices are
     // irrelevant (no PTY, no /model or /effort), so pass the current (default)
@@ -508,36 +518,38 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
   if (!open) return null;
 
+  // The expanded panel is now INSIDE the card (see renderSessionRow), so it
+  // drops its own border/fill and separates with a rule instead. The old
+  // `bg-inset/50` also had to go: the protection cascade that keeps nested
+  // surfaces opaque inside an overlay is `.layer-surface .bg-inset`
+  // (globals.css:951), and an opacity modifier emits `bg-inset/50` — a
+  // different class the cascade does not match, so it would have gone
+  // translucent on wallpaper themes.
   const renderExpandedOptions = (s: PastSession) => {
   return (
-    <div className="px-4 pb-2">
-      <div className="rounded-lg bg-inset/50 border border-edge-dim p-3 flex flex-col gap-2">
-        {/* Model + Skip Permissions are Claude-Code-only. A native session
-            resumes with the model binding stored in its header (there's nothing
-            to choose here) and has no PTY permission flow, so both are hidden
-            for native rows. */}
-        {s.provider !== 'native' ? (
-          <>
-            {/* Model selector */}
-            <div>
-              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-              <div className="flex gap-1">
-                {MODELS.map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setResumeModel(m)}
-                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
-                      resumeModel === m
-                        ? 'bg-accent text-on-accent font-medium'
-                        : 'bg-inset text-fg-dim hover:bg-edge'
-                    }`}
-                  >
-                    {MODEL_LABELS[m] || m}
-                  </button>
-                ))}
-              </div>
-            </div>
+    <div className="border-t border-edge-dim">
+      <div className="p-3 flex flex-col gap-2">
+        {/* ONE model control for both runtimes. Was two: a Claude alias button
+            row here and NativeModelSelect below, which is the duplication this
+            picker exists to end. The list is SCOPED to the row's own runtime —
+            a resume cannot move a conversation across runtimes, so offering the
+            other side would be a pick that cannot be honoured. */}
+        <div onClick={(e) => e.stopPropagation()}>
+          <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
+          <ModelPicker
+            value={resumeChoice(s)}
+            onSelect={(c) => applyResumeChoice(s, c)}
+            includeClaude={s.provider !== 'native'}
+            includeNative={s.provider === 'native'}
+            prefill={s.lastUsedModel}
+            onManageModels={() => window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'))}
+          />
+        </div>
 
+        {/* Skip Permissions is Claude-Code-only — a native session has no PTY
+            permission flow. */}
+        {s.provider !== 'native' && (
+          <>
             {/* Skip Permissions */}
             <div className="flex items-center justify-between">
               <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
@@ -562,22 +574,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
             )}
           </>
-        ) : (
-          <div>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-            {/* Task 6 — native resume ALWAYS offers this selector (never
-                auto-launches a binding). Prefilled from the conversation's
-                synced lastUsedModel when it matches a model available on
-                THIS device; no local match leaves it un-prefilled — never an
-                error, never a substitute. onSelect both handles a manual pick
-                AND the (only-once, first-load) prefill auto-select. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <NativeModelSelect
-                prefill={s.lastUsedModel}
-                onSelect={(binding) => setNativeResumeBinding(binding)}
-              />
-            </div>
-          </div>
         )}
 
         {/* Launch in new window — hidden on remote/Android (single-window) */}
@@ -667,21 +663,62 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   );
   };
 
-  const renderSessionRow = (s: PastSession, showPath?: boolean) => (
-    <div key={s.sessionId}>
+  const renderSessionRow = (s: PastSession, showPath?: boolean) => {
+    const isExpanded = expandedId === s.sessionId;
+    // Unresumable rows are inert: no card hover, no expand. See the note on the
+    // click handler below for the two reasons a row lands here.
+    const inert = !!(s.missingProject || s.notSyncedYet);
+    // px-4 matches the search bar and the project group headers above, so the
+    // card's outer edge lines up with the rest of the panel.
+    return (
+    <div key={s.sessionId} className="px-4 pb-2">
+      {/* Expandable card. The surface is `bg-inset` + `border-edge-dim`, NOT
+          `.layer-surface`.
+          `.layer-surface` is the FLOATING surface — panel fill + border +
+          `0 8px 32px` shadow + the wallpaper glass treatment — and it must
+          appear exactly ONCE per stack. It is right for a card sitting directly
+          on canvas (SkillCard.tsx:117, MarketplaceCard, FilesTab.tsx:393) and
+          for the overlay itself. Nesting one inside another stacks all four:
+          under `[data-wallpaper]` each `.layer-surface` is
+          `color-mix(--panel, panels-opacity%)`, so a card inside the Resume
+          OverlayPanel lays a second helping of --panel over the first and the
+          cards glow brighter than the panel holding them (reported 2026-07-30).
+          CommandDrawer gets away with `.layer-surface` tiles only because its
+          own container is a plain `bg-panel` utility (CommandDrawer.tsx:195),
+          which the wallpaper rule does not touch.
+          `bg-inset` is what every other item nested in an overlay uses —
+          NativeModelSelect, OpenTasksPopup, TagPicker, ContextPopup — and the
+          protection cascade (`.layer-surface .bg-inset`, globals.css:951) keeps
+          it opaque inside a glass panel.
+          Bare `bg-inset` here rather than change 25's `bg-inset/50` in-panel ROW
+          surface (EngineCard.tsx:92, LocalModelsSection, ModelProvidersPopup —
+          24 files): a row is a tint inside a section, a card is an object you
+          click, so it gets the full fill. Worth knowing that the /50 form falls
+          outside the protection cascade above, which matches on `.bg-inset`
+          exactly — so those rows do let a wallpaper through where a bare
+          `bg-inset` would not. That is long-standing and deliberate-looking;
+          it is NOT something to "fix" from this file.
+          `card-interactive` is deliberately absent — its own comment scopes it
+          to cards that ARE a `.layer-surface`, and its hover fill is
+          `var(--inset)`, a no-op on an inset base. Hover moves the border
+          instead, following SettingsPanel.tsx:1833's selectable cards.
+          The card wraps BOTH the trigger and the expanded panel so an open row
+          reads as one object instead of a row with a detached box under it. */}
+      <div
+        className={`rounded-lg border bg-inset overflow-hidden transition-colors ${
+          isExpanded ? 'border-accent' : inert ? 'border-edge-dim' : 'border-edge-dim hover:border-edge'
+        }`}
+      >
       <button
         // Resume is disabled for conversations whose project folder isn't on
         // this device (synced in from elsewhere) OR whose transcript hasn't
         // synced here yet — either way there's nothing to resume into, so the
         // row shows a plain-words note instead of expanding.
-        onClick={() => { if (!s.missingProject && !s.notSyncedYet) handleSelectSession(s.sessionId); }}
-        aria-disabled={s.missingProject || s.notSyncedYet || undefined}
-        className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-          s.missingProject || s.notSyncedYet
-            ? 'text-fg-dim cursor-default'
-            : expandedId === s.sessionId
-              ? 'bg-inset text-fg'
-              : 'text-fg-dim hover:bg-inset hover:text-fg'
+        onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
+        aria-disabled={inert || undefined}
+        aria-expanded={inert ? undefined : isExpanded}
+        className={`w-full text-left p-3 flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          inert ? 'text-fg-dim cursor-default' : isExpanded ? 'text-fg' : 'text-fg-dim'
         }`}
       >
         <div className="flex-1 min-w-0">
@@ -739,9 +776,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           {formatRelativeTime(s.lastModified)}
         </span>
       </button>
-      {expandedId === s.sessionId && renderExpandedOptions(s)}
+      {isExpanded && renderExpandedOptions(s)}
+      </div>
     </div>
-  );
+    );
+  };
 
   return (
     <>

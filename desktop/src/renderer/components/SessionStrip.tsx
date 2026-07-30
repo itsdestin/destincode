@@ -3,11 +3,10 @@ import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
 import { Button, Toggle } from './ui';
 import { isAndroid, isRemoteMode } from '../platform';
-import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
-import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
-import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
+import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -25,13 +24,6 @@ interface SessionEntry {
   // Absent for Claude sessions.
   harnessId?: string;
 }
-
-const MODEL_LABELS: Record<string, string> = {
-  sonnet: 'Sonnet',
-  'opus[1m]': 'Opus',
-  haiku: 'Haiku',
-  fable: 'Fable',
-};
 
 interface Props {
   sessions: SessionEntry[];
@@ -193,6 +185,26 @@ export default function SessionStrip({
   // RuntimeBinding.usePreset). Follows the folder heuristic until the user picks a
   // card, then latches; re-arms every time the form (re)opens via `showNewForm`.
   const { preset, setPreset } = usePreset({ active: showNewForm, cwd: newCwd });
+
+  // Bridge between the unified <ModelPicker> and the create-time state the form
+  // already threads through (runtime / newModel / binding). Kept as a derived
+  // value + one setter so the create path below is untouched while the UI is
+  // being iterated on.
+  const modelChoice: ModelChoice | null = runtime === 'native'
+    ? (nb.effectiveBinding
+        ? { runtime: 'native', providerId: nb.effectiveBinding.providerId, modelId: nb.effectiveBinding.modelId }
+        : null)
+    : { runtime: 'claude', alias: newModel };
+
+  const applyModelChoice = (c: ModelChoice) => {
+    if (c.runtime === 'claude') {
+      setRuntime('claude');
+      setNewModel(c.alias);
+    } else {
+      setRuntime('native');
+      nb.setBinding({ providerId: c.providerId, modelId: c.modelId });
+    }
+  };
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -277,7 +289,12 @@ export default function SessionStrip({
       // option would otherwise close this menu and unmount the Select before
       // its onChange fires — the exact bug above, one component over.
       const inSelectPortal = target instanceof Element && !!target.closest('[data-select-portal]');
-      if (!inTrigger && !inDropdown && !inFolderPortal && !inSelectPortal) {
+      // Third instance of the same trap: the unified <ModelPicker> portals its
+      // dropdown to document.body as well. Without this, clicking a model (or
+      // its favourite star, or a filter chip) closed this menu and unmounted
+      // the picker before the click landed.
+      const inModelPortal = target instanceof Element && !!target.closest('[data-model-picker-portal]');
+      if (!inTrigger && !inDropdown && !inFolderPortal && !inSelectPortal && !inModelPortal) {
         setMenuOpen(false);
         setShowNewForm(false);
       }
@@ -381,7 +398,9 @@ export default function SessionStrip({
     }
     onCreateSession(
       newCwd,
-      dangerous,
+      // Hidden for native (see the gate on the toggle), so a value left over
+      // from an earlier Claude pick must not ride along into the create.
+      runtime === 'native' ? false : dangerous,
       newModel,
       runtime,
       launchInNewWindow,
@@ -1016,61 +1035,59 @@ export default function SessionStrip({
                   onManageProjects={() => { setMenuOpen(false); artifactDispatch({ type: 'PROJECT_VIEW_OPENED' }); }}
                 />
               </div>
-              {/* Runtime (Claude Code | YouCoded) + native provider/model picker.
-                  Shared with the welcome/app-open form; self-hides when
-                  native.supported is false (one runtime = no selector). */}
-              <RuntimeBindingFields
-                runtime={runtime}
-                onRuntime={setRuntime}
-                nb={nb}
-                preset={preset}
-                onPreset={setPreset}
-              />
-              {/* Model selector (Claude aliases) — hidden for the native runtime,
-                  which chooses a model via the provider/model binding picker above. */}
-              {runtime !== 'native' && (
-                <div>
-                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-                  <div className="flex gap-1">
-                    {MODELS.map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => setNewModel(m)}
-                        className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors flex items-center justify-center ${
-                          newModel === m
-                            ? 'bg-accent text-on-accent font-medium'
-                            : 'bg-inset text-fg-dim hover:bg-edge'
-                        }`}
-                      >
-                        {MODEL_LABELS[m] || m}
-                        <ModelInfoTooltip model={m} />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Skip Permissions */}
-              <div className="flex items-center justify-between">
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
-                  Skip Permissions
-                  <SkipPermissionsInfoTooltip />
-                </label>
-                {/* Shared Toggle (change 15). The "danger" tone replaces the raw
-                    #DD4444 hex, so community themes can restyle it. aria-label
-                    added — the neighbouring <label> was never wired to the
-                    control, so it announced as an unnamed button. */}
-                <Toggle
-                  checked={dangerous}
-                  onChange={setDangerous}
-                  tone="danger"
-                  aria-label="Skip Permissions"
+              {/* ONE model list. Replaces the Runtime toggle + the provider and
+                  model <Select> pair + this form's Claude alias row. The runtime
+                  is DERIVED from the pick (see applyModelChoice), so the user
+                  answers "which model?" instead of decoding "Runtime" first. */}
+              <div>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
+                <ModelPicker
+                  value={modelChoice}
+                  onSelect={applyModelChoice}
+                  onManageModels={() => {
+                    setMenuOpen(false);
+                    window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'));
+                  }}
                 />
               </div>
-              {/* Warning text was a raw text-[#DD4444] hex. Change 17 moves it onto
-                  the same token as the toggle beside it, so a community theme
-                  restyling its red doesn't leave the two out of sync. */}
-              {dangerous && (
-                <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
+              {/* Native-only extras that are NOT model selection. They appear
+                  because a native model was picked, not because a runtime was
+                  declared. */}
+              {runtime === 'native' && nb.nativeSupported && (
+                <NativeExtras nb={nb} preset={preset} onPreset={setPreset} />
+              )}
+              {/* Skip Permissions is CLAUDE-CODE ONLY. It works by starting the
+                  CLI with permissions bypassed, and a native session has no PTY
+                  and no CC permission flow for it to affect — so on a native
+                  model the control did nothing at all. The Resume Browser
+                  already gated it per row; this is the create-time half.
+                  Gated on the DERIVED runtime, so it appears and disappears as
+                  the model choice changes. */}
+              {runtime !== 'native' && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
+                      Skip Permissions
+                      <SkipPermissionsInfoTooltip />
+                    </label>
+                    {/* Shared Toggle (change 15). The "danger" tone replaces the raw
+                        #DD4444 hex, so community themes can restyle it. aria-label
+                        added — the neighbouring <label> was never wired to the
+                        control, so it announced as an unnamed button. */}
+                    <Toggle
+                      checked={dangerous}
+                      onChange={setDangerous}
+                      tone="danger"
+                      aria-label="Skip Permissions"
+                    />
+                  </div>
+                  {/* Warning text was a raw text-[#DD4444] hex. Change 17 moves it onto
+                      the same token as the toggle beside it, so a community theme
+                      restyling its red doesn't leave the two out of sync. */}
+                  {dangerous && (
+                    <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
+                  )}
+                </>
               )}
               {/* Launch in new window — hidden on platforms without multi-window support */}
               {detachAvailable && (
@@ -1095,13 +1112,13 @@ export default function SessionStrip({
                   white-on-pink. The non-dangerous branch also gains a real hover
                   (it was hover:bg-accent over bg-accent — inert; change 75). */}
               <Button
-                variant={dangerous ? 'danger' : 'primary'}
+                variant={dangerous && runtime !== 'native' ? 'danger' : 'primary'}
                 size="lg"
                 onClick={handleCreate}
                 disabled={nb.nativeCreateBlocked}
                 className="w-full py-1.5"
               >
-                {dangerous ? 'Create (Dangerous)' : 'Create Session'}
+                {dangerous && runtime !== 'native' ? 'Create (Dangerous)' : 'Create Session'}
               </Button>
             </div>
           ) : (
