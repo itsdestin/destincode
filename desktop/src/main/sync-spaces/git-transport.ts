@@ -100,6 +100,7 @@ function throwRepoCorrupt(spaceId: string, op: string, detail: string): never {
   e.syncErrorCode = REPO_CORRUPT_ERROR_CODE;
   throw e;
 }
+
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
 const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
 // Bound the recursive size walk so a pathological repo can never hang the probe.
@@ -121,27 +122,22 @@ interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: 
 // damaged.
 const LOCK_CONTENDED = /Unable to create .*\.lock['"]?: File exists/i;
 
-// Fix (2026-07-30 review finding 2, pass 1): LOCK_CONTENDED used to be wired
-// only into the `add` guards in push()/pull(), never `commit` or `checkout`,
-// even though its own comment above claims it covers every lock-taking op.
-// That meant a concurrent writer holding index.lock was silent if it lost the
-// race at `add` but a hard `Sync failed for …` throw if it lost the race one
-// line later at `commit` — whichever op happened to hit the lock decided the
-// user-visible outcome for the exact same transient condition.
-//
-// Fix (2026-07-30 review finding 4, pass 2): pulled the predicate out to its
-// own name (was inlined as `(r) => LOCK_CONTENDED.test(r.stderr)` at three
-// separate call sites — push's add guard, pull's add guard, pull's checkout
-// guard — plus folded into isCommitBenign below for the two commit sites). A
-// future narrowing of the lock rule would otherwise need the same edit made
-// in four places with nothing asserting they mean the same condition.
+// A single canonical predicate, applied identically at EVERY lock-taking op
+// (add/commit/checkout, in both push() and pull()). The same transient lock
+// must produce the same user-visible outcome no matter which op happens to
+// hit it — a concurrent writer holding index.lock is exactly as benign at
+// `commit` as it is at `add`, since both mean "nothing damaged, try again
+// next cycle," never "whichever op lost the race decides silent-vs-throw."
+// Named once here (rather than inlined per call site) so a future narrowing
+// of the lock rule is a single edit, not a hunt across every call site for
+// ones that got missed.
 const isLockContended = (r: ExecResult) => LOCK_CONTENDED.test(r.stderr);
 
 const isNothingToCommit = (r: ExecResult) => /nothing to commit/i.test(r.stdout + r.stderr);
 
 // Shared here so push()'s commit and pull()'s snapshot commit apply the
-// identical benign rule. IMPORTANT (2026-07-30 review finding 2, pass 2): this
-// collapses two DIFFERENT benign reasons into one boolean, which is fine for
+// identical benign rule. IMPORTANT: this collapses two DIFFERENT benign
+// reasons into one boolean, which is fine for
 // assertLocalOk's purposes (either one means "don't throw") but NOT fine for
 // deciding what to do next. "Nothing to commit" means a commit genuinely
 // happened on a prior cycle and HEAD already reflects it — safe to read HEAD
@@ -264,15 +260,14 @@ export class GitTransport implements SyncTransport {
    *  days while the panel showed green. Benign is now an explicit allowlist
    *  via the `benign` predicate, never the fallthrough.
    *
-   *  ORDER FIX (2026-07-30 review finding 1): corruption is checked BEFORE the
-   *  benign allowlist, not after. `benign` predicates test the WHOLE stderr
-   *  while matchGitCorruption is LINE-based, so a multi-line stderr carrying
-   *  both a benign line (e.g. an orphaned index.lock) AND a corruption line
-   *  used to be swallowed as benign and never reach the corruption check. That
-   *  co-occurrence is exactly what a power-loss crash produces: an orphaned
-   *  lock (not yet aged past lockStaleMs, so reapStaleLocks hasn't cleared it)
-   *  sitting alongside a truncated loose object. Corruption must win that race
-   *  every time. */
+   *  Corruption is checked BEFORE the benign allowlist, not after: `benign`
+   *  predicates test the WHOLE stderr while matchGitCorruption is LINE-based,
+   *  so a multi-line stderr carrying both a benign line (e.g. an orphaned
+   *  index.lock) AND a corruption line would otherwise be swallowed as benign
+   *  and never reach the corruption check. That co-occurrence is exactly what
+   *  a power-loss crash produces: an orphaned lock (not yet aged past
+   *  lockStaleMs, so reapStaleLocks hasn't cleared it) sitting alongside a
+   *  truncated loose object. Corruption must win that race every time. */
   private assertLocalOk(space: SyncSpace, op: string, r: ExecResult, benign?: (r: ExecResult) => boolean): void {
     if (r.code === 0) return;
     const corrupt = matchGitCorruption(r.stderr);
@@ -348,6 +343,16 @@ export class GitTransport implements SyncTransport {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     const add = await this.git(space, ['add', '-A']);
     this.assertLocalOk(space, 'add', add, isLockContended);
+    // Deliberately NO early return here on a lock-contended `add` (contrast
+    // pull()'s add guard below, which DOES early-return): if
+    // `add` loses the lock race, nothing NEW gets staged this cycle, but a
+    // PRIOR cycle's commit(s) may still be sitting locally unpushed. Falling
+    // through lets that backlog reach `git push` below and go out — the
+    // honest result is {pushed:true, commit:undefined}, since nothing
+    // committed THIS cycle but something real still shipped. `commit` being
+    // undefined self-clears next cycle once the lock is gone. Do not "fix"
+    // this into an early return — that would strand already-committed work
+    // behind a transient lock that has nothing to do with it.
     const oversize = await this.unstageOversize(space);
     const staged = await this.git(space, ['diff', '--cached', '--name-only']);
     this.assertLocalOk(space, 'diff', staged);
@@ -360,17 +365,16 @@ export class GitTransport implements SyncTransport {
       // race where another cycle already committed the staged set ("nothing
       // to commit"), OR a live writer still holding index.lock — same rule as
       // the `add` guard above, so losing the lock race here vs. there no
-      // longer decides silent-vs-throw (finding 2).
+      // longer decides silent-vs-throw.
       this.assertLocalOk(space, 'commit', c, isCommitBenign);
-      // Fix (2026-07-30 review finding 2, pass 2): assertLocalOk passing only
-      // proves the failure was BENIGN, not that a commit happened. If it was
-      // benign because HEAD is stale-locked (isLockContended), the staged
-      // edits are STILL uncommitted — reading `rev-parse HEAD` below would
-      // return the PRIOR sha, and that truthy value would bypass the
-      // `!commit` nothing-to-push shortcut further down, returning
-      // {pushed:true} while none of the user's changes actually pushed. Only
-      // the "nothing to commit" half of isCommitBenign is safe to fall
-      // through on — there, HEAD already IS the right commit.
+      // assertLocalOk passing only proves the failure was BENIGN, not that a
+      // commit happened. If it was benign because HEAD is stale-locked
+      // (isLockContended), the staged edits are STILL uncommitted — reading
+      // `rev-parse HEAD` below would return the PRIOR sha, and that truthy
+      // value would bypass the `!commit` nothing-to-push shortcut further
+      // down, returning {pushed:true} while none of the user's changes
+      // actually pushed. Only the "nothing to commit" half of isCommitBenign
+      // is safe to fall through on — there, HEAD already IS the right commit.
       if (c.code !== 0 && isLockContended(c)) return { pushed: false, oversize };
       const head = await this.git(space, ['rev-parse', 'HEAD']);
       this.assertLocalOk(space, 'rev-parse', head);
@@ -445,25 +449,36 @@ export class GitTransport implements SyncTransport {
     // Snapshot local changes first so merge never runs on a dirty tree.
     const add = await this.git(space, ['add', '-A']);
     this.assertLocalOk(space, 'add', add, isLockContended);
+    // `add` is the FIRST lock-taking op in pull(), so it is the one that loses
+    // a live-writer race first. If it fails, there is no staged snapshot of
+    // the working tree and no way to know whether it's dirty — falling
+    // through would let `merge` below run against a tree that may hold
+    // uncommitted edits, exactly what this function's header comment ("...so
+    // merge never runs on a dirty tree") promises never happens. Report the
+    // honest benign result immediately and let the next poll cycle retry once
+    // the lock clears — mirrors the same transient-lock-is-silent behavior at
+    // every other lock-taking op in this file.
+    if (add.code !== 0 && isLockContended(add)) return { updated: false, conflictCopies: [] };
     await this.unstageOversize(space);
     const dirtyR = await this.git(space, ['diff', '--cached', '--name-only']);
     this.assertLocalOk(space, 'diff', dirtyR);
     const dirty = dirtyR.stdout.trim();
     if (dirty) {
       const snap = await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
-      // Same benign rule as push()'s commit — see isCommitBenign (finding 2).
+      // Same benign rule as push()'s commit — see isCommitBenign.
       this.assertLocalOk(space, 'commit', snap, isCommitBenign);
-      // Fix (2026-07-30 review finding 2, pass 2): a lock-contended snapshot
-      // commit means the working tree is STILL dirty — falling through would
-      // violate the invariant this function's own header comment states
-      // ("Snapshot local changes first so merge never runs on a dirty tree").
-      // Running merge dirty either corrupts the merge result or (if git
-      // refuses) reaches the conflict block with zero --diff-filter=U entries
-      // and throws "Sync merge could not complete", misattributing a
-      // transient lock to a genuinely unmergeable space. Report the honest
-      // benign result instead and let the next poll cycle retry once the
-      // lock clears. "Nothing to commit" doesn't need this — there the tree
-      // genuinely was clean already.
+      // A lock-contended snapshot commit HERE is a genuinely different race
+      // window than the `add` guard above — a writer can grab the lock in the
+      // gap between `add` succeeding and this `commit` running — so this
+      // guard stays reachable and still needed even with the early return
+      // above. Falling through would violate the same "merge never runs on a
+      // dirty tree" invariant: running merge dirty either corrupts the merge
+      // result or (if git refuses) reaches the conflict block with zero
+      // --diff-filter=U entries and throws "Sync merge could not complete",
+      // misattributing a transient lock to a genuinely unmergeable space.
+      // Report the honest benign result instead and let the next poll cycle
+      // retry once the lock clears. "Nothing to commit" doesn't need this —
+      // there the tree genuinely was clean already.
       if (snap.code !== 0 && isLockContended(snap)) return { updated: false, conflictCopies: [] };
     }
 
@@ -490,17 +505,16 @@ export class GitTransport implements SyncTransport {
       // adoption is a real error (corrupt local objects, unreadable remote tip).
       // checkout takes a lock too (it moves HEAD/refs), so the same transient
       // live-writer contention that's benign at `add`/`commit` must be benign
-      // here as well (finding 2) — otherwise this is the ONE lock-taking op
-      // still hard-throwing on the exact condition the other two swallow.
+      // here as well — otherwise this would be the ONE lock-taking op still
+      // hard-throwing on the exact condition the other two swallow.
       this.assertLocalOk(space, 'checkout', co, isLockContended);
-      // Fix (2026-07-30 review finding 1, pass 2): this used to unconditionally
-      // return {updated:true}, which was only honest while assertLocalOk threw
-      // on every non-zero exit. Now that a lock-contended checkout is allowed
-      // to pass through, an unconditional true reports success for a checkout
-      // that never actually ran — the working tree still has none of the
-      // remote's content and local `main` still doesn't exist. Report the real
-      // outcome; the throw above still fires for anything that isn't the
-      // benign lock case, so this is honest without widening the allowlist.
+      // assertLocalOk passing only proves the failure was benign, not that the
+      // checkout ran — an unconditional {updated:true} would report success
+      // for a checkout that never happened: the working tree still has none
+      // of the remote's content and local `main` still doesn't exist. Report
+      // the real outcome; the throw above still fires for anything that isn't
+      // the benign lock case, so this stays honest without widening the
+      // allowlist.
       return { updated: co.code === 0, conflictCopies: [] };
     }
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);

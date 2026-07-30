@@ -512,14 +512,20 @@ describe('GitTransport benign-allowlist intent', () => {
     await expect(t.push(space, 'msg')).resolves.toMatchObject({ pushed: false });
   });
 
-  it('LOCK_CONTENDED now also covers `commit` (finding 2: the same transient lock must not decide silent-vs-throw by which op loses the race)', async () => {
+  it('LOCK_CONTENDED now also covers `commit` (the same transient lock must not decide silent-vs-throw by which op loses the race)', async () => {
     const t = scripted({
       add: { code: 0 },
       diff: { code: 0, stdout: 'file.md' }, // something staged, so push() attempts a commit
       commit: { code: 128, stderr: LOCK_STDERR },
     });
-    // Must resolve, not throw — the lock at commit is exactly as benign as at add.
-    await expect(t.push(space, 'msg')).resolves.toBeDefined();
+    // Must resolve, not throw — the lock at commit is exactly as benign as at
+    // add. Pin the EXACT shape, not just "resolves": a bare `.toBeDefined()`
+    // passes identically whether the fix's early return runs (real result
+    // {pushed:false, oversize:[]}) or the fix is missing entirely and every
+    // downstream unscripted call falls through to its `{code:0}` default,
+    // producing {pushed:true, commit:'', oversize:[]} — a silently wrong
+    // result that still satisfies `toBeDefined()`.
+    await expect(t.push(space, 'msg')).resolves.toEqual({ pushed: false, oversize: [] });
   });
 
   it('LOCK_CONTENDED now also covers `checkout` (finding 2: pull() adopting a fresh remote while a lock is still live) — but the checkout still did not happen, so it must not report updated:true (finding 1, pass 2)', async () => {
@@ -533,8 +539,24 @@ describe('GitTransport benign-allowlist intent', () => {
     });
     // Must resolve (not throw — the lock is transient), but the checkout never
     // ran, so `updated: true` here would be a success-shaped result for a
-    // verifiably failed op (2026-07-30 review finding 1, pass 2).
+    // verifiably failed op.
     await expect(t.pull(space)).resolves.toMatchObject({ updated: false, conflictCopies: [] });
+  });
+
+  it('LOCK_CONTENDED on `add` in pull() resolves benignly and never falls through to merge (`add` is the FIRST lock-taking op, so losing the race there leaves the tree state unknown — proceeding to merge would risk running on a dirty tree)', async () => {
+    const t = scripted({
+      add: { code: 128, stderr: LOCK_STDERR },
+      // Every other call is left unscripted, so it defaults to `{code:0}`.
+      // If the early return after `add` were missing, execution would sail
+      // straight through diff/hasRemote/fetch/rev-parse/rev-list all the way
+      // to `merge`, which would ALSO default to success — silently reporting
+      // `updated: true` for a pull that never actually ran a merge. The
+      // exact-shape assertion below catches that value; the mock-calls check
+      // proves `merge` specifically never ran.
+    });
+    await expect(t.pull(space)).resolves.toEqual({ updated: false, conflictCopies: [] });
+    const calledMerge = (t as any).git.mock.calls.some((c: any[]) => c[1][0] === 'merge');
+    expect(calledMerge).toBe(false);
   });
 
   it('NOTHING_TO_PUSH_YET: a fresh space with zero local commits ever stays silent, not a throw', async () => {
