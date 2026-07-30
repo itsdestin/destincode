@@ -237,13 +237,33 @@ describe('GitTransport specifics', () => {
     const a = await h.makeDeviceSpace();
     fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
     await h.transport.push(a, 'seed');
-    // Make the repo unwritable in a NON-corruption way: replace the objects dir
-    // with a file → git add fails with an EACCES/ENOTDIR-flavored error.
-    const objects = path.join(a.root, '.youcoded', 'sync.git', 'objects');
-    fs.rmSync(objects, { recursive: true, force: true });
-    fs.writeFileSync(objects, 'not a directory');
+    // Fix (2026-07-30 review finding 3): the PRIOR technique here — replacing
+    // objects/ with a plain file — was verified empirically to make git print
+    // `fatal: not a git repository: '<path>'`, which IS one of
+    // CORRUPTION_PATTERNS in sync-error-classifier.ts. So this test was
+    // silently exercising throwRepoCorrupt() while its assertion
+    // (`/Sync failed for|needs repair/`) passed for EITHER branch — the "real
+    // stderr, not a guess" half of the contract (the generic, non-coded throw)
+    // was never actually pinned.
+    //
+    // A git pre-commit hook gives us a LOCAL git failure we fully author:
+    // deterministic stderr, guaranteed not to match any CORRUPTION_PATTERNS or
+    // benign predicate (LOCK_CONTENDED / "nothing to commit" / NOTHING_TO_PUSH_YET),
+    // and portable — git invokes a hook with a `#!/bin/sh` shebang via its own
+    // bundled shell on every CI OS this suite runs on (Git for Windows ships
+    // one for exactly this reason).
+    const hooksDir = path.join(a.root, '.youcoded', 'sync.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    fs.writeFileSync(hookPath, '#!/bin/sh\necho "simulated-disk-hiccup: pre-commit refused" >&2\nexit 1\n');
+    fs.chmodSync(hookPath, 0o755);
     fs.writeFileSync(path.join(a.root, 'two.md'), 'second');
-    await expect(h.transport.push(a, 'x')).rejects.toThrow(/Sync failed for|needs repair/);
+    const err = await h.transport.push(a, 'x').catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    // NOT the coded corruption path — proves this is the generic branch.
+    expect(err.syncErrorCode).toBeUndefined();
+    // AND the real git/hook-emitted text reached the message, not a guess.
+    expect(String(err.message)).toContain('simulated-disk-hiccup: pre-commit refused');
     await h.cleanup();
   });
 });
@@ -453,6 +473,92 @@ describe('GitTransport auth-failure surfacing', () => {
     expect(String(err.message)).toContain('GitHub sign-in expired');
     expect(err.syncErrorCode).toBe('github-auth');
     expect(String(err.message)).not.toContain(TOKEN);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Benign-allowlist intent pins (2026-07-30 review findings 2 & 4).
+// LOCK_CONTENDED and NOTHING_TO_PUSH_YET were previously covered only
+// INCIDENTALLY, by tests written before the constants existed (pinning the
+// OLD "swallow every failure" behavior, not the deliberate allowlist). Without
+// a test that names the intent, anyone narrowing these regexes later gets a
+// failure that reads as "stale-lock reaping broke" or "first-push broke",
+// never "you narrowed the benign allowlist". These state the intent directly,
+// via the same scripted-git() technique as the auth-failure block above (no
+// real git subprocess, no real race needed to prove a policy decision).
+// ---------------------------------------------------------------------------
+describe('GitTransport benign-allowlist intent', () => {
+  const space: SyncSpace = { id: 'personal', kind: 'personal', root: '/nowhere' };
+  const LOCK_STDERR = "Unable to create '/nowhere/.youcoded/sync.git/index.lock': File exists.";
+
+  /** Transport whose git() is scripted per leading arg — no real git runs. */
+  function scripted(responses: Record<string, { code: number; stdout?: string; stderr?: string }>) {
+    const t = new GitTransport({ deviceName: 'test' });
+    (t as any).git = vi.fn(async (_s: SyncSpace, args: string[]) => {
+      const r = responses[args[0]] ?? { code: 0 };
+      return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '', tokenUsed: false };
+    });
+    (t as any).reapStaleLocks = () => {};
+    return t;
+  }
+
+  it('LOCK_CONTENDED: a still-held lock on `add` during push stays silent (transient, self-resolving)', async () => {
+    const t = scripted({
+      add: { code: 128, stderr: LOCK_STDERR },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      diff: { code: 0, stdout: '' },
+      'rev-list': { code: 0, stdout: '0' },
+    });
+    await expect(t.push(space, 'msg')).resolves.toMatchObject({ pushed: false });
+  });
+
+  it('LOCK_CONTENDED now also covers `commit` (finding 2: the same transient lock must not decide silent-vs-throw by which op loses the race)', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: 'file.md' }, // something staged, so push() attempts a commit
+      commit: { code: 128, stderr: LOCK_STDERR },
+    });
+    // Must resolve, not throw — the lock at commit is exactly as benign as at add.
+    await expect(t.push(space, 'msg')).resolves.toBeDefined();
+  });
+
+  it('LOCK_CONTENDED now also covers `checkout` (finding 2: pull() adopting a fresh remote while a lock is still live)', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: '' },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      fetch: { code: 0 },
+      'rev-parse': { code: 1 }, // no local `main` yet → pull() takes the adopt-remote/checkout branch
+      checkout: { code: 128, stderr: LOCK_STDERR },
+    });
+    await expect(t.pull(space)).resolves.toMatchObject({ updated: true, conflictCopies: [] });
+  });
+
+  it('NOTHING_TO_PUSH_YET: a fresh space with zero local commits ever stays silent, not a throw', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: '' },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      fetch: { code: 0 },
+      'rev-list': { code: 1, stderr: 'fatal: Invalid revision range' }, // origin/main doesn't exist yet
+      push: { code: 1, stderr: 'error: src refspec main does not match any known revisions' },
+    });
+    await expect(t.push(space, 'msg')).resolves.toMatchObject({ pushed: false });
+  });
+
+  it('finding 1 co-occurrence: a stderr carrying BOTH lock contention AND corruption evidence throws repo-corrupt, never gets swallowed as benign', async () => {
+    // The 2026-07-27 incident shape: an orphaned index.lock not yet aged past
+    // lockStaleMs, sitting alongside a truncated loose object in the same
+    // stderr. Corruption must win — this is the case finding 1's reordering
+    // (corruption checked BEFORE the benign allowlist in assertLocalOk) fixes.
+    const t = scripted({
+      add: {
+        code: 128,
+        stderr: `${LOCK_STDERR}\nerror: object file .youcoded/sync.git/objects/ab/cdef is empty`,
+      },
+    });
+    const err = await t.push(space, 'msg').catch((e) => e);
+    expect(err.syncErrorCode).toBe('repo-corrupt');
   });
 });
 

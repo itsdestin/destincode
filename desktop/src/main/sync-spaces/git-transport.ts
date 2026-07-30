@@ -121,6 +121,17 @@ interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: 
 // damaged.
 const LOCK_CONTENDED = /Unable to create .*\.lock['"]?: File exists/i;
 
+// Fix (2026-07-30 review finding 2): LOCK_CONTENDED used to be wired only into
+// the `add` guards in push()/pull(), never `commit` or `checkout`, even though
+// its own comment above claims it covers every lock-taking op. That meant a
+// concurrent writer holding index.lock was silent if it lost the race at
+// `add` but a hard `Sync failed for …` throw if it lost the race one line
+// later at `commit` — whichever op happened to hit the lock decided the
+// user-visible outcome for the exact same transient condition. Shared here so
+// push()'s commit and pull()'s snapshot commit apply the identical rule.
+const isCommitBenign = (r: ExecResult) =>
+  LOCK_CONTENDED.test(r.stderr) || /nothing to commit/i.test(r.stdout + r.stderr);
+
 // Benign for a push: the local branch has NEVER had a commit (a fresh space
 // with zero history) — git refuses "push -u origin main" with this exact
 // message since there is no local `main` ref to push at all. Equivalent to
@@ -231,12 +242,22 @@ export class GitTransport implements SyncTransport {
    *  the REAL stderr. WHY (2026-07-27 incident): the old shape returned benign
    *  results on failure — a corrupt repo reported "nothing to push" for three
    *  days while the panel showed green. Benign is now an explicit allowlist
-   *  via the `benign` predicate, never the fallthrough. */
+   *  via the `benign` predicate, never the fallthrough.
+   *
+   *  ORDER FIX (2026-07-30 review finding 1): corruption is checked BEFORE the
+   *  benign allowlist, not after. `benign` predicates test the WHOLE stderr
+   *  while matchGitCorruption is LINE-based, so a multi-line stderr carrying
+   *  both a benign line (e.g. an orphaned index.lock) AND a corruption line
+   *  used to be swallowed as benign and never reach the corruption check. That
+   *  co-occurrence is exactly what a power-loss crash produces: an orphaned
+   *  lock (not yet aged past lockStaleMs, so reapStaleLocks hasn't cleared it)
+   *  sitting alongside a truncated loose object. Corruption must win that race
+   *  every time. */
   private assertLocalOk(space: SyncSpace, op: string, r: ExecResult, benign?: (r: ExecResult) => boolean): void {
     if (r.code === 0) return;
-    if (benign?.(r)) return;
     const corrupt = matchGitCorruption(r.stderr);
     if (corrupt) throwRepoCorrupt(space.id, op, corrupt);
+    if (benign?.(r)) return;
     throw new Error(`Sync failed for ${space.id} (git ${op}): ${stderrTail(r.stderr)}`);
   }
 
@@ -315,9 +336,12 @@ export class GitTransport implements SyncTransport {
       const c = await this.git(space, ['commit', '-m', message]);
       // THE 2026-07-27 bug site: this used to `return {pushed:false}` on ANY
       // failure — indistinguishable from "nothing to push", so a corrupt repo
-      // synced "green" forever. Benign allowlist: a commit race where another
-      // cycle already committed the staged set ("nothing to commit").
-      this.assertLocalOk(space, 'commit', c, (r) => /nothing to commit/i.test(r.stdout + r.stderr));
+      // synced "green" forever. Benign allowlist (isCommitBenign): a commit
+      // race where another cycle already committed the staged set ("nothing
+      // to commit"), OR a live writer still holding index.lock — same rule as
+      // the `add` guard above, so losing the lock race here vs. there no
+      // longer decides silent-vs-throw (finding 2).
+      this.assertLocalOk(space, 'commit', c, isCommitBenign);
       const head = await this.git(space, ['rev-parse', 'HEAD']);
       this.assertLocalOk(space, 'rev-parse', head);
       commit = head.stdout.trim();
@@ -397,7 +421,8 @@ export class GitTransport implements SyncTransport {
     const dirty = dirtyR.stdout.trim();
     if (dirty) {
       const snap = await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
-      this.assertLocalOk(space, 'commit', snap, (r) => /nothing to commit/i.test(r.stdout + r.stderr));
+      // Same benign rule as push()'s commit — see isCommitBenign (finding 2).
+      this.assertLocalOk(space, 'commit', snap, isCommitBenign);
     }
 
     if (!(await this.hasRemote(space))) return { updated: false, conflictCopies: [] };
@@ -421,7 +446,11 @@ export class GitTransport implements SyncTransport {
       const co = await this.git(space, ['checkout', '-B', 'main', 'origin/main']);
       // Used to return {updated:false} on failure — silent. A failed remote
       // adoption is a real error (corrupt local objects, unreadable remote tip).
-      this.assertLocalOk(space, 'checkout', co);
+      // checkout takes a lock too (it moves HEAD/refs), so the same transient
+      // live-writer contention that's benign at `add`/`commit` must be benign
+      // here as well (finding 2) — otherwise this is the ONE lock-taking op
+      // still hard-throwing on the exact condition the other two swallow.
+      this.assertLocalOk(space, 'checkout', co, (r) => LOCK_CONTENDED.test(r.stderr));
       return { updated: true, conflictCopies: [] };
     }
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);
