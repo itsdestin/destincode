@@ -66,3 +66,56 @@ Makes the harness usable on locally-hosted models: capability profiles, REAL con
 - **Injection is messages, once per trigger per session, bounded by the profile.** A mid-session system-prompt edit would discard the KV cache prefix every local model reuses, turning a cheap follow-up turn into a full re-prefill of the whole conversation. Re-sending a rule after every `Read` of a matching file would dominate the conversation and blow the window it was sized against — and repetition does not make a model follow a rule harder. `Bash` is skipped when collecting touched paths: its permission subject is a command string, not a path. `fitInjection` always announces a cut, because a silently truncated procedure is worse than none — the model follows the fragment believing it is whole.
 - **Sizing is a function of the WINDOW, not the provider.** `injectionBudgetTokens` and `exposeSkillCatalog` derive from the effective context window (so an 8k model loaded at `-c 128000` is judged on its real ceiling), and an unmeasured window is treated as small. Frontier hosted providers (anthropic/openai/google/openrouter) are exempt: we never DISCOVER their window, so `null` there means "not measured", not "small", and sizing them down would strip the catalog from every cloud session. `openai-compatible` is deliberately NOT exempt — `provider-registry` documents it as the Ollama / LM Studio shape, so an unmeasured one is a local model in disguise.
 - **`native:*` four-surface parity was only pinned on 2026-07-28.** `ipc-channels.test.ts` covers `remote-shim.ts` and `SessionService.kt` per-PREFIX — `dev:*` and `account:*` each had a block, `native:*` never did. Verified by deleting `native:invoke-skill` from the shim: the whole file still went green. A native command that works on desktop and dies on the remote web client is exactly what program §9 exit criterion (c) forbids, and nothing would have said so.
+
+### Progress, token accounting and /clear — corrections made 2026-07-28/29
+
+These landed in the same PR (#268) but AFTER the section above was written, several of them
+because Destin found the bug by using the app. Recorded here because each one is a claim the
+earlier text or the code's own comments got wrong.
+
+- **Prefill progress measures THIS STEP'S work, not the whole prompt.** llama.cpp's `total` is
+  every token in the request and `cache` is the prefix it reused for free, so on turn 2+ a
+  percentage against `total` reads as nearly done before any work starts. `toReport` derives
+  `newTotal = total - cache` and bases the fraction AND the rate on that — counting cached
+  tokens as processed inflates the rate into promising a finish that cannot happen.
+  **UNVERIFIED and written to be correct either way:** every capture we have is `cache: 0`, so
+  whether `processed` counts from 0 or from `cache` on a warm prompt has never been observed.
+  The dual handling breaks in one direction (cache SMALL relative to new work can under-report
+  by up to `cache`); one warm capture settles it.
+- **100% is reserved for actually finished.** The label used `Math.round`, which reaches 100 at
+  99.5% — and this repo's own captured trace contains a NON-final reading of 5,515/5,519
+  (99.93%). It floors to 99 unless `processed >= total`.
+- **The displayed value never counts down**, because two things can hand back a lower number
+  than last render: `interpolateProcessed` extrapolating past the next real report, and the
+  warm-cache ambiguity above. A high-water clamp, reset per prefill run.
+- **`prefillSeenAt` compares its `key`.** It always STORED one and never compared it, so the
+  render that receives a new report measured elapsed time from the PREVIOUS report's stamp
+  (effects run after render) and projected a full batch forward on arrival. Latent and
+  self-correcting until the clamp latched the overshoot — which is how a smoothing fix made the
+  counter jumpier rather than smoother.
+- **`promptProcessing` is cleared when prefill ENDS** — first assistant text, first reasoning, a
+  new user turn, and `endTurn()`. It was written in only two reducer cases and cleared by
+  nothing, so a generation pause longer than the indicator's 2s streaming window re-rendered the
+  old "Reading your prompt — N%" line mid-generation. `chat-types.ts` had documented the correct
+  intent ("cleared by any other event") for behavior the reducer never had.
+- **`tokensPerSecond` measures GENERATION, not the turn.** The denominator was the whole turn's
+  wall-clock, so prefill, tool execution and permission waits all diluted a number labelled
+  "output tokens per second" — a turn generating 300 tokens in 10s of decoding but spending 30s
+  in a Bash call reported ~7 tok/s instead of ~30. `StepResult.generationMs` runs from each
+  step's first real output chunk to the end of its stream, summed.
+- **`/clear` FADES the conversation; it does not wipe it.** `CLEAR_TIMELINE` replaced the whole
+  timeline with a marker on BOTH providers. Clearing resets the MODEL'S context, not the user's
+  ability to re-read what they said, so it now appends the marker and `findArchiveBoundary`
+  (`renderer/state/archive-boundary.ts`) makes ChatView fade everything above it exactly as it
+  already did for `/compact`. Side effect: the dispatcher's "CLEAR_TIMELINE is irreversible"
+  reasoning no longer holds — nothing is destroyed, so a refused clear costs a stray marker
+  rather than a conversation. `deferUiEffectsToRuntime` is kept because a marker for a clear that
+  never happened would still be a lie, but it is no longer load-bearing against data loss.
+- **`NON_PATH_SUBJECT_TOOLS` names the tools whose permission subject is not a path.** The
+  driver's rule was spelled inline as `toolName !== 'Bash'`, so `Skill` — whose subject is a
+  skill id — was canonicalized against cwd, run through the credential denylist, and matched
+  against rule globs the moment it was added.
+- **Test sessions must inject a skill catalog.** `syncSkillTool` falls back to a real
+  `~/.claude` scan, which made the attached tool set depend on the machine: Ubuntu CI failed
+  "expected 10 tools, got 11" while macOS, Windows and local all passed. `EMPTY_SKILL_CATALOG`
+  is the default in both shared factories AND in the seven suites that build their own opts.
