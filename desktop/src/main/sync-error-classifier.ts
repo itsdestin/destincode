@@ -401,6 +401,12 @@ export function classifyPushError(
  *  is what triggers the transport's repair() path. Never string-match prose. */
 export const REPO_CORRUPT_ERROR_CODE = 'repo-corrupt';
 
+/** Machine-readable marker for a FAILED repair attempt (e.g. Tier 2 with no
+ *  network/auth) — sibling of REPO_CORRUPT_ERROR_CODE, exported so the engine
+ *  and every consumer (renderer CTA, tests) share one literal instead of
+ *  drifting copies of the string. Never string-match prose. */
+export const REPO_REPAIR_FAILED_ERROR_CODE = 'repo-repair-failed';
+
 // Crash signatures: what git prints when loose objects / refs / the index were
 // truncated by power loss. Sources: the 2026-07-27 Z13 forensics (zero-byte
 // objects → "object file … is empty", "bad object", "Unknown object type",

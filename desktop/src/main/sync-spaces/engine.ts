@@ -5,7 +5,7 @@
 import path from 'path';
 import chokidar, { FSWatcher } from 'chokidar';
 import type { SpaceSyncEvent, SyncSpace, SyncTransport } from './types';
-import { REPO_CORRUPT_ERROR_CODE } from '../sync-error-classifier';
+import { REPO_CORRUPT_ERROR_CODE, REPO_REPAIR_FAILED_ERROR_CODE } from '../sync-error-classifier';
 
 interface EngineOpts {
   debounceMs?: number;  // default 15s (spec §8)
@@ -192,9 +192,15 @@ export class SpaceSyncEngine {
       } catch (e: any) {
         const errorCode = typeof e?.syncErrorCode === 'string' ? e.syncErrorCode : undefined;
         // Crash-corrupted repo: repair automatically (approved policy — the
-        // heal never touches user files and keeps the broken repo aside as a
-        // backup), notify after, and rerun THIS space's sync so the panel goes
-        // green on real evidence. Guarded to once per space per launch.
+        // heal never touches user files and, if it has to start the repo
+        // fresh, keeps the broken one aside as a backup), notify after, and
+        // rerun THIS space's sync so the panel goes green on real evidence.
+        // Guarded to once per space per launch: healedSpaces is marked BEFORE
+        // the repair call (not just on success), so a repair that throws or
+        // hangs still consumes the launch's one attempt — a second corruption
+        // in the same run means something deeper than crash damage, and
+        // re-attempting at poll cadence would thrash a repair/fail loop
+        // instead of surfacing it.
         if (errorCode === REPO_CORRUPT_ERROR_CODE && this.transport.repair && !this.healedSpaces.has(space.id)) {
           this.healedSpaces.add(space.id);
           try {
@@ -204,7 +210,7 @@ export class SpaceSyncEngine {
           } catch (re: any) {
             // Repair itself failed (e.g. Tier 2 with no network/auth). Cause
             // genuinely unknown → surface the real detail, no guessed cause.
-            this.onEvent({ type: 'error', spaceId: space.id, message: `Sync self-repair failed: ${String(re?.message ?? re)}`, errorCode: 'repo-repair-failed' });
+            this.onEvent({ type: 'error', spaceId: space.id, message: `Sync self-repair failed: ${String(re?.message ?? re)}`, errorCode: REPO_REPAIR_FAILED_ERROR_CODE });
           }
         } else {
           // Forward the typed marker (e.g. 'github-auth' from the transport /

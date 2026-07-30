@@ -651,8 +651,11 @@ export class GitTransport implements SyncTransport {
         const sha = tip.stdout.trim();
         // Light closure check: commit + root tree readable. NOT a full fsck —
         // that times out on real repos (>2 min on the Z13's Personal space).
-        // Residual damage this misses fails the next push, which escalates
-        // back here and takes Tier 2 (same launch-scoped heal attempt).
+        // Residual damage this misses fails the next push, but the engine's
+        // launch-scoped healedSpaces guard means that failure does NOT re-enter
+        // repair() this run — it forwards a plain repo-corrupt error instead.
+        // Escalation to Tier 2 happens on the NEXT app launch, when the guard
+        // resets and a fresh corruption is seen for the first time.
         const commitOk = (await this.git(space, ['cat-file', 'commit', sha])).code === 0;
         const treeOk = (await this.git(space, ['cat-file', '-p', `${sha}^{tree}`])).code === 0;
         if (commitOk && treeOk) {

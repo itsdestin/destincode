@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { SpaceSyncEngine } from '../src/main/sync-spaces/engine';
 import type { SyncSpace, SyncTransport, SpaceSyncEvent } from '../src/main/sync-spaces/types';
+import { REPO_REPAIR_FAILED_ERROR_CODE } from '../src/main/sync-error-classifier';
 
 function fakeTransport(): SyncTransport & { pushes: string[]; pulls: string[] } {
   const t: any = {
@@ -360,8 +361,54 @@ describe('corruption self-heal', () => {
     const space: SyncSpace = { id: 'project:sad', kind: 'project', root: tmp };
     await engine.addSpace(space);
     await engine.syncSpace(space);
-    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === 'repo-repair-failed')).toBe(true), { timeout: WAIT_MS });
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === REPO_REPAIR_FAILED_ERROR_CODE)).toBe(true), { timeout: WAIT_MS });
     expect(events.some(e => e.type === 'synced')).toBe(false);
+    // A FAILED repair still consumes the launch's one heal attempt — the guard
+    // is "one attempt per launch," not "one attempt until it succeeds." Drive a
+    // second cycle against the still-corrupt repo and confirm repair is NOT
+    // retried: call count stays at 1, and the corruption forwards as a plain
+    // repo-corrupt error (not another repo-repair-failed) — proof the engine
+    // took the "already healed this launch" branch instead of re-attempting.
+    events.length = 0;
+    await engine.syncSpace(space);
+    expect((t as any).repair).toHaveBeenCalledTimes(1);
+    const secondError = events.find(e => e.type === 'error') as Extract<SpaceSyncEvent, { type: 'error' }>;
+    expect(secondError).toBeDefined();
+    expect(secondError.errorCode).toBe('repo-corrupt');
+    await engine.stop();
+  });
+
+  it('repair succeeds but the healed re-run still fails: no phantom synced, plain error surfaces', async () => {
+    // The existing "repairs once" test's push always throws, so its own
+    // `expect(events.some(synced)).toBe(false)` assertion never actually
+    // exercises the repair-succeeded-but-still-broken shape (synced is
+    // unreachable there for an unrelated reason). Realistic case this test
+    // pins: repair() itself resolves cleanly, but the healed rerun's push
+    // hits a DIFFERENT, uncoded failure (e.g. disk full) — the engine must
+    // still forward it as a plain error, never mistake the repair's own
+    // success for a synced space.
+    const t = fakeTransport();
+    (t as any).repair = vi.fn(async () => {}); // Tier 1/2 succeeds
+    t.push = vi.fn(async () => { throw new Error('no space left on device'); }) as any; // uncoded, unrelated to corruption
+    // First push call throws the coded corruption error to trigger repair;
+    // every call AFTER that (i.e. the healed rerun) throws the uncoded one.
+    let first = true;
+    (t.push as any).mockImplementation(async () => {
+      if (first) { first = false; const e: any = new Error('bad object HEAD'); e.syncErrorCode = 'repo-corrupt'; throw e; }
+      throw new Error('no space left on device');
+    });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { onEvent: (e) => events.push(e), pollMs: 0, debounceMs: 50 });
+    const space: SyncSpace = { id: 'project:healedbutbroken', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === undefined)).toBe(true), { timeout: WAIT_MS });
+    expect((t as any).repair).toHaveBeenCalledTimes(1);
+    const notice = events.find(e => e.type === 'notice');
+    expect(notice).toBeDefined(); // the repair itself did succeed and notify
+    expect(events.some(e => e.type === 'synced')).toBe(false);
+    const plainError = events.find(e => e.type === 'error') as Extract<SpaceSyncEvent, { type: 'error' }>;
+    expect(plainError.message).toContain('no space left on device');
     await engine.stop();
   });
 
