@@ -14,6 +14,7 @@ import { DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES, conflictCopyName } from './guards
 import { nextGcCounter } from './gc-policy';
 import { GITHUB_AUTH_ERROR_CODE } from '../github-client';
 import { matchGitCorruption, isNetworkFailureStderr, stderrTail, REPO_CORRUPT_ERROR_CODE } from '../sync-error-classifier';
+import { deleteZeroByteObjects, brokenBackupName, pruneBrokenBackups } from './repair';
 import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -625,6 +626,48 @@ export class GitTransport implements SyncTransport {
       // repo doesn't actually need repacking, --quiet suppresses progress noise.
       await this.git(space, ['gc', '--auto', '--quiet']);
     } catch { /* best-effort; retries in another N syncs */ }
+  }
+
+  /** Two-tier corruption repair (2026-07-30 spec §2). Resolves when healed;
+   *  throws when even Tier 2 failed. NEVER touches the user's files — every
+   *  write is under <root>/.youcoded/. The engine gates calls to once per
+   *  space per launch. */
+  async repair(space: SyncSpace): Promise<void> {
+    const gd = this.gitDir(space);
+    // ---- Tier 1: surgical, offline-capable ----
+    if (fs.existsSync(path.join(gd, 'HEAD'))) {
+      deleteZeroByteObjects(gd);
+      const tip = await this.git(space, ['rev-parse', '--verify', '--quiet', 'origin/main']);
+      if (tip.code === 0) {
+        const sha = tip.stdout.trim();
+        // Light closure check: commit + root tree readable. NOT a full fsck —
+        // that times out on real repos (>2 min on the Z13's Personal space).
+        // Residual damage this misses fails the next push, which escalates
+        // back here and takes Tier 2 (same launch-scoped heal attempt).
+        const commitOk = (await this.git(space, ['cat-file', 'commit', sha])).code === 0;
+        const treeOk = (await this.git(space, ['cat-file', '-p', `${sha}^{tree}`])).code === 0;
+        if (commitOk && treeOk) {
+          const upd = await this.git(space, ['update-ref', 'refs/heads/main', sha]);
+          // Delete the index: it may reference the just-deleted poison hashes.
+          // add -A rebuilds it from the worktree — files are the source of truth.
+          try { fs.rmSync(path.join(gd, 'index'), { force: true }); } catch { /* rebuilt anyway */ }
+          const probe = await this.git(space, ['rev-parse', '--verify', 'HEAD']);
+          if (upd.code === 0 && probe.code === 0) return; // healed — local changes re-commit on the next cycle
+        }
+      }
+    }
+    // ---- Tier 2: move the repo aside, start fresh ----
+    // The worktree files and the GitHub remote are the two real sources of
+    // truth; the hidden repo is just transport machinery. After the re-init,
+    // the engine's normal cycle re-provisions the remote (ensureProvisioned →
+    // setRemote: provisionGithubRemote treats an existing repo as SUCCESS) and
+    // pull() adopts origin/main via its unborn-branch checkout — real ancestry,
+    // so NO conflict-copy explosion (spec §2).
+    if (fs.existsSync(gd)) {
+      fs.renameSync(gd, brokenBackupName(gd, new Date()));
+      pruneBrokenBackups(gd);
+    }
+    await this.init(space);
   }
 
   /** Recursive byte size of <root>/.youcoded/sync.git — feeds the engine's
