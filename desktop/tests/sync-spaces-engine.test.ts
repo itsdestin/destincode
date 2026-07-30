@@ -307,3 +307,73 @@ describe('SpaceSyncEngine errorCode passthrough', () => {
     await engine.stop();
   });
 });
+
+describe('corruption self-heal', () => {
+  function corruptOnce(t: ReturnType<typeof fakeTransport>) {
+    // First push throws coded repo-corrupt; after repair() runs, pushes succeed.
+    let repaired = false;
+    (t as any).repair = vi.fn(async () => { repaired = true; });
+    t.push = vi.fn(async (s: SyncSpace) => {
+      if (!repaired) { const e: any = new Error('Sync data needs repair (git commit: bad object HEAD)'); e.syncErrorCode = 'repo-corrupt'; throw e; }
+      t.pushes.push(s.id); return { pushed: true, oversize: [] };
+    }) as any;
+    return t;
+  }
+
+  it('repairs once, emits the notice, and the rerun sync succeeds', async () => {
+    const t = corruptOnce(fakeTransport());
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { onEvent: (e) => events.push(e), pollMs: 0, debounceMs: 50 });
+    const space: SyncSpace = { id: 'project:heal', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: WAIT_MS });
+    expect((t as any).repair).toHaveBeenCalledTimes(1);
+    const notice = events.find(e => e.type === 'notice');
+    expect(notice).toMatchObject({ spaceId: 'project:heal', message: 'Sync repaired itself after a crash. Your files were untouched.' });
+    // The healed rerun emitted a real synced event; no error event ever fired.
+    await vi.waitFor(() => expect(events.some(e => e.type === 'synced')).toBe(true), { timeout: WAIT_MS });
+    expect(events.filter(e => e.type === 'error')).toEqual([]);
+    await engine.stop();
+  });
+
+  it('a SECOND corruption in the same launch surfaces as an error — no heal loop', async () => {
+    const t = fakeTransport();
+    (t as any).repair = vi.fn(async () => {});
+    t.push = vi.fn(async () => { const e: any = new Error('still corrupt'); e.syncErrorCode = 'repo-corrupt'; throw e; }) as any;
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { onEvent: (e) => events.push(e), pollMs: 0, debounceMs: 50 });
+    const space: SyncSpace = { id: 'project:loop', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);   // corrupt → heals (attempt 1) → rerun → corrupt AGAIN
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === 'repo-corrupt')).toBe(true), { timeout: WAIT_MS });
+    expect((t as any).repair).toHaveBeenCalledTimes(1);  // never a second attempt
+    await engine.stop();
+  });
+
+  it('a FAILED repair surfaces repo-repair-failed, never a phantom synced', async () => {
+    const t = fakeTransport();
+    (t as any).repair = vi.fn(async () => { throw new Error('no network for tier 2'); });
+    t.push = vi.fn(async () => { const e: any = new Error('bad object HEAD'); e.syncErrorCode = 'repo-corrupt'; throw e; }) as any;
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { onEvent: (e) => events.push(e), pollMs: 0, debounceMs: 50 });
+    const space: SyncSpace = { id: 'project:sad', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === 'repo-repair-failed')).toBe(true), { timeout: WAIT_MS });
+    expect(events.some(e => e.type === 'synced')).toBe(false);
+    await engine.stop();
+  });
+
+  it('a transport WITHOUT repair() falls through to the plain error event', async () => {
+    const t = fakeTransport(); // no repair member — future non-git transport
+    t.push = vi.fn(async () => { const e: any = new Error('bad object HEAD'); e.syncErrorCode = 'repo-corrupt'; throw e; }) as any;
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { onEvent: (e) => events.push(e), pollMs: 0, debounceMs: 50 });
+    const space: SyncSpace = { id: 'project:norep', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error' && e.errorCode === 'repo-corrupt')).toBe(true), { timeout: WAIT_MS });
+    await engine.stop();
+  });
+});
