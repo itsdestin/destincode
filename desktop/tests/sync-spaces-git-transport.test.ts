@@ -522,7 +522,7 @@ describe('GitTransport benign-allowlist intent', () => {
     await expect(t.push(space, 'msg')).resolves.toBeDefined();
   });
 
-  it('LOCK_CONTENDED now also covers `checkout` (finding 2: pull() adopting a fresh remote while a lock is still live)', async () => {
+  it('LOCK_CONTENDED now also covers `checkout` (finding 2: pull() adopting a fresh remote while a lock is still live) — but the checkout still did not happen, so it must not report updated:true (finding 1, pass 2)', async () => {
     const t = scripted({
       add: { code: 0 },
       diff: { code: 0, stdout: '' },
@@ -531,7 +531,10 @@ describe('GitTransport benign-allowlist intent', () => {
       'rev-parse': { code: 1 }, // no local `main` yet → pull() takes the adopt-remote/checkout branch
       checkout: { code: 128, stderr: LOCK_STDERR },
     });
-    await expect(t.pull(space)).resolves.toMatchObject({ updated: true, conflictCopies: [] });
+    // Must resolve (not throw — the lock is transient), but the checkout never
+    // ran, so `updated: true` here would be a success-shaped result for a
+    // verifiably failed op (2026-07-30 review finding 1, pass 2).
+    await expect(t.pull(space)).resolves.toMatchObject({ updated: false, conflictCopies: [] });
   });
 
   it('NOTHING_TO_PUSH_YET: a fresh space with zero local commits ever stays silent, not a throw', async () => {
@@ -543,7 +546,15 @@ describe('GitTransport benign-allowlist intent', () => {
       'rev-list': { code: 1, stderr: 'fatal: Invalid revision range' }, // origin/main doesn't exist yet
       push: { code: 1, stderr: 'error: src refspec main does not match any known revisions' },
     });
-    await expect(t.push(space, 'msg')).resolves.toMatchObject({ pushed: false });
+    // Fix (2026-07-30 review finding 3, pass 2): a bare `pushed: false` partial
+    // match passes for ANY resolution shape, including a false positive where
+    // `commit` ends up truthy (e.g. from a lock-contended commit leaking the
+    // prior HEAD sha, finding 2's bug shape) — the field that actually decides
+    // whether the "nothing was pushed" story is honest never gets checked.
+    // Pin the full result so a future regression at any field surfaces here.
+    await expect(t.push(space, 'msg')).resolves.toEqual({
+      pushed: false, commit: undefined, oversize: [], updated: false, conflictCopies: [],
+    });
   });
 
   it('finding 1 co-occurrence: a stderr carrying BOTH lock contention AND corruption evidence throws repo-corrupt, never gets swallowed as benign', async () => {

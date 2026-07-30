@@ -121,16 +121,36 @@ interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: 
 // damaged.
 const LOCK_CONTENDED = /Unable to create .*\.lock['"]?: File exists/i;
 
-// Fix (2026-07-30 review finding 2): LOCK_CONTENDED used to be wired only into
-// the `add` guards in push()/pull(), never `commit` or `checkout`, even though
-// its own comment above claims it covers every lock-taking op. That meant a
-// concurrent writer holding index.lock was silent if it lost the race at
-// `add` but a hard `Sync failed for …` throw if it lost the race one line
-// later at `commit` — whichever op happened to hit the lock decided the
-// user-visible outcome for the exact same transient condition. Shared here so
-// push()'s commit and pull()'s snapshot commit apply the identical rule.
-const isCommitBenign = (r: ExecResult) =>
-  LOCK_CONTENDED.test(r.stderr) || /nothing to commit/i.test(r.stdout + r.stderr);
+// Fix (2026-07-30 review finding 2, pass 1): LOCK_CONTENDED used to be wired
+// only into the `add` guards in push()/pull(), never `commit` or `checkout`,
+// even though its own comment above claims it covers every lock-taking op.
+// That meant a concurrent writer holding index.lock was silent if it lost the
+// race at `add` but a hard `Sync failed for …` throw if it lost the race one
+// line later at `commit` — whichever op happened to hit the lock decided the
+// user-visible outcome for the exact same transient condition.
+//
+// Fix (2026-07-30 review finding 4, pass 2): pulled the predicate out to its
+// own name (was inlined as `(r) => LOCK_CONTENDED.test(r.stderr)` at three
+// separate call sites — push's add guard, pull's add guard, pull's checkout
+// guard — plus folded into isCommitBenign below for the two commit sites). A
+// future narrowing of the lock rule would otherwise need the same edit made
+// in four places with nothing asserting they mean the same condition.
+const isLockContended = (r: ExecResult) => LOCK_CONTENDED.test(r.stderr);
+
+const isNothingToCommit = (r: ExecResult) => /nothing to commit/i.test(r.stdout + r.stderr);
+
+// Shared here so push()'s commit and pull()'s snapshot commit apply the
+// identical benign rule. IMPORTANT (2026-07-30 review finding 2, pass 2): this
+// collapses two DIFFERENT benign reasons into one boolean, which is fine for
+// assertLocalOk's purposes (either one means "don't throw") but NOT fine for
+// deciding what to do next. "Nothing to commit" means a commit genuinely
+// happened on a prior cycle and HEAD already reflects it — safe to read HEAD
+// and continue. Lock contention means NO commit happened at all — reading
+// HEAD would return the PRIOR sha and let a caller mistake "commit didn't run"
+// for "commit ran". Callers that need to tell these apart call
+// isLockContended(r) directly alongside this predicate; see push()/pull()'s
+// commit sites below.
+const isCommitBenign = (r: ExecResult) => isLockContended(r) || isNothingToCommit(r);
 
 // Benign for a push: the local branch has NEVER had a commit (a fresh space
 // with zero history) — git refuses "push -u origin main" with this exact
@@ -327,7 +347,7 @@ export class GitTransport implements SyncTransport {
   async push(space: SyncSpace, message: string): Promise<PushResult> {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     const add = await this.git(space, ['add', '-A']);
-    this.assertLocalOk(space, 'add', add, (r) => LOCK_CONTENDED.test(r.stderr));
+    this.assertLocalOk(space, 'add', add, isLockContended);
     const oversize = await this.unstageOversize(space);
     const staged = await this.git(space, ['diff', '--cached', '--name-only']);
     this.assertLocalOk(space, 'diff', staged);
@@ -342,6 +362,16 @@ export class GitTransport implements SyncTransport {
       // the `add` guard above, so losing the lock race here vs. there no
       // longer decides silent-vs-throw (finding 2).
       this.assertLocalOk(space, 'commit', c, isCommitBenign);
+      // Fix (2026-07-30 review finding 2, pass 2): assertLocalOk passing only
+      // proves the failure was BENIGN, not that a commit happened. If it was
+      // benign because HEAD is stale-locked (isLockContended), the staged
+      // edits are STILL uncommitted — reading `rev-parse HEAD` below would
+      // return the PRIOR sha, and that truthy value would bypass the
+      // `!commit` nothing-to-push shortcut further down, returning
+      // {pushed:true} while none of the user's changes actually pushed. Only
+      // the "nothing to commit" half of isCommitBenign is safe to fall
+      // through on — there, HEAD already IS the right commit.
+      if (c.code !== 0 && isLockContended(c)) return { pushed: false, oversize };
       const head = await this.git(space, ['rev-parse', 'HEAD']);
       this.assertLocalOk(space, 'rev-parse', head);
       commit = head.stdout.trim();
@@ -414,7 +444,7 @@ export class GitTransport implements SyncTransport {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     // Snapshot local changes first so merge never runs on a dirty tree.
     const add = await this.git(space, ['add', '-A']);
-    this.assertLocalOk(space, 'add', add, (r) => LOCK_CONTENDED.test(r.stderr));
+    this.assertLocalOk(space, 'add', add, isLockContended);
     await this.unstageOversize(space);
     const dirtyR = await this.git(space, ['diff', '--cached', '--name-only']);
     this.assertLocalOk(space, 'diff', dirtyR);
@@ -423,6 +453,18 @@ export class GitTransport implements SyncTransport {
       const snap = await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
       // Same benign rule as push()'s commit — see isCommitBenign (finding 2).
       this.assertLocalOk(space, 'commit', snap, isCommitBenign);
+      // Fix (2026-07-30 review finding 2, pass 2): a lock-contended snapshot
+      // commit means the working tree is STILL dirty — falling through would
+      // violate the invariant this function's own header comment states
+      // ("Snapshot local changes first so merge never runs on a dirty tree").
+      // Running merge dirty either corrupts the merge result or (if git
+      // refuses) reaches the conflict block with zero --diff-filter=U entries
+      // and throws "Sync merge could not complete", misattributing a
+      // transient lock to a genuinely unmergeable space. Report the honest
+      // benign result instead and let the next poll cycle retry once the
+      // lock clears. "Nothing to commit" doesn't need this — there the tree
+      // genuinely was clean already.
+      if (snap.code !== 0 && isLockContended(snap)) return { updated: false, conflictCopies: [] };
     }
 
     if (!(await this.hasRemote(space))) return { updated: false, conflictCopies: [] };
@@ -450,8 +492,16 @@ export class GitTransport implements SyncTransport {
       // live-writer contention that's benign at `add`/`commit` must be benign
       // here as well (finding 2) — otherwise this is the ONE lock-taking op
       // still hard-throwing on the exact condition the other two swallow.
-      this.assertLocalOk(space, 'checkout', co, (r) => LOCK_CONTENDED.test(r.stderr));
-      return { updated: true, conflictCopies: [] };
+      this.assertLocalOk(space, 'checkout', co, isLockContended);
+      // Fix (2026-07-30 review finding 1, pass 2): this used to unconditionally
+      // return {updated:true}, which was only honest while assertLocalOk threw
+      // on every non-zero exit. Now that a lock-contended checkout is allowed
+      // to pass through, an unconditional true reports success for a checkout
+      // that never actually ran — the working tree still has none of the
+      // remote's content and local `main` still doesn't exist. Report the real
+      // outcome; the throw above still fires for anything that isn't the
+      // benign lock case, so this is honest without widening the allowlist.
+      return { updated: co.code === 0, conflictCopies: [] };
     }
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);
     this.throwIfCorrupt(space, 'rev-list', behind);
