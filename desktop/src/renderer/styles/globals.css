@@ -625,6 +625,23 @@ body[data-mode="buddy-chat"] #theme-bg {
   background: var(--accent);
   animation: model-load-sweep 1.1s ease-in-out infinite;
 }
+/* Reduced Effects — the app's own setting must stop perpetual animations too,
+   not just the OS `prefers-reduced-motion` preference. Before this,
+   `[data-reduced-effects]` (set on <html> by theme-engine.ts) had ZERO css rules
+   gating on it: it was read only in JS by ThemeEffects and MascotRig, so turning
+   Reduced Effects on left every CSS keyframe animation running.
+   `model-load-sweep` animates `left`, which is not compositable and forces a
+   layout pass every frame — worse per-frame than the opacity/transform cases
+   that layer promotion fixed, though it only runs while a model loads.
+   The declarations are duplicated across an attribute rule and a media block
+   because CSS has no way to say "this selector OR this media condition" in one
+   rule. Keep the two bodies identical when editing either. */
+[data-reduced-effects] .model-load-track::after {
+  animation: none;
+  left: 0;
+  width: 100%;
+  opacity: 0.5;
+}
 @media (prefers-reduced-motion: reduce) {
   .model-load-track::after {
     animation: none;
@@ -657,6 +674,7 @@ body[data-mode="buddy-chat"] #theme-bg {
   );
   animation: model-load-sweep 1.25s ease-in-out infinite;
 }
+[data-reduced-effects] .model-load-finalize::after { animation: none; opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
   .model-load-finalize::after { animation: none; opacity: 0; }
 }
@@ -1369,6 +1387,20 @@ body[data-mode="buddy-chat"] #theme-bg {
   );
   font-weight: 600;
 }
+/* Stop the keyword gradient when motion is reduced, by OS preference or by the
+   app's own Reduced Effects setting.
+   This one matters most for CPU: `flowing-word-pan` animates background-position,
+   which is NOT a compositable property, so unlike opacity/transform animations it
+   cannot be fixed by layer promotion (`will-change` was measured at 43.0% vs 43.8%
+   — no help). The text repaints on the renderer main thread every frame, and a
+   single visible keyword measured ~43% of one CPU core on a 180Hz panel.
+   `.timeline-entry:not(.in-view)` already pauses offscreen keywords; this covers
+   the on-screen ones, which is the app's most common state (a chat full of user
+   messages). See docs/active/investigations/2026-07-30-idle-cpu-burn.md.
+   Duplicated selector rather than one rule because CSS cannot combine an
+   attribute selector with a media query — see the Reduced Effects note above
+   .model-load-track. */
+[data-reduced-effects] .flowing-word { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .flowing-word { animation: none; }
 }
