@@ -14,6 +14,17 @@ export function resolveAssetPath(value: string | undefined, slug: string): strin
     value.startsWith('radial-gradient') ||
     value.startsWith('rgb')
   ) return value;
+  // Already-resolved locations pass through too. This function's job is to turn
+  // a RELATIVE path into a theme-asset:// URI; a data URI, an absolute URL or a
+  // root-absolute path is already a location, and prefixing one produced
+  // `theme-asset://slug/data:image/...` — a dead link, silently. The docblock
+  // above has always claimed this behaviour; only theme-asset:// implemented it.
+  if (
+    value.startsWith('data:') ||
+    value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('/')
+  ) return value;
   return `theme-asset://${slug}/${value}`;
 }
 

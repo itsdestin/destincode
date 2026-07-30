@@ -1,0 +1,61 @@
+{
+  "name": "Meadow Mist",
+  "slug": "meadow-mist",
+  "dark": false,
+  "author": "claude",
+  "created": "2026-06-19",
+  "tokens": {
+    "canvas": "#F6FAF5",
+    "panel": "#DDE9DA",
+    "inset": "#BAD0B6",
+    "well": "#C4DCBF",
+    "accent": "#2F7D55",
+    "on-accent": "#FFFFFF",
+    "fg": "#041008",
+    "fg-2": "#1E3426",
+    "fg-dim": "#33493A",
+    "fg-muted": "#465B4E",
+    "fg-faint": "#637668",
+    "edge": "#8FB191",
+    "edge-dim": "#8FB19180",
+    "scrollbar-thumb": "#2F7D55",
+    "scrollbar-hover": "#24613F"
+  },
+  "shape": {
+    "radius": "8px",
+    "radius-sm": "6px",
+    "radius-md": "10px",
+    "radius-lg": "14px",
+    "radius-full": "9999px"
+  },
+  "font": {
+    "family": "'Nunito', 'Cascadia Mono', monospace",
+    "google-font-url": "https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap"
+  },
+  "background": {
+    "average-color": "#527C9F",
+    "type": "image",
+    "value": "assets/wallpaper.jpg",
+    "terminal-value": "assets/wallpaper-terminal.webp",
+    "opacity": 1,
+    "panels-blur": 22,
+    "panels-opacity": 0.58,
+    "bubble-blur": 18,
+    "bubble-opacity": 0.64
+  },
+  "layout": {
+    "chrome-style": "default",
+    "input-style": "default",
+    "bubble-style": "bordered",
+    "header-style": "default",
+    "statusbar-style": "default"
+  },
+  "effects": {
+    "particles": "none",
+    "scan-lines": false,
+    "vignette": 0,
+    "noise": 0
+  },
+  "custom_css": "::selection { background: rgba(47, 125, 85, 0.3); color: var(--fg); }",
+  "contentHash": "sha256:168d293f2304c089afb639d1087c2c57c65c82db4776d36955bcec3dfc3a4ff1"
+}

@@ -183,4 +183,53 @@ function Root() {
   return <LoginScreen onLogin={handleLogin} />;
 }
 
-createRoot(document.getElementById('root')!).render(<Root />);
+// Workbench boot. `import.meta.env.DEV` is statically replaced with `false` in
+// production, so Vite drops this whole branch and never emits the chunk.
+//
+// WHY it renders <App/> and not <Root/>: Root exists only to own remote
+// connection state, and its `isElectron` (line 112) is a module-eval-time
+// const — an async mock install lands too late for it, so going through Root
+// would mean converting that const to a function and updating its six readers
+// in a file every launch goes through. The workbench has no connection state;
+// skipping Root costs nothing and touches no production boot code.
+//
+// It also does NOT route through App.tsx: WorkbenchFrame renders <App/>, so an
+// App-side route would recurse and need a `workbenchChild` prop threaded
+// through App purely to break it. `?mode=workbench` matches none of App's
+// existing buddyMode branches, so <App/> falls through to the main app.
+const __mount = createRoot(document.getElementById('root')!);
+// @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+if (import.meta.env.DEV && __buddyMode === 'workbench') {
+  // `child=1` is the iframe the workbench frame hosts (see WorkbenchFrame.tsx
+  // for why it is an iframe): it renders the app itself, at the iframe's own
+  // viewport width, so useNarrowViewport() sees a real narrow viewport. The
+  // outer document renders the toolbar frame around it.
+  const isChild = new URLSearchParams(location.search).get('child') === '1';
+  import('./dev/workbench/install-mock').then(async ({ installMock }) => {
+    // The mock installs in BOTH documents: the child needs it to run the app,
+    // and the parent frame would otherwise fall through to Root's login path if
+    // anything there ever reads the bridge.
+    installMock();
+    if (isChild) {
+      // The tool gallery is a separate surface, not part of the app shell, so it
+      // renders in place of <App/> rather than inside it. It DOES get a real
+      // ThemeProvider — the ?mode=tool-sandbox route it replaces rendered
+      // outside the provider tree and so was never themed.
+      if (new URLSearchParams(location.search).get('view') === 'tools') {
+        const [{ ToolGallery }, { ThemeProvider }] = await Promise.all([
+          import('./dev/workbench/ToolGallery'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><ToolGallery /></ThemeProvider>);
+        return;
+      }
+      // App is already statically imported above (Root renders it).
+      __mount.render(<App />);
+      return;
+    }
+    const { WorkbenchFrame } = await import('./dev/workbench/WorkbenchFrame');
+    __mount.render(<WorkbenchFrame />);
+  });
+} else {
+  __mount.render(<Root />);
+}

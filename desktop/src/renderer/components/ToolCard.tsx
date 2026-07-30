@@ -716,9 +716,9 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
-  // Optional: the tool sandbox (?mode=tool-sandbox) renders ToolCard outside the
-  // ArtifactProvider. Missing cwd just drops the folder name from the confirm
-  // header rather than crashing the card.
+  // Optional: the workbench tool gallery (?mode=workbench&view=tools) renders
+  // ToolCard outside the ArtifactProvider. Missing cwd just drops the folder
+  // name from the confirm header rather than crashing the card.
   const artifacts = useArtifactOptional();
   const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
   const display = friendlyToolDisplay(tool);
