@@ -157,6 +157,35 @@ export function loadFixture(name: string, raw: string, sessionId: string = SANDB
         const after = state.get(sessionId);
         const tool = after?.toolCalls.get(parsed.tool_use_id);
         if (tool) blocks.push({ kind: 'tool', tool });
+      } else if (parsed.type === 'permission_expired') {
+        // WHY: reproduces the RETAINED card state from PERMISSION_EXPIRED
+        // ('hook-closed') — spec 2026-07-30 §2a. The hook socket died but
+        // Claude's menu may still be live in the terminal, so the card must
+        // NOT resolve to failed: it stays awaiting-approval, gains
+        // `expired: true`, loses its requestId, and swaps Yes/No for a
+        // "Dismiss — I answered in the terminal" control. This is the one
+        // card state Tasks 3-5 added that nothing else in the workbench can
+        // produce, so a fixture line must exist to review it (task-6-brief).
+        // Always follows a permission_request line for the same tool_use_id.
+        const action: ChatAction = {
+          type: 'PERMISSION_EXPIRED',
+          sessionId,
+          requestId: parsed.requestId,
+          reason: parsed.reason ?? 'hook-closed',
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+        // The permission_request line above already pushed a block for this
+        // tool — but that block is a snapshot object, and PERMISSION_EXPIRED
+        // produces a NEW tool object (reducer spreads, never mutates). Swap
+        // the existing block in place so the gallery renders the post-expiry
+        // state instead of the stale awaiting-approval-with-buttons one.
+        const after = state.get(sessionId);
+        const tool = after?.toolCalls.get(parsed.tool_use_id);
+        if (tool) {
+          const idx = blocks.findIndex((b) => b.kind === 'tool' && b.tool.toolUseId === parsed.tool_use_id);
+          if (idx !== -1) blocks[idx] = { kind: 'tool', tool };
+        }
       }
       // Unknown types are silently skipped (same policy as before).
     }
