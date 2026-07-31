@@ -763,11 +763,20 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(id);
     }
     await this.store.flushAll();
-    // Tear down every pooled MCP server connection HERE too — this is the one
-    // place confirmed to actually run at app quit (ipc-handlers.ts cleanup(),
-    // called from main.ts's window-all-closed handler). Without this, an MCP
-    // server's spawned subprocess (e.g. a stdio server) would outlive the app
-    // instead of being closed alongside it.
+    // Tear down every pooled MCP server connection HERE too. Without this, an
+    // MCP server's spawned subprocess (e.g. a stdio server) would outlive the
+    // app instead of being closed alongside it.
+    //
+    // SCOPE OF THAT PROMISE, precisely: this runs via ipc-handlers.ts cleanup(),
+    // which main.ts calls from its `window-all-closed` handler — and that is the
+    // ONLY quit-related listener the app registers. There is no `before-quit`,
+    // `will-quit`, `quit` or SIGTERM handler, so a quit route that skips
+    // window-all-closed (macOS Cmd+Q / dock quit, an OS-shutdown SIGTERM) skips
+    // this teardown too and DOES leak the subprocess. That gap is app-wide and
+    // pre-existing — sessionManager.destroyAll() and hookRelay.stop() ride the
+    // same single hook — so it is tracked as its own roadmap bug rather than
+    // patched here. Hooking in beside them is the correct move; just don't read
+    // this line as "covered at every quit."
     await this.mcpManager?.destroyAll();
   }
 }
