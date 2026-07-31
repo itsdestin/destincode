@@ -5,7 +5,8 @@ import { TagPicker } from './tags/TagPicker';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { NoteEditor } from './tags/NoteEditor';
-import { Button, Dialog } from './ui';
+import { Button, Checkbox, Dialog, Toggle } from './ui';
+import { designVariant } from '../utils/design-variant';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
@@ -16,6 +17,109 @@ import { isTypingTarget } from '../utils/is-typing-target';
 // carry now live at each control.
 type FlagName = 'priority' | 'complete';
 const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
+
+// Candidates for the Mark-complete control. All four set the same state; they
+// differ in weight and, mainly, in how much they answer a hover — the thing
+// that felt dead about the first one (Destin, 2026-07-31). Switchable from the
+// workbench toolbar; see utils/design-variant.ts.
+//
+//   card      the shipped one — a bordered card, hover moves only the border.
+//   card-lift same shape, but hover tints the fill, warms the border toward the
+//             accent, brightens the icon, and the press sinks it slightly.
+//   checkbox  a compact row on the shared Checkbox primitive; the whole row is
+//             the target and takes a fill on hover.
+//   toggle    label + description with a Toggle on the right — the shape Skip
+//             Permissions and Show Complete already use elsewhere in the app.
+const COMPLETE_BUTTONS = ['card', 'card-lift', 'checkbox', 'toggle'] as const;
+type CompleteButton = typeof COMPLETE_BUTTONS[number];
+
+const COMPLETE_TITLE = 'Mark complete';
+const COMPLETE_HINT = 'Hides it from the resume list unless you turn on Show Complete.';
+
+/** The check-in-a-circle from the Resume Browser card, so the same act looks the
+ *  same in both places. Filled when set; the check knocks out with var(--canvas)
+ *  rather than a hardcoded white so it survives a dark or community theme. */
+function CompleteGlyph({ done, className = '' }: { done: boolean; className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
+      <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
+    </svg>
+  );
+}
+
+function MarkComplete({ variant, checked, onChange }: {
+  variant: CompleteButton; checked: boolean; onChange: (next: boolean) => void;
+}) {
+  if (variant === 'toggle') {
+    // Not a button: the Toggle owns the interaction, matching every other
+    // toggle row in the app. The container still lights on hover so the row
+    // reads as one object.
+    return (
+      <div className="flex items-center gap-3 rounded-lg border border-edge-dim bg-inset px-3 py-2.5 transition-colors hover:border-edge hover:bg-well">
+        <CompleteGlyph done={checked} className={`w-5 h-5 shrink-0 transition-colors ${checked ? 'text-accent' : 'text-fg-faint'}`} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
+          <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
+        </span>
+        <Toggle checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} />
+      </div>
+    );
+  }
+
+  if (variant === 'checkbox') {
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        aria-pressed={checked}
+        className="group flex items-center gap-3 w-full text-left rounded-lg px-3 py-2.5 transition-colors hover:bg-inset active:bg-well"
+      >
+        {/* `pointer-events-none` so the click always lands on the row, never on
+            the checkbox alone — otherwise the two would toggle each other and
+            cancel out. */}
+        <span className="pointer-events-none shrink-0">
+          <Checkbox checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} tabIndex={-1} />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
+          <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
+        </span>
+      </button>
+    );
+  }
+
+  // card / card-lift — same markup, different hover budget.
+  const lift = variant === 'card-lift';
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      aria-pressed={checked}
+      className={[
+        'group flex items-center gap-2.5 w-full text-left rounded-lg border px-3 py-2.5',
+        lift ? 'transition-all duration-100 active:translate-y-px' : 'transition-colors',
+        checked
+          ? `border-accent bg-accent/10${lift ? ' hover:bg-accent/20' : ''}`
+          : `border-edge-dim bg-inset hover:border-edge${lift ? ' hover:bg-well hover:border-accent/50' : ''}`,
+      ].join(' ')}
+    >
+      <CompleteGlyph
+        done={checked}
+        className={[
+          'w-5 h-5 shrink-0 transition-colors',
+          checked ? 'text-accent' : 'text-fg-faint',
+          lift && !checked ? 'group-hover:text-fg-2' : '',
+        ].join(' ')}
+      />
+      <span className="min-w-0">
+        <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
+        <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
+      </span>
+    </button>
+  );
+}
 
 interface Props {
   open: boolean;
@@ -47,6 +151,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   // Tag registry editing lives in its own surface now (it used to be a ✎ on
   // each TagPicker row). Layer 3 because this prompt is itself a layer-2 Dialog.
   const [manageOpen, setManageOpen] = useState(false);
+  const completeButton: CompleteButton = designVariant('completebtn', 'card', COMPLETE_BUTTONS);
   const [note, setNote] = useState('');
   // The session's tags/note as loaded on open — the baseline for the delta, so
   // Cancel changes nothing and Confirm only writes what the user toggled.
@@ -138,32 +243,13 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <>
               {/* "Are you done with this one?" is the QUESTION this dialog
                   exists to ask, so Complete is the one prominent control rather
-                  than half of a two-button flag row. Same check-in-a-circle the
-                  Resume Browser card uses, so the same act looks the same in
-                  both places — set it here, and that is the state the card will
-                  show. Priority is NOT beside it any more: it is a tag, and it
-                  now lives in the tag list below like every other tag. */}
-              <button
-                type="button"
-                onClick={() => setSel((prev) => ({ ...prev, complete: !prev.complete }))}
-                aria-pressed={sel.complete}
-                className={`flex items-center gap-2.5 w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${
-                  sel.complete ? 'border-accent bg-accent/10' : 'border-edge-dim bg-inset hover:border-edge'
-                }`}
-              >
-                <svg className={`w-5 h-5 shrink-0 ${sel.complete ? 'text-accent' : 'text-fg-faint'}`}
-                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
-                  strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <circle cx="12" cy="12" r="9" fill={sel.complete ? 'currentColor' : 'none'} />
-                  <path d="M8 12.5l2.5 2.5L16 9.5" stroke={sel.complete ? 'var(--canvas)' : 'currentColor'} />
-                </svg>
-                <span className="min-w-0">
-                  <span className="block text-xs text-fg">Mark complete</span>
-                  <span className="block text-3xs text-fg-muted leading-snug">
-                    Hides it from the resume list unless you turn on Show Complete.
-                  </span>
-                </span>
-              </button>
+                  than half of a two-button flag row. Priority is NOT beside it
+                  any more: it is a tag, and it lives in the tag list below. */}
+              <MarkComplete
+                variant={completeButton}
+                checked={sel.complete}
+                onChange={(next) => setSel((prev) => ({ ...prev, complete: next }))}
+              />
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
