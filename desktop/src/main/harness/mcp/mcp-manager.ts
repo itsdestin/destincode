@@ -56,6 +56,15 @@ interface PooledEntry {
   // connect() again — the seam that makes "one broken/slow server, two
   // simultaneous acquire()s" connect once, not twice. See McpManager.acquire.
   connecting?: Promise<void>;
+  // sessionId -> the McpManager-wide touch sequence number as of the most
+  // recent ensureConnected() call for that session (first-ever hold OR a
+  // renewal of one already held). release() snapshots this per session
+  // before it does anything and compares again once it's safe to act — a
+  // changed number means some acquire() renewed this exact hold WHILE
+  // release() was running, which release() must not then undo. See
+  // release()'s fix comment for why a plain Set can't tell this apart on
+  // its own (adding an already-present sessionId is a same-membership no-op).
+  holderTouch: Map<string, number>;
 }
 
 export class McpManager {
@@ -80,6 +89,12 @@ export class McpManager {
   // acquire()'s finally), so awaiting them can never propagate a failed
   // acquire()'s rejection into release(), and can never hang on one either.
   private inflightAcquires = new Map<string, Array<Promise<void>>>();
+  // Monotonic counter stamped into PooledEntry.holderTouch on every
+  // ensureConnected() call, across every entry and session — its only job is
+  // giving release() a way to detect "did a hold get renewed while I was
+  // running," not to order anything globally. See PooledEntry.holderTouch
+  // and release()'s fix comment.
+  private touchSeq = 0;
 
   constructor(deps: { registry: McpRegistryLike; connectionFactory: McpConnectionFactory }) {
     this.registry = deps.registry;
@@ -144,6 +159,15 @@ export class McpManager {
       // ever add has been added — a release() that was waiting on
       // `registered` can now safely conclude "nothing left to add" and
       // proceed with its own holder-clearing work.
+      //
+      // WHY every server's connect() fires in this one synchronous sweep
+      // (not started one-at-a-time as each prior server's connect settled):
+      // ensureConnected() calls connect() as a side effect of first touch,
+      // and this loop touches every not-yet-pooled server before yielding —
+      // so all of them spawn at once instead of queueing behind each other.
+      // That's a deliberate behavior change, not an accident of the
+      // registration-ordering fix above: a hung or slow-to-spawn server no
+      // longer blocks every server after it from even starting to connect.
       const entries = servers.map((server) => this.ensureConnected(server, sessionId));
       settleRegistered();
       clearSelf();
@@ -204,13 +228,17 @@ export class McpManager {
     let entry = this.pool.get(server.id);
     if (!entry) {
       const conn = this.connectionFactory(server);
-      entry = { server, conn, holders: new Set() };
+      entry = { server, conn, holders: new Set(), holderTouch: new Map() };
       this.pool.set(server.id, entry);
       entry.connecting = conn.connect().finally(() => {
         entry!.connecting = undefined;
       });
     }
     entry.holders.add(sessionId);
+    // Stamp this touch regardless of whether sessionId was already a holder
+    // — a renewal needs to be observable even though Set#add is a no-op on
+    // an already-present member. See PooledEntry.holderTouch / release().
+    entry.holderTouch.set(sessionId, ++this.touchSeq);
     return entry;
   }
 
@@ -231,16 +259,64 @@ export class McpManager {
    * cannot deadlock: the promises awaited here settle when an acquire()'s
    * OWN registration pass finishes — never when some other release() call
    * finishes — so there is no cycle for two calls to wait on each other
-   * through. The list is snapshotted (spread) before awaiting so an
-   * acquire() that starts only AFTER this release() began isn't waited on;
-   * that acquire() hadn't started yet from this call's point of view, so
-   * there's nothing this call could have done about it anyway.
+   * through.
+   *
+   * This waits in a LOOP, not a single snapshot-and-await: a plain "read the
+   * list once, await it, then clear holders" has a gap — an acquire() for
+   * the SAME sessionId that starts after the snapshot but before the
+   * holder-clearing loop below runs would register its holders (see
+   * ensureConnected) after this call has already decided what to clear.
+   * Re-reading `inflightAcquires` after every await catches any such
+   * late-arriving acquire() before we touch a single holder. This
+   * terminates: each acquire()'s registration pass is synchronous/await-free
+   * (pass 1, above), so by the time an iteration's `Promise.all` resolves,
+   * every acquire() that was in that snapshot has already removed itself
+   * from the map (see acquire()'s `clearSelf`) — the only way the next
+   * iteration finds more is a genuinely NEW acquire() call starting mid-wait,
+   * which is bounded by how many callers actually call acquire(), not by
+   * this loop. The awaited promises never reject (see `inflightAcquires`'s
+   * comment — a failing acquire() still resolves `registered`), so a failed
+   * acquire() can neither hang nor throw this loop.
+   *
+   * Fix (premature close): waiting for registration to finish is NOT enough
+   * on its own. A resumed session reuses its old session id, so an
+   * acquire(sessionId) tearing UP a fresh connection and a release(sessionId)
+   * tearing DOWN the outgoing one can genuinely overlap (Task 6). If that
+   * acquire's registration pass runs to completion (and, since the server
+   * was already connected, its ready-check right along with it — that check
+   * has no `await` of its own) while this call is suspended above, this
+   * call would resume to find `holders` still showing just `{sessionId}` —
+   * re-added by the racing acquire, indistinguishable in a `Set` from the
+   * SAME stale membership this release() is supposed to be dropping — and
+   * would close the very connection that acquire just handed back as
+   * `ready`. `holderTouch` (see PooledEntry) is what makes the two
+   * distinguishable: it snapshots, per entry, the touch number this
+   * session's hold had at the moment this call started, and after waiting,
+   * only removes/closes entries whose touch number is UNCHANGED. A changed
+   * number means an acquire() renewed this exact hold sometime after this
+   * call began — this release() backs off and leaves it in place; whichever
+   * acquire renewed it owns the eventual release() for it. An entry this
+   * session didn't hold at all when this call started (the ordinary
+   * Window A/B shape, where the FIRST-ever hold is being established by the
+   * very acquire() this call is waiting on) is never in the snapshot, so it
+   * is unaffected by this check and is removed/closed as before.
    */
   async release(sessionId: string): Promise<void> {
-    const inflight = this.inflightAcquires.get(sessionId);
-    if (inflight && inflight.length) await Promise.all([...inflight]);
+    // Snapshot, per entry this session currently holds, the touch number as
+    // of RIGHT NOW — before any waiting. See the fix comment above.
+    const touchAtStart = new Map<string, number>();
+    for (const [id, entry] of this.pool) {
+      if (entry.holders.has(sessionId)) touchAtStart.set(id, entry.holderTouch.get(sessionId)!);
+    }
+    let inflight = this.inflightAcquires.get(sessionId);
+    while (inflight && inflight.length) {
+      await Promise.all([...inflight]);
+      inflight = this.inflightAcquires.get(sessionId);
+    }
     for (const [id, entry] of [...this.pool.entries()]) {
       if (!entry.holders.has(sessionId)) continue;
+      // Renewed since this call started — leave it, see the fix comment.
+      if (touchAtStart.has(id) && entry.holderTouch.get(sessionId) !== touchAtStart.get(id)) continue;
       entry.holders.delete(sessionId);
       if (entry.holders.size === 0) {
         this.pool.delete(id);

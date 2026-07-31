@@ -205,6 +205,68 @@ describe('McpManager', () => {
     expect(close2).toHaveBeenCalledTimes(1);
   });
 
+  // Regression test for the "release() closes a connection a live acquire()
+  // is about to hand back" premature-close: release() used to snapshot
+  // inflightAcquires once and await it, then run its holder-clearing loop
+  // unconditionally. A resumed session reuses its old session id, so a
+  // release() for the outgoing instance and an acquire() for the incoming
+  // one can genuinely race on the SAME sessionId. This test fails on a
+  // single snapshot-and-await (close() gets called) and passes once
+  // release() re-reads inflightAcquires in a loop until it is truly empty
+  // before touching holders.
+  it('a release() suspended waiting on a live acquire() does not close the connection that acquire hands back', async () => {
+    const close = vi.fn();
+    let resolveConnect: () => void = () => {};
+    let resolveRegistry: (servers: any[]) => void = () => {};
+    const servers = [
+      { id: 'demo', label: 'Demo', enabled: true, transport: { type: 'stdio', command: 'node' },
+        origin: { kind: 'user' }, missingSecrets: [] },
+    ];
+    const registry = {
+      resolveAllEnabled: () => new Promise<any[]>((r) => { resolveRegistry = r; }),
+    };
+    const connectionFactory = () => ({
+      state: 'ready' as const, lastError: null,
+      connect: () => new Promise<void>((r) => { resolveConnect = r; }),
+      listTools: () => [],
+      callTool: async () => ({ text: 'ok', isError: false }),
+      close: async () => { close(); },
+    });
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+
+    // 1. First acquire('s1') settles fully: 's1' holds a ready connection.
+    const p1 = mgr.acquire('s1');
+    await new Promise<void>((r) => setImmediate(r));
+    resolveRegistry(servers);
+    await new Promise<void>((r) => setImmediate(r));
+    resolveConnect();
+    const ready1 = await p1;
+    expect(ready1).toHaveLength(1);
+
+    // 2. A second acquire('s1') starts (the resumed session) and registers
+    // itself in inflightAcquires, but is held at resolveAllEnabled() so it
+    // hasn't registered its holder yet.
+    const p2 = mgr.acquire('s1');
+    await new Promise<void>((r) => setImmediate(r));
+
+    // 3. release('s1') (the outgoing instance tearing down) is called NOW,
+    // while acquire #2 is in flight — its snapshot of inflightAcquires is
+    // non-empty, so it suspends on the await instead of running its
+    // holder-clearing loop immediately.
+    const releasing = mgr.release('s1');
+
+    // 4. Let acquire #2 finish registering (and, since the pooled connection
+    // is already ready with no pending connect, hand the connection straight
+    // back) before release() gets to act.
+    resolveRegistry(servers);
+
+    const [ready2] = await Promise.all([p2, releasing]);
+    expect(ready2).toHaveLength(1);
+    // The connection acquire #2 just returned must still be usable — release()
+    // must not have closed it out from under the caller that's holding it.
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it('a failing server does not prevent healthy ones from being returned', async () => {
     const registry = { resolveAllEnabled: async () => ([
       { id: 'bad', label: 'Bad', enabled: true, transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' }, missingSecrets: [] },
