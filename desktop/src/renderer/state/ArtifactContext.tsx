@@ -17,8 +17,8 @@ export function useArtifact(): ArtifactContextValue {
 }
 
 // Non-throwing variant for components that can render in React roots WITHOUT
-// the provider — the buddy window (BubbleFeed), the ToolCard sandbox, and unit
-// tests all mount AssistantTurnBubble / ToolCard without ArtifactProvider.
+// the provider — the buddy window (BubbleFeed), the workbench tool gallery, and
+// unit tests all mount AssistantTurnBubble / ToolCard without ArtifactProvider.
 // Returns null there so file chips / tool previews degrade gracefully instead
 // of crashing the whole window.
 export function useArtifactOptional(): ArtifactContextValue | null {

@@ -102,6 +102,7 @@ export class SyncService extends EventEmitter {
   private lockDir: string;
   private backupLogPath: string;
   private appSyncMarkerPath: string;
+  private syncSpacesStatePath: string;
   private conversationIndexPath: string;
   private pushing = false;
   // Hourly daily-snapshot poll (see SNAPSHOT_POLL_INTERVAL_MS). Cleared in stop().
@@ -121,6 +122,9 @@ export class SyncService extends EventEmitter {
     this.lockDir = path.join(this.claudeDir, 'toolkit-state', '.sync-lock');
     this.backupLogPath = path.join(this.claudeDir, 'backup.log');
     this.appSyncMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.app-sync-active');
+    // Owned by SpaceManager (sync-spaces/space-manager.ts) — read-only here.
+    // Pinned to SpaceManager's default path by sync-health-primary-system.test.ts.
+    this.syncSpacesStatePath = path.join(this.claudeDir, 'toolkit-state', 'sync-spaces.json');
     this.conversationIndexPath = path.join(this.claudeDir, 'conversation-index.json');
   }
 
@@ -1053,6 +1057,24 @@ export class SyncService extends EventEmitter {
     }
 
     // 1. Personal data sync backend status
+    //
+    // Fix (2026-07-24): this section knew about the LEGACY additional-backup
+    // backends only — `getSyncEnabledBackends()` reads `storage_backends` in
+    // toolkit-state/config.json (Drive/iCloud/rclone). The app's PRIMARY sync,
+    // GitHub sync spaces, keeps its own state file and is invisible to it, so a
+    // machine syncing happily to GitHub with no Drive/iCloud backend got a
+    // danger-level, NON-dismissible "No sync configured — your backups aren't
+    // set up", which the StatusBar renders as a red "Sync Failing" chip. Seen on
+    // a fresh macOS install running 1.3.0-beta.9. Long-lived installs hid the bug
+    // via autoDetectBackend(): it probes `rclone lsd gdrive:…`/the iCloud folder
+    // and, on a machine that used the legacy backups years ago, silently succeeds
+    // and skips the warning — without enabling any backend (verified on the Z13:
+    // storage_backends is [], rclone exits 0). A clean machine has no rclone, so
+    // the probe fails and the warning fires — i.e. the bug lands precisely on new
+    // installs, and the release population is all new installs.
+    // The warning now describes the whole picture: it fires only when NOTHING is
+    // syncing, and the stale warning names the additional backups it's about.
+    const primarySyncOn = this.isPrimarySyncEnabled();
     const syncBackends = this.getSyncEnabledBackends();
     if (syncBackends.length === 0) {
       const detected = await this.autoDetectBackend();
@@ -1063,12 +1085,12 @@ export class SyncService extends EventEmitter {
           this.atomicWrite(this.configPath, JSON.stringify(config, null, 2));
           this.logBackup('INFO', `Auto-detected sync backend: ${detected}`, 'sync.health');
         } catch {}
-      } else {
+      } else if (!primarySyncOn) {
         warnings.push({
           code: 'PERSONAL_NOT_CONFIGURED',
           level: 'danger',
           title: 'No sync configured',
-          body: "Your backups aren't set up. Connect a cloud provider so your data is protected.",
+          body: "Nothing is backing up your data yet. Set up sync so your conversations and settings are protected.",
           fixAction: { label: 'Set up sync', kind: 'open-sync-setup' },
           dismissible: false,
           createdEpoch: now,
@@ -1084,8 +1106,11 @@ export class SyncService extends EventEmitter {
             warnings.push({
               code: 'PERSONAL_STALE',
               level: 'warn',
-              title: 'Sync is stale',
-              body: "Backups haven't succeeded in over 24 hours. Check the sync panel for details.",
+              // Named for what the marker actually tracks: the legacy
+              // Drive/iCloud snapshot pushes. GitHub sync spaces has its own
+              // status in the panel and never stamps this marker.
+              title: 'Extra backups are stale',
+              body: "Your additional cloud backups (Drive or iCloud) haven't succeeded in over 24 hours. Check Backup & Sync for details.",
               dismissible: true,
               createdEpoch: now,
             });
@@ -1109,6 +1134,20 @@ export class SyncService extends EventEmitter {
     await writeWarnings([...preserved, ...warnings]);
 
     return warnings;
+  }
+
+  /**
+   * True when the app's PRIMARY sync — GitHub sync spaces — is turned on.
+   *
+   * Reads SpaceManager's state file directly instead of importing
+   * `sync-spaces/service.ts`: that module pulls in the sync engine, chokidar and
+   * electron's BrowserWindow, none of which belong in a startup health check
+   * (and SyncService's tests run under plain node against a tmp home). The path
+   * agreement is pinned by `sync-health-primary-system.test.ts`, which drives a
+   * real SpaceManager and asserts this reader sees what it wrote.
+   */
+  private isPrimarySyncEnabled(): boolean {
+    return !!this.readJson(this.syncSpacesStatePath)?.enabled;
   }
 
   /** Try to auto-detect a sync backend (Drive via rclone, iCloud via folder). */

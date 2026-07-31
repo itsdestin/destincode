@@ -1,0 +1,88 @@
+{
+  "name": "Halftone Dimension",
+  "slug": "halftone-dimension",
+  "version": "1.2.2",
+  "companions": [
+    {"asset": "assets/companions/ghost.svg", "size": 1.0, "dx": 0, "dy": 0, "stiffness": 34, "damping": 7, "ghost": true},
+    {"asset": "assets/companions/bar-cyan.svg", "size": 0.87, "height": 0.026, "dx": -0.035, "dy": -0.322, "stiffness": 55, "damping": 8, "float": 0.017, "floatMs": 2300},
+    {"asset": "assets/companions/bar-red.svg", "size": 0.717, "height": 0.026, "dx": 0.061, "dy": 0.33, "stiffness": 42, "damping": 7, "float": 0.022, "floatMs": 2900}
+  ],
+  "dark": true,
+  "author": "claude",
+  "description": "Cyberpunk manga print shop — deep purple-black with hot pink accent, cyan secondary, misregistered CMY halftone dots, scanlines, and floating chrome.",
+  "created": "2026-04-05",
+  "tokens": {
+    "canvas": "#08060e",
+    "panel": "#100e1c",
+    "inset": "#181430",
+    "well": "#0C0A14",
+    "accent": "#E51F48",
+    "on-accent": "#ffffff",
+    "fg": "#F0E8F8",
+    "fg-2": "#D4CAE4",
+    "fg-dim": "#A498C0",
+    "fg-muted": "#7468A0",
+    "fg-faint": "#4D417A",
+    "edge": "#372D56",
+    "edge-dim": "#453B6580",
+    "scrollbar-thumb": "#e8234a60",
+    "scrollbar-hover": "#e8234a90"
+  },
+  "shape": {
+    "radius": "8px",
+    "radius-sm": "8px",
+    "radius-md": "16px",
+    "radius-lg": "24px",
+    "radius-xl": "32px",
+    "radius-2xl": "36px",
+    "radius-full": "9999px"
+  },
+  "background": {
+    "average-color": "#18102E",
+    "type": "gradient",
+    "value": "linear-gradient(135deg, #08060e 0%, #18102e 25%, #200e3a 50%, rgba(232,35,74,0.07) 70%, rgba(0,184,255,0.05) 85%, #08060e 100%)",
+    "opacity": 1,
+    "panels-blur": 20,
+    "panels-opacity": 0.78,
+    "bubble-blur": 0,
+    "bubble-opacity": 1,
+    "pattern": "assets/pattern.svg",
+    "pattern-opacity": 0.12
+  },
+  "layout": {
+    "chrome-style": "floating",
+    "input-style": "default",
+    "bubble-style": "bordered",
+    "header-style": "default",
+    "statusbar-style": "default"
+  },
+  "effects": {
+    "particles": "custom",
+    "particle-shape": "assets/particle.svg",
+    "particle-count": 35,
+    "particle-speed": 0.8,
+    "particle-drift": 0.6,
+    "particle-size-range": [
+      6,
+      14
+    ],
+    "scan-lines": true,
+    "vignette": 0.3,
+    "noise": 0.04
+  },
+  "icons": {
+    "send": "assets/icon-send.svg"
+  },
+  "mascot": {
+    "rig": "assets/mascot-rig.svg",
+    "idle": "assets/mascot-idle.svg",
+    "welcome": "assets/mascot-welcome.svg",
+    "inquisitive": "assets/mascot-inquisitive.svg"
+  },
+  "scrollbar": {
+    "thumb-image": "assets/scrollbar-thumb.svg",
+    "track-color": "transparent"
+  },
+  "custom_css": "::selection { background: rgba(229, 31, 72, 0.3); color: var(--fg); }\n\n[data-theme=\"halftone-dimension\"] .bg-accent { box-shadow: 0 0 20px rgba(229, 31, 72, 0.4), 0 0 40px rgba(229, 31, 72, 0.15); }\n\n[data-theme=\"halftone-dimension\"] .assistant-bubble { border-left: 3px solid #E51F48; }\n\n[data-theme=\"halftone-dimension\"] .header-bar { border-color: rgba(229, 31, 72, 0.4); }\n[data-theme=\"halftone-dimension\"] .input-bar-container { border-color: rgba(229, 31, 72, 0.4); }\n\n[data-theme=\"halftone-dimension\"] button:focus-visible, [data-theme=\"halftone-dimension\"] a:focus-visible, [data-theme=\"halftone-dimension\"] select:focus-visible { outline: 2px solid #E51F48; outline-offset: 2px; box-shadow: 0 0 8px rgba(229, 31, 72, 0.3); }\n\n[data-theme=\"halftone-dimension\"] h1,\n[data-theme=\"halftone-dimension\"] h2,\n[data-theme=\"halftone-dimension\"] .header-bar { text-shadow: -1.5px 0 rgba(229, 31, 72, 0.4), 1.5px 0 rgba(0, 184, 255, 0.4); }\n\n[data-theme=\"halftone-dimension\"] .user-bubble { box-shadow: 0 0 18px rgba(229, 31, 72, 0.3), 0 0 40px rgba(229, 31, 72, 0.1); border: 1.5px solid rgba(229, 31, 72, 0.5); }\n\n::-webkit-scrollbar-thumb { background-image: url('assets/scrollbar-thumb.svg'); background-size: contain; background-repeat: repeat-y; }\n::-webkit-scrollbar-track { background: transparent; }",
+  "source": "community"
+}

@@ -233,9 +233,31 @@ export function MascotRig({
   }, [reducedEffects]);
 
   // ── Unified spring loop: pose base + drag trail + idle sway per part ──
+  //
+  // Perf: dual-rate driver (2026-07-30 idle-CPU investigation). This was an
+  // unconditional requestAnimationFrame chain — and because every motion
+  // style's idleSway is a continuous sinusoid, the springs never park, so it
+  // woke AND wrote new limb transforms at the display's full refresh rate for
+  // as long as a rig mascot was mounted. On a 180Hz panel that is 180 presented
+  // frames/sec for ambient sway, at ~1.5-1.9ms of CPU each (~29% of one core).
+  //
+  // Now a 33ms interval drives idle motion (sway, twitches, wave, pupils —
+  // 30fps is indistinguishable for slow ambient movement), and the rAF chain
+  // runs ONLY while the user is dragging, where limb trailing tracks the
+  // cursor and full refresh rate is genuinely the point. stepSpring integrates
+  // real elapsed time (dt), so the handoff between cadences changes no physics.
+  //
+  // Freeze-safety: the interval never stops; `rafActive` only decides who
+  // calls step(). Drag start is noticed on the next interval tick (≤33ms —
+  // imperceptible for a grab); the rAF chain retires itself the frame after
+  // `dragging` clears. If rAF is ever suspended mid-drag (window hidden), the
+  // interval resumes idle stepping as soon as `dragging` clears — no wake
+  // source can be missed because the interval IS the wake source.
   useEffect(() => {
     if (reducedEffects) return;
+    const IDLE_TICK_MS = 33;
     let raf = 0;
+    let rafActive = false;
     let last = performance.now();
     // Hyper twitch countdown — an impulse straight into a random spring's velocity.
     let twitchIn = 1200;
@@ -243,8 +265,7 @@ export function MascotRig({
     // change only tx/ty (side-peek arm parking) while the rotation target is
     // unchanged, and the parked-spring skip below would never write it.
     let lastPose: PoseName | null = null;
-    const tick = (now: number) => {
-      raf = requestAnimationFrame(tick);
+    const step = (now: number) => {
       const dt = now - last;
       last = now;
       // Self-healing: re-indexes (and restyles) if React replaced the svg DOM
@@ -304,8 +325,21 @@ export function MascotRig({
         }
       }
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    // Full-rate chain, alive only while dragging (see the driver comment above).
+    const rafTick = (now: number) => {
+      if (!motionRef.current.dragging) { rafActive = false; return; }
+      raf = requestAnimationFrame(rafTick);
+      step(now);
+    };
+    const interval = setInterval(() => {
+      if (motionRef.current.dragging) {
+        if (!rafActive) { rafActive = true; raf = requestAnimationFrame(rafTick); }
+        return; // rAF owns step() while dragging — don't double-step
+      }
+      step(performance.now());
+    }, IDLE_TICK_MS);
+    step(performance.now()); // first paint immediately, not 33ms late
+    return () => { clearInterval(interval); cancelAnimationFrame(raf); };
   }, [reducedEffects, motionRef]);
 
   return (

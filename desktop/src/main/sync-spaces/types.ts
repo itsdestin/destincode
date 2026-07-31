@@ -49,6 +49,13 @@ export interface SyncTransport {
   /** Recursive byte size of the hidden sync repo, for the large-history warning.
    *  Bounded + best-effort; returns 0 on error / missing repo. */
   gitDirSizeBytes?(space: SyncSpace): Promise<number>;
+  /** Repair a corrupt hidden repo (crash-truncated objects, bad refs, corrupt
+   *  index). Tier 1 deletes zero-byte loose objects and resets main to the
+   *  local origin/main; Tier 2 moves the whole repo aside as a .broken-<date>
+   *  backup and re-inits (the engine's normal provisioning + pull re-adopt the
+   *  remote). NEVER touches the user's files — only <root>/.youcoded/.
+   *  Optional like maybeGc — a non-git transport omits it. */
+  repair?(space: SyncSpace): Promise<void>;
 }
 
 // `at` is stamped by service.broadcast() at emit time (ms epoch). Optional so
