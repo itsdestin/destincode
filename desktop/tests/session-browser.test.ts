@@ -102,6 +102,10 @@ function jsonlLine(obj: Record<string, unknown>): string {
 function writeTranscript(slug: string, sid: string, opts: {
   firstUserText?: string;
   lastTimestamp?: string;
+  model?: string;
+  /** Lines appended AFTER the assistant reply — e.g. tool traffic, which is
+   *  what normally sits between the last assistant message and end-of-file. */
+  trailing?: Record<string, unknown>[];
 } = {}): string {
   const dir = path.join(tmpHome, '.claude', 'projects', slug);
   fs.mkdirSync(dir, { recursive: true });
@@ -114,8 +118,13 @@ function writeTranscript(slug: string, sid: string, opts: {
   });
   content += jsonlLine({
     type: 'assistant', uuid: 'a1', timestamp: opts.lastTimestamp ?? '2026-06-01T10:05:00Z',
-    message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done. '.repeat(40) }] },
+    message: {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'done. '.repeat(40) }],
+      ...(opts.model ? { model: opts.model } : {}),
+    },
   });
+  for (const line of opts.trailing ?? []) content += jsonlLine(line);
   fs.writeFileSync(file, content);
   return file;
 }
@@ -223,6 +232,60 @@ describe('listPastSessions — existing gates still hold', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].sessionId).toBe(SID_A);
     expect(sessions[0].projectSlug).toBe('C--home-project-deep');
+  });
+});
+
+// A Claude Code conversation has no provider binding to resolve, so the ONLY
+// place its model is recorded is `message.model` on each assistant line in the
+// transcript. Reading it here is what puts a model on a CC card in the Resume
+// Browser; without it the chip is native-only. The read piggybacks on the tail
+// chunk that was already being scanned for the last timestamp.
+describe('listPastSessions — last model used (Claude Code)', () => {
+  it('derives lastUsedModel from the last assistant message', async () => {
+    writeTranscript('C--proj-alpha', SID_A, { model: 'claude-sonnet-4-5-20250929' });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel).toEqual({
+      modelId: 'claude-sonnet-4-5-20250929',
+      // NOT a native provider type — the resume prefill matches
+      // providerType+modelId against the local model catalog, and a CC session
+      // must never match there. It resumes on an alias, not a binding.
+      providerType: 'claude-code',
+      providerLabel: 'Claude Code',
+    });
+  });
+
+  it('finds the model when tool traffic sits between it and end-of-file', async () => {
+    // The realistic shape: the last LINE of a transcript is almost never the
+    // assistant message. A scan that stopped at the first parseable line (as
+    // the timestamp scan did) would find nothing here.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-opus-4-7-20260115',
+      trailing: [
+        { type: 'user', uuid: 'tr1', timestamp: '2026-06-01T10:06:00Z', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
+        { type: 'user', uuid: 'tr2', timestamp: '2026-06-01T10:06:01Z', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
+      ],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-4-7-20260115');
+  });
+
+  it('omits lastUsedModel entirely when no assistant line carries a model', async () => {
+    // Older transcripts predate the field. Absent must stay absent — the card
+    // shows no chip rather than a guessed default.
+    writeTranscript('C--proj-alpha', SID_A);
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel).toBeUndefined();
+  });
+
+  it('still reports the last timestamp when a model is present', async () => {
+    // Both values come from one backwards pass now; a regression in either
+    // could silently break the other.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-sonnet-4-5-20250929',
+      lastTimestamp: '2026-06-02T08:30:00Z',
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastModified).toBe(Date.parse('2026-06-02T08:30:00Z'));
   });
 });
 

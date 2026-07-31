@@ -185,6 +185,18 @@ export interface SessionTranscriptMeta {
   fallbackTitle: string | null;
   /** Timestamp (ms) of the last parseable transcript line, or null. */
   lastTimestampMs: number | null;
+  /**
+   * `message.model` from the last assistant line in the tail chunk, or null.
+   *
+   * This is how a CLAUDE CODE conversation gets a lastUsedModel at all. The
+   * native side records one at bind time (conversations/service.ts
+   * noteModelUsed), but CC has no binding to resolve — the model only exists as
+   * a field on each assistant message in the transcript. Null when the tail
+   * chunk holds no assistant line with a model, which a long run of tool
+   * results can cause; the chunk is deliberately NOT grown to chase it, because
+   * this runs once per transcript on every browse.
+   */
+  lastModelId: string | null;
 }
 
 /** Collapse whitespace and trim a derived title to a word boundary. */
@@ -219,8 +231,9 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
     fh = await fs.promises.open(jsonlPath, 'r');
     const { size } = await fh.stat();
 
-    // --- Tail: last parseable line's timestamp ---
+    // --- Tail: last parseable line's timestamp, and the last model used ---
     let lastTimestampMs: number | null = null;
+    let lastModelId: string | null = null;
     const tailLen = Math.min(TAIL_CHUNK_BYTES, size);
     if (tailLen > 0) {
       const tailBuf = Buffer.alloc(tailLen);
@@ -228,13 +241,25 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
       // First "line" of the chunk is usually a partial JSON line — the
       // backwards scan just skips anything that doesn't parse.
       const tailLines = tailBuf.toString('utf8').split('\n');
+      // Both values come from the SAME backwards pass over the SAME buffer, so
+      // reading the model costs no extra IO — the tail was already being read
+      // for the timestamp. The loop now runs until BOTH are found (or the chunk
+      // is exhausted) instead of breaking on the first timestamp: the last line
+      // is usually a tool result, and the assistant line carrying the model can
+      // be several entries further back.
       for (let i = tailLines.length - 1; i >= 0; i--) {
+        if (lastTimestampMs !== null && lastModelId !== null) break;
         const line = tailLines[i];
         if (!line.trim() || line.includes('\x00')) continue;
-        try {
-          const ts = Date.parse(JSON.parse(line).timestamp);
-          if (!Number.isNaN(ts)) { lastTimestampMs = ts; break; }
-        } catch { /* partial or corrupt line — keep scanning backwards */ }
+        let parsed: any;
+        try { parsed = JSON.parse(line); } catch { continue; } // partial/corrupt
+        if (lastTimestampMs === null) {
+          const ts = Date.parse(parsed.timestamp);
+          if (!Number.isNaN(ts)) lastTimestampMs = ts;
+        }
+        if (lastModelId === null && parsed.type === 'assistant' && typeof parsed.message?.model === 'string') {
+          lastModelId = parsed.message.model;
+        }
       }
     }
 
@@ -267,9 +292,9 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
       }
     }
 
-    return { fallbackTitle, lastTimestampMs };
+    return { fallbackTitle, lastTimestampMs, lastModelId };
   } catch {
-    return { fallbackTitle: null, lastTimestampMs: null };
+    return { fallbackTitle: null, lastTimestampMs: null, lastModelId: null };
   } finally {
     try { await fh?.close(); } catch {}
   }
@@ -363,6 +388,18 @@ export async function listPastSessions(
           lastModified: meta.lastTimestampMs ?? stat.mtimeMs,
           size: stat.size,
           ...(joinedFlags ? { flags: joinedFlags } : {}),
+          // Model chip on the Resume Browser card. providerType is the literal
+          // 'claude-code' rather than one of the native provider types, which
+          // matters: ModelPicker's resume prefill matches providerType+modelId
+          // against the LOCAL native catalog, and this must never match there.
+          // A CC session resumes on an alias, not on a provider binding.
+          //
+          // The store overlay below runs AFTER this and re-assigns
+          // lastUsedModel when the record has one, so a synced record still
+          // wins — this only fills the gap the store leaves for CC rows.
+          ...(meta.lastModelId
+            ? { lastUsedModel: { modelId: meta.lastModelId, providerType: 'claude-code', providerLabel: 'Claude Code' } }
+            : {}),
         } as PastSession;
       } catch {
         console.warn(`[session-browser] Failed to stat ${slug}/${file} after retries`);

@@ -41,6 +41,16 @@ function formatSize(bytes: number): string {
   return `${(kb / 1024).toFixed(1)}MB`;
 }
 
+// Claude Code model ids carry a release date — `claude-sonnet-4-5-20250929`.
+// The date is noise on a card that already shows when the conversation last
+// ran, and it is the difference between the chip fitting and truncating. Only a
+// TRAILING 8-digit group is stripped, so a native id that happens to contain
+// digits (`gpt-5.6-sol`, `qwen3-coder-30b-a3b-instruct`) is untouched. The full
+// id stays in the chip's title attribute.
+function formatModelId(id: string): string {
+  return id.replace(/-\d{8}$/, '');
+}
+
 // Shared trigger-button shape for the filter row beneath the search bar.
 // Inactive pills look like the search input frame; active pills tint with the
 // accent so the user can see at a glance which pills have departed from
@@ -862,7 +872,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
               >
                 <ModelIcon className="w-3 h-3 shrink-0" />
-                <span className="truncate">{s.lastUsedModel.modelId}</span>
+                <span className="truncate">{formatModelId(s.lastUsedModel.modelId)}</span>
               </span>
             )}
             <span className="shrink-0 ml-auto">{formatRelativeTime(s.lastModified)}</span>
