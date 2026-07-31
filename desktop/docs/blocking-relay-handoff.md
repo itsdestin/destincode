@@ -60,6 +60,15 @@ The pipe protocol works. Backward compatibility confirmed. (This re-run was exec
 
 ## Implementation Plan
 
+> **Historical — this plan shipped, with two deliberate divergences.** Read it as
+> the original spike's proposal, not as current API docs. What actually shipped:
+> (1) the blocking hook is **`PermissionRequest`**, not `PreToolUse` (Step 5 below
+> guessed this might become possible — it did); (2) `respond()` takes the nested
+> **decision object** `{ decision: { behavior: 'allow' | 'deny' } }`, not the
+> `allow: boolean` / `{"allow": …}` shape sketched in Steps 2, 3 and 5 — see the
+> corrected protocol bullet near the top of this file. For current behavior,
+> trust `hook-relay.ts` and `relay-blocking.js`, not this section.
+
 ### Step 1: Replace relay.js with relay-blocking.js
 - `relay-blocking.js` is a drop-in replacement — when server closes without writing back, behavior is identical to current `relay.js`
 - Rename or replace; update any references in `scripts/install-hooks.js` or hook config
