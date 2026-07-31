@@ -140,6 +140,13 @@ function useDropdownReposition(
   }, [isOpen, triggerRef, dropdownWidthPx, setPosition]);
 }
 
+// Right padding reserved on a card's upper rows for the absolutely-positioned
+// icon cluster. Derived, not eyeballed: cluster p-1.5 (6) + two p-1.5 buttons
+// around 16px icons (28 each) + gap-0.5 (2) = 64px = pr-16. The BOTTOM row
+// deliberately omits it so the timestamp reaches the card's own right padding.
+// If the cluster's padding or its button count changes, this changes with it.
+const ICON_GUTTER = 'pr-16';
+
 // FlagName is imported from resume-browser-filters.ts (single source of truth),
 // kept in sync with SESSION_FLAG_NAMES in shared/types.ts (that module is
 // CommonJS so we don't import it directly).
@@ -746,14 +753,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           The card wraps BOTH the trigger and the expanded panel so an open row
           reads as one object instead of a row with a detached box under it. */}
       <div
-        className={`rounded-lg border bg-inset overflow-hidden transition-colors ${
+        // `relative` is load-bearing: the icon cluster is positioned against
+        // this card, not the panel. The icon buttons are SIBLINGS of the expand
+        // trigger, never nested — a button inside a button is invalid HTML and
+        // the inner one would never receive its own click.
+        className={`relative rounded-lg border bg-inset overflow-hidden transition-colors ${
           isExpanded ? 'border-accent' : inert ? 'border-edge-dim' : 'border-edge-dim hover:border-edge'
         }`}
       >
-      {/* Header row: the expand trigger plus the Organize button beside it.
-          They are SIBLINGS, not nested — a button inside a button is invalid
-          HTML and the inner one would never receive its own click. */}
-      <div className="flex items-stretch">
       <button
         // Resume is disabled for conversations whose project folder isn't on
         // this device (synced in from elsewhere) OR whose transcript hasn't
@@ -762,12 +769,19 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
         aria-disabled={inert || undefined}
         aria-expanded={inert ? undefined : isExpanded}
-        className={`flex-1 min-w-0 text-left p-3 pr-1 flex focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`w-full text-left p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           inert ? 'text-fg-dim cursor-default' : isExpanded ? 'text-fg' : 'text-fg-dim'
         }`}
       >
-        <div className="flex-1 min-w-0">
-          <div className="text-sm truncate flex items-center gap-1.5">
+        <div className="min-w-0">
+          {/* ICON_GUTTER on the two upper rows, none on the bottom one — that
+              asymmetry is the whole point. The icon buttons are absolutely
+              positioned over the card's top-right corner, so the trigger can
+              span the FULL card width and the timestamp on the bottom row lands
+              flush with the card's right padding. Laying the icons out as flex
+              siblings instead (as this did) shortened the trigger by their
+              width, which left the date visibly short of the right edge. */}
+          <div className={`text-sm truncate flex items-center gap-1.5 ${ICON_GUTTER}`}>
             {/* Runtime badge — native (YouCoded harness) sessions only. Plain
                 word, no glyph; distinguishes them from Claude Code transcripts. */}
             {s.provider === 'native' && (
@@ -791,7 +805,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               separate species of label (built-in-tags.ts). Complete has no chip:
               its state is the hide icon on the right of this row. */}
           {(s.flags?.priority || (s.tags && s.tags.length > 0) || s.note) && (
-            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+            <div className={`flex items-center gap-1 mt-0.5 flex-wrap ${ICON_GUTTER}`}>
               {s.flags?.priority && <TagChip tag={PRIORITY_TAG} />}
               {(s.tags ?? []).map((id) => {
                 const t = registry.byId.get(id);
@@ -827,13 +841,17 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         </div>
       </button>
-      {/* Complete — the classic "hide" eye-with-a-slash, because that is what
-          Complete DOES here: the row drops out of the list unless Show Complete
-          is on. It sits on the card rather than inside the Organize popover
-          because finishing with a conversation is a one-click action, and
-          costing a menu-open for it is what made the old flag row feel buried.
-          Hover copy is a question ("Mark this session complete?") so the icon
-          reads as an action, not a status badge. */}
+      {/* The two icon buttons, overlaid on the card's top-right corner rather
+          than laid out beside the trigger. Their padding is chosen so each
+          icon's right edge lands 12px from the card edge — the same p-3 the
+          trigger uses — which is what puts the tag icon and the timestamp on
+          one vertical line. */}
+      <div className="absolute top-0 right-0 p-1.5 flex items-start gap-0.5">
+      {/* Complete. It sits on the card rather than inside the tag sheet because
+          finishing with a conversation is a one-click action, and costing a
+          menu-open for it is what made the old flag row feel buried. Hover copy
+          is a question ("Mark this session complete?") so the icon reads as an
+          action, not a status badge. */}
       {(() => {
         const done = !!s.flags?.complete;
         return (
@@ -843,7 +861,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             aria-pressed={done}
             title={done ? 'Marked complete — hidden unless Show Complete is on. Click to undo.' : 'Mark this session complete?'}
             aria-label={done ? `Mark ${s.name} not complete` : `Mark ${s.name} complete`}
-            className={`shrink-0 pl-1 pr-0.5 pt-3 flex items-start focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+            className={`p-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
               done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
             }`}
           >
@@ -883,7 +901,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         aria-label={`Organize ${s.name}`}
         aria-haspopup="dialog"
         aria-expanded={organizeId === s.sessionId}
-        className={`shrink-0 px-2.5 pt-3 flex items-start focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`p-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
         }`}
       >
