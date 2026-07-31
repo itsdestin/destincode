@@ -709,7 +709,7 @@ body[data-mode="buddy-chat"] #theme-bg {
    exchange for a 3x CPU cut on a control that shows during every install/sync.
    These longhand declarations override the timing-function inside Tailwind's
    `animation` shorthand by source order — this file's rules come after the
-   tailwindcss import. See docs/active/investigations/2026-07-30-idle-cpu-burn.md */
+   tailwindcss import. See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
 .animate-pulse { animation-timing-function: steps(8); }
 .animate-spin { animation-timing-function: steps(12); }
 
@@ -1399,7 +1399,7 @@ body[data-mode="buddy-chat"] #theme-bg {
      a keyword as the message arrives — and then stops, at which point the cost
      is exactly zero. `fill-mode` is deliberately left at `none` so it settles
      back to the static start gradient, which is legible (screenshot-checked).
-     See docs/active/investigations/2026-07-30-idle-cpu-burn.md */
+     See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
   animation: flowing-word-pan 3s linear 2;
   /* NOTE: font-weight intentionally omitted here. In the chat input mirror the
      keyword renders bolder than the same characters in the transparent
@@ -1436,7 +1436,7 @@ body[data-mode="buddy-chat"] #theme-bg {
    single visible keyword measured ~43% of one CPU core on a 180Hz panel.
    `.timeline-entry:not(.in-view)` already pauses offscreen keywords; this covers
    the on-screen ones, which is the app's most common state (a chat full of user
-   messages). See docs/active/investigations/2026-07-30-idle-cpu-burn.md.
+   messages). See docs/archive/investigations/2026-07-30-idle-cpu-burn.md.
    Duplicated selector rather than one rule because CSS cannot combine an
    attribute selector with a media query — see the Reduced Effects note above
    .model-load-track. */

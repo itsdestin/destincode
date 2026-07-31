@@ -97,7 +97,7 @@ function SessionDot({ color, isActive }: { color: SessionStatusColor; isActive: 
         // refresh; measured 2026-07-30, cost is per-frame not per-element).
         // steps(8) = 8 opacity changes/sec: measured 3x cheaper, and visually
         // indistinguishable on an 8px dot. See the .animate-pulse comment in
-        // globals.css + docs/active/investigations/2026-07-30-idle-cpu-burn.md
+        // globals.css + docs/archive/investigations/2026-07-30-idle-cpu-burn.md
         style={breathing ? { animation: 'breathe 2s steps(8) infinite' } : { opacity: isActive ? 1 : 0.5 }}
       />
     </span>

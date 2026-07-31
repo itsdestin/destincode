@@ -21,7 +21,7 @@ import { describe, it, expect } from 'vitest';
 // finite animation infinite again. Nothing breaks visually — the app just
 // quietly resumes burning ~30% of a core whenever that element is on screen.
 //
-// Investigation: youcoded-dev/docs/active/investigations/2026-07-30-idle-cpu-burn.md
+// Investigation: youcoded-dev/docs/archive/investigations/2026-07-30-idle-cpu-burn.md
 const RENDERER = join(__dirname, '..', 'src', 'renderer');
 const read = (...p: string[]) =>
   readFileSync(join(RENDERER, ...p), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');

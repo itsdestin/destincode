@@ -22,7 +22,7 @@ import { describe, it, expect } from 'vitest';
 // OR this media condition" in one rule. This test pins BOTH halves so a future
 // edit to one cannot silently drift from the other.
 //
-// Investigation: youcoded-dev/docs/active/investigations/2026-07-30-idle-cpu-burn.md
+// Investigation: youcoded-dev/docs/archive/investigations/2026-07-30-idle-cpu-burn.md
 const GLOBALS = join(__dirname, '..', 'src', 'renderer', 'styles', 'globals.css');
 
 // Every perpetual animation that is NOT already gated elsewhere. The mascot rig
