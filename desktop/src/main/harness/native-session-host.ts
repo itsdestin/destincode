@@ -155,10 +155,10 @@ export class NativeSessionHost extends EventEmitter {
     // skills installed" an expressible state rather than an environment accident.
     private skillCatalog?: SkillCatalog,
     // The process-level MCP connection pool (Task 4, mcp-manager.ts). Optional +
-    // LAST so existing constructions still compile. Task 6 is what actually
-    // calls acquire()/release() per session (create/resume/destroy below);
-    // destroyAll() (this host's own app-quit path) already tore down its
-    // destroyAll() before this task. Typed structurally (McpManager's real
+    // LAST so existing constructions still compile. Its destroyAll() was
+    // already wired at this host's own app-quit path (destroyAll() below)
+    // before this task; Task 6 adds the per-session acquire()/release() calls
+    // (create/resume/destroy below). Typed structurally (McpManager's real
     // shape, not the imported class) so tests can inject a fake pool without
     // this file depending on the concrete class for a few method calls.
     private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<ReadyServer[]>; release(sessionId: string): Promise<void> },
