@@ -20,7 +20,11 @@ import { McpRegistry, type ResolvedMcpServer } from './harness/mcp/mcp-registry'
  *      before this task.
  *   2. The YouCoded MCP registry (~/.youcoded/mcp.json, via McpRegistry) —
  *      new in Task 7. See `projectToClaudeJson`'s header comment for the
- *      ownership rule that governs this source.
+ *      ownership rule that governs this source, INCLUDING the collision
+ *      guard added in the fix pass: an id that already exists in mcpServers
+ *      and that YouCoded did not previously own (hand-written by the user via
+ *      `claude mcp add <id> ...`, or scanned from a plugin manifest) is never
+ *      overwritten — it is skipped and reported, not silently replaced.
  *
  * Servers with `auto: false` (setup required, e.g., iMessages full-disk-access,
  * Todoist OAuth) are skipped — those need the user to act before they work,
@@ -55,6 +59,16 @@ interface ClaudeJson {
    *  projectToClaudeJson below. */
   _youcodedOwnedMcpServers?: string[];
   [k: string]: unknown;
+}
+
+// Guard for the write path against a hand-edited/corrupted ~/.claude.json
+// where `mcpServers` is present but not an object (e.g. a string or number).
+// Spreading a non-object with `{ ...value }` does NOT throw in JS — for a
+// string it produces numeric-indexed keys ('0', '1', ...) that would then get
+// written back into the real config as garbage entries. Treat anything that
+// isn't a plain object the same as "absent".
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 function currentPlatform(): 'macos' | 'windows' | 'linux' {
@@ -167,12 +181,33 @@ function buildRegistryServerConfig(server: ResolvedMcpServer): Record<string, un
  * disabling a server in YouCoded turns it off for Claude Code too, which is
  * what "YouCoded owns it" has to mean. The owned-id list is rebuilt fresh on
  * every call from THIS run's registry, so it can never drift from reality.
+ *
+ * COLLISION GUARD (fix pass, 2026-07-31): "an entry it does not own is never
+ * modified" has to hold on the WRITE side too, not just the prune side above.
+ * `sanitizeServerId()` applies no namespace prefix, so a human-picked id like
+ * `gmail` from `claude mcp add gmail ...` collides exactly with a YouCoded
+ * registry entry labeled "Gmail". Before writing a registry server's config,
+ * check whether its id already exists in `mcpServers` AND is absent from
+ * `previouslyOwned` — that combination means "something else put this key
+ * here" (a hand-written entry, or a plugin-manifest-scanned one from the loop
+ * in `reconcileMcp` that runs before this function). That id is skipped, not
+ * overwritten, and reported back in `skippedCollisions` so a caller can offer
+ * it as an explicit "adopt" action later (phase 2) instead of silently taking
+ * it. An id already in `previouslyOwned` is a legitimate update, not a
+ * collision, and proceeds as before.
  */
-export function projectToClaudeJson(claudeJson: ClaudeJson, servers: ResolvedMcpServer[]): ClaudeJson {
+export function projectToClaudeJson(
+  claudeJson: ClaudeJson,
+  servers: ResolvedMcpServer[]
+): { claudeJson: ClaudeJson; skippedCollisions: string[] } {
   const previouslyOwned = Array.isArray(claudeJson._youcodedOwnedMcpServers)
     ? claudeJson._youcodedOwnedMcpServers
     : [];
-  const mcpServers: Record<string, unknown> = { ...(claudeJson.mcpServers ?? {}) };
+  // Non-object mcpServers (hand-edited/corrupted file: a string, a number)
+  // is treated as absent rather than spread — see isPlainObject's comment.
+  const mcpServers: Record<string, unknown> = {
+    ...(isPlainObject(claudeJson.mcpServers) ? claudeJson.mcpServers : {}),
+  };
   const stillInRegistry = new Set(servers.map((s) => s.id));
 
   // An id we owned last run that isn't in THIS run's registry has left
@@ -184,6 +219,7 @@ export function projectToClaudeJson(claudeJson: ClaudeJson, servers: ResolvedMcp
   }
 
   const nowOwned: string[] = [];
+  const skippedCollisions: string[] = [];
   for (const server of servers) {
     // Defensive: projectToClaudeJson's contract is "enabled, resolved
     // servers only" regardless of what the caller passes — resolveAllEnabled()
@@ -195,14 +231,25 @@ export function projectToClaudeJson(claudeJson: ClaudeJson, servers: ResolvedMcp
     // it would hand Claude Code a command/header missing a required value,
     // so it's skipped until the secret actually resolves.
     if (server.missingSecrets && server.missingSecrets.length > 0) continue;
+    // Collision guard — see this function's header comment. `mcpServers`
+    // here still reflects the incoming file (pruning above only removes ids
+    // NOT in `servers`, so it can never remove the very id being checked).
+    const idAlreadyExists = Object.prototype.hasOwnProperty.call(mcpServers, server.id);
+    if (idAlreadyExists && !previouslyOwned.includes(server.id)) {
+      skippedCollisions.push(server.id);
+      continue;
+    }
     mcpServers[server.id] = buildRegistryServerConfig(server);
     nowOwned.push(server.id);
   }
 
   return {
-    ...claudeJson,
-    mcpServers,
-    _youcodedOwnedMcpServers: nowOwned,
+    claudeJson: {
+      ...claudeJson,
+      mcpServers,
+      _youcodedOwnedMcpServers: nowOwned,
+    },
+    skippedCollisions,
   };
 }
 
@@ -211,6 +258,12 @@ export interface ReconcileMcpResult {
   skippedPlatform: number;
   skippedManual: number;
   manifestCount: number;
+  /** Registry server ids skipped this run because the id collided with an
+   *  entry (hand-written by the user, or manifest-scanned) that YouCoded does
+   *  not own — see projectToClaudeJson's collision guard. Empty in the common
+   *  case; a non-empty list is worth logging so a collision doesn't go
+   *  unnoticed even though phase 1 has no UI to surface it yet. */
+  skippedCollisions: string[];
 }
 
 export async function reconcileMcp(): Promise<ReconcileMcpResult> {
@@ -251,7 +304,7 @@ export async function reconcileMcp(): Promise<ReconcileMcpResult> {
   // pool here (that's McpManager's job for LIVE sessions), just a read.
   const registry = new McpRegistry(new NativeHome(), new SecretsStore(app.getPath('userData')));
   const resolved = await registry.resolveAllEnabled();
-  const projected = projectToClaudeJson(claudeJson, resolved);
+  const { claudeJson: projected, skippedCollisions } = projectToClaudeJson(claudeJson, resolved);
 
   // added/skippedPlatform/skippedManual intentionally keep their ORIGINAL
   // meaning (manifest-scan counts only) rather than being redefined to
@@ -264,5 +317,5 @@ export async function reconcileMcp(): Promise<ReconcileMcpResult> {
   if (manifestChanged || mcpServersChanged || ownershipChanged) {
     writeClaudeJsonAtomic(projected);
   }
-  return { added, skippedPlatform, skippedManual, manifestCount: manifests.length };
+  return { added, skippedPlatform, skippedManual, manifestCount: manifests.length, skippedCollisions };
 }
