@@ -320,6 +320,33 @@ describe('classifyGitFailure primitives', () => {
     expect(matchGitCorruption('')).toBeNull();
   });
 
+  it('does NOT flag remote-authored corruption-shaped lines as LOCAL repo damage', () => {
+    // The server writes `remote:`-prefixed lines verbatim into our stderr on
+    // fetch/push. A misconfigured or corrupt SERVER-side repo must never
+    // trigger THIS device's repair() — that would reset a perfectly healthy
+    // local `main` to origin/main and discard readable local commits over a
+    // problem that isn't local at all.
+    expect(matchGitCorruption('remote: error: unable to read object 123')).toBeNull();
+    expect(matchGitCorruption('remote: fatal: bad object HEAD')).toBeNull();
+    // Same text, un-prefixed (i.e. actually ours), must still match.
+    expect(matchGitCorruption('error: unable to read object 123')).toContain('unable to read');
+    expect(matchGitCorruption('fatal: bad object HEAD')).toContain('bad object');
+  });
+
+  it('does NOT flag a missing/unmounted space root (cwd-read fatal) as repo corruption', () => {
+    // "unable to read current working directory" is git failing to resolve
+    // its OWN cwd (the space root was deleted or an external drive was
+    // unmounted mid-cycle) — not an object/ref integrity problem. It happens
+    // to contain the substring "unable to read" too. Misclassifying it would
+    // call repair(), whose Tier 2 fallback recreates <root>/.youcoded via a
+    // recursive mkdir — silently rebuilding the deleted/unmounted mount point
+    // as a plain local directory and then repopulating it from the remote at
+    // the WRONG path.
+    expect(matchGitCorruption('fatal: unable to read current working directory: No such file or directory')).toBeNull();
+    // The object-integrity "unable to read" must still match.
+    expect(matchGitCorruption('error: unable to read 3251535497a31d0436ae0f81533468121bf8b94c')).toContain('unable to read');
+  });
+
   it('recognizes network failures (the silent-offline allowlist)', () => {
     expect(isNetworkFailureStderr('fatal: unable to access …: Could not resolve host: github.com')).toBe(true);
     expect(isNetworkFailureStderr('fatal: unable to access …: Connection timed out')).toBe(true);

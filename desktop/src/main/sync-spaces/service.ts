@@ -46,10 +46,17 @@ let lastSyncByDevice: Record<string, number> = {};
 // (the status:data push) — the two paths SyncPanel reads recency from.
 export function getLastSyncByDevice(): Record<string, number> { return lastSyncByDevice; }
 
-/** Max persisted last-successful-sync across this device's spaces (ms), or
- *  null when sync is off / has never succeeded. Evidence-grade: recordSyncSuccess
- *  stamps only on real 'synced' events (transport failures now THROW — spec §1),
- *  so this can no longer advance while sync is broken. */
+/** Max persisted last-COMPLETED-sync-CYCLE across this device's spaces (ms), or
+ *  null when sync is off / has never completed a cycle. NOT "last successful
+ *  sync": corruption and auth failures now THROW (spec §1) and correctly stop
+ *  this from advancing, but a cycle that completes without shipping anything
+ *  still stamps it — the engine emits 'synced' after pull+push regardless of
+ *  push.pushed, and git-transport's offline path is silent-by-design (a failed
+ *  retry push whose stderr matches isNetworkFailureStderr falls through
+ *  without throwing, returning {pushed:false}). So a device offline for days,
+ *  or hitting a lock-contended cycle, still advances this value every ~120s
+ *  poll with nothing actually synced. Read it as "sync last ran", not "sync
+ *  last succeeded". */
 export function getSelfLastSyncEpochMs(): number | null {
   if (!manager || !roots) return null;
   let max: number | null = null;

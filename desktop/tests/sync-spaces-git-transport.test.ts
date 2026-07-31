@@ -237,8 +237,9 @@ describe('GitTransport specifics', () => {
     const a = await h.makeDeviceSpace();
     fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
     await h.transport.push(a, 'seed');
-    // Fix (2026-07-30 review finding 3): the PRIOR technique here — replacing
-    // objects/ with a plain file — was verified empirically to make git print
+    // Corruption vs. unexplained-failure discrimination: the PRIOR technique
+    // here — replacing objects/ with a plain file — was verified empirically
+    // to make git print
     // `fatal: not a git repository: '<path>'`, which IS one of
     // CORRUPTION_PATTERNS in sync-error-classifier.ts. So this test was
     // silently exercising throwRepoCorrupt() while its assertion
@@ -477,7 +478,7 @@ describe('GitTransport auth-failure surfacing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Benign-allowlist intent pins (2026-07-30 review findings 2 & 4).
+// Benign-allowlist intent pins.
 // LOCK_CONTENDED and NOTHING_TO_PUSH_YET were previously covered only
 // INCIDENTALLY, by tests written before the constants existed (pinning the
 // OLD "swallow every failure" behavior, not the deliberate allowlist). Without
@@ -528,7 +529,7 @@ describe('GitTransport benign-allowlist intent', () => {
     await expect(t.push(space, 'msg')).resolves.toEqual({ pushed: false, oversize: [] });
   });
 
-  it('LOCK_CONTENDED now also covers `checkout` (finding 2: pull() adopting a fresh remote while a lock is still live) — but the checkout still did not happen, so it must not report updated:true (finding 1, pass 2)', async () => {
+  it('LOCK_CONTENDED now also covers `checkout` (pull() adopting a fresh remote while a lock is still live) — but the checkout still did not happen, so it must not report updated:true', async () => {
     const t = scripted({
       add: { code: 0 },
       diff: { code: 0, stdout: '' },
@@ -568,22 +569,23 @@ describe('GitTransport benign-allowlist intent', () => {
       'rev-list': { code: 1, stderr: 'fatal: Invalid revision range' }, // origin/main doesn't exist yet
       push: { code: 1, stderr: 'error: src refspec main does not match any known revisions' },
     });
-    // Fix (2026-07-30 review finding 3, pass 2): a bare `pushed: false` partial
+    // Exact-shape pin, not a partial match: a bare `pushed: false` partial
     // match passes for ANY resolution shape, including a false positive where
     // `commit` ends up truthy (e.g. from a lock-contended commit leaking the
-    // prior HEAD sha, finding 2's bug shape) — the field that actually decides
-    // whether the "nothing was pushed" story is honest never gets checked.
-    // Pin the full result so a future regression at any field surfaces here.
+    // prior HEAD sha) — the field that actually decides whether the "nothing
+    // was pushed" story is honest never gets checked. Pin the full result so
+    // a future regression at any field surfaces here.
     await expect(t.push(space, 'msg')).resolves.toEqual({
       pushed: false, commit: undefined, oversize: [], updated: false, conflictCopies: [],
     });
   });
 
-  it('finding 1 co-occurrence: a stderr carrying BOTH lock contention AND corruption evidence throws repo-corrupt, never gets swallowed as benign', async () => {
+  it('corruption evidence wins over a co-occurring lock line: a stderr carrying BOTH lock contention AND corruption evidence throws repo-corrupt, never gets swallowed as benign', async () => {
     // The 2026-07-27 incident shape: an orphaned index.lock not yet aged past
     // lockStaleMs, sitting alongside a truncated loose object in the same
-    // stderr. Corruption must win — this is the case finding 1's reordering
-    // (corruption checked BEFORE the benign allowlist in assertLocalOk) fixes.
+    // stderr. Corruption must win — assertLocalOk checks corruption evidence
+    // BEFORE the benign allowlist, so this case can't be misclassified as a
+    // simple lock race.
     const t = scripted({
       add: {
         code: 128,

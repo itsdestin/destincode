@@ -431,6 +431,22 @@ const CORRUPTION_PATTERNS: RegExp[] = [
 export function matchGitCorruption(stderr: string): string | null {
   if (!stderr) return null;
   for (const line of stderr.split('\n')) {
+    // The git SERVER writes `remote:`-prefixed lines verbatim into our
+    // stderr on fetch/push — they describe the REMOTE repo's state, not this
+    // device's local one. Classifying them as local corruption would call
+    // repair() on a perfectly healthy local repo (Tier 1 resets local `main`
+    // to origin/main, discarding readable local history) over a problem that
+    // isn't local at all.
+    if (/^remote:/i.test(line)) continue;
+    // Git's cwd-resolution fatal ("the process's own working directory is
+    // gone") happens to contain "unable to read" too, but it means the space
+    // root was deleted or an external drive was unmounted mid-cycle — not
+    // object/ref damage. Misclassifying it as corruption is worse than a
+    // false alarm: repair()'s Tier 2 fallback recreates <root>/.youcoded via
+    // a recursive mkdir, silently rebuilding the missing mount point as a
+    // plain local directory and repopulating it from the remote at the WRONG
+    // path.
+    if (/unable to read current working directory/i.test(line)) continue;
     if (CORRUPTION_PATTERNS.some(p => p.test(line))) return line.trim();
   }
   return null;
