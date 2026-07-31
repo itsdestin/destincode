@@ -107,19 +107,34 @@ export class HookRelay extends EventEmitter {
               // The message lands VERBATIM in the denied tool result the model
               // reads (verified in the CC 2.1.220 binary), so say what
               // happened and invite a re-ask.
-              this.respond(requestId, {
+              // Fix: pluralize naturally (was the literal "hour(s)" landing in
+              // the model-visible message). Android derives the same way from
+              // its own PERMISSION_HOLD_MS (EventBridge.kt) — keep both in
+              // sync if this tier value ever changes; permission-timeout-
+              // margins.test.ts pins the underlying numbers.
+              const holdHours = Math.round(this.holdMs / 3600000);
+              // Fix: only claim "auto-denied" if the deny actually reached the
+              // socket. respond() returns false when the pending entry is
+              // already gone or the socket is already destroyed — nothing was
+              // written in that case, so emitting unconditionally would assert
+              // a cause that never happened (docs/error-message-standards.md).
+              // Mirrors Android's `if (respond(requestId, deny)) { emit }`
+              // guard (EventBridge.kt) — the two platforms deliberately agree.
+              const delivered = this.respond(requestId, {
                 decision: {
                   behavior: 'deny',
                   message: routable
-                    ? `YouCoded auto-denied this request after ${Math.round(this.holdMs / 3600000)} hour(s) with no user response — ask again if still needed.`
+                    ? `YouCoded auto-denied this request after ${holdHours} hour${holdHours === 1 ? '' : 's'} with no user response — ask again if still needed.`
                     : 'YouCoded could not route this request to any open session — auto-denied. Ask again if still needed.',
                 },
               });
               // respond() deletes the pending entry BEFORE 'close' fires, so
               // the close handler's wasOpen guard swallows any emit —
               // app-initiated endings must emit explicitly (spec §2).
-              this.emit('permission-expired', event.sessionId, requestId,
-                routable ? 'app-timeout' : 'unroutable');
+              if (delivered) {
+                this.emit('permission-expired', event.sessionId, requestId,
+                  routable ? 'app-timeout' : 'unroutable');
+              }
             }, holdMs));
 
             // When the socket closes (relay timeout, Claude Code kills hook,

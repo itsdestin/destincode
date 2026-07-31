@@ -67,4 +67,16 @@ describe('permission timeout tier margins (2026-07-30 spec §1)', () => {
     expect(androidHold()).toBe(7200000);
     expect(androidHold()).toBeLessThanOrEqual(androidRelay() - 15 * 60 * 1000);
   });
+
+  // Unlike the other five tiers, this one has no "loses the race to CC" cap
+  // to check against — its whole purpose is to cap an ask whose sessionId
+  // matches no live session, which will never render a card anywhere. A
+  // large value here silently turns that into an invisible hang, so pin the
+  // literal (not an env-resolved value) and require it stay far below the
+  // routable app hold.
+  const unroutableHold = () => literal('desktop/src/main/hook-relay.ts', /UNROUTABLE_HOLD_MS = (\d+)/);
+  it('unroutable dead-man cap is 60s and far below the routable app hold', () => {
+    expect(unroutableHold()).toBe(60000);
+    expect(unroutableHold()).toBeLessThanOrEqual(appHold() / 10);
+  });
 });

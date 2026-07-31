@@ -52,7 +52,7 @@ describe('CompactToolStrip — expired approval card', () => {
         <CompactToolStrip tools={[tool]} sessionId="s1" />
       </ChatProvider>
     );
-    expect(screen.getByText('Dismiss')).toBeInTheDocument();
+    expect(screen.getByText('Dismiss — I answered in the terminal')).toBeInTheDocument();
     expect(screen.queryByText('✓ Allow')).toBeNull();
     expect(screen.queryByText('✕ Deny')).toBeNull();
     expect(screen.queryByText('∞ Always')).toBeNull();
@@ -72,7 +72,7 @@ describe('CompactToolStrip — expired approval card', () => {
         <CompactToolStrip tools={[tool]} sessionId="s1" />
       </ChatProvider>
     );
-    fireEvent.click(screen.getByText('Dismiss'));
+    fireEvent.click(screen.getByText('Dismiss — I answered in the terminal'));
     expect(broadcastAction).toHaveBeenCalledWith({
       type: 'PERMISSION_CARD_RESOLVED',
       sessionId: 's1',

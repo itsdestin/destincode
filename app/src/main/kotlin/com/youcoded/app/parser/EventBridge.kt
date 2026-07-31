@@ -144,9 +144,17 @@ class EventBridge(private val socketName: String) {
                             // Nested decision shape is load-bearing: the relay
                             // reads appDecision.decision. Message lands in the
                             // tool result the model reads.
+                            // Fix: derive from PERMISSION_HOLD_MS instead of a
+                            // hardcoded "2 hours" — mirrors desktop's
+                            // hook-relay.ts deriving from APP_HOLD_MS, so a
+                            // future tier change can't silently desync the two
+                            // platforms' copy (permission-timeout-margins.test.ts
+                            // still pins the underlying millisecond values).
+                            val holdHours = PERMISSION_HOLD_MS / 3_600_000L
+                            val hoursLabel = if (holdHours == 1L) "hour" else "hours"
                             val deny = JSONObject().put("decision", JSONObject()
                                 .put("behavior", "deny")
-                                .put("message", "YouCoded auto-denied this request after 2 hours with no user response — ask again if still needed."))
+                                .put("message", "YouCoded auto-denied this request after $holdHours $hoursLabel with no user response — ask again if still needed."))
                             // Only emit "app-timeout" if the deny actually went out. If
                             // the write failed, respond() already emitted its own
                             // "delivery-failed" PermissionExpired — emitting again here

@@ -274,9 +274,17 @@ function ToolRow({
                 dispatch(action);
                 (window as any).claude?.remote?.broadcastAction(action);
               }}
-              style={denyStyle}
+              // Fix: this must say the same thing ToolCard's Dismiss says, not
+              // just "Dismiss". Clicking it opens the PTY input gates (marks
+              // the card complete), which is only safe because the label
+              // extracts an assertion that the user already answered the live
+              // terminal menu — a bare "Dismiss" would let a user clear
+              // clutter and then type, sending stray keys (+ trailing \r)
+              // straight into that menu. A `title` tooltip isn't enough
+              // either — this app runs on touch, where hover never fires.
+              style={{ ...denyStyle, whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.3 }}
             >
-              Dismiss
+              Dismiss — I answered in the terminal
             </button>
           </span>
         ) : (
