@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
+import { TagManagerPopup } from './tags/TagManagerPopup';
 import { NoteEditor } from './tags/NoteEditor';
 import { Button, Dialog } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
@@ -39,6 +40,9 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const registry = useTagRegistry();
   const [tagIds, setTagIds] = useState<Set<string>>(new Set());
+  // Tag registry editing lives in its own surface now (it used to be a ✎ on
+  // each TagPicker row). Layer 3 because this prompt is itself a layer-2 Dialog.
+  const [manageOpen, setManageOpen] = useState(false);
   const [note, setNote] = useState('');
   // The session's tags/note as loaded on open — the baseline for the delta, so
   // Cancel changes nothing and Confirm only writes what the user toggled.
@@ -159,6 +163,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   appliedIds={tagIds}
                   onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
                   registry={registry}
+                  onManageTags={() => setManageOpen(true)}
                 />
                 <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
                 <NoteEditor value={note} onSave={setNote} />
@@ -206,6 +211,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
             </div>
           </div>
       </Dialog>
+      <TagManagerPopup open={manageOpen} onClose={() => setManageOpen(false)} registry={registry} layer={3} />
     </>
   );
 }

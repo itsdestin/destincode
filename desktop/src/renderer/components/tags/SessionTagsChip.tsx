@@ -10,10 +10,15 @@ import { useTagRegistry } from '../../hooks/useTagRegistry';
 import { useSessionMeta } from '../../hooks/useSessionMeta';
 import type { TagRecord } from '../../../shared/tags';
 import { TagPicker } from './TagPicker';
+import { TagManagerPopup } from './TagManagerPopup';
 import { NoteEditor } from './NoteEditor';
 
 export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
   const [open, setOpen] = useState(false);
+  // Tag registry editing moved out of TagPicker into its own surface; this is
+  // the route to it from the in-session chip. Layer 3 because this popup is
+  // itself layer 2.
+  const [manageOpen, setManageOpen] = useState(false);
   const registry = useTagRegistry();
   const meta = useSessionMeta(sessionId);
   useEscClose(open, () => setOpen(false));
@@ -66,7 +71,7 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                   className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">×</button>
               </div>
               <div className="px-4 py-3 space-y-3 overflow-y-auto">
-                <TagPicker appliedIds={meta.tags} onToggle={meta.setTag} registry={registry} />
+                <TagPicker appliedIds={meta.tags} onToggle={meta.setTag} registry={registry} onManageTags={() => setManageOpen(true)} />
                 <div>
                   <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
                   <NoteEditor value={meta.note} onSave={meta.setNote} />
@@ -74,6 +79,7 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
               </div>
             </OverlayPanel>
           </div>
+          <TagManagerPopup open={manageOpen} onClose={() => setManageOpen(false)} registry={registry} layer={3} />
         </>,
         document.body,
       )}

@@ -15,6 +15,7 @@ import {
 } from './resume-browser-filters';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
+import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
@@ -99,7 +100,16 @@ function measureDropdown(
   triggerRef: React.RefObject<HTMLButtonElement | null>,
   dropdownWidthPx: number,
 ): { top: number; left: number } | null {
-  const el = triggerRef.current;
+  return measureAnchored(triggerRef.current, dropdownWidthPx);
+}
+
+// Same math against an element rather than a ref. The per-card Organize button
+// is created in a list loop, so there is no stable ref to hand measureDropdown —
+// its click handler measures its own currentTarget through this instead.
+function measureAnchored(
+  el: HTMLElement | null,
+  dropdownWidthPx: number,
+): { top: number; left: number } | null {
   if (!el) return null;
   const rect = el.getBoundingClientRect();
   // Clamp so the dropdown's right edge stays at least 8px inside the viewport.
@@ -258,6 +268,24 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // Single state instead of two booleans so the dropdowns are mutually exclusive.
   const [openPill, setOpenPill] = useState<'projects' | 'tags' | null>(null);
 
+  // Which card's Organize popover is open (session id), plus its anchor position.
+  //
+  // WHY A POPOVER: flags, tags and the note used to sit in the expanded row,
+  // below the launch controls — so one open card stacked seven form fields and
+  // the Resume button ended up at the bottom of a form. They are a different
+  // JOB from resuming (organizing a conversation you are NOT about to open), so
+  // they moved out here. Side effect worth having: you can now tag or complete a
+  // conversation WITHOUT expanding it, including rows that can't be resumed on
+  // this device at all.
+  const [organizeId, setOrganizeId] = useState<string | null>(null);
+  const [organizePos, setOrganizePos] = useState<{ top: number; left: number } | null>(null);
+  const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const organizePopRef = useRef<HTMLDivElement>(null);
+  // The tag registry editor (rename/recolor/archive/delete). Opened from the
+  // "Manage tags…" footer in either the Organize popover's TagPicker or the
+  // Tags filter dropdown, so there is ONE destination for tag management.
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+
   // Fetch sessions when opened
   useEffect(() => {
     if (open) {
@@ -266,6 +294,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setNativeResumeBinding(null);
+      setOrganizeId(null);
+      setTagManagerOpen(false);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
       // Reset filter pills each open — current spec: no persistence.
@@ -282,13 +312,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   }, [open]);
 
-  // Layered ESC: close an open filter dropdown first, then collapse the
-  // expanded row, then close the browser. Each ESC press peels one layer.
+  // Layered ESC: close the tag manager, then an open Organize popover, then an
+  // open filter dropdown, then collapse the expanded row, then close the
+  // browser. Each ESC press peels one layer.
   const handleEscClose = useCallback(() => {
-    if (openPill) setOpenPill(null);
+    if (tagManagerOpen) setTagManagerOpen(false);
+    else if (organizeId) setOrganizeId(null);
+    else if (openPill) setOpenPill(null);
     else if (expandedId) setExpandedId(null);
     else onClose();
-  }, [openPill, expandedId, onClose]);
+  }, [tagManagerOpen, organizeId, openPill, expandedId, onClose]);
   useEscClose(open, handleEscClose);
 
   // Close the active filter dropdown on outside click. Recognizes clicks
@@ -310,6 +343,30 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       document.removeEventListener('touchstart', handler);
     };
   }, [openPill]);
+
+  // Same outside-click close for the Organize popover. It is portaled to
+  // document.body, so the card's own subtree can't see it — the popover ref is
+  // checked explicitly (the portal trap that already bit the model picker and
+  // the folder switcher). The trigger is checked too so a second click on the
+  // "⋯" toggles rather than close-then-reopen.
+  useEffect(() => {
+    if (!organizeId) return;
+    const handler = (e: Event) => {
+      const target = e.target as Node;
+      if (organizePopRef.current?.contains(target)) return;
+      if (organizeTriggerRef.current?.contains(target)) return;
+      setOrganizeId(null);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [organizeId]);
+
+  // Keep the popover anchored while the list scrolls under it (w-64 = 256px).
+  useDropdownReposition(!!organizeId, organizeTriggerRef, 256, setOrganizePos);
 
   const filtered = useMemo(() => {
     // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
@@ -525,6 +582,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // (globals.css:951), and an opacity modifier emits `bg-inset/50` — a
   // different class the cascade does not match, so it would have gone
   // translucent on wallpaper themes.
+  // The expanded panel answers ONE question: how do I relaunch this? Model,
+  // the two launch toggles, Resume. Flags/tags/note used to be stacked in here
+  // too, which is what made an open card a seven-field form with its primary
+  // action at the bottom — they now live in the Organize popover (see
+  // organizeId's comment).
   const renderExpandedOptions = (s: PastSession) => {
   return (
     <div className="border-t border-edge-dim">
@@ -588,51 +650,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             />
           </div>
         )}
-
-        {/* Flags / tags / note are Conversation Store-backed. Task 5 (2026-07-2x)
-            unlocked native sessions here too — they're real store records now
-            (Task 4), so there's no more "unsupported" branch to hide this
-            block behind. A write that somehow gets refused (store down, etc.)
-            is still caught by the revert in toggleFlag/toggleTag/saveNote. */}
-        <>
-          {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
-          <div>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Flags</label>
-            <div className="flex gap-1">
-              {FLAG_ORDER.map((flag) => {
-                const active = !!s.flags?.[flag];
-                return (
-                  <button
-                    key={flag}
-                    onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
-                      active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
-                    }`}
-                    aria-pressed={active}
-                  >
-                    {FLAG_LABEL[flag]}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
-          <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
-            <TagPicker
-              appliedIds={new Set(s.tags ?? [])}
-              onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
-              registry={registry}
-            />
-          </div>
-
-          {/* Note — stopPropagation so editing doesn't collapse the row. */}
-          <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-            <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
-          </div>
-        </>
 
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}
@@ -709,6 +726,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           isExpanded ? 'border-accent' : inert ? 'border-edge-dim' : 'border-edge-dim hover:border-edge'
         }`}
       >
+      {/* Header row: the expand trigger plus the Organize button beside it.
+          They are SIBLINGS, not nested — a button inside a button is invalid
+          HTML and the inner one would never receive its own click. */}
+      <div className="flex items-stretch">
       <button
         // Resume is disabled for conversations whose project folder isn't on
         // this device (synced in from elsewhere) OR whose transcript hasn't
@@ -717,7 +738,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
         aria-disabled={inert || undefined}
         aria-expanded={inert ? undefined : isExpanded}
-        className={`w-full text-left p-3 flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`flex-1 min-w-0 text-left p-3 pr-1 flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           inert ? 'text-fg-dim cursor-default' : isExpanded ? 'text-fg' : 'text-fg-dim'
         }`}
       >
@@ -776,6 +797,36 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           {formatRelativeTime(s.lastModified)}
         </span>
       </button>
+      {/* Organize: flags, tags, note. Always visible rather than hover-revealed
+          — a hover-only affordance is invisible on touch and undiscoverable on
+          desktop, and this is now the ONLY route to tagging. Rendered for inert
+          rows too: the metadata is Conversation Store-backed, so a conversation
+          synced in from another device can be organized here even though it
+          can't be resumed on this one. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (organizeId === s.sessionId) { setOrganizeId(null); return; }
+          // Measure synchronously off the trigger so the popover renders at its
+          // final position in the same commit the id flips (same approach the
+          // filter pills use — avoids a one-frame jump).
+          organizeTriggerRef.current = e.currentTarget;
+          setOrganizePos(measureAnchored(e.currentTarget, 256));
+          setOrganizeId(s.sessionId);
+        }}
+        aria-label={`Organize ${s.name}`}
+        aria-haspopup="dialog"
+        aria-expanded={organizeId === s.sessionId}
+        className={`shrink-0 px-2.5 flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
+        }`}
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />
+        </svg>
+      </button>
+      </div>
       {isExpanded && renderExpandedOptions(s)}
       </div>
     </div>
@@ -926,6 +977,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   {registry.tags.filter((t) => !t.archived).length === 0 && (
                     <div className="px-2.5 py-1.5 text-xs text-fg-muted">No tags yet.</div>
                   )}
+                  {/* Second route to the tag manager, so "where do I rename a
+                      tag?" is answerable from the filter too — not only from a
+                      conversation's Organize popover. */}
+                  <button
+                    type="button"
+                    onClick={() => { setOpenPill(null); setTagManagerOpen(true); }}
+                    className="w-full text-left px-2.5 py-1.5 text-2xs text-fg-muted tracking-wider uppercase hover:text-fg hover:bg-inset transition-colors border-b border-edge-dim"
+                  >
+                    Manage tags…
+                  </button>
                   {registry.tags.filter((t) => !t.archived).map((t) => {
                     const checked = selectedTagIds.has(t.id);
                     return (
@@ -994,6 +1055,68 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         </OverlayPanel>
       </div>
+
+      {/* Organize popover — one instance driven by organizeId, not one per card.
+          Portaled to document.body for the same reason the filter dropdowns are:
+          OverlayPanel is `.layer-surface`, which sets overflow:hidden, so a
+          popover rendered inside a card would be clipped at the panel edge. */}
+      {organizeId && organizePos && (() => {
+        const s = sessions.find((x) => x.sessionId === organizeId);
+        if (!s) return null;
+        return createPortal(
+          <div
+            ref={organizePopRef}
+            className="layer-surface w-64 max-w-[calc(100vw-1rem)] p-2.5 flex flex-col gap-2"
+            style={{ position: 'fixed', top: organizePos.top, left: organizePos.left, zIndex: 60 }}
+            role="dialog"
+            aria-label={`Organize ${s.name}`}
+          >
+            {/* Flags as checkable rows, not the old two-button segmented row.
+                They read as the same KIND of thing as the tags below them now —
+                which they are: both are labels you put on a conversation. The
+                reserved pair keeps its own section because they drive sorting
+                (Priority pins to top) and filtering (Complete hides the row). */}
+            <div className="flex flex-col gap-0.5">
+              {FLAG_ORDER.map((flag) => {
+                const active = !!s.flags?.[flag];
+                return (
+                  <button
+                    key={flag}
+                    type="button"
+                    onClick={() => toggleFlag(s.sessionId, flag, !active)}
+                    aria-pressed={active}
+                    className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset text-left text-xs text-fg-2"
+                  >
+                    <span className={`w-3 h-3 shrink-0 rounded-sm border ${active ? 'bg-accent border-accent' : 'border-edge'}`} />
+                    <span className="flex-1">{FLAG_LABEL[flag]}</span>
+                    <span className="text-4xs text-fg-muted">
+                      {flag === 'priority' ? 'pins to top' : 'hides from list'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-edge-dim pt-2">
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
+              <TagPicker
+                appliedIds={new Set(s.tags ?? [])}
+                onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+                registry={registry}
+                onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
+              />
+            </div>
+
+            <div className="border-t border-edge-dim pt-2">
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
+              <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
+            </div>
+          </div>,
+          document.body,
+        );
+      })()}
+
+      <TagManagerPopup open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} registry={registry} />
     </>
   );
 }
