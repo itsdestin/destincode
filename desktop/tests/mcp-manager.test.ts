@@ -120,6 +120,91 @@ describe('McpManager', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  // Window A regression test: this leak shape reopens EARLIER than the
+  // window fix pass 1 closed — before resolveAllEnabled() has even
+  // resolved, so before any server (let alone a holder) exists yet. A
+  // release() landing in that gap used to find an empty pool, no-op, and
+  // then the resuming acquire() would register the holder anyway with
+  // nobody left to ever release it. Fails on fix-pass-1 code (close() never
+  // called); passes once release() waits for an in-flight acquire's
+  // registration pass before touching holders.
+  it('a release() that lands before resolveAllEnabled() resolves does not leak the holder', async () => {
+    const close = vi.fn();
+    let resolveRegistry: (servers: any[]) => void = () => {};
+    const registry = {
+      resolveAllEnabled: () => new Promise<any[]>((r) => { resolveRegistry = r; }),
+    };
+    const connectionFactory = () => ({
+      state: 'ready' as const, lastError: null,
+      connect: async () => {},
+      listTools: () => [],
+      callTool: async () => ({ text: 'ok', isError: false }),
+      close: async () => { close(); },
+    });
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+    const acquiring = mgr.acquire('s1');
+    // release() arrives while acquire() is still stuck at its very FIRST
+    // await — resolveAllEnabled() hasn't resolved, so the pool is empty and
+    // no holder for 's1' exists anywhere yet. Deliberately NOT awaited here:
+    // awaiting it before resolving the registry would deadlock (release()
+    // would be waiting on a registration pass that can't run until the
+    // registry resolves, which this line hasn't done yet).
+    const releasing = mgr.release('s1');
+    resolveRegistry([
+      { id: 'demo', label: 'Demo', enabled: true, transport: { type: 'stdio', command: 'node' },
+        origin: { kind: 'user' }, missingSecrets: [] },
+    ]);
+    await releasing;
+    await acquiring;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  // Window B regression test: the second earlier leak shape — in a
+  // multi-server acquire(), awaiting one server's `connecting` used to
+  // suspend BETWEEN servers, so a release() landing there would see the
+  // holder for the server already reached but not the one still to come.
+  // Fails on fix-pass-1 code (server "two" never gets released, close2
+  // never called); passes once acquire() registers holders for every server
+  // in one synchronous sweep before waiting on any connect().
+  it('a release() that lands while the first of several servers is still connecting does not leak either holder', async () => {
+    const close1 = vi.fn();
+    const close2 = vi.fn();
+    let resolveConnect1: () => void = () => {};
+    const registry = {
+      resolveAllEnabled: async () => ([
+        { id: 'one', label: 'One', enabled: true, transport: { type: 'stdio', command: 'a' },
+          origin: { kind: 'user' }, missingSecrets: [] },
+        { id: 'two', label: 'Two', enabled: true, transport: { type: 'stdio', command: 'b' },
+          origin: { kind: 'user' }, missingSecrets: [] },
+      ] as any),
+    };
+    const connectionFactory = (s: any) => s.id === 'one'
+      ? {
+          state: 'ready' as const, lastError: null,
+          connect: () => new Promise<void>((r) => { resolveConnect1 = r; }),
+          listTools: () => [], callTool: async () => ({ text: '', isError: false }),
+          close: async () => { close1(); },
+        }
+      : {
+          state: 'ready' as const, lastError: null,
+          connect: async () => {},
+          listTools: () => [], callTool: async () => ({ text: '', isError: false }),
+          close: async () => { close2(); },
+        };
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+    const acquiring = mgr.acquire('s1');
+    // Let acquire() run past resolveAllEnabled() and reach the point of
+    // waiting on server "one"'s connect() — server "two" has not settled
+    // (in the old interleaved loop, it would not even have been touched
+    // yet).
+    await new Promise<void>((r) => setImmediate(r));
+    await mgr.release('s1');
+    resolveConnect1();
+    await acquiring;
+    expect(close1).toHaveBeenCalledTimes(1);
+    expect(close2).toHaveBeenCalledTimes(1);
+  });
+
   it('a failing server does not prevent healthy ones from being returned', async () => {
     const registry = { resolveAllEnabled: async () => ([
       { id: 'bad', label: 'Bad', enabled: true, transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' }, missingSecrets: [] },

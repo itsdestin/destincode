@@ -64,6 +64,22 @@ export class McpManager {
   // serverId -> pooled entry. Absence means "never touched yet" — NOT the
   // same as a connected-but-errored server, which stays present (see acquire).
   private pool = new Map<string, PooledEntry>();
+  // sessionId -> "registration complete" promises for every acquire() call
+  // currently in flight for that session. A promise is added SYNCHRONOUSLY
+  // at the top of acquire(), before its first await, and removed once that
+  // acquire() has registered every holder it is ever going to register (see
+  // acquire()'s pass 1 below). release() awaits these before touching
+  // holders — see release() for why. Usually a session has at most one
+  // in-flight acquire(), but the list shape (not a single slot) is
+  // deliberate: two OVERLAPPING acquire() calls for the SAME sessionId (a
+  // caller firing acquire() twice before the first returns) each get their
+  // own promise here, and release() must wait for BOTH, not just whichever
+  // started last — the last-started one settling first would let release()
+  // proceed while the other is still mid-registration, reopening the exact
+  // leak this map exists to close. None of these promises ever reject (see
+  // acquire()'s finally), so awaiting them can never propagate a failed
+  // acquire()'s rejection into release(), and can never hang on one either.
+  private inflightAcquires = new Map<string, Array<Promise<void>>>();
 
   constructor(deps: { registry: McpRegistryLike; connectionFactory: McpConnectionFactory }) {
     this.registry = deps.registry;
@@ -77,39 +93,99 @@ export class McpManager {
    * pooled — so status() can report its real error and a later acquire()
    * doesn't reconnect it every time — but it is EXCLUDED from the returned
    * list: one broken server must never deny a session its working ones.
+   *
+   * Fix (two leak windows, both closed by the same mechanism): the original
+   * bug shape was "a release() arrives while acquire() is still in flight,
+   * finds no holder yet to remove, no-ops — then acquire() registers the
+   * holder anyway once it resumes, and nobody calls release() twice for one
+   * session, so it leaks forever." A prior pass closed ONE window (holder
+   * registration happening after `await entry.connecting` instead of
+   * before), but two earlier suspension points had the identical shape:
+   *   - Window A: the `await resolveAllEnabled()` below suspends before ANY
+   *     server is known, so no holder exists for anything yet.
+   *   - Window B: in a multi-server acquire, awaiting one server's
+   *     `connecting` used to suspend BETWEEN servers, so a release() landing
+   *     there would see holders for servers already reached but not the
+   *     ones still to come.
+   * Both are closed the same way: `inflightAcquires` (above) records that
+   * this session has a registration in progress the instant this method is
+   * entered, and release() (below) waits for it. Splitting this method into
+   * two passes — pass 1 registers every holder synchronously (zero awaits),
+   * pass 2 waits on each connect() — is what makes "registration complete"
+   * a checkpoint reachable BEFORE any connect() settles, instead of only at
+   * the very end of this method; without that split, release() would be
+   * stuck behind a slow (or, in one existing test, never-resolving)
+   * connect() it has no reason to wait for.
    */
   async acquire(sessionId: string): Promise<ReadyServer[]> {
-    const servers = await this.registry.resolveAllEnabled();
-    const ready: ReadyServer[] = [];
-    for (const server of servers) {
-      // Fix: ensureConnected() records `sessionId` as a holder SYNCHRONOUSLY,
-      // before the `await` below. If holder registration instead happened
-      // after awaiting connect() (as it used to), a release() for this same
-      // session arriving in that window (session torn down almost
-      // immediately after creation) would find no holder to remove and
-      // no-op — then this acquire() would add the holder anyway once
-      // connect() settled, leaking it forever (nobody calls release() twice
-      // for the same session). See mcp-manager.test.ts: "a release() that
-      // lands while acquire() is still connecting does not leak the holder".
-      const entry = this.ensureConnected(server, sessionId);
-      if (entry.connecting) await entry.connecting;
-      if (entry.conn.state === 'ready') {
-        ready.push({
-          id: entry.server.id,
-          label: entry.server.label,
-          tools: entry.conn.listTools(),
-          call: (tool, args, signal) => entry.conn.callTool(tool, args, signal),
-        });
+    let settleRegistered!: () => void;
+    const registered = new Promise<void>((resolve) => { settleRegistered = resolve; });
+    const inflightForSession = this.inflightAcquires.get(sessionId);
+    if (inflightForSession) inflightForSession.push(registered);
+    else this.inflightAcquires.set(sessionId, [registered]);
+    // Removes only THIS acquire()'s own promise from the tracking list.
+    // Idempotent (safe to call twice — see the `finally` below) and safe
+    // when another acquire() for the same session is still in flight (it
+    // leaves that one's entry untouched).
+    const clearSelf = () => {
+      const list = this.inflightAcquires.get(sessionId);
+      if (!list) return;
+      const idx = list.indexOf(registered);
+      if (idx !== -1) list.splice(idx, 1);
+      if (list.length === 0) this.inflightAcquires.delete(sessionId);
+    };
+    try {
+      const servers = await this.registry.resolveAllEnabled();
+      // Pass 1 — registration, ZERO awaits between servers. ensureConnected()
+      // itself is synchronous (see its own comment), so mapping over every
+      // server here registers `sessionId` as a holder of ALL of them before
+      // control can be yielded again. This is the checkpoint: once
+      // `settleRegistered()` below runs, every holder this acquire() will
+      // ever add has been added — a release() that was waiting on
+      // `registered` can now safely conclude "nothing left to add" and
+      // proceed with its own holder-clearing work.
+      const entries = servers.map((server) => this.ensureConnected(server, sessionId));
+      settleRegistered();
+      clearSelf();
+
+      // Pass 2 — connect: registration is done and release() is unblocked,
+      // so it's now safe to wait on each server's connect() at our leisure.
+      const ready: ReadyServer[] = [];
+      for (const entry of entries) {
+        if (entry.connecting) await entry.connecting;
+        if (entry.conn.state === 'ready') {
+          ready.push({
+            id: entry.server.id,
+            label: entry.server.label,
+            tools: entry.conn.listTools(),
+            call: (tool, args, signal) => entry.conn.callTool(tool, args, signal),
+          });
+        }
       }
+      return ready;
+    } finally {
+      // Safety net for the path where `resolveAllEnabled()` itself rejects
+      // (or anything else throws before pass 1 runs): `settleRegistered()`
+      // above never executed on that path, so without this, a release()
+      // waiting on `registered` would hang forever behind holders that are
+      // now never going to exist. Resolving an already-resolved promise (the
+      // success path) is a no-op, so this costs nothing when nothing went
+      // wrong. This is also why `registered` never REJECTS even if the
+      // acquire() call itself does — release() only ever awaits a promise
+      // that resolves, so a failing acquire() can never hang or fail a
+      // release() call.
+      settleRegistered();
+      clearSelf();
     }
-    return ready;
   }
 
   // Looks up (or creates) the pooled entry for `server` and adds `sessionId`
   // to its holder set, all SYNCHRONOUSLY (no `await` anywhere in this
   // method) — connecting it if this is the first-ever touch. Staying
-  // synchronous is what lets acquire() register the holder before it awaits
-  // anything (see the fix comment there). It also remains the
+  // synchronous is what lets acquire()'s pass 1 register a holder on every
+  // server in one uninterrupted sweep — no server's holder registration can
+  // be split from another's by an intervening await, which is what closes
+  // Window B (see acquire()'s fix comment). It also remains the
   // concurrency-safety seam for the double-connect race: two acquire() calls
   // racing on the same server both reach this method, both see the SAME
   // entry.connecting promise (the entry + its promise are installed
@@ -145,8 +221,24 @@ export class McpManager {
    * anything — or a server it never held — is a no-op, never a throw: the
    * caller (session teardown) shouldn't have to first check whether MCP was
    * ever in play for that session.
+   *
+   * Fix: first waits for any acquire() currently registering holders for
+   * `sessionId` (see `inflightAcquires` and acquire()'s fix comment) before
+   * doing any of the above. Without this, a release() landing while an
+   * acquire() for the same session is still in flight would see an
+   * incomplete (or entirely absent) holder set, no-op, and let the resuming
+   * acquire() register a holder that nothing will ever remove again. This
+   * cannot deadlock: the promises awaited here settle when an acquire()'s
+   * OWN registration pass finishes — never when some other release() call
+   * finishes — so there is no cycle for two calls to wait on each other
+   * through. The list is snapshotted (spread) before awaiting so an
+   * acquire() that starts only AFTER this release() began isn't waited on;
+   * that acquire() hadn't started yet from this call's point of view, so
+   * there's nothing this call could have done about it anyway.
    */
   async release(sessionId: string): Promise<void> {
+    const inflight = this.inflightAcquires.get(sessionId);
+    if (inflight && inflight.length) await Promise.all([...inflight]);
     for (const [id, entry] of [...this.pool.entries()]) {
       if (!entry.holders.has(sessionId)) continue;
       entry.holders.delete(sessionId);
