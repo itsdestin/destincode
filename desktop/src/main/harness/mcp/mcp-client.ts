@@ -368,7 +368,10 @@ export class McpConnection {
 
 export function createConnection(
   server: ResolvedMcpServer,
-  deps?: { clientFactory?: ClientFactory; callTimeoutMs?: number }
+  // connectTimeoutMs belongs here too: the constructor accepts it, and tests
+  // pass it. It was missing only because tsconfig's `include` is src/**/* — so
+  // tsc never type-checks the tests, and the excess-property error never fired.
+  deps?: { clientFactory?: ClientFactory; callTimeoutMs?: number; connectTimeoutMs?: number }
 ): McpConnection {
   return new McpConnection(server, deps);
 }

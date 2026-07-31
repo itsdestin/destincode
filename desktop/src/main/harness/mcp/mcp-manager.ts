@@ -419,9 +419,24 @@ export class McpManager {
    * spot and will eventually get its own release() call from whoever owns
    * THAT session — deferring to your OWN still-running acquire() has nobody
    * else who is ever going to call release() again for it. Re-invoking
-   * guarantees this entry is still cleaned up (no permanent leak) while
-   * guaranteeing the deferred acquire() gets to actually observe `ready`
-   * before the connection is torn down out from under it.
+   * guarantees this entry is still cleaned up (no permanent leak).
+   *
+   * BE PRECISE ABOUT WHAT THIS DOES NOT DO. It postpones the close; it does
+   * not prevent it. The deferred re-release runs one microtask after the
+   * owning acquire() returns, so in the motivating case — a RESUMED session
+   * reusing its id, where destroy() releases the outgoing generation while
+   * create()/resume() acquires for the incoming one — the incoming session is
+   * handed a connection that is then closed underneath it, and its tool calls
+   * return "<server> is not connected." for the rest of that session. That is
+   * a different failure from the one this replaced (silently absent), not a
+   * fixed one. It is still the right trade: the alternative, skipping the
+   * close forever, leaks a spawned subprocess, which three regression tests
+   * in mcp-manager.test.ts pin.
+   *
+   * The real fix is out of reach here: this manager keys holders by
+   * sessionId, which cannot distinguish two generations of the same resumed
+   * session. release() would have to take the handle acquire() returned.
+   * Tracked as a ROADMAP follow-up.
    */
   async release(sessionId: string): Promise<void> {
     // Snapshot, per entry this session currently holds, the touch record as
