@@ -813,6 +813,94 @@ describe('PERMISSION_EXPIRED reasons (2026-07-30 spec §2/§2a/§2c/§2d)', () =
     expect(resolved.expired).toBeUndefined();
   });
 
+  it('TRANSCRIPT_TOOL_RESULT settling a retained hook-closed card clears `expired` (success path: user answers the live terminal menu, tool runs, result lands on the same toolUseId)', () => {
+    // Retain via 'hook-closed', then merge the real toolUseId in via
+    // TRANSCRIPT_TOOL_USE (mirrors the prior regression test) so the card
+    // under test has the exact shape a merged retained card has in prod.
+    let state = expire(withPendingAsk(), { reason: 'hook-closed' });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 's1',
+      uuid: 'line-uuid-1',
+      toolUseId: 'toolu_real_1',
+      toolName: 'Bash',
+      toolInput: {},
+    } as any);
+    expect(state.get('s1')!.toolCalls.get('toolu_real_1')!.expired).toBe(true);
+
+    // The user answered the still-live Ink menu directly in the terminal;
+    // Claude Code ran the tool and the transcript watcher's tool_result lands
+    // on the same toolUseId. This is the PRIMARY success path for a retained
+    // card — PERMISSION_CARD_RESOLVED never fires here.
+    const complete = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT',
+      sessionId: 's1',
+      uuid: 'result-uuid-1',
+      toolUseId: 'toolu_real_1',
+      result: 'ok',
+      isError: false,
+    } as any);
+    const completeTool = complete.get('s1')!.toolCalls.get('toolu_real_1')!;
+    // Regression guard: settling this path used to spread `...existing` over
+    // status/response only, leaving a stale `expired: true` on an ordinary
+    // successful tool — UI that renders on `expired` would wrongly show it
+    // as expired forever.
+    expect(completeTool.status).toBe('complete');
+    expect(completeTool.expired).toBeUndefined();
+
+    // Same bug, the failed branch.
+    const failed = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT',
+      sessionId: 's1',
+      uuid: 'result-uuid-2',
+      toolUseId: 'toolu_real_1',
+      result: 'boom',
+      isError: true,
+    } as any);
+    const failedTool = failed.get('s1')!.toolCalls.get('toolu_real_1')!;
+    expect(failedTool.status).toBe('failed');
+    expect(failedTool.expired).toBeUndefined();
+  });
+
+  it('TRANSCRIPT_TOOL_USE re-emit for an already-progressed real toolUseId is idempotent — does not erase retention or flip status back to running', () => {
+    // Retain via 'hook-closed', then merge the real toolUseId in — the card is
+    // now { status: 'awaiting-approval', expired: true, requestId: undefined }.
+    let state = expire(withPendingAsk(), { reason: 'hook-closed' });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 's1',
+      uuid: 'line-uuid-1',
+      toolUseId: 'toolu_real_1',
+      toolName: 'Bash',
+      toolInput: {},
+    } as any);
+    const merged = state.get('s1')!.toolCalls.get('toolu_real_1')!;
+    expect(merged.status).toBe('awaiting-approval');
+    expect(merged.expired).toBe(true);
+
+    // CC rewrites the same JSONL line again (assistant message still growing)
+    // and the watcher re-emits tool-use for the SAME real toolUseId — by
+    // design, per transcript-watcher.ts's dedup-by-uuid comment. No perm-*
+    // synthetic entry exists anymore (already merged above), so this used to
+    // fall through to the unconditional toolCalls.set(...) that stamps a
+    // bare { status: 'running' } object, erasing retention entirely and
+    // flipping the pty gates open while the terminal menu may still be live.
+    const reEmitted = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 's1',
+      uuid: 'line-uuid-1',
+      toolUseId: 'toolu_real_1',
+      toolName: 'Bash',
+      toolInput: {},
+    } as any);
+    const card = reEmitted.get('s1')!.toolCalls.get('toolu_real_1')!;
+    expect(card.status).toBe('awaiting-approval');
+    expect(card.expired).toBe(true);
+    expect(card.requestId).toBeUndefined();
+    expect(hasPendingInteraction(reEmitted.get('s1')!)).toBe(true);
+    expect(canRetrySubmit(reEmitted.get('s1')!)).toBe(false);
+  });
+
   it('PERMISSION_CARD_RESOLVED guard independently requires status === awaiting-approval, not just `expired`', () => {
     // Discrimination test: a reviewer confirmed that reverting ONLY the
     // guard's `status !== 'awaiting-approval'` clause still left the older

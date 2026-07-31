@@ -899,12 +899,28 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
       if (mergedSynthetic) return next;
 
-      toolCalls.set(action.toolUseId, {
-        toolUseId: action.toolUseId,
-        toolName: action.toolName,
-        input: action.toolInput,
-        status: 'running',
-      });
+      // Fix: this write must be IDEMPOTENT for a toolUseId that already has a
+      // progressed entry. transcript-watcher.ts's readNewLines re-emits
+      // tool-use on a repeated line uuid by design (CC rewrites the same
+      // JSONL line as the assistant message grows, and the earlier tool_use
+      // block is still present in the rewrite) — see its dedup-by-uuid
+      // comment. If the hook relay already carried this same toolUseId past
+      // 'running' (awaiting-approval, or retained via PERMISSION_EXPIRED
+      // 'hook-closed': awaiting-approval + expired: true), a later re-emit
+      // used to unconditionally stamp a bare { status: 'running' } object
+      // here, erasing that progress — and since the pty-input gates key off
+      // `status`, a retained card's gates would flip back open while the
+      // terminal's Ink menu may still be live. Only a genuinely new
+      // toolUseId gets a fresh 'running' card.
+      const existingCall = toolCalls.get(action.toolUseId);
+      toolCalls.set(action.toolUseId, existingCall
+        ? { ...existingCall, toolName: action.toolName, input: action.toolInput }
+        : {
+            toolUseId: action.toolUseId,
+            toolName: action.toolName,
+            input: action.toolInput,
+            status: 'running',
+          });
 
       let { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const toolGroups = new Map(session.toolGroups);
@@ -984,14 +1000,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // Carry structuredPatch onto the tool state so DiffView can render
         // with absolute file line numbers (Claude Code ships it pre-computed).
         const patch = action.structuredPatch;
+        // Fix: a tool_result settling a card must clear `expired`, or a card
+        // retained through PERMISSION_EXPIRED('hook-closed') stays flagged
+        // expired forever even though it just settled normally. This IS the
+        // retention feature's primary success path (not an edge case): the
+        // user answers the still-live terminal menu, Claude Code runs the
+        // tool, and this tool_result lands on the same toolUseId —
+        // PERMISSION_CARD_RESOLVED never fires for it. A card must always end
+        // up either retained (awaiting-approval + expired) or settled
+        // (failed/complete, expired cleared) — never both.
         if (action.isError) {
           toolCalls.set(action.toolUseId, {
-            ...existing, status: 'failed', error: action.result,
+            ...existing, status: 'failed', error: action.result, expired: undefined,
             ...(patch ? { structuredPatch: patch } : {}),
           });
         } else {
           toolCalls.set(action.toolUseId, {
-            ...existing, status: 'complete', response: action.result,
+            ...existing, status: 'complete', response: action.result, expired: undefined,
             ...(patch ? { structuredPatch: patch } : {}),
           });
         }
