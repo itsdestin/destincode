@@ -95,7 +95,7 @@ function StarGlyph({ filled }: { filled: boolean }) {
 // and the destination agree. Chosen from five drafts, 2026-07-30.
 // Matches the project picker's folder glyph spec (FolderSwitcher.tsx:186):
 // 24 viewBox, fill none, strokeWidth 2, rendered w-3 h-3 in the trigger.
-function ModelIcon({ className }: { className?: string }) {
+export function ModelIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -417,7 +417,17 @@ export default function ModelPicker({
         // value and never its purpose — the same defect the Provider/Model
         // Selects carried before change 21.
         aria-label="Model"
-        className={fieldClasses('sm', 'w-full text-left truncate flex items-center gap-1.5 justify-between')}
+        // `bg-well border-edge` overrides the shared FIELD surface (`bg-inset`
+        // + `border-edge-dim`) at this ONE call site. field.ts calls the
+        // collision out by name: "inputs on bg-inset cards now sit closer to
+        // their background than before… the alternative (bg-well inside inset
+        // cards) was offered during review and not taken." Every host of this
+        // picker is exactly that case — the Resume Browser's expanded pane sits
+        // on a `bg-inset` card, so the trigger was the same fill as the surface
+        // behind it and read as a label rather than a control (reported
+        // 2026-07-31 with a screenshot). One step deeper on the surface ladder
+        // fixes it without disturbing the other ~25 fields.
+        className={fieldClasses('sm', 'w-full text-left truncate flex items-center gap-1.5 justify-between bg-well border-edge')}
       >
         <ModelIcon className="w-3 h-3 shrink-0 text-fg-muted" />
         <span className={`flex-1 truncate ${value ? '' : 'text-fg-muted'}`}>{currentLabel}</span>

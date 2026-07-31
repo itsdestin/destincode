@@ -19,7 +19,7 @@ import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { NoteEditor } from './tags/NoteEditor';
-import ModelPicker, { type ModelChoice } from './model/ModelPicker';
+import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
 
 function formatRelativeTime(epochMs: number): string {
@@ -170,12 +170,15 @@ interface PastSession {
   tags?: string[];   // applied custom-tag ids
   note?: string;
   // Which runtime owns this session: `'claude'` = a Claude Code transcript;
-  // `'native'` = a YouCoded native-harness session (gets a "YouCoded" badge and
-  // skips the CC-only resume options — model / skip-perms). Typed `string`
-  // because Conversation-Store rows (Phase 2a) populate it from a stored string.
+  // `'native'` = a YouCoded native-harness session (skips the CC-only resume
+  // options — model / skip-perms). Typed `string` because Conversation-Store
+  // rows (Phase 2a) populate it from a stored string. No longer SHOWN on the
+  // card: the runtime badge was replaced by the model chip (2026-07-31).
   provider?: string;
   // Native runtime only: the stored harness preset id ('assistant' | 'coder' |
-  // legacy 'chat'). Drives the preset label next to the YouCoded badge.
+  // legacy 'chat'). Currently unread here — it drove the "Coder"/"Assistant"
+  // badge the model chip replaced. Kept because session.browse() returns it and
+  // dropping it from the shape would hide it from any future surface.
   harnessId?: string;
   // Conversation Store (Phase 2a) fields, present on store-fed rows only.
   device?: string;   // last device that ran a turn
@@ -188,7 +191,19 @@ interface PastSession {
   notSyncedYet?: boolean;
   // Task 6: portable reference to the model this conversation last ran a turn
   // with (Conversation Store, Task 4/5). Pre-fills the native resume selector
-  // below when it matches a model available on THIS device.
+  // below when it matches a model available on THIS device, and drives the
+  // model chip on the card.
+  //
+  // ONLY NATIVE SESSIONS CARRY IT TODAY — verified 2026-07-31. The single
+  // writer is noteModelUsed (main/conversations/service.ts), fed exclusively by
+  // resolvePortableModel → nativeHost.getBinding (ipc-handlers.ts:2154), which
+  // returns null for a Claude Code session because there is no native binding
+  // to resolve. So a CC card shows no chip. The data EXISTS to fix that — CC
+  // transcripts carry `message.model` on every assistant message
+  // (transcript-watcher.ts:174) — but session.browse() never opens the
+  // transcript, so wiring it is backend work, not a renderer change. Do NOT
+  // "fix" the blank by falling back to the app default: that would print a
+  // guess as history.
   lastUsedModel?: import('../../shared/types').PortableModelRef;
 }
 
@@ -781,25 +796,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               flush with the card's right padding. Laying the icons out as flex
               siblings instead (as this did) shortened the trigger by their
               width, which left the date visibly short of the right edge. */}
-          <div className={`text-sm truncate flex items-center gap-1.5 ${ICON_GUTTER}`}>
-            {/* Runtime badge — native (YouCoded harness) sessions only. Plain
-                word, no glyph; distinguishes them from Claude Code transcripts. */}
-            {s.provider === 'native' && (
-              <span
-                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
-                title="YouCoded native session"
-              >YouCoded</span>
-            )}
-            {/* Preset label — which harness personality this native session runs
-                as. Legacy 'chat' (and any unknown id) falls back to Assistant. */}
-            {s.provider === 'native' && (
-              <span
-                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
-                title="YouCoded native session"
-              >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
-            )}
-            <span className="truncate flex-1 min-w-0">{s.name}</span>
-          </div>
+          {/* Title only. The "YouCoded" + "Coder"/"Assistant" badges that used
+              to lead this line are gone: they named the RUNTIME and the harness
+              preset, which is internal vocabulary, and they pushed the actual
+              conversation title right on every native row. The model chip on
+              the line below says the same thing in the user's terms — a model
+              name — and says it for Claude Code rows too. */}
+          <div className={`text-sm truncate ${ICON_GUTTER}`}>{s.name}</div>
           {/* Tag chips after the name. Priority is FIRST and rendered with the
               same TagChip as everything else — it is a built-in tag, not a
               separate species of label (built-in-tags.ts). Complete has no chip:
@@ -822,7 +825,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               The timestamp sits HERE rather than on the title line: the two
               icon buttons own the card's top-right corner, and a third item
               crowding in beside them read as part of that control cluster. */}
-          <div className="flex items-end gap-2 text-3xs text-fg-muted">
+          <div className="flex items-center gap-2 text-3xs text-fg-muted">
             {s.missingProject || s.notSyncedYet ? (
               // Plain words, no glyphs (house rule). The conversation is visible
               // everywhere; resume needs the project folder AND its transcript
@@ -831,13 +834,38 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
               </span>
             ) : (
-              <span className="truncate flex-1 min-w-0">
-                {showPath
-                  ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
-                  : formatSize(s.size)}
+              <span className="flex items-center gap-1 truncate flex-1 min-w-0">
+                {/* Same folder glyph as the project picker (FolderSwitcher.tsx:186)
+                    so "which project" looks the same wherever it is answered.
+                    Only where a project is actually named — in grouped mode the
+                    group header names it and this line is just the size. */}
+                {showPath && (
+                  <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                )}
+                <span className="truncate">
+                  {showPath
+                    ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
+                    : formatSize(s.size)}
+                </span>
               </span>
             )}
-            <span className="shrink-0">{formatRelativeTime(s.lastModified)}</span>
+            {/* Last model this conversation actually ran on, beside the same
+                layers glyph the model picker uses. Rendered ONLY when the
+                record has one: showing the app default here would be a guess
+                dressed as history. See lastUsedModel's note on PastSession for
+                which sessions carry it today. */}
+            {s.lastUsedModel && (
+              <span
+                className="flex items-center gap-1 shrink-0 max-w-[45%]"
+                title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
+              >
+                <ModelIcon className="w-3 h-3 shrink-0" />
+                <span className="truncate">{s.lastUsedModel.modelId}</span>
+              </span>
+            )}
+            <span className="shrink-0 ml-auto">{formatRelativeTime(s.lastModified)}</span>
           </div>
         </div>
       </button>
