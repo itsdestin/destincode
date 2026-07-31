@@ -74,10 +74,24 @@ describe('McpConnection', () => {
     const conn = createConnection(server, { clientFactory: () => client as any, callTimeoutMs: 1000 });
     await conn.connect();
     const p = conn.callTool('search', {}, new AbortController().signal);
+    let settled = false;
+    p.then(() => { settled = true; });
+
+    // Regression pin: fix pass 1 built the backstop on the invariant that it
+    // must NEVER preempt the SDK's own (better-cleaning-up) timeout path, so
+    // its delay is callTimeoutMs + BACKSTOP_GRACE_MS, strictly longer than
+    // callTimeoutMs alone. Advancing exactly callTimeoutMs and asserting the
+    // call is still pending catches a revert to plain `this.callTimeoutMs`
+    // (mcp-client.ts's backstop timer) — the prior version of this test only
+    // ever advanced past the grace margin, so that regression fired inside
+    // the window and every assertion below still passed.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settled).toBe(false);
+
     // This exercises the file's own BACKSTOP timer (the fake never rejects,
     // unlike a real SDK Client honoring `options.timeout`), so the advance
     // must clear callTimeoutMs (1000) PLUS the backstop's grace margin.
-    await vi.advanceTimersByTimeAsync(2500);
+    await vi.advanceTimersByTimeAsync(1500);
     const r = await p;
     expect(r.isError).toBe(true);
     expect(r.text).toContain('Demo');       // names the SERVER, so the user knows what hung

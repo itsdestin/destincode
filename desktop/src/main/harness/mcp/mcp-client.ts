@@ -209,11 +209,21 @@ export class McpConnection {
         // bound, which docs/error-message-standards.md requires. Detect it
         // by the SDK's own error CODE (never by matching message text,
         // which is an SDK implementation detail) and rewrite into the
-        // actionable shape below. This is not a guessed cause: a
-        // RequestTimeout code IS a timeout, with certainty, so relabeling it
-        // is translation, not invention. Every other error (a real server
-        // failure) falls through and surfaces its own text verbatim.
-        if (err instanceof McpError && err.code === ErrorCode.RequestTimeout) {
+        // actionable shape below.
+        //
+        // BUT the code alone is not an exclusive timeout signal: the SDK's
+        // shared rejection path (protocol.js's _cleanupTimeout /
+        // request-abort handling) wraps ANY reason — including our own
+        // AbortController firing — as `new McpError(RequestTimeout,
+        // String(reason))`, because `cancel()` is the abort path too, not
+        // just the timeout path. Without the `signal.aborted` check, a
+        // user-interrupted call would be relabeled as "did not respond",
+        // telling the user their own interrupt was a server hang — a wrong
+        // cause, which error-message-standards.md forbids. Checking
+        // `signal.aborted` lets an abort fall through to `abortPromise`
+        // below (or, if this promise still wins the race, at least avoids
+        // mislabeling it) instead of being swallowed here.
+        if (err instanceof McpError && err.code === ErrorCode.RequestTimeout && !signal.aborted) {
           return { text: `${label} did not respond within ${this.callTimeoutMs}ms.`, isError: true };
         }
         return { text: errorMessage(err), isError: true };
@@ -226,7 +236,13 @@ export class McpConnection {
     // regression, or a transport that ignores `options.timeout`), so its
     // delay is deliberately callTimeoutMs + BACKSTOP_GRACE_MS: strictly
     // longer than the SDK's own bound, so it can never preempt the SDK's
-    // better-behaved rejection in the normal case.
+    // better-behaved rejection in the normal case. This ordering assumes
+    // `resetTimeoutOnProgress`/`maxTotalTimeout` are never threaded into
+    // `options` above — both let the SDK legitimately extend a call past
+    // `callTimeoutMs`, which would make this backstop fire spuriously one
+    // second later. `McpCallToolOptions` only exposes `signal`/`timeout`
+    // today, so that can't happen yet; revisit this comment if a later task
+    // adds `onprogress`.
     const timeoutPromise = new Promise<ToolCallResult>((resolve) => {
       timer = setTimeout(() => {
         resolve({ text: `${label} did not respond within ${this.callTimeoutMs}ms.`, isError: true });
