@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseInkSelect, menuToButtons } from '../src/renderer/parser/ink-select-parser';
+import { parseInkSelect, menuToButtons, rebindButtons } from '../src/renderer/parser/ink-select-parser';
+import type { ParsedMenu } from '../src/renderer/parser/ink-select-parser';
 
 describe('ink-select-parser', () => {
   describe('parseInkSelect', () => {
@@ -421,6 +422,40 @@ Pick a follow-up:
 
       // Should strip the numbering
       expect(menu.options).toEqual(['as is', 'from summary']);
+    });
+  });
+
+  describe('rebindButtons (spec §3 gates)', () => {
+    const digitMenu: ParsedMenu = {
+      id: 'm1', title: 'Bash command', options: ['Yes', "Yes, and don't ask again", 'No'],
+      optionNumbers: [1, 2, 3], selectedIndex: 0,
+    };
+
+    it('returns digit-writing buttons for a fully-numbered single-select menu', () => {
+      const btns = rebindButtons(digitMenu, 'Bash')!;
+      expect(btns.map((b) => b.input)).toEqual(['1', '2', '3']);
+      expect(btns.every((b) => b.submitInput === undefined)).toBe(true);
+      // Labels come from the fresh parse, not any guessed/matched original —
+      // this is what rules out the "click No, land on don't-ask-again" misfire.
+      expect(btns.map((b) => b.label)).toEqual(digitMenu.options);
+    });
+
+    it('rejects a menu with ANY arrow-fallback option — never mix write shapes', () => {
+      const partial: ParsedMenu = { ...digitMenu, optionNumbers: [1, null, 3] };
+      expect(rebindButtons(partial, 'Bash')).toBeNull();
+    });
+
+    it('rejects a menu with NO digits at all (pure arrow-fallback)', () => {
+      const noDigits: ParsedMenu = { ...digitMenu, optionNumbers: undefined };
+      expect(rebindButtons(noDigits, 'Bash')).toBeNull();
+    });
+
+    it('never rebinds AskUserQuestion — sequential multi-question TUI with Skip/free-text', () => {
+      expect(rebindButtons(digitMenu, 'AskUserQuestion')).toBeNull();
+    });
+
+    it('null menu → null', () => {
+      expect(rebindButtons(null, 'Bash')).toBeNull();
     });
   });
 });
