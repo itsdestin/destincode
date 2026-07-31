@@ -2,21 +2,20 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
+import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { NoteEditor } from './tags/NoteEditor';
 import { Button, Dialog } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
-// This prompt still shows Priority and Complete as its own button pair. The
-// Resume Browser no longer does — there, Priority became a built-in TAG and
-// Complete became the card's hide icon (2026-07-30). Left alone deliberately:
-// this surface exists to ASK "done with this one?" at close time, so a plain
-// labelled pair reads better than an eye icon with no list to hide from. If the
-// two are ever unified, this is the copy that has to move.
+// The two reserved flags no longer share a control here (2026-07-31). Complete
+// is the dialog's actual question, so it gets the one prominent check button;
+// Priority is a tag and sits in the tag list. FLAG_ORDER survives only as the
+// serialization order for buildResult's `flags` array — the labels it used to
+// carry now live at each control.
 type FlagName = 'priority' | 'complete';
 const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
-const FLAG_LABEL: Record<FlagName, string> = { priority: 'Priority', complete: 'Complete' };
 
 interface Props {
   open: boolean;
@@ -137,38 +136,54 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
               <>
-              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tag before closing</label>
-              <div className="flex gap-1">
-                {FLAG_ORDER.map((flag) => {
-                  const active = sel[flag];
-                  return (
-                    <button
-                      key={flag}
-                      onClick={() => setSel((prev) => ({ ...prev, [flag]: !prev[flag] }))}
-                      className={`flex-1 px-1 py-1.5 rounded-sm text-2xs transition-colors ${
-                        active
-                          ? 'bg-accent text-on-accent font-medium'
-                          : 'bg-inset text-fg-dim hover:bg-edge'
-                      }`}
-                      aria-pressed={active}
-                    >
-                      {FLAG_LABEL[flag]}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-3xs text-fg-muted">
-                {sel.complete
-                  ? 'Complete hides this from the resume menu by default.'
-                  : 'Tap a flag to tag this session, or close with none.'}
-              </p>
-              <div className="flex flex-col gap-1.5 mt-2">
+              {/* "Are you done with this one?" is the QUESTION this dialog
+                  exists to ask, so Complete is the one prominent control rather
+                  than half of a two-button flag row. Same check-in-a-circle the
+                  Resume Browser card uses, so the same act looks the same in
+                  both places — set it here, and that is the state the card will
+                  show. Priority is NOT beside it any more: it is a tag, and it
+                  now lives in the tag list below like every other tag. */}
+              <button
+                type="button"
+                onClick={() => setSel((prev) => ({ ...prev, complete: !prev.complete }))}
+                aria-pressed={sel.complete}
+                className={`flex items-center gap-2.5 w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${
+                  sel.complete ? 'border-accent bg-accent/10' : 'border-edge-dim bg-inset hover:border-edge'
+                }`}
+              >
+                <svg className={`w-5 h-5 shrink-0 ${sel.complete ? 'text-accent' : 'text-fg-faint'}`}
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
+                  strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <circle cx="12" cy="12" r="9" fill={sel.complete ? 'currentColor' : 'none'} />
+                  <path d="M8 12.5l2.5 2.5L16 9.5" stroke={sel.complete ? 'var(--canvas)' : 'currentColor'} />
+                </svg>
+                <span className="min-w-0">
+                  <span className="block text-xs text-fg">Mark complete</span>
+                  <span className="block text-3xs text-fg-muted leading-snug">
+                    Hides it from the resume list unless you turn on Show Complete.
+                  </span>
+                </span>
+              </button>
+
+              <div className="flex flex-col gap-1.5">
                 <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+                {/* Priority as a built-in, exactly as in the Resume Browser's
+                    tag sheet and the in-session chip. Unlike those two this one
+                    is DEFERRED: the dialog collects a result and the caller
+                    writes it on confirm (buildResult), so this toggles local
+                    state instead of calling setFlag. Cancel must leave nothing
+                    behind. */}
                 <TagPicker
                   appliedIds={tagIds}
                   onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
                   registry={registry}
                   onManageTags={() => setManageOpen(true)}
+                  builtIns={[{
+                    tag: PRIORITY_TAG,
+                    hint: PRIORITY_HINT,
+                    applied: sel.priority,
+                    onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
+                  }]}
                 />
                 <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
                 <NoteEditor value={note} onSave={setNote} />

@@ -38,9 +38,22 @@ export interface PastSession {
   lastUsedModel?: { modelId: string; providerType: string; providerLabel: string };
 }
 
+/** Per-session tags/note/flags for LIVE sessions — what session.getMeta reads.
+ *  Kept separate from `past` because the two are keyed by different id spaces:
+ *  a live session's id is never a row in the resume list. The writers mirror
+ *  into `past` as well when a row with the same id happens to exist, so the
+ *  Resume Browser and the in-session chip can't disagree about the same
+ *  conversation. */
+export interface MockSessionMeta {
+  tags: string[];
+  note: string;
+  flags: Record<string, boolean>;
+}
+
 export interface MockState {
   sessions: SessionInfo[];
   past: PastSession[];
+  meta: Record<string, MockSessionMeta>;
   providers: ProviderRow[];
   catalog: CatalogRow[];
   tags: TagRecord[];
@@ -130,6 +143,10 @@ export function seed(scenario: ScenarioId): MockState {
   const base: MockState = {
     sessions: sessions(),
     past: defaultPast(),
+    // The live CC session starts with a tag and Priority set, so the StatusBar
+    // chip and the close prompt both have something to render without the
+    // reviewer having to click first.
+    meta: { 'wb-1': { tags: ['tag_work'], note: '', flags: { priority: true } } },
     providers: seedProviders(),
     catalog: seedCatalog(),
     tags: seedTags(),

@@ -827,15 +827,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {s.note && <span className="text-4xs text-fg-muted" title={s.note}>📝 note</span>}
             </div>
           )}
-          {/* Bottom line: context on the left, timestamp on the right.
-              In flat (chronological) mode each row carries its project label
-              since there's no group header; size rides along so no info is lost
-              vs. the grouped view. Grouped rows keep size only — the group
-              header already names the project.
-              The timestamp sits HERE rather than on the title line: the two
+          {/* Bottom line: one dotted trail of context on the left — project,
+              model, size — then the timestamp on the right.
+              The model sits INSIDE that trail rather than floating right beside
+              the date: it is another fact ABOUT the conversation, and pinning
+              it to the right edge grouped it with the timestamp instead
+              (reported 2026-07-31 with a screenshot).
+              Built as segments joined by "·" rather than a template string,
+              because two of the three are conditional — grouped mode drops the
+              project (the group header names it) and a conversation with no
+              recorded model drops that — and a literal separator would leave
+              stray dots on either.
+              The timestamp lives here rather than on the title line: the two
               icon buttons own the card's top-right corner, and a third item
               crowding in beside them read as part of that control cluster. */}
-          <div className="flex items-center gap-2 text-3xs text-fg-muted">
+          <div className="flex items-center gap-1.5 text-3xs text-fg-muted">
             {s.missingProject || s.notSyncedYet ? (
               // Plain words, no glyphs (house rule). The conversation is visible
               // everywhere; resume needs the project folder AND its transcript
@@ -844,35 +850,41 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
               </span>
             ) : (
-              <span className="flex items-center gap-1 truncate flex-1 min-w-0">
-                {/* Same folder glyph as the project picker (FolderSwitcher.tsx:186)
-                    so "which project" looks the same wherever it is answered.
-                    Only where a project is actually named — in grouped mode the
-                    group header names it and this line is just the size. */}
-                {showPath && (
-                  <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  </svg>
-                )}
-                <span className="truncate">
-                  {showPath
-                    ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
-                    : formatSize(s.size)}
-                </span>
-              </span>
-            )}
-            {/* Last model this conversation actually ran on, beside the same
-                layers glyph the model picker uses. Rendered ONLY when the
-                record has one: showing the app default here would be a guess
-                dressed as history. See lastUsedModel's note on PastSession for
-                which sessions carry it today. */}
-            {s.lastUsedModel && (
-              <span
-                className="flex items-center gap-1 shrink-0 max-w-[45%]"
-                title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
-              >
-                <ModelIcon className="w-3 h-3 shrink-0" />
-                <span className="truncate">{formatModelId(s.lastUsedModel.modelId)}</span>
+              <span className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
+                {[
+                  // Same folder glyph as the project picker (FolderSwitcher.tsx:186)
+                  // so "which project" looks the same wherever it is answered.
+                  showPath ? (
+                    <span key="project" className="flex items-center gap-1 min-w-0">
+                      <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                      </svg>
+                      <span className="truncate">{s.projectPath.replace(/\\/g, '/').split('/').pop()}</span>
+                    </span>
+                  ) : null,
+                  // Last model this conversation actually RAN on, beside the same
+                  // layers glyph the model picker uses. Rendered only when the
+                  // record has one — showing the app default here would be a
+                  // guess dressed as history. See PastSession.lastUsedModel for
+                  // which conversations carry it.
+                  s.lastUsedModel ? (
+                    <span
+                      key="model"
+                      className="flex items-center gap-1 min-w-0"
+                      title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
+                    >
+                      <ModelIcon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{formatModelId(s.lastUsedModel.modelId)}</span>
+                    </span>
+                  ) : null,
+                  <span key="size" className="shrink-0">{formatSize(s.size)}</span>,
+                ]
+                  .filter(Boolean)
+                  // Separators are injected between surviving segments, so a
+                  // missing project or model never leaves a dangling dot.
+                  .flatMap((node, i) => (i === 0
+                    ? [node]
+                    : [<span key={`sep-${i}`} className="shrink-0">·</span>, node]))}
               </span>
             )}
             <span className="shrink-0 ml-auto">{formatRelativeTime(s.lastModified)}</span>

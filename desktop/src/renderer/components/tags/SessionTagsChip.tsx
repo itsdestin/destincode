@@ -10,6 +10,7 @@ import { useTagRegistry } from '../../hooks/useTagRegistry';
 import { useSessionMeta } from '../../hooks/useSessionMeta';
 import type { TagRecord } from '../../../shared/tags';
 import { TagPicker } from './TagPicker';
+import { PRIORITY_TAG, PRIORITY_HINT } from './built-in-tags';
 import { TagManagerPopup } from './TagManagerPopup';
 import { NoteEditor } from './NoteEditor';
 
@@ -26,7 +27,15 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
   const appliedTags = [...meta.tags]
     .map((id) => registry.byId.get(id))
     .filter((t): t is TagRecord => !!t);
-  const hasContent = appliedTags.length > 0 || meta.note.length > 0;
+  // Priority reads as an ordinary tag everywhere else (built-in-tags.ts), so it
+  // leads the chip's dots and its label the same way it leads the picker list.
+  // It is stored as a reserved FLAG, which is why it rides meta.flags rather
+  // than meta.tags.
+  const priority = !!meta.flags.priority;
+  const dotColors = [...(priority ? [PRIORITY_TAG.color] : []), ...appliedTags.map((t) => t.color)];
+  const leadLabel = priority ? PRIORITY_TAG.label : appliedTags[0]?.label;
+  const labelCount = dotColors.length;
+  const hasContent = labelCount > 0 || meta.note.length > 0;
 
   return (
     <>
@@ -42,13 +51,13 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
       >
         {hasContent ? (
           <span className="flex items-center gap-1 overflow-hidden">
-            {appliedTags.slice(0, 3).map((t) => (
-              <span key={t.id} className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: `var(--${t.color})` }} />
+            {dotColors.slice(0, 3).map((c, i) => (
+              <span key={`${c}-${i}`} className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: `var(--${c})` }} />
             ))}
             {meta.note && <NotebookIcon className="w-3 h-3 text-fg-muted shrink-0" />}
-            {appliedTags.length > 0 && (
+            {leadLabel && (
               <span className="truncate text-fg-2">
-                {appliedTags[0].label}{appliedTags.length > 1 ? ` +${appliedTags.length - 1}` : ''}
+                {leadLabel}{labelCount > 1 ? ` +${labelCount - 1}` : ''}
               </span>
             )}
           </span>
@@ -71,7 +80,24 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                   className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">×</button>
               </div>
               <div className="px-4 py-3 space-y-3 overflow-y-auto">
-                <TagPicker appliedIds={meta.tags} onToggle={meta.setTag} registry={registry} onManageTags={() => setManageOpen(true)} />
+                {/* Same list as the Resume Browser's tag sheet, Priority
+                    included as a built-in. The two surfaces disagreeing about
+                    whether Priority is a tag was the inconsistency this pass
+                    exists to remove. Complete is deliberately NOT offered here:
+                    a session you are sitting in is not finished, and the close
+                    prompt is where that decision belongs. */}
+                <TagPicker
+                  appliedIds={meta.tags}
+                  onToggle={meta.setTag}
+                  registry={registry}
+                  onManageTags={() => setManageOpen(true)}
+                  builtIns={[{
+                    tag: PRIORITY_TAG,
+                    hint: PRIORITY_HINT,
+                    applied: priority,
+                    onToggle: (next) => meta.setFlag('priority', next),
+                  }]}
+                />
                 <div>
                   <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
                   <NoteEditor value={meta.note} onSave={meta.setNote} />
