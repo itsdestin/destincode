@@ -176,7 +176,15 @@ function endTurn(
   for (const id of session.activeTurnToolIds) {
     const tool = toolCalls.get(id);
     if (tool && (tool.status === 'running' || tool.status === 'awaiting-approval')) {
-      toolCalls.set(id, { ...tool, status: 'failed', error: errorMessage });
+      // Fix: also clear `expired` when force-failing. A retained hook-closed
+      // card (PERMISSION_EXPIRED reason 'hook-closed') carries `expired: true`
+      // while still 'awaiting-approval'. If the session then dies here, the
+      // card is now genuinely settled ('failed') — leaving `expired` set is
+      // stale state that lets a later quiet PERMISSION_CARD_RESOLVED (Dismiss
+      // button, stale-detector callback) pass its `!tool.expired` guard and
+      // silently overwrite this real failure with 'complete' and no error.
+      const { expired: _expired, ...rest } = tool;
+      toolCalls.set(id, { ...rest, status: 'failed', error: errorMessage });
     }
   }
   return {
@@ -1281,9 +1289,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
       const tool = session.toolCalls.get(action.toolUseId);
-      // Only expired cards resolve this way — a live ask must go through its
-      // buttons (which deliver a real decision through the socket).
-      if (!tool || !tool.expired) return state;
+      // Only a still-awaiting expired card resolves this way — a live ask
+      // must go through its buttons (which deliver a real decision through
+      // the socket). Fix: also require status === 'awaiting-approval', not
+      // just `expired`. endTurn() force-fails a retained hook-closed card
+      // ('failed' + real error) if the session dies before it's resolved,
+      // but historically left `expired` set — without this status check a
+      // late PERMISSION_CARD_RESOLVED (Dismiss button, stale-detector
+      // callback) would pass on that stale marker and silently flip a real
+      // failure to 'complete' with no error, erasing it.
+      if (!tool || !tool.expired || tool.status !== 'awaiting-approval') return state;
       const toolCalls = new Map(session.toolCalls);
       // 'complete' with no error: nothing failed — the ask was answered in
       // the terminal or dismissed. If the tool really runs, the transcript's

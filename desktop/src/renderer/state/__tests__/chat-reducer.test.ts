@@ -737,4 +737,37 @@ describe('PERMISSION_EXPIRED reasons (2026-07-30 spec §2/§2a/§2c/§2d)', () =
     const untouched = chatReducer(fresh, { type: 'PERMISSION_CARD_RESOLVED', sessionId: 's1', toolUseId: 'perm-r1' });
     expect(untouched.get('s1')!.toolCalls.get('perm-r1')!.status).toBe('awaiting-approval');
   });
+
+  it('endTurn force-failing a retained hook-closed card clears `expired`, and a later PERMISSION_CARD_RESOLVED cannot erase the failure', () => {
+    // Retain via 'hook-closed': awaiting-approval + expired: true.
+    let state = expire(withPendingAsk(), { reason: 'hook-closed' });
+
+    // The session then actually dies (endTurn is spread by
+    // SESSION_PROCESS_EXITED). This force-fails the still-awaiting tool.
+    state = chatReducer(state, {
+      type: 'SESSION_PROCESS_EXITED',
+      sessionId: 's1',
+      exitCode: 1,
+    } as any);
+
+    const failed = state.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toBe('Turn ended');
+    // Regression guard: endTurn() must clear the stale `expired` marker once
+    // it force-fails the card, or a later quiet PERMISSION_CARD_RESOLVED can
+    // still pass the (buggy) `!tool.expired`-only guard and erase this
+    // failure with no error text.
+    expect(failed.expired).toBeUndefined();
+
+    // A stray PERMISSION_CARD_RESOLVED (Dismiss button, stale-detector
+    // callback) must NOT resurrect the failed card as a quiet 'complete'.
+    state = chatReducer(state, {
+      type: 'PERMISSION_CARD_RESOLVED',
+      sessionId: 's1',
+      toolUseId: 'perm-r1',
+    });
+    const stillFailed = state.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(stillFailed.status).toBe('failed');
+    expect(stillFailed.error).toBe('Turn ended');
+  });
 });
