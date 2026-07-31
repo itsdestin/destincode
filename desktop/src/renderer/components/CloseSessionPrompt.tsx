@@ -246,37 +246,46 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <div className="rounded-lg border border-edge-dim bg-inset px-3 py-2.5">
                 {editing ? (
                   <div className="flex flex-col gap-2">
-                    {/* ONE well holding both fields, divided. `bg-well` is one
-                        step deeper than the card, which is one step deeper than
-                        the dialog — the documented surface ladder, not an
-                        arbitrary shade. */}
-                    <div className="rounded-md bg-well border border-edge-dim divide-y divide-edge-dim">
-                      <div className="p-2">
-                        {/* Priority as a built-in, as in the Resume Browser's
-                            tag sheet and the in-session chip. Unlike those two
-                            this one is DEFERRED: the dialog collects a result
-                            and the caller writes it on confirm, so this toggles
-                            local state instead of calling setFlag. Cancel must
-                            leave nothing behind. */}
-                        <TagPicker
-                          appliedIds={tagIds}
-                          onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
-                          registry={registry}
-                          onManageTags={() => setManageOpen(true)}
-                          builtIns={[{
-                            tag: PRIORITY_TAG,
-                            hint: PRIORITY_HINT,
-                            applied: sel.priority,
-                            onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
-                          }]}
-                        />
-                      </div>
-                      <div className="p-2">
-                        {/* Collapsing UNMOUNTS this, and NoteEditor commits its
-                            draft on unmount as well as on blur — so "type a
-                            note, press Save" keeps the note. */}
-                        <NoteEditor value={note} onSave={setNote} placeholder="Add a note…" />
-                      </div>
+                    {/* No inner container. The editor's fields sit DIRECTLY on
+                        the card, separated by a rule rather than nested in a
+                        second box — two concentric containers around the tag
+                        list read as one too many (2026-07-31).
+                        The cost of that, and why fieldClassName exists: the
+                        shared FIELD surface is `bg-inset`, which is also this
+                        card's fill, so on the card the search box and the
+                        textarea would have been the same colour as the thing
+                        behind them. They take `bg-well` instead — one step
+                        deeper, the ladder used properly, and the same override
+                        ModelPicker's trigger already makes for the same reason. */}
+                    {/* Priority as a built-in, as in the Resume Browser's tag
+                        sheet and the in-session chip. Unlike those two this one
+                        is DEFERRED: the dialog collects a result and the caller
+                        writes it on confirm, so this toggles local state
+                        instead of calling setFlag. Cancel must leave nothing
+                        behind. */}
+                    <TagPicker
+                      appliedIds={tagIds}
+                      onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                      registry={registry}
+                      onManageTags={() => setManageOpen(true)}
+                      fieldClassName="bg-well border-edge"
+                      builtIns={[{
+                        tag: PRIORITY_TAG,
+                        hint: PRIORITY_HINT,
+                        applied: sel.priority,
+                        onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
+                      }]}
+                    />
+                    <div className="border-t border-edge-dim pt-2">
+                      {/* Collapsing UNMOUNTS this, and NoteEditor commits its
+                          draft on unmount as well as on blur — so "type a note,
+                          press Save" keeps the note. */}
+                      <NoteEditor
+                        value={note}
+                        onSave={setNote}
+                        placeholder="Add a note…"
+                        fieldClassName="bg-well border-edge"
+                      />
                     </div>
                     <SaveButton onClick={() => setEditing(false)} />
                   </div>

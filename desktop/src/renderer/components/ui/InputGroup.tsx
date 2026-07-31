@@ -1,5 +1,6 @@
 import React from 'react';
 import { FIELD_SURFACE, FIELD_TEXT, FIELD_SIZE, type FieldSize } from './field';
+import { mergeClasses } from './Button';
 
 /**
  * A field with its action INSIDE it (change 77, spec §11.9).
@@ -53,19 +54,25 @@ function InputGroupRoot({ size = 'md', disabled, className = '', children }: Inp
   return (
     <SizeContext.Provider value={size}>
       <div
-        className={[
-          FIELD_SURFACE,
-          'flex items-center gap-1',
-          // The action sits inset from the border rather than flush against it.
-          'pr-1',
-          // The focus state the bare input can't express on its own.
-          'focus-within:border-accent',
-          disabled ? 'opacity-50 cursor-not-allowed' : '',
+        // mergeClasses, not a raw join, for the same reason buttonClasses and
+        // fieldClasses use it: Tailwind resolves two competing utilities by CSS
+        // SOURCE order, not by their order in the class attribute. A caller
+        // passing `bg-well` to lift this field off a same-coloured card would
+        // otherwise get whichever of bg-inset/bg-well Tailwind happened to emit
+        // later — i.e. it worked or didn't by luck. (Found 2026-07-31 doing
+        // exactly that in the close prompt.)
+        className={mergeClasses(
+          [
+            FIELD_SURFACE,
+            'flex items-center gap-1',
+            // The action sits inset from the border rather than flush against it.
+            'pr-1',
+            // The focus state the bare input can't express on its own.
+            'focus-within:border-accent',
+            disabled ? 'opacity-50 cursor-not-allowed' : '',
+          ].filter(Boolean).join(' '),
           className,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .trim()}
+        ).trim()}
       >
         {children}
       </div>

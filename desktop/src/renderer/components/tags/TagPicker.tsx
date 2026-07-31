@@ -27,7 +27,7 @@ export interface BuiltInTag {
   onToggle: (next: boolean) => void;
 }
 
-export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtIns = [] }: {
+export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtIns = [], fieldClassName = '' }: {
   appliedIds: Set<string>;
   onToggle: (tagId: string, next: boolean) => void;
   registry: TagRegistryApi;
@@ -37,6 +37,10 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtI
   onManageTags?: () => void;
   /** Reserved flags shown as tags, listed first. */
   builtIns?: BuiltInTag[];
+  /** Extra classes for the search field's surface. Exists so a host whose own
+   *  background is already `bg-inset` — the FIELD surface — can lift the field
+   *  off it with `bg-well` rather than having an invisible control. */
+  fieldClassName?: string;
 }) {
   const [query, setQuery] = useState('');
 
@@ -68,7 +72,7 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtI
           canCreate. The row used to echo the typed name (+ Create “x”); inside the
           field that echo is redundant visually, so it survives as the aria-label —
           screen-reader users still hear which tag they're about to create. */}
-      <InputGroup size="sm">
+      <InputGroup size="sm" className={fieldClassName}>
         <InputGroup.Field
           aria-label="Search or create a tag"
           value={query}
