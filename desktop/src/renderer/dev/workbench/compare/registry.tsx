@@ -801,6 +801,135 @@ function FlowCardButton() {
   );
 }
 
+// ── Round 8: tightening the editor ───────────────────────────────────────────
+// C (full-width button) won round 7, with the label changed from "Done" to
+// "Save" on a darker pill. All three candidates below carry that same button,
+// so it is settled, not compared:
+//
+//   `secondary` is the outline — too quiet for the one action closing a
+//   section. `primary` is the accent, which would compete with the dialog's own
+//   "Close session". So SaveButton is a filled NEUTRAL pill: bg-well with a
+//   border, rounded-full. Darker than the card it sits in, quieter than accent.
+//
+// What is compared is the editor above it, which measured 9 stacked bands in
+// round 7: label, search, four tag rows, a manage link, a second label, and a
+// three-row textarea. Each candidate cuts that a different way.
+
+/** The settled Save control. Pill, filled, neutral — deliberately not accent,
+ *  which belongs to the dialog's own confirm. */
+function SaveButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-full bg-well border border-edge-dim px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-edge hover:border-edge focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      Save
+    </button>
+  );
+}
+
+/** MERGED HEADERS. The two section labels stop owning their own lines: "Tags"
+ *  shares its row with "Manage tags…", and the note loses its label entirely —
+ *  its placeholder already says what it is. Rows tighten and the note drops to
+ *  two lines. Same structure, three bands less. */
+function EditTightHeaders({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+        <button type="button" className="text-3xs text-fg-muted hover:text-fg transition-colors">Manage tags…</button>
+      </div>
+      <TagPicker
+        appliedIds={d.tagIds}
+        onToggle={d.toggleTag}
+        registry={d.registry}
+        builtIns={[{ tag: PRIORITY_TAG, hint: PRIORITY_HINT, applied: d.priority, onToggle: d.setPriority }]}
+      />
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** APPLIED FIRST. What is already on the conversation sits as removable chips
+ *  directly under the search, and the list beneath offers only what is NOT
+ *  applied. With three tags on, the list you scan is three rows shorter — and
+ *  "what does this have" stops being a hunt through checkboxes. */
+function EditAppliedFirst({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        {!d.priority && d.chips.length === 0 && <span className="text-3xs text-fg-muted">No tags yet</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-1 border-t border-edge-dim pt-2">
+        {!d.priority && (
+          <button type="button" onClick={() => d.setPriority(true)}
+            className="opacity-60 hover:opacity-100 transition-opacity">
+            <TagChip tag={PRIORITY_TAG} />
+          </button>
+        )}
+        {unapplied.map((t) => (
+          <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)}
+            className="opacity-60 hover:opacity-100 transition-opacity">
+            <TagChip tag={t} />
+          </button>
+        ))}
+        <button type="button" className="px-1.5 py-[1px] rounded-sm text-3xs leading-none border border-dashed border-edge text-fg-muted hover:text-fg transition-colors">
+          + new
+        </button>
+      </div>
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** ONE WELL. Tags and note share a single inset container split by a divider,
+ *  so the editor reads as one object rather than two stacked sections. No
+ *  labels at all — a tag row and a text field do not need naming. The most
+ *  compact, and the furthest from the app's existing form language. */
+function EditOneWell({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-md bg-well border border-edge-dim divide-y divide-edge-dim">
+        <div className="p-2">
+          <TagPicker
+            appliedIds={d.tagIds}
+            onToggle={d.toggleTag}
+            registry={d.registry}
+            builtIns={[{ tag: PRIORITY_TAG, hint: PRIORITY_HINT, applied: d.priority, onToggle: d.setPriority }]}
+          />
+        </div>
+        <div className="p-2">
+          <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+        </div>
+      </div>
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** Round 7's winning shell, with the editor body swapped per candidate. */
+function EditFlowCard({ render }: {
+  render: (d: ReturnType<typeof useDraft>, onSave: () => void) => React.ReactNode;
+}) {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(true);   // open, since it is what is being judged
+  return (
+    <div className="flex flex-col gap-3">
+      <EditCard>
+        {editing ? render(d, () => setEditing(false)) : <EditCardSummary d={d} onEdit={() => setEditing(true)} />}
+      </EditCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
 function CheckGlyph({ className = '' }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
@@ -1057,6 +1186,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'Full-width Done button',
             note: 'Unmissable and impossible to fumble — but it reads as "commit this section", which is a small lie: nothing commits until the dialog\'s own button. Tallest by a row.',
             render: () => <InDialog><FlowCardButton /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 8,
+        basis: 'R7 · C (full-width button), with Done → Save on a darker neutral pill (settled, not compared — accent belongs to the dialog\'s own confirm). Compared: tightening the editor, which was 9 stacked bands. All three open in edit mode, since that is what is being judged.',
+        candidates: [
+          {
+            id: 'headers',
+            label: 'Merged headers',
+            note: 'Labels stop owning their own lines — "Tags" shares its row with "Manage tags…", the note loses its label since the placeholder says it. Same structure, three bands less. Least disruptive.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditTightHeaders d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'applied-first',
+            label: 'Applied first, rest as chips',
+            note: 'What is already on sits as removable chips up top; below are only the tags that are NOT applied. With three tags on, the list you scan is three rows shorter, and "what does this have" stops being a hunt through checkboxes.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditAppliedFirst d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'one-well',
+            label: 'One well, no labels',
+            note: 'Tags and note share a single inset container split by a divider, so the editor is one object rather than two sections. Most compact; furthest from the app\'s existing form language.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditOneWell d={d} onSave={save} />} /></InDialog>,
           },
         ],
       },
