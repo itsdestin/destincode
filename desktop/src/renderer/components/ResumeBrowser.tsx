@@ -20,6 +20,24 @@ import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
+import { SegmentedTabs } from './ui';
+import { designVariant } from '../utils/design-variant';
+
+// Three candidate designs for where flags/tags/note live, switchable in the
+// workbench toolbar so they can be compared against real data. All three
+// present the SAME controls over the same store writes; only the container
+// differs. See utils/design-variant.ts for how the switch works and how to
+// finalize.
+//
+//   popover — a "⋯" on each card opens a floating panel. Organizing never
+//             requires expanding, and works on rows that can't be resumed here.
+//   tabs    — the expanded card gets Resume | Organize tabs. Nothing floats,
+//             nothing new on the collapsed row, but you must expand first.
+//   inline  — no menu. Flags and tags are toggle chips on one line inside the
+//             expanded card, the note is a single field under them. Fewest
+//             clicks, most weight in the card itself.
+const ORGANIZE_VARIANTS = ['popover', 'tabs', 'inline'] as const;
+type OrganizeVariant = typeof ORGANIZE_VARIANTS[number];
 
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
@@ -277,6 +295,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // they moved out here. Side effect worth having: you can now tag or complete a
   // conversation WITHOUT expanding it, including rows that can't be resumed on
   // this device at all.
+  const organizeVariant: OrganizeVariant = designVariant('organize', 'popover', ORGANIZE_VARIANTS);
+  // Which pane an expanded card is showing — 'tabs' variant only.
+  const [expandedTab, setExpandedTab] = useState<'resume' | 'organize'>('resume');
   const [organizeId, setOrganizeId] = useState<string | null>(null);
   const [organizePos, setOrganizePos] = useState<{ top: number; left: number } | null>(null);
   const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -533,6 +554,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
       setNativeResumeBinding(null);
+      // A newly opened card always lands on Resume — that's what expanding a
+      // row is for. ('tabs' variant only; inert elsewhere.)
+      setExpandedTab('resume');
     }
   };
 
@@ -582,15 +606,142 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // (globals.css:951), and an opacity modifier emits `bg-inset/50` — a
   // different class the cascade does not match, so it would have gone
   // translucent on wallpaper themes.
+  // Flags, tags and note — the SAME controls every variant shows, so switching
+  // designs never changes what you can do, only where it sits. Used by the
+  // 'popover' and 'tabs' variants; 'inline' uses the compact chip form below.
+  const renderOrganizeControls = (s: PastSession) => (
+    <>
+      {/* Flags as checkable rows rather than the old segmented button pair —
+          they read as the same KIND of thing as the tags beneath them, which
+          they are. They keep their own section because they drive sorting
+          (Priority pins to top) and filtering (Complete hides the row). */}
+      <div className="flex flex-col gap-0.5">
+        {FLAG_ORDER.map((flag) => {
+          const active = !!s.flags?.[flag];
+          return (
+            <button
+              key={flag}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
+              aria-pressed={active}
+              className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset text-left text-xs text-fg-2"
+            >
+              <span className={`w-3 h-3 shrink-0 rounded-sm border ${active ? 'bg-accent border-accent' : 'border-edge'}`} />
+              <span className="flex-1">{FLAG_LABEL[flag]}</span>
+              <span className="text-4xs text-fg-muted">
+                {flag === 'priority' ? 'pins to top' : 'hides from list'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="border-t border-edge-dim pt-2" onClick={(e) => e.stopPropagation()}>
+        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
+        <TagPicker
+          appliedIds={new Set(s.tags ?? [])}
+          onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+          registry={registry}
+          onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
+        />
+      </div>
+
+      <div className="border-t border-edge-dim pt-2" onClick={(e) => e.stopPropagation()}>
+        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
+        <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
+      </div>
+    </>
+  );
+
+  // 'inline' variant: everything above compressed onto one chip line plus a
+  // note field, sitting inside the expanded card. No labelled sections, no
+  // separate surface — you edit the metadata where the card already shows it.
+  const renderInlineOrganize = (s: PastSession) => {
+    const applied = s.tags ?? [];
+    return (
+      <div className="flex flex-col gap-1.5 pt-1" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1 flex-wrap">
+          {FLAG_ORDER.map((flag) => {
+            const active = !!s.flags?.[flag];
+            return (
+              <button
+                key={flag}
+                type="button"
+                onClick={() => toggleFlag(s.sessionId, flag, !active)}
+                aria-pressed={active}
+                className={`px-2 py-0.5 rounded-full text-2xs border transition-colors ${
+                  active ? 'bg-accent/10 border-accent/40 text-fg' : 'bg-inset border-edge-dim text-fg-muted hover:text-fg'
+                }`}
+              >
+                {FLAG_LABEL[flag]}
+              </button>
+            );
+          })}
+          {/* Applied tags are removable in place — clicking the chip unapplies
+              it, which is the direct-manipulation move this variant is testing. */}
+          {applied.map((id) => {
+            const t = registry.byId.get(id);
+            if (!t) return null;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => toggleTag(s.sessionId, id, false)}
+                title={`Remove ${t.label}`}
+                className="px-2 py-0.5 rounded-full text-2xs border border-edge-dim bg-inset text-fg-2 hover:border-edge flex items-center gap-1"
+              >
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: `var(--${t.color})` }} />
+                {t.label}
+                <span className="text-fg-faint">×</span>
+              </button>
+            );
+          })}
+          {/* Opens the SAME popover machinery the 'popover' variant uses, but
+              scoped to the tag picker alone. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (organizeId === s.sessionId) { setOrganizeId(null); return; }
+              organizeTriggerRef.current = e.currentTarget;
+              setOrganizePos(measureAnchored(e.currentTarget, 256));
+              setOrganizeId(s.sessionId);
+            }}
+            aria-haspopup="dialog"
+            aria-expanded={organizeId === s.sessionId}
+            className="px-2 py-0.5 rounded-full text-2xs border border-dashed border-edge text-fg-muted hover:text-fg"
+          >
+            + Tag
+          </button>
+        </div>
+        <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} placeholder="Add a note…" />
+      </div>
+    );
+  };
+
   // The expanded panel answers ONE question: how do I relaunch this? Model,
   // the two launch toggles, Resume. Flags/tags/note used to be stacked in here
   // too, which is what made an open card a seven-field form with its primary
-  // action at the bottom — they now live in the Organize popover (see
-  // organizeId's comment).
+  // action at the bottom.
   const renderExpandedOptions = (s: PastSession) => {
   return (
     <div className="border-t border-edge-dim">
       <div className="p-3 flex flex-col gap-2">
+        {/* 'tabs' variant: the card holds both jobs and you choose which one
+            you're doing, instead of one floating away into a popover. */}
+        {organizeVariant === 'tabs' && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <SegmentedTabs
+              variant="contained"
+              aria-label="Card section"
+              tabs={[{ id: 'resume', label: 'Resume' }, { id: 'organize', label: 'Organize' }]}
+              value={expandedTab}
+              onChange={(id) => setExpandedTab(id as 'resume' | 'organize')}
+            />
+          </div>
+        )}
+        {organizeVariant === 'tabs' && expandedTab === 'organize' ? renderOrganizeControls(s) : (
+        <>
         {/* ONE model control for both runtimes. Was two: a Claude alias button
             row here and a separate native picker below, which is the duplication this
             picker exists to end. The list is SCOPED to the row's own runtime —
@@ -651,6 +802,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         )}
 
+        {/* 'inline' variant: metadata sits with the launch controls, above the
+            button, as chips rather than three labelled sections. */}
+        {organizeVariant === 'inline' && renderInlineOrganize(s)}
+
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}
         {(() => {
@@ -675,6 +830,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             </Button>
           );
         })()}
+        </>
+        )}
       </div>
     </div>
   );
@@ -738,7 +895,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
         aria-disabled={inert || undefined}
         aria-expanded={inert ? undefined : isExpanded}
-        className={`flex-1 min-w-0 text-left p-3 pr-1 flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`flex-1 min-w-0 text-left p-3 pr-1 flex focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           inert ? 'text-fg-dim cursor-default' : isExpanded ? 'text-fg' : 'text-fg-dim'
         }`}
       >
@@ -760,7 +917,15 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 title="YouCoded native session"
               >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
             )}
-            <span className="truncate">{s.name}</span>
+            <span className="truncate flex-1 min-w-0">{s.name}</span>
+            {/* Timestamp rides the NAME line, top-right, rather than being
+                vertically centred against the whole card. A card can be one
+                line or four (chips, project/size, an inert-row note) and a
+                centred timestamp drifted with it; pinned to the title line it
+                sits on a stable baseline across every row. */}
+            <span className="text-3xs text-fg-muted shrink-0 font-normal">
+              {formatRelativeTime(s.lastModified)}
+            </span>
           </div>
           {/* Reserved-flag indicators + custom-tag chips, AFTER the name. */}
           {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
@@ -793,16 +958,15 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             </div>
           )}
         </div>
-        <span className="text-3xs text-fg-muted shrink-0">
-          {formatRelativeTime(s.lastModified)}
-        </span>
       </button>
       {/* Organize: flags, tags, note. Always visible rather than hover-revealed
           — a hover-only affordance is invisible on touch and undiscoverable on
-          desktop, and this is now the ONLY route to tagging. Rendered for inert
-          rows too: the metadata is Conversation Store-backed, so a conversation
-          synced in from another device can be organized here even though it
-          can't be resumed on this one. */}
+          desktop, and in this variant it is the ONLY route to tagging. Rendered
+          for inert rows too: the metadata is Conversation Store-backed, so a
+          conversation synced in from another device can be organized here even
+          though it can't be resumed on this one. That reach is what the other
+          two variants give up by living inside the expanded card. */}
+      {organizeVariant === 'popover' && (
       <button
         type="button"
         onClick={(e) => {
@@ -818,7 +982,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         aria-label={`Organize ${s.name}`}
         aria-haspopup="dialog"
         aria-expanded={organizeId === s.sessionId}
-        className={`shrink-0 px-2.5 flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`shrink-0 px-2.5 pt-3 flex items-start focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
         }`}
       >
@@ -826,6 +990,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />
         </svg>
       </button>
+      )}
       </div>
       {isExpanded && renderExpandedOptions(s)}
       </div>
@@ -1071,46 +1236,18 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             role="dialog"
             aria-label={`Organize ${s.name}`}
           >
-            {/* Flags as checkable rows, not the old two-button segmented row.
-                They read as the same KIND of thing as the tags below them now —
-                which they are: both are labels you put on a conversation. The
-                reserved pair keeps its own section because they drive sorting
-                (Priority pins to top) and filtering (Complete hides the row). */}
-            <div className="flex flex-col gap-0.5">
-              {FLAG_ORDER.map((flag) => {
-                const active = !!s.flags?.[flag];
-                return (
-                  <button
-                    key={flag}
-                    type="button"
-                    onClick={() => toggleFlag(s.sessionId, flag, !active)}
-                    aria-pressed={active}
-                    className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset text-left text-xs text-fg-2"
-                  >
-                    <span className={`w-3 h-3 shrink-0 rounded-sm border ${active ? 'bg-accent border-accent' : 'border-edge'}`} />
-                    <span className="flex-1">{FLAG_LABEL[flag]}</span>
-                    <span className="text-4xs text-fg-muted">
-                      {flag === 'priority' ? 'pins to top' : 'hides from list'}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="border-t border-edge-dim pt-2">
-              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
+            {/* Body depends on the variant. 'popover' is the full set;
+                'inline' opens this same popover from its "+ Tag" chip and only
+                needs the picker, because the flags and the note are already
+                editable in the card. */}
+            {organizeVariant === 'inline' ? (
               <TagPicker
                 appliedIds={new Set(s.tags ?? [])}
                 onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
                 registry={registry}
                 onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
               />
-            </div>
-
-            <div className="border-t border-edge-dim pt-2">
-              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-              <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
-            </div>
+            ) : renderOrganizeControls(s)}
           </div>,
           document.body,
         );
