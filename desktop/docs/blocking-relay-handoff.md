@@ -53,7 +53,7 @@ We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-block
 [TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 413ms)
 [TEST] Blocking allow (server sends allow=true)...    PASS (exit=0, expected=0, 853ms)
 [TEST] Blocking deny (server sends allow=false)...    PASS (exit=2, expected=2, 853ms)
-[TEST] Timeout (server holds, relay fails open)...    PASS (exit=0, expected=0, 3365ms)
+[TEST] Timeout (server holds, relay fails closed)...  PASS (exit=2, expected=2, 3365ms)
 ```
 
 The pipe protocol works on Windows. Backward compatibility confirmed.

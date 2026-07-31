@@ -49,7 +49,7 @@ describe('permission timeout tier margins (2026-07-30 spec §1)', () => {
   });
 
   it('every value is under the 32-bit setTimeout ceiling', () => {
-    for (const v of [desktopRelay(), androidRelay(), desktopCcSeconds() * 1000]) {
+    for (const v of [desktopRelay(), androidRelay(), desktopCcSeconds() * 1000, androidCcSeconds() * 1000]) {
       expect(v).toBeLessThan(2147483647); // overflow fires IMMEDIATELY — the bug, disguised
     }
   });
