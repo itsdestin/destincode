@@ -28,6 +28,11 @@ import type { CompareSurface } from './types';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
 const NOTE = 'blocked on the gh dead-end';
+// A realistic long note. Short fixture text made every overflow treatment look
+// identical, which is exactly the failure mode the workbench's stress scenario
+// exists to prevent — see the spec's fidelity contract.
+const NOTE_LONG = 'blocked on the gh dead-end — the token refresh works locally but CI '
+  + 'still 403s on the first push, so I parked it until we can test against a clean runner';
 
 /** The check-in-a-circle used by the Resume Browser card and the close prompt.
  *  Duplicated here rather than imported because it is a private helper of
@@ -413,6 +418,88 @@ function CardNotePlain() {
   );
 }
 
+// ── Round 5: within the quoted note ──────────────────────────────────────────
+// B (italic in quotes) won round 4, so the direction is settled: typography
+// rather than a container. What is still open is the one thing a short fixture
+// note could never show — what happens when the note is actually long, which is
+// most real notes. All three use NOTE_LONG for exactly that reason.
+//
+// The axis is overflow, and it is a genuine trade: a fixed height keeps the
+// dialog's primary button where the user expects it, an unbounded one respects
+// what they wrote. Italic is varied alongside it because at text-2xs italic
+// costs real legibility, and that only shows up over two full lines.
+
+/** Round 4's winner, unchanged, on a long note. One line, ellipsis. The card
+ *  never changes height no matter what was written — and you can read about
+ *  four words of it. */
+function CardQuoteOneLine() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <NoteGutter>
+          <span className="text-2xs text-fg-muted italic truncate min-w-0">“{NOTE_LONG}”</span>
+        </NoteGutter>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Two lines, then ellipsis. Roughly a full sentence gets through, and the card
+ *  still has a ceiling — it can grow by one line and no further. Italic kept. */
+function CardQuoteTwoLines() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <NoteGutter align="start">
+          <span className="text-2xs text-fg-muted italic leading-snug line-clamp-2 min-w-0">“{NOTE_LONG}”</span>
+        </NoteGutter>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Unclamped, and NOT italic. The note wraps to whatever it needs, so nothing
+ *  the user wrote is hidden — at the cost of an unbounded card that pushes
+ *  "Close session" down the dialog. Roman rather than italic because two or
+ *  three full lines of italic at this size is where it stops being comfortable;
+ *  the quotes carry the signal on their own. */
+function CardQuoteFull() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <NoteGutter align="start">
+          <span className="text-2xs text-fg-muted leading-snug min-w-0">“{NOTE_LONG}”</span>
+        </NoteGutter>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** The settled gutter grid — tag row above, note row below, page glyph in the
+ *  fixed column. `align` lifts the glyph to the first text line when the note
+ *  wraps, instead of centring it against a two-line block. */
+function NoteGutter({ children, align = 'center' }: {
+  children: React.ReactNode; align?: 'center' | 'start';
+}) {
+  return (
+    <span className={`grid grid-cols-[16px_1fr] gap-x-1.5 gap-y-1.5 pr-6 ${align === 'start' ? 'items-start' : 'items-center'}`}>
+      <TagGlyph className={`w-3 h-3 text-fg-muted ${align === 'start' ? 'mt-0.5' : ''}`} />
+      <span className="flex flex-wrap items-center gap-1 min-w-0">
+        <TagChip tag={PRIORITY_TAG} />
+        <TagChip tag={WORK_TAG} />
+      </span>
+      <NotePageGlyph className={`w-3 h-3 text-fg-muted ${align === 'start' ? 'mt-0.5' : ''}`} />
+      {children}
+    </span>
+  );
+}
+
 /** The round-3 winner's shell, shared so round 4 can vary only what is inside
  *  it — card, hover, and the corner pencil are identical across all three. */
 function GutterCard({ children }: { children: React.ReactNode }) {
@@ -595,6 +682,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'Plain, promoted',
             note: 'No box, no quotes — the note is simply the most prominent thing in the card, at full text colour and the chip row\'s size, with the page glyph as the only context.',
             render: () => <InDialog><CardNotePlain /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 5,
+        basis: 'R4 · B (Italic in quotes). Typography over a container, settled. Open: what a LONG note does — all three use a realistic two-line note, which is what a short fixture could never show.',
+        candidates: [
+          {
+            id: 'one-line',
+            label: 'One line (as picked)',
+            note: 'Round 4\'s winner, unchanged, against a long note. The card never changes height whatever was written — and about four words get through.',
+            render: () => <InDialog><CardQuoteOneLine /></InDialog>,
+          },
+          {
+            id: 'two-lines',
+            label: 'Two lines, then ellipsis',
+            note: 'Roughly a full sentence lands, and the card still has a ceiling: it can grow by one line and no further. Italic kept.',
+            render: () => <InDialog><CardQuoteTwoLines /></InDialog>,
+          },
+          {
+            id: 'full',
+            label: 'Unclamped, roman',
+            note: 'Nothing you wrote is hidden, at the cost of a card that pushes "Close session" down the dialog. Drops italic — two full lines of it at this size stops being comfortable, and the quotes carry the signal alone.',
+            render: () => <InDialog><CardQuoteFull /></InDialog>,
           },
         ],
       },
