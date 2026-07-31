@@ -37,6 +37,12 @@ import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
+// Task 7b: the MCP registry (WHICH servers ~/.youcoded/mcp.json configures)
+// and the pooled connection manager that acquire()s them per session. See the
+// construction site below for the eager-vs-lazy invariant this must preserve.
+import { McpRegistry } from './harness/mcp/mcp-registry';
+import { McpManager } from './harness/mcp/mcp-manager';
+import { createConnection } from './harness/mcp/mcp-client';
 // WebSearch provider stack (Phase 2 Plan B): keyed Tavily/Exa upgrades + the
 // chain-walking SearchService injected into the native tool framework.
 import { SearchKeyStore } from './harness/search/search-key-store';
@@ -2115,6 +2121,26 @@ export function registerIpcHandlers(
     searchKeyStore,
     { exa: exaBackend, ddg: ddgBackend, tavily: tavilyBackend },
   );
+  // Task 7b: this is the ONLY production construction site for both classes —
+  // without it every piece of the native-MCP stack (registry, client, pooled
+  // manager, tool adapter) is unreachable dead code (see task-7b-brief.md).
+  // Registry rides the SAME nativeHome/secretsStore instances as everything
+  // else above (never a duplicate) — same precedent as SearchKeyStore just
+  // above. connectionFactory is mcp-client's real createConnection, unwrapped
+  // (no fake, no override) — every server it pools is a real subprocess/HTTP
+  // client once acquired.
+  //
+  // Construction itself is side-effect-free: McpRegistry.list()/
+  // resolveAllEnabled() only READ ~/.youcoded/mcp.json (NativeHome.readJson
+  // never creates the directory — see native-home.ts's lazy-creation
+  // invariant), and McpManager's constructor does no I/O at all. Nothing here
+  // connects to a server or spawns a subprocess: that only happens inside
+  // acquire(), called per-session by NativeSessionHost (Task 6's wiring)
+  // below. A user with no ~/.youcoded/mcp.json configured gets zero
+  // directory creation, zero subprocesses, and zero log output from this
+  // line — the normal case for almost every install.
+  const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
+  const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
@@ -2144,6 +2170,14 @@ export function registerIpcHandlers(
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
     { search: searchService },
+    // skillCatalog (8th param): NOT wired yet — a different task's scope (see
+    // task-7b-brief.md "Explicitly NOT in scope"). Passed explicitly so
+    // mcpManager lands in the 9th positional slot instead of silently taking
+    // skillCatalog's place.
+    undefined,
+    // mcpManager (9th param, Task 7b): makes the whole native-MCP stack
+    // reachable — see the construction comment above.
+    mcpManager,
   );
 
   // Task 4: resolves sessionId's CURRENT model binding into the portable ref
