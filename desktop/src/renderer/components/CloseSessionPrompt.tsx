@@ -3,10 +3,11 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
+import { TagChip } from './tags/TagChip';
+import type { TagRecord } from '../../shared/tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { NoteEditor } from './tags/NoteEditor';
-import { Button, Checkbox, Dialog, Toggle } from './ui';
-import { designVariant } from '../utils/design-variant';
+import { Button, Dialog, Toggle } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
@@ -17,21 +18,6 @@ import { isTypingTarget } from '../utils/is-typing-target';
 // carry now live at each control.
 type FlagName = 'priority' | 'complete';
 const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
-
-// Candidates for the Mark-complete control. All four set the same state; they
-// differ in weight and, mainly, in how much they answer a hover — the thing
-// that felt dead about the first one (Destin, 2026-07-31). Switchable from the
-// workbench toolbar; see utils/design-variant.ts.
-//
-//   card      the shipped one — a bordered card, hover moves only the border.
-//   card-lift same shape, but hover tints the fill, warms the border toward the
-//             accent, brightens the icon, and the press sinks it slightly.
-//   checkbox  a compact row on the shared Checkbox primitive; the whole row is
-//             the target and takes a fill on hover.
-//   toggle    label + description with a Toggle on the right — the shape Skip
-//             Permissions and Show Complete already use elsewhere in the app.
-const COMPLETE_BUTTONS = ['card', 'card-lift', 'checkbox', 'toggle'] as const;
-type CompleteButton = typeof COMPLETE_BUTTONS[number];
 
 const COMPLETE_TITLE = 'Mark complete';
 const COMPLETE_HINT = 'Hides it from the resume list unless you turn on Show Complete.';
@@ -49,75 +35,21 @@ function CompleteGlyph({ done, className = '' }: { done: boolean; className?: st
   );
 }
 
-function MarkComplete({ variant, checked, onChange }: {
-  variant: CompleteButton; checked: boolean; onChange: (next: boolean) => void;
-}) {
-  if (variant === 'toggle') {
-    // Not a button: the Toggle owns the interaction, matching every other
-    // toggle row in the app. The container still lights on hover so the row
-    // reads as one object.
-    return (
-      <div className="flex items-center gap-3 rounded-lg border border-edge-dim bg-inset px-3 py-2.5 transition-colors hover:border-edge hover:bg-well">
-        <CompleteGlyph done={checked} className={`w-5 h-5 shrink-0 transition-colors ${checked ? 'text-accent' : 'text-fg-faint'}`} />
-        <span className="min-w-0 flex-1">
-          <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
-          <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
-        </span>
-        <Toggle checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} />
-      </div>
-    );
-  }
-
-  if (variant === 'checkbox') {
-    return (
-      <button
-        type="button"
-        onClick={() => onChange(!checked)}
-        aria-pressed={checked}
-        className="group flex items-center gap-3 w-full text-left rounded-lg px-3 py-2.5 transition-colors hover:bg-inset active:bg-well"
-      >
-        {/* `pointer-events-none` so the click always lands on the row, never on
-            the checkbox alone — otherwise the two would toggle each other and
-            cancel out. */}
-        <span className="pointer-events-none shrink-0">
-          <Checkbox checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} tabIndex={-1} />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
-          <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
-        </span>
-      </button>
-    );
-  }
-
-  // card / card-lift — same markup, different hover budget.
-  const lift = variant === 'card-lift';
+/** Chosen from four candidates in the workbench, 2026-07-31. A Toggle rather
+ *  than a card or a checkbox: it is the shape Skip Permissions and Show
+ *  Complete already use, so the app has one way of asking a yes/no. The row is
+ *  not itself a button — the Toggle owns the interaction — but the container
+ *  still lights on hover so it reads as one object. */
+function MarkComplete({ checked, onChange }: { checked: boolean; onChange: (next: boolean) => void }) {
   return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      aria-pressed={checked}
-      className={[
-        'group flex items-center gap-2.5 w-full text-left rounded-lg border px-3 py-2.5',
-        lift ? 'transition-all duration-100 active:translate-y-px' : 'transition-colors',
-        checked
-          ? `border-accent bg-accent/10${lift ? ' hover:bg-accent/20' : ''}`
-          : `border-edge-dim bg-inset hover:border-edge${lift ? ' hover:bg-well hover:border-accent/50' : ''}`,
-      ].join(' ')}
-    >
-      <CompleteGlyph
-        done={checked}
-        className={[
-          'w-5 h-5 shrink-0 transition-colors',
-          checked ? 'text-accent' : 'text-fg-faint',
-          lift && !checked ? 'group-hover:text-fg-2' : '',
-        ].join(' ')}
-      />
-      <span className="min-w-0">
+    <div className="flex items-center gap-3 rounded-lg border border-edge-dim bg-inset px-3 py-2.5 transition-colors hover:border-edge hover:bg-well">
+      <CompleteGlyph done={checked} className={`w-5 h-5 shrink-0 transition-colors ${checked ? 'text-accent' : 'text-fg-faint'}`} />
+      <span className="min-w-0 flex-1">
         <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
         <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
       </span>
-    </button>
+      <Toggle checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} />
+    </div>
   );
 }
 
@@ -126,11 +58,22 @@ interface Props {
   sessionName?: string;
   sessionId?: string | null;
   onCancel: () => void;
-  // onConfirm receives the reserved flags to set true, plus the TAG DELTA and the
-  // note. The prompt preloads the session's current tags/note (so already-applied
-  // tags stay selected) and reports only what the user changed off that baseline:
-  // addTagIds/removeTagIds are the tags toggled on/off; noteChanged gates the write.
-  onConfirm: (result: { flags: FlagName[]; addTagIds: string[]; removeTagIds: string[]; note: string; noteChanged: boolean }) => void;
+  // onConfirm receives a DELTA in every field. The prompt preloads the session's
+  // current flags/tags/note (so what is already applied shows as applied) and
+  // reports only what the user changed off that baseline: `flags` carries the
+  // reserved flags whose value MOVED, addTagIds/removeTagIds the tags toggled
+  // on/off, and noteChanged gates the note write.
+  //
+  // `flags` used to be a set-only FlagName[] — every listed flag was written
+  // true and nothing could be cleared. That was fine while the two reserved
+  // flags were a "mark on close" action that always started off. It stopped
+  // being fine when Priority became a tag in this picker (2026-07-31): it now
+  // preloads as applied, so un-toggling it has to be able to clear it, exactly
+  // like un-toggling a real tag does.
+  onConfirm: (result: {
+    flags: Partial<Record<FlagName, boolean>>;
+    addTagIds: string[]; removeTagIds: string[]; note: string; noteChanged: boolean;
+  }) => void;
 }
 
 // localStorage key used to suppress this prompt permanently. Exported so
@@ -151,11 +94,16 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   // Tag registry editing lives in its own surface now (it used to be a ✎ on
   // each TagPicker row). Layer 3 because this prompt is itself a layer-2 Dialog.
   const [manageOpen, setManageOpen] = useState(false);
-  const completeButton: CompleteButton = designVariant('completebtn', 'card', COMPLETE_BUTTONS);
+  // The tag/note EDITOR is collapsed by default (see the summary block below).
+  // Not persisted and not remembered across opens: each close starts from the
+  // summary, because the common case is closing a session without filing it.
+  const [editing, setEditing] = useState(false);
   const [note, setNote] = useState('');
   // The session's tags/note as loaded on open — the baseline for the delta, so
   // Cancel changes nothing and Confirm only writes what the user toggled.
-  const [original, setOriginal] = useState<{ tags: Set<string>; note: string }>({ tags: new Set(), note: '' });
+  const [original, setOriginal] = useState<{ tags: Set<string>; note: string; flags: Record<FlagName, boolean> }>(
+    { tags: new Set(), note: '', flags: { priority: false, complete: false } },
+  );
   // False for sessions whose meta the backend refuses to store — as of Task 5
   // that's Android only (desktop native sessions are real store records now).
   // This prompt writes flags/tags/note and then IMMEDIATELY destroys the
@@ -171,38 +119,64 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   // producing a note write that gets refused. Cheap: the IPC is sub-frame.
   const [metaLoaded, setMetaLoaded] = useState(false);
 
-  // On open, preload the session's current tags + note so already-applied tags
-  // stay SELECTED. Reserved flags still default off — they're a "mark on close"
-  // action, not existing state we read back.
+  // On open, preload the session's current flags + tags + note so whatever is
+  // already applied SHOWS as applied.
+  //
+  // Reserved flags used to be excluded from this preload deliberately — they
+  // were a "mark on close" action rather than state read back. That stopped
+  // holding when Priority became an ordinary-looking tag in this picker: a
+  // session already flagged Priority would have shown it unapplied, and
+  // toggling it on then off would have done nothing. getMeta carries flags as
+  // of 2026-07-31, so both are read and both round-trip through the delta.
+  const EMPTY_FLAGS: Record<FlagName, boolean> = { priority: false, complete: false };
   useEffect(() => {
     if (!open) return;
-    setSel({ priority: false, complete: false });
+    setSel({ ...EMPTY_FLAGS });
+    setEditing(false);   // every close starts from the summary, not the editor
     setDontShowAgain(false);
     setMetaSupported(true);
     setMetaLoaded(false);
-    if (!sessionId) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); setMetaLoaded(true); return; }
+    const blank = { tags: new Set<string>(), note: '', flags: { ...EMPTY_FLAGS } };
+    if (!sessionId) { setTagIds(new Set()); setNote(''); setOriginal(blank); setMetaLoaded(true); return; }
     let cancelled = false;
     Promise.resolve((window as any).claude.session.getMeta(sessionId))
       .then((m: SessionMetaResult) => {
         if (cancelled) return;
         const tags = new Set(m?.tags ?? []);
+        // Missing `flags` = Android or an older remote peer. Absent reads as
+        // "none set", never as an error.
+        const flags: Record<FlagName, boolean> = {
+          priority: !!m?.flags?.priority,
+          complete: !!m?.flags?.complete,
+        };
         setTagIds(new Set(tags));
         setNote(m?.note ?? '');
-        setOriginal({ tags, note: m?.note ?? '' });
+        setSel({ ...flags });
+        setOriginal({ tags, note: m?.note ?? '', flags });
         // Missing field = older backend; assume supported rather than hiding the UI.
         setMetaSupported(m?.supported !== false);
         setMetaReason(m?.unsupportedReason || META_UNSUPPORTED_FALLBACK);
         setMetaLoaded(true);
       })
-      .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); setMetaLoaded(true); } });
+      .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal(blank); setMetaLoaded(true); } });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionId]);
 
   // Reserved flags to set + the tag delta (add/remove vs. the loaded baseline) +
   // the note. useCallback keeps a stable identity so the Enter effect below
   // doesn't re-subscribe its keydown listener every render.
+  // What the collapsed summary shows. Priority rides `sel` rather than `tagIds`
+  // because it is a reserved flag, so it has to be folded in here by hand.
+  const appliedTags = [...tagIds]
+    .map((id) => registry.byId.get(id))
+    .filter((t): t is TagRecord => !!t);
+  const hasMeta = sel.priority || appliedTags.length > 0 || note.trim().length > 0;
+
   const buildResult = useCallback(() => ({
-    flags: FLAG_ORDER.filter((f) => sel[f]),
+    flags: Object.fromEntries(
+      FLAG_ORDER.filter((f) => sel[f] !== original.flags[f]).map((f) => [f, sel[f]]),
+    ) as Partial<Record<FlagName, boolean>>,
     addTagIds: [...tagIds].filter((id) => !original.tags.has(id)),
     removeTagIds: [...original.tags].filter((id) => !tagIds.has(id)),
     note,
@@ -241,39 +215,89 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
               <>
-              {/* "Are you done with this one?" is the QUESTION this dialog
-                  exists to ask, so Complete is the one prominent control rather
-                  than half of a two-button flag row. Priority is NOT beside it
-                  any more: it is a tag, and it lives in the tag list below. */}
+              {/* Tags and note lead, because closing a session is mostly a
+                  filing action — but the FULL editor is a search field, a tag
+                  list and a textarea, which is a lot of form for a dialog whose
+                  primary button is "Close session". So the default state is a
+                  SUMMARY of what is already applied, and the editor opens on
+                  demand. An empty summary offers the same door with different
+                  words, so "there is nothing here" and "you can add something"
+                  are one control rather than two. */}
+              {editing ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+                    <button
+                      type="button"
+                      onClick={() => setEditing(false)}
+                      className="text-3xs text-fg-muted hover:text-fg transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                  {/* Priority as a built-in, exactly as in the Resume Browser's
+                      tag sheet and the in-session chip. Unlike those two this
+                      one is DEFERRED: the dialog collects a result and the
+                      caller writes it on confirm (buildResult), so this toggles
+                      local state instead of calling setFlag. Cancel must leave
+                      nothing behind. */}
+                  <TagPicker
+                    appliedIds={tagIds}
+                    onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                    registry={registry}
+                    onManageTags={() => setManageOpen(true)}
+                    builtIns={[{
+                      tag: PRIORITY_TAG,
+                      hint: PRIORITY_HINT,
+                      applied: sel.priority,
+                      onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
+                    }]}
+                  />
+                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
+                  {/* Collapsing UNMOUNTS this, and NoteEditor commits its draft
+                      on unmount as well as on blur — so "type a note, hit Done"
+                      keeps the note rather than dropping it. */}
+                  <NoteEditor value={note} onSave={setNote} />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex items-start gap-3 transition-colors hover:border-edge hover:bg-well"
+                >
+                  <span className="min-w-0 flex-1 flex flex-col gap-1.5">
+                    {hasMeta ? (
+                      <>
+                        {(sel.priority || appliedTags.length > 0) && (
+                          <span className="flex flex-wrap items-center gap-1">
+                            {sel.priority && <TagChip tag={PRIORITY_TAG} />}
+                            {appliedTags.map((t) => <TagChip key={t.id} tag={t} />)}
+                          </span>
+                        )}
+                        {note.trim() && (
+                          // One line only — the editor is a click away, and a
+                          // long note would push the dialog's primary button
+                          // off the bottom of the screen.
+                          <span className="block text-2xs text-fg-2 truncate">{note.trim()}</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="block text-2xs text-fg-muted">No tags or note</span>
+                    )}
+                  </span>
+                  <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0 mt-0.5">
+                    {hasMeta ? 'Edit' : 'Add'}
+                  </span>
+                </button>
+              )}
+
+              {/* Mark complete sits LAST: the tags above are optional filing,
+                  this is the actual "are you done with it?" question, and it
+                  reads better immediately above the button that acts on it. */}
               <MarkComplete
-                variant={completeButton}
                 checked={sel.complete}
                 onChange={(next) => setSel((prev) => ({ ...prev, complete: next }))}
               />
-
-              <div className="flex flex-col gap-1.5">
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
-                {/* Priority as a built-in, exactly as in the Resume Browser's
-                    tag sheet and the in-session chip. Unlike those two this one
-                    is DEFERRED: the dialog collects a result and the caller
-                    writes it on confirm (buildResult), so this toggles local
-                    state instead of calling setFlag. Cancel must leave nothing
-                    behind. */}
-                <TagPicker
-                  appliedIds={tagIds}
-                  onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
-                  registry={registry}
-                  onManageTags={() => setManageOpen(true)}
-                  builtIns={[{
-                    tag: PRIORITY_TAG,
-                    hint: PRIORITY_HINT,
-                    applied: sel.priority,
-                    onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
-                  }]}
-                />
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
-                <NoteEditor value={note} onSave={setNote} />
-              </div>
               </>
             )}
           </div>

@@ -15,23 +15,6 @@ const VIEWS = [
   { value: 'tools', label: 'tool gallery' },
 ];
 
-// Open design questions, one Select each. Every entry drives a `dv_<key>` query
-// param that a production component reads via utils/design-variant.ts, and the
-// FIRST option must be the shipping default so the toolbar shows the truth on a
-// fresh load. This list is meant to SHRINK — an entry here is an unresolved
-// question, and resolving it means deleting the losing branch AND the entry.
-const DESIGN_VARIANTS: { key: string; label: string; options: { value: string; label: string }[] }[] = [
-  {
-    key: 'completebtn',
-    label: 'Mark complete',
-    options: [
-      { value: 'card', label: 'card (current)' },
-      { value: 'card-lift', label: 'card — reactive' },
-      { value: 'checkbox', label: 'checkbox row' },
-      { value: 'toggle', label: 'toggle row' },
-    ],
-  },
-];
 
 
 
@@ -113,21 +96,6 @@ export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchTo
           onChange={(next) => { setLatency(Number(next)); setLatencyState(next); }}
         />
       </label>
-
-      {/* Reloads like Scenario does — the surfaces read their variant once, at
-          module load. */}
-      {DESIGN_VARIANTS.map((v) => (
-        <label key={v.key} className="flex items-center gap-1.5 text-3xs text-fg-muted">
-          {v.label}
-          <Select
-            size="sm"
-            aria-label={v.label}
-            value={new URLSearchParams(location.search).get(`dv_${v.key}`) ?? v.options[0].value}
-            options={v.options}
-            onChange={(next) => reloadWith(`dv_${v.key}`, next)}
-          />
-        </label>
-      ))}
 
       <span className="text-3xs text-fg-faint">
         Themes: Settings → Appearance
