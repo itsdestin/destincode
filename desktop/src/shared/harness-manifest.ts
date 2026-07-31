@@ -20,7 +20,15 @@ export interface HarnessManifest {
    *  ask/auto-edit — it is a default posture, never a hard guard. */
   permissionPolicy: 'ask' | 'auto-edit' | 'full-auto' | Record<string, 'allow' | 'ask' | 'deny'>;
   defaultBinding?: ModelBinding;
-  skills?: string[]; mcp?: string[];
+  /** Per-preset skill allowlist. `undefined` = every installed skill is offered;
+   *  an array restricts the Skill tool's catalog to those ids. Consumed by
+   *  harness-session.buildAiTools (M3 item 1). Declared since Phase 2 with no
+   *  consumer until then. */
+  skills?: string[];
+  /** RESERVED — still no consumer. The MCP pass (M3 item 4, its own plan) lands
+   *  one. Left declared rather than deleted so that plan does not have to
+   *  re-litigate the manifest shape. */
+  mcp?: string[];
   limits?: { maxSteps?: number; maxTokens?: number };
 }
 
@@ -28,6 +36,17 @@ export const NATIVE_TOOL_NAMES = [
   'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
   'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion',
 ] as const;
+
+/** Tools attached at RUNTIME, per session, when conditions allow — deliberately
+ *  NOT in NATIVE_TOOL_NAMES.
+ *
+ *  `Skill` (M3 item 1) exists only when the capability profile says the window can
+ *  afford its catalog AND at least one skill is installed. Advertising it in a
+ *  preset would do exactly what the registry↔manifest guard exists to prevent:
+ *  tell the model about a tool that, on a small local model or a machine with no
+ *  skills installed, is not attached. The model learns about it the only reliable
+ *  way — from the tool schema buildAiTools() actually sends. */
+export const CONDITIONAL_TOOL_NAMES = ['Skill'] as const;
 
 export const ASSISTANT_PRESET: HarnessManifest = {
   schema: 1,

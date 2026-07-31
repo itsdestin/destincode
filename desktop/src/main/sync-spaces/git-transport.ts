@@ -13,6 +13,8 @@ import { promisify } from 'util';
 import { DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES, conflictCopyName } from './guards';
 import { nextGcCounter } from './gc-policy';
 import { GITHUB_AUTH_ERROR_CODE } from '../github-client';
+import { matchGitCorruption, isNetworkFailureStderr, stderrTail, REPO_CORRUPT_ERROR_CODE } from '../sync-error-classifier';
+import { deleteZeroByteObjects, brokenBackupName, pruneBrokenBackups } from './repair';
 import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -90,6 +92,16 @@ function throwAuthFailure(auth: { message: string; code: string }): never {
   e.syncErrorCode = auth.code;
   throw e;
 }
+
+/** Throw the corruption as a coded error. The engine matches the CODE (never
+ *  prose) to trigger repair(); the message still carries the real git line per
+ *  docs/error-message-standards.md. */
+function throwRepoCorrupt(spaceId: string, op: string, detail: string): never {
+  const e: any = new Error(`Sync data for ${spaceId} needs repair (git ${op}: ${detail})`);
+  e.syncErrorCode = REPO_CORRUPT_ERROR_CODE;
+  throw e;
+}
+
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
 const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
 // Bound the recursive size walk so a pathological repo can never hang the probe.
@@ -100,6 +112,49 @@ const SIZE_WALK_MAX_ENTRIES = 200_000;
 const SIZE_WALK_MAX_DEPTH = 100;
 
 interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: boolean; }
+
+// Benign for local WRITE ops (add/commit/checkout — anything that takes a git
+// lock): a *.lock already held by a genuinely-live writer (a second app
+// instance, or this same process's prior sync cycle still finishing under
+// contention). This is transient and self-resolving — reapStaleLocks heals it
+// once it goes stale, or the other writer simply finishes — so throwing here
+// would alarm the user over a condition the very next poll cycle clears on its
+// own. Distinct from corruption: git created the lock file itself; nothing is
+// damaged.
+const LOCK_CONTENDED = /Unable to create .*\.lock['"]?: File exists/i;
+
+// A single canonical predicate, applied identically at EVERY lock-taking op
+// (add/commit/checkout, in both push() and pull()). The same transient lock
+// must produce the same user-visible outcome no matter which op happens to
+// hit it — a concurrent writer holding index.lock is exactly as benign at
+// `commit` as it is at `add`, since both mean "nothing damaged, try again
+// next cycle," never "whichever op lost the race decides silent-vs-throw."
+// Named once here (rather than inlined per call site) so a future narrowing
+// of the lock rule is a single edit, not a hunt across every call site for
+// ones that got missed.
+const isLockContended = (r: ExecResult) => LOCK_CONTENDED.test(r.stderr);
+
+const isNothingToCommit = (r: ExecResult) => /nothing to commit/i.test(r.stdout + r.stderr);
+
+// Shared here so push()'s commit and pull()'s snapshot commit apply the
+// identical benign rule. IMPORTANT: this collapses two DIFFERENT benign
+// reasons into one boolean, which is fine for
+// assertLocalOk's purposes (either one means "don't throw") but NOT fine for
+// deciding what to do next. "Nothing to commit" means a commit genuinely
+// happened on a prior cycle and HEAD already reflects it — safe to read HEAD
+// and continue. Lock contention means NO commit happened at all — reading
+// HEAD would return the PRIOR sha and let a caller mistake "commit didn't run"
+// for "commit ran". Callers that need to tell these apart call
+// isLockContended(r) directly alongside this predicate; see push()/pull()'s
+// commit sites below.
+const isCommitBenign = (r: ExecResult) => isLockContended(r) || isNothingToCommit(r);
+
+// Benign for a push: the local branch has NEVER had a commit (a fresh space
+// with zero history) — git refuses "push -u origin main" with this exact
+// message since there is no local `main` ref to push at all. Equivalent to
+// "nothing to push", just via a different git code path than the
+// already-handled ahead-count===0 case (which requires origin/main to exist).
+const NOTHING_TO_PUSH_YET = /src refspec .* does not match any/i;
 
 export class GitTransport implements SyncTransport {
   private deviceName: string;
@@ -199,6 +254,38 @@ export class GitTransport implements SyncTransport {
     }
   }
 
+  /** Guard for LOCAL git ops (add/diff/commit/checkout/rev-parse…): exit 0
+   *  passes; corruption throws coded repo-corrupt; anything else throws with
+   *  the REAL stderr. WHY (2026-07-27 incident): the old shape returned benign
+   *  results on failure — a corrupt repo reported "nothing to push" for three
+   *  days while the panel showed green. Benign is now an explicit allowlist
+   *  via the `benign` predicate, never the fallthrough.
+   *
+   *  Corruption is checked BEFORE the benign allowlist, not after: `benign`
+   *  predicates test the WHOLE stderr while matchGitCorruption is LINE-based,
+   *  so a multi-line stderr carrying both a benign line (e.g. an orphaned
+   *  index.lock) AND a corruption line would otherwise be swallowed as benign
+   *  and never reach the corruption check. That co-occurrence is exactly what
+   *  a power-loss crash produces: an orphaned lock (not yet aged past
+   *  lockStaleMs, so reapStaleLocks hasn't cleared it) sitting alongside a
+   *  truncated loose object. Corruption must win that race every time. */
+  private assertLocalOk(space: SyncSpace, op: string, r: ExecResult, benign?: (r: ExecResult) => boolean): void {
+    if (r.code === 0) return;
+    const corrupt = matchGitCorruption(r.stderr);
+    if (corrupt) throwRepoCorrupt(space.id, op, corrupt);
+    if (benign?.(r)) return;
+    throw new Error(`Sync failed for ${space.id} (git ${op}): ${stderrTail(r.stderr)}`);
+  }
+
+  /** Corruption-only guard for PROBE ops whose non-zero exit is often expected
+   *  (ahead/behind rev-list before origin/main exists). Keeps the probe's
+   *  benign fallthrough but refuses to let corruption ride it. */
+  private throwIfCorrupt(space: SyncSpace, op: string, r: ExecResult): void {
+    if (r.code === 0) return;
+    const corrupt = matchGitCorruption(r.stderr);
+    if (corrupt) throwRepoCorrupt(space.id, op, corrupt);
+  }
+
   /** Read one side of a conflicted file (stage 2 = ours, 3 = theirs) as raw
    *  BYTES. The string-returning git() helper must never be used for file
    *  CONTENT: utf8 decoding mangles binary files, and a too-small buffer cap
@@ -255,18 +342,50 @@ export class GitTransport implements SyncTransport {
   /** Stage everything, unstage+exclude oversize files, commit, push. */
   async push(space: SyncSpace, message: string): Promise<PushResult> {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
-    await this.git(space, ['add', '-A']);
+    const add = await this.git(space, ['add', '-A']);
+    this.assertLocalOk(space, 'add', add, isLockContended);
+    // Deliberately NO early return here on a lock-contended `add` (contrast
+    // pull()'s add guard below, which DOES early-return): if
+    // `add` loses the lock race, nothing NEW gets staged this cycle, but a
+    // PRIOR cycle's commit(s) may still be sitting locally unpushed. Falling
+    // through lets that backlog reach `git push` below and go out — the
+    // honest result is {pushed:true, commit:undefined}, since nothing
+    // committed THIS cycle but something real still shipped. `commit` being
+    // undefined self-clears next cycle once the lock is gone. Do not "fix"
+    // this into an early return — that would strand already-committed work
+    // behind a transient lock that has nothing to do with it.
     const oversize = await this.unstageOversize(space);
     const staged = await this.git(space, ['diff', '--cached', '--name-only']);
+    this.assertLocalOk(space, 'diff', staged);
     let commit: string | undefined;
     if (staged.stdout.trim().length > 0) {
       const c = await this.git(space, ['commit', '-m', message]);
-      if (c.code !== 0) return { pushed: false, oversize };
-      commit = (await this.git(space, ['rev-parse', 'HEAD'])).stdout.trim();
+      // THE 2026-07-27 bug site: this used to `return {pushed:false}` on ANY
+      // failure — indistinguishable from "nothing to push", so a corrupt repo
+      // synced "green" forever. Benign allowlist (isCommitBenign): a commit
+      // race where another cycle already committed the staged set ("nothing
+      // to commit"), OR a live writer still holding index.lock — same rule as
+      // the `add` guard above, so losing the lock race here vs. there no
+      // longer decides silent-vs-throw.
+      this.assertLocalOk(space, 'commit', c, isCommitBenign);
+      // assertLocalOk passing only proves the failure was BENIGN, not that a
+      // commit happened. If it was benign because HEAD is stale-locked
+      // (isLockContended), the staged edits are STILL uncommitted — reading
+      // `rev-parse HEAD` below would return the PRIOR sha, and that truthy
+      // value would bypass the `!commit` nothing-to-push shortcut further
+      // down, returning {pushed:true} while none of the user's changes
+      // actually pushed. Only the "nothing to commit" half of isCommitBenign
+      // is safe to fall through on — there, HEAD already IS the right commit.
+      if (c.code !== 0 && isLockContended(c)) return { pushed: false, oversize };
+      const head = await this.git(space, ['rev-parse', 'HEAD']);
+      this.assertLocalOk(space, 'rev-parse', head);
+      commit = head.stdout.trim();
     }
     if (!(await this.hasRemote(space))) return { pushed: false, commit, oversize };
     const ahead = await this.git(space, ['rev-list', '--count', 'origin/main..main']);
-    // origin/main may not exist yet (first push) — rev-list fails; push anyway.
+    // origin/main may not exist yet (first push) — rev-list fails benignly;
+    // push anyway. Corruption must not ride that fallthrough.
+    this.throwIfCorrupt(space, 'rev-list', ahead);
     if (ahead.code === 0 && ahead.stdout.trim() === '0' && !commit) return { pushed: false, oversize };
     const p = await this.git(space, ['push', '-u', 'origin', 'main']);
     if (p.code !== 0) {
@@ -284,6 +403,15 @@ export class GitTransport implements SyncTransport {
         // token would otherwise look like "nothing to push" forever.
         const auth = classifyGitAuthFailure(retry.stderr, retry.tokenUsed);
         if (auth) throwAuthFailure(auth);
+        this.throwIfCorrupt(space, 'push', retry);
+        // Offline stays silent by design (spec §13), and so does "nothing to
+        // push yet" (a fresh space with zero commits ever — git refuses the
+        // push because local `main` doesn't exist as a ref at all). Every
+        // OTHER push refusal (deleted repo, server-side hook, …) surfaces with
+        // the real stderr.
+        if (!isNetworkFailureStderr(retry.stderr) && !NOTHING_TO_PUSH_YET.test(retry.stderr)) {
+          throw new Error(`Sync push failed for ${space.id}: ${stderrTail(retry.stderr)}`);
+        }
       }
       return { pushed: retry.code === 0, commit, oversize, updated: recovery.updated, conflictCopies: recovery.conflictCopies };
     }
@@ -320,31 +448,78 @@ export class GitTransport implements SyncTransport {
   async pull(space: SyncSpace): Promise<PullResult> {
     this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     // Snapshot local changes first so merge never runs on a dirty tree.
-    await this.git(space, ['add', '-A']);
+    const add = await this.git(space, ['add', '-A']);
+    this.assertLocalOk(space, 'add', add, isLockContended);
+    // `add` is the FIRST lock-taking op in pull(), so it is the one that loses
+    // a live-writer race first. If it fails, there is no staged snapshot of
+    // the working tree and no way to know whether it's dirty — falling
+    // through would let `merge` below run against a tree that may hold
+    // uncommitted edits, exactly what this function's header comment ("...so
+    // merge never runs on a dirty tree") promises never happens. Report the
+    // honest benign result immediately and let the next poll cycle retry once
+    // the lock clears — mirrors the same transient-lock-is-silent behavior at
+    // every other lock-taking op in this file.
+    if (add.code !== 0 && isLockContended(add)) return { updated: false, conflictCopies: [] };
     await this.unstageOversize(space);
-    const dirty = (await this.git(space, ['diff', '--cached', '--name-only'])).stdout.trim();
-    if (dirty) await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
+    const dirtyR = await this.git(space, ['diff', '--cached', '--name-only']);
+    this.assertLocalOk(space, 'diff', dirtyR);
+    const dirty = dirtyR.stdout.trim();
+    if (dirty) {
+      const snap = await this.git(space, ['commit', '-m', `local snapshot before merge (${this.deviceName})`]);
+      // Same benign rule as push()'s commit — see isCommitBenign.
+      this.assertLocalOk(space, 'commit', snap, isCommitBenign);
+      // A lock-contended snapshot commit HERE is a genuinely different race
+      // window than the `add` guard above — a writer can grab the lock in the
+      // gap between `add` succeeding and this `commit` running — so this
+      // guard stays reachable and still needed even with the early return
+      // above. Falling through would violate the same "merge never runs on a
+      // dirty tree" invariant: running merge dirty either corrupts the merge
+      // result or (if git refuses) reaches the conflict block with zero
+      // --diff-filter=U entries and throws "Sync merge could not complete",
+      // misattributing a transient lock to a genuinely unmergeable space.
+      // Report the honest benign result instead and let the next poll cycle
+      // retry once the lock clears. "Nothing to commit" doesn't need this —
+      // there the tree genuinely was clean already.
+      if (snap.code !== 0 && isLockContended(snap)) return { updated: false, conflictCopies: [] };
+    }
 
     if (!(await this.hasRemote(space))) return { updated: false, conflictCopies: [] };
     const fetch = await this.git(space, ['fetch', 'origin', 'main']);
     if (fetch.code !== 0) {
       // Auth refusals must NOT masquerade as offline: "offline" is silent by
       // design (spec §13), so an expired/revoked credential would read as a
-      // healthy-but-idle device forever. Only classified AUTH failures throw;
-      // every other fetch failure keeps the never-block offline contract.
+      // healthy-but-idle device forever. Same for corruption (2026-07-30 spec).
+      // Every remaining fetch failure keeps the never-block offline contract.
       const auth = classifyGitAuthFailure(fetch.stderr, fetch.tokenUsed);
       if (auth) throwAuthFailure(auth);
+      this.throwIfCorrupt(space, 'fetch', fetch);
       return { updated: false, conflictCopies: [] }; // offline — never block (spec §13)
     }
     // Fix: a fresh device has no local `main` yet (nothing committed). `main..origin/main`
     // errors on an unborn branch, so adopt the remote wholesale on first sync — this is
     // what lets a second device actually receive the first device's push.
     const localMain = await this.git(space, ['rev-parse', '--verify', '--quiet', 'main']);
+    this.throwIfCorrupt(space, 'rev-parse', localMain);
     if (localMain.code !== 0) {
       const co = await this.git(space, ['checkout', '-B', 'main', 'origin/main']);
+      // Used to return {updated:false} on failure — silent. A failed remote
+      // adoption is a real error (corrupt local objects, unreadable remote tip).
+      // checkout takes a lock too (it moves HEAD/refs), so the same transient
+      // live-writer contention that's benign at `add`/`commit` must be benign
+      // here as well — otherwise this would be the ONE lock-taking op still
+      // hard-throwing on the exact condition the other two swallow.
+      this.assertLocalOk(space, 'checkout', co, isLockContended);
+      // assertLocalOk passing only proves the failure was benign, not that the
+      // checkout ran — an unconditional {updated:true} would report success
+      // for a checkout that never happened: the working tree still has none
+      // of the remote's content and local `main` still doesn't exist. Report
+      // the real outcome; the throw above still fires for anything that isn't
+      // the benign lock case, so this stays honest without widening the
+      // allowlist.
       return { updated: co.code === 0, conflictCopies: [] };
     }
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);
+    this.throwIfCorrupt(space, 'rev-list', behind);
     if (behind.code !== 0 || behind.stdout.trim() === '0') return { updated: false, conflictCopies: [] };
 
     // Fix: --allow-unrelated-histories covers the mainline "second device" case —
@@ -451,6 +626,60 @@ export class GitTransport implements SyncTransport {
       // repo doesn't actually need repacking, --quiet suppresses progress noise.
       await this.git(space, ['gc', '--auto', '--quiet']);
     } catch { /* best-effort; retries in another N syncs */ }
+  }
+
+  /** Two-tier corruption repair (2026-07-30 spec §2). Resolves when healed;
+   *  throws when even Tier 2 failed. NEVER touches the user's files — every
+   *  write is under <root>/.youcoded/. The engine gates calls to once per
+   *  space per launch. */
+  async repair(space: SyncSpace): Promise<void> {
+    const gd = this.gitDir(space);
+    // ---- Tier 1: surgical, offline-capable ----
+    if (fs.existsSync(path.join(gd, 'HEAD'))) {
+      // Reap first: assertLocalOk's own comment above notes that a power-loss
+      // crash's classic signature is an orphaned *.lock (not yet past
+      // lockStaleMs) sitting alongside a truncated object — exactly the state
+      // repair() is called to fix. Without this, the update-ref below hits
+      // "Unable to create '...refs/heads/main.lock': File exists" against a
+      // repo that's otherwise perfectly repairable, and a stale-but-provably-
+      // dead lock (reapStaleLocks only removes locks older than lockStaleMs)
+      // sends a Tier-1-fixable repo down the more destructive Tier 2 path.
+      this.reapStaleLocks(space);
+      deleteZeroByteObjects(gd);
+      const tip = await this.git(space, ['rev-parse', '--verify', '--quiet', 'origin/main']);
+      if (tip.code === 0) {
+        const sha = tip.stdout.trim();
+        // Light closure check: commit + root tree readable. NOT a full fsck —
+        // that times out on real repos (>2 min on the Z13's Personal space).
+        // Residual damage this misses fails the next push, but the engine's
+        // launch-scoped healedSpaces guard means that failure does NOT re-enter
+        // repair() this run — it forwards a plain repo-corrupt error instead.
+        // Escalation to Tier 2 happens on the NEXT app launch, when the guard
+        // resets and a fresh corruption is seen for the first time.
+        const commitOk = (await this.git(space, ['cat-file', 'commit', sha])).code === 0;
+        const treeOk = (await this.git(space, ['cat-file', '-p', `${sha}^{tree}`])).code === 0;
+        if (commitOk && treeOk) {
+          const upd = await this.git(space, ['update-ref', 'refs/heads/main', sha]);
+          // Delete the index: it may reference the just-deleted poison hashes.
+          // add -A rebuilds it from the worktree — files are the source of truth.
+          try { fs.rmSync(path.join(gd, 'index'), { force: true }); } catch { /* rebuilt anyway */ }
+          const probe = await this.git(space, ['rev-parse', '--verify', 'HEAD']);
+          if (upd.code === 0 && probe.code === 0) return; // healed — local changes re-commit on the next cycle
+        }
+      }
+    }
+    // ---- Tier 2: move the repo aside, start fresh ----
+    // The worktree files and the GitHub remote are the two real sources of
+    // truth; the hidden repo is just transport machinery. After the re-init,
+    // the engine's normal cycle re-provisions the remote (ensureProvisioned →
+    // setRemote: provisionGithubRemote treats an existing repo as SUCCESS) and
+    // pull() adopts origin/main via its unborn-branch checkout — real ancestry,
+    // so NO conflict-copy explosion (spec §2).
+    if (fs.existsSync(gd)) {
+      fs.renameSync(gd, brokenBackupName(gd, new Date()));
+      pruneBrokenBackups(gd);
+    }
+    await this.init(space);
   }
 
   /** Recursive byte size of <root>/.youcoded/sync.git — feeds the engine's

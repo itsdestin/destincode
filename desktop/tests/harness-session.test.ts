@@ -9,6 +9,7 @@ import type { TranscriptEvent } from '../src/shared/types';
 // MockLanguageModelV4 + simulateReadableStream confirmed present in ai@7.0.22
 // (node_modules/ai/dist/test/index.d.ts).
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
 function mockModel(parts: any[]) {
   return new MockLanguageModelV4({
@@ -39,7 +40,10 @@ function collect(session: HarnessSession): TranscriptEvent[] {
 }
 
 describe('HarnessSession', () => {
-  const opts = { sessionId: 's-1', cwd: 'C:/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
+  // skillCatalog: without it buildAiTools scans the REAL ~/.claude and the
+  // attached tool set depends on the machine (Ubuntu CI found skills, macOS and
+  // Windows did not — 2026-07-29).
+  const opts = { sessionId: 's-1', cwd: 'C:/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' }, skillCatalog: EMPTY_SKILL_CATALOG };
 
   it('send() emits user-message, merged-partId assistant-text deltas, and turn-complete with usage', async () => {
     const session = new HarnessSession(opts, async () => mockModel(TEXT_FINISH) as any);

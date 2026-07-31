@@ -44,7 +44,7 @@ export default function GameChat({ connection }: Props) {
     <div className="border-t border-edge flex flex-col" style={{ maxHeight: '160px', minHeight: '120px' }}>
       {/* Header */}
       <div className="px-3 py-1.5 border-b border-edge shrink-0">
-        <span className="text-3xs uppercase tracking-wider text-fg-muted">Game Chat</span>
+        <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Game Chat</span>
       </div>
 
       {/* Messages */}

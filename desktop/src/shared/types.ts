@@ -118,7 +118,23 @@ export type TranscriptEventType =
   // Native-runtime only: a provider/stream failure ended the turn. Carries the
   // human-readable message in data.text. Never emitted by CC's transcript
   // watcher and never persisted to the native session store (stale on resume).
-  | 'session-error';
+  | 'session-error'
+  // Native-runtime only: /clear's CONTEXT BARRIER (M3 item 2). The native
+  // session log is append-only with a write-once header, so "clear" cannot
+  // erase anything — it appends this marker instead, and everything before it
+  // is ignored when history is rebuilt. The conversation therefore keeps its
+  // identity and stays fully readable on disk while the model's memory resets.
+  // Unlike session-error this IS persisted: a barrier that vanished on resume
+  // would silently resurrect the context the user deliberately dropped.
+  | 'context-clear'
+  // Native-runtime only: a user-invoked skill (/skill-name, M3 item 1). Persisted
+  // because the skill's instructions ARE part of the model's history — a resume
+  // that dropped them would replay a conversation whose first move makes no sense.
+  // `data.body` carries those instructions for history rebuild; the UI renders
+  // only `skillId`/`displayName`/`args` as a compact card, because a 26k-character
+  // SKILL.md as a user bubble is unreadable (Destin, 2026-07-28). `skillPath`
+  // makes the card open the real file in the artifact viewer.
+  | 'skill-invoked';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -152,6 +168,14 @@ export interface TranscriptEvent {
       cacheCreationTokens: number;
       /** Native runtime only: output tokens / stream seconds. CC never reports this. */
       tokensPerSecond?: number;
+      /** Native runtime only: the session's REAL context window (resolved in main,
+       *  Task 4/5). Carried on the per-turn payload so the renderer's StatusBar can
+       *  compute context % without a separate IPC. Constant per session; CC omits it. */
+      contextLength?: number | null;
+      /** Native runtime only: tokens OCCUPYING the window after this turn — the
+       *  last step's prompt plus its output. Distinct from inputTokens, which
+       *  sums every step and therefore re-counts the history once per step. */
+      contextUsedTokens?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies
@@ -172,6 +196,16 @@ export interface TranscriptEvent {
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
     /**
+     * Native runtime only. Emitted on `assistant-thinking` the moment a step's
+     * stream opens, BEFORE any token arrives, so the UI can say the model is
+     * reading the prompt rather than showing an idle spinner. Local models take
+     * minutes to prefill a long prompt and there is otherwise nothing to tell
+     * that apart from a hang — which is what made the 75s stall watchdog's false
+     * alarm so alarming (2026-07-26). `budgetMs` is how long prefill is allowed
+     * to take before the watchdog treats the silence as a real stall.
+     */
+    promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
@@ -184,6 +218,25 @@ export interface TranscriptEvent {
      * the otherwise-thin "Compacted" divider.
      */
     summary?: string;
+    /**
+     * Native runtime only: set on a `compact-summary` emitted by the harness's
+     * SPONTANEOUS two-stage compaction (spec §4.4). CC's transcript-watcher
+     * compact-summary events never carry it. The renderer renders the marker for
+     * an auto-compaction without the manual-/compact `compactionPending` flag —
+     * without it a native auto-compaction would replace ~all history and show
+     * NOTHING. Kept off CC's path so manual /compact and resume-from-summary are
+     * unchanged.
+     */
+    autoCompaction?: boolean;
+    /** `skill-invoked` only (M3 item 1). `skillId` is the resolved, qualified id
+     *  (wecoded-themes-plugin:theme-builder); `body` is the SKILL.md text that
+     *  enters model history on rebuild and is deliberately NOT rendered;
+     *  `skillPath` lets the card open the real file in the artifact viewer. */
+    skillId?: string;
+    displayName?: string;
+    args?: string;
+    body?: string;
+    skillPath?: string;
   };
 }
 
@@ -326,6 +379,14 @@ export interface SkillEntry {
   sourceType?: string;
   sourceRef?: string;
   sourceSubdir?: string;
+
+  // Absolute path to the skill's own directory (the one holding SKILL.md).
+  // Populated by scanSkills for filesystem-discovered skills. The native harness
+  // needs it because `prompt` is only the slash-command string — it carries no
+  // instructions — and the scanner otherwise discards the path it already knew
+  // in order to read the frontmatter. Absent for registry-only entries the user
+  // has not installed.
+  skillDir?: string;
 }
 
 export interface SkillDetailView extends SkillEntry {
@@ -1112,6 +1173,12 @@ export const IPC = {
   // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
+  // the caller needs the {ok, reason} result to explain a refusal.
+  NATIVE_COMPACT: 'native:compact',
+  // M3 item 2 — /clear as a context barrier. invoke: the caller needs {ok, reason}.
+  NATIVE_CLEAR: 'native:clear',
+  NATIVE_INVOKE_SKILL: 'native:invoke-skill',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   // Read the session's current native permission mode. Seeds the StatusBar chip

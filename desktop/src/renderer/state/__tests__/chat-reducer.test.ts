@@ -615,3 +615,40 @@ describe('chatReducer tool-group collapse semantics (Task 8 / BUG B)', () => {
     expect(state.get(SID)!.toolGroups.size).toBe(1);
   });
 });
+
+describe('chatReducer COMPACTION_COMPLETE — native auto-compaction (I2b)', () => {
+  it('inserts a compact SystemMarker for a native auto-compaction WITHOUT a compactionPending flag', () => {
+    // A spontaneous native compaction never sets compactionPending (only /compact
+    // does), so action.auto must bypass the stale-event guard — else the user sees
+    // NOTHING after ~all their history is replaced by a model-written summary.
+    const session = createSessionChatState();
+    expect(session.compactionPending).toBeNull();
+    const state: ChatState = new Map([['sess-1', session]]);
+    const next = chatReducer(state, {
+      type: 'COMPACTION_COMPLETE',
+      sessionId: 'sess-1',
+      markerId: 'auto-marker-1',
+      afterContextTokens: null,
+      auto: true,
+      summary: 'Earlier: user asked X; did Y.',
+    });
+    const timeline = next.get('sess-1')!.timeline;
+    const marker = timeline.find((e) => e.kind === 'system-marker') as any;
+    expect(marker).toBeTruthy();
+    expect(marker.marker.variant).toBe('compact');
+    expect(marker.marker.summary).toBe('Earlier: user asked X; did Y.');
+  });
+
+  it('still IGNORES a non-auto COMPACTION_COMPLETE with no compactionPending (CC resume-from-summary path unchanged)', () => {
+    const session = createSessionChatState();
+    const state: ChatState = new Map([['sess-1', session]]);
+    const next = chatReducer(state, {
+      type: 'COMPACTION_COMPLETE',
+      sessionId: 'sess-1',
+      markerId: 'stale-marker',
+      afterContextTokens: null,
+      // no `auto`, no compactionPending → stale, must be dropped
+    });
+    expect(next).toBe(state);   // untouched — no spurious marker
+  });
+});

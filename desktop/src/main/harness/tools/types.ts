@@ -43,6 +43,12 @@ export interface ToolResultPayload {
 export interface NativeTool<A = any> {
   name: string;
   description: string;
+  /** Compact one-line description used for SIMPLIFIED tool presentation on small
+   *  local models (spec §4.2). When the resolved profile is 'simplified',
+   *  buildAiTools() hands the model this instead of the full `description` to keep
+   *  the tool schema small enough for a weak model to follow. Tools without one
+   *  fall back to `description`. */
+  shortDescription?: string;
   inputSchema: z.ZodType<A>;
   /** The permission SUBJECT for rule matching: Bash → command string; file
    *  tools → the file path; undefined → tool-name-only matching. */

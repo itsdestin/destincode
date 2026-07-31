@@ -194,6 +194,10 @@ export const BashTool = defineTool({
   // Placeholder: the real text comes from the getter installed below, which
   // resolves the shell on first read (harness-session.ts buildAiTools()).
   description: '',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  // MERGE RECONCILIATION: stays a plain static string rather than joining the
+  // lazy-getter dance — it names no shell, so there is nothing to resolve.
+  shortDescription: 'Run a shell command and return its output.',
   inputSchema: z.object({
     command: z.string(),
     timeout: z.number().int().optional().describe('Timeout in milliseconds'),

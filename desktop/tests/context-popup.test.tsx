@@ -67,9 +67,11 @@ describe('ContextPopup — main view', () => {
 
   it('calls onClose when the X button is clicked', () => {
     const { onClose } = renderPopup();
-    // Label is "Close context panel", not a bare "Close" — CloseButton takes a
-    // `label` prop so each popup's ✕ has a distinct accessible name (change 76).
-    fireEvent.click(screen.getByLabelText('Close context panel'));
+    // Each dialog's ✕ still has a DISTINCT accessible name (change 76), but the
+    // string is now derived by the shell rather than passed per popup: <Dialog>
+    // labels it "Close {title}". Was "Close context panel" when this component
+    // hand-rolled its own header.
+    fireEvent.click(screen.getByLabelText('Close Context'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -103,10 +105,14 @@ describe('ContextPopup — info view', () => {
     expect(screen.queryByText(/Plenty of room/i)).toBeNull();
   });
 
+  // K12 moved the explainer's header onto <Dialog>, so Back and Close are the
+  // SHELL's controls now and carry its accessible names — "Back" rather than
+  // the explainer's old "Back to settings", and "Close About Context" rather
+  // than a bare "Close". Same behavior, different owner.
   it('returns to the main view when Back is clicked', () => {
     renderPopup();
     fireEvent.click(screen.getByLabelText('What is this?'));
-    fireEvent.click(screen.getByLabelText('Back to settings'));
+    fireEvent.click(screen.getByLabelText('Back'));
     expect(screen.getByText(/Plenty of room/i)).toBeInTheDocument();
     expect(screen.queryByText('About Context')).toBeNull();
   });
@@ -114,10 +120,7 @@ describe('ContextPopup — info view', () => {
   it('closes the whole popup when the explainer Close is clicked', () => {
     const { onClose } = renderPopup();
     fireEvent.click(screen.getByLabelText('What is this?'));
-    // Explainer renders its own Close button; main-view header is not mounted when showInfo is true.
-    // This one is SettingsExplainer's CloseButton, which passes no `label` and so
-    // keeps the default "Close" — distinct from the main view's "Close context panel".
-    fireEvent.click(screen.getByLabelText('Close'));
+    fireEvent.click(screen.getByLabelText('Close About Context'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

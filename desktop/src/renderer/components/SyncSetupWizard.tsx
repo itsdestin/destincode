@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button, CloseButton, TextInput, Toggle, Radio, RadioGroup } from './ui';
+import { Button, CloseButton, TextInput, Toggle, Radio, RadioGroup, Callout } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -492,9 +492,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
 
           {/* Error message */}
           {error && (
-            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-2xs text-red-400">
-              {error}
-            </div>
+            <Callout tone="danger">{error}</Callout>
           )}
 
           {/* Duplicate destination heads-up — informational only.
@@ -711,14 +709,18 @@ function PrereqCheckStep({
 
         {/* Install error */}
         {installError && (
-          <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-2xs text-red-400">
+          // The "Install manually" link stays INSIDE the callout, which does not
+          // make this a K5 status strip: K5 is for a laid-out action that
+          // resolves the state, and this is an inline link inside the sentence
+          // that explains it. A dot-message-button row would read worse here.
+          <Callout tone="danger">
             {installError}
             <div className="mt-1">
               <button className="text-accent underline" onClick={() => claude.openExternal('https://rclone.org/install/')}>
                 Install manually
               </button>
             </div>
-          </div>
+          </Callout>
         )}
         </div>
       </div>

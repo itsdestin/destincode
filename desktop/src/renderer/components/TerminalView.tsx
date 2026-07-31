@@ -44,6 +44,11 @@ export default function TerminalView({ sessionId, visible }: Props) {
   const attachWebglRef = useRef<(() => void) | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  // Previous `visible`, updated only inside the visibility effect (NOT on every
+  // render like visibleRef). Lets the glyph-atlas heal below fire on a genuine
+  // hidden → shown transition and skip the initial mount — see the blast-radius
+  // note there for why healing on mount is expensive.
+  const wasVisibleRef = useRef<boolean | null>(null);
   const { activeTheme, reducedEffects } = useTheme();
 
   // Detect if the theme has a visual background (wallpaper image, gradient, or glassmorphism)
@@ -236,12 +241,31 @@ export default function TerminalView({ sessionId, visible }: Props) {
     let pendingCols = 0;
     let pendingRows = 0;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // The first flush is this terminal's initial fit, not a user resize — see
+    // the skip below.
+    let hasFlushedResize = false;
     const flushResize = () => {
       debounceTimer = null;
       if (pendingCols === lastCols && pendingRows === lastRows) return;
       lastCols = pendingCols;
       lastRows = pendingRows;
       window.claude.session.resize(sessionId, pendingCols, pendingRows);
+      // Fix: make resizing actually clear a corrupt glyph atlas. Resizing is
+      // the first thing a user tries when text looks wrong, and until now it
+      // did nothing for this failure mode (the repaint re-samples the same
+      // bad GPU texture — see the clearTextureAtlas note in the visibility
+      // effect below). Placed in the DEBOUNCED trailing call, not fitAndSync,
+      // so a window drag re-rasterizes glyphs once after it settles instead
+      // of on every observer tick.
+      //
+      // Skipped on the FIRST flush: that one is the mount-time fit, and this
+      // terminal has just joined the atlas shared with every already-open
+      // terminal — clearing there would make opening a session re-rasterize
+      // all of them. Becoming visible is covered by the visibility effect.
+      if (hasFlushedResize) {
+        (terminalRef.current ?? terminal).clearTextureAtlas();
+      }
+      hasFlushedResize = true;
     };
     const fitAndSync = () => {
       try {
@@ -397,7 +421,51 @@ export default function TerminalView({ sessionId, visible }: Props) {
   // the 300ms toggle animation (a major source of visual jank). Here we just
   // manage focus; the fit happens through the observer.
   useEffect(() => {
+    const wasVisible = wasVisibleRef.current;
+    wasVisibleRef.current = visible;
     if (visible && terminalRef.current) {
+      // Fix: heal a corrupt WebGL glyph atlas on every hide → show.
+      //
+      // The webgl addon shares ONE rasterized atlas across all terminals
+      // (acquireTextureAtlas) but uploads it into each WebGL context's own
+      // GPU texture (_atlasTextures). When a single context's texture goes
+      // bad — GPU reset, driver fault, the OS reclaiming VRAM, resume from
+      // sleep — that session renders every glyph as a solid black box the
+      // exact size of the glyph's ink bounding box, while other sessions
+      // sharing the same atlas stay correct. xterm cannot detect this: no
+      // context-loss event fires, so the onContextLoss recovery above never
+      // runs and the corruption persists for the terminal's whole lifetime
+      // (a resize repaints from the buffer but re-samples the same bad
+      // texture, so it does NOT clear it).
+      //
+      // clearTextureAtlas() is xterm's documented remedy for exactly this
+      // (see the Terminal.clearTextureAtlas docs in @xterm/xterm). It lives
+      // on the CORE Terminal, not the addon, so it needs no renderer guard:
+      // core does `_renderer.value && (_renderer.value.clearTextureAtlas?.(),
+      // _fullRefresh())`, so on the DOM renderer the atlas call optional-
+      // chains away and only a full repaint runs. Cheap, but NOT a no-op.
+      //
+      // Blast radius: acquireTextureAtlas shares ONE atlas between every
+      // terminal whose config matches, and clearing bumps each page's
+      // `version`, which every other terminal's GlyphRenderer compares
+      // against to decide whether to re-upload. So this is safe across
+      // sessions (no stale glyph coordinates) but costs every open terminal
+      // a re-rasterize on its next frame, not just this one. The flip side
+      // is that healing here heals all of them at once.
+      //
+      // Bound to `visible` rather than the chat/terminal toggle handler:
+      // App.tsx drives this prop from `active session && terminal view`, so
+      // this also heals on session switches, and it can't be silently
+      // disconnected by a future refactor of the toggle.
+      //
+      // `wasVisible === false` (not just `visible`) skips the initial mount.
+      // A newly-opened session JOINS the shared warm atlas, so healing on
+      // mount would wipe it for every already-open terminal — turning "open a
+      // new session" into a re-rasterize for all of them. A brand-new
+      // terminal has nothing to heal anyway.
+      if (wasVisible === false) {
+        terminalRef.current.clearTextureAtlas();
+      }
       const raf = requestAnimationFrame(() => terminalRef.current?.focus());
       return () => cancelAnimationFrame(raf);
     }

@@ -121,6 +121,38 @@ Observed b9992 shape:
 - Note: Qwen3 emits a `reasoning_content` field on the message; not consumed in
   Plan B (dormant reasoning path).
 
+### Native tool-calling + real-ctx report (harness tool loop; `/props`; probe-tools.mjs)
+
+Plan C runs Claude-Code-style tool calls straight through llama-server's OpenAI-
+compatible endpoint. The coupling is `--jinja` + the `/v1/chat/completions` request
+shape the harness sends, plus the `/props` read used to learn a loaded model's real
+context window.
+
+- **`--jinja` is what enables native tool-calling.** Already in the pinned spawn
+  flag set (above), so no process-shape change was needed for Plan C. With it, a
+  request carrying `tools: [...]` + `tool_choice: 'auto'` returns a
+  `choices[0].message.tool_calls[]` whose `function.arguments` is a **JSON string**
+  (parse it, don't read it as an object) matching the tool's `parameters` schema.
+- **`parallel_tool_calls: false` pins serial-only tool use.** The harness executes
+  one tool at a time (transcript + permission flow assume a single in-flight tool),
+  so the request disables parallel calls rather than reconciling a fan-out.
+- **Never-force invariant:** with `tool_choice: 'auto'` a plain-text prompt must come
+  back with NO `tool_calls` — the model answers in `message.content`. A build that
+  force-calls a tool on ordinary text would break normal chat; the probe asserts
+  against this.
+- **Real context window via `GET /props`.** The loaded model's actual `n_ctx` is the
+  ground truth the known-model registry (advertised context) is checked against.
+  **The field name drifts across builds** — read `default_generation_settings.n_ctx`
+  first, then fall back to top-level `n_ctx`; if neither is present the build moved
+  it again (re-check against the pinned tag). This is `-c` propagated to the loaded
+  instance (see the `--models-dir` / `-c` notes above).
+- **Verified by `test-engine/probe-tools.mjs`** — fires a tool-y prompt (asserts
+  schema-valid JSON args), a plain prompt (asserts no forced call), and prints the
+  `/props` `n_ctx`. Usage: `node test-engine/probe-tools.mjs http://127.0.0.1:<port>
+  <model-id>` against an already-running engine. **Engine-bump gated:** re-run this
+  probe whenever the pinned llama.cpp build changes (tool-call arg encoding and the
+  `/props` field layout are both build-sensitive).
+
 ### Release assets + archive layout (engine-pin.ts, generate-engine-pin.mjs, engine-acquisition.ts)
 
 - GitHub release API (`/repos/ggml-org/llama.cpp/releases/tags/<tag>`) publishes a
@@ -179,3 +211,6 @@ three on every engine bump — analogous to `test-conpty/` on a CC bump. The
 original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
 `probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
 PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.
+`probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +
+real `/props` `n_ctx`) runs against an already-running engine — re-run on every engine
+bump; verified live during acceptance on the Linux dev box.

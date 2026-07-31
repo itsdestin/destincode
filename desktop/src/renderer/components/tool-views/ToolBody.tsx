@@ -57,7 +57,7 @@ function CollapsibleBlock({ children, maxLines = 20, className = '' }: { childre
       {overflow && (
         <button
           onClick={() => setOpen(o => !o)}
-          className="mt-1 text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
+          className="mt-1 text-3xs text-fg-muted tracking-wider uppercase hover:text-fg-2"
         >
           {open ? 'Show less' : `Show ${lines.length - maxLines} more lines`}
         </button>
@@ -213,7 +213,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handle}
-      className="text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2 px-1 rounded-sm"
+      className="text-3xs text-fg-muted tracking-wider uppercase hover:text-fg-2 px-1 rounded-sm"
       title="Copy"
     >
       {copied ? 'Copied' : 'Copy'}
@@ -329,7 +329,7 @@ function ShellView({ tool, commandField }: {
       </div>
       {response && (
         <div>
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Output</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">Output</div>
           <CollapsibleBlock maxLines={20} className="bg-canvas">{response}</CollapsibleBlock>
         </div>
       )}
@@ -553,7 +553,7 @@ function ReadView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string
           {overflow && (
             <button
               onClick={() => setOpen(o => !o)}
-              className="text-3xs uppercase tracking-wider text-fg-muted hover:text-fg-2"
+              className="text-3xs text-fg-muted tracking-wider uppercase hover:text-fg-2"
             >
               {open ? 'Collapse' : `Expand (${rows.length} lines)`}
             </button>
@@ -855,13 +855,13 @@ function RawFallbackView({ tool }: { tool: ToolCallState }) {
     <div className="space-y-2">
       {formatted && (
         <div>
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Input</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">Input</div>
           <CollapsibleBlock maxLines={15}>{formatted}</CollapsibleBlock>
         </div>
       )}
       {tool.response && (
         <div>
-          <div className="text-3xs uppercase tracking-wider text-fg-muted mb-1">Response</div>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">Response</div>
           <CollapsibleBlock maxLines={20}>{tool.response}</CollapsibleBlock>
         </div>
       )}

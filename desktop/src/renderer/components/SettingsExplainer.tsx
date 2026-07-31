@@ -1,19 +1,27 @@
 /**
- * SettingsExplainer.tsx — Reusable in-popup explainer screen.
+ * SettingsExplainer.tsx — the explainer payload, and nothing else.
  *
- * Used by RemoteButton (Remote Access), SyncPopup (Sync), and ThemeScreen
- * (Appearance) to render a "What is this?" view inside the same modal frame.
- * The host popup keeps a `showInfo` boolean and renders this component instead
- * of its main content, so the user can back out to the original settings.
+ * Used by Remote Access, Backup & Sync, Appearance and Context to render a
+ * "What is this?" view inside the same modal frame. The host keeps a `showInfo`
+ * boolean and renders this instead of its main content, so the user can back
+ * out to the original settings.
+ *
+ * K12: this USED to carry its own header (back chevron + "About {title}" +
+ * close), its own useScrollFade body and its own Esc handler, because it
+ * predates <Dialog>. D1 owns all three now, so hosts render this as ordinary
+ * body content and pass `title` + `onBack` to their Dialog instead — which also
+ * means the explainer inherits the shell's edge fades and height cap rather
+ * than each host remembering to wire them.
+ *
+ * The spec framed K12 as consolidating five mechanisms into one renderer. That
+ * had already happened: four hosts shared this component and this payload
+ * before tranche 3 started. What had NOT happened is the part above.
  *
  * Content is intentionally written in plain layman's terms — YouCoded is
  * built for non-developers and these explainers double as in-app help.
  */
 
 import React from 'react';
-import { useScrollFade } from '../hooks/useScrollFade';
-import { CloseButton } from './ui';
-import { useEscClose } from '../hooks/use-esc-close';
 
 export interface ExplainerBullet {
   /** Optional bold lead-in (e.g. a setting name). */
@@ -31,70 +39,40 @@ export interface ExplainerSection {
 }
 
 interface Props {
-  /** Subject of the explainer, e.g. "Remote Access". */
-  title: string;
   /** One- or two-sentence opening summary. */
   intro: string;
   sections: ExplainerSection[];
-  /** Return to the host popup's main view. */
-  onBack: () => void;
-  /** Close the host popup entirely. */
-  onClose: () => void;
 }
 
-export default function SettingsExplainer({ title, intro, sections, onBack, onClose }: Props) {
-  // Always mounted when shown (host swaps this in via a boolean flag) — so open=true is correct here.
-  useEscClose(true, onClose);
-  const bodyRef = useScrollFade<HTMLDivElement>();
+export default function SettingsExplainer({ intro, sections }: Props) {
   return (
-    <div className="flex flex-col h-full">
-      {/* Header — back arrow on the left, "About <title>" centered, close on the right.
-          Mirrors the host popup's header layout so the swap feels seamless. */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-        <button
-          onClick={onBack}
-          className="text-fg-muted hover:text-fg-2 leading-none w-6 h-6 flex items-center justify-center rounded-sm hover:bg-inset"
-          title="Back to settings"
-          aria-label="Back to settings"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <h2 className="text-sm font-bold text-fg">About {title}</h2>
-        <CloseButton onClick={onClose} />
-      </div>
+    <>
+      <p className="text-xs text-fg-2 leading-relaxed">{intro}</p>
 
-      {/* Body — intro paragraph, then each section with its own heading.
-          Padding on inner wrapper so scroll-fade is unpadded (fade pseudos flush). */}
-      <div ref={bodyRef} className="scroll-fade flex-1">
-        <div className="px-4 py-4 space-y-5">
-        <p className="text-xs text-fg-2 leading-relaxed">{intro}</p>
-
-        {sections.map((section, i) => (
-          <section key={i}>
-            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
-              {section.heading}
-            </h3>
-            {section.paragraphs?.map((p, j) => (
-              <p key={j} className="text-xs text-fg-2 leading-relaxed mb-2 last:mb-0">{p}</p>
-            ))}
-            {section.bullets && (
-              <ul className="space-y-1.5 mt-1">
-                {section.bullets.map((b, j) => (
-                  <li key={j} className="text-xs text-fg-2 leading-relaxed pl-3 relative before:content-['•'] before:absolute before:left-0 before:text-fg-faint">
-                    {b.term && <span className="font-semibold text-fg">{b.term}</span>}
-                    {b.term && ' — '}
-                    {b.text}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
-        </div>
-      </div>
-    </div>
+      {sections.map((section, i) => (
+        <section key={i}>
+          {/* h3, matching K1 — the dialog title is h2, so an h3 here announces
+              as its child rather than its sibling. */}
+          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+            {section.heading}
+          </h3>
+          {section.paragraphs?.map((p, j) => (
+            <p key={j} className="text-xs text-fg-2 leading-relaxed mb-2 last:mb-0">{p}</p>
+          ))}
+          {section.bullets && (
+            <ul className="space-y-1.5 mt-1">
+              {section.bullets.map((b, j) => (
+                <li key={j} className="text-xs text-fg-2 leading-relaxed pl-3 relative before:content-['•'] before:absolute before:left-0 before:text-fg-faint">
+                  {b.term && <span className="font-semibold text-fg">{b.term}</span>}
+                  {b.term && ' — '}
+                  {b.text}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
+    </>
   );
 }
 

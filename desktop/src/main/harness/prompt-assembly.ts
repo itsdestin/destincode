@@ -9,8 +9,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import type { PromptVariant } from './capability-profile';
+import { variantOverlay } from './prompts/variants';
 
-export interface PromptInputs { presetBody: string; cwd: string; appVersion: string }
+// promptVariant is the capability-profile steering overlay (see prompts/variants.ts).
+// Optional so pre-variant callers assemble byte-identically; only local-small adds text.
+// hasTools defaults true; a tool-less model (profile.supportsTools === false, e.g.
+// Gemma 3n) sets it false so the assembled prompt drops BOTH the tool-guidance line
+// and the variant overlay — every overlay references tools the model doesn't have.
+export interface PromptInputs { presetBody: string; cwd: string; appVersion: string; promptVariant?: PromptVariant; hasTools?: boolean }
 
 function gitSnapshot(cwd: string): string {
   try {
@@ -48,6 +55,12 @@ function projectInstructions(cwd: string): string | null {
 }
 
 export function assembleSystemPrompt(i: PromptInputs): string {
+  // Tool-less model (profile.supportsTools === false → buildAiTools() returns {}):
+  // it runs as plain chat, so telling it to "prefer dedicated tools" or to "call
+  // one tool at a time" (the variant overlay) is nonsense guidance for tools it
+  // was never given. Drop both. Everything else (identity, preset, env, project
+  // instructions) is tool-agnostic and stays. Default true → unchanged behavior.
+  const hasTools = i.hasTools !== false;
   const sections = [
     'You are the YouCoded assistant, an agentic AI running inside the YouCoded app.',
     i.presetBody,
@@ -61,7 +74,16 @@ export function assembleSystemPrompt(i: PromptInputs): string {
       '</env>',
     ].join('\n'),
     projectInstructions(i.cwd),
-    'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep. Keep edits minimal and verify your work by running relevant commands after changing code.',
+    // Tool-guidance line — only when the model actually HAS tools.
+    hasTools
+      ? 'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep. Keep edits minimal and verify your work by running relevant commands after changing code.'
+      : null,
+    // Capability-steering overlay, appended LAST: personality (preset body) and
+    // tool-calling steering (variant) are orthogonal axes composed by append. The
+    // no-op variants return '' and are dropped by the empty-string filter below,
+    // keeping default/anthropic/gpt byte-identical to a call with no variant. A
+    // tool-less model skips it entirely (all overlays are tool-calling steering).
+    hasTools ? variantOverlay(i.promptVariant) : '',
   ].filter((s): s is string => s !== null && s !== '');
   return sections.join('\n\n');
 }

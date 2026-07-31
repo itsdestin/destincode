@@ -59,6 +59,20 @@ in the youcoded-dev workspace).
   single token — multiplied by 1e6 into CatalogModel's per-1M convention).
   Same defensive-parse + stale-cache-fallback posture as models.dev; consumer
   is `src/main/providers/model-catalog.ts`. (model-catalog)
+- **AI SDK local-model serial-only constraint** — `@ai-sdk/openai-compatible`
+  `3.0.7`'s `createOpenAICompatible({ …, transformRequestBody })` config hook
+  rewrites the request body before send. The LOCAL-engine branch of
+  `languageModel(binding, { serialToolCalls })` uses it to inject
+  `parallel_tool_calls: false` for small local models (spec §4.2) — llama-server
+  honors it and `--jinja` already grammar-constrains the emitted tool-call args.
+  We deliberately do NOT set a top-level `json_schema`/`response_format` (that
+  would force JSON on every reply and break plain-text answers). The hook is
+  stored on the model's `config` (reachable at runtime as `(model as any).config`,
+  pinned by `desktop/tests/provider-registry.test.ts`) — if the openai-compatible
+  config API drops/renames `transformRequestBody`, the constraint silently stops
+  applying; re-verify on any `@ai-sdk/openai-compatible` bump. Round-trip proven
+  by `desktop/test-engine/probe-tools.mjs` (dev-run, engine-bump gated).
+  (provider-registry)
 - **OpenRouter attribution + BYOK** — attribution headers (`HTTP-Referer`,
   `X-Title`), BYOK behavior. (provider-registry)
 - **Per-vendor quirks** — reasoning blocks, prompt caching, rate-limit

@@ -11,7 +11,7 @@
 // Windows CI run.
 import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import { HarnessSession, type HarnessSessionOpts } from '../src/main/harness/harness-session';
+import { HarnessSession, type HarnessSessionOpts, StreamStallError } from '../src/main/harness/harness-session';
 import type { HarnessManifest } from '../src/shared/harness-manifest';
 import type { TranscriptEvent } from '../src/shared/types';
 import { textChunks, finishChunk, stream } from './helpers/scripted-model';
@@ -132,8 +132,26 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(warns[1].data.stallWarning!.willRetry).toBe(false);  // retry also stalled: no more retries
     const errs = events.filter((e) => e.type === 'session-error');
     expect(errs).toHaveLength(1);
-    expect(errs[0].data.text).toMatch(/stopped responding/i);
+    // WORDING CHANGED 2026-07-26, deliberately. Every attempt here uses
+    // hangingStream(), so the model never produced a single part — it did not
+    // "stop responding", it never began. Claiming otherwise sends the user
+    // hunting a provider fault that isn't there, and on a local model the real
+    // cause is usually just a long prompt. The mid-stream phrasing is still
+    // pinned by the test below.
+    expect(errs[0].data.text).toMatch(/didn't begin responding/i);
+    expect(errs[0].data.text).not.toMatch(/stopped responding/i);
     expect(types(events)).not.toContain('turn-complete');
+  });
+
+  it('a stall AFTER output has started still says the model STOPPED responding', () => {
+    // The complement of the case above: once parts have flowed, silence really
+    // does mean something went wrong mid-stream, and the wording must say so.
+    // Asserted on the error class directly — driving a real mid-stream stall
+    // needs a provider that emits and then hangs forever, which makes the test
+    // itself hang rather than prove anything extra.
+    const err = new StreamStallError(75_000, 'streaming');
+    expect(err.message).toMatch(/stopped responding/i);
+    expect(err.message).not.toMatch(/didn't begin responding/i);
   });
 
   it('stall AFTER content already streamed: does NOT retry (would duplicate), errors immediately', async () => {

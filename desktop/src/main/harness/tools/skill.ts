@@ -1,0 +1,55 @@
+// Skill — load a named skill's instructions into the conversation.
+//
+// Claude Code performs this step implicitly: it reads the skill's SKILL.md and
+// follows it. The native harness has no such step, so a skill is exposed as a
+// tool whose OUTPUT is the instructions. The model then follows them the same way
+// it follows any tool result.
+//
+// Deliberately NOT `interactive`: that flag (harness-session.ts) skips guards AND
+// the permission decision. Correct for AskUserQuestion — asking permission to ask
+// a question is absurd — and wrong here, because a skill's instructions can drive
+// real side effects, so this goes through decide() like every other tool.
+import { z } from 'zod';
+import { defineTool } from './registry';
+import type { NativeTool, ToolContext, ToolResultPayload } from './types';
+import type { SkillCatalog } from '../skills/skill-catalog';
+
+const schema = z.object({
+  skill: z.string().describe("The id of the skill to load, exactly as listed in this tool's description."),
+});
+
+type SkillArgs = z.infer<typeof schema>;
+
+export function createSkillTool(catalog: SkillCatalog): NativeTool<SkillArgs> {
+  // Snapshotted ONCE at construction: buildAiTools() reads these strings on every
+  // turn, and re-scanning the filesystem per turn would be a real cost for a list
+  // that only changes when the user installs something (which rebuilds the session's
+  // tool set anyway).
+  const installed = catalog.list();
+
+  return defineTool<SkillArgs>({
+    name: 'Skill',
+    description:
+      "Load a named skill's instructions and follow them. Use this when the user asks for "
+      + 'something one of these skills covers. Available skills:\n'
+      + installed.map((s) => `- ${s.id}: ${s.description}`).join('\n'),
+    // Simplified presentation (small local models): ids only. The full one-liners
+    // are the bulk of the text and a weak model does better with a short list.
+    shortDescription: "Load a named skill's instructions. Skills: " + installed.map((s) => s.id).join(', '),
+    inputSchema: schema,
+    // The skill id is the permission subject, so "always allow the journal skill"
+    // is expressible as a rule — same as a Bash command string.
+    permissionSubject: (a) => a.skill,
+    async execute(args: SkillArgs, _ctx: ToolContext): Promise<ToolResultPayload> {
+      try {
+        const skill = catalog.load(args.skill);
+        return { text: `<skill-instructions name="${skill.id}">\n${skill.body}\n</skill-instructions>` };
+      } catch (err: any) {
+        // RETURNED, not thrown: defineTool's catch would prefix "Skill failed:" and
+        // bury the recovery information these errors carry — the list of skills that
+        // DO exist, or the real filesystem reason. Both are the actionable part.
+        return { text: err?.message ?? String(err), isError: true };
+      }
+    },
+  });
+}

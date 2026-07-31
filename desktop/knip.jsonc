@@ -29,7 +29,11 @@
   ],
 
   "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["dist/**", "src/renderer/dev/fixtures/**"],
+  // The old `src/renderer/dev/fixtures/**` ignore is gone: those fixtures moved
+  // under dev/workbench/ and are DELIBERATELY left unignored. Workbench fixture
+  // modules are ordinary imports, so knip catching an unused one is the point —
+  // it is what flagged a models.ts that existed only "for symmetry".
+  "ignore": ["dist/**"],
 
   "ignoreDependencies": [
     // Peer of @tailwindcss/postcss, wired through postcss.config.js rather

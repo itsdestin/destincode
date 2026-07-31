@@ -190,9 +190,18 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
       />
 
       {/* Drawer — overflow-hidden clips the scroll-fade pseudos to the rounded-t-xl
-          corners so fades don't paint into the square corners above. */}
+          corners so fades don't paint into the square corners above.
+
+          `command-drawer` is a STYLING HOOK, not decoration: globals.css uses it
+          to cancel the backdrop-filter that theme-engine puts on every
+          .layer-surface under [data-wallpaper]. Every tile below is a
+          .layer-surface, so without it each one becomes its own live blur
+          compositing layer inside this overflow-hidden, transform-animating
+          box — and Windows Electron drops their paint (cards blink in and out).
+          Removing this class silently reopens that bug; guarded by
+          tests/drawer-card-glass.test.ts. */}
       <div
-        className={`fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl overflow-hidden transition-transform duration-300 ease-out ${
+        className={`command-drawer fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl overflow-hidden transition-transform duration-300 ease-out ${
           open ? 'translate-y-0' : 'translate-y-full'
         }`}
         style={{ maxHeight: '45vh' }}
@@ -312,7 +321,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* Favorites section */}
               {favsSorted.length > 0 && (
                 <section className="px-2 pt-2">
-                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {favsSorted.map(renderSkillCard)}
                   </div>
@@ -322,7 +331,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on */}
               {!favoritesOnly && othersSorted.length > 0 && (
                 <section className="px-2 pt-3">
-                  <h3 className="text-3xs uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
+                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {othersSorted.map(renderSkillCard)}
                   </div>

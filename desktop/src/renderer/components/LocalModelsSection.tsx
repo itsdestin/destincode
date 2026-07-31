@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, InputGroup, ProgressBar } from './ui';
+import { Button, InputGroup, ProgressBar, Callout } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -471,10 +471,18 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
 
       {/* Consequence-gated delete — plain-language warning before the file is removed. */}
       {confirming && (
-        <div className="mt-2 space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-          <p className="text-2xs text-fg-dim leading-relaxed">
+        /* K9: the consequence moves into a danger callout, kept with the control
+           it describes. Copy unchanged — it already named the real size and the
+           real cost.
+
+           NO "Danger zone" LABEL HERE, deliberately. K9's label + always-last
+           placement are for a menu SECTION; this is a per-item action inside a
+           list, and an uppercase eyebrow above every model row would be noise.
+           The callout-with-control half of K9 is what applies. */
+        <div className="mt-2 space-y-2">
+          <Callout tone="danger">
             This removes the model file ({gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.
-          </p>
+          </Callout>
           <div className="flex gap-2">
             {/* Keep collapses the confirm rather than closing anything, so it
                 survives the "no redundant text cancel" rule. */}

@@ -21,6 +21,7 @@ import type { PermissionDecision } from '../src/shared/permission-types';
 import type { AskDecision } from '../src/main/harness/permission-broker';
 import { MockLanguageModelV4 } from 'ai/test';
 import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
 
 // Permissive fake tool (mirrors the loop suite's helper) — records executions,
 // subject undefined so tool-layer guards are skipped and decide() is the gate.
@@ -49,6 +50,8 @@ const HARNESS: HarnessManifest = {
 };
 function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
   return {
+    // See EMPTY_SKILL_CATALOG: keeps the tool set off the real ~/.claude.
+    skillCatalog: EMPTY_SKILL_CATALOG,
     sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],

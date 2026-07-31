@@ -127,10 +127,19 @@ function drawCustom(
 
 const DEFAULT_PARTICLE_COUNT = 60;
 
+// Particle cadence. The draw loop was previously a requestAnimationFrame chain
+// that woke at the display's refresh rate (180/sec on a 180Hz panel) and
+// early-returned 5 of 6 wakeups to cap DRAWING at ~30fps — the cap saved the
+// paint cost but still paid the full-rate wakeup churn (2026-07-30 idle-CPU
+// investigation: the per-frame wakeup chain is the dominant animation cost).
+// A 33ms interval produces the same 30fps particle motion with the timer
+// matched to the work. Ambient particles don't need more.
+const FRAME_MS = 33;
+
 export default function ThemeEffects() {
   const { activeTheme, reducedEffects } = useTheme();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
+  const animRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const particlesRef = useRef<Particle[]>([]);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
@@ -167,7 +176,7 @@ export default function ThemeEffects() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || preset === 'none' || reducedEffects) {
-      cancelAnimationFrame(animRef.current);
+      if (animRef.current !== null) { clearInterval(animRef.current); animRef.current = null; }
       return;
     }
 
@@ -200,13 +209,8 @@ export default function ThemeEffects() {
 
     const rainColor = accent + '40';
     const FADE_DISTANCE = 24; // px — soft falloff band around every chrome rect
-    let lastFrame = 0;
     let running = false;
-    const draw = (now: number) => {
-      animRef.current = requestAnimationFrame(draw);
-      // Cap at ~30fps — ambient particles don't need 60fps
-      if (now - lastFrame < 33) return;
-      lastFrame = now;
+    const draw = () => {
       const w = canvas.width;
       const h = canvas.height;
       const rects = chromeRectsRef.current;
@@ -222,13 +226,13 @@ export default function ThemeEffects() {
     const startAnim = () => {
       if (running) return;
       running = true;
-      lastFrame = 0; // first frame after resume draws immediately
-      animRef.current = requestAnimationFrame(draw);
+      draw(); // first frame after resume draws immediately
+      animRef.current = setInterval(draw, FRAME_MS);
     };
     const stopAnim = () => {
       if (!running) return;
       running = false;
-      cancelAnimationFrame(animRef.current);
+      if (animRef.current !== null) { clearInterval(animRef.current); animRef.current = null; }
     };
     // Pause the rAF when the window is hidden (minimized / fully occluded).
     // Without this, themes that combine particles with chrome glassmorphism

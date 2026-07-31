@@ -12,18 +12,25 @@ function getThemeColors(): string[] {
   return [fgDim, fg2, accent, fgMuted, fgFaint];
 }
 
-// Shared animation driver — one requestAnimationFrame loop for all spinners.
-// Replaces per-instance setIntervals (2 timers × N spinners) with a single
-// rAF that only runs while at least one spinner is mounted.
+// Shared animation driver — ONE timer for all mounted spinners.
+// History: per-instance setIntervals (2 timers × N spinners) → a single rAF
+// loop → this. The rAF version woke the renderer at the display's refresh rate
+// (180 wakeups/sec on a 180Hz panel) to do work that only changes every 80ms —
+// the 2026-07-30 idle-CPU investigation found the per-frame wakeup chain is the
+// dominant animation cost, so the driver now ticks on a 40ms interval instead:
+// same 80ms glyph / 600ms color cadence (checked against performance.now(), so
+// timer jitter can't accumulate drift), ~4.5x fewer wakeups, no visual change.
+// Renders (and therefore presented frames) were always gated on `changed`.
 let frameIndex = 0;
 let colorIndex = 0;
 let version = 0;
 let lastFrameTick = 0;
 let lastColorTick = 0;
-let rafId: number | null = null;
+let timerId: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<() => void>();
 
-function tick(now: number) {
+function tick() {
+  const now = performance.now();
   let changed = false;
   if (now - lastFrameTick >= 80) {
     frameIndex = (frameIndex + 1) % FRAMES.length;
@@ -39,22 +46,21 @@ function tick(now: number) {
     version++;
     listeners.forEach((cb) => cb());
   }
-  rafId = requestAnimationFrame(tick);
 }
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
-  if (rafId === null) {
+  if (timerId === null) {
     const now = performance.now();
     lastFrameTick = now;
     lastColorTick = now;
-    rafId = requestAnimationFrame(tick);
+    timerId = setInterval(tick, 40);
   }
   return () => {
     listeners.delete(cb);
-    if (listeners.size === 0 && rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
+    if (listeners.size === 0 && timerId !== null) {
+      clearInterval(timerId);
+      timerId = null;
     }
   };
 }

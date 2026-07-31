@@ -90,7 +90,15 @@ function SessionDot({ color, isActive }: { color: SessionStatusColor; isActive: 
     <span className="relative inline-flex items-center justify-center w-2.5 h-2.5 shrink-0">
       <span
         className={`relative w-2 h-2 rounded-full ${DOT_BG[color]}`}
-        style={breathing ? { animation: 'breathe 2s ease-in-out infinite' } : { opacity: isActive ? 1 : 0.5 }}
+        // Perf: steps(8) instead of ease-in-out. This dot breathes whenever the
+        // session isn't gray — i.e. for every non-idle session, in the
+        // always-visible header — and on a 180Hz panel a smoothly-animating
+        // element costs ~29% of one CPU core (Chromium presents a frame per
+        // refresh; measured 2026-07-30, cost is per-frame not per-element).
+        // steps(8) = 8 opacity changes/sec: measured 3x cheaper, and visually
+        // indistinguishable on an 8px dot. See the .animate-pulse comment in
+        // globals.css + docs/archive/investigations/2026-07-30-idle-cpu-burn.md
+        style={breathing ? { animation: 'breathe 2s steps(8) infinite' } : { opacity: isActive ? 1 : 0.5 }}
       />
     </span>
   );
@@ -867,7 +875,7 @@ export default function SessionStrip({
           {/* Android only ever has one window, so the "in this window" scoping label is meaningless there */}
           {sessions.length > 0 && !isAndroid() && (
             <>
-              <div className="px-3 pt-1.5 text-3xs uppercase tracking-wider text-fg-muted">
+              <div className="px-3 pt-1.5 text-3xs font-medium text-fg-muted tracking-wider uppercase">
                 Sessions in this window
               </div>
             </>
@@ -963,7 +971,7 @@ export default function SessionStrip({
             return (
               <>
                 <div className="border-t border-edge" />
-                <div className="px-3 pt-1.5 text-3xs uppercase tracking-wider text-fg-muted">
+                <div className="px-3 pt-1.5 text-3xs font-medium text-fg-muted tracking-wider uppercase">
                   Sessions in other windows
                 </div>
                 <div className="py-1">
@@ -999,7 +1007,7 @@ export default function SessionStrip({
           {showNewForm ? (
             <div className="p-3 flex flex-col gap-2 rounded-b-lg overflow-hidden">
               <div>
-                <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Project Folder</label>
                 <FolderSwitcher
                   value={newCwd}
                   onChange={setNewCwd}
@@ -1022,7 +1030,7 @@ export default function SessionStrip({
                   which chooses a model via the provider/model binding picker above. */}
               {runtime !== 'native' && (
                 <div>
-                  <label className="text-3xs uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
                   <div className="flex gap-1">
                     {MODELS.map((m) => (
                       <button
@@ -1043,7 +1051,7 @@ export default function SessionStrip({
               )}
               {/* Skip Permissions */}
               <div className="flex items-center justify-between">
-                <label className="text-3xs uppercase tracking-wider text-fg-muted inline-flex items-center">
+                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
                   Skip Permissions
                   <SkipPermissionsInfoTooltip />
                 </label>
@@ -1067,7 +1075,7 @@ export default function SessionStrip({
               {/* Launch in new window — hidden on platforms without multi-window support */}
               {detachAvailable && (
                 <div className="flex items-center justify-between">
-                  <label className="text-3xs uppercase tracking-wider text-fg-muted">Launch in New Window</label>
+                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Launch in New Window</label>
                   {/* Shared Toggle (change 15) — same accent on-state as before. */}
                   <Toggle
                     checked={launchInNewWindow}

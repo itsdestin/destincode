@@ -10,6 +10,8 @@ const inputSchema = z.object({ query: z.string().min(1).describe('The search que
 export const WebSearchTool = defineTool<z.infer<typeof inputSchema>>({
   name: 'WebSearch',
   description: 'Search the web. Returns titles, URLs, and snippets — use WebFetch to read a promising result in full. Use this whenever fresh or current information matters.',
+  // Compact form for small local models (simplified presentation).
+  shortDescription: 'Search the web and return titles, URLs, and snippets for a query.',
   inputSchema,
   permissionSubject: (args) => args.query,
   async execute(args, ctx) {

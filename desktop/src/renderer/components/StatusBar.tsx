@@ -1,21 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { createPortal } from 'react-dom';
-import { useTheme } from '../state/theme-context';
+import { useTheme, type ContextDisplay } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
 import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
-import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
 import OpenTasksChip from './OpenTasksChip';
 import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
-import { CloseButton } from './ui';
+import { Dialog } from './ui';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -129,6 +127,73 @@ const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknow
   unknown:       { label: 'PERMISSION UNKNOWN',  shortLabel: 'UNKNOWN', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
 };
 
+// --- Native (local-model) StatusBar chips (Task 12) ---
+// Native-runtime sessions have no CC statusline writing .usage-cache.json, so
+// their context/tokens/speed chips are derived directly from the per-turn usage
+// stamped on turn-complete (see chat-reducer TRANSCRIPT_TURN_COMPLETE). This is
+// a small PURE function so the derivation is unit-tested in isolation.
+//
+// v1 limitation (spec decision 7): chips reflect the LAST COMPLETED turn, not
+// mid-turn progress — during a long agentic turn the context chip lags until the
+// turn completes. Mid-turn liveness is a deliberate follow-up, not this task.
+
+/** Usage payload shape the selector accepts. Superset-tolerant: only in/out
+ *  tokens are required; tokensPerSecond + cache fields are optional so both the
+ *  full turn-complete payload and a trimmed test fixture satisfy it. */
+export interface NativeUsageInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  tokensPerSecond?: number;
+  /** How full the window is: the LAST step's prompt + its output. Distinct from
+   *  inputTokens, which sums every step and so re-counts history once per step.
+   *  Absent on records written before 2026-07-28. */
+  contextUsedTokens?: number;
+}
+
+export interface NativeStatusChips {
+  /** Percent of the model's context window REMAINING (100 = empty, 0 = full).
+   *  null when the real context window is unknown — the other chips still show. */
+  contextPct: number | null;
+  /** Tokens OCCUPYING the window (what the pill shows in "tokens" mode). */
+  contextUsedTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  tokensPerSecond: number;
+}
+
+/** Derive the native context/in/out/speed chips from a turn's usage + the
+ *  session's REAL context window (resolved in main, Task 4/5). Returns null when
+ *  there's no usage yet so CC / idle sessions render nothing extra. */
+export function selectNativeStatusChips(
+  usage: NativeUsageInput | undefined | null,
+  contextLength: number | undefined | null,
+): NativeStatusChips | null {
+  if (!usage) return null;
+  const tokensPerSecond = usage.tokensPerSecond ?? 0;
+  // Fix: the gauge asks "how close is the user to filling the window?", which is
+  // OCCUPANCY — the last prompt plus its reply. It used to sum in+out across
+  // every step of the turn, which both re-counted history per step AND reset to
+  // near-zero each turn (Destin, 2026-07-28). Older records carry no
+  // contextUsedTokens; the in+out sum is the closest thing they have.
+  const contextUsedTokens = usage.contextUsedTokens ?? (usage.inputTokens + usage.outputTokens);
+  // contextPct is REMAINING context. Falsy contextLength (unknown window) → null
+  // so we never fabricate a percentage; the token + speed chips remain valid.
+  let contextPct: number | null = null;
+  if (contextLength) {
+    const remaining = Math.round(((contextLength - contextUsedTokens) / contextLength) * 100);
+    contextPct = Math.max(0, Math.min(100, remaining)); // clamp to [0,100]
+  }
+  return {
+    contextPct,
+    contextUsedTokens,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    tokensPerSecond,
+  };
+}
+
 function utilizationColor(pct: number): string {
   if (pct >= 80) return 'text-[#DD4444]';
   if (pct >= 50) return 'text-[#FF9800]';
@@ -174,6 +239,49 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return `${n}`;
+}
+
+/** What the context pill renders, for a given display mode. `value` is the part
+ *  that carries the color band; `suffix` is the trailing word (empty in tokens
+ *  mode, where "35.2k / 64k" already reads as a quantity).
+ *
+ *  WHY this is pure + exported: the two callers below (the Claude Code chip and
+ *  the native chip) must render IDENTICALLY for the same inputs — they are the
+ *  same conceptual pill fed from different sources. Keeping the decision here
+ *  instead of inline in both branches is what stops them drifting apart, and
+ *  lets the formatting be tested without mounting a StatusBar.
+ *
+ *  The color is ALWAYS derived from `pct` by the caller, in both modes, so
+ *  switching display never changes what green/amber/red mean.
+ *
+ *  Falls back to percent whenever the token figures aren't both known — a pill
+ *  reading "null / null" (or a blank) would be worse than the percentage the
+ *  user already trusts. */
+export function formatContextPill(
+  pct: number,
+  usedTokens: number | null | undefined,
+  windowTokens: number | null | undefined,
+  mode: ContextDisplay,
+): { value: string; suffix: string } {
+  if (mode === 'tokens' && usedTokens != null && windowTokens != null && windowTokens > 0) {
+    return { value: `${formatTokens(usedTokens)} / ${formatTokens(windowTokens)}`, suffix: '' };
+  }
+  return { value: `${pct}%`, suffix: 'Remaining' };
+}
+
+/** Tokens CONSUMED, derived from a percent-remaining reading and the window size.
+ *  Used by the Claude Code chip, which is told the window and the percentage but
+ *  never the raw used count (statusline.sh exposes `context_window_size` +
+ *  `contextPercent`, not consumption). The native chip does NOT use this — it has
+ *  a real measured used-token count and passes that straight through.
+ *
+ *  Necessarily APPROXIMATE: `pct` arrives already rounded to a whole number, so
+ *  the result carries up to half a percent of the window as error. Fine for a
+ *  glanceable pill; do not reuse it anywhere a token count must be exact. */
+export function derivedUsedTokens(pct: number, windowTokens: number | null | undefined): number | null {
+  if (windowTokens == null || windowTokens <= 0) return null;
+  const clamped = Math.max(0, Math.min(100, pct));
+  return Math.round(windowTokens * (1 - clamped / 100));
 }
 
 /** Format seconds as human-readable duration (e.g. 125 -> "2m 5s", 3700 -> "1h 1m") */
@@ -222,6 +330,13 @@ interface Props {
   openTasksCounts?: { running: number; pending: number };
   /** Fired when the user clicks the Open Tasks chip. */
   onOpenOpenTasks?: () => void;
+  /** Native-runtime sessions only (Task 12): the active session's most-recent
+   *  turn-complete usage. null/absent for CC + idle sessions (chips stay hidden). */
+  nativeUsage?: NativeUsageInput | null;
+  /** Native-runtime sessions only: the session's REAL context window (resolved in
+   *  main, Task 4/5) carried on the same usage payload. null when unknown → the
+   *  context % chip is omitted but tokens + speed still render. */
+  nativeContextLength?: number | null;
 }
 
 
@@ -510,7 +625,6 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
   // so the Theme pill's cycle can be edited without leaving the widget popup.
   const { allThemes, cycleList, setCycleList } = useTheme();
   // Scroll-fade: hide scrollbar, fade edges to signal hidden scroll room.
-  const widgetListRef = useScrollFade<HTMLDivElement>();
 
   if (!open) return null;
 
@@ -526,34 +640,13 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
   return createPortal(
     <>
-      {/* Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
-          Layout mirrors ResumeBrowser: outer flex wrapper centers the panel,
-          panel uses position:relative + flex-col + max-h so its flex-1 scroll
-          region actually has a bounded height to scroll within. The prior
-          position:fixed + transform approach broke the height constraint. */}
-      <Scrim layer={2} onClick={onClose} />
-      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
-        <OverlayPanel
-          layer={2}
-          className="w-full max-w-[420px] max-h-[80vh] flex flex-col pointer-events-auto"
-          style={{ position: 'relative', zIndex: 'auto' }}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-            <h2 className="text-sm font-bold text-fg">Status Bar Widgets</h2>
-            <CloseButton onClick={onClose} label="Close status bar widgets" />
-          </div>
-
-          {/* Widget list grouped by category — scrolls within the panel.
-              No flex-1: OverlayPanel only has max-h (indefinite height), which breaks
-              flex-grow in Chromium. Using default flex: 0 1 auto lets flex-shrink
-              clamp this div when content exceeds max-h so overflow-y: auto engages
-              and the scroll-fade hook sees a real scroll. */}
-          {/* Padding lives on an inner wrapper so the scroll-fade element itself has
-              no padding — sticky fade pseudos then sit flush with the scroll-fade's
-              outer edge. Rounded corners are clipped via overflow:hidden on .layer-surface. */}
-          <div ref={widgetListRef} className="scroll-fade">
-            <div className="px-4 py-3 space-y-4">
+      {/* This popup already used the outer-flex-wrapper centering that Dialog
+          now owns -- it was one of the two places that had independently
+          discovered transform centering breaks a bounded scroll region. Its
+          "No flex-1" workaround is gone too: that was needed because its body
+          was a bare overflow-y-auto div with no min-height:0, which .scroll-fade
+          supplies. */}
+      <Dialog open onClose={onClose} title="Status Bar Widgets" size="panel">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
                 <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
@@ -687,10 +780,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                 </div>
               </section>
             ))}
-            </div>
-          </div>
-        </OverlayPanel>
-      </div>
+      </Dialog>
     </>,
     document.body
   );
@@ -703,6 +793,7 @@ export default function StatusBar({
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
+  nativeUsage, nativeContextLength,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
 
@@ -711,7 +802,7 @@ export default function StatusBar({
   // bootstrap, which can run after this module is imported. null in the built app
   // and on remote/Android, so this renders nothing there.
   const devLabel = window.claude?.devLabel ?? null;
-  const { activeTheme, cycleTheme } = useTheme();
+  const { activeTheme, cycleTheme, contextDisplay } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
   const [popupOpen, setPopupOpen] = useState(false);
   // Version pill now opens the in-app UpdatePanel (changelog + update action) instead of firing external URLs.
@@ -720,6 +811,27 @@ export default function StatusBar({
 
   const show = (id: WidgetId) => visible.has(id);
   const ss = sessionStats; // shorthand
+
+  // Native-runtime chips (Task 12). Non-null only for native sessions that have
+  // completed at least one turn; CC/idle sessions get null and render nothing
+  // extra. Fed the session's real context window (resolved in main) so the
+  // context % is accurate for the local model, not a hardcoded guess.
+  const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
+
+  // In/Out come from the CC statusline for CC sessions and from turn-complete
+  // usage for native ones. Native used to render its OWN "Tokens" chip (just
+  // in+out summed) while these two sat at "--" forever, because sessionStats is
+  // only ever written by CC — two dead chips beside a redundant third
+  // (Destin, 2026-07-28). One concept, one chip, whichever runtime feeds it.
+  const inTokens = ss?.inputTokens ?? nativeChips?.inputTokens ?? null;
+  const outTokens = ss?.outputTokens ?? nativeChips?.outputTokens ?? null;
+  // Speed had the identical problem: a CC chip stuck at "--" for native sessions
+  // beside a native chip that duplicated it AND ignored show('output-speed'), so
+  // hiding Speed in settings didn't hide it. CC derives it from the statusline's
+  // apiDuration; native's provider already reports tokens/sec on turn-complete.
+  const speedTokPerSec = ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
+    ? Math.round(ss.outputTokens / ss.apiDuration)
+    : nativeChips?.tokensPerSecond ?? null;
 
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-3xs text-fg-muted">
@@ -840,18 +952,82 @@ export default function StatusBar({
         </button>
       )}
 
-      {/* Context remaining — clickable opens ContextPopup (compact/clear actions + explainer). */}
-      {show('context') && contextPercent != null && (
-        <button
-          onClick={() => setContextPopupOpen(true)}
-          aria-haspopup="dialog"
-          aria-label={`Context: ${contextPercent}% remaining. Click to manage context.`}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
-        >
-          <span>Context:</span>
-          <span className={contextColor(contextPercent)}>{contextPercent}%</span>
-          <span>Remaining</span>
-        </button>
+      {/* Context remaining — clickable opens ContextPopup (compact/clear actions + explainer).
+          Renders as a percentage or as "used / window" per the contextDisplay pref;
+          the aria-label always states the percentage so the accessible name stays
+          stable and meaningful regardless of the visual mode. */}
+      {show('context') && contextPercent != null && (() => {
+        const pill = formatContextPill(
+          contextPercent,
+          derivedUsedTokens(contextPercent, sessionStats?.contextTokens),
+          sessionStats?.contextTokens,
+          contextDisplay,
+        );
+        return (
+          <button
+            onClick={() => setContextPopupOpen(true)}
+            aria-haspopup="dialog"
+            aria-label={`Context: ${contextPercent}% remaining. Click to manage context.`}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+          >
+            <span>Context:</span>
+            <span className={contextColor(contextPercent)}>{pill.value}</span>
+            {pill.suffix && <span>{pill.suffix}</span>}
+          </button>
+        );
+      })()}
+
+      {/* Native-runtime context chip (Task 12) — derived from the local model's
+          last turn-complete usage. Tokens and speed no longer render here: they
+          feed the shared In:/Out:/Speed: chips further down, which are otherwise
+          dead in native sessions (nothing writes the CC statusline).
+          The CC context chip above renders from `contextPercent`, which is always
+          null for native sessions (they write no .context-* file), so there is no
+          duplicate context chip. Reuses the exact CC chip markup — no restyle.
+
+          v1 limitation: values reflect the LAST COMPLETED turn, so during a long
+          agentic turn the context chip lags until the turn finishes (spec #7). */}
+      {nativeChips && (
+        <>
+          {/* Context remaining — reuses the CC context chip's visual style. Not a
+              button: the CC version opens ContextPopup (CC-only /compact + /clear
+              actions); native compaction is engine-driven, so this is display-only. */}
+          {show('context') && nativeChips.contextPct != null && (() => {
+            // Native passes its MEASURED used-token count straight through — unlike
+            // the CC chip above, which has to derive "used" from a rounded percent.
+            const pill = formatContextPill(
+              nativeChips.contextPct,
+              nativeChips.contextUsedTokens,
+              nativeContextLength,
+              contextDisplay,
+            );
+            return (
+              // Clickable since M3 item 2 (Destin's request, 2026-07-25). It was
+              // deliberately a plain <span> while the popup's only two actions —
+              // Compact and Clear — had no native implementation and would have
+              // been dead buttons. Both are real now, so this opens the SAME
+              // ContextPopup the Claude Code chip does.
+              <button
+                onClick={() => setContextPopupOpen(true)}
+                aria-haspopup="dialog"
+                aria-label={`Context: ${nativeChips.contextPct}% remaining. Click to manage context.`}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+                title={`Context: ${nativeChips.contextPct}% of the model's window remaining${
+                  nativeContextLength ? ` (${nativeChips.contextUsedTokens.toLocaleString()} of ${nativeContextLength.toLocaleString()} tokens used)` : ''
+                }`}
+              >
+                <span>Context:</span>
+                <span className={contextColor(nativeChips.contextPct)}>{pill.value}</span>
+                {pill.suffix && <span>{pill.suffix}</span>}
+              </button>
+            );
+          })()}
+
+          {/* No "Tokens" or "Speed" chip here — native in/out/speed feed the
+              shared In:/Out:/Speed: chips below (see the inTokens/outTokens/
+              speedTokPerSec derivations), so each concept has exactly one chip
+              and each honors its own show() toggle. */}
+        </>
       )}
 
       {/* Session cost — estimated USD cost for this session */}
@@ -884,10 +1060,10 @@ export default function StatusBar({
       {show('tokens-in') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.inputTokens != null ? `Input tokens: ${ss.inputTokens.toLocaleString()}` : 'Input tokens'}
+          title={inTokens != null ? `Input tokens: ${inTokens.toLocaleString()}` : 'Input tokens'}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{ss?.inputTokens != null ? formatTokens(ss.inputTokens) : '--'}</span>
+          <span className="text-fg-2">{inTokens != null ? formatTokens(inTokens) : '--'}</span>
         </span>
       )}
 
@@ -895,10 +1071,10 @@ export default function StatusBar({
       {show('tokens-out') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null ? `Output tokens: ${ss.outputTokens.toLocaleString()}` : 'Output tokens'}
+          title={outTokens != null ? `Output tokens: ${outTokens.toLocaleString()}` : 'Output tokens'}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{ss?.outputTokens != null ? formatTokens(ss.outputTokens) : '--'}</span>
+          <span className="text-fg-2">{outTokens != null ? formatTokens(outTokens) : '--'}</span>
         </span>
       )}
 
@@ -950,13 +1126,11 @@ export default function StatusBar({
       {show('output-speed') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output speed'}
+          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
-            {ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
-              ? `${Math.round(ss.outputTokens / ss.apiDuration)} tok/s`
-              : '--'}
+            {speedTokPerSec != null ? `${speedTokPerSec} tok/s` : '--'}
           </span>
         </span>
       )}
@@ -1113,12 +1287,16 @@ export default function StatusBar({
       )}
 
       {/* Context popup — portal-rendered; position in tree is cosmetic. */}
+      {/* Native sessions have their own numbers: the CC fields (contextPercent /
+          sessionStats) are always null for them, because a native session writes
+          no statusline file. Feed the harness-derived figures so the popup shows
+          real values instead of "--" now that the native pill can open it. */}
       <ContextPopup
         open={contextPopupOpen}
         onClose={() => setContextPopupOpen(false)}
         sessionId={sessionId ?? null}
-        contextPercent={contextPercent}
-        contextTokens={sessionStats?.contextTokens ?? null}
+        contextPercent={contextPercent ?? nativeChips?.contextPct ?? null}
+        contextTokens={sessionStats?.contextTokens ?? nativeContextLength ?? null}
         onDispatch={onDispatch ?? (() => {})}
       />
     </div>

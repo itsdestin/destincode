@@ -59,6 +59,13 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
     { tool: 'TodoWrite', action: 'allow' },
     { tool: 'WebFetch', action: 'allow' },
     { tool: 'WebSearch', action: 'allow' },
+    // Skill is a READ, and a narrower one than Read itself: it opens exactly one
+    // file, in a directory the app discovered, chosen from a list the app itself
+    // advertised. Returning that text has no side effect — every action a skill
+    // INSTRUCTS is performed by some other tool, which is gated on its own terms.
+    // Prompting here would add friction with no safety gained, and would train the
+    // user to click through prompts that never matter (M3 item 1).
+    { tool: 'Skill', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':

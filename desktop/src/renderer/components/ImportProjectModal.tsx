@@ -3,9 +3,8 @@
 // and folder-picker). The move is consequence-gated: the copy spells out that
 // the folder itself MOVES (old path stops existing) before anything happens.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, TextInput } from './ui';
+import { Button, Dialog, TextInput } from './ui';
 
 interface Props {
   sourcePath: string;
@@ -98,13 +97,15 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
 
   return (
     <>
-      <Scrim layer={2} onClick={busy ? undefined : dismiss} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal
-        aria-labelledby="import-project-title"
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[26rem] max-w-[calc(100vw-2rem)] p-4"
+      <Dialog
+        open
+        // Dismissal stays suppressed mid-import: an interrupted move would
+        // leave the folder half-relocated.
+        onClose={busy ? () => {} : dismiss}
+        size="panel"
+        aria-label="Import project"
+        scrollBody={false}
+        className="p-4"
       >
         {doneWarnings ? (
           <>
@@ -129,7 +130,7 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
             </div>
             {/* htmlFor/id pair added: the label was floating unassociated, so
                 screen readers announced this field with no name. */}
-            <label htmlFor="import-project-name" className="block mt-3 text-3xs uppercase tracking-wide text-fg-muted">Project name</label>
+            <label htmlFor="import-project-name" className="text-3xs font-medium text-fg-muted tracking-wider uppercase block mt-3">Project name</label>
             {/* Shared TextInput (change 20). Stays a plain field, NOT an
                 InputGroup: the "Move and sync" button lives in the modal footer
                 below, not inline beside the field. */}
@@ -151,7 +152,7 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
             </div>
           </>
         )}
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

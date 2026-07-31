@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTheme } from '../state/theme-context';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { PublishState } from '../../shared/theme-marketplace-types';
-import { Button } from './ui';
+import { Button, Dialog, LoadingState } from './ui';
 
 interface ThemeShareSheetProps {
   themeSlug: string;
@@ -82,14 +81,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
   return (
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
     <>
-      <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel
-        layer={2}
-        role="dialog"
-        aria-modal={true}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-5 max-w-md w-[calc(100%-2rem)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Dialog open onClose={onClose} size="panel" aria-label="Publish theme" scrollBody={false} className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-bold text-fg">
             Publish: {theme.name}
@@ -103,7 +95,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
         <div className="rounded-lg overflow-hidden border border-edge-dim mb-4">
           {previewLoading ? (
             <div className="w-full h-40 bg-well flex items-center justify-center">
-              <span className="text-xs text-fg-muted animate-pulse">Generating preview...</span>
+              <LoadingState what="the preview" variant="inline" />
             </div>
           ) : previewPath ? (
             <img
@@ -162,7 +154,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
             <p className="text-xs text-destructive-fg text-center mt-2">{publishError}</p>
           )}
         </div>
-      </OverlayPanel>
+      </Dialog>
     </>
   );
 }

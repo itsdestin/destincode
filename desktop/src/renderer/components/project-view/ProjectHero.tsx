@@ -203,7 +203,7 @@ export function ProjectHero({
     <div className="layer-surface p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
       {/* Left: eyebrow + name switcher + path/repo + stat row */}
       <div className="min-w-0">
-        <div className="text-3xs font-medium tracking-wider text-fg-muted uppercase mb-1.5">
+        <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">
           Project
         </div>
 

@@ -36,6 +36,8 @@ export const EditTool = defineTool({
   name: 'Edit',
   description:
     'Replace an exact string in a file. old_string must match exactly once (or pass replace_all). You must Read the file first.',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  shortDescription: 'Replace an exact string in a file with new text.',
   inputSchema: z.object({
     file_path: z.string(),
     old_string: z.string(),

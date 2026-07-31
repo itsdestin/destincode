@@ -28,6 +28,10 @@ const SOUND_CUSTOM_PATH_PREFIX = 'youcoded-sound-custom-path-'; // + category
 export interface SoundPreset {
   id: string;
   label: string;
+  /** Short tone signature shown under the label, e.g. "C5 → E5". Lifted from
+   *  the trailing comments these definitions used to carry — with 15 presets
+   *  in one list, the label alone is not enough to tell them apart. */
+  desc?: string;
   /** Synthesize the sound at the given volume (0–1) */
   play: (volume: number) => void;
 }
@@ -130,22 +134,25 @@ function doubleTap(freq: number, type: OscillatorType = 'sine') {
 
 // ── Stock preset definitions (shared across both categories) ────────────────
 
+// The tone signature moved from a trailing comment into `desc` so the UI can
+// show it. It is the only thing that distinguishes "Ping" from "Blip" from
+// "Pop" before you hear them.
 export const STOCK_PRESETS: SoundPreset[] = [
-  { id: 'chime',     label: 'Chime',     play: twoTone([523.25, 659.25]) },             // C5 → E5
-  { id: 'bell',      label: 'Bell',      play: twoTone([659.25, 783.99], 'triangle') }, // E5 → G5
-  { id: 'arpeggio',  label: 'Arpeggio',  play: triTone([523.25, 659.25, 783.99]) },     // C5 → E5 → G5
-  { id: 'soft',      label: 'Soft',      play: pulse(440, 'sine', 0.25) },               // A4 gentle
-  { id: 'sparkle',   label: 'Sparkle',   play: triTone([783.99, 987.77, 1174.66], 'triangle') }, // G5 → B5 → D6
-  { id: 'drop',      label: 'Drop',      play: descending([783.99, 523.25]) },            // G5 → C5
-  { id: 'nudge',     label: 'Nudge',     play: doubleTap(440) },                          // A4 double tap
-  { id: 'alert',     label: 'Alert',     play: descending([880, 659.25]) },               // A5 → E5
-  { id: 'ping',      label: 'Ping',      play: pulse(880, 'triangle', 0.12) },            // A5 short
-  { id: 'knock',     label: 'Knock',     play: doubleTap(330, 'triangle') },              // E4 soft knock
-  { id: 'pop',       label: 'Pop',       play: pulse(587.33, 'sine', 0.1) },              // D5 short pop
-  { id: 'blip',      label: 'Blip',      play: pulse(698.46, 'triangle', 0.08) },         // F5 blip
-  { id: 'rise',      label: 'Rise',      play: twoTone([392, 523.25]) },                  // G4 → C5
-  { id: 'bubble',    label: 'Bubble',    play: twoTone([493.88, 587.33], 'triangle') },   // B4 → D5
-  { id: 'ding',      label: 'Ding',      play: pulse(1046.5, 'sine', 0.15) },             // C6 ding
+  { id: 'chime',     label: 'Chime',     desc: 'C5 → E5',         play: twoTone([523.25, 659.25]) },
+  { id: 'bell',      label: 'Bell',      desc: 'E5 → G5',         play: twoTone([659.25, 783.99], 'triangle') },
+  { id: 'arpeggio',  label: 'Arpeggio',  desc: 'C5 → E5 → G5',    play: triTone([523.25, 659.25, 783.99]) },
+  { id: 'soft',      label: 'Soft',      desc: 'A4 gentle',       play: pulse(440, 'sine', 0.25) },
+  { id: 'sparkle',   label: 'Sparkle',   desc: 'G5 → B5 → D6',    play: triTone([783.99, 987.77, 1174.66], 'triangle') },
+  { id: 'drop',      label: 'Drop',      desc: 'G5 → C5',         play: descending([783.99, 523.25]) },
+  { id: 'nudge',     label: 'Nudge',     desc: 'A4 double tap',   play: doubleTap(440) },
+  { id: 'alert',     label: 'Alert',     desc: 'A5 → E5',         play: descending([880, 659.25]) },
+  { id: 'ping',      label: 'Ping',      desc: 'A5 short',        play: pulse(880, 'triangle', 0.12) },
+  { id: 'knock',     label: 'Knock',     desc: 'E4 soft knock',   play: doubleTap(330, 'triangle') },
+  { id: 'pop',       label: 'Pop',       desc: 'D5 short pop',    play: pulse(587.33, 'sine', 0.1) },
+  { id: 'blip',      label: 'Blip',      desc: 'F5 blip',         play: pulse(698.46, 'triangle', 0.08) },
+  { id: 'rise',      label: 'Rise',      desc: 'G4 → C5',         play: twoTone([392, 523.25]) },
+  { id: 'bubble',    label: 'Bubble',    desc: 'B4 → D5',         play: twoTone([493.88, 587.33], 'triangle') },
+  { id: 'ding',      label: 'Ding',      desc: 'C6 ding',         play: pulse(1046.5, 'sine', 0.15) },
 ];
 
 // Special ID indicating user chose a custom sound file
