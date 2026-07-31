@@ -9,10 +9,9 @@ import { useEscClose } from '../../hooks/use-esc-close';
 import { useTagRegistry } from '../../hooks/useTagRegistry';
 import { useSessionMeta } from '../../hooks/useSessionMeta';
 import type { TagRecord } from '../../../shared/tags';
-import { TagPicker } from './TagPicker';
+import { TagNoteEditor } from './TagNoteEditor';
 import { PRIORITY_TAG, PRIORITY_HINT } from './built-in-tags';
 import { TagManagerPopup } from './TagManagerPopup';
-import { NoteEditor } from './NoteEditor';
 
 export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
   const [open, setOpen] = useState(false);
@@ -79,18 +78,26 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                 <button onClick={() => setOpen(false)}
                   className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">×</button>
               </div>
-              <div className="px-4 py-3 space-y-3 overflow-y-auto">
-                {/* Same list as the Resume Browser's tag sheet, Priority
-                    included as a built-in. The two surfaces disagreeing about
-                    whether Priority is a tag was the inconsistency this pass
-                    exists to remove. Complete is deliberately NOT offered here:
-                    a session you are sitting in is not finished, and the close
-                    prompt is where that decision belongs. */}
-                <TagPicker
+              <div className="px-4 py-3 overflow-y-auto">
+                {/* The SAME editor the close prompt uses, not a copy of its
+                    styling — see TagNoteEditor's header for why that
+                    distinction earned its own component on this branch.
+                    Priority rides along as a built-in tag; Complete is
+                    deliberately NOT offered here, because a session you are
+                    sitting in is not finished and the close prompt owns that
+                    decision.
+                    Footer says "Done", not "Save": this surface persists every
+                    keystroke as you make it, so claiming there is something
+                    left to save would be a lie. The close prompt says "Save"
+                    because there, the writes really are still pending. */}
+                <TagNoteEditor
                   appliedIds={meta.tags}
-                  onToggle={meta.setTag}
+                  onToggleTag={meta.setTag}
                   registry={registry}
                   onManageTags={() => setManageOpen(true)}
+                  note={meta.note}
+                  onNote={meta.setNote}
+                  footer={{ label: 'Done', onClick: () => setOpen(false) }}
                   builtIns={[{
                     tag: PRIORITY_TAG,
                     hint: PRIORITY_HINT,
@@ -98,10 +105,6 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                     onToggle: (next) => meta.setFlag('priority', next),
                   }]}
                 />
-                {/* No "NOTE" header — the placeholder says it, and the three
-                    tag/note surfaces agree on having none. The dialog's own
-                    title ("Tags & note") already names what is here. */}
-                <NoteEditor value={meta.note} onSave={meta.setNote} />
               </div>
             </OverlayPanel>
           </div>

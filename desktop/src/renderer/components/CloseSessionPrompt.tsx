@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
-import { TagPicker } from './tags/TagPicker';
+import { TagNoteEditor } from './tags/TagNoteEditor';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagChip } from './tags/TagChip';
 import { TagGlyph, NotePageGlyph, PencilGlyph } from './tags/glyphs';
 import type { TagRecord } from '../../shared/tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
-import { NoteEditor } from './tags/NoteEditor';
 import { Button, Dialog, Toggle } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
@@ -243,58 +242,41 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   the card itself stays put, glyphs instead of section labels,
                   the note quoted and clamped to two lines, and the editor as a
                   single well closed by a Save pill. */}
-              <div className="rounded-lg border border-edge-dim bg-inset px-3 py-2.5">
-                {editing ? (
-                  <div className="flex flex-col gap-2">
-                    {/* No inner container. The editor's fields sit DIRECTLY on
-                        the card, separated by a rule rather than nested in a
-                        second box — two concentric containers around the tag
-                        list read as one too many (2026-07-31).
-                        The cost of that, and why fieldClassName exists: the
-                        shared FIELD surface is `bg-inset`, which is also this
-                        card's fill, so on the card the search box and the
-                        textarea would have been the same colour as the thing
-                        behind them. They take `bg-well` instead — one step
-                        deeper, the ladder used properly, and the same override
-                        ModelPicker's trigger already makes for the same reason. */}
-                    {/* Priority as a built-in, as in the Resume Browser's tag
-                        sheet and the in-session chip. Unlike those two this one
-                        is DEFERRED: the dialog collects a result and the caller
-                        writes it on confirm, so this toggles local state
-                        instead of calling setFlag. Cancel must leave nothing
-                        behind. */}
-                    <TagPicker
-                      appliedIds={tagIds}
-                      onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
-                      registry={registry}
-                      onManageTags={() => setManageOpen(true)}
-                      fieldClassName="bg-well border-edge"
-                      builtIns={[{
-                        tag: PRIORITY_TAG,
-                        hint: PRIORITY_HINT,
-                        applied: sel.priority,
-                        onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
-                      }]}
-                    />
-                    <div className="border-t border-edge-dim pt-2">
-                      {/* Collapsing UNMOUNTS this, and NoteEditor commits its
-                          draft on unmount as well as on blur — so "type a note,
-                          press Save" keeps the note. */}
-                      <NoteEditor
-                        value={note}
-                        onSave={setNote}
-                        placeholder="Add a note…"
-                        fieldClassName="bg-well border-edge"
-                      />
-                    </div>
-                    <SaveButton onClick={() => setEditing(false)} />
-                  </div>
+              {editing ? (
+                  // Priority as a built-in, as in the Resume Browser's tag sheet
+                  // and the in-session chip. Unlike those two this one is
+                  // DEFERRED: the dialog collects a result and the caller writes
+                  // it on confirm, so this toggles local state instead of
+                  // calling setFlag. Cancel must leave nothing behind.
+                  //
+                  // "Save" collapses back to the summary and writes NOTHING —
+                  // the dialog's own button is what commits. Pinned in a test,
+                  // because the label invites someone to wire it to onConfirm.
+                  <TagNoteEditor
+                    appliedIds={tagIds}
+                    onToggleTag={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                    registry={registry}
+                    onManageTags={() => setManageOpen(true)}
+                    note={note}
+                    onNote={setNote}
+                    footer={{ label: 'Save', onClick: () => setEditing(false) }}
+                    builtIns={[{
+                      tag: PRIORITY_TAG,
+                      hint: PRIORITY_HINT,
+                      applied: sel.priority,
+                      onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
+                    }]}
+                  />
                 ) : (
                   <button
                     type="button"
                     onClick={() => setEditing(true)}
                     aria-label="Edit tags and note"
-                    className="group relative w-full text-left"
+                    // The card lives HERE now, not on a shared wrapper: the
+                    // editor brings its own (TagNoteEditor), and both states
+                    // draw the same border/fill/padding so the dialog body
+                    // still doesn't change shape when you click in.
+                    className="group relative w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5"
                   >
                     {/* Fixed 16px glyph column so the chips and the note text
                         start on the SAME left edge — letting each row set its
@@ -320,12 +302,11 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                         <span className="text-2xs text-fg-muted min-w-0">No note</span>
                       )}
                     </span>
-                    <span className="absolute top-0 right-0 text-fg-faint group-hover:text-fg transition-colors">
+                    <span className="absolute top-2.5 right-3 text-fg-faint group-hover:text-fg transition-colors">
                       <PencilGlyph className="w-3.5 h-3.5" />
                     </span>
                   </button>
                 )}
-              </div>
 
               {/* Mark complete sits LAST: the tags above are optional filing,
                   this is the actual "are you done with it?" question, and it
