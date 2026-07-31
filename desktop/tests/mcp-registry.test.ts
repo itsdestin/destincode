@@ -100,4 +100,15 @@ describe('McpRegistry', () => {
     expect(sanitizeServerId('Google Services!')).toBe('google-services');
     expect(sanitizeServerId('a__b')).toBe('a-b'); // '__' is the tool-name separator
   });
+
+  // Extra beyond the brief's six: upsert() is the one place that actually
+  // persists an id, so it's the backstop against a hand-built (not run
+  // through sanitizeServerId) id reaching disk and making
+  // mcp__{server}__{tool} ambiguous to parse later (Task 5).
+  it('rejects an id containing the reserved "__" tool-name separator', async () => {
+    const home = fakeHome(); const secrets = fakeSecrets();
+    const reg = new McpRegistry(home, secrets);
+    await expect(reg.upsert({ ...stdioEntry, id: 'a__b' })).rejects.toThrow(/__/);
+    expect(reg.list()).toEqual([]);
+  });
 });
