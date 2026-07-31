@@ -460,6 +460,20 @@ export type ChatAction =
       type: 'PERMISSION_EXPIRED';
       sessionId: string;
       requestId: string;
+      /** Why the ask ended. ONLY 'hook-closed' (far end died, menu may still
+       *  be live) retains the card. Absent = resolve: retention is the
+       *  riskier behavior, and the native PermissionBroker + older remote
+       *  shims never send a reason — defaulting to retain would wedge them
+       *  (spec §2c/§2d). Optional so older serialized actions deserialize. */
+      reason?: 'app-timeout' | 'unroutable' | 'delivery-failed' | 'hook-closed';
+    }
+  | {
+      /** Quiet local resolve of an EXPIRED card: the user answered in the
+       *  terminal (menu left the buffer) or clicked Dismiss. No error text —
+       *  nothing failed. */
+      type: 'PERMISSION_CARD_RESOLVED';
+      sessionId: string;
+      toolUseId: string;
     }
   | {
       type: 'PERMISSION_RESPONDED';

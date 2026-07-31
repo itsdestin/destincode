@@ -176,7 +176,15 @@ function endTurn(
   for (const id of session.activeTurnToolIds) {
     const tool = toolCalls.get(id);
     if (tool && (tool.status === 'running' || tool.status === 'awaiting-approval')) {
-      toolCalls.set(id, { ...tool, status: 'failed', error: errorMessage });
+      // Fix: also clear `expired` when force-failing. A retained hook-closed
+      // card (PERMISSION_EXPIRED reason 'hook-closed') carries `expired: true`
+      // while still 'awaiting-approval'. If the session then dies here, the
+      // card is now genuinely settled ('failed') — leaving `expired` set is
+      // stale state that lets a later quiet PERMISSION_CARD_RESOLVED (Dismiss
+      // button, stale-detector callback) pass its `!tool.expired` guard and
+      // silently overwrite this real failure with 'complete' and no error.
+      const { expired: _expired, ...rest } = tool;
+      toolCalls.set(id, { ...rest, status: 'failed', error: errorMessage });
     }
   }
   return {
@@ -824,7 +832,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       for (const [synId, synTool] of toolCalls) {
         if (synId.startsWith('perm-') && synTool.toolName === action.toolName
             && synTool.status === 'awaiting-approval') {
-          // Replace synthetic with real tool, preserving permission state
+          // Replace synthetic with real tool, preserving permission state.
+          // Fix: this field list is HAND-PICKED, not a spread — any ToolCallState
+          // field a synthetic card can carry that isn't listed here is silently
+          // dropped on merge. `expired` was missing: a hook-closed retained card
+          // (status stays 'awaiting-approval', expired: true, requestId cleared)
+          // that merges with its real TRANSCRIPT_TOOL_USE used to lose `expired`,
+          // leaving a card with no requestId (unanswerable) and no expired flag
+          // (unresolvable — PERMISSION_CARD_RESOLVED's guard requires it) — an
+          // orphan stuck awaiting-approval forever. If you add a new field to
+          // ToolCallState that a synthetic card can carry, add it here too.
           toolCalls.delete(synId);
           toolCalls.set(action.toolUseId, {
             toolUseId: action.toolUseId,
@@ -834,6 +851,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            expired: synTool.expired,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -881,12 +899,28 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
       if (mergedSynthetic) return next;
 
-      toolCalls.set(action.toolUseId, {
-        toolUseId: action.toolUseId,
-        toolName: action.toolName,
-        input: action.toolInput,
-        status: 'running',
-      });
+      // Fix: this write must be IDEMPOTENT for a toolUseId that already has a
+      // progressed entry. transcript-watcher.ts's readNewLines re-emits
+      // tool-use on a repeated line uuid by design (CC rewrites the same
+      // JSONL line as the assistant message grows, and the earlier tool_use
+      // block is still present in the rewrite) — see its dedup-by-uuid
+      // comment. If the hook relay already carried this same toolUseId past
+      // 'running' (awaiting-approval, or retained via PERMISSION_EXPIRED
+      // 'hook-closed': awaiting-approval + expired: true), a later re-emit
+      // used to unconditionally stamp a bare { status: 'running' } object
+      // here, erasing that progress — and since the pty-input gates key off
+      // `status`, a retained card's gates would flip back open while the
+      // terminal's Ink menu may still be live. Only a genuinely new
+      // toolUseId gets a fresh 'running' card.
+      const existingCall = toolCalls.get(action.toolUseId);
+      toolCalls.set(action.toolUseId, existingCall
+        ? { ...existingCall, toolName: action.toolName, input: action.toolInput }
+        : {
+            toolUseId: action.toolUseId,
+            toolName: action.toolName,
+            input: action.toolInput,
+            status: 'running',
+          });
 
       let { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const toolGroups = new Map(session.toolGroups);
@@ -966,14 +1000,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // Carry structuredPatch onto the tool state so DiffView can render
         // with absolute file line numbers (Claude Code ships it pre-computed).
         const patch = action.structuredPatch;
+        // Fix: a tool_result settling a card must clear `expired`, or a card
+        // retained through PERMISSION_EXPIRED('hook-closed') stays flagged
+        // expired forever even though it just settled normally. This IS the
+        // retention feature's primary success path (not an edge case): the
+        // user answers the still-live terminal menu, Claude Code runs the
+        // tool, and this tool_result lands on the same toolUseId —
+        // PERMISSION_CARD_RESOLVED never fires for it. A card must always end
+        // up either retained (awaiting-approval + expired) or settled
+        // (failed/complete, expired cleared) — never both.
         if (action.isError) {
           toolCalls.set(action.toolUseId, {
-            ...existing, status: 'failed', error: action.result,
+            ...existing, status: 'failed', error: action.result, expired: undefined,
             ...(patch ? { structuredPatch: patch } : {}),
           });
         } else {
           toolCalls.set(action.toolUseId, {
-            ...existing, status: 'complete', response: action.result,
+            ...existing, status: 'complete', response: action.result, expired: undefined,
             ...(patch ? { structuredPatch: patch } : {}),
           });
         }
@@ -1238,16 +1281,65 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const toolCalls = new Map(session.toolCalls);
       for (const [id, tool] of toolCalls) {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
-          toolCalls.set(id, {
-            ...tool,
-            status: 'failed',
-            requestId: undefined,
-            error: 'Permission request expired — socket closed before a response was sent',
-          });
+          if (action.reason === 'hook-closed') {
+            // Far end died (relay timeout/death, CC killed the hook) but the
+            // Ink menu may STILL be on screen. Retain provisionally: keep
+            // awaiting-approval so useSessionAttention stays red and the
+            // pty-input gates keep blocking sends into the live menu.
+            // usePromptDetector's menu-absence rule or the Dismiss button
+            // resolves it (spec §2/§2a). The reducer never reads the buffer.
+            toolCalls.set(id, { ...tool, requestId: undefined, expired: true });
+          } else if (action.reason === 'app-timeout' || action.reason === 'unroutable') {
+            // The app itself delivered a deny — accurate copy, no retention.
+            toolCalls.set(id, {
+              ...tool,
+              status: 'failed',
+              requestId: undefined,
+              error: action.reason === 'unroutable'
+                ? 'No open session could show this request — YouCoded auto-denied it'
+                : 'No response in time — YouCoded auto-denied this request so Claude could continue',
+            });
+          } else {
+            // 'delivery-failed' or absent (native PermissionBroker cancel,
+            // renderer delivery-failure recovery, older remote shim). DEFAULT
+            // IS RESOLVE, never retain: native sessions have no PTY (nothing
+            // to rebind), and delivery-failure means the socket is provably
+            // gone. Do not flip this default (spec §2c/§2d).
+            toolCalls.set(id, {
+              ...tool,
+              status: 'failed',
+              requestId: undefined,
+              error: 'Permission request expired — socket closed before a response was sent',
+            });
+          }
           break;
         }
       }
 
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
+
+    case 'PERMISSION_CARD_RESOLVED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const tool = session.toolCalls.get(action.toolUseId);
+      // Only a still-awaiting expired card resolves this way — a live ask
+      // must go through its buttons (which deliver a real decision through
+      // the socket). Fix: also require status === 'awaiting-approval', not
+      // just `expired`. endTurn() force-fails a retained hook-closed card
+      // ('failed' + real error) if the session dies before it's resolved,
+      // but historically left `expired` set — without this status check a
+      // late PERMISSION_CARD_RESOLVED (Dismiss button, stale-detector
+      // callback) would pass on that stale marker and silently flip a real
+      // failure to 'complete' with no error, erasing it.
+      if (!tool || !tool.expired || tool.status !== 'awaiting-approval') return state;
+      const toolCalls = new Map(session.toolCalls);
+      // 'complete' with no error: nothing failed — the ask was answered in
+      // the terminal or dismissed. If the tool really runs, the transcript's
+      // TOOL_RESULT overwrites this with the true outcome.
+      const { expired: _resolved, ...rest } = tool;
+      toolCalls.set(action.toolUseId, { ...rest, status: 'complete' });
       next.set(action.sessionId, { ...session, toolCalls });
       return next;
     }

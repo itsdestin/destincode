@@ -39,27 +39,35 @@ Keep PTY detection as the catch-all (for trust gates, non-hook menus), but add s
 
 The relay writes its payload and **waits**. The server decides what happens:
 - **Fire-and-forget:** Server closes socket without writing → relay sees `end` → exits 0 (backward compatible)
-- **Blocking allow:** Server holds socket, writes `{"allow":true}\n` → relay exits 0
-- **Blocking deny:** Server holds socket, writes `{"allow":false}\n` → relay exits 2
-- **Timeout safety:** Relay has a configurable timeout (default 30s, via `CLAUDE_RELAY_TIMEOUT` env var). If server goes silent → relay exits 0 (fail-open)
+- **Blocking decision:** Server holds socket, writes a decision in the real nested shape — `{"decision":{"behavior":"allow"}}` or `{"decision":{"behavior":"deny"}}` (see `main.ts`'s `hookRelay.respond()` calls and `relay-blocking.js`, which reads `appDecision.decision` and re-wraps it as `hookSpecificOutput.decision`) → relay wraps it in `hookSpecificOutput` and exits 0 either way; Claude Code reads the `decision` field, not the exit code. The nesting matters: a flat `{"decision":"allow"}` or bare-string decision reaches Claude Code as `decision: undefined`, silently dropping the answer. Exit 2 is the timeout path only (see below) — there is no deny-specific exit code.
+- **Timeout safety:** Relay has a configurable timeout (default 2h30m, via `CLAUDE_RELAY_TIMEOUT` env var). If the server goes silent past it → relay exits 2 (fail-closed deny)
 
 Key property: **relay doesn't need to know which hooks are blocking.** The server decides. This means adding new blocking hook types only requires server-side changes.
 
-### Spike Test Results (VALIDATED, 4/4 PASS)
+### Spike Test Results (re-run 2026-07-31, 4/4 PASS)
 
-We created `hook-scripts/relay-blocking.js` (the new relay) and `scripts/test-blocking-relay.js` (test harness). Results:
+We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). The harness previously asserted a deny-specific exit code (`exit 2`) that never matched shipped behavior — the relay has no such path; a delivered deny exits 0 like any other delivered decision, with the decision riding in stdout's `hookSpecificOutput`. Test 2's handler also previously sent the legacy flat `{"allow":true}` shape instead of the real nested `{"decision":{"behavior":"allow"}}` shape. Both were corrected to match `relay-blocking.js` as written, then re-run for real numbers (`node desktop/docs/test-blocking-relay.js` from the repo root; Linux, not Windows — see note below):
 
 ```
 === Blocking Relay Protocol Spike Test ===
-[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 413ms)
-[TEST] Blocking allow (server sends allow=true)...    PASS (exit=0, expected=0, 853ms)
-[TEST] Blocking deny (server sends allow=false)...    PASS (exit=2, expected=2, 853ms)
-[TEST] Timeout (server holds, relay fails open)...    PASS (exit=0, expected=0, 3365ms)
+[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 333ms)
+[TEST] Blocking allow (server sends allow decision)...     PASS (exit=0, expected=0, 839ms)
+[TEST] Blocking deny (server sends deny decision, exits 0 — decision rides in stdout)... PASS (exit=0, expected=0, 831ms)
+[TEST] Timeout (server holds, relay fails CLOSED — exit 2 deny)... PASS (exit=2, expected=2, 3348ms)
 ```
 
-The pipe protocol works on Windows. Backward compatibility confirmed.
+The pipe protocol works. Backward compatibility confirmed. (This re-run was executed on Linux, where `net.createServer().listen(PIPE_NAME)` binds the Windows-style pipe string as a plain Unix socket file — the harness doesn't branch on platform. Timings are illustrative for this machine/run, not a perf contract.)
 
 ## Implementation Plan
+
+> **Historical — this plan shipped, with two deliberate divergences.** Read it as
+> the original spike's proposal, not as current API docs. What actually shipped:
+> (1) the blocking hook is **`PermissionRequest`**, not `PreToolUse` (Step 5 below
+> guessed this might become possible — it did); (2) `respond()` takes the nested
+> **decision object** `{ decision: { behavior: 'allow' | 'deny' } }`, not the
+> `allow: boolean` / `{"allow": …}` shape sketched in Steps 2, 3 and 5 — see the
+> corrected protocol bullet near the top of this file. For current behavior,
+> trust `hook-relay.ts` and `relay-blocking.js`, not this section.
 
 ### Step 1: Replace relay.js with relay-blocking.js
 - `relay-blocking.js` is a drop-in replacement — when server closes without writing back, behavior is identical to current `relay.js`
@@ -120,6 +128,6 @@ The pipe protocol works on Windows. Backward compatibility confirmed.
 ## Design Constraints
 
 - PTY-based Ink detection (`usePromptDetector`, `PromptCard`, `TrustGate`) must remain as the fallback for non-hook interactive prompts. Do not remove or break it.
-- The protocol must fail-open (exit 0) on timeout or error — Claude Code must never deadlock waiting for a response that will never come.
+- The protocol fails CLOSED (exit 2) on timeout, and OPEN (exit 0) on connection error — no listener means a terminal session, which gets CC's own prompt. Claude Code must never deadlock waiting for a response that will never come; the staggered timeout tiers (2026-07-30 spec §1) are what guarantee that.
 - `relay-blocking.js` must remain backward-compatible with the current fire-and-forget server behavior.
 - The spec is at `~/.claude/specs/claude-desktop-ui-spec.md` — update the "Planned updates" section when done to reflect that blocking approval flow is implemented.

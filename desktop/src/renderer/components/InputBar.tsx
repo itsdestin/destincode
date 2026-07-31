@@ -13,7 +13,7 @@ import { isTypingTarget } from '../utils/is-typing-target';
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
 import { runNativeSlashAction, routeSlashResult } from '../state/native-slash-actions';
 import type { UsageSnapshot } from '../state/chat-types';
-import { hasPendingInteraction } from '../state/pty-input-gate';
+import { hasPendingInteraction, pendingInteractionKind, pendingInteractionRefusalCopy } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
 import { sendChatMessage } from './native-send';
 import type { NativeSendResult } from '../../shared/types';
@@ -349,7 +349,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               sendRef.current(true);
             });
           } else {
-            onToast?.('Claude is waiting for your response — answer the prompt first.');
+            // Same copy as the onSendBlocked branch above (and App.tsx's
+            // notifyIfPtyBlocked) — pendingInteractionRefusalCopy is the one
+            // source both refusal sites read from so they can't drift apart.
+            onToast?.(pendingInteractionRefusalCopy(pendingInteractionKind(session)));
           }
           return false;
         }

@@ -168,13 +168,17 @@ function ToolRow({
           decision,
         );
         if (delivered === false) {
-          // Fix: Socket already closed — mark expired so the UI unsticks.
+          // Fix: Socket already closed — resolve the card so the UI unsticks.
+          // reason: 'delivery-failed' — the write returned false, so the
+          // socket is provably gone; this must RESOLVE, never retain (spec
+          // §2c/§2d — retention would pin a card whose buttons cannot work).
           // Reset responding so user can retry if needed.
           setResponding(false);
           const action = {
             type: 'PERMISSION_EXPIRED' as const,
             sessionId,
             requestId: tool.requestId,
+            reason: 'delivery-failed' as const,
           };
           dispatch(action);
           (window as any).claude?.remote?.broadcastAction(action);
@@ -190,12 +194,15 @@ function ToolRow({
         (window as any).claude?.remote?.broadcastAction(action);
       } catch (err) {
         console.error('CompactToolStrip: failed to respond to permission:', err);
-        // Treat as expired so the card doesn't get stuck
+        // Treat as expired so the card doesn't get stuck. reason:
+        // 'delivery-failed' — same rationale as the delivered===false branch
+        // above: the throw means the socket is gone, so this must RESOLVE.
         if (tool.requestId) {
           const action = {
             type: 'PERMISSION_EXPIRED' as const,
             sessionId,
             requestId: tool.requestId,
+            reason: 'delivery-failed' as const,
           };
           dispatch(action);
           (window as any).claude?.remote?.broadcastAction(action);
@@ -248,38 +255,70 @@ function ToolRow({
       >
         {target}
       </span>
-      {/* Inline Allow / Deny / Always buttons only for awaiting-approval tools */}
-      {tool.status === 'awaiting-approval' && tool.requestId ? (
-        <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <button
-            disabled={responding}
-            onClick={() => respond({ decision: { behavior: 'allow' } })}
-            style={{ ...approveStyle, opacity: responding ? 0.5 : 1 }}
-          >
-            ✓ Allow
-          </button>
-          <button
-            disabled={responding}
-            onClick={() => respond({ decision: { behavior: 'deny' } })}
-            style={{ ...denyStyle, opacity: responding ? 0.5 : 1 }}
-          >
-            ✕ Deny
-          </button>
-          <button
-            disabled={responding}
-            onClick={() =>
-              respond({
-                decision: { behavior: 'allow' },
-                updatedPermissions: tool.permissionSuggestions?.[0]
-                  ? [tool.permissionSuggestions[0]]
-                  : undefined,
-              })
-            }
-            style={{ ...alwaysStyle, opacity: responding ? 0.5 : 1 }}
-          >
-            ∞ Always
-          </button>
-        </span>
+      {/* Inline Allow / Deny / Always buttons only for awaiting-approval tools.
+          An expired card (requestId cleared, socket dead) gets a single
+          Dismiss instead — same quiet local resolve as ToolCard's, since
+          there's nothing left to respond to over the dead socket. */}
+      {tool.status === 'awaiting-approval' && (tool.requestId || tool.expired) ? (
+        tool.expired || !tool.requestId ? (
+          <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+            <button
+              onClick={() => {
+                // Same quiet local resolve as ToolCard's Dismiss — the socket
+                // is dead, there is nothing to respond to.
+                const action = {
+                  type: 'PERMISSION_CARD_RESOLVED' as const,
+                  sessionId,
+                  toolUseId: tool.toolUseId,
+                };
+                dispatch(action);
+                (window as any).claude?.remote?.broadcastAction(action);
+              }}
+              // Fix: this must say the same thing ToolCard's Dismiss says, not
+              // just "Dismiss". Clicking it opens the PTY input gates (marks
+              // the card complete), which is only safe because the label
+              // extracts an assertion that the user already answered the live
+              // terminal menu — a bare "Dismiss" would let a user clear
+              // clutter and then type, sending stray keys (+ trailing \r)
+              // straight into that menu. A `title` tooltip isn't enough
+              // either — this app runs on touch, where hover never fires.
+              style={{ ...denyStyle, whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.3 }}
+            >
+              Dismiss — I answered in the terminal
+            </button>
+          </span>
+        ) : (
+          <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+            <button
+              disabled={responding}
+              onClick={() => respond({ decision: { behavior: 'allow' } })}
+              style={{ ...approveStyle, opacity: responding ? 0.5 : 1 }}
+            >
+              ✓ Allow
+            </button>
+            <button
+              disabled={responding}
+              onClick={() => respond({ decision: { behavior: 'deny' } })}
+              style={{ ...denyStyle, opacity: responding ? 0.5 : 1 }}
+            >
+              ✕ Deny
+            </button>
+            <button
+              disabled={responding}
+              onClick={() =>
+                respond({
+                  decision: { behavior: 'allow' },
+                  updatedPermissions: tool.permissionSuggestions?.[0]
+                    ? [tool.permissionSuggestions[0]]
+                    : undefined,
+                })
+              }
+              style={{ ...alwaysStyle, opacity: responding ? 0.5 : 1 }}
+            >
+              ∞ Always
+            </button>
+          </span>
+        )
       ) : null}
     </div>
   );

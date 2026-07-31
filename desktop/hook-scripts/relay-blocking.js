@@ -16,10 +16,16 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const PIPE_NAME = process.env.CLAUDE_DESKTOP_PIPE || (process.platform === 'win32' ? '\\\\.\\pipe\\claude-desktop-hooks' : path.join(os.tmpdir(), 'claude-desktop-hooks.sock'));
-// Default 300s to match the Claude Code hook timeout in settings.json.
-// If the relay times out before Claude Code's hook timeout, it exits with
-// code 2 (deny), causing an auto-deny before the user can respond.
-const TIMEOUT_MS = parseInt(process.env.CLAUDE_RELAY_TIMEOUT || '300000', 10);
+// Tier-2 backstop: 2h30m — deliberately 30m LONGER than the app's own 2h hold
+// (hook-relay.ts APP_HOLD_MS: the app must answer first, it's the only party
+// that can label the card accurately) and 30m SHORTER than the Claude Code
+// hook timeout in settings.json (install-hooks.js, 10800s): if the app hangs,
+// this relay must fire before CC does. Relay timeout = exit 2 = clean deny
+// that unblocks the turn; a CC hook-kill delivers NO decision, and
+// AskUserQuestion then waits forever on CC's default-"never" question
+// timeout. Do NOT tidy these back to equal — that restores the silent
+// 5-minute wedge this replaced (2026-07-30 spec §1).
+const TIMEOUT_MS = parseInt(process.env.CLAUDE_RELAY_TIMEOUT || '9000000', 10);
 
 let input = '';
 process.stdin.setEncoding('utf8');

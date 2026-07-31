@@ -16,12 +16,15 @@ const mocks = vi.hoisted(() => ({
   callbacks: [] as Array<(sid: string) => void>,
   screen: { text: '' },
   // Minimal ChatStore stand-in (tranche 1: the detector reads the store
-  // directly instead of subscribing to the whole chat map). These tests drive
-  // the detector purely through terminal buffer events, so chat state stays
-  // empty — no awaiting-approval tools — and nothing ever notifies. Identity
-  // is stable across renders, matching the real store's per-provider lifetime.
+  // directly instead of subscribing to the whole chat map). Most tests in
+  // this file drive the detector purely through terminal buffer events with
+  // an empty `sessions` map (no awaiting-approval tools), so nothing ever
+  // notifies. The §2 resolver tests below populate `sessions` per-test.
+  // Identity is stable across renders, matching the real store's
+  // per-provider lifetime.
+  sessions: new Map<string, any>(),
   store: {
-    getState: () => new Map(),
+    getState: () => mocks.sessions,
     subscribeAll: () => () => {},
   },
 }));
@@ -70,6 +73,7 @@ describe('usePromptDetector prompt lifecycle', () => {
     mocks.dispatch.mockClear();
     mocks.callbacks.length = 0;
     mocks.screen.text = '';
+    mocks.sessions.clear();
   });
 
   afterEach(() => {
@@ -190,5 +194,116 @@ describe('usePromptDetector prompt lifecycle', () => {
     const dismiss = mocks.dispatch.mock.calls.find((c) => c[0].type === 'DISMISS_PROMPT');
     expect(dismiss).toBeTruthy();
     expect(dismiss![0].promptId).toBe(shownId);
+  });
+});
+
+// Coverage for the §2 standing rule (2026-07-30 spec): usePromptDetector is
+// the ONLY thing that auto-resolves a 'hook-closed'-retained card. Before
+// this block, only the pure helpers in expired-card-resolver.ts had tests —
+// deleting the resolver block inside usePromptDetector (the effect body that
+// calls expiredToolIds/nextAbsentCount and dispatches PERMISSION_CARD_RESOLVED)
+// left the whole suite green while every retained card stayed stuck until the
+// user clicked Dismiss by hand.
+describe('usePromptDetector — expired card resolver (2026-07-30 spec §2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.dispatch.mockClear();
+    mocks.callbacks.length = 0;
+    mocks.screen.text = '';
+    mocks.sessions.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A neutral, unrecognized Ink menu — parses as "a menu is present" without
+  // matching any SETUP_PROMPT_TITLES entry, so it can't also trigger a
+  // SHOW_PROMPT dispatch and muddy the PERMISSION_CARD_RESOLVED assertions.
+  const NEUTRAL_MENU = `Pick a flavor
+
+ ❯ 1. Vanilla
+   2. Chocolate`;
+  const NO_MENU = 'plain output, no menu here';
+
+  function makeSession(tools: Array<Record<string, any>>) {
+    const toolCalls = new Map(tools.map((t) => [t.toolUseId, { input: {}, ...t }]));
+    return {
+      toolCalls,
+      activeTurnToolIds: new Set(tools.map((t) => t.toolUseId)),
+    };
+  }
+
+  function setExpiredCard() {
+    mocks.sessions.set('s1', makeSession([
+      { toolUseId: 'toolu_expired', toolName: 'Bash', status: 'awaiting-approval', expired: true },
+    ]));
+  }
+
+  it('menu present: does not resolve, and resets the absence counter', () => {
+    setExpiredCard();
+    renderHook(() => usePromptDetector());
+
+    // Build up one absent flush first...
+    mocks.screen.text = NO_MENU;
+    fireBuffer('s1');
+    // ...then the menu reappears, which must reset the counter to 0.
+    mocks.screen.text = NEUTRAL_MENU;
+    fireBuffer('s1');
+    expect(
+      mocks.dispatch.mock.calls.find((c) => c[0].type === 'PERMISSION_CARD_RESOLVED'),
+    ).toBeUndefined();
+
+    // If the reset above didn't happen, this single absent flush would be
+    // the "2nd" and would wrongly resolve.
+    mocks.screen.text = NO_MENU;
+    fireBuffer('s1');
+    expect(
+      mocks.dispatch.mock.calls.find((c) => c[0].type === 'PERMISSION_CARD_RESOLVED'),
+    ).toBeUndefined();
+  });
+
+  it('menu absent for ONE flush: still does not resolve', () => {
+    setExpiredCard();
+    renderHook(() => usePromptDetector());
+
+    mocks.screen.text = NO_MENU;
+    fireBuffer('s1');
+
+    expect(
+      mocks.dispatch.mock.calls.find((c) => c[0].type === 'PERMISSION_CARD_RESOLVED'),
+    ).toBeUndefined();
+  });
+
+  it('menu absent for TWO consecutive flushes: dispatches PERMISSION_CARD_RESOLVED for the expired card', () => {
+    setExpiredCard();
+    renderHook(() => usePromptDetector());
+
+    mocks.screen.text = NO_MENU;
+    fireBuffer('s1');
+    fireBuffer('s1');
+
+    const resolved = mocks.dispatch.mock.calls.find((c) => c[0].type === 'PERMISSION_CARD_RESOLVED');
+    expect(resolved).toBeTruthy();
+    expect(resolved![0]).toMatchObject({
+      type: 'PERMISSION_CARD_RESOLVED',
+      sessionId: 's1',
+      toolUseId: 'toolu_expired',
+    });
+  });
+
+  it('a LIVE (non-expired) awaiting-approval card still bails prompt detection, unaffected by the resolver', () => {
+    mocks.sessions.set('s1', makeSession([
+      { toolUseId: 'toolu_live', toolName: 'Bash', status: 'awaiting-approval' },
+    ]));
+    renderHook(() => usePromptDetector());
+
+    // A recognized setup-prompt menu would normally SHOW_PROMPT after the
+    // debounce — the live awaiting-approval bail must suppress that too.
+    mocks.screen.text = RESUME_MENU;
+    fireBuffer('s1');
+    act(() => { vi.advanceTimersByTime(400); });
+
+    expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 });

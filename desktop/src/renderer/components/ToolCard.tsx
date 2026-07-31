@@ -9,6 +9,9 @@ import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { getVisibleScreenText } from '../hooks/terminal-registry';
+import { parseInkSelect, rebindButtons, type PromptButton } from '../parser/ink-select-parser';
+import type { ChatAction } from '../state/chat-types';
 
 // --- Helpers for friendly display ---
 
@@ -495,6 +498,115 @@ function PlanApprovalButtons({ requestId, sessionId, onResponded }: {
   );
 }
 
+// --- Expired-card rebind UI (2026-07-30 spec §3) ---
+// A card lands here only after Task 4's retention path sets `expired`: the
+// hook socket died but CC's Ink menu may STILL be live in the terminal.
+// Re-parse the visible buffer periodically and, if the parse yields a menu
+// whose every option carries a bare digit, render THAT menu's own labels as
+// buttons that type the digit straight into the PTY.
+
+/** How often to re-parse the terminal buffer while an expired card is on
+ *  screen — cheap because this component only ever mounts on expired cards,
+ *  which are rare and short-lived (the menu-absence rule below resolves them
+ *  within a couple of buffer flushes once the digit lands). */
+const REBIND_POLL_MS = 2000;
+
+/** How long a clicked rebind button stays disabled before re-arming. The
+ *  click does NOT resolve the card — nothing here confirms the write
+ *  landed, since the hook socket is dead and no response can ever arrive on
+ *  it. Resolution comes exclusively from usePromptDetector's menu-absence
+ *  rule (Task 4): once the Ink menu has been gone from the buffer for two
+ *  consecutive flushes, it dispatches PERMISSION_CARD_RESOLVED. So a
+ *  successful digit write makes the menu disappear, which resolves the card
+ *  on its own; a write that didn't land leaves the menu (and this card) up,
+ *  and the buttons must be clickable again — hence re-arming on a timer
+ *  rather than on any signal we'd have to invent. */
+const REBIND_REARM_MS = 2000;
+
+/** Expired-card actions. Re-parses the live buffer every REBIND_POLL_MS: if
+ *  CC's menu is still up AND every option has a digit (rebindButtons'
+ *  gate — see its own header for why), render the MENU'S OWN options as
+ *  digit-writing buttons; otherwise fall back to copy + Dismiss only (the
+ *  only case in the Workbench, which has no real terminal buffer to parse).
+ *
+ *  The digit write is a DELIBERATE menu-driving write — like
+ *  PlanApprovalButtons and TrustGate, it must NOT go through
+ *  pty-input-gate.ts (see that module's header: "driving the menu is their
+ *  whole purpose"). Unlike PlanApprovalButtons' `DOWN.repeat(i) + '\r'` (a
+ *  known-broken write shape — arrows in a write that ends with `\r` are
+ *  discarded, see menuToButtons' header — already filed separately, not
+ *  fixed here), this only ever sends a bare digit: select-and-submit in one
+ *  byte, no `\r`, nothing for CC to collapse. */
+function ExpiredApprovalActions({ sessionId, tool, dispatch }: {
+  sessionId?: string;
+  tool: ToolCallState;
+  dispatch: React.Dispatch<ChatAction>;
+}) {
+  const [buttons, setButtons] = useState<PromptButton[] | null>(null);
+  const [clicked, setClicked] = useState(false);
+  const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const parse = () => {
+      const screen = getVisibleScreenText(sessionId);
+      setButtons(rebindButtons(screen ? parseInkSelect(screen) : null, tool.toolName));
+    };
+    parse();
+    const poll = setInterval(parse, REBIND_POLL_MS);
+    return () => clearInterval(poll);
+  }, [sessionId, tool.toolName]);
+
+  // Cleanup: don't let a stale re-arm timer fire setState after this card
+  // has already been resolved and unmounted.
+  useEffect(() => () => {
+    if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+  }, []);
+
+  const resolveLocally = () => {
+    if (!sessionId) return;
+    const action: ChatAction = { type: 'PERMISSION_CARD_RESOLVED', sessionId, toolUseId: tool.toolUseId };
+    dispatch(action);
+    (window as any).claude?.remote?.broadcastAction?.(action);
+  };
+
+  const writeDigit = (button: PromptButton) => {
+    if (!sessionId || clicked) return;
+    setClicked(true);
+    window.claude.session.sendInput(sessionId, button.input);
+    rearmTimerRef.current = setTimeout(() => setClicked(false), REBIND_REARM_MS);
+  };
+
+  return (
+    <div className="px-3 pb-3 pt-1 text-xs text-fg-dim">
+      <p className="mb-2">
+        The buttons on this card timed out, but Claude may still be waiting
+        in the terminal.{buttons
+          ? ' These options come straight from the terminal menu:'
+          : ' Answer it there — or dismiss this if you already did.'}
+      </p>
+      {buttons && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {buttons.map((b) => (
+            <Button
+              key={b.label}
+              variant="secondary"
+              size="sm"
+              disabled={clicked}
+              onClick={() => writeDigit(b)}
+            >
+              {b.label}
+            </Button>
+          ))}
+        </div>
+      )}
+      <Button variant="secondary" size="sm" onClick={resolveLocally}>
+        Dismiss — I answered in the terminal
+      </Button>
+    </div>
+  );
+}
+
 // --- AskUserQuestion UI ---
 // Claude Code's AskUserQuestion tool sends 1-4 multiple-choice questions.
 // Unlike regular tools (allow/deny), we must collect the user's selections
@@ -782,7 +894,28 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
 
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
-      {tool.status === 'awaiting-approval' && tool.requestId && (() => {
+      {tool.status === 'awaiting-approval' && (tool.requestId || tool.expired) && (() => {
+        // Expired: the hook socket is dead (requestId cleared) but CC's Ink
+        // menu may still be live in the terminal. ExpiredApprovalActions
+        // (Task 9) re-parses the buffer and offers digit-rebind buttons when
+        // safe; Dismiss is the universal out (only out for AskUserQuestion,
+        // which never rebinds — spec §3/§1b). Copy says what is known
+        // (buttons stopped working), not what is assumed (the ask failed) —
+        // the user may have already answered in the terminal.
+        //
+        // WHY "answer it in the terminal" is safe copy: `expired` is only
+        // ever set by the hook/PTY permission path ('hook-closed' reason,
+        // src/shared/types.ts). The native permission broker never emits
+        // that reason, and native sessions have no terminal at all — so an
+        // expired card always implies a live PTY the user can act in. If a
+        // future change makes native cards expire too, this copy (and the
+        // rebind attempt below, which needs a real screen buffer) goes wrong
+        // silently — check that invariant still holds before touching it.
+        if (tool.expired || !tool.requestId) {
+          return (
+            <ExpiredApprovalActions sessionId={sessionId} tool={tool} dispatch={dispatch} />
+          );
+        }
         // AskUserQuestion needs its own UI with option selection instead of Yes/No
         const isAskUser = tool.toolName === 'AskUserQuestion' && isValidQuestions(tool.input);
         // ExitPlanMode has a 4-option Ink menu in the CLI (bypass/manual/refine/feedback),
@@ -797,7 +930,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         };
         const onFailedCb = () => {
           if (sessionId && tool.requestId) {
-            const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId: tool.requestId };
+            // 'delivery-failed': the respond() write returned false or threw —
+            // the socket is provably gone, so this must RESOLVE the card, never
+            // retain it (retention would pin a card whose buttons cannot work).
+            const action = {
+              type: 'PERMISSION_EXPIRED' as const, sessionId,
+              requestId: tool.requestId, reason: 'delivery-failed' as const,
+            };
             dispatch(action);
             (window as any).claude?.remote?.broadcastAction(action);
           }

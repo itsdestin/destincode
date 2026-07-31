@@ -288,6 +288,13 @@ export interface ToolCallState {
   /** Native broker only: winning rule came from the destructive deny-list →
    *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
   denyListed?: boolean;
+  /** Permission ask whose hook socket died with the terminal menu possibly
+   *  still live ('hook-closed' expiry). The card STAYS awaiting-approval so
+   *  the red strip dot and pty-input gates keep holding (the 2026-07-30 bug
+   *  was this card flipping 'failed' — session looked fine while CC stayed
+   *  blocked). requestId is cleared: the socket is gone, respond() can never
+   *  work. Resolved by usePromptDetector's menu-absence rule or Dismiss. */
+  expired?: true;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */

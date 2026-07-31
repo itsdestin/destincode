@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { parseInkSelect, menuToButtons } from '../parser/ink-select-parser';
 import { useChatDispatch, useChatStore } from '../state/chat-context';
 import { getVisibleScreenText, onBufferReady } from './terminal-registry';
+import { expiredToolIds, nextAbsentCount } from '../state/expired-card-resolver';
 
 // How long to wait before showing a parser-detected prompt, giving the hook
 // system time to deliver a PermissionRequest via the named pipe relay.
@@ -67,6 +68,10 @@ export function usePromptDetector() {
   const lastPermissionClearedRef = useRef<Map<string, number>>(new Map());
   const prevAwaitingRef = useRef<Map<string, boolean>>(new Map());
 
+  // §2 standing rule: per-session count of consecutive buffer flushes with no
+  // Ink menu while an expired card is retained. At 2, resolve the card(s).
+  const expiredAbsentRef = useRef<Map<string, number>>(new Map());
+
   // Perf: detect awaiting-approval transitions in an effect (off the render
   // path) and iterate activeTurnToolIds (current-turn only, per chat-reducer
   // rule #2) rather than the session-lifetime toolCalls Map. With many
@@ -100,8 +105,44 @@ export function usePromptDetector() {
       // (the hook-based UI is handling the permission flow)
       const sessionState = store.getState().get(sid);
       if (sessionState) {
+        // §2 resolver runs BEFORE the awaiting-approval bail below — and that
+        // bail must ignore expired cards, or retention switches this whole
+        // detector off for the session, taking the resolver itself, the
+        // digit-rebind feature, and every unrelated setup PromptCard (trust
+        // gate, usage limit, resume) down with it (spec §2b). A retained card
+        // stays awaiting-approval indefinitely, so without this exemption the
+        // bail below would never fire again for this session.
+        const expired = expiredToolIds(sessionState);
+        if (expired.length > 0) {
+          // Menu-absence standing rule (spec §2): resolve only after the Ink
+          // menu has been absent for two consecutive buffer flushes — see
+          // expired-card-resolver.ts for why a one-shot check races both ways.
+          const expiredScreen = getVisibleScreenText(sid);
+          const menuPresent = !!(expiredScreen && parseInkSelect(expiredScreen));
+          const prev = expiredAbsentRef.current.get(sid) ?? 0;
+          const { count, resolve } = nextAbsentCount(menuPresent, prev);
+          expiredAbsentRef.current.set(sid, count);
+          if (resolve) {
+            expiredAbsentRef.current.delete(sid);
+            for (const toolUseId of expired) {
+              const action = { type: 'PERMISSION_CARD_RESOLVED' as const, sessionId: sid, toolUseId };
+              dispatch(action);
+              (window as any).claude?.remote?.broadcastAction?.(action);
+            }
+          }
+        } else {
+          // Nothing expired for this session — drop any stale counter so a
+          // FUTURE expiry starts its own count from zero instead of leaking
+          // state across unrelated permission asks.
+          expiredAbsentRef.current.delete(sid);
+        }
         for (const [, tool] of sessionState.toolCalls) {
-          if (tool.status === 'awaiting-approval') return;
+          // Live asks silence the parser below — the hook-based ToolCard
+          // owns that menu and a PromptCard must not double-render it.
+          // EXPIRED asks must NOT silence it — their menu has no live socket
+          // behind it, and the resolver above needs this function to keep
+          // running every flush to ever see two consecutive absences.
+          if (tool.status === 'awaiting-approval' && !tool.expired) return;
         }
       }
 
@@ -161,11 +202,14 @@ export function usePromptDetector() {
             pendingTimerRef.current.delete(sid);
 
             // Re-check: if a PermissionRequest arrived during the debounce,
-            // a tool will be in awaiting-approval — don't show the prompt
+            // a tool will be in awaiting-approval — don't show the prompt.
+            // Same expired exemption as the top-of-flush bail above: an
+            // expired card must not block this setup-prompt PromptCard from
+            // showing (spec §2b).
             const currentSession = store.getState().get(sid);
             if (currentSession) {
               for (const [, tool] of currentSession.toolCalls) {
-                if (tool.status === 'awaiting-approval') return;
+                if (tool.status === 'awaiting-approval' && !tool.expired) return;
               }
             }
 

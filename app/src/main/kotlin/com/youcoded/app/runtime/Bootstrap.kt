@@ -25,6 +25,53 @@ class Bootstrap(internal val context: Context) {
         // Last Claude Code release shipping cli.js. See the comment on
         // isFullySetup and installClaudeCode() for why this is pinned.
         private const val PINNED_CLAUDE_CODE_VERSION = "2.1.112"
+
+        /** Tier-3 CC hook timeout (3h) — 30m above the relay asset's 2h30m so CC
+         *  never kills the hook first (no decision = AskUserQuestion wedges
+         *  forever, spec §1). Pinned by desktop/tests/permission-timeout-margins. */
+        const val PERMISSION_HOOK_TIMEOUT_SECONDS = 10800
+
+        /** Ensure the PermissionRequest blocking-relay hook entry exists AND
+         *  carries the current command + timeout. WHY: earlier versions only
+         *  appended when missing, so every existing install kept timeout 300
+         *  forever — and the relay asset DOES redeploy on every launch, so a
+         *  relay-only change would put relay-2h30m against CC-300s: CC kills the
+         *  hook with no decision and AskUserQuestion wedges permanently
+         *  (2026-07-30 spec §Constraints). Mirrors desktop install-hooks.js
+         *  find-and-replace semantics. */
+        fun ensurePermissionRequestHook(
+            hooksObj: org.json.JSONObject,
+            blockingHookCommand: String,
+            timeoutSeconds: Int,
+        ) {
+            val prEvent = "PermissionRequest"
+            val prArray = hooksObj.optJSONArray(prEvent) ?: org.json.JSONArray()
+            var updated = false
+            for (i in 0 until prArray.length()) {
+                val hooks = prArray.optJSONObject(i)?.optJSONArray("hooks") ?: continue
+                for (j in 0 until hooks.length()) {
+                    val h = hooks.optJSONObject(j)
+                    if (h?.optString("command")?.contains("hook-relay-blocking.js") == true) {
+                        h.put("command", blockingHookCommand)
+                        h.put("timeout", timeoutSeconds)
+                        updated = true
+                    }
+                }
+            }
+            if (!updated) {
+                val hookEntry = org.json.JSONObject()
+                hookEntry.put("matcher", ".*")
+                val hooksList = org.json.JSONArray()
+                val hookDef = org.json.JSONObject()
+                hookDef.put("type", "command")
+                hookDef.put("command", blockingHookCommand)
+                hookDef.put("timeout", timeoutSeconds)
+                hooksList.put(hookDef)
+                hookEntry.put("hooks", hooksList)
+                prArray.put(hookEntry)
+            }
+            hooksObj.put(prEvent, prArray)
+        }
     }
 
     val usrDir: File get() = File(context.filesDir, "usr")
@@ -986,37 +1033,9 @@ class Bootstrap(internal val context: Context) {
             hooksObj.put(event, eventArray)
         }
 
-        // Register PermissionRequest with blocking relay (long timeout for user approval)
-        val prEvent = "PermissionRequest"
-        val prArray = hooksObj.optJSONArray(prEvent) ?: org.json.JSONArray()
-        var prRegistered = false
-        for (i in 0 until prArray.length()) {
-            val entry = prArray.optJSONObject(i)
-            val hooks = entry?.optJSONArray("hooks")
-            if (hooks != null) {
-                for (j in 0 until hooks.length()) {
-                    val h = hooks.optJSONObject(j)
-                    if (h?.optString("command")?.contains("hook-relay-blocking.js") == true) {
-                        prRegistered = true
-                        break
-                    }
-                }
-            }
-            if (prRegistered) break
-        }
-        if (!prRegistered) {
-            val hookEntry = org.json.JSONObject()
-            hookEntry.put("matcher", ".*")
-            val hooksList = org.json.JSONArray()
-            val hookDef = org.json.JSONObject()
-            hookDef.put("type", "command")
-            hookDef.put("command", blockingHookCommand)
-            hookDef.put("timeout", 300)
-            hooksList.put(hookDef)
-            hookEntry.put("hooks", hooksList)
-            prArray.put(hookEntry)
-        }
-        hooksObj.put(prEvent, prArray)
+        // Register PermissionRequest with blocking relay (tier-3 CC timeout, see
+        // PERMISSION_HOOK_TIMEOUT_SECONDS doc comment for the margin rationale)
+        ensurePermissionRequestHook(hooksObj, blockingHookCommand, PERMISSION_HOOK_TIMEOUT_SECONDS)
 
         // Auto-title hook: always deploy the bundled asset. Post-decomposition,
         // title-update.sh is app-owned (not a toolkit hook) on both platforms —

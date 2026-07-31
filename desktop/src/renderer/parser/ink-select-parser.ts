@@ -384,3 +384,25 @@ export function menuToButtons(menu: ParsedMenu): PromptButton[] {
     return { label, input: DOWN.repeat(steps), submitInput: '\r' };
   });
 }
+
+/** §3 rebind gate (2026-07-30 spec): expired-card buttons may drive the
+ *  still-live menu ONLY when every option carries a bare digit. A digit
+ *  selects-and-submits in one byte with no cursor dependency (header above).
+ *  Any arrow-fallback option disqualifies the whole menu — its DOWN math
+ *  depends on selectedIndex freshness, which goes stale the moment the card
+ *  is expired (nothing is left maintaining it), and a mixed row would also
+ *  mix write shapes on one render. AskUserQuestion NEVER rebinds: CC's TUI
+ *  for it is sequential (Q1 then Q2), multi-select, with a Skip and
+ *  free-text box our card doesn't model — replaying that blind has a
+ *  wrong-answer failure mode strictly worse than no feature. Its outs stay
+ *  Dismiss + terminal view. Labels always come from THIS parse (menu.options),
+ *  never from the card's original buttons — matching by index or guess is
+ *  the exact misfire class ("click No, land on don't-ask-again") this gate
+ *  exists to rule out. */
+export function rebindButtons(menu: ParsedMenu | null, toolName: string): PromptButton[] | null {
+  if (!menu) return null;
+  if (toolName === 'AskUserQuestion') return null;
+  const buttons = menuToButtons(menu);
+  if (buttons.some((b) => b.submitInput !== undefined)) return null;
+  return buttons;
+}

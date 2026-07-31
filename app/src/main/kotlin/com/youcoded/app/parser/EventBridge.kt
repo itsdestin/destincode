@@ -19,11 +19,24 @@ import java.util.concurrent.ConcurrentHashMap
  * structured decision back through it (blocking relay protocol).
  */
 class EventBridge(private val socketName: String) {
+    companion object {
+        /** §1 tier-1 hold (2h). Must stay UNDER the relay asset's 2h30m and
+         *  Bootstrap's 3h CC hook timeout — margins are load-bearing (the
+         *  losing order kills the hook with no decision and AskUserQuestion
+         *  wedges forever). Pinned by desktop/tests/permission-timeout-margins. */
+        const val PERMISSION_HOLD_MS = 7_200_000L
+    }
+
     private val _events = MutableSharedFlow<HookEvent>(extraBufferCapacity = 1000)
     val events: SharedFlow<HookEvent> = _events
 
     /** Sockets held open for blocking PermissionRequest responses. */
     private val pendingSockets = ConcurrentHashMap<String, LocalSocket>()
+
+    /** Tier-1 hold timers, keyed by requestId. Cancelled on every path that
+     *  ends a request (respond, closeSocket, closure monitor, stop) so a
+     *  2h coroutine never outlives the socket it was guarding. */
+    private val holdJobs = ConcurrentHashMap<String, Job>()
 
     /** Maps mobile session IDs to Claude Code session IDs. */
     private val sessionIdMap = ConcurrentHashMap<String, String>()
@@ -119,6 +132,43 @@ class EventBridge(private val socketName: String) {
                     // hook-relay-blocking.js times out or Claude Code kills the hook.
                     // Desktop equivalent: hook-relay.ts socket.on('close') handler.
                     monitorSocketClosure(requestId, sessionId, client)
+
+                    // §1 tier-1: the app ends the wait with a labeled deny.
+                    // Must emit explicitly — respond() removes the pending
+                    // entry BEFORE closing, so the closure monitor stays
+                    // silent for app-initiated endings (its own comment).
+                    monitorScope?.launch(Dispatchers.IO) {
+                        delay(PERMISSION_HOLD_MS)
+                        holdJobs.remove(requestId)
+                        if (pendingSockets.containsKey(requestId)) {
+                            // Nested decision shape is load-bearing: the relay
+                            // reads appDecision.decision. Message lands in the
+                            // tool result the model reads.
+                            // Fix: derive from PERMISSION_HOLD_MS instead of a
+                            // hardcoded "2 hours" — mirrors desktop's
+                            // hook-relay.ts deriving from APP_HOLD_MS, so a
+                            // future tier change can't silently desync the two
+                            // platforms' copy (permission-timeout-margins.test.ts
+                            // still pins the underlying millisecond values).
+                            val holdHours = PERMISSION_HOLD_MS / 3_600_000L
+                            val hoursLabel = if (holdHours == 1L) "hour" else "hours"
+                            val deny = JSONObject().put("decision", JSONObject()
+                                .put("behavior", "deny")
+                                .put("message", "YouCoded auto-denied this request after $holdHours $hoursLabel with no user response — ask again if still needed."))
+                            // Only emit "app-timeout" if the deny actually went out. If
+                            // the write failed, respond() already emitted its own
+                            // "delivery-failed" PermissionExpired — emitting again here
+                            // would violate "at most one expiry per request".
+                            if (respond(requestId, deny)) {
+                                _events.tryEmit(HookEvent.PermissionExpired(
+                                    sessionId = sessionId,
+                                    hookEventName = "PermissionExpired",
+                                    requestId = requestId,
+                                    reason = "app-timeout",
+                                ))
+                            }
+                        }
+                    }?.also { holdJobs[requestId] = it }
                 } else {
                     pendingSockets.remove(requestId)
                     client.close()
@@ -143,7 +193,7 @@ class EventBridge(private val socketName: String) {
 
     /**
      * Monitor a held PermissionRequest socket for remote closure.
-     * When hook-relay-blocking.js times out (120s) or Claude Code kills the hook
+     * When hook-relay-blocking.js times out (its 2h30m tier-2 backstop) or Claude Code kills the hook
      * process, the socket closes. We detect this and emit PermissionExpired so
      * the React UI can clear the stale approval card.
      *
@@ -165,10 +215,14 @@ class EventBridge(private val socketName: String) {
             // responded to — emit PermissionExpired to clean up the React UI.
             if (pendingSockets.remove(requestId) != null) {
                 try { client.close() } catch (_: Exception) {}
+                // Far-end death (relay backstop or CC killing the hook), not our
+                // own hold firing — cancel the hold job so it doesn't also emit.
+                holdJobs.remove(requestId)?.cancel()
                 if (!_events.tryEmit(HookEvent.PermissionExpired(
                         sessionId = sessionId,
                         hookEventName = "PermissionExpired",
                         requestId = requestId,
+                        reason = "hook-closed",
                     ))) {
                     android.util.Log.e("EventBridge", "Event buffer full, dropped PermissionExpired")
                 }
@@ -176,18 +230,29 @@ class EventBridge(private val socketName: String) {
         }
     }
 
-    /** Send a decision back through a held PermissionRequest socket. */
-    fun respond(requestId: String, decision: JSONObject) {
+    /**
+     * Send a decision back through a held PermissionRequest socket.
+     * Returns true if the write succeeded, false if it failed (in which case
+     * this method has ALREADY emitted a "delivery-failed" PermissionExpired
+     * itself — callers must not emit a second one for the same requestId, or
+     * "at most one expiry per request" breaks for the hold-timeout path).
+     */
+    fun respond(requestId: String, decision: JSONObject): Boolean {
+        // A decision is about to be delivered (or attempted) — the tier-1
+        // hold is no longer needed. Cancel first so it can never race a
+        // second emit for the same request.
+        holdJobs.remove(requestId)?.cancel()
         val socket = pendingSockets.remove(requestId)
         if (socket == null) {
             android.util.Log.e("EventBridge", "No pending socket for requestId=$requestId")
-            return
+            return false
         }
         try {
             val payload = decision.toString() + "\n"
             socket.outputStream.write(payload.toByteArray())
             socket.outputStream.flush()
             socket.close()
+            return true
         } catch (e: Exception) {
             // Response couldn't be delivered — permission effectively expired.
             // Emit PermissionExpired so React UI clears the stale approval card.
@@ -197,12 +262,15 @@ class EventBridge(private val socketName: String) {
                 sessionId = "",  // ManagedSession uses its own ID for broadcast
                 hookEventName = "PermissionExpired",
                 requestId = requestId,
+                reason = "delivery-failed",
             ))
+            return false
         }
     }
 
     /** Close a held socket without sending a response (cross-path cleanup). */
     fun closeSocket(requestId: String) {
+        holdJobs.remove(requestId)?.cancel()
         val socket = pendingSockets.remove(requestId) ?: return
         try { socket.close() } catch (_: Exception) {}
     }
@@ -219,6 +287,10 @@ class EventBridge(private val socketName: String) {
     fun hasPendingPermission(): Boolean = pendingSockets.isNotEmpty()
 
     fun stop() {
+        // Cancel any outstanding tier-1 hold timers so they don't fire (and
+        // try to write to a socket we're about to close) after teardown.
+        holdJobs.values.forEach { it.cancel() }
+        holdJobs.clear()
         // Close all pending sockets
         for ((_, socket) in pendingSockets) {
             try { socket.close() } catch (_: Exception) {}
