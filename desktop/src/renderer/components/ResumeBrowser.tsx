@@ -18,6 +18,12 @@ import { TagPicker } from './tags/TagPicker';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
+import {
+  CompleteIcon, OrganizeIcon,
+  COMPLETE_ICONS, ORGANIZE_ICONS,
+  type CompleteIconVariant, type OrganizeIconVariant,
+} from './resume-card-icons';
+import { designVariant } from '../utils/design-variant';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -120,6 +126,48 @@ function measureAnchored(
     top: rect.bottom + 4,
     left: Math.min(rect.left, maxLeft),
   };
+}
+
+// Candidate placements for the Organize popover. `anchor-left` is what ships
+// today; the rest exist to be compared in the workbench (design-variant.ts).
+//
+//   anchor-left   below the trigger, LEFT edges aligned. Simple, but the
+//                 trigger sits at the card's right edge, so the panel hangs
+//                 off to the right and gets viewport-clamped on narrow widths.
+//   anchor-right  below the trigger, RIGHT edges aligned — it opens back over
+//                 the card it belongs to instead of away from it.
+//   centered      below the trigger, horizontally centred on it. Same call the
+//                 model picker makes.
+//   sheet         not floating at all — drops INTO the card, full width, under
+//                 the header row. No positioning maths, no clamping, no
+//                 off-panel case; costs the card growing while you edit.
+const ORGANIZE_POPOVERS = ['anchor-left', 'anchor-right', 'centered', 'sheet'] as const;
+type OrganizePopover = typeof ORGANIZE_POPOVERS[number];
+
+// Rough height used only to decide whether the popover should open UPWARD when
+// it would otherwise run off the bottom. An estimate is honest here: the real
+// height isn't known until after render, and being ~40px out only shifts a
+// panel that was going to be clamped anyway.
+const ORGANIZE_POPOVER_EST_H = 340;
+
+// Placement maths for the three FLOATING variants. Flips above the trigger when
+// there isn't room below and there is above — the case that currently clamps a
+// bottom-of-list card's popover against the viewport edge.
+function measureOrganize(
+  el: HTMLElement | null,
+  width: number,
+  placement: OrganizePopover,
+): { top: number; left: number } | null {
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const rawLeft =
+    placement === 'centered' ? r.left + r.width / 2 - width / 2
+    : placement === 'anchor-right' ? r.right - width
+    : r.left;
+  const left = Math.max(8, Math.min(rawLeft, window.innerWidth - width - 8));
+  const spaceBelow = window.innerHeight - r.bottom;
+  const flip = spaceBelow < ORGANIZE_POPOVER_EST_H && r.top > spaceBelow;
+  return { top: flip ? Math.max(8, r.top - ORGANIZE_POPOVER_EST_H - 4) : r.bottom + 4, left };
 }
 
 // While a dropdown is open, re-measure the trigger on window resize / scroll
@@ -277,6 +325,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // they moved out here. Side effect worth having: you can now tag or complete a
   // conversation WITHOUT expanding it, including rows that can't be resumed on
   // this device at all.
+  // Open design questions, switchable from the workbench toolbar. All three
+  // default to what ships today, so the real app is unaffected.
+  const completeIcon: CompleteIconVariant = designVariant('completeicon', 'eye-slash', COMPLETE_ICONS);
+  const organizeIcon: OrganizeIconVariant = designVariant('organizeicon', 'dots-h', ORGANIZE_ICONS);
+  const organizePop: OrganizePopover = designVariant('organizepop', 'anchor-left', ORGANIZE_POPOVERS);
+
   const [organizeId, setOrganizeId] = useState<string | null>(null);
   const [organizePos, setOrganizePos] = useState<{ top: number; left: number } | null>(null);
   const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -366,7 +420,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   }, [organizeId]);
 
   // Keep the popover anchored while the list scrolls under it (w-64 = 256px).
-  useDropdownReposition(!!organizeId, organizeTriggerRef, 256, setOrganizePos);
+  // Not useDropdownReposition: that hook hardcodes the below-left maths, and
+  // the 'sheet' variant has no anchor to track at all.
+  useEffect(() => {
+    if (!organizeId || organizePop === 'sheet') return;
+    const remeasure = () => {
+      const next = measureOrganize(organizeTriggerRef.current, 256, organizePop);
+      if (next) setOrganizePos(next);
+    };
+    window.addEventListener('resize', remeasure);
+    window.addEventListener('scroll', remeasure, true);
+    return () => {
+      window.removeEventListener('resize', remeasure);
+      window.removeEventListener('scroll', remeasure, true);
+    };
+  }, [organizeId, organizePop]);
 
   const filtered = useMemo(() => {
     // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
@@ -855,22 +923,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
             }`}
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              {done ? (
-                // Struck-through eye = hidden. The slash is the state.
-                <>
-                  <path d="M9.9 4.24A9.1 9.1 0 0112 4c5 0 9 5 9 5a15.5 15.5 0 01-2.8 3.24M6.6 6.6A15.6 15.6 0 003 9s4 5 9 5a9 9 0 003.4-.66" />
-                  <path d="M9.9 9.9a3 3 0 004.2 4.2" />
-                  <path d="M3 3l18 18" />
-                </>
-              ) : (
-                // Plain eye = currently visible; clicking hides it.
-                <>
-                  <path d="M3 9s4-5 9-5 9 5 9 5-4 5-9 5-9-5-9-5z" />
-                  <circle cx="12" cy="9" r="2.5" />
-                </>
-              )}
-            </svg>
+            <CompleteIcon variant={completeIcon} done={done} />
           </button>
         );
       })()}
@@ -889,7 +942,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           // final position in the same commit the id flips (same approach the
           // filter pills use — avoids a one-frame jump).
           organizeTriggerRef.current = e.currentTarget;
-          setOrganizePos(measureAnchored(e.currentTarget, 256));
+          setOrganizePos(measureOrganize(e.currentTarget, 256, organizePop));
           setOrganizeId(s.sessionId);
         }}
         aria-label={`Organize ${s.name}`}
@@ -899,11 +952,20 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
         }`}
       >
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />
-        </svg>
+        <OrganizeIcon variant={organizeIcon} />
       </button>
       </div>
+      {/* 'sheet' variant: the organize controls drop INTO the card rather than
+          floating. No positioning maths and nothing to clamp — the trade is
+          that the card grows and pushes the rest of the list down.
+          It shares organizePopRef with the floating variants: only one of the
+          two is ever mounted, and the outside-click handler checks that ref to
+          know "the click landed inside the open organize UI". */}
+      {organizePop === 'sheet' && organizeId === s.sessionId && (
+        <div ref={organizePopRef} className="border-t border-edge-dim p-2.5 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+          {renderOrganizeControls(s)}
+        </div>
+      )}
       {isExpanded && renderExpandedOptions(s)}
       </div>
     </div>
@@ -1137,7 +1199,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           Portaled to document.body for the same reason the filter dropdowns are:
           OverlayPanel is `.layer-surface`, which sets overflow:hidden, so a
           popover rendered inside a card would be clipped at the panel edge. */}
-      {organizeId && organizePos && (() => {
+      {organizePop !== 'sheet' && organizeId && organizePos && (() => {
         const s = sessions.find((x) => x.sessionId === organizeId);
         if (!s) return null;
         return createPortal(
