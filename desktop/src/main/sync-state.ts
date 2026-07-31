@@ -20,8 +20,7 @@ import type { SyncService } from './sync-service';
 // Per-device sync recency lives in the sync-spaces service (it owns the SyncHub
 // socket that receives it). Surfaced here so getSyncStatus() — the SyncPanel's
 // full-snapshot source — carries it alongside the other sync fields. No cycle:
-// sync-spaces/service.ts does not import sync-state (confirmed by grep — the
-// only "sync-state" hits inside sync-spaces/*.ts are comments, not imports).
+// sync-spaces/service.ts does not import sync-state.ts.
 // getSelfLastSyncEpochMs/isSyncSpacesSyncing are the same "this device" evidence
 // buildStatusData() in ipc-handlers.ts reads (Task 7) — getSyncStatus() is the
 // SyncPanel's OTHER read path (on-mount snapshot vs. the 10s status:data push),

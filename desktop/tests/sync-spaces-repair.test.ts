@@ -247,6 +247,10 @@ describe('engine + real transport end-to-end', () => {
     // `add -A` re-discovers it as new content and pushes it out. If the heal
     // or the rerun push were broken, the remote would end with only day1.md.
     expect(remote.files).toEqual(['day1.md', 'day2.md']);
+    // Byte-check BOTH files, not just the stranded one — the title claims the
+    // remote ends byte-identical to the worktree, which day1.md (pushed before
+    // the crash, untouched by the repair) must also prove.
+    expect(remote.read('day1.md')).toBe('pushed before the crash');
     expect(remote.read('day2.md')).toBe('stranded by the crash');  // the 3,381-file class, in miniature
     w.cleanup();
   });
