@@ -47,6 +47,47 @@ export function hasPendingInteraction(session: SessionChatState): boolean {
 }
 
 /**
+ * Which kind of interaction is blocking sends — drives the send-refusal
+ * copy (§4, 2026-07-30 permission-ask-timeout spec) so a 2h app-owned hold
+ * never reads as a generic mystery lock: an 'approval' card names itself
+ * and its Dismiss out even once expired; a scraped 'prompt' has neither, so
+ * it keeps the plainer "answer the prompt" phrasing. Same scan order and
+ * same source fields as hasPendingInteraction — kept as a parallel function
+ * (not derived from its boolean) so the two can never disagree about
+ * whether something is blocking.
+ */
+export function pendingInteractionKind(session: SessionChatState): 'approval' | 'prompt' | null {
+  for (const id of session.activeTurnToolIds) {
+    if (session.toolCalls.get(id)?.status === 'awaiting-approval') return 'approval';
+  }
+  for (const entry of session.timeline) {
+    if (entry.kind === 'prompt'
+        && entry.prompt.promptId !== HISTORY_EXPAND_PROMPT_ID
+        && !entry.prompt.completed) {
+      return 'prompt';
+    }
+  }
+  return null;
+}
+
+/**
+ * Send-refusal copy for a given pendingInteractionKind — the single source
+ * both refusal sites (App.tsx's command/skill send guard and InputBar's
+ * typed-message guard, including its "Send anyway" force-path toast) pull
+ * from, so they cannot drift apart (§4, 2026-07-30 spec). An 'approval' card
+ * is named explicitly, with its Dismiss out, because it stays accurate even
+ * once the app-owned hold has expired the card (still blocking, no longer
+ * "waiting" in the live sense) — see docs/error-message-standards.md:
+ * specific+accurate over a generic guess. `null` falls back to the 'prompt'
+ * copy defensively; callers only invoke this when a kind was found.
+ */
+export function pendingInteractionRefusalCopy(kind: 'approval' | 'prompt' | null): string {
+  return kind === 'approval'
+    ? 'Claude asked a question — answer or dismiss the card in the chat before sending.'
+    : 'Claude is waiting for your response — answer the prompt first.';
+}
+
+/**
  * True only when the session is observably idle enough that a recovery `\r`
  * (useSubmitConfirmation) cannot land on anything but CC's empty input bar:
  *

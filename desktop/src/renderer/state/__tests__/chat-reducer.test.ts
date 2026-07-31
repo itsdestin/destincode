@@ -3,7 +3,7 @@ import { chatReducer } from '../chat-reducer';
 import { createSessionChatState, serializeChatState } from '../chat-types';
 import type { ChatState } from '../chat-types';
 import type { ToolCallState } from '../../../shared/types';
-import { hasPendingInteraction, canRetrySubmit } from '../pty-input-gate';
+import { hasPendingInteraction, canRetrySubmit, pendingInteractionKind } from '../pty-input-gate';
 
 function stateWithInFlightTurn(sessionId = 'sess-1', turnId = 'turn-1'): ChatState {
   const session = createSessionChatState();
@@ -927,5 +927,16 @@ describe('PERMISSION_EXPIRED reasons (2026-07-30 spec §2/§2a/§2c/§2d)', () =
     const tool = next.get('s1')!.toolCalls.get('perm-r1')!;
     expect(tool.status).toBe('failed');
     expect(tool.error).toBe('Some real failure');
+  });
+
+  // Task 10 (2026-07-30 spec §4): the send-refusal copy needs to distinguish
+  // an awaiting-approval card (has a Dismiss out, names itself accurately
+  // even once expired) from a scraped terminal prompt (no card, no Dismiss).
+  it('pendingInteractionKind distinguishes approval cards from scraped prompts', () => {
+    const withCard = withPendingAsk(); // Task 3 helper — awaiting-approval tool
+    expect(pendingInteractionKind(withCard.get('s1')!)).toBe('approval');
+    const expired = expire(withCard, { reason: 'hook-closed' });
+    expect(pendingInteractionKind(expired.get('s1')!)).toBe('approval'); // expired still blocks
+    expect(pendingInteractionKind(emptySession().get('s1')!)).toBeNull();
   });
 });

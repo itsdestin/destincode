@@ -38,7 +38,7 @@ import { dispatchSlashCommand, type DispatcherResult } from './state/slash-comma
 import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
-import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
+import { hasPendingInteraction, pendingInteractionKind, pendingInteractionRefusalCopy, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
@@ -526,7 +526,11 @@ function AppInner() {
   const notifyIfPtyBlocked = useCallback((sid: string): boolean => {
     const session = chatStateMapRef.current.get(sid);
     if (session && hasPendingInteraction(session)) {
-      setToast('Claude is waiting for your response — answer the prompt first.');
+      // Name the blocker — under the 2h app-owned hold (Task 9) a generic
+      // line reads as a mystery lock once it's been sitting there a while.
+      // An 'approval' card carries its own outs (answer / Dismiss) even
+      // after it's expired, so point at it instead of the generic copy.
+      setToast(pendingInteractionRefusalCopy(pendingInteractionKind(session)));
       return true;
     }
     return false;
@@ -2935,7 +2939,15 @@ function AppInner() {
                 {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => setToast({ message: 'Claude is waiting for your response — answer the prompt first.', durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } })} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => {
+                  // "Send anyway" writes straight into the live Ink menu (the
+                  // exact stray-input class this gate exists to prevent) —
+                  // name the actual blocker so reaching for it is an informed
+                  // choice, not a reflex against a generic-sounding lock.
+                  const blockedSession = chatStateMapRef.current.get(sessionId ?? '');
+                  const message = blockedSession ? pendingInteractionRefusalCopy(pendingInteractionKind(blockedSession)) : 'Claude is waiting for your response — answer the prompt first.';
+                  setToast({ message, durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } });
+                }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
