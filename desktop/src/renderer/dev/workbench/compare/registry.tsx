@@ -233,6 +233,110 @@ function CardNoteLed() {
   );
 }
 
+// ── Round 3: within the icon-led card ────────────────────────────────────────
+// Icon-led won round 2, so glyphs-instead-of-labels is settled. What is still
+// open is density and alignment: how much vertical space the card takes, where
+// the text hangs, and how the way in is drawn.
+
+/** One line. Chips and note share a single truncating row, which makes the card
+ *  the same height as the Mark complete row below it — two equal bands instead
+ *  of a tall block over a short one. Costs the note its space: anything past a
+ *  few words is an ellipsis. Empty: the row reads "No tags or note". */
+function CardOneLine() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex items-center gap-2 transition-colors hover:border-edge hover:bg-well"
+      >
+        <TagGlyph className="w-3 h-3 shrink-0 text-fg-muted" />
+        <span className="flex items-center gap-1 shrink-0">
+          <TagChip tag={PRIORITY_TAG} />
+          <TagChip tag={WORK_TAG} />
+        </span>
+        <NoteGlyph className="w-3 h-3 shrink-0 text-fg-muted ml-1" />
+        <span className="text-2xs text-fg-2 truncate min-w-0 flex-1">{NOTE}</span>
+        <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0">Edit</span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Gutter-aligned. The glyphs sit in a fixed left column so the chips and the
+ *  note text start on the SAME left edge — in the round-2 version each row set
+ *  its own indent, so they were a pixel or two apart. Edit becomes a pencil in
+ *  the corner: the whole card is already the target, so the word was doing
+ *  nothing the hover state doesn't. Empty: one gutter row, muted. */
+function CardGutter() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group relative w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex flex-col gap-1.5 transition-colors hover:border-edge hover:bg-well"
+      >
+        <span className="grid grid-cols-[16px_1fr] items-center gap-x-1.5 gap-y-1.5 pr-6">
+          <TagGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="flex flex-wrap items-center gap-1 min-w-0">
+            <TagChip tag={PRIORITY_TAG} />
+            <TagChip tag={WORK_TAG} />
+          </span>
+          <NoteGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="text-2xs text-fg-2 truncate min-w-0">{NOTE}</span>
+        </span>
+        <span className="absolute top-2.5 right-3 text-fg-faint group-hover:text-fg transition-colors">
+          <PencilGlyph className="w-3.5 h-3.5" />
+        </span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Note as a quotation. Same two rows, but the note gets a left rule and sits
+ *  in the muted text colour, so "these are labels I applied" and "this is a
+ *  sentence I wrote" separate at a glance rather than on inspection. Tallest of
+ *  the three. Empty: the rule disappears with the note. */
+function CardQuote() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex items-start gap-3 transition-colors hover:border-edge hover:bg-well"
+      >
+        <span className="min-w-0 flex-1 flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 min-w-0">
+            <TagGlyph className="w-3 h-3 shrink-0 text-fg-muted" />
+            <span className="flex flex-wrap items-center gap-1 min-w-0">
+              <TagChip tag={PRIORITY_TAG} />
+              <TagChip tag={WORK_TAG} />
+            </span>
+          </span>
+          <span className="block border-l-2 border-edge pl-2 text-2xs text-fg-muted leading-snug line-clamp-2">
+            {NOTE}
+          </span>
+        </span>
+        <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0 mt-0.5">Edit</span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Pencil — the edit glyph the app already uses on the tag-manager rows. */
+function PencilGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5" />
+      <path d="M17.586 3.586a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+    </svg>
+  );
+}
+
 /** Mirrored tag glyph — the same one the Resume Browser card uses. */
 function TagGlyph({ className = '' }: { className?: string }) {
   return (
@@ -326,6 +430,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'Note first',
             note: 'Inverts the emphasis: the note you actually wrote takes the top line at full text colour, chips demote to metadata under it, and Edit moves inline with them.',
             render: () => <InDialog><CardNoteLed /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis: 'R2 · A (Icon-led rows). Glyphs-instead-of-labels settled. Open: density, where the text hangs, and how the way in is drawn.',
+        candidates: [
+          {
+            id: 'one-line',
+            label: 'One line',
+            note: 'Chips and note share a single truncating row, making the card the same height as Mark complete below it — two equal bands. Costs the note its space.',
+            render: () => <InDialog><CardOneLine /></InDialog>,
+          },
+          {
+            id: 'gutter',
+            label: 'Gutter + pencil',
+            note: 'Glyphs in a fixed left column so chips and note text share one left edge. Edit becomes a pencil in the corner — the whole card is already the target.',
+            render: () => <InDialog><CardGutter /></InDialog>,
+          },
+          {
+            id: 'quote',
+            label: 'Note as quotation',
+            note: 'The note gets a left rule and the muted colour, so "labels I applied" and "a sentence I wrote" separate at a glance. Tallest of the three.',
+            render: () => <InDialog><CardQuote /></InDialog>,
           },
         ],
       },
