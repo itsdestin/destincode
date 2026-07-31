@@ -53,4 +53,10 @@ describe('permission timeout tier margins (2026-07-30 spec §1)', () => {
       expect(v).toBeLessThan(2147483647); // overflow fires IMMEDIATELY — the bug, disguised
     }
   });
+
+  const appHold = () => literal('desktop/src/main/hook-relay.ts', /APP_HOLD_MS = ([\d_]+)/);
+  it('app hold is 2h and strictly under the relay backstop', () => {
+    expect(appHold()).toBe(7200000);
+    expect(appHold()).toBeLessThanOrEqual(desktopRelay() - 15 * 60 * 1000);
+  });
 });

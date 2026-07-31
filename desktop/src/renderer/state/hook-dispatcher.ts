@@ -35,7 +35,9 @@ export function hookEventToAction(event: HookEvent): ChatAction | null {
     case 'PermissionExpired': {
       const requestId = payload._requestId as string;
       if (!requestId) return null;
-      return { type: 'PERMISSION_EXPIRED', sessionId, requestId };
+      const reason = payload._reason as
+        | 'app-timeout' | 'unroutable' | 'delivery-failed' | 'hook-closed' | undefined;
+      return { type: 'PERMISSION_EXPIRED', sessionId, requestId, reason };
     }
 
     default:

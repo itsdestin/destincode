@@ -315,6 +315,11 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(id)?.info;
   }
 
+  /** §1a routability gate — true when this sessionId belongs to a live session. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   destroyAll(): void {
     for (const [id] of this.sessions) {
       this.destroySession(id);

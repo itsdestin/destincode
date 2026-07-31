@@ -11,6 +11,18 @@ const DEFAULT_PIPE_NAME = process.platform === 'win32'
   ? '\\\\.\\pipe\\claude-desktop-hooks'
   : path.join(os.tmpdir(), 'claude-desktop-hooks.sock');
 
+// §1 tier-1 hold (2026-07-30 spec): the APP owns the permission-ask clock —
+// 2h here < 2h30m relay backstop (relay-blocking.js) < 3h CC hook entry
+// (install-hooks.js). Margins are load-bearing: if CC ever wins it kills the
+// hook with NO decision and AskUserQuestion waits forever on CC's
+// default-"never" question timeout. Do not equalize. NOTE: setTimeout does
+// not advance during system suspend, so the hold can stretch past 2h of
+// wall-clock on a laptop that slept — expected, not a bug.
+export const APP_HOLD_MS = 7200000;
+// §1a dead-man cap: an ask whose sessionId matches no live session will never
+// render a card anywhere — a 2h hold would be a 2h invisible hang.
+export const UNROUTABLE_HOLD_MS = 60000;
+
 export class HookRelay extends EventEmitter {
   private server: net.Server | null = null;
   private running = false;
@@ -20,10 +32,30 @@ export class HookRelay extends EventEmitter {
   // a live permission/AskUserQuestion menu and must not be typed into.
   private pendingSockets = new Map<string, { socket: net.Socket; sessionId: string }>();
   private pipeName: string;
+  // requestId → the app-owned hold timer for that pending ask. Cleared on
+  // respond()/closeSocket()/socket-close/stop() — a leaked 2h timer would
+  // hold a socket reference alive, and firing one after teardown would
+  // respond() into a dead/reused socket.
+  private holdTimers = new Map<string, NodeJS.Timeout>();
+  private sessionGate: ((sessionId: string) => boolean) | null = null;
+  private readonly holdMs: number;
+  private readonly unroutableHoldMs: number;
 
-  constructor(pipeName?: string) {
+  constructor(pipeName?: string, holdMs: number = APP_HOLD_MS, unroutableHoldMs: number = UNROUTABLE_HOLD_MS) {
     super();
     this.pipeName = pipeName || DEFAULT_PIPE_NAME;
+    this.holdMs = holdMs;
+    this.unroutableHoldMs = unroutableHoldMs;
+  }
+
+  /** main.ts wires this to SessionManager (mirrors setReloadPluginsGate). */
+  setSessionGate(gate: (sessionId: string) => boolean): void {
+    this.sessionGate = gate;
+  }
+
+  private clearHold(requestId: string): void {
+    const t = this.holdTimers.get(requestId);
+    if (t) { clearTimeout(t); this.holdTimers.delete(requestId); }
   }
 
   private parseHookPayload(data: string): HookEvent {
@@ -62,13 +94,46 @@ export class HookRelay extends EventEmitter {
             event.payload._requestId = requestId;
             this.emit('hook-event', event);
 
+            // §1 tier-1: the app ends the wait, with a labeled deny. §1a: an
+            // unroutable ask (no live session at arrival) gets the short
+            // dead-man cap instead — restores what the old 300s timeout was
+            // silently doing for that case.
+            const routable = this.sessionGate ? this.sessionGate(event.sessionId) : true;
+            const holdMs = routable ? this.holdMs : this.unroutableHoldMs;
+            this.holdTimers.set(requestId, setTimeout(() => {
+              this.holdTimers.delete(requestId);
+              // Nested { decision: { … } } is load-bearing: relay-blocking.js
+              // reads appDecision.decision — a flat shape ships undefined.
+              // The message lands VERBATIM in the denied tool result the model
+              // reads (verified in the CC 2.1.220 binary), so say what
+              // happened and invite a re-ask.
+              this.respond(requestId, {
+                decision: {
+                  behavior: 'deny',
+                  message: routable
+                    ? `YouCoded auto-denied this request after ${Math.round(this.holdMs / 3600000)} hour(s) with no user response — ask again if still needed.`
+                    : 'YouCoded could not route this request to any open session — auto-denied. Ask again if still needed.',
+                },
+              });
+              // respond() deletes the pending entry BEFORE 'close' fires, so
+              // the close handler's wasOpen guard swallows any emit —
+              // app-initiated endings must emit explicitly (spec §2).
+              this.emit('permission-expired', event.sessionId, requestId,
+                routable ? 'app-timeout' : 'unroutable');
+            }, holdMs));
+
             // When the socket closes (relay timeout, Claude Code kills hook,
             // or network error), notify listeners so the UI can clear the
             // awaiting-approval state instead of leaving dead buttons.
             socket.on('close', () => {
+              this.clearHold(requestId);
               const wasOpen = this.pendingSockets.delete(requestId);
               if (wasOpen) {
-                this.emit('permission-expired', event.sessionId, requestId);
+                // Reachable ONLY when the far end went away first (relay
+                // timeout/death, CC killing the hook): app-initiated paths
+                // delete the entry before 'close' fires and emit their own
+                // reason. That asymmetry IS the §2 discrimination.
+                this.emit('permission-expired', event.sessionId, requestId, 'hook-closed');
               }
             });
           } else {
@@ -154,6 +219,7 @@ export class HookRelay extends EventEmitter {
   }
 
   respond(requestId: string, decision: object): boolean {
+    this.clearHold(requestId);
     const pending = this.pendingSockets.get(requestId);
     if (!pending || pending.socket.destroyed) {
       this.pendingSockets.delete(requestId);
@@ -166,6 +232,7 @@ export class HookRelay extends EventEmitter {
   }
 
   closeSocket(requestId: string): void {
+    this.clearHold(requestId);
     const pending = this.pendingSockets.get(requestId);
     if (pending && !pending.socket.destroyed) {
       pending.socket.end();
@@ -187,6 +254,11 @@ export class HookRelay extends EventEmitter {
   }
 
   stop(): void {
+    // Clear all app-owned hold timers first — otherwise a still-pending
+    // timer could fire respond() into a socket we're about to tear down.
+    for (const t of this.holdTimers.values()) clearTimeout(t);
+    this.holdTimers.clear();
+
     // Clean up all pending permission sockets
     for (const [, pending] of this.pendingSockets) {
       if (!pending.socket.destroyed) {

@@ -179,6 +179,8 @@ const hookRelay = new HookRelay(pipeName);
 // live permission/AskUserQuestion menu — typing into that menu presses Enter
 // on the highlighted option and silently answers the prompt (stray-Enter fix).
 sessionManager.setReloadPluginsGate((sessionId) => hookRelay.hasPendingPermission(sessionId));
+// §1a: unroutable asks get the 60s dead-man cap instead of the 2h hold.
+hookRelay.setSessionGate((sessionId) => sessionManager.hasSession(sessionId));
 const remoteConfig = new RemoteConfig();
 const skillProvider = new LocalSkillProvider();
 skillProvider.ensureMigrated();
@@ -924,12 +926,16 @@ function createWindow(firstRunManager?: FirstRunManager) {
     }
   });
 
-  // Notify renderer when a permission request socket closes (timeout/killed)
-  hookRelay.on('permission-expired', (sessionId: string, requestId: string) => {
+  // Notify renderer when a permission request ends — either app-initiated
+  // (hold timer / unroutable cap, with a labeled reason) or because the far
+  // end went away first (hook-closed). See hook-relay.ts §1/§2.
+  hookRelay.on('permission-expired', (sessionId: string, requestId: string, reason?: string) => {
     const evt = {
       type: 'PermissionExpired',
       sessionId,
-      payload: { _requestId: requestId },
+      // _reason rides INSIDE the payload — no IPC channel shape change, so
+      // ipc-channels.test.ts needs nothing and old remote shims just ignore it.
+      payload: { _requestId: requestId, _reason: reason },
       timestamp: Date.now(),
     };
     const ownerId = windowRegistry.getOwner(sessionId);
