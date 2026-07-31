@@ -8,7 +8,7 @@ import type { PortableModelRef } from '../../../shared/types';
 
 // ONE model list, used everywhere a model gets chosen. Replaces four shapes for
 // the same question: the alias button row in both new-session forms,
-// RuntimeBinding's Provider+Model <Select> pair, NativeModelSelect's grouped
+// RuntimeBinding's Provider+Model <Select> pair, the deleted NativeModelSelect's grouped
 // list, and ModelPickerPopup's own native branch.
 //
 // The runtime is DERIVED from the pick, not chosen first. Picking a Claude Code
@@ -161,7 +161,7 @@ export default function ModelPicker({
    *  providerId is a per-device ULID and cannot be compared across synced
    *  devices. No match leaves the picker un-prefilled: never an error, never a
    *  substitute for the saved model. Carried over verbatim from
-   *  NativeModelSelect, whose behaviour this replaces in the Resume Browser
+   *  NativeModelSelect (now deleted), whose behaviour this replaces in the Resume Browser
    *  (Destin's Task 6 ruling — native resume ALWAYS offers the picker,
    *  pre-filled when the model is available here). */
   prefill?: PortableModelRef;

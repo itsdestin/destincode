@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
-import { Select, TextInput } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -209,8 +208,9 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
 // The native-only extras that are NOT model selection: the harness preset and
 // the local-engine memory-fit warning. Split out so the unified <ModelPicker>
 // can host them without dragging in the Runtime toggle and the provider/model
-// <Select> pair it replaces. RuntimeBindingFields below renders this too, so
-// there is one copy while both paths exist.
+// <Select> pair it replaced. Both are now deleted — all three new-session
+// surfaces (SessionStrip, the welcome form, the Resume Browser) go through
+// <ModelPicker>, so this is the only place the preset/memory UI lives.
 export function NativeExtras({ nb, preset, onPreset }: {
   nb: NativeBinding & { setBinding: (b: Binding) => void };
   preset: PresetId;
@@ -267,156 +267,6 @@ export function NativeExtras({ nb, preset, onPreset }: {
               )}
             </div>
           </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// The Runtime toggle + (when native is chosen) the provider/model picker.
-// Self-gates on native support — renders nothing when there's only one runtime.
-export function RuntimeBindingFields({
-  runtime, onRuntime, nb, preset, onPreset,
-}: {
-  runtime: Runtime;
-  onRuntime: (r: Runtime) => void;
-  nb: NativeBinding & { setBinding: (b: Binding) => void };
-  // The chosen native harness preset (Assistant | Coder) + its setter. Only
-  // meaningful when runtime === 'native'; the parent forwards it into the
-  // create call so the session is stamped with the right personality/posture.
-  preset: PresetId;
-  onPreset: (p: PresetId) => void;
-}) {
-  if (!nb.nativeSupported) return null;
-  return (
-    <>
-      <div>
-        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Runtime</label>
-        <div className="inline-flex rounded border border-edge overflow-hidden">
-          <button
-            type="button"
-            onClick={() => onRuntime('claude')}
-            className={`px-3 py-1 text-xs ${runtime === 'claude' ? 'bg-accent text-on-accent' : 'bg-panel text-fg hover:bg-inset'}`}
-          >
-            Claude Code
-          </button>
-          <button
-            type="button"
-            onClick={() => onRuntime('native')}
-            className={`px-3 py-1 text-xs ${runtime === 'native' ? 'bg-accent text-on-accent' : 'bg-panel text-fg hover:bg-inset'}`}
-          >
-            YouCoded
-          </button>
-        </div>
-      </div>
-
-      {runtime === 'native' && (
-        <div className="flex flex-col gap-2">
-          {nb.readyProviders.length === 0 ? (
-            <p className="text-3xs text-fg-muted">Add a provider key in Settings → Model Providers first.</p>
-          ) : (
-            <>
-              <div>
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Provider</label>
-                {/* Change 21: no native <select> — its option list is drawn by the
-                    OS, so a themed app dropped an OS-blue menu out of it. The
-                    <label> above is not associated (it never had an htmlFor), so
-                    the name is carried by aria-label. */}
-                <Select
-                  options={nb.readyProviders.map((p) => ({ value: p.id, label: p.label }))}
-                  value={nb.selectedProviderId}
-                  onChange={(pid) => {
-                    const firstModel = nb.modelCatalog.find((m) => m.providerId === pid)?.id ?? '';
-                    nb.setBinding({ providerId: pid, modelId: firstModel });
-                  }}
-                  size="sm"
-                  // These two Selects render inside the SessionStrip new-session
-                  // form (z-9000 host), so their menus must escape above it.
-                  escapeHost
-                  aria-label="Provider"
-                />
-              </div>
-              <div>
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-                {nb.needsFreeformModel ? (
-                  <TextInput
-                    type="text"
-                    size="sm"
-                    value={nb.selectedModelId}
-                    placeholder="e.g. llama3.1"
-                    aria-label="Model"
-                    onChange={(e) => nb.setBinding({ providerId: nb.selectedProviderId, modelId: e.target.value })}
-                    className="w-full"
-                  />
-                ) : (
-                  // Change 21. The whole provider catalog is passed through
-                  // UNCAPPED — for an OpenRouter-style provider that is dozens of
-                  // entries, and Select's own menu already scrolls and scrolls the
-                  // current value into view on open.
-                  <Select
-                    options={nb.providerModels.map((m) => ({ value: m.id, label: m.label }))}
-                    value={nb.selectedModelId}
-                    onChange={(modelId) => nb.setBinding({ providerId: nb.selectedProviderId, modelId })}
-                    size="sm"
-                    escapeHost
-                    aria-label="Model"
-                  />
-                )}
-              </div>
-
-              {/* Preset picker (spec §3.4): the native harness personality —
-                  Assistant (asks first) vs Coder (agentic, auto-edits). Both carry
-                  the full tool suite; they differ in prompt + starting permission
-                  posture. Stamped at create; drives the resolved harnessId. */}
-              <div>
-                <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Preset</label>
-                <div className="flex gap-2">
-                  {PRESETS.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => onPreset(p.id as PresetId)}
-                      aria-pressed={preset === p.id}
-                      className={`flex-1 text-left rounded border px-2 py-1.5 ${preset === p.id ? 'border-accent bg-inset' : 'border-edge bg-panel hover:bg-inset'}`}
-                    >
-                      <div className="text-xs text-fg">{p.name}</div>
-                      <div className="text-3xs text-fg-muted leading-snug">{p.description}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Memory guard (#2): block only when clearly too large; otherwise a
-                  warning with a "Show more" detail (overflow + LRU eviction).
-                  local-engine models only. */}
-              {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
-                <div
-                  className={`text-2xs rounded-sm px-2 py-1.5 border ${
-                    nb.memVerdict.verdict === 'too-large'
-                      ? 'border-[var(--destructive)] text-fg-2'
-                      : 'border-edge bg-well text-fg-dim'
-                  }`}
-                >
-                  <div className="flex items-start gap-1.5">
-                    <span aria-hidden>{nb.memVerdict.verdict === 'too-large' ? '⛔' : '⚠️'}</span>
-                    <div className="flex-1 min-w-0">
-                      <span>{nb.memVerdict.headline}</span>{' '}
-                      <button
-                        type="button"
-                        onClick={() => nb.setMemDetailOpen((o) => !o)}
-                        className="underline text-fg-muted hover:text-fg whitespace-nowrap"
-                      >
-                        {nb.memDetailOpen ? 'Show less' : 'Show more'}
-                      </button>
-                      {nb.memDetailOpen && (
-                        <p className="mt-1 text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
         </div>
       )}
     </>

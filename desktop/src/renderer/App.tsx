@@ -14,13 +14,6 @@ import { modelChipFor, supportsAliasCycling } from './components/model-chip';
 import FolderSwitcher from './components/FolderSwitcher';
 import { isTypingTarget } from './utils/is-typing-target';
 
-// Labels for the welcome-screen model picker (mirrors SessionStrip)
-const WELCOME_MODEL_LABELS: Record<string, string> = {
-  sonnet: 'Sonnet',
-  'opus[1m]': 'Opus',
-  haiku: 'Haiku',
-  fable: 'Fable',
-};
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim } from './components/overlays/Overlay';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
@@ -62,9 +55,9 @@ import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
-import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
+import ModelPicker, { type ModelChoice } from './components/model/ModelPicker';
 import ModelPickerPopup from './components/ModelPickerPopup';
-import NativeModelSelect from './components/NativeModelSelect';
 import type { ModelBinding } from '../shared/provider-types';
 import OpenTasksPopup from './components/OpenTasksPopup';
 import { useSessionTasks } from './hooks/useSessionTasks';
@@ -429,6 +422,27 @@ function AppInner() {
   // RuntimeBinding.usePreset). Follows the folder heuristic until the user picks a
   // card, then latches; re-arms every time the form (re)opens via welcomeFormOpen.
   const { preset: welcomePreset, setPreset: setWelcomePreset } = usePreset({ active: welcomeFormOpen, cwd: welcomeCwd });
+
+  // Bridge between the unified <ModelPicker> and the welcome form's existing
+  // create-time state (welcomeRuntime / welcomeModel / welcomeBinding). Same
+  // shape as SessionStrip's — the runtime is DERIVED from the model the user
+  // picks, so this form no longer asks "Runtime?" before "Model?". Kept as a
+  // derived value + one setter so the createSession call below is untouched.
+  const welcomeModelChoice: ModelChoice | null = welcomeRuntime === 'native'
+    ? (welcomeNb.effectiveBinding
+        ? { runtime: 'native', providerId: welcomeNb.effectiveBinding.providerId, modelId: welcomeNb.effectiveBinding.modelId }
+        : null)
+    : { runtime: 'claude', alias: welcomeModel };
+
+  const applyWelcomeModelChoice = (c: ModelChoice) => {
+    if (c.runtime === 'claude') {
+      setWelcomeRuntime('claude');
+      setWelcomeModel(c.alias);
+    } else {
+      setWelcomeRuntime('native');
+      welcomeNb.setBinding({ providerId: c.providerId, modelId: c.modelId });
+    }
+  };
 
   // Per-session model state — keyed by sessionId, same pattern as permissionModes.
   // 'unknown' is a display-only sentinel — never a real /model target.
@@ -3034,37 +3048,26 @@ function AppInner() {
                       onManageProjects={() => dispatchArtifact({ type: 'PROJECT_VIEW_OPENED' })}
                     />
                   </div>
-                  {/* Runtime (Claude Code | YouCoded) + native provider/model
-                      picker — same shared control as the SessionStrip form.
-                      Self-hides when native.supported is false. */}
-                  <RuntimeBindingFields
-                    runtime={welcomeRuntime}
-                    onRuntime={setWelcomeRuntime}
-                    nb={welcomeNb}
-                    preset={welcomePreset}
-                    onPreset={setWelcomePreset}
-                  />
-                  {/* Claude model aliases — hidden for the native runtime, which
-                      picks its model via the binding picker above. */}
-                  {welcomeRuntime !== 'native' && (
-                    <div>
-                      <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-                      <div className="flex gap-1">
-                        {MODELS.map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => setWelcomeModel(m)}
-                            className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
-                              welcomeModel === m
-                                ? 'bg-accent text-on-accent font-medium'
-                                : 'bg-inset text-fg-dim hover:bg-edge'
-                            }`}
-                          >
-                            {WELCOME_MODEL_LABELS[m] || m}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                  {/* ONE model list — the third and last form to drop the
+                      Runtime toggle + provider/model <Select> pair + its own
+                      Claude alias row (SessionStrip and the Resume Browser were
+                      converted first). Runtime is DERIVED from the pick, so the
+                      user answers "which model?" instead of decoding "Runtime"
+                      first. */}
+                  <div>
+                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
+                    <ModelPicker
+                      value={welcomeModelChoice}
+                      onSelect={applyWelcomeModelChoice}
+                      onManageModels={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+                    />
+                  </div>
+                  {/* Native-only extras that are NOT model selection (harness
+                      preset, local-engine memory-fit warning). They appear
+                      because a native model was picked, not because a runtime
+                      was declared. */}
+                  {welcomeRuntime === 'native' && welcomeNb.nativeSupported && (
+                    <NativeExtras nb={welcomeNb} preset={welcomePreset} onPreset={setWelcomePreset} />
                   )}
                   {/* Skip Permissions is CLAUDE-CODE ONLY — it bypasses the CLI's
                       permission flow, and a native session has neither a PTY nor
@@ -3460,10 +3463,12 @@ function AppInner() {
       {/* Task 6 — pre-resume model picker for a native conversation resumed
           from a call site with no inline picker of its own (the Resume
           Browser's expanded row has one and never opens this — see
-          pendingNativeResume's doc comment above). Same NativeModelSelect as
-          the Resume Browser; Resume stays disabled until a binding exists —
-          Destin's ruling forbids auto-launching one. Cancel discards the
-          pending resume entirely (no partial/implicit resume). */}
+          pendingNativeResume's doc comment above). Same unified <ModelPicker>
+          as the Resume Browser, SCOPED to native (a resume cannot move a
+          conversation across runtimes, so offering Claude models here would be
+          a pick that cannot be honoured). Resume stays disabled until a binding
+          exists — Destin's ruling forbids auto-launching one. Cancel discards
+          the pending resume entirely (no partial/implicit resume). */}
       {pendingNativeResume && (
         <>
           <Dialog
@@ -3476,7 +3481,12 @@ function AppInner() {
             className="p-5"
           >
             <h3 className="text-sm font-semibold text-fg mb-3">Choose a model to resume with</h3>
-            <NativeModelSelect onSelect={(binding) => setPendingNativeBinding(binding)} />
+            <ModelPicker
+              value={pendingNativeBinding ? { runtime: 'native', providerId: pendingNativeBinding.providerId, modelId: pendingNativeBinding.modelId } : null}
+              onSelect={(c) => { if (c.runtime === 'native') setPendingNativeBinding({ providerId: c.providerId, modelId: c.modelId }); }}
+              includeClaude={false}
+              onManageModels={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+            />
             <div className="flex justify-end gap-2 mt-4">
               <Button
                 variant="secondary"

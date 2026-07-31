@@ -219,9 +219,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
   // Task 6 — native resume ALWAYS offers the provider-scoped model selector
   // (Destin's ruling: never auto-launch a binding). null until the user picks
-  // a row OR NativeModelSelect auto-selects a prefill match; the Resume button
+  // a row OR ModelPicker auto-selects a prefill match; the Resume button
   // stays disabled for a native row until this is set. Reset whenever a
-  // (possibly different) row expands/collapses — a fresh NativeModelSelect
+  // (possibly different) row expands/collapses — a fresh ModelPicker
   // mount per expansion is what actually resets ITS internal state; this just
   // keeps the Resume-button gate and the value threaded through onResume in
   // sync with that same lifecycle.
@@ -502,7 +502,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     // irrelevant (no PTY, no /model or /effort), so pass the current (default)
     // values but tag the row's provider so App takes the native path, PLUS the
     // binding the user just picked (or the prefill auto-selected) in the
-    // NativeModelSelect below — the Resume button is disabled until this is
+    // ModelPicker below — the Resume button is disabled until this is
     // set (see the (s.provider === 'native' && !nativeResumeBinding) guard on
     // the button), so it is always present here for a native row.
     //
@@ -530,7 +530,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     <div className="border-t border-edge-dim">
       <div className="p-3 flex flex-col gap-2">
         {/* ONE model control for both runtimes. Was two: a Claude alias button
-            row here and NativeModelSelect below, which is the duplication this
+            row here and a separate native picker below, which is the duplication this
             picker exists to end. The list is SCOPED to the row's own runtime —
             a resume cannot move a conversation across runtimes, so offering the
             other side would be a pick that cannot be honoured. */}
@@ -687,7 +687,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           own container is a plain `bg-panel` utility (CommandDrawer.tsx:195),
           which the wallpaper rule does not touch.
           `bg-inset` is what every other item nested in an overlay uses —
-          NativeModelSelect, OpenTasksPopup, TagPicker, ContextPopup — and the
+          ModelPicker rows, OpenTasksPopup, TagPicker, ContextPopup — and the
           protection cascade (`.layer-surface .bg-inset`, globals.css:951) keeps
           it opaque inside a glass panel.
           Bare `bg-inset` here rather than change 25's `bg-inset/50` in-panel ROW
