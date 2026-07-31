@@ -119,3 +119,82 @@ earlier text or the code's own comments got wrong.
   `~/.claude` scan, which made the attached tool set depend on the machine: Ubuntu CI failed
   "expected 10 tools, got 11" while macOS, Windows and local all passed. `EMPTY_SKILL_CATALOG`
   is the default in both shared factories AND in the seven suites that build their own opts.
+
+## MCP in native sessions (M3 item 4, phase 1)
+
+Design: workspace `docs/active/specs/2026-07-30-native-mcp-design.md`. Nine tasks built a
+registry store, a single-server client, a refcounted connection manager, a per-tool adapter,
+budget-gated session wiring, and projection into Claude Code's `~/.claude.json` — all on branch
+`feat/native-mcp-phase1`, not yet merged to master.
+
+- **Registry** (`harness/mcp/mcp-registry.ts`) persists WHICH servers exist to the synced
+  `~/.youcoded/mcp.json`, split the same way `providers.json`/`search-providers.json` are: only
+  a `secretRef` pointer is stored; plaintext lives in `SecretsStore` (safeStorage, userData,
+  machine-bound). A synced entry without its matching ciphertext on a device resolves with
+  `missingSecrets` populated ("needs setup"), never a crash or a half-configured spawn.
+- **Client** (`harness/mcp/mcp-client.ts`) owns exactly one server's connection lifecycle:
+  connect (stdio via `StdioClientTransport`, or streamable HTTP), list tools, call one, close.
+  `stderr: 'pipe'` on the stdio transport is deliberate — the SDK default (`'inherit'`) would
+  route a failing server's only diagnostic into the app's own stderr, unreachable by the user;
+  the piped stream is buffered (bounded ring, last ~4KB) so a connect failure can quote it. Call
+  timeouts thread `signal`+`timeout` into the SDK's own request options at the SDK's
+  `(params, resultSchema, options)` position — a "simplified" 2-arg call would silently drop
+  both onto the SDK's own 60s default timeout with an error naming neither the server nor the
+  bound. A local backstop timer (`callTimeoutMs + 1s`) exists only for the case the SDK itself
+  never rejects.
+- **Manager** (`harness/mcp/mcp-manager.ts`) pools one live connection per server, refcounted
+  across every session that acquires it — two sessions using the same server share one
+  subprocess, not two. `acquire()`/`release()` close two overlapping-call race windows (a
+  `release()` landing mid-registration, and a resumed session's re-acquire racing an outgoing
+  release for the same session id) via a synchronous two-pass registration and a `holderTouch`
+  sequence number — see the file's own comments for the exact race shapes. App-quit calls
+  `destroyAll()` — see the leaked-subprocess caveat below.
+- **Adapter** (`harness/mcp/mcp-tools.ts`) turns a connected server's tools into ordinary
+  `NativeTool`s named `mcp__{server}__{tool}` (Claude Code's own convention, so names can't
+  collide with the ten built-in tools). Input schemas pass through raw — no local
+  re-validation, since the server validates its own arguments and a lossy local check could
+  reject a valid call. `permissionSubject` returns `undefined`, so a remembered "always allow"
+  grants exactly the one namespaced tool it was granted for, never the whole server —
+  deliberate, because a server update can add a destructive tool with no revocation UI until M5
+  item 3 ships. The server's own tool annotations (`readOnlyHint`, `destructiveHint`) are read
+  and ignored: a server is not a trusted authority about its own danger.
+- **Session wiring** (`harness-session.ts`) attaches WHOLE servers only, in registry order,
+  dropping from the END once `estimateToolSchemaTokens` (chars/4, the same estimate
+  `fitToContext` uses) would exceed `profile.mcpToolBudgetTokens` — never a partial tool set for
+  one server — and `droppedMcpServers` records the dropped servers' ids. Re-synced on every
+  `buildAiTools()` call (mirrors the Skill tool's per-call resync), gated on the budget value
+  plus the `mcpServers` array reference so an unchanged binding doesn't re-tokenize every
+  server's schema on every turn.
+- **Projection** (`mcp-reconciler.ts`) writes the registry's enabled servers into
+  `~/.claude.json`'s `mcpServers` so Claude Code sessions see them too. **Ownership is tracked
+  in a TOP-LEVEL `_youcodedOwnedMcpServers: string[]` key, not a per-entry marker** — the
+  original plan called for a per-entry flag, but Claude Code's tolerance for an unknown
+  top-level key is demonstrated (Destin's real file carries 59 of them), while its tolerance for
+  an unknown key inside an individual `mcpServers` entry is unverified; a strict per-entry
+  schema could silently break MCP loading. An id already present in `mcpServers` that YouCoded
+  did not previously own — hand-written via `claude mcp add`, or scanned from a plugin
+  manifest — is SKIPPED, never overwritten, and reported via `skippedCollisions`; that is the
+  adopt-candidate case, and adopt itself is phase 2.
+
+**Deliberately deferred, not a phase-1 oversight:**
+- The plugin-manifest scan (the pre-existing `~/.claude/plugins/*/mcp-manifest.json` walk that
+  has fed `~/.claude.json` since decomposition v3) was **not** migrated to feed the YouCoded
+  registry, despite the original plan's own Step 4 saying it would. No production
+  registry-write path exists yet (`McpRegistry.upsert()` has zero production callers), and the
+  manifest schema (`platform`, `auto`, `command_windows`, `{{plugin_root}}` template expansion)
+  has no lossless equivalent in the registry's `McpServerEntry`/`McpTransport` shape.
+  **Consequence, stated plainly: a marketplace-installed MCP server is visible in Claude Code
+  sessions but NOT in native sessions today** — the stated cross-runtime parity goal is not yet
+  met for that path.
+- No settings UI, no adopt flow, no `mcp:*` IPC channel. Phase 1 is configured entirely by
+  hand-editing `~/.youcoded/mcp.json` — developer-operable only, per the design spec's own
+  phasing. The registry is read only in the main process; nothing crosses to the renderer, so
+  `ipc-channels.test.ts` has no `mcp:*` row to pin — its absence is not an oversight.
+
+**A leaked-subprocess caveat, app-wide and pre-existing — not MCP-specific.**
+`McpManager.destroyAll()` runs from `NativeSessionHost.destroyAll()`, which the app reaches only
+via its `window-all-closed` handler — the only quit path it is wired to. macOS Cmd+Q, dock
+quit, and an OS SIGTERM bypass that handler entirely and leak the spawned MCP subprocess.
+`SessionManager.destroyAll()` and `HookRelay.stop()` ride the exact same single hook, so this is
+the existing quit-hook gap (logged as its own ROADMAP bug) applying to one more subsystem, not a
+new hole this work introduced.
