@@ -1,19 +1,21 @@
 // @vitest-environment jsdom
 // desktop/tests/resume-browser-organize.test.tsx
 //
-// The Resume Browser's per-card organize affordances: the hide (Complete) icon
-// on the card, and the "⋯" popover holding tags + note. Three of these
-// behaviours are design decisions that are easy to undo by accident, so they
-// are pinned here rather than left to a visual pass:
+// The Resume Browser's per-card organize affordances: the Complete check icon
+// on the card, and the tag icon that opens an in-card sheet holding tags + note.
+// Four of these behaviours are design decisions that are easy to undo by
+// accident, so they are pinned here rather than left to a visual pass:
 //
-//   1. Complete is reachable in ONE click from the card, not behind the menu.
+//   1. Complete is reachable in ONE click from the card, not behind the sheet.
 //   2. Priority is applied through the tag picker like any other tag, but is
 //      not a registry tag — toggling it writes a FLAG, and it never appears in
 //      the tag manager (so it can't be renamed or deleted out from under the
 //      sort that reads it).
-//   3. A row that cannot be resumed on this device can still be organized.
-//      Inert rows never expand, so anything living inside the expanded card
-//      would be unreachable for them.
+//   3. The resume pane and the tag sheet are MUTUALLY EXCLUSIVE — a card shows
+//      one or the other, never both stacked.
+//   4. A row that cannot be resumed on this device can still be organized.
+//      Inert rows never expand, and the sheet opens independently of expansion,
+//      which is the only reason those rows are reachable at all.
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
@@ -111,6 +113,24 @@ describe('ResumeBrowser — organizing a conversation', () => {
     // The registry tag is editable there; the built-in has no row at all.
     expect(await screen.findByRole('textbox', { name: 'Rename Research' })).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Rename Priority' })).not.toBeInTheDocument();
+  });
+
+  it('shows the resume pane OR the tag sheet, never both', async () => {
+    mount();
+    // Expand to resume…
+    fireEvent.click(await screen.findByText('CC Chat'));
+    expect(await screen.findByRole('button', { name: 'Resume Session' })).toBeInTheDocument();
+
+    // …opening tags replaces it rather than stacking a second panel under it,
+    // which is what would push the Resume button down the screen as you typed.
+    fireEvent.click(await screen.findByRole('button', { name: /Organize CC Chat/ }));
+    expect(await screen.findByPlaceholderText('Search or create a tag…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Resume Session' })).not.toBeInTheDocument();
+
+    // …and back the other way.
+    fireEvent.click(await screen.findByText('CC Chat'));
+    expect(await screen.findByRole('button', { name: 'Resume Session' })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Search or create a tag…')).not.toBeInTheDocument();
   });
 
   it('organizes a row that cannot be resumed on this device', async () => {

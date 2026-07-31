@@ -44,9 +44,6 @@ export function WorkbenchFrame() {
     child.set('view', view);
     child.set('scenario', params.get('scenario') ?? 'default');
     child.set('latency', String(getLatency()));
-    // Forward every design-variant param (utils/design-variant.ts reads them
-    // from the iframe's own query string, not the parent's).
-    params.forEach((value, key) => { if (key.startsWith('dv_')) child.set(key, value); });
     return `${location.pathname}?${child.toString()}`;
   }, [view]);
 

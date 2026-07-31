@@ -18,12 +18,6 @@ import { TagPicker } from './tags/TagPicker';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
-import {
-  CompleteIcon, OrganizeIcon,
-  COMPLETE_ICONS, ORGANIZE_ICONS,
-  type CompleteIconVariant, type OrganizeIconVariant,
-} from './resume-card-icons';
-import { designVariant } from '../utils/design-variant';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -107,16 +101,7 @@ function measureDropdown(
   triggerRef: React.RefObject<HTMLButtonElement | null>,
   dropdownWidthPx: number,
 ): { top: number; left: number } | null {
-  return measureAnchored(triggerRef.current, dropdownWidthPx);
-}
-
-// Same math against an element rather than a ref. The per-card Organize button
-// is created in a list loop, so there is no stable ref to hand measureDropdown —
-// its click handler measures its own currentTarget through this instead.
-function measureAnchored(
-  el: HTMLElement | null,
-  dropdownWidthPx: number,
-): { top: number; left: number } | null {
+  const el = triggerRef.current;
   if (!el) return null;
   const rect = el.getBoundingClientRect();
   // Clamp so the dropdown's right edge stays at least 8px inside the viewport.
@@ -126,48 +111,6 @@ function measureAnchored(
     top: rect.bottom + 4,
     left: Math.min(rect.left, maxLeft),
   };
-}
-
-// Candidate placements for the Organize popover. `anchor-left` is what ships
-// today; the rest exist to be compared in the workbench (design-variant.ts).
-//
-//   anchor-left   below the trigger, LEFT edges aligned. Simple, but the
-//                 trigger sits at the card's right edge, so the panel hangs
-//                 off to the right and gets viewport-clamped on narrow widths.
-//   anchor-right  below the trigger, RIGHT edges aligned — it opens back over
-//                 the card it belongs to instead of away from it.
-//   centered      below the trigger, horizontally centred on it. Same call the
-//                 model picker makes.
-//   sheet         not floating at all — drops INTO the card, full width, under
-//                 the header row. No positioning maths, no clamping, no
-//                 off-panel case; costs the card growing while you edit.
-const ORGANIZE_POPOVERS = ['anchor-left', 'anchor-right', 'centered', 'sheet'] as const;
-type OrganizePopover = typeof ORGANIZE_POPOVERS[number];
-
-// Rough height used only to decide whether the popover should open UPWARD when
-// it would otherwise run off the bottom. An estimate is honest here: the real
-// height isn't known until after render, and being ~40px out only shifts a
-// panel that was going to be clamped anyway.
-const ORGANIZE_POPOVER_EST_H = 340;
-
-// Placement maths for the three FLOATING variants. Flips above the trigger when
-// there isn't room below and there is above — the case that currently clamps a
-// bottom-of-list card's popover against the viewport edge.
-function measureOrganize(
-  el: HTMLElement | null,
-  width: number,
-  placement: OrganizePopover,
-): { top: number; left: number } | null {
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  const rawLeft =
-    placement === 'centered' ? r.left + r.width / 2 - width / 2
-    : placement === 'anchor-right' ? r.right - width
-    : r.left;
-  const left = Math.max(8, Math.min(rawLeft, window.innerWidth - width - 8));
-  const spaceBelow = window.innerHeight - r.bottom;
-  const flip = spaceBelow < ORGANIZE_POPOVER_EST_H && r.top > spaceBelow;
-  return { top: flip ? Math.max(8, r.top - ORGANIZE_POPOVER_EST_H - 4) : r.bottom + 4, left };
 }
 
 // While a dropdown is open, re-measure the trigger on window resize / scroll
@@ -325,14 +268,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // they moved out here. Side effect worth having: you can now tag or complete a
   // conversation WITHOUT expanding it, including rows that can't be resumed on
   // this device at all.
-  // Open design questions, switchable from the workbench toolbar. All three
-  // default to what ships today, so the real app is unaffected.
-  const completeIcon: CompleteIconVariant = designVariant('completeicon', 'eye-slash', COMPLETE_ICONS);
-  const organizeIcon: OrganizeIconVariant = designVariant('organizeicon', 'dots-h', ORGANIZE_ICONS);
-  const organizePop: OrganizePopover = designVariant('organizepop', 'anchor-left', ORGANIZE_POPOVERS);
-
   const [organizeId, setOrganizeId] = useState<string | null>(null);
-  const [organizePos, setOrganizePos] = useState<{ top: number; left: number } | null>(null);
   const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const organizePopRef = useRef<HTMLDivElement>(null);
   // The tag registry editor (rename/recolor/archive/delete). Opened from the
@@ -419,22 +355,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     };
   }, [organizeId]);
 
-  // Keep the popover anchored while the list scrolls under it (w-64 = 256px).
-  // Not useDropdownReposition: that hook hardcodes the below-left maths, and
-  // the 'sheet' variant has no anchor to track at all.
-  useEffect(() => {
-    if (!organizeId || organizePop === 'sheet') return;
-    const remeasure = () => {
-      const next = measureOrganize(organizeTriggerRef.current, 256, organizePop);
-      if (next) setOrganizePos(next);
-    };
-    window.addEventListener('resize', remeasure);
-    window.addEventListener('scroll', remeasure, true);
-    return () => {
-      window.removeEventListener('resize', remeasure);
-      window.removeEventListener('scroll', remeasure, true);
-    };
-  }, [organizeId, organizePop]);
 
   const filtered = useMemo(() => {
     // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
@@ -597,6 +517,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setExpandedId(null);
     } else {
       setExpandedId(sessionId);
+      // Other half of the mutual exclusion (the tag button does the reverse):
+      // a card shows the resume pane OR the tag sheet, never both. Clears any
+      // card's open sheet, not just this one — two cards' panes open at once
+      // would be the same stacking problem spread across rows.
+      setOrganizeId(null);
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
@@ -860,14 +785,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
             )}
             <span className="truncate flex-1 min-w-0">{s.name}</span>
-            {/* Timestamp rides the NAME line, top-right, rather than being
-                vertically centred against the whole card. A card can be one
-                line or four (chips, project/size, an inert-row note) and a
-                centred timestamp drifted with it; pinned to the title line it
-                sits on a stable baseline across every row. */}
-            <span className="text-3xs text-fg-muted shrink-0 font-normal">
-              {formatRelativeTime(s.lastModified)}
-            </span>
           </div>
           {/* Tag chips after the name. Priority is FIRST and rendered with the
               same TagChip as everything else — it is a built-in tag, not a
@@ -883,24 +800,31 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {s.note && <span className="text-4xs text-fg-muted" title={s.note}>📝 note</span>}
             </div>
           )}
-          {/* Second line: in flat (chronological) mode each row carries its
-              project label since there's no group header; size rides along so
-              no info is lost vs. the grouped view. Grouped rows keep size only
-              — the group header already names the project. */}
-          {s.missingProject || s.notSyncedYet ? (
-            // Plain words, no glyphs (house rule). The conversation is visible
-            // everywhere; resume needs the project folder AND its transcript
-            // present on this device — the two notes say which one is missing.
-            <div className="text-3xs text-fg-muted truncate">
-              {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
-            </div>
-          ) : (
-            <div className="text-3xs text-fg-muted truncate">
-              {showPath
-                ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
-                : formatSize(s.size)}
-            </div>
-          )}
+          {/* Bottom line: context on the left, timestamp on the right.
+              In flat (chronological) mode each row carries its project label
+              since there's no group header; size rides along so no info is lost
+              vs. the grouped view. Grouped rows keep size only — the group
+              header already names the project.
+              The timestamp sits HERE rather than on the title line: the two
+              icon buttons own the card's top-right corner, and a third item
+              crowding in beside them read as part of that control cluster. */}
+          <div className="flex items-end gap-2 text-3xs text-fg-muted">
+            {s.missingProject || s.notSyncedYet ? (
+              // Plain words, no glyphs (house rule). The conversation is visible
+              // everywhere; resume needs the project folder AND its transcript
+              // present on this device — the two notes say which one is missing.
+              <span className="truncate flex-1 min-w-0">
+                {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
+              </span>
+            ) : (
+              <span className="truncate flex-1 min-w-0">
+                {showPath
+                  ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
+                  : formatSize(s.size)}
+              </span>
+            )}
+            <span className="shrink-0">{formatRelativeTime(s.lastModified)}</span>
+          </div>
         </div>
       </button>
       {/* Complete — the classic "hide" eye-with-a-slash, because that is what
@@ -923,7 +847,17 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
             }`}
           >
-            <CompleteIcon variant={completeIcon} done={done} />
+            {/* Check-in-a-circle, not the eye-with-a-slash this started as:
+                the control's NAME is Complete, and "done" is what the user is
+                actually saying. That its effect is to hide the row from the
+                list is a consequence, and one the Show Complete toggle already
+                explains. Filled when set so the state reads at a glance. */}
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
+              {/* Knocked out of the fill when set — var(--canvas), not a
+                  hardcoded white, so it survives a dark or community theme. */}
+              <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
+            </svg>
           </button>
         );
       })()}
@@ -938,11 +872,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         onClick={(e) => {
           e.stopPropagation();
           if (organizeId === s.sessionId) { setOrganizeId(null); return; }
-          // Measure synchronously off the trigger so the popover renders at its
-          // final position in the same commit the id flips (same approach the
-          // filter pills use — avoids a one-frame jump).
           organizeTriggerRef.current = e.currentTarget;
-          setOrganizePos(measureOrganize(e.currentTarget, 256, organizePop));
+          // The two panes are mutually exclusive: a card shows EITHER how to
+          // relaunch it or how to organize it, never both stacked. Without this
+          // an open card could grow two panels deep and the Resume button would
+          // slide down the screen as you tagged.
+          setExpandedId(null);
           setOrganizeId(s.sessionId);
         }}
         aria-label={`Organize ${s.name}`}
@@ -952,7 +887,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
         }`}
       >
-        <OrganizeIcon variant={organizeIcon} />
+        {/* A tag, not a generic dots menu — it names what the sheet holds.
+            MIRRORED (translate + scale(-1,1)) so the wide, punched end sits on
+            the RIGHT: the icon lives at the card's right edge and its point
+            should aim back into the card, not off the panel. */}
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <g transform="translate(24,0) scale(-1,1)">
+            <path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8l8.5 8.5a1.5 1.5 0 010 2.1l-6.9 6.9a1.5 1.5 0 01-2.1 0L3 12.5z" />
+            <circle cx="7.75" cy="7.75" r="1.25" />
+          </g>
+        </svg>
       </button>
       </div>
       {/* 'sheet' variant: the organize controls drop INTO the card rather than
@@ -961,7 +905,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           It shares organizePopRef with the floating variants: only one of the
           two is ever mounted, and the outside-click handler checks that ref to
           know "the click landed inside the open organize UI". */}
-      {organizePop === 'sheet' && organizeId === s.sessionId && (
+      {organizeId === s.sessionId && (
         <div ref={organizePopRef} className="border-t border-edge-dim p-2.5 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
           {renderOrganizeControls(s)}
         </div>
@@ -1194,27 +1138,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         </OverlayPanel>
       </div>
-
-      {/* Organize popover — one instance driven by organizeId, not one per card.
-          Portaled to document.body for the same reason the filter dropdowns are:
-          OverlayPanel is `.layer-surface`, which sets overflow:hidden, so a
-          popover rendered inside a card would be clipped at the panel edge. */}
-      {organizePop !== 'sheet' && organizeId && organizePos && (() => {
-        const s = sessions.find((x) => x.sessionId === organizeId);
-        if (!s) return null;
-        return createPortal(
-          <div
-            ref={organizePopRef}
-            className="layer-surface w-64 max-w-[calc(100vw-1rem)] p-2.5 flex flex-col gap-2"
-            style={{ position: 'fixed', top: organizePos.top, left: organizePos.left, zIndex: 60 }}
-            role="dialog"
-            aria-label={`Organize ${s.name}`}
-          >
-            {renderOrganizeControls(s)}
-          </div>,
-          document.body,
-        );
-      })()}
 
       <TagManagerPopup open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} registry={registry} />
     </>

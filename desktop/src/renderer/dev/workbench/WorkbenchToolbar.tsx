@@ -15,41 +15,6 @@ const VIEWS = [
   { value: 'tools', label: 'tool gallery' },
 ];
 
-// Open design questions, one Select each. Every entry drives a `dv_<key>` query
-// param that a production component reads via utils/design-variant.ts, and the
-// FIRST option must be the shipping default so the toolbar shows the truth on a
-// fresh load. This list is meant to SHRINK — an entry here is an unresolved
-// question, and resolving it means deleting the losing branch AND the entry.
-const DESIGN_VARIANTS: { key: string; label: string; options: { value: string; label: string }[] }[] = [
-  {
-    key: 'completeicon',
-    label: 'Complete icon',
-    options: [
-      { value: 'eye-slash', label: 'eye + slash (breaks)' },
-      { value: 'eye-simple', label: 'eye + slash (whole)' },
-      { value: 'check-circle', label: 'check in circle' },
-    ],
-  },
-  {
-    key: 'organizeicon',
-    label: 'Organize icon',
-    options: [
-      { value: 'dots-h', label: 'dots — horizontal' },
-      { value: 'dots-v', label: 'dots — vertical' },
-      { value: 'tag', label: 'tag' },
-    ],
-  },
-  {
-    key: 'organizepop',
-    label: 'Organize menu',
-    options: [
-      { value: 'anchor-left', label: 'float — left aligned' },
-      { value: 'anchor-right', label: 'float — right aligned' },
-      { value: 'centered', label: 'float — centered' },
-      { value: 'sheet', label: 'in-card sheet' },
-    ],
-  },
-];
 
 
 export interface WorkbenchToolbarProps {
@@ -130,21 +95,6 @@ export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchTo
           onChange={(next) => { setLatency(Number(next)); setLatencyState(next); }}
         />
       </label>
-
-      {/* Reloads like Scenario does — the surfaces read their variant once, at
-          module load. */}
-      {DESIGN_VARIANTS.map((v) => (
-        <label key={v.key} className="flex items-center gap-1.5 text-3xs text-fg-muted">
-          {v.label}
-          <Select
-            size="sm"
-            aria-label={v.label}
-            value={new URLSearchParams(location.search).get(`dv_${v.key}`) ?? v.options[0].value}
-            options={v.options}
-            onChange={(next) => reloadWith(`dv_${v.key}`, next)}
-          />
-        </label>
-      ))}
 
       <span className="text-3xs text-fg-faint">
         Themes: Settings → Appearance
