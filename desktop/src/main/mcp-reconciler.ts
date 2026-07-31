@@ -1,24 +1,34 @@
+import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { listInstalledPluginDirs } from './claude-code-registry';
+import { NativeHome } from './native-home';
+import { SecretsStore } from './providers/secrets-store';
+import { McpRegistry, type ResolvedMcpServer } from './harness/mcp/mcp-registry';
 
 /**
- * MCP Reconciler (decomposition v3, §9.3)
+ * MCP Reconciler (decomposition v3 §9.3; native MCP phase 1, Task 7)
  *
- * Scans ~/.claude/plugins/ * /mcp-manifest.json and reconciles Claude Code's
- * ~/.claude.json `mcpServers` section.
+ * Reconciles Claude Code's ~/.claude.json `mcpServers` section from TWO
+ * sources:
  *
- * Scope (deliberately narrow):
- *   - Only auto-registers servers with `auto: true` in the manifest
- *   - Filters by `platform` field so macOS-only servers aren't registered
- *     on Windows (and vice versa)
- *   - Never removes user-added MCP servers
- *   - Expands `{{plugin_root}}` in command/args to the actual plugin dir
+ *   1. Plugin manifests (~/.claude/plugins/ * /mcp-manifest.json) — the
+ *      original, additive-only path. Only auto-registers `auto: true`
+ *      entries, filtered by `platform`, expanding `{{plugin_root}}`. NEVER
+ *      overwrites or removes an existing entry, owned or not — unchanged from
+ *      before this task.
+ *   2. The YouCoded MCP registry (~/.youcoded/mcp.json, via McpRegistry) —
+ *      new in Task 7. See `projectToClaudeJson`'s header comment for the
+ *      ownership rule that governs this source.
  *
  * Servers with `auto: false` (setup required, e.g., iMessages full-disk-access,
  * Todoist OAuth) are skipped — those need the user to act before they work,
  * and surfacing that belongs in the marketplace UI, not a silent reconciler.
+ *
+ * OPEN QUESTION (flagged in task-7-report.md, not resolved by this task): the
+ * plan's Task 7 step 4 says the manifest scan "moves to feeding the registry".
+ * That migration is deliberately NOT done here — see the report for why.
  */
 
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
@@ -39,6 +49,11 @@ interface McpManifestEntry {
 
 interface ClaudeJson {
   mcpServers?: Record<string, unknown>;
+  /** Ids of mcpServers entries YouCoded currently owns (see
+   *  projectToClaudeJson). A plain top-level key, deliberately NOT nested
+   *  inside individual server entries — see the OWNER DECISION comment on
+   *  projectToClaudeJson below. */
+  _youcodedOwnedMcpServers?: string[];
   [k: string]: unknown;
 }
 
@@ -113,6 +128,84 @@ function buildServerConfig(entry: McpManifestEntry, pluginRoot: string): Record<
   return config;
 }
 
+/** Convert one RESOLVED registry server (secrets already decrypted) into the
+ *  shape Claude Code expects in ~/.claude.json's mcpServers section. Distinct
+ *  from buildServerConfig above: that one reads a plugin MANIFEST entry, this
+ *  one reads a registry entry — different source shapes, same destination. */
+function buildRegistryServerConfig(server: ResolvedMcpServer): Record<string, unknown> {
+  if (server.transport.type === 'http') {
+    const config: Record<string, unknown> = { type: 'http', url: server.transport.url };
+    if (server.headers && Object.keys(server.headers).length > 0) config.headers = server.headers;
+    return config;
+  }
+  // stdio
+  const config: Record<string, unknown> = { type: 'stdio', command: server.transport.command };
+  if (server.transport.args) config.args = server.transport.args;
+  if (server.transport.cwd) config.cwd = server.transport.cwd;
+  if (server.env && Object.keys(server.env).length > 0) config.env = server.env;
+  return config;
+}
+
+/**
+ * Pure projection of the YouCoded MCP registry into Claude Code's
+ * ~/.claude.json shape. Kept pure so every case is unit-testable without ever
+ * touching a real config file — `reconcileMcp` below is the only impure
+ * caller (reads the file, calls this, writes atomically).
+ *
+ * OWNERSHIP (2026-07-30, spec 2026-07-30-native-mcp-design §3.3 — owner
+ * decision overriding the original plan's per-entry marker):
+ * YouCoded manages exactly the entries it marked as its own, tracked in a
+ * TOP-LEVEL `_youcodedOwnedMcpServers: string[]` key, NOT a per-entry flag.
+ * Claude Code demonstrably tolerates arbitrary top-level keys (Destin's real
+ * file carries 59) but whether it tolerates an unknown key INSIDE an
+ * mcpServers entry is unverified — writing one there could silently break MCP
+ * loading in his live sessions if that schema turns out to be strict, so
+ * server entries stay schema-clean.
+ *
+ * An entry it does not own is never modified or removed. An owned entry that
+ * has left the registry (disabled or deleted) IS removed — that is how
+ * disabling a server in YouCoded turns it off for Claude Code too, which is
+ * what "YouCoded owns it" has to mean. The owned-id list is rebuilt fresh on
+ * every call from THIS run's registry, so it can never drift from reality.
+ */
+export function projectToClaudeJson(claudeJson: ClaudeJson, servers: ResolvedMcpServer[]): ClaudeJson {
+  const previouslyOwned = Array.isArray(claudeJson._youcodedOwnedMcpServers)
+    ? claudeJson._youcodedOwnedMcpServers
+    : [];
+  const mcpServers: Record<string, unknown> = { ...(claudeJson.mcpServers ?? {}) };
+  const stillInRegistry = new Set(servers.map((s) => s.id));
+
+  // An id we owned last run that isn't in THIS run's registry has left
+  // (disabled or deleted in YouCoded) — remove it. Deleting a key that's
+  // already gone (the user hand-deleted the entry too) is a no-op, not a
+  // crash — Set/delete on a missing key is always safe.
+  for (const id of previouslyOwned) {
+    if (!stillInRegistry.has(id)) delete mcpServers[id];
+  }
+
+  const nowOwned: string[] = [];
+  for (const server of servers) {
+    // Defensive: projectToClaudeJson's contract is "enabled, resolved
+    // servers only" regardless of what the caller passes — resolveAllEnabled()
+    // already filters disabled ones, but a disabled entry must never be
+    // projected even if a future caller passes list() by mistake.
+    if (server.enabled === false) continue;
+    // A server synced from another device without its matching secret is
+    // "needs setup" (McpRegistry.resolveEntry's missingSecrets) — projecting
+    // it would hand Claude Code a command/header missing a required value,
+    // so it's skipped until the secret actually resolves.
+    if (server.missingSecrets && server.missingSecrets.length > 0) continue;
+    mcpServers[server.id] = buildRegistryServerConfig(server);
+    nowOwned.push(server.id);
+  }
+
+  return {
+    ...claudeJson,
+    mcpServers,
+    _youcodedOwnedMcpServers: nowOwned,
+  };
+}
+
 export interface ReconcileMcpResult {
   added: number;
   skippedPlatform: number;
@@ -120,7 +213,7 @@ export interface ReconcileMcpResult {
   manifestCount: number;
 }
 
-export function reconcileMcp(): ReconcileMcpResult {
+export async function reconcileMcp(): Promise<ReconcileMcpResult> {
   const manifests = listManifests();
   const claudeJson = readClaudeJson();
   const servers = (claudeJson.mcpServers as Record<string, unknown>) || {};
@@ -128,8 +221,13 @@ export function reconcileMcp(): ReconcileMcpResult {
   let added = 0;
   let skippedPlatform = 0;
   let skippedManual = 0;
-  let changed = false;
+  let manifestChanged = false;
 
+  // Legacy path (decomposition v3 §9.3), unchanged by this task: plugin-
+  // bundled servers declared in mcp-manifest.json. Additive-only — never
+  // overwritten, never removed, regardless of the ownership model below.
+  // Folding this into the registry (one ownership rule for both sources) was
+  // considered for this task and deliberately deferred — see task-7-report.md.
   for (const { entries, pluginRoot } of manifests) {
     for (const entry of entries) {
       if (!entry.name) continue;
@@ -142,13 +240,29 @@ export function reconcileMcp(): ReconcileMcpResult {
       if (!config) continue;
       servers[entry.name] = config;
       added++;
-      changed = true;
+      manifestChanged = true;
     }
   }
+  claudeJson.mcpServers = servers;
 
-  if (changed) {
-    claudeJson.mcpServers = servers;
-    writeClaudeJsonAtomic(claudeJson);
+  // New path (Task 7): project the YouCoded-owned MCP registry on top. A
+  // fresh, cheap NativeHome/SecretsStore pair — same construction ipc-
+  // handlers.ts already uses for ProviderRegistry; no shared connections to
+  // pool here (that's McpManager's job for LIVE sessions), just a read.
+  const registry = new McpRegistry(new NativeHome(), new SecretsStore(app.getPath('userData')));
+  const resolved = await registry.resolveAllEnabled();
+  const projected = projectToClaudeJson(claudeJson, resolved);
+
+  // added/skippedPlatform/skippedManual intentionally keep their ORIGINAL
+  // meaning (manifest-scan counts only) rather than being redefined to
+  // include registry churn — the registry re-projects its owned entries on
+  // every call by design, so counting that as "added" every launch would be
+  // misleading telemetry, not a bug fix.
+  const mcpServersChanged = JSON.stringify(claudeJson.mcpServers) !== JSON.stringify(projected.mcpServers);
+  const ownershipChanged = JSON.stringify(claudeJson._youcodedOwnedMcpServers ?? []) !== JSON.stringify(projected._youcodedOwnedMcpServers ?? []);
+
+  if (manifestChanged || mcpServersChanged || ownershipChanged) {
+    writeClaudeJsonAtomic(projected);
   }
   return { added, skippedPlatform, skippedManual, manifestCount: manifests.length };
 }

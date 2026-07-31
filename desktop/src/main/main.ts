@@ -1397,12 +1397,14 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to clean up stale update downloads', { error: String(e) });
   }
 
-  // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
-  // ~/.claude.json mcpServers. Only auto:true entries, filtered by platform.
-  // Never overwrites user-configured servers.
+  // Decomposition v3 §9.3 + native MCP phase 1 Task 7: reconcile plugin
+  // mcp-manifest.json AND the YouCoded MCP registry into ~/.claude.json
+  // mcpServers. reconcileMcp() is now async (registry secrets decrypt via
+  // Electron's safeStorage) — awaited so a rejection lands in this catch
+  // instead of becoming an unhandled promise rejection.
   try {
     const { reconcileMcp } = require('./mcp-reconciler');
-    const mcpSummary = reconcileMcp();
+    const mcpSummary = await reconcileMcp();
     log('INFO', 'Main', 'MCP servers reconciled', mcpSummary);
   } catch (e) {
     log('ERROR', 'Main', 'Failed to reconcile MCP servers', { error: String(e) });
