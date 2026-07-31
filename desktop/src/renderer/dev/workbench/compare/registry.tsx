@@ -23,7 +23,11 @@
 import React from 'react';
 import { Button, Toggle } from '../../../components/ui';
 import { TagChip } from '../../../components/tags/TagChip';
-import { PRIORITY_TAG } from '../../../components/tags/built-in-tags';
+import { TagPicker } from '../../../components/tags/TagPicker';
+import { NoteEditor } from '../../../components/tags/NoteEditor';
+import { useTagRegistry } from '../../../hooks/useTagRegistry';
+import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-tags';
+import type { TagRecord } from '../../../../shared/tags';
 import type { CompareSurface } from './types';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
@@ -502,10 +506,11 @@ function NoteGutter({ children, align = 'center' }: {
 
 /** The round-3 winner's shell, shared so round 4 can vary only what is inside
  *  it — card, hover, and the corner pencil are identical across all three. */
-function GutterCard({ children }: { children: React.ReactNode }) {
+function GutterCard({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className="group relative w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex flex-col gap-1.5 transition-colors hover:border-edge hover:bg-well"
     >
       {children}
@@ -513,6 +518,189 @@ function GutterCard({ children }: { children: React.ReactNode }) {
         <PencilGlyph className="w-3.5 h-3.5" />
       </span>
     </button>
+  );
+}
+
+// ── Round 6: the edit flow ───────────────────────────────────────────────────
+// The card is settled through round 5. What is being refined now is what
+// happens when you act on it — how you get into editing, whether you can still
+// see what is applied while you do, and how you get out.
+//
+// These candidates run the REAL TagPicker and NoteEditor against the mock
+// backend, not stand-ins: an edit flow can only be judged by using it, and a
+// fake picker would hide exactly the friction being compared.
+
+/** Shared editing state, so all three candidates start from the same content
+ *  and the only difference on screen is the flow. */
+function useDraft() {
+  const registry = useTagRegistry();
+  const [tagIds, setTagIds] = React.useState<Set<string>>(new Set(['tag_work']));
+  const [priority, setPriority] = React.useState(true);
+  const [note, setNote] = React.useState(NOTE_LONG);
+  const toggleTag = (id: string, next: boolean) => setTagIds((prev) => {
+    const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s;
+  });
+  // Typed narrowing rather than `filter(Boolean)` — the latter leaves
+  // TagRecord|undefined and every consumer then needs a guard.
+  const chips = [...tagIds]
+    .map((id) => registry.byId.get(id))
+    .filter((t): t is TagRecord => !!t);
+  return { registry, tagIds, toggleTag, priority, setPriority, note, setNote, chips };
+}
+
+/** The settled summary body — round 5's B. Shared by the flows that show it. */
+function SummaryBody({ chips, priority, note }: {
+  chips: TagRecord[]; priority: boolean; note: string;
+}) {
+  return (
+    <span className="grid grid-cols-[16px_1fr] items-start gap-x-1.5 gap-y-1.5 pr-6">
+      <TagGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+      <span className="flex flex-wrap items-center gap-1 min-w-0">
+        {priority && <TagChip tag={PRIORITY_TAG} />}
+        {chips.map((t) => <TagChip key={t.id} tag={t} />)}
+        {!priority && chips.length === 0 && <span className="text-2xs text-fg-muted">No tags</span>}
+      </span>
+      <NotePageGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+      {note.trim()
+        ? <span className="text-2xs text-fg-muted italic leading-snug line-clamp-2 min-w-0">“{note.trim()}”</span>
+        : <span className="text-2xs text-fg-muted min-w-0">No note</span>}
+    </span>
+  );
+}
+
+/** The editor body, identical in every flow that has one. */
+function EditorBody({ d }: { d: ReturnType<typeof useDraft> }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <TagPicker
+        appliedIds={d.tagIds}
+        onToggle={d.toggleTag}
+        registry={d.registry}
+        onManageTags={() => {}}
+        builtIns={[{ tag: PRIORITY_TAG, hint: PRIORITY_HINT, applied: d.priority, onToggle: d.setPriority }]}
+      />
+      <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
+      <NoteEditor value={d.note} onSave={d.setNote} />
+    </div>
+  );
+}
+
+/** REPLACE — what ships today. The card swaps to the editor; a "Done" text link
+ *  swaps it back. Least chrome, but while editing you cannot see the summary
+ *  you were changing, and "Done" is a small target for the only way out. */
+function FlowReplace() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      {editing ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+            <button type="button" onClick={() => setEditing(false)}
+              className="text-3xs text-fg-muted hover:text-fg transition-colors">Done</button>
+          </div>
+          <EditorBody d={d} />
+        </div>
+      ) : (
+        <GutterCard onClick={() => setEditing(true)}>
+          <SummaryBody chips={d.chips} priority={d.priority} note={d.note} />
+        </GutterCard>
+      )}
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** EXPAND — the summary stays put as a header and the editor opens beneath it
+ *  inside the same card, so you can see what you are changing while you change
+ *  it. The pencil becomes a chevron. Costs height: summary and editor are on
+ *  screen together. */
+function FlowExpand() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-lg border border-edge-dim bg-inset overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          aria-expanded={editing}
+          className="group relative w-full text-left px-3 py-2.5 transition-colors hover:bg-well"
+        >
+          <SummaryBody chips={d.chips} priority={d.priority} note={d.note} />
+          <span className="absolute top-2.5 right-3 text-fg-faint group-hover:text-fg transition-colors">
+            <ChevronGlyph className={`w-3.5 h-3.5 transition-transform ${editing ? 'rotate-180' : ''}`} />
+          </span>
+        </button>
+        {editing && (
+          <div className="border-t border-edge-dim px-3 py-2.5">
+            <EditorBody d={d} />
+          </div>
+        )}
+      </div>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** NO MODE — nothing to enter or leave. Applied chips carry an × , a dashed
+ *  "+ tag" chip drops the picker in below, and the note row becomes a field
+ *  when clicked. Fewest clicks to a small change; the card is busier at rest,
+ *  and there is no single "I'm done" moment. */
+function FlowInline() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [picking, setPicking] = React.useState(false);
+  const [notingNote, setNotingNote] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex flex-col gap-2">
+        <div className="grid grid-cols-[16px_1fr] items-start gap-x-1.5 gap-y-2">
+          <TagGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+          <div className="flex flex-wrap items-center gap-1 min-w-0">
+            {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+            {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+            <button type="button" onClick={() => setPicking((v) => !v)}
+              className="px-1.5 py-[1px] rounded-sm text-3xs leading-none border border-dashed border-edge text-fg-muted hover:text-fg transition-colors">
+              + tag
+            </button>
+          </div>
+          <NotePageGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+          {notingNote ? (
+            <NoteEditor value={d.note} onSave={(t) => { d.setNote(t); setNotingNote(false); }} />
+          ) : (
+            <button type="button" onClick={() => setNotingNote(true)}
+              className="text-left text-2xs text-fg-muted italic leading-snug line-clamp-2 min-w-0 hover:text-fg-2 transition-colors">
+              {d.note.trim() ? `“${d.note.trim()}”` : 'Add a note…'}
+            </button>
+          )}
+        </div>
+        {picking && (
+          <div className="border-t border-edge-dim pt-2">
+            <TagPicker
+              appliedIds={d.tagIds}
+              onToggle={d.toggleTag}
+              registry={d.registry}
+              onManageTags={() => {}}
+              builtIns={[{ tag: PRIORITY_TAG, hint: PRIORITY_HINT, applied: d.priority, onToggle: d.setPriority }]}
+            />
+          </div>
+        )}
+      </div>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+function ChevronGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M19 9l-7 7-7-7" />
+    </svg>
   );
 }
 
@@ -706,6 +894,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'Unclamped, roman',
             note: 'Nothing you wrote is hidden, at the cost of a card that pushes "Close session" down the dialog. Drops italic — two full lines of it at this size stops being comfortable, and the quotes carry the signal alone.',
             render: () => <InDialog><CardQuoteFull /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 6,
+        basis: 'R5 · B (two lines, then ellipsis). The card is settled. Open: the EDIT flow — how you get in, whether you can see what you are changing, and how you get out. All three run the real TagPicker and NoteEditor, so they can actually be used.',
+        candidates: [
+          {
+            id: 'replace',
+            label: 'Replace in place',
+            note: 'What ships today. The card swaps to the editor, a "Done" link swaps it back. Least chrome — but you lose sight of the summary you are editing, and "Done" is a small target for the only way out.',
+            render: () => <InDialog><FlowReplace /></InDialog>,
+          },
+          {
+            id: 'expand',
+            label: 'Expand beneath',
+            note: 'The summary stays as a header and the editor opens under it in the same card, so what you are changing stays visible. Pencil becomes a chevron. Costs height — both are on screen at once.',
+            render: () => <InDialog><FlowExpand /></InDialog>,
+          },
+          {
+            id: 'inline',
+            label: 'No mode at all',
+            note: 'Chips carry an ×, a dashed "+ tag" drops the picker in, the note becomes a field on click. Fewest clicks for a small change; busier at rest, and there is no single "I am done" moment.',
+            render: () => <InDialog><FlowInline /></InDialog>,
           },
         ],
       },
