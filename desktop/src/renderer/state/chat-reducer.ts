@@ -1238,16 +1238,58 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const toolCalls = new Map(session.toolCalls);
       for (const [id, tool] of toolCalls) {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
-          toolCalls.set(id, {
-            ...tool,
-            status: 'failed',
-            requestId: undefined,
-            error: 'Permission request expired — socket closed before a response was sent',
-          });
+          if (action.reason === 'hook-closed') {
+            // Far end died (relay timeout/death, CC killed the hook) but the
+            // Ink menu may STILL be on screen. Retain provisionally: keep
+            // awaiting-approval so useSessionAttention stays red and the
+            // pty-input gates keep blocking sends into the live menu.
+            // usePromptDetector's menu-absence rule or the Dismiss button
+            // resolves it (spec §2/§2a). The reducer never reads the buffer.
+            toolCalls.set(id, { ...tool, requestId: undefined, expired: true });
+          } else if (action.reason === 'app-timeout' || action.reason === 'unroutable') {
+            // The app itself delivered a deny — accurate copy, no retention.
+            toolCalls.set(id, {
+              ...tool,
+              status: 'failed',
+              requestId: undefined,
+              error: action.reason === 'unroutable'
+                ? 'No open session could show this request — YouCoded auto-denied it'
+                : 'No response in time — YouCoded auto-denied this request so Claude could continue',
+            });
+          } else {
+            // 'delivery-failed' or absent (native PermissionBroker cancel,
+            // renderer delivery-failure recovery, older remote shim). DEFAULT
+            // IS RESOLVE, never retain: native sessions have no PTY (nothing
+            // to rebind), and delivery-failure means the socket is provably
+            // gone. Do not flip this default (spec §2c/§2d).
+            toolCalls.set(id, {
+              ...tool,
+              status: 'failed',
+              requestId: undefined,
+              error: 'Permission request expired — socket closed before a response was sent',
+            });
+          }
           break;
         }
       }
 
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
+
+    case 'PERMISSION_CARD_RESOLVED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const tool = session.toolCalls.get(action.toolUseId);
+      // Only expired cards resolve this way — a live ask must go through its
+      // buttons (which deliver a real decision through the socket).
+      if (!tool || !tool.expired) return state;
+      const toolCalls = new Map(session.toolCalls);
+      // 'complete' with no error: nothing failed — the ask was answered in
+      // the terminal or dismissed. If the tool really runs, the transcript's
+      // TOOL_RESULT overwrites this with the true outcome.
+      const { expired: _resolved, ...rest } = tool;
+      toolCalls.set(action.toolUseId, { ...rest, status: 'complete' });
       next.set(action.sessionId, { ...session, toolCalls });
       return next;
     }

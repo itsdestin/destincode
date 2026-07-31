@@ -3,6 +3,7 @@ import { chatReducer } from '../chat-reducer';
 import { createSessionChatState, serializeChatState } from '../chat-types';
 import type { ChatState } from '../chat-types';
 import type { ToolCallState } from '../../../shared/types';
+import { hasPendingInteraction, canRetrySubmit } from '../pty-input-gate';
 
 function stateWithInFlightTurn(sessionId = 'sess-1', turnId = 'turn-1'): ChatState {
   const session = createSessionChatState();
@@ -650,5 +651,90 @@ describe('chatReducer COMPACTION_COMPLETE — native auto-compaction (I2b)', () 
       // no `auto`, no compactionPending → stale, must be dropped
     });
     expect(next).toBe(state);   // untouched — no spurious marker
+  });
+});
+
+describe('PERMISSION_EXPIRED reasons (2026-07-30 spec §2/§2a/§2c/§2d)', () => {
+  // Fresh two-session-map state, mirroring initState() in the tool-card-
+  // duplication block above. A named helper (rather than inlining) makes the
+  // "fresh state, no pending ask" case in the last test read clearly.
+  function emptySession(sessionId = 's1'): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  // Arrange: PERMISSION_REQUEST with no matching running tool takes the
+  // synthetic-card path in chat-reducer.ts (no TRANSCRIPT_TOOL_USE has landed
+  // yet), minting toolCalls.get('perm-r1') with status 'awaiting-approval'
+  // and requestId 'r1' — the exact shape a live permission ask has in prod
+  // right before it expires.
+  function withPendingAsk(sessionId = 's1'): ChatState {
+    return chatReducer(emptySession(sessionId), {
+      type: 'PERMISSION_REQUEST',
+      sessionId,
+      toolName: 'Bash',
+      input: {},
+      requestId: 'r1',
+    } as any);
+  }
+
+  function expire(
+    state: ChatState,
+    opts: { reason?: 'app-timeout' | 'unroutable' | 'delivery-failed' | 'hook-closed' },
+    sessionId = 's1',
+  ): ChatState {
+    return chatReducer(state, {
+      type: 'PERMISSION_EXPIRED',
+      sessionId,
+      requestId: 'r1',
+      ...opts,
+    } as any);
+  }
+
+  it("'hook-closed' retains: awaiting-approval + expired, requestId cleared, no error", () => {
+    const state = expire(withPendingAsk(), { reason: 'hook-closed' });
+    const tool = state.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(tool.status).toBe('awaiting-approval'); // red dot + input gates keep holding
+    expect(tool.expired).toBe(true);
+    expect(tool.requestId).toBeUndefined();
+    expect(tool.error).toBeUndefined();
+  });
+
+  it("'hook-closed' still counts as pending for both pty gates", () => {
+    const state = expire(withPendingAsk(), { reason: 'hook-closed' });
+    const session = state.get('s1')!;
+    expect(hasPendingInteraction(session)).toBe(true);
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it("'app-timeout' resolves as failed with accurate copy, never retains", () => {
+    const state = expire(withPendingAsk(), { reason: 'app-timeout' });
+    const tool = state.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(tool.status).toBe('failed');
+    expect(tool.expired).toBeUndefined();
+    expect(tool.error).toContain('auto-denied');
+  });
+
+  it('absent reason resolves — the native-broker / old-shim default', () => {
+    const state = expire(withPendingAsk(), {});
+    expect(state.get('s1')!.toolCalls.get('perm-r1')!.status).toBe('failed');
+  });
+
+  it("'delivery-failed' resolves", () => {
+    const state = expire(withPendingAsk(), { reason: 'delivery-failed' });
+    expect(state.get('s1')!.toolCalls.get('perm-r1')!.status).toBe('failed');
+  });
+
+  it('PERMISSION_CARD_RESOLVED quietly completes an expired card only', () => {
+    let state = expire(withPendingAsk(), { reason: 'hook-closed' });
+    state = chatReducer(state, { type: 'PERMISSION_CARD_RESOLVED', sessionId: 's1', toolUseId: 'perm-r1' });
+    const tool = state.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(tool.status).toBe('complete');
+    expect(tool.error).toBeUndefined();
+    expect(tool.expired).toBeUndefined();
+    // a NON-expired awaiting card must be untouched (only the §2 resolver and
+    // Dismiss use this action, and both only ever see expired cards)
+    const fresh = withPendingAsk();
+    const untouched = chatReducer(fresh, { type: 'PERMISSION_CARD_RESOLVED', sessionId: 's1', toolUseId: 'perm-r1' });
+    expect(untouched.get('s1')!.toolCalls.get('perm-r1')!.status).toBe('awaiting-approval');
   });
 });
