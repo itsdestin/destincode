@@ -135,6 +135,127 @@ function CompleteRow({ done, onChange }: { done: boolean; onChange: (v: boolean)
   );
 }
 
+// ── Round 2: the summary card's internals ────────────────────────────────────
+// A won round 1, so the structure is settled: a summary card with the Mark
+// complete row separate beneath it. What is still open is how the card ORGANISES
+// what it holds — chips, note, and the way in.
+//
+// All three keep CompleteRow identical below them, so the only difference on
+// screen is the thing being compared.
+
+/** Icon-led. A tag glyph and a note glyph stand in for labels, matching the
+ *  Resume Browser card's bottom line, which already uses a folder and a layers
+ *  glyph the same way. Empty state: one muted "No tags or note" line, no icons. */
+function CardIconRows() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex items-start gap-3 transition-colors hover:border-edge hover:bg-well"
+      >
+        <span className="min-w-0 flex-1 flex flex-col gap-1.5">
+          <span className="flex items-center gap-1.5 min-w-0">
+            <TagGlyph className="w-3 h-3 shrink-0 text-fg-muted" />
+            <span className="flex flex-wrap items-center gap-1 min-w-0">
+              <TagChip tag={PRIORITY_TAG} />
+              <TagChip tag={WORK_TAG} />
+            </span>
+          </span>
+          <span className="flex items-center gap-1.5 min-w-0">
+            <NoteGlyph className="w-3 h-3 shrink-0 text-fg-muted" />
+            <span className="block text-2xs text-fg-2 truncate">{NOTE}</span>
+          </span>
+        </span>
+        <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0 mt-0.5">Edit</span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Labelled sections inside the card — the same uppercase micro-labels the rest
+ *  of the app's forms use. Most explicit and most scannable; also the tallest,
+ *  and it repeats a vocabulary the chips already carry. Empty state: the labels
+ *  stay, each with a muted "None". */
+function CardLabelled() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 transition-colors hover:border-edge hover:bg-well"
+      >
+        <span className="flex items-start gap-3">
+          <span className="min-w-0 flex-1 flex flex-col gap-2">
+            <span className="block">
+              <span className="block text-4xs font-medium text-fg-muted tracking-wider uppercase mb-1">Tags</span>
+              <span className="flex flex-wrap items-center gap-1">
+                <TagChip tag={PRIORITY_TAG} />
+                <TagChip tag={WORK_TAG} />
+              </span>
+            </span>
+            <span className="block">
+              <span className="block text-4xs font-medium text-fg-muted tracking-wider uppercase mb-1">Note</span>
+              <span className="block text-2xs text-fg-2 truncate">{NOTE}</span>
+            </span>
+          </span>
+          <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0">Edit</span>
+        </span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Note-led. The note is the human sentence you actually wrote; the chips are
+ *  filing. So the note takes the top line at full text colour and the chips sit
+ *  under it as metadata, which is the inverse of the shipped emphasis. "Edit"
+ *  moves to a footer link so the top line starts at the card edge. Empty state:
+ *  the footer link becomes the whole affordance ("Add tags or a note"). */
+function CardNoteLed() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex flex-col gap-2 transition-colors hover:border-edge hover:bg-well"
+      >
+        <span className="block text-xs text-fg leading-snug line-clamp-2">{NOTE}</span>
+        <span className="flex items-center gap-1 flex-wrap">
+          <TagChip tag={PRIORITY_TAG} />
+          <TagChip tag={WORK_TAG} />
+          <span className="ml-auto text-3xs text-fg-muted group-hover:text-fg transition-colors">Edit</span>
+        </span>
+      </button>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Mirrored tag glyph — the same one the Resume Browser card uses. */
+function TagGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <g transform="translate(24,0) scale(-1,1)">
+        <path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8l8.5 8.5a1.5 1.5 0 010 2.1l-6.9 6.9a1.5 1.5 0 01-2.1 0L3 12.5z" />
+        <circle cx="7.75" cy="7.75" r="1.25" />
+      </g>
+    </svg>
+  );
+}
+
+/** The notebook glyph the StatusBar tags chip already uses for "has a note". */
+function NoteGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+    </svg>
+  );
+}
+
 /** Dialog chrome around a candidate, so the body is judged at its real width
  *  with the real header and footer either side of it. */
 function InDialog({ children }: { children: React.ReactNode }) {
@@ -181,6 +302,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'One grouped box',
             note: 'Both jobs share one bordered group split by a divider, so the dialog body reads as a single object.',
             render: () => <InDialog><SummaryMerged /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 · A (Card + row). Structure settled — a summary card with Mark complete separate beneath it. Open: how the card organises what it holds.',
+        candidates: [
+          {
+            id: 'icon-rows',
+            label: 'Icon-led rows',
+            note: 'A tag glyph and a note glyph stand in for labels — the same language the Resume Browser card\'s bottom line already uses. Compact, no repeated words.',
+            render: () => <InDialog><CardIconRows /></InDialog>,
+          },
+          {
+            id: 'labelled',
+            label: 'Labelled sections',
+            note: 'Uppercase micro-labels inside the card, matching the rest of the app\'s forms. Most scannable, also the tallest, and it names what the chips already say.',
+            render: () => <InDialog><CardLabelled /></InDialog>,
+          },
+          {
+            id: 'note-led',
+            label: 'Note first',
+            note: 'Inverts the emphasis: the note you actually wrote takes the top line at full text colour, chips demote to metadata under it, and Edit moves inline with them.',
+            render: () => <InDialog><CardNoteLed /></InDialog>,
           },
         ],
       },
