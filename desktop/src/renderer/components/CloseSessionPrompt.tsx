@@ -4,6 +4,7 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagChip } from './tags/TagChip';
+import { TagGlyph, NotePageGlyph, PencilGlyph } from './tags/glyphs';
 import type { TagRecord } from '../../shared/tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { NoteEditor } from './tags/NoteEditor';
@@ -32,6 +33,23 @@ function CompleteGlyph({ done, className = '' }: { done: boolean; className?: st
       <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
       <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
     </svg>
+  );
+}
+
+/** The editor's Save control. A filled NEUTRAL pill, deliberately not `primary`
+ *  — the accent belongs to the dialog's own "Close session", and two accent
+ *  buttons in one dialog is two primary actions. `secondary`'s outline was too
+ *  quiet for the one control that closes a section. Chosen in the workbench,
+ *  round 7/8. */
+function SaveButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-full bg-well border border-edge-dim px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-edge hover:border-edge focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      Save
+    </button>
   );
 }
 
@@ -215,81 +233,90 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
               <>
-              {/* Tags and note lead, because closing a session is mostly a
-                  filing action — but the FULL editor is a search field, a tag
-                  list and a textarea, which is a lot of form for a dialog whose
-                  primary button is "Close session". So the default state is a
-                  SUMMARY of what is already applied, and the editor opens on
-                  demand. An empty summary offers the same door with different
-                  words, so "there is nothing here" and "you can add something"
-                  are one control rather than two. */}
-              {editing ? (
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
-                    <button
-                      type="button"
-                      onClick={() => setEditing(false)}
-                      className="text-3xs text-fg-muted hover:text-fg transition-colors"
-                    >
-                      Done
-                    </button>
+              {/* Tags and note lead — closing a session is mostly a filing
+                  action — but the full editor is a tag list and a textarea,
+                  which is a lot of form in front of a dialog whose primary
+                  button is "Close session". So the default is a SUMMARY of what
+                  is applied, and the editor opens in place.
+                  Settled over ten workbench comparison rounds (view=compare,
+                  surface close-prompt-body): a card whose contents swap while
+                  the card itself stays put, glyphs instead of section labels,
+                  the note quoted and clamped to two lines, and the editor as a
+                  single well closed by a Save pill. */}
+              <div className="rounded-lg border border-edge-dim bg-inset px-3 py-2.5">
+                {editing ? (
+                  <div className="flex flex-col gap-2">
+                    {/* ONE well holding both fields, divided. `bg-well` is one
+                        step deeper than the card, which is one step deeper than
+                        the dialog — the documented surface ladder, not an
+                        arbitrary shade. */}
+                    <div className="rounded-md bg-well border border-edge-dim divide-y divide-edge-dim">
+                      <div className="p-2">
+                        {/* Priority as a built-in, as in the Resume Browser's
+                            tag sheet and the in-session chip. Unlike those two
+                            this one is DEFERRED: the dialog collects a result
+                            and the caller writes it on confirm, so this toggles
+                            local state instead of calling setFlag. Cancel must
+                            leave nothing behind. */}
+                        <TagPicker
+                          appliedIds={tagIds}
+                          onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                          registry={registry}
+                          onManageTags={() => setManageOpen(true)}
+                          builtIns={[{
+                            tag: PRIORITY_TAG,
+                            hint: PRIORITY_HINT,
+                            applied: sel.priority,
+                            onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
+                          }]}
+                        />
+                      </div>
+                      <div className="p-2">
+                        {/* Collapsing UNMOUNTS this, and NoteEditor commits its
+                            draft on unmount as well as on blur — so "type a
+                            note, press Save" keeps the note. */}
+                        <NoteEditor value={note} onSave={setNote} placeholder="Add a note…" />
+                      </div>
+                    </div>
+                    <SaveButton onClick={() => setEditing(false)} />
                   </div>
-                  {/* Priority as a built-in, exactly as in the Resume Browser's
-                      tag sheet and the in-session chip. Unlike those two this
-                      one is DEFERRED: the dialog collects a result and the
-                      caller writes it on confirm (buildResult), so this toggles
-                      local state instead of calling setFlag. Cancel must leave
-                      nothing behind. */}
-                  <TagPicker
-                    appliedIds={tagIds}
-                    onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
-                    registry={registry}
-                    onManageTags={() => setManageOpen(true)}
-                    builtIns={[{
-                      tag: PRIORITY_TAG,
-                      hint: PRIORITY_HINT,
-                      applied: sel.priority,
-                      onToggle: (next) => setSel((prev) => ({ ...prev, priority: next })),
-                    }]}
-                  />
-                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-1">Note</label>
-                  {/* Collapsing UNMOUNTS this, and NoteEditor commits its draft
-                      on unmount as well as on blur — so "type a note, hit Done"
-                      keeps the note rather than dropping it. */}
-                  <NoteEditor value={note} onSave={setNote} />
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setEditing(true)}
-                  className="group w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex items-start gap-3 transition-colors hover:border-edge hover:bg-well"
-                >
-                  <span className="min-w-0 flex-1 flex flex-col gap-1.5">
-                    {hasMeta ? (
-                      <>
-                        {(sel.priority || appliedTags.length > 0) && (
-                          <span className="flex flex-wrap items-center gap-1">
-                            {sel.priority && <TagChip tag={PRIORITY_TAG} />}
-                            {appliedTags.map((t) => <TagChip key={t.id} tag={t} />)}
-                          </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setEditing(true)}
+                    aria-label="Edit tags and note"
+                    className="group relative w-full text-left"
+                  >
+                    {/* Fixed 16px glyph column so the chips and the note text
+                        start on the SAME left edge — letting each row set its
+                        own indent left them a pixel or two apart. */}
+                    <span className="grid grid-cols-[16px_1fr] items-start gap-x-1.5 gap-y-1.5 pr-6">
+                      <TagGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+                      <span className="flex flex-wrap items-center gap-1 min-w-0">
+                        {sel.priority && <TagChip tag={PRIORITY_TAG} />}
+                        {appliedTags.map((t) => <TagChip key={t.id} tag={t} />)}
+                        {!sel.priority && appliedTags.length === 0 && (
+                          <span className="text-2xs text-fg-muted">No tags</span>
                         )}
-                        {note.trim() && (
-                          // One line only — the editor is a click away, and a
-                          // long note would push the dialog's primary button
-                          // off the bottom of the screen.
-                          <span className="block text-2xs text-fg-2 truncate">{note.trim()}</span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="block text-2xs text-fg-muted">No tags or note</span>
-                    )}
-                  </span>
-                  <span className="text-3xs text-fg-muted group-hover:text-fg transition-colors shrink-0 mt-0.5">
-                    {hasMeta ? 'Edit' : 'Add'}
-                  </span>
-                </button>
-              )}
+                      </span>
+                      <NotePageGlyph className="w-3 h-3 text-fg-muted mt-0.5" />
+                      {note.trim() ? (
+                        // Quoted and clamped to two lines: roughly a sentence
+                        // gets through and the card can grow by one line and no
+                        // further, so "Close session" stays where the user left it.
+                        <span className="text-2xs text-fg-muted italic leading-snug line-clamp-2 min-w-0">
+                          “{note.trim()}”
+                        </span>
+                      ) : (
+                        <span className="text-2xs text-fg-muted min-w-0">No note</span>
+                      )}
+                    </span>
+                    <span className="absolute top-0 right-0 text-fg-faint group-hover:text-fg transition-colors">
+                      <PencilGlyph className="w-3.5 h-3.5" />
+                    </span>
+                  </button>
+                )}
+              </div>
 
               {/* Mark complete sits LAST: the tags above are optional filing,
                   this is the actual "are you done with it?" question, and it

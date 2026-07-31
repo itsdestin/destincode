@@ -18,6 +18,7 @@ import { TagPicker } from './tags/TagPicker';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
+import { TagGlyph } from './tags/glyphs';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -1044,14 +1045,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         }`}
       >
         {/* A tag, not a generic dots menu — it names what the sheet holds.
-            MIRRORED (translate + scale(-1,1)) so the wide, punched end sits on
-            the RIGHT and the point aims back into the card. */}
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <g transform="translate(24,0) scale(-1,1)">
-            <path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8l8.5 8.5a1.5 1.5 0 010 2.1l-6.9 6.9a1.5 1.5 0 01-2.1 0L3 12.5z" />
-            <circle cx="7.75" cy="7.75" r="1.25" />
-          </g>
-        </svg>
+            Shared with the close prompt's summary (tags/glyphs.tsx) so the mark
+            can't drift between the two surfaces that draw it. */}
+        <TagGlyph className="w-4 h-4" />
       </button>
       {/* Complete. It sits on the card rather than inside the tag sheet because
           finishing with a conversation is a one-click action, and costing a

@@ -27,6 +27,9 @@ import { TagPicker } from '../../../components/tags/TagPicker';
 import { NoteEditor } from '../../../components/tags/NoteEditor';
 import { useTagRegistry } from '../../../hooks/useTagRegistry';
 import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-tags';
+// Shared with the shipping surfaces — a candidate must draw the SAME mark the
+// app does, or the comparison is against something that doesn't exist.
+import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
 import type { CompareSurface } from './types';
 
@@ -1201,43 +1204,8 @@ function ChevronGlyph({ className = '' }: { className?: string }) {
   );
 }
 
-/** A lined page with a folded corner — "there is a note here", as an object
- *  rather than an action. Replaces the notebook-and-pencil glyph, which read as
- *  "edit this note" and collided with the corner pencil that actually does. */
-function NotePageGlyph({ className = '' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z" />
-      <path d="M14 3v5h5" />
-      <path d="M9 13h6M9 17h4" />
-    </svg>
-  );
-}
 
-/** Pencil — the edit glyph the app already uses on the tag-manager rows. */
-function PencilGlyph({ className = '' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5" />
-      <path d="M17.586 3.586a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-    </svg>
-  );
-}
 
-/** Mirrored tag glyph — the same one the Resume Browser card uses. */
-function TagGlyph({ className = '' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <g transform="translate(24,0) scale(-1,1)">
-        <path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8l8.5 8.5a1.5 1.5 0 010 2.1l-6.9 6.9a1.5 1.5 0 01-2.1 0L3 12.5z" />
-        <circle cx="7.75" cy="7.75" r="1.25" />
-      </g>
-    </svg>
-  );
-}
 
 /** The notebook glyph the StatusBar tags chip already uses for "has a note". */
 function NoteGlyph({ className = '' }: { className?: string }) {
