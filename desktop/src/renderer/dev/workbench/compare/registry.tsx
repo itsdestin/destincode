@@ -21,7 +21,7 @@
 // previous round has a recorded pick. Don't delete old rounds — the breadcrumb
 // IS the record of how a design got where it did.
 import React from 'react';
-import { Button, Toggle } from '../../../components/ui';
+import { Button, Toggle, fieldClasses } from '../../../components/ui';
 import { TagChip } from '../../../components/tags/TagChip';
 import { TagPicker } from '../../../components/tags/TagPicker';
 import { NoteEditor } from '../../../components/tags/NoteEditor';
@@ -913,6 +913,140 @@ function EditOneWell({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: ()
   );
 }
 
+// ── Round 9: mechanics of the applied/available split ────────────────────────
+// B (applied first, rest as chips) won round 8 on concept: what is ON sits
+// apart from what is available, and both are chips rather than checkbox rows.
+// Round 9 keeps that and varies the MECHANIC — how a tag gets added, removed,
+// and where the available set lives when you are not using it.
+//
+// The note field and the Save pill are identical in all three.
+
+/** TOKEN FIELD. Applied tags live INSIDE the search input, the way an email
+ *  To: field works: type to filter, Enter adds the top match or creates,
+ *  Backspace on an empty field removes the last chip, × removes any. One
+ *  control instead of two rows — and the search that round 8's B gave up comes
+ *  back for free, because it is the same box. */
+function EditTokenField({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const [q, setQ] = React.useState('');
+  const matches = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id)
+    && (!q || t.label.toLowerCase().includes(q.toLowerCase())));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={fieldClasses('sm', 'flex flex-wrap items-center gap-1 min-h-[34px] cursor-text')}>
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && matches[0]) { e.preventDefault(); d.toggleTag(matches[0].id, true); setQ(''); }
+            // Backspace on an empty field peels the last chip — the behaviour
+            // that makes a token field feel like a field rather than a list.
+            if (e.key === 'Backspace' && !q && d.chips.length) d.toggleTag(d.chips[d.chips.length - 1].id, false);
+          }}
+          placeholder={d.priority || d.chips.length ? '' : 'Add tags…'}
+          aria-label="Add tags"
+          className="flex-1 min-w-[80px] bg-transparent text-2xs text-fg placeholder:text-fg-muted outline-none"
+        />
+      </div>
+      {q && (
+        <div className="flex flex-wrap items-center gap-1">
+          {matches.map((t) => (
+            <button key={t.id} type="button" onClick={() => { d.toggleTag(t.id, true); setQ(''); }}
+              className="opacity-70 hover:opacity-100 transition-opacity"><TagChip tag={t} /></button>
+          ))}
+          {matches.length === 0 && (
+            <span className="text-3xs text-fg-muted">Enter to create “{q}”</span>
+          )}
+        </div>
+      )}
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** CHIPS + "+" DISCLOSURE. At rest the editor shows ONLY what is applied, plus
+ *  a "+". The available set costs nothing until you ask for it, which is the
+ *  tightest resting state of the three — at the price of one extra click for
+ *  every add, and a list that appears and disappears under your cursor. */
+function EditPlusDisclosure({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+          className="w-5 h-5 rounded-full border border-dashed border-edge text-fg-muted hover:text-fg hover:border-edge transition-colors flex items-center justify-center text-3xs leading-none">
+          +
+        </button>
+      </div>
+      {open && (
+        <div className="flex flex-wrap items-center gap-1 rounded-md bg-well border border-edge-dim p-2">
+          {!d.priority && (
+            <button type="button" onClick={() => d.setPriority(true)}
+              className="opacity-70 hover:opacity-100 transition-opacity"><TagChip tag={PRIORITY_TAG} /></button>
+          )}
+          {unapplied.map((t) => (
+            <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)}
+              className="opacity-70 hover:opacity-100 transition-opacity"><TagChip tag={t} /></button>
+          ))}
+          <button type="button" className="px-1.5 py-[1px] rounded-sm text-3xs leading-none border border-dashed border-edge text-fg-muted hover:text-fg transition-colors">
+            + new
+          </button>
+        </div>
+      )}
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** TWO COLUMNS. Applied on the left, available on the right, both always
+ *  visible; clicking a chip moves it across. Nothing is hidden and nothing
+ *  toggles, so the state is never in doubt — but it spends horizontal space the
+ *  380px dialog does not really have, and each column wraps sooner. */
+function EditTwoColumns({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-col gap-1">
+          <span className="text-4xs font-medium text-fg-muted tracking-wider uppercase">On</span>
+          <div className="flex flex-wrap items-start gap-1 content-start min-h-[48px] rounded-md bg-well border border-edge-dim p-1.5">
+            {d.priority && (
+              <button type="button" onClick={() => d.setPriority(false)}><TagChip tag={PRIORITY_TAG} /></button>
+            )}
+            {d.chips.map((t) => (
+              <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, false)}><TagChip tag={t} /></button>
+            ))}
+            {!d.priority && d.chips.length === 0 && <span className="text-3xs text-fg-muted px-0.5">None</span>}
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-4xs font-medium text-fg-muted tracking-wider uppercase">Available</span>
+          <div className="flex flex-wrap items-start gap-1 content-start min-h-[48px] rounded-md bg-well border border-edge-dim p-1.5">
+            {!d.priority && (
+              <button type="button" onClick={() => d.setPriority(true)} className="opacity-70 hover:opacity-100 transition-opacity">
+                <TagChip tag={PRIORITY_TAG} />
+              </button>
+            )}
+            {unapplied.map((t) => (
+              <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)} className="opacity-70 hover:opacity-100 transition-opacity">
+                <TagChip tag={t} />
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
 /** Round 7's winning shell, with the editor body swapped per candidate. */
 function EditFlowCard({ render }: {
   render: (d: ReturnType<typeof useDraft>, onSave: () => void) => React.ReactNode;
@@ -1210,6 +1344,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'One well, no labels',
             note: 'Tags and note share a single inset container split by a divider, so the editor is one object rather than two sections. Most compact; furthest from the app\'s existing form language.',
             render: () => <InDialog><EditFlowCard render={(d, save) => <EditOneWell d={d} onSave={save} />} /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 9,
+        basis: 'R8 · B (applied first, rest as chips) on CONCEPT — what is on sits apart from what is available, as chips rather than checkbox rows. Compared: the mechanic — how a tag is added, removed, and where the available set lives at rest. Note field and Save pill identical throughout.',
+        candidates: [
+          {
+            id: 'token',
+            label: 'Token field',
+            note: 'Applied chips live inside the input, like an email To: field. Type to filter, Enter adds or creates, Backspace peels the last chip. One control instead of two rows — and it gets the search back that R8·B gave up.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditTokenField d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'plus',
+            label: 'Chips + "+" disclosure',
+            note: 'At rest you see only what is applied, plus a "+". The available set costs nothing until asked for — tightest resting state, at one extra click per add and a list that appears under your cursor.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditPlusDisclosure d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'columns',
+            label: 'On | Available',
+            note: 'Both sets always visible side by side; click a chip to move it across. Nothing hidden, nothing toggles, state never in doubt — but it spends horizontal space a 380px dialog does not have, so each column wraps sooner.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditTwoColumns d={d} onSave={save} />} /></InDialog>,
           },
         ],
       },
