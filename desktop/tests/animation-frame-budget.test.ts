@@ -60,6 +60,37 @@ describe('perpetual animations are frame-budgeted', () => {
     expect(src).not.toMatch(/animation:\s*'challenge-pulse[^']*ease/);
   });
 
+  // ── JS animation drivers ──
+  // A requestAnimationFrame chain wakes at the display's refresh rate (180/sec
+  // on a 180Hz panel). These three drivers do slow work (12.5fps spinner, 30fps
+  // particles, ambient sway) and were each converted to interval-driven ticks —
+  // rAF remains legitimate ONLY for genuinely full-rate work (MascotRig's
+  // drag-trailing) and one-shot next-frame coalescing.
+
+  it('BrailleSpinner is interval-driven, not a rAF chain', () => {
+    const src = read('components', 'BrailleSpinner.tsx');
+    expect(src).toMatch(/setInterval\(tick/);
+    expect(src).not.toMatch(/requestAnimationFrame/);
+  });
+
+  it('ThemeEffects draws from an interval, not a rAF chain', () => {
+    const src = read('components', 'ThemeEffects.tsx');
+    expect(src).toMatch(/setInterval\(draw/);
+    // The one-shot resize coalescer may keep rAF; the draw loop may not.
+    expect(src).not.toMatch(/requestAnimationFrame\(draw/);
+  });
+
+  it('MascotRig runs rAF only for the drag chain, idle from an interval', () => {
+    const src = read('components', 'mascot', 'MascotRig.tsx');
+    expect(src).toMatch(/setInterval\(/);
+    // Every rAF request must belong to the drag-gated chain (rafTick) — an
+    // unconditional `requestAnimationFrame(tick)`-style self-chain regressing
+    // here would resume 180 presented frames/sec of ambient sway forever.
+    const rafCalls = [...src.matchAll(/requestAnimationFrame\(\s*(\w+)/g)].map((m) => m[1]);
+    expect(rafCalls.length).toBeGreaterThan(0);
+    expect(rafCalls.every((fn) => fn === 'rafTick')).toBe(true);
+  });
+
   it('bans NEW inline infinite animations without steps timing in components', () => {
     // The two above were found only by a manual sweep; this keeps the class
     // closed. An inline `animation: '... infinite'` must carry steps() (or be
