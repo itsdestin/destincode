@@ -12,7 +12,7 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
  *  timeline with no error — which is exactly the failure this guards. */
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
-  'permission_request',
+  'permission_request', 'permission_expired',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {
