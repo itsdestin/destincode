@@ -166,3 +166,60 @@ describe('capability gating — a big window does not make a small model capable
     expect(resolveProfile({ providerType: 'anthropic', modelId: 'm', contextLength: null }).exposeSkillCatalog).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix pass 1 / Finding 2 — nothing previously pinned an exact
+// mcpToolBudgetTokens value, so the whole ladder (and the local-clamp branch)
+// could silently drift. mcp-gating.test.ts only ever asserts on WHICH servers
+// survive, never on the raw budget number, so a tier constant could change
+// (e.g. 750 -> 200) without any test noticing as long as the surviving-server
+// math still worked out for that suite's fixtures. These assert the exact
+// integers from every tier plus the frontier/null shortcut and the
+// registry-ceiling clamp Finding 1 fixed.
+// ---------------------------------------------------------------------------
+describe('mcpToolBudgetTokens ladder (Task 6 / fix pass 1, Finding 2)', () => {
+  it('an unmeasured/null window gets the smallest tier', () => {
+    expect(resolveProfile(local('mystery', null)).mcpToolBudgetTokens).toBe(750);
+  });
+
+  it('a small window (< 32,768) gets the smallest tier', () => {
+    expect(resolveProfile(local('small-model', 8_192)).mcpToolBudgetTokens).toBe(750);
+  });
+
+  it('a mid window (>= 32,768, < 100,000) gets the middle tier', () => {
+    expect(resolveProfile(local('mid-model', 64_000)).mcpToolBudgetTokens).toBe(4_000);
+  });
+
+  it('a large window (>= 100,000) gets the largest tier', () => {
+    expect(resolveProfile(local('big-model', 128_000)).mcpToolBudgetTokens).toBe(20_000);
+  });
+
+  it('a FRONTIER provider with an unmeasured window stays at CLOUD_DEFAULT, not the small tier', () => {
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'm', contextLength: null }).mcpToolBudgetTokens, providerType)
+        .toBe(CLOUD_DEFAULT.mcpToolBudgetTokens);
+    }
+  });
+
+  it('a MEASURED small window on a hosted (non-frontier-exempt) provider is gated exactly like local', () => {
+    // openai-compatible is deliberately not a FRONTIER_PROVIDER (it's the
+    // Ollama/LM Studio shape), so a real measured 8k window there must land
+    // on the same small tier a local model would.
+    const p = resolveProfile({ providerType: 'openai-compatible', modelId: 'm', contextLength: 8_000 });
+    expect(p.mcpToolBudgetTokens).toBe(750);
+  });
+
+  it('regression (Finding 1): the registry ceiling clamps the window for EVERY provider, not only local-engine', () => {
+    // Before the fix, mcpBudgetSizing only ran effectiveContextForModel for
+    // providerType === 'local-engine'. An openai-compatible endpoint (the
+    // Ollama/LM Studio shape) launched with a large declared window whose
+    // model id happens to match a small registry entry skipped the clamp
+    // entirely and landed on the 20,000 tier here, while injectionBudgetTokens
+    // (which already clamps every non-frontier provider) correctly sized it
+    // down — 20,000 tokens of tool schema on a model whose real window is 8k.
+    const reg: KnownModelEntry[] = [{ match: 'tiny-model', label: 'Tiny', maxContextWindow: 8192, supportsTools: true }];
+    const p = resolveProfile({ providerType: 'openai-compatible', modelId: 'tiny-model-q4', contextLength: 131_072 }, reg);
+    expect(p.mcpToolBudgetTokens).toBe(750);                 // clamped to the 8192 ceiling -> smallest tier
+    expect(p.injectionBudgetTokens).toBeLessThan(10_000);     // the clamp injectionSizing already applied
+  });
+});

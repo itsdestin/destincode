@@ -130,12 +130,22 @@ function mcpBudgetSizing(d: DiscoveredModel, registry: KnownModelEntry[]): numbe
   if (FRONTIER_PROVIDERS.has(d.providerType) && d.contextLength == null) {
     return CLOUD_DEFAULT.mcpToolBudgetTokens;
   }
-  // The local-only ceiling clamp mirrors resolveContextAndProfile's own
-  // provider gate: a hosted model whose id happens to match a local registry
-  // entry must NOT be capped to that entry's (possibly much smaller) ceiling.
-  const window = d.providerType === 'local-engine'
-    ? effectiveContextForModel(d.contextLength, d.modelId, registry)
-    : d.contextLength;
+  // Fix pass 1 / Finding 1: use the SAME effective-window expression
+  // injectionSizing (`:89`) uses, for every non-frontier provider — not just
+  // 'local-engine'. Gating the clamp on providerType made 'openai-compatible'
+  // (the Ollama/LM Studio shape, deliberately excluded from FRONTIER_PROVIDERS
+  // above because "an unmeasured one is a local model in disguise") skip the
+  // registry-ceiling clamp entirely: a model launched with a large declared
+  // `num_ctx` whose id happened to match a small registry entry got the
+  // 20,000-token tier here while injectionBudgetTokens correctly clamped it to
+  // 6,000 — twenty thousand tokens of tool schema on a model whose real window
+  // is far smaller. There is no separate "hosted model matching a local
+  // registry family" concern to protect here (that's resolveContextAndProfile's
+  // job, one layer up, for the CONTEXT WINDOW itself) — this function only
+  // ever sees a window that's already been resolved for THIS provider type, so
+  // clamping it again to a matching registry family's ceiling is exactly
+  // right for every provider, matching injectionSizing's own reasoning.
+  const window = effectiveContextForModel(d.contextLength, d.modelId, registry);
   return window == null ? 750
     : window >= 100_000 ? 20_000
     : window >= SMALL_LOCAL_CONTEXT ? 4_000

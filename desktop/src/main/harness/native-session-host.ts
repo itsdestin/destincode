@@ -405,12 +405,26 @@ export class NativeSessionHost extends EventEmitter {
     // Acquire this session's MCP servers (Task 6) BEFORE constructing the
     // session, so mcpServers is available for the very first buildAiTools().
     const mcpServers = await this.acquireMcp(opts.sessionId);
-    const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
-        ...(mcpServers ? { mcpServers } : {}),
-        ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
-      this.modelFactory,
-    );
+    let session: HarnessSession;
+    try {
+      // Fix pass 1 / Finding 3: this whole block is fallible synchronous work
+      // (toolWiring() calls assembleSystemPrompt(), buildTriggerIndex()) that
+      // runs AFTER the mcp acquire() above but BEFORE wire() ever registers
+      // this id in `this.live`. destroy() early-returns for a non-live id, so
+      // a throw here — with no catch — would strand the acquired MCP hold
+      // (and the pooled server's spawned child process) for the rest of the
+      // app's lifetime. Release the hold and rethrow the ORIGINAL error
+      // unchanged (never guess/replace a cause — error-message-standards.md).
+      session = new HarnessSession(
+        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+          ...(mcpServers ? { mcpServers } : {}),
+          ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
+        this.modelFactory,
+      );
+    } catch (err) {
+      await this.mcpManager?.release(opts.sessionId);
+      throw err;
+    }
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
     this.wire(opts.sessionId, opts.cwd, session);
   }
@@ -466,20 +480,33 @@ export class NativeSessionHost extends EventEmitter {
     // resume() call there is no overlap; a genuine race needs a second,
     // external destroy()/resume() pair for this id in flight concurrently.
     const mcpServers = await this.acquireMcp(sessionId);
-    const session = new HarnessSession(
-      // `binding` (not header.binding) — same override reason as above.
-      { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
-        ...(mcpServers ? { mcpServers } : {}),
-        ...this.toolWiring(sessionId, cwd, preset, profile) },
-      this.modelFactory,
-    );
+    let session: HarnessSession;
+    try {
+      // Fix pass 1 / Finding 3 — same leak as create(): everything in this
+      // block (construction, then the history rebuild) is fallible synchronous
+      // work that runs after the mcp acquire() above but before wire() ever
+      // registers this id in `this.live`. A throw anywhere in here — with no
+      // catch — would strand the acquired MCP hold permanently (destroy()
+      // early-returns for a non-live id). Release and rethrow the ORIGINAL
+      // error unchanged (error-message-standards.md).
+      session = new HarnessSession(
+        // `binding` (not header.binding) — same override reason as above.
+        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+          ...(mcpServers ? { mcpServers } : {}),
+          ...this.toolWiring(sessionId, cwd, preset, profile) },
+        this.modelFactory,
+      );
+      // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
+      // tool-call + tool-result pairs too (the old eventsToMessages dropped every
+      // tool event, so a resumed tool turn lost its tool context). seedHistory
+      // already clears readRegistry + todos (the reset-on-resume ruling) — those
+      // are runtime state, never persisted.
+      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
+    } catch (err) {
+      await this.mcpManager?.release(sessionId);
+      throw err;
+    }
     this.presetIdFor.set(sessionId, preset.manifest.id);
-    // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
-    // tool-call + tool-result pairs too (the old eventsToMessages dropped every
-    // tool event, so a resumed tool turn lost its tool context). seedHistory
-    // already clears readRegistry + todos (the reset-on-resume ruling) — those
-    // are runtime state, never persisted.
-    session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
     this.wire(sessionId, cwd, session);
     return true;
   }

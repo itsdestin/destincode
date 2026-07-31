@@ -320,6 +320,20 @@ export class HarnessSession extends EventEmitter {
    *  configured MCP server fit the budget. */
   get droppedMcpServers(): readonly string[] { return this._droppedMcpServers; }
 
+  // Tool names CURRENTLY attached by syncMcpTools (not merely name-prefixed
+  // "mcp__*") — tracked rather than pattern-matched so a tool that HAPPENS to
+  // be named like an MCP tool but was placed in toolByName some other way
+  // (e.g. harness-raw-schema.test.ts injects one directly via `extraTools` to
+  // test schema passthrough in isolation, with opts.mcpServers empty) is never
+  // touched by this sync. Only opts.mcpServers is this method's domain.
+  // (Fix pass 1 / Finding 5: moved up here with the rest of the Task 6 MCP
+  // fields — it was declared mid-class, between unrelated methods.)
+  private mcpToolNames = new Set<string>();
+  /** Fix pass 1 / Finding 4: the (budget, servers-array-identity) pair
+   *  syncMcpTools last computed itself against — its cheap dirty-check. undefined
+   *  until the first sync runs. See syncMcpTools' header for why this exists. */
+  private mcpSyncedFor: { budget: number; servers: ReadyServer[] | undefined } | undefined;
+
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
     super();
     this.binding = opts.binding;
@@ -439,14 +453,6 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
-  // Tool names CURRENTLY attached by syncMcpTools (not merely name-prefixed
-  // "mcp__*") — tracked rather than pattern-matched so a tool that HAPPENS to
-  // be named like an MCP tool but was placed in toolByName some other way
-  // (e.g. harness-raw-schema.test.ts injects one directly via `extraTools` to
-  // test schema passthrough in isolation, with opts.mcpServers empty) is never
-  // touched by this sync. Only opts.mcpServers is this method's domain.
-  private mcpToolNames = new Set<string>();
-
   /** Add or remove MCP server tools to match the CURRENT profile's budget
    *  (Task 6, spec §6).
    *
@@ -464,12 +470,39 @@ export class HarnessSession extends EventEmitter {
    *  Re-run per buildAiTools (not once in the constructor) for the same
    *  reason syncSkillTool is: setBinding() re-resolves the profile on a model
    *  swap, so a server attached under a 128k model must come back OFF on a
-   *  swap to an 8k one, and back on when swapping back. Clearing this sync's
-   *  OWN previously-attached names first makes both directions idempotent. */
+   *  swap to an 8k one, and back on when swapping back.
+   *
+   *  Fix pass 1 / Finding 4: buildAiTools() runs on every turn (see its own
+   *  call site), and until this fix syncMcpTools rebuilt from scratch on
+   *  EVERY one of those calls regardless of whether anything actually
+   *  changed — mcpToolsFor() re-allocates every tool closure and
+   *  estimateToolSchemaTokens() re-JSON.stringifies every server's raw schema,
+   *  which is real, avoidable work on the common case (no binding swap this
+   *  turn). syncSkillTool has a real dirty-check (`toolByName.has('Skill')`);
+   *  this one didn't, despite the header above claiming the same "re-run
+   *  per buildAiTools" reasoning. mcpSyncedFor restores that parity: only the
+   *  budget VALUE and the mcpServers ARRAY REFERENCE are compared (not deep
+   *  equality), because those are the only two things this method's output
+   *  depends on — setBinding() always hands in a freshly resolved profile
+   *  object when the budget changes (mcp-gating.test.ts's re-gate test below
+   *  relies on exactly that), and opts.mcpServers only ever gets a new array
+   *  reference from NativeSessionHost re-acquiring (create/resume), never
+   *  mid-session. Clearing this sync's OWN previously-attached names first
+   *  (on an actual re-sync) makes both directions idempotent. */
   private syncMcpTools(): void {
+    const rawServers = this.opts.mcpServers;
+    const budget = this.profile.mcpToolBudgetTokens;
+    // Nothing this method reads has changed since the last sync — skip the
+    // teardown/rebuild entirely. `rawServers` (not `servers` below) is the
+    // comparison target: defaulting to `[]` here would allocate a NEW empty
+    // array on every undefined-mcpServers call, which would never compare
+    // equal to itself and defeat the whole point of the check.
+    if (this.mcpSyncedFor && this.mcpSyncedFor.budget === budget && this.mcpSyncedFor.servers === rawServers) return;
+    this.mcpSyncedFor = { budget, servers: rawServers };
+
     for (const name of this.mcpToolNames) this.toolByName.delete(name);
     this.mcpToolNames.clear();
-    const servers = this.opts.mcpServers ?? [];
+    const servers = rawServers ?? [];
     this._droppedMcpServers = [];
     let spent = 0;
     for (let i = 0; i < servers.length; i++) {
