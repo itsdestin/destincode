@@ -695,6 +695,121 @@ function FlowInline() {
   );
 }
 
+// ── Round 7: keeping the card while editing ──────────────────────────────────
+// A (replace in place) won round 6, but it dropped the card on the way in — the
+// editor became a bare labelled section on the dialog, so the body visibly
+// changed shape when you clicked. All three candidates here fix that: the
+// bordered container stays put and only its CONTENTS swap, which is B's
+// containment with A's one-thing-at-a-time.
+//
+// That leaves one real question. With the editor open the pencil is gone (you
+// are already editing), so the way OUT needs its own affordance, and it is the
+// only control in the card that is not part of the editor.
+
+/** The card that holds either state, so the border, fill and padding are
+ *  literally the same element before and after the swap — nothing shifts. */
+function EditCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-edge-dim bg-inset px-3 py-2.5">{children}</div>
+  );
+}
+
+/** Summary content, as a click target filling the card. */
+function EditCardSummary({ d, onEdit }: { d: ReturnType<typeof useDraft>; onEdit: () => void }) {
+  return (
+    <button type="button" onClick={onEdit} className="group relative w-full text-left">
+      <SummaryBody chips={d.chips} priority={d.priority} note={d.note} />
+      <span className="absolute top-0 right-0 text-fg-faint group-hover:text-fg transition-colors">
+        <PencilGlyph className="w-3.5 h-3.5" />
+      </span>
+    </button>
+  );
+}
+
+/** Done as a text link where the pencil was — the exit sits exactly where the
+ *  way in was, so the corner is consistently "the control for this card".
+ *  Quietest, and the smallest target. */
+function FlowCardLink() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <EditCard>
+        {editing ? (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+              <button type="button" onClick={() => setEditing(false)}
+                className="text-3xs text-fg-muted hover:text-fg transition-colors">Done</button>
+            </div>
+            <EditorBody d={d} />
+          </div>
+        ) : <EditCardSummary d={d} onEdit={() => setEditing(true)} />}
+      </EditCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** A checkmark in the corner, replacing the pencil in place. The card's corner
+ *  always holds its one control and the glyph says which mode you are in —
+ *  pencil to edit, check to finish. No words, same target size as the pencil. */
+function FlowCardCheck() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <EditCard>
+        {editing ? (
+          <div className="relative flex flex-col gap-1.5">
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase pr-6">Tags</label>
+            <button type="button" onClick={() => setEditing(false)} aria-label="Done editing"
+              className="absolute top-0 right-0 text-fg-muted hover:text-fg transition-colors">
+              <CheckGlyph className="w-3.5 h-3.5" />
+            </button>
+            <EditorBody d={d} />
+          </div>
+        ) : <EditCardSummary d={d} onEdit={() => setEditing(true)} />}
+      </EditCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** A full-width Done button closing the card. Unmissable and impossible to
+ *  fumble, and it reads as "commit this section" — which is a small lie, since
+ *  nothing is committed until the dialog's own button. Tallest by a row. */
+function FlowCardButton() {
+  const d = useDraft();
+  const [done, setDone] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <EditCard>
+        {editing ? (
+          <div className="flex flex-col gap-2">
+            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Tags</label>
+            <EditorBody d={d} />
+            <Button variant="secondary" size="sm" className="w-full" onClick={() => setEditing(false)}>Done</Button>
+          </div>
+        ) : <EditCardSummary d={d} onEdit={() => setEditing(true)} />}
+      </EditCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+function CheckGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
 function ChevronGlyph({ className = '' }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
@@ -918,6 +1033,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'No mode at all',
             note: 'Chips carry an ×, a dashed "+ tag" drops the picker in, the note becomes a field on click. Fewest clicks for a small change; busier at rest, and there is no single "I am done" moment.',
             render: () => <InDialog><FlowInline /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 7,
+        basis: 'R6 · A (replace in place), with B\'s containment. A dropped the card on the way in — the editor became a bare section on the dialog, so the body changed shape when you clicked. All three keep the SAME card element and swap only its contents. Open: how you get out, since the pencil is gone while editing.',
+        candidates: [
+          {
+            id: 'link',
+            label: 'Done link in the corner',
+            note: 'The exit sits exactly where the way in was, so the corner is consistently "this card\'s control". Quietest, and the smallest target.',
+            render: () => <InDialog><FlowCardLink /></InDialog>,
+          },
+          {
+            id: 'check',
+            label: 'Checkmark, swaps the pencil',
+            note: 'The corner always holds one control and the glyph says which mode you are in — pencil to edit, check to finish. No words, same target as the pencil.',
+            render: () => <InDialog><FlowCardCheck /></InDialog>,
+          },
+          {
+            id: 'button',
+            label: 'Full-width Done button',
+            note: 'Unmissable and impossible to fumble — but it reads as "commit this section", which is a small lie: nothing commits until the dialog\'s own button. Tallest by a row.',
+            render: () => <InDialog><FlowCardButton /></InDialog>,
           },
         ],
       },
