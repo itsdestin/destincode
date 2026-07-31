@@ -59,4 +59,12 @@ describe('permission timeout tier margins (2026-07-30 spec §1)', () => {
     expect(appHold()).toBe(7200000);
     expect(appHold()).toBeLessThanOrEqual(desktopRelay() - 15 * 60 * 1000);
   });
+
+  const androidHold = () => literal(
+    'app/src/main/kotlin/com/youcoded/app/parser/EventBridge.kt',
+    /PERMISSION_HOLD_MS = ([\d_]+)L/);
+  it('android hold is 2h and strictly under the relay backstop', () => {
+    expect(androidHold()).toBe(7200000);
+    expect(androidHold()).toBeLessThanOrEqual(androidRelay() - 15 * 60 * 1000);
+  });
 });
