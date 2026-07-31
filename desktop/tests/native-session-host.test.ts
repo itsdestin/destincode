@@ -325,6 +325,82 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // ---- Task 6: the host is the ONE production caller of McpManager's
+  // acquire()/release() — create()/resume() acquire this session's servers
+  // and thread them into the HarnessSession; destroy() releases the hold. ----
+  describe('MCP session wiring (Task 6)', () => {
+    const fakeServer = (id: string) => ({
+      id, label: id, tools: [], call: async () => ({ text: 'ok', isError: false }),
+    });
+
+    it('create() acquires this session\'s MCP servers and threads them into the session', async () => {
+      const wanted = [fakeServer('srv0')];
+      const acquire = vi.fn(async () => wanted);
+      const release = vi.fn(async () => {});
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire, release },
+      );
+      await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      expect(acquire).toHaveBeenCalledWith('s-1');
+      const session = (h as any).live.get('s-1').session;
+      expect(session.opts.mcpServers).toBe(wanted);
+    });
+
+    it('resume() acquires MCP servers for the resumed session', async () => {
+      const wanted = [fakeServer('srv1')];
+      const acquire = vi.fn(async () => wanted);
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire, release: async () => {} },
+      );
+      await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('s-1', 'hello');
+      await waitForTurnComplete(h, 1);
+      await h.drain('s-1');
+      await h.destroyAll();
+      acquire.mockClear();
+
+      const h2 = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire, release: async () => {} },
+      );
+      const resumed = await h2.resume('s-1', root);
+      expect(resumed).toBe(true);
+      expect(acquire).toHaveBeenCalledWith('s-1');
+      const session = (h2 as any).live.get('s-1').session;
+      expect(session.opts.mcpServers).toBe(wanted);
+      await h2.destroyAll();
+    });
+
+    it('destroy() releases this session\'s hold on MCP servers', async () => {
+      const release = vi.fn(async () => {});
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire: async () => [], release },
+      );
+      await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      await h.destroy('s-1');
+      expect(release).toHaveBeenCalledWith('s-1');
+    });
+
+    it('a registry-wide acquire failure does not block session creation — the session just opens with no MCP servers', async () => {
+      const acquire = vi.fn(async () => { throw new Error('registry file corrupt'); });
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire, release: async () => {} },
+      );
+      await expect(h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } })).resolves.toBeUndefined();
+      const session = (h as any).live.get('s-1').session;
+      expect(session.opts.mcpServers).toBeUndefined();
+    });
+  });
+
   // ---- Task 5: the host resolves + threads a CapabilityProfile per binding ----
   describe('capability profile threading', () => {
     // Binding-aware fakes: a 'local' provider is a small local engine; anything

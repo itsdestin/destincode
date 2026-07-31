@@ -33,6 +33,7 @@ import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
+import type { ReadyServer } from './mcp/mcp-manager';
 
 export interface CreateNativeSessionOpts {
   sessionId: string;
@@ -154,12 +155,13 @@ export class NativeSessionHost extends EventEmitter {
     // skills installed" an expressible state rather than an environment accident.
     private skillCatalog?: SkillCatalog,
     // The process-level MCP connection pool (Task 4, mcp-manager.ts). Optional +
-    // LAST so existing constructions still compile — Task 6 is what actually
-    // acquire()s servers per session; this task only needs its destroyAll() torn
-    // down at the SAME app-quit path as this host's own (see destroyAll() below).
-    // Typed structurally (not imported from mcp-manager.ts) to avoid this file
-    // depending on the concrete McpManager class for a single method call.
-    private mcpManager?: { destroyAll(): Promise<void> },
+    // LAST so existing constructions still compile. Task 6 is what actually
+    // calls acquire()/release() per session (create/resume/destroy below);
+    // destroyAll() (this host's own app-quit path) already tore down its
+    // destroyAll() before this task. Typed structurally (McpManager's real
+    // shape, not the imported class) so tests can inject a fake pool without
+    // this file depending on the concrete class for a few method calls.
+    private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<ReadyServer[]>; release(sessionId: string): Promise<void> },
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -313,6 +315,26 @@ export class NativeSessionHost extends EventEmitter {
     };
   }
 
+  /** Acquire this session's pooled MCP servers (Task 6) — the ONE production
+   *  caller of McpManager.acquire(). undefined when no manager is wired (every
+   *  existing test construction, which predates Task 6) or when acquisition
+   *  itself fails: a registry-wide failure (a corrupt `~/.youcoded/mcp.json`,
+   *  a secrets-store read error) must not block the session from opening at
+   *  all — MCP is one optional capability layered onto the tool set, not a
+   *  precondition for having a session at all. A single broken SERVER is
+   *  already handled inside McpManager itself (excluded from the returned
+   *  list, never a rejection) — this only guards the rarer whole-registry
+   *  failure. */
+  private async acquireMcp(sessionId: string): Promise<ReadyServer[] | undefined> {
+    if (!this.mcpManager) return undefined;
+    try {
+      return await this.mcpManager.acquire(sessionId);
+    } catch (err) {
+      log('ERROR', 'NativeSessionHost', 'mcp acquire failed — session opens with no MCP servers', { sessionId, error: String(err) });
+      return undefined;
+    }
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession): void {
@@ -380,8 +402,12 @@ export class NativeSessionHost extends EventEmitter {
     // The preset seeds the STARTING mode; an explicit setPermissionMode always
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
+    // Acquire this session's MCP servers (Task 6) BEFORE constructing the
+    // session, so mcpServers is available for the very first buildAiTools().
+    const mcpServers = await this.acquireMcp(opts.sessionId);
     const session = new HarnessSession(
       { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+        ...(mcpServers ? { mcpServers } : {}),
         ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
       this.modelFactory,
     );
@@ -431,9 +457,19 @@ export class NativeSessionHost extends EventEmitter {
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
+    // Acquire this session's MCP servers (Task 6). A RESUMED session reuses
+    // its old sessionId, so this acquire() can genuinely race a release()
+    // still in flight from an overlapping destroy() of the SAME id elsewhere
+    // (mcp-manager.ts's holderTouch is what makes that safe) — the guard at
+    // the top of this method already awaits any prior live session's OWN
+    // destroy() to completion before reaching here, so within a single
+    // resume() call there is no overlap; a genuine race needs a second,
+    // external destroy()/resume() pair for this id in flight concurrently.
+    const mcpServers = await this.acquireMcp(sessionId);
     const session = new HarnessSession(
       // `binding` (not header.binding) — same override reason as above.
       { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+        ...(mcpServers ? { mcpServers } : {}),
         ...this.toolWiring(sessionId, cwd, preset, profile) },
       this.modelFactory,
     );
@@ -752,6 +788,16 @@ export class NativeSessionHost extends EventEmitter {
     this.rememberedFor.delete(sessionId);
     this.presetIdFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
+    // Release this session's hold on every pooled MCP server (Task 6), LAST —
+    // orthogonal to the transcript/live-map teardown above (MCP release never
+    // touches either), so ordering it after doesn't affect that invariant.
+    // Awaited like every other step here; safe even if a resume() for this
+    // SAME sessionId is racing in its own acquire() concurrently — that
+    // overlap is exactly what McpManager.release()'s holderTouch mechanism
+    // exists to get right (see mcp-manager.ts), not something this call needs
+    // to guard against itself. No-ops harmlessly when this session never
+    // acquired anything (no manager wired, or acquireMcp caught a failure).
+    await this.mcpManager?.release(sessionId);
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */
