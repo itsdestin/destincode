@@ -302,6 +302,29 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // ---- Task 4: the host tears down the pooled MCP connections at the SAME
+  // app-quit path as its own sessions (destroyAll() is confirmed the real
+  // teardown method — invoked by ipc-handlers.ts cleanup() from main.ts's
+  // window-all-closed handler). Without this, an MCP server subprocess would
+  // outlive the app.
+  describe('MCP teardown (Task 4)', () => {
+    it('destroyAll() also tears down the pooled MCP connections', async () => {
+      const mcpDestroyAll = vi.fn(async () => {});
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: mcpDestroyAll },
+      );
+      await h.destroyAll();
+      expect(mcpDestroyAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('destroyAll() works fine with no mcpManager wired (pre-Task-6 wiring)', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+      await expect(h.destroyAll()).resolves.toBeUndefined();
+    });
+  });
+
   // ---- Task 5: the host resolves + threads a CapabilityProfile per binding ----
   describe('capability profile threading', () => {
     // Binding-aware fakes: a 'local' provider is a small local engine; anything

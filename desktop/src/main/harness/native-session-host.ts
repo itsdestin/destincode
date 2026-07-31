@@ -153,6 +153,13 @@ export class NativeSessionHost extends EventEmitter {
     // supply a fake instead of scanning the real ~/.claude — which makes "no
     // skills installed" an expressible state rather than an environment accident.
     private skillCatalog?: SkillCatalog,
+    // The process-level MCP connection pool (Task 4, mcp-manager.ts). Optional +
+    // LAST so existing constructions still compile — Task 6 is what actually
+    // acquire()s servers per session; this task only needs its destroyAll() torn
+    // down at the SAME app-quit path as this host's own (see destroyAll() below).
+    // Typed structurally (not imported from mcp-manager.ts) to avoid this file
+    // depending on the concrete McpManager class for a single method call.
+    private mcpManager?: { destroyAll(): Promise<void> },
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -756,5 +763,11 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(id);
     }
     await this.store.flushAll();
+    // Tear down every pooled MCP server connection HERE too — this is the one
+    // place confirmed to actually run at app quit (ipc-handlers.ts cleanup(),
+    // called from main.ts's window-all-closed handler). Without this, an MCP
+    // server's spawned subprocess (e.g. a stdio server) would outlive the app
+    // instead of being closed alongside it.
+    await this.mcpManager?.destroyAll();
   }
 }
