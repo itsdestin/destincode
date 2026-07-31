@@ -101,8 +101,22 @@ function defaultPast(): PastSession[] {
 // resume-disabled states. This is the scenario that catches designs which only
 // work on tidy data (spec §4) — including the ones that assume every row can
 // be resumed.
+//
+// The count is overridable via `?stressRows=N` so a perf harness can drive the
+// list to Destin's real scale (~1,642 rows) WITHOUT editing this file. It used
+// to require a temporary source edit that had to be remembered and reverted;
+// the default stays 220 on purpose, because that is the size at which the
+// stress scenario is still usable for design work.
+function stressRowCount(): number {
+  // The fixture factories are unit-tested under vitest's `node` environment,
+  // where there is no `location` — reading it unguarded fails workbench-store.test.ts.
+  if (typeof location === 'undefined') return 220;
+  const raw = Number(new URLSearchParams(location.search).get('stressRows'));
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 20000) : 220;
+}
+
 function stressPast(): PastSession[] {
-  return Array.from({ length: 220 }, (_, i) => {
+  return Array.from({ length: stressRowCount() }, (_, i) => {
     const extra: Partial<PastSession> = {};
     if (i % 5 === 0) extra.tags = ['tag_work', 'tag_bug', 'tag_idea'];
     if (i % 11 === 0) extra.missingProject = true;

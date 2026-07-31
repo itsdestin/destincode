@@ -157,6 +157,38 @@ function useDropdownReposition(
 // padding or its button count changes, this changes with it.
 const ICON_GUTTER = 'pr-14';
 
+// How many list items the browser materializes at a time, and how many more
+// each top-up adds.
+//
+// WHY THIS EXISTS: the list used to render EVERY row on open. Measured against
+// Destin's real scale (1,642 conversations) on 2026-07-31: 37,920 DOM nodes,
+// ~1,050ms to open and ~470ms per search keystroke, scaling linearly with the
+// conversation count. ~23 DOM nodes per card is the multiplier. Roughly half of
+// that was React building the tree and a third was the browser's style+layout
+// for nodes nobody could see.
+//
+// 50 fills the panel (max-h-70vh ≈ 8 rows) several times over, so the first
+// paint is never waiting on rows below the fold, and a top-up lands well before
+// the user scrolls to the end.
+//
+// Deliberately NOT true virtualization: rows here are variable-height, grow when
+// their resume pane or tag sheet opens, and sit in a container whose scroll-fade
+// hook reads real content height. Chunked reveal needs none of that height
+// bookkeeping. The trade: the scrollbar is proportional to what's revealed, not
+// to the whole list, and scrolling through many hundreds of rows re-accumulates
+// DOM. If deep scrolling ever becomes a real usage pattern, a windowed list is
+// the upgrade — see the 2026-07-31 handoff.
+const REVEAL_CHUNK = 50;
+
+// One entry in the flattened list. Grouped mode interleaves project headers
+// with rows, so both modes reduce to a single ordered array — that is what lets
+// one slice() bound the whole list regardless of which mode is active.
+// Rows carry no `key` here on purpose — renderSessionRow already returns an
+// element keyed by sessionId, so a second copy would be dead data.
+type ListItem =
+  | { kind: 'header'; key: string; label: string; first: boolean }
+  | { kind: 'row'; session: PastSession; showPath: boolean };
+
 // FlagName is imported from resume-browser-filters.ts (single source of truth),
 // kept in sync with SESSION_FLAG_NAMES in shared/types.ts (that module is
 // CommonJS so we don't import it directly).
@@ -416,6 +448,91 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const flatSorted = useMemo(() => {
     return sortSessions(filtered, sortDir);
   }, [filtered, sortDir]);
+
+  // Flatten whichever mode is active into ONE ordered list of headers + rows.
+  // Both branches used to render inline in the JSX, which meant the grouped
+  // branch had no single index to bound — this is what makes the reveal window
+  // below mode-agnostic.
+  const items = useMemo<ListItem[]>(() => {
+    if (grouped) {
+      const out: ListItem[] = [];
+      for (const [projectPath, rows] of grouped.entries()) {
+        out.push({
+          kind: 'header',
+          key: `header:${projectPath}`,
+          label: projectPath.replace(/\\/g, '/').split('/').pop() || projectPath,
+          first: out.length === 0,
+        });
+        // No project label on the row: the header directly above names it.
+        for (const s of rows) out.push({ kind: 'row', session: s, showPath: false });
+      }
+      return out;
+    }
+    return flatSorted.map((s) => ({ kind: 'row' as const, session: s, showPath: true }));
+  }, [grouped, flatSorted]);
+
+  // How much of `items` is currently materialized. Grows as the user scrolls.
+  const [revealCount, setRevealCount] = useState(REVEAL_CHUNK);
+
+  // Reset the window to the top whenever the user changes WHAT THEY ARE LOOKING
+  // FOR — a new search, filter, or sort order is a new list, and it should start
+  // at the top and cost one chunk to draw.
+  //
+  // Keyed on the query VALUES, deliberately not on `items`' identity. `items`
+  // also changes when a session mutates (tagging a row, marking one complete,
+  // saving a note all rewrite `sessions`), and resetting on those would collapse
+  // the list back to 50 rows under a user who had scrolled down to organize
+  // something — yanking their scroll position as a side effect of tagging.
+  const queryKey = useMemo(() => JSON.stringify([
+    search.trim(), sortDir, showComplete,
+    [...selectedProjects].sort(), [...selectedTagIds].sort(),
+  ]), [search, sortDir, showComplete, selectedProjects, selectedTagIds]);
+  const [lastQueryKey, setLastQueryKey] = useState(queryKey);
+  if (queryKey !== lastQueryKey) {
+    // Adjusting state during render (the React-documented pattern) rather than
+    // in an effect. An effect would commit one render at the OLD revealCount
+    // first — for a user who had scrolled deep that is exactly the 1,000-row
+    // render this whole change exists to avoid, once per keystroke.
+    setLastQueryKey(queryKey);
+    setRevealCount(REVEAL_CHUNK);
+  }
+
+  // A new query starts at the top of its results. Load-bearing for the reveal
+  // window, not just manners: resetting revealCount while the container stays
+  // scrolled 250 rows down leaves the sentinel already in view, so the observer
+  // below immediately cascades the window back up to cover the scroll offset —
+  // measured doing exactly that (search after scrolling deep re-revealed 250
+  // rows instead of 50). Scrolling to the top is what makes the reset stick.
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current;
+    if (el) el.scrollTop = 0;
+  }, [queryKey, open, listRef]);
+
+  const visibleItems = revealCount >= items.length ? items : items.slice(0, revealCount);
+  const hasMore = items.length > visibleItems.length;
+
+  // Top up when the sentinel below the last revealed row comes into view.
+  // Same "don't do the work until it's needed" shape as ArtifactThumbnail's
+  // fetch gating. Re-arming on every revealCount change is what makes it
+  // cascade: if one chunk still doesn't reach past the sentinel (short rows, a
+  // tall window), observing again fires again until it does.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || !hasMore) return;
+    // No IntersectionObserver (jsdom under test, any exotic WebView) — reveal
+    // everything rather than stranding the list at 50 rows with no way to grow.
+    if (typeof IntersectionObserver === 'undefined') { setRevealCount(items.length); return; }
+    const el = sentinelRef.current;
+    const root = listRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) setRevealCount((n) => n + REVEAL_CHUNK); },
+      { root, rootMargin: '400px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [open, hasMore, revealCount, items.length, listRef]);
 
   // Distinct projects with counts — what the Projects pill dropdown displays.
   // Derived from the unfiltered session list so the dropdown always shows
@@ -1175,22 +1292,31 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   message={search.trim() ? 'No matching sessions' : 'No previous sessions found'}
                   action={search.trim() ? { label: 'Clear search', onClick: () => setSearch('') } : undefined}
                 />
-              ) : grouped ? (
-                // Grouped by project — only when the Projects filter is active
-                [...grouped.entries()].map(([projectPath, items]) => (
-                  <div key={projectPath} className="mb-2">
-                    <div className="px-4 py-1">
-                      <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
-                        {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
-                      </span>
-                    </div>
-                    {items.map((s) => renderSessionRow(s))}
-                  </div>
-                ))
               ) : (
-                // Flat chronological list (default view + search results),
-                // priority-pinned; each row shows its own project label.
-                flatSorted.map((s) => renderSessionRow(s, true))
+                // ONE list for both modes — grouped (project header + its rows,
+                // only when the Projects filter is active) and flat chronological
+                // (default view + search results, each row showing its own
+                // project label). Bounded to `revealCount`; the sentinel below
+                // extends it as the user scrolls.
+                //
+                // The per-group wrapper this replaced carried `mb-2` for the gap
+                // between groups; a flat list has no wrapper to hang that on, so
+                // the spacing moves to a top margin on every header after the
+                // first — same 8px between groups.
+                <>
+                  {visibleItems.map((item) => (
+                    item.kind === 'header' ? (
+                      <div key={item.key} className={`px-4 py-1 ${item.first ? '' : 'mt-2'}`}>
+                        <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
+                          {item.label}
+                        </span>
+                      </div>
+                    ) : renderSessionRow(item.session, item.showPath)
+                  ))}
+                  {/* Top-up trigger. Rendered only while rows remain, so the
+                      observer effect above tears down once the list is whole. */}
+                  {hasMore && <div ref={sentinelRef} aria-hidden className="h-px" />}
+                </>
               )}
             </div>
           </div>
