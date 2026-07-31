@@ -49,9 +49,10 @@ export function hasPendingInteraction(session: SessionChatState): boolean {
 /**
  * Which kind of interaction is blocking sends — drives the send-refusal
  * copy (§4, 2026-07-30 permission-ask-timeout spec) so a 2h app-owned hold
- * never reads as a generic mystery lock: an 'approval' card names itself
- * and its Dismiss out even once expired; a scraped 'prompt' has neither, so
- * it keeps the plainer "answer the prompt" phrasing. Same scan order and
+ * never reads as a generic mystery lock: an 'approval' card points the user
+ * at "the card in the chat" even once expired (still blocking, no longer
+ * "waiting" in the live sense); a scraped 'prompt' has no card, so it keeps
+ * the plainer "answer the prompt" phrasing. Same scan order and
  * same source fields as hasPendingInteraction — kept as a parallel function
  * (not derived from its boolean) so the two can never disagree about
  * whether something is blocking.
@@ -75,15 +76,24 @@ export function pendingInteractionKind(session: SessionChatState): 'approval' | 
  * both refusal sites (App.tsx's command/skill send guard and InputBar's
  * typed-message guard, including its "Send anyway" force-path toast) pull
  * from, so they cannot drift apart (§4, 2026-07-30 spec). An 'approval' card
- * is named explicitly, with its Dismiss out, because it stays accurate even
- * once the app-owned hold has expired the card (still blocking, no longer
+ * points at "the card in the chat" rather than naming a specific control —
+ * of the four card shapes this kind collapses (permission triad, ExitPlanMode,
+ * AskUserQuestion, expired/retained), only two render a Dismiss button, so
+ * "resolve" is the one phrasing that stays true of all four, including once
+ * the app-owned hold has expired the card (still blocking, no longer
  * "waiting" in the live sense) — see docs/error-message-standards.md:
  * specific+accurate over a generic guess. `null` falls back to the 'prompt'
  * copy defensively; callers only invoke this when a kind was found.
  */
 export function pendingInteractionRefusalCopy(kind: 'approval' | 'prompt' | null): string {
+  // 'approval' covers four card shapes and only two of them have a Dismiss
+  // button (AskUserQuestion, ExpiredApprovalActions) — the plain permission
+  // triad and ExitPlanMode do not. "Answer or dismiss" named a control that
+  // isn't always on screen (review finding on 5fb40acd); "resolve" is honest
+  // for all four (click Yes/No/Always Allow, pick a plan option, answer the
+  // question, or dismiss an already-expired card) without enumerating them.
   return kind === 'approval'
-    ? 'Claude asked a question — answer or dismiss the card in the chat before sending.'
+    ? 'Claude is waiting for your response — resolve the card in the chat before sending.'
     : 'Claude is waiting for your response — answer the prompt first.';
 }
 

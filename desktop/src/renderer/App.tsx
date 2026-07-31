@@ -2945,7 +2945,11 @@ function AppInner() {
                   // name the actual blocker so reaching for it is an informed
                   // choice, not a reflex against a generic-sounding lock.
                   const blockedSession = chatStateMapRef.current.get(sessionId ?? '');
-                  const message = blockedSession ? pendingInteractionRefusalCopy(pendingInteractionKind(blockedSession)) : 'Claude is waiting for your response — answer the prompt first.';
+                  // Route through the shared helper even in the no-session
+                  // fallback — hardcoding its `null` output here let this
+                  // site silently drift from the other two on any future
+                  // copy edit (found in review of 5fb40acd).
+                  const message = pendingInteractionRefusalCopy(blockedSession ? pendingInteractionKind(blockedSession) : null);
                   setToast({ message, durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } });
                 }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
