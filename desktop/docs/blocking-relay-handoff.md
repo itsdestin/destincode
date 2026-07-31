@@ -39,21 +39,21 @@ Keep PTY detection as the catch-all (for trust gates, non-hook menus), but add s
 
 The relay writes its payload and **waits**. The server decides what happens:
 - **Fire-and-forget:** Server closes socket without writing → relay sees `end` → exits 0 (backward compatible)
-- **Blocking decision:** Server holds socket, writes a decision (`{"decision":"allow"}` or `{"decision":"deny"}`) → relay wraps it in `hookSpecificOutput` and exits 0 either way; Claude Code reads the `decision` field, not the exit code. Exit 2 is the timeout path only (see below) — there is no deny-specific exit code.
+- **Blocking decision:** Server holds socket, writes a decision in the real nested shape — `{"decision":{"behavior":"allow"}}` or `{"decision":{"behavior":"deny"}}` (see `main.ts`'s `hookRelay.respond()` calls and `relay-blocking.js`, which reads `appDecision.decision` and re-wraps it as `hookSpecificOutput.decision`) → relay wraps it in `hookSpecificOutput` and exits 0 either way; Claude Code reads the `decision` field, not the exit code. The nesting matters: a flat `{"decision":"allow"}` or bare-string decision reaches Claude Code as `decision: undefined`, silently dropping the answer. Exit 2 is the timeout path only (see below) — there is no deny-specific exit code.
 - **Timeout safety:** Relay has a configurable timeout (default 2h30m, via `CLAUDE_RELAY_TIMEOUT` env var). If the server goes silent past it → relay exits 2 (fail-closed deny)
 
 Key property: **relay doesn't need to know which hooks are blocking.** The server decides. This means adding new blocking hook types only requires server-side changes.
 
 ### Spike Test Results (re-run 2026-07-31, 4/4 PASS)
 
-We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). The harness previously asserted a deny-specific exit code (`exit 2`) that never matched shipped behavior — the relay has no such path; a delivered deny exits 0 like any other delivered decision, with the decision riding in stdout's `hookSpecificOutput`. Test 3 and this results block were corrected to match `relay-blocking.js` as written, then re-run for real numbers (`node desktop/docs/test-blocking-relay.js` from the repo root; Linux, not Windows — see note below):
+We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). The harness previously asserted a deny-specific exit code (`exit 2`) that never matched shipped behavior — the relay has no such path; a delivered deny exits 0 like any other delivered decision, with the decision riding in stdout's `hookSpecificOutput`. Test 2's handler also previously sent the legacy flat `{"allow":true}` shape instead of the real nested `{"decision":{"behavior":"allow"}}` shape. Both were corrected to match `relay-blocking.js` as written, then re-run for real numbers (`node desktop/docs/test-blocking-relay.js` from the repo root; Linux, not Windows — see note below):
 
 ```
 === Blocking Relay Protocol Spike Test ===
-[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 331ms)
-[TEST] Blocking allow (server sends allow=true)...     PASS (exit=0, expected=0, 835ms)
-[TEST] Blocking deny (server sends deny decision, exits 0 — decision rides in stdout)... PASS (exit=0, expected=0, 838ms)
-[TEST] Timeout (server holds, relay fails CLOSED — exit 2 deny)... PASS (exit=2, expected=2, 3337ms)
+[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 333ms)
+[TEST] Blocking allow (server sends allow decision)...     PASS (exit=0, expected=0, 839ms)
+[TEST] Blocking deny (server sends deny decision, exits 0 — decision rides in stdout)... PASS (exit=0, expected=0, 831ms)
+[TEST] Timeout (server holds, relay fails CLOSED — exit 2 deny)... PASS (exit=2, expected=2, 3348ms)
 ```
 
 The pipe protocol works. Backward compatibility confirmed. (This re-run was executed on Linux, where `net.createServer().listen(PIPE_NAME)` binds the Windows-style pipe string as a plain Unix socket file — the harness doesn't branch on platform. Timings are illustrative for this machine/run, not a perf contract.)

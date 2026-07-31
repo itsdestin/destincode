@@ -122,13 +122,17 @@ async function main() {
     socket.end();
   }, { expectedCode: 0 });
 
-  // Test 2: Blocking allow — server sends allow response
-  await runTest('Blocking allow (server sends allow=true)', (socket, payload) => {
+  // Test 2: Blocking allow — server sends an allow decision in the real
+  // nested wire shape ({ decision: { behavior: 'allow' } }). A flat or
+  // bare-string decision would ship `decision: undefined` to Claude Code —
+  // see relay-blocking.js, which reads `appDecision.decision` and re-wraps
+  // it as `hookSpecificOutput.decision`.
+  await runTest('Blocking allow (server sends allow decision)', (socket, payload) => {
     // Simulate a brief "thinking" delay, then approve
     const parsed = JSON.parse(payload);
     log(`  Received: ${parsed.hook_event_name} tool=${parsed.tool_name}`);
     setTimeout(() => {
-      socket.end(JSON.stringify({ allow: true }) + '\n');
+      socket.end(JSON.stringify({ decision: { behavior: 'allow' } }) + '\n');
     }, 500);
   }, { expectedCode: 0 });
 
