@@ -1047,6 +1047,125 @@ function EditTwoColumns({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave:
   );
 }
 
+// ── Round 10: organising the tag chips ───────────────────────────────────────
+// Round 9 was the wrong axis. R8·B was liked for its LAYOUT — applied above,
+// available below, plain chips, plain click — and round 9 answered "tighten it"
+// by making the interaction cleverer, which is the opposite. These three keep
+// R8·B's mechanic exactly (click a chip, that is all) and vary only how the
+// chips are ORGANISED on the page.
+
+/** An available chip drawn as an outline rather than a dimmed fill. TagChip
+ *  sets its background with an inline style, which no className can override,
+ *  so this is a local variant — if it wins, TagChip gains an `outline` prop and
+ *  this goes away. */
+function OutlineChip({ tag }: { tag: { label: string; color: string } }) {
+  const c = `var(--${tag.color})`;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-sm text-3xs leading-none border border-dashed"
+      style={{ color: c, borderColor: `color-mix(in srgb, ${c} 45%, transparent)` }}
+    >
+      {tag.label}
+    </span>
+  );
+}
+
+/** ONE FLOW. No two blocks and no rule — applied chips first, a single dot
+ *  separator, then the available ones dimmed, all in one wrapped run. You read
+ *  it left to right as "these are on … these are not". Fewest bands of the
+ *  three; the boundary is a single character, which is either elegant or
+ *  invisible depending on how many tags are applied. */
+function EditFlowOne({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        <span className="text-fg-faint text-3xs px-1">·</span>
+        {!d.priority && (
+          <button type="button" onClick={() => d.setPriority(true)} className="opacity-50 hover:opacity-100 transition-opacity">
+            <TagChip tag={PRIORITY_TAG} />
+          </button>
+        )}
+        {unapplied.map((t) => (
+          <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)} className="opacity-50 hover:opacity-100 transition-opacity">
+            <TagChip tag={t} />
+          </button>
+        ))}
+      </div>
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** OUTLINE VS FILLED. Still two groups, but the difference is drawn rather than
+ *  faded: applied chips keep their fill, available ones are dashed outlines. No
+ *  divider rule is needed because the styling already separates them, and a
+ *  dashed outline reads as "not yet" the way opacity never quite does. */
+function EditOutline({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        {!d.priority && d.chips.length === 0 && <span className="text-3xs text-fg-muted">No tags yet</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        {!d.priority && (
+          <button type="button" onClick={() => d.setPriority(true)} className="hover:opacity-70 transition-opacity">
+            <OutlineChip tag={PRIORITY_TAG} />
+          </button>
+        )}
+        {unapplied.map((t) => (
+          <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)} className="hover:opacity-70 transition-opacity">
+            <OutlineChip tag={t} />
+          </button>
+        ))}
+      </div>
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+/** FIXED STRIP. Applied chips wrap freely; the available set is ONE row that
+ *  scrolls sideways. The editor's height then never changes as the registry
+ *  grows — the thing that makes every wrapped-cloud design worse the longer you
+ *  use the app. Costs discoverability: tags past the right edge are only found
+ *  by scrolling. */
+function EditFixedStrip({ d, onSave }: { d: ReturnType<typeof useDraft>; onSave: () => void }) {
+  const unapplied = d.registry.tags.filter((t) => !t.archived && !d.tagIds.has(t.id));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1">
+        {d.priority && <TagChip tag={PRIORITY_TAG} onRemove={() => d.setPriority(false)} />}
+        {d.chips.map((t) => <TagChip key={t.id} tag={t} onRemove={() => d.toggleTag(t.id, false)} />)}
+        {!d.priority && d.chips.length === 0 && <span className="text-3xs text-fg-muted">No tags yet</span>}
+      </div>
+      <div className="flex items-center gap-1 overflow-x-auto rounded-md bg-well border border-edge-dim px-1.5 py-1">
+        {!d.priority && (
+          <button type="button" onClick={() => d.setPriority(true)} className="shrink-0 opacity-70 hover:opacity-100 transition-opacity">
+            <TagChip tag={PRIORITY_TAG} />
+          </button>
+        )}
+        {unapplied.map((t) => (
+          <button key={t.id} type="button" onClick={() => d.toggleTag(t.id, true)} className="shrink-0 opacity-70 hover:opacity-100 transition-opacity">
+            <TagChip tag={t} />
+          </button>
+        ))}
+        <button type="button" className="shrink-0 px-1.5 py-[1px] rounded-sm text-3xs leading-none border border-dashed border-edge text-fg-muted hover:text-fg transition-colors">
+          + new
+        </button>
+      </div>
+      <NoteEditor value={d.note} onSave={d.setNote} placeholder="Add a note…" />
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
 /** Round 7's winning shell, with the editor body swapped per candidate. */
 function EditFlowCard({ render }: {
   render: (d: ReturnType<typeof useDraft>, onSave: () => void) => React.ReactNode;
@@ -1368,6 +1487,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'On | Available',
             note: 'Both sets always visible side by side; click a chip to move it across. Nothing hidden, nothing toggles, state never in doubt — but it spends horizontal space a 380px dialog does not have, so each column wraps sooner.',
             render: () => <InDialog><EditFlowCard render={(d, save) => <EditTwoColumns d={d} onSave={save} />} /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 10,
+        basis: 'Back to R8·B, which was right. Round 9 was the wrong axis — it answered "tighten this" by making the INTERACTION cleverer. These keep R8·B\'s mechanic exactly (click a chip, that is all) and vary only how the chips are ORGANISED.',
+        candidates: [
+          {
+            id: 'one-flow',
+            label: 'One flow, dot divider',
+            note: 'No two blocks and no rule — applied first, one dot, then the available dimmed, all in a single wrapped run you read left to right. Fewest bands; the boundary is one character, which is either elegant or invisible.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditFlowOne d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'outline',
+            label: 'Filled on, outlined off',
+            note: 'Two groups still, but the difference is DRAWN rather than faded: applied keep their fill, available are dashed outlines. No divider needed, and a dashed outline reads as "not yet" the way opacity never quite does.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditOutline d={d} onSave={save} />} /></InDialog>,
+          },
+          {
+            id: 'strip',
+            label: 'Fixed-height strip',
+            note: 'Applied wraps freely; available is ONE sideways-scrolling row, so the editor\'s height never changes as the tag registry grows — the thing that makes every wrapped cloud worse the longer you use the app. Costs discoverability past the right edge.',
+            render: () => <InDialog><EditFlowCard render={(d, save) => <EditFixedStrip d={d} onSave={save} />} /></InDialog>,
           },
         ],
       },
