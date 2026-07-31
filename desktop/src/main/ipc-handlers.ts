@@ -2920,10 +2920,16 @@ export function registerIpcHandlers(
       const rec = await store.get(await sessionProviderFor(resolved), resolved);
       if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
+      // Reserved flags travel alongside the tags now: the in-session chip shows
+      // Priority as a built-in tag, so it needs the value, not just the tag
+      // list. Whitelisted to SESSION_FLAG_NAMES so an internal flag key can
+      // never leak to the renderer by being added to a record.
+      const reserved: Partial<Record<string, boolean>> = {};
       for (const [k, v] of Object.entries(rec.flags)) {
         if (v.value && k.startsWith('tag:')) tags.push(k.slice(4));
+        else if (v.value && (SESSION_FLAG_NAMES as string[]).includes(k)) reserved[k] = true;
       }
-      return { tags, note: rec.note || '', supported: true };
+      return { tags, note: rec.note || '', supported: true, flags: reserved };
     } catch { return { tags: [], note: '', supported: true }; }
   });
 

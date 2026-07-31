@@ -3250,12 +3250,17 @@ function AppInner() {
         onConfirm={(result) => {
           const id = closePromptFor;
           if (!id) return;
-          // Reserved flags to set + the TAG DELTA (only what the user toggled off
-          // the preloaded baseline) + the note if it changed — each fire-and-forget;
-          // main resolves the desktop id to the Claude id. The .catch() swallows an
-          // IPC rejection (remote timeout) so it can't become an unhandled rejection.
-          for (const flag of result.flags) {
-            try { Promise.resolve((window as any).claude.session.setFlag(id, flag, true)).catch(() => {}); } catch {}
+          // Every field is a DELTA vs. what the prompt loaded on open — reserved
+          // flags whose value moved, tags toggled on/off, the note if it changed.
+          // Each write is fire-and-forget; main resolves the desktop id to the
+          // Claude id. The .catch() swallows an IPC rejection (remote timeout) so
+          // it can't become an unhandled rejection.
+          //
+          // `flags` carries a VALUE per entry, not just a list to set true — a
+          // Priority the user un-toggled has to be cleared, the same way an
+          // un-toggled tag is (see CloseSessionPrompt's onConfirm doc comment).
+          for (const [flag, value] of Object.entries(result.flags)) {
+            try { Promise.resolve((window as any).claude.session.setFlag(id, flag, value)).catch(() => {}); } catch {}
           }
           for (const tagId of result.addTagIds) {
             try { Promise.resolve((window as any).claude.session.setTag(id, tagId, true)).catch(() => {}); } catch {}
