@@ -4,9 +4,11 @@
  *
  * Runs four scenarios against relay-blocking.js:
  *   1. Fire-and-forget: server closes immediately → relay exits 0
- *   2. Blocking allow: server sends {"allow":true} → relay exits 0
- *   3. Blocking deny: server sends {"allow":false} → relay exits 2
- *   4. Timeout: server holds forever → relay exits 0 after timeout
+ *   2. Blocking allow: server sends {"decision":{"behavior":"allow"}} → relay exits 0
+ *   3. Blocking deny: server sends {"decision":{"behavior":"deny"}} → relay exits 0
+ *      (the decision rides in stdout's hookSpecificOutput, not the exit code —
+ *      there is no deny-specific exit code; see relay-blocking.js)
+ *   4. Timeout: server holds forever → relay exits 2 (fail-closed) after timeout
  *
  * Usage: node scripts/test-blocking-relay.js
  */
@@ -130,12 +132,15 @@ async function main() {
     }, 500);
   }, { expectedCode: 0 });
 
-  // Test 3: Blocking deny — server sends deny response
-  await runTest('Blocking deny (server sends allow=false)', (socket, payload) => {
+  // Test 3: Blocking deny — server sends a deny decision. The relay does not
+  // special-case deny: it wraps whatever `decision` the server sent into
+  // hookSpecificOutput on stdout and exits 0, same as allow. Exit 2 is
+  // reserved for the timeout path (test 4), never for a delivered decision.
+  await runTest('Blocking deny (server sends deny decision, exits 0 — decision rides in stdout)', (socket, payload) => {
     setTimeout(() => {
-      socket.end(JSON.stringify({ allow: false }) + '\n');
+      socket.end(JSON.stringify({ decision: { behavior: 'deny' } }) + '\n');
     }, 500);
-  }, { expectedCode: 2 });
+  }, { expectedCode: 0 });
 
   // Test 4: Timeout — server holds socket open, never responds
   // Override relay timeout to 3s so this test doesn't take 2h30m (shipped

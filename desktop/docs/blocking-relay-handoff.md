@@ -44,19 +44,19 @@ The relay writes its payload and **waits**. The server decides what happens:
 
 Key property: **relay doesn't need to know which hooks are blocking.** The server decides. This means adding new blocking hook types only requires server-side changes.
 
-### Spike Test Results (VALIDATED, 4/4 PASS)
+### Spike Test Results (re-run 2026-07-31, 4/4 PASS)
 
-We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). Results:
+We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). The harness previously asserted a deny-specific exit code (`exit 2`) that never matched shipped behavior — the relay has no such path; a delivered deny exits 0 like any other delivered decision, with the decision riding in stdout's `hookSpecificOutput`. Test 3 and this results block were corrected to match `relay-blocking.js` as written, then re-run for real numbers (`node desktop/docs/test-blocking-relay.js` from the repo root; Linux, not Windows — see note below):
 
 ```
 === Blocking Relay Protocol Spike Test ===
-[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 413ms)
-[TEST] Blocking allow (server sends allow=true)...    PASS (exit=0, expected=0, 853ms)
-[TEST] Blocking deny (server sends allow=false)...    PASS (exit=2, expected=2, 853ms)
-[TEST] Timeout (server holds, relay fails closed)...  PASS (exit=2, expected=2, 3365ms)
+[TEST] Fire-and-forget (server closes immediately)... PASS (exit=0, expected=0, 331ms)
+[TEST] Blocking allow (server sends allow=true)...     PASS (exit=0, expected=0, 835ms)
+[TEST] Blocking deny (server sends deny decision, exits 0 — decision rides in stdout)... PASS (exit=0, expected=0, 838ms)
+[TEST] Timeout (server holds, relay fails CLOSED — exit 2 deny)... PASS (exit=2, expected=2, 3337ms)
 ```
 
-The pipe protocol works on Windows. Backward compatibility confirmed.
+The pipe protocol works. Backward compatibility confirmed. (This re-run was executed on Linux, where `net.createServer().listen(PIPE_NAME)` binds the Windows-style pipe string as a plain Unix socket file — the harness doesn't branch on platform. Timings are illustrative for this machine/run, not a perf contract.)
 
 ## Implementation Plan
 
