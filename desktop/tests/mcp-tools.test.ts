@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mcpToolsFor } from '../src/main/harness/mcp/mcp-tools';
+import { mcpToolsFor, estimateToolSchemaTokens } from '../src/main/harness/mcp/mcp-tools';
 
 function readyServer(over: Partial<any> = {}) {
   return {
@@ -41,5 +41,37 @@ describe('mcpToolsFor', () => {
     const s = readyServer({ tools: [{ name: 'wipe', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] });
     // readOnlyHint comes from the SERVER. It must not become an allow rule.
     expect(mcpToolsFor(s)[0].permissionSubject({})).toBeUndefined();
+  });
+});
+
+describe('estimateToolSchemaTokens', () => {
+  it('returns 0 for an empty tool list', () => {
+    // Fix: catch overly-optimistic schema budget that would silently drop MCP servers
+    // from the model's context with no error shown to the user.
+    expect(estimateToolSchemaTokens([])).toBe(0);
+  });
+
+  it('pins the exact arithmetic: (name + description + JSON(rawInputSchema)) / 4 ceiling', () => {
+    // Fix: prevent silent context-budget regressions from wrong divisor, wrong fallback,
+    // or schema omission that would drop tools from context or exceed the budget silently.
+    const tools = mcpToolsFor(readyServer({
+      id: 'test',
+      label: 'Test',
+      tools: [{ name: 'add', description: 'Add two numbers', inputSchema: { type: 'object' } }]
+    }));
+    // Expected: mcp__test__add (13) + Add two numbers (15) + {"type":"object"} (17) = 45 / 4 = 11.25 -> ceil = 12
+    expect(estimateToolSchemaTokens(tools)).toBe(12);
+  });
+
+  it('still counts name and description when rawInputSchema is missing, falling back to {}', () => {
+    // Fix: prevent regression if rawInputSchema fallback (?? {}) is dropped,
+    // causing JSON.stringify(undefined) or thrown errors.
+    const tools = mcpToolsFor(readyServer({
+      id: 'test',
+      label: 'Test',
+      tools: [{ name: 'add', description: 'Add two numbers' }]  // no inputSchema
+    }));
+    // Expected: mcp__test__add (13) + Add two numbers (15) + {} (2) = 30 / 4 = 7.5 -> ceil = 8
+    expect(estimateToolSchemaTokens(tools)).toBe(8);
   });
 });
