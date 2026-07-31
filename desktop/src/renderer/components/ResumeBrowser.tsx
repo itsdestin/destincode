@@ -141,11 +141,11 @@ function useDropdownReposition(
 }
 
 // Right padding reserved on a card's upper rows for the absolutely-positioned
-// icon cluster. Derived, not eyeballed: cluster p-1.5 (6) + two p-1.5 buttons
-// around 16px icons (28 each) + gap-0.5 (2) = 64px = pr-16. The BOTTOM row
-// deliberately omits it so the timestamp reaches the card's own right padding.
-// If the cluster's padding or its button count changes, this changes with it.
-const ICON_GUTTER = 'pr-16';
+// icon cluster. Derived, not eyeballed: cluster pr-2 (8) + two px-1 buttons
+// around 16px icons (24 each) = 56px = pr-14. The BOTTOM row deliberately omits
+// it so the timestamp reaches the card's own right padding. If the cluster's
+// padding or its button count changes, this changes with it.
+const ICON_GUTTER = 'pr-14';
 
 // FlagName is imported from resume-browser-filters.ts (single source of truth),
 // kept in sync with SESSION_FLAG_NAMES in shared/types.ts (that module is
@@ -842,45 +842,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         </div>
       </button>
       {/* The two icon buttons, overlaid on the card's top-right corner rather
-          than laid out beside the trigger. Their padding is chosen so each
-          icon's right edge lands 12px from the card edge — the same p-3 the
-          trigger uses — which is what puts the tag icon and the timestamp on
-          one vertical line. */}
-      <div className="absolute top-0 right-0 p-1.5 flex items-start gap-0.5">
-      {/* Complete. It sits on the card rather than inside the tag sheet because
-          finishing with a conversation is a one-click action, and costing a
-          menu-open for it is what made the old flag row feel buried. Hover copy
-          is a question ("Mark this session complete?") so the icon reads as an
-          action, not a status badge. */}
-      {(() => {
-        const done = !!s.flags?.complete;
-        return (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, 'complete', !done); }}
-            aria-pressed={done}
-            title={done ? 'Marked complete — hidden unless Show Complete is on. Click to undo.' : 'Mark this session complete?'}
-            aria-label={done ? `Mark ${s.name} not complete` : `Mark ${s.name} complete`}
-            className={`p-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-              done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
-            }`}
-          >
-            {/* Check-in-a-circle, not the eye-with-a-slash this started as:
-                the control's NAME is Complete, and "done" is what the user is
-                actually saying. That its effect is to hide the row from the
-                list is a consequence, and one the Show Complete toggle already
-                explains. Filled when set so the state reads at a glance. */}
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
-              {/* Knocked out of the fill when set — var(--canvas), not a
-                  hardcoded white, so it survives a dark or community theme. */}
-              <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
-            </svg>
-          </button>
-        );
-      })()}
-      {/* Organize: tags and note. Always visible rather than hover-revealed —
-          a hover-only affordance is invisible on touch and undiscoverable on
+          than laid out beside the trigger. Order is TAG then COMPLETE, so
+          Complete — the one that changes what the list shows — sits outermost
+          and lands on the same vertical line as the timestamp below it.
+          Padding is what sets both the outer alignment and the space between
+          the pair: py-1.5/px-1 buttons put 8px between the two icons (4 + 4)
+          while the cluster's pr-2 puts the last icon's right edge 12px from the
+          card edge, matching the trigger's p-3. */}
+      <div className="absolute top-0 right-0 pt-1.5 pl-1.5 pr-2 flex items-start">
+      {/* Tags and note. Always visible rather than hover-revealed — a
+          hover-only affordance is invisible on touch and undiscoverable on
           desktop, and this is the ONLY route to tagging. Rendered for inert
           rows too: the metadata is Conversation Store-backed, so a conversation
           synced in from another device can be organized here even though it
@@ -901,14 +872,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         aria-label={`Organize ${s.name}`}
         aria-haspopup="dialog"
         aria-expanded={organizeId === s.sessionId}
-        className={`p-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        className={`px-1 py-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
         }`}
       >
         {/* A tag, not a generic dots menu — it names what the sheet holds.
             MIRRORED (translate + scale(-1,1)) so the wide, punched end sits on
-            the RIGHT: the icon lives at the card's right edge and its point
-            should aim back into the card, not off the panel. */}
+            the RIGHT and the point aims back into the card. */}
         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <g transform="translate(24,0) scale(-1,1)">
             <path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8l8.5 8.5a1.5 1.5 0 010 2.1l-6.9 6.9a1.5 1.5 0 01-2.1 0L3 12.5z" />
@@ -916,6 +886,38 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </g>
         </svg>
       </button>
+      {/* Complete. It sits on the card rather than inside the tag sheet because
+          finishing with a conversation is a one-click action, and costing a
+          menu-open for it is what made the old flag row feel buried. Hover copy
+          is a question ("Mark this session complete?") so the icon reads as an
+          action, not a status badge. */}
+      {(() => {
+        const done = !!s.flags?.complete;
+        return (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, 'complete', !done); }}
+            aria-pressed={done}
+            title={done ? 'Marked complete — hidden unless Show Complete is on. Click to undo.' : 'Mark this session complete?'}
+            aria-label={done ? `Mark ${s.name} not complete` : `Mark ${s.name} complete`}
+            className={`px-1 py-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
+            }`}
+          >
+            {/* Check-in-a-circle, not the eye-with-a-slash this started as:
+                the control's NAME is Complete, and "done" is what the user is
+                actually saying. That its effect is to hide the row from the
+                list is a consequence, and one the Show Complete toggle already
+                explains. Filled when set so the state reads at a glance. */}
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
+              {/* Knocked out of the fill when set — var(--canvas), not a
+                  hardcoded white, so it survives a dark or community theme. */}
+              <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
+            </svg>
+          </button>
+        );
+      })()}
       </div>
       {/* 'sheet' variant: the organize controls drop INTO the card rather than
           floating. No positioning maths and nothing to clamp — the trade is
