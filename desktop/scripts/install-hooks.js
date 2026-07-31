@@ -111,7 +111,9 @@ function installHooks() {
     }
   }
 
-  // Register PermissionRequest with blocking relay (longer timeout for user response)
+  // Register PermissionRequest with blocking relay. Tier-3 backstop: 3h —
+  // 30m ABOVE the relay's 2h30m so CC never wins (CC winning kills the hook
+  // with no decision; see relay-blocking.js header). Margins are load-bearing.
   if (!settings.hooks['PermissionRequest']) {
     settings.hooks['PermissionRequest'] = [];
   }
@@ -123,7 +125,7 @@ function installHooks() {
 
   const blockingEntry = {
     matcher: '',
-    hooks: [{ type: 'command', command: expectedBlockingCmd, timeout: 300 }],
+    hooks: [{ type: 'command', command: expectedBlockingCmd, timeout: 10800 }],
   };
 
   const existingBlockingIdx = settings.hooks['PermissionRequest'].findIndex((matcher) =>

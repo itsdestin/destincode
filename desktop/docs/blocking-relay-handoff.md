@@ -39,15 +39,14 @@ Keep PTY detection as the catch-all (for trust gates, non-hook menus), but add s
 
 The relay writes its payload and **waits**. The server decides what happens:
 - **Fire-and-forget:** Server closes socket without writing → relay sees `end` → exits 0 (backward compatible)
-- **Blocking allow:** Server holds socket, writes `{"allow":true}\n` → relay exits 0
-- **Blocking deny:** Server holds socket, writes `{"allow":false}\n` → relay exits 2
-- **Timeout safety:** Relay has a configurable timeout (default 30s, via `CLAUDE_RELAY_TIMEOUT` env var). If server goes silent → relay exits 0 (fail-open)
+- **Blocking decision:** Server holds socket, writes a decision (`{"decision":"allow"}` or `{"decision":"deny"}`) → relay wraps it in `hookSpecificOutput` and exits 0 either way; Claude Code reads the `decision` field, not the exit code. Exit 2 is the timeout path only (see below) — there is no deny-specific exit code.
+- **Timeout safety:** Relay has a configurable timeout (default 2h30m, via `CLAUDE_RELAY_TIMEOUT` env var). If the server goes silent past it → relay exits 2 (fail-closed deny)
 
 Key property: **relay doesn't need to know which hooks are blocking.** The server decides. This means adding new blocking hook types only requires server-side changes.
 
 ### Spike Test Results (VALIDATED, 4/4 PASS)
 
-We created `hook-scripts/relay-blocking.js` (the new relay) and `scripts/test-blocking-relay.js` (test harness). Results:
+We created `hook-scripts/relay-blocking.js` (the new relay) and `docs/test-blocking-relay.js` (test harness). Results:
 
 ```
 === Blocking Relay Protocol Spike Test ===
@@ -120,6 +119,6 @@ The pipe protocol works on Windows. Backward compatibility confirmed.
 ## Design Constraints
 
 - PTY-based Ink detection (`usePromptDetector`, `PromptCard`, `TrustGate`) must remain as the fallback for non-hook interactive prompts. Do not remove or break it.
-- The protocol must fail-open (exit 0) on timeout or error — Claude Code must never deadlock waiting for a response that will never come.
+- The protocol fails CLOSED (exit 2) on timeout, and OPEN (exit 0) on connection error — no listener means a terminal session, which gets CC's own prompt. Claude Code must never deadlock waiting for a response that will never come; the staggered timeout tiers (2026-07-30 spec §1) are what guarantee that.
 - `relay-blocking.js` must remain backward-compatible with the current fire-and-forget server behavior.
 - The spec is at `~/.claude/specs/claude-desktop-ui-spec.md` — update the "Planned updates" section when done to reflect that blocking approval flow is implemented.

@@ -143,7 +143,7 @@ class EventBridge(private val socketName: String) {
 
     /**
      * Monitor a held PermissionRequest socket for remote closure.
-     * When hook-relay-blocking.js times out (120s) or Claude Code kills the hook
+     * When hook-relay-blocking.js times out (its 2h30m tier-2 backstop) or Claude Code kills the hook
      * process, the socket closes. We detect this and emit PermissionExpired so
      * the React UI can clear the stale approval card.
      *

@@ -13,7 +13,10 @@
 var net = require('net');
 var socket = process.env.CLAUDE_MOBILE_SOCKET;
 if (!socket) process.exit(0);
-var TIMEOUT_MS = parseInt(process.env.CLAUDE_RELAY_TIMEOUT || '120000', 10);
+// Tier-2 backstop: 2h30m — above EventBridge's 2h hold, below Bootstrap's 3h
+// CC hook timeout. Relay-wins = exit 2 (clean deny); CC-wins = hook killed
+// with no decision = AskUserQuestion wedges forever. Do NOT equalize (spec §1).
+var TIMEOUT_MS = parseInt(process.env.CLAUDE_RELAY_TIMEOUT || '9000000', 10);
 
 var input = '';
 process.stdin.setEncoding('utf8');

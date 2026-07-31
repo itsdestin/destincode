@@ -26,6 +26,11 @@ class Bootstrap(internal val context: Context) {
         // isFullySetup and installClaudeCode() for why this is pinned.
         private const val PINNED_CLAUDE_CODE_VERSION = "2.1.112"
 
+        /** Tier-3 CC hook timeout (3h) — 30m above the relay asset's 2h30m so CC
+         *  never kills the hook first (no decision = AskUserQuestion wedges
+         *  forever, spec §1). Pinned by desktop/tests/permission-timeout-margins. */
+        const val PERMISSION_HOOK_TIMEOUT_SECONDS = 10800
+
         /** Ensure the PermissionRequest blocking-relay hook entry exists AND
          *  carries the current command + timeout. WHY: earlier versions only
          *  appended when missing, so every existing install kept timeout 300
@@ -1028,8 +1033,9 @@ class Bootstrap(internal val context: Context) {
             hooksObj.put(event, eventArray)
         }
 
-        // Register PermissionRequest with blocking relay (long timeout for user approval)
-        ensurePermissionRequestHook(hooksObj, blockingHookCommand, 300)
+        // Register PermissionRequest with blocking relay (tier-3 CC timeout, see
+        // PERMISSION_HOOK_TIMEOUT_SECONDS doc comment for the margin rationale)
+        ensurePermissionRequestHook(hooksObj, blockingHookCommand, PERMISSION_HOOK_TIMEOUT_SECONDS)
 
         // Auto-title hook: always deploy the bundled asset. Post-decomposition,
         // title-update.sh is app-owned (not a toolkit hook) on both platforms —

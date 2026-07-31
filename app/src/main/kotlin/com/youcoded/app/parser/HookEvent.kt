@@ -57,7 +57,7 @@ sealed class HookEvent {
     ) : HookEvent()
 
     /** Emitted when a held PermissionRequest socket closes before a response
-     *  was sent — e.g., hook-relay-blocking.js timed out (120s) or Claude Code
+     *  was sent — e.g., hook-relay-blocking.js timed out (2h30m backstop) or Claude Code
      *  killed the hook process. React uses this to clear stale approval cards.
      *  Desktop equivalent: hook-relay.ts socket.on('close') → 'permission-expired'. */
     data class PermissionExpired(

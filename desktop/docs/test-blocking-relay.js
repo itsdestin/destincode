@@ -138,10 +138,14 @@ async function main() {
   }, { expectedCode: 2 });
 
   // Test 4: Timeout — server holds socket open, never responds
-  // Override relay timeout to 3s so this test doesn't take 30s
-  await runTest('Timeout (server holds, relay fails open)', (socket, _payload) => {
+  // Override relay timeout to 3s so this test doesn't take 2h30m (shipped
+  // default). Fails CLOSED (exit 2) — the pre-2026 fail-open (exit 0)
+  // contract this used to pin was replaced by the 2026-07-30 staggered
+  // timeout tiers; a silent auto-allow on timeout is the wrong failure mode
+  // for a permission gate.
+  await runTest('Timeout (server holds, relay fails CLOSED — exit 2 deny)', (socket, _payload) => {
     // Deliberately do nothing — hold the socket open
-  }, { expectedCode: 0, timeout: 10000, env: { CLAUDE_RELAY_TIMEOUT: '3000' } });
+  }, { expectedCode: 2, timeout: 10000, env: { CLAUDE_RELAY_TIMEOUT: '3000' } });
 
   // Summary
   console.log('\n=== Summary ===');
