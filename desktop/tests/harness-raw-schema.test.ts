@@ -28,5 +28,9 @@ describe('buildAiTools raw schema passthrough', () => {
     const session = makeSession({});
     const built = (session as any).buildAiTools();
     expect(built['Read']).toBeDefined();
+    // Fix: assert that the zod schema was correctly translated by checking for a
+    // required property name from Read's inputSchema. This catches regressions in
+    // zodSchema() that would silently produce a corrupted empty schema.
+    expect(JSON.stringify(built['Read'].inputSchema)).toContain('"file_path"');
   });
 });
