@@ -20,8 +20,17 @@ import type { SyncService } from './sync-service';
 // Per-device sync recency lives in the sync-spaces service (it owns the SyncHub
 // socket that receives it). Surfaced here so getSyncStatus() — the SyncPanel's
 // full-snapshot source — carries it alongside the other sync fields. No cycle:
-// sync-spaces/service.ts does not import sync-state.
-import { getLastSyncByDevice } from './sync-spaces/service';
+// sync-spaces/service.ts does not import sync-state.ts.
+// getSelfLastSyncEpochMs/isSyncSpacesSyncing are the same "this device" evidence
+// buildStatusData() in ipc-handlers.ts reads (Task 7) — getSyncStatus() is the
+// SyncPanel's OTHER read path (on-mount snapshot vs. the 10s status:data push),
+// and was still reading the legacy marker alone, so the self row showed the
+// stale value until the first push overwrote it (2026-07-30 spec §4 gap).
+import { getLastSyncByDevice, getSelfLastSyncEpochMs, isSyncSpacesSyncing } from './sync-spaces/service';
+// Same pure derivation buildStatusData() uses — reused, not duplicated, so the
+// two read paths can't drift on the ms→wire-seconds conversion or the
+// sync-spaces-vs-legacy-marker precedence rule.
+import { deriveSelfLastSyncEpochSec } from './sync-spaces/self-sync-status';
 
 // --- SyncService delegation ---
 // When the SyncService is running, forceSync() delegates to it instead
@@ -418,7 +427,11 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     }),
   );
 
-  const globalMarkerEpoch = markerText ? parseInt(markerText, 10) || null : null;
+  // Self recency: sync-spaces evidence first, legacy .sync-marker as
+  // fallback/max — same precedence buildStatusData() uses (Task 7). WHY this
+  // isn't `markerText ? parseInt(...) : null` alone: that only ever reflects
+  // the LEGACY Drive/iCloud push path, which GitHub-era installs never stamp.
+  const lastSyncEpoch = deriveSelfLastSyncEpochSec(getSelfLastSyncEpochMs(), markerText || null);
 
   const backupMeta = meta
     ? {
@@ -455,10 +468,13 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 
   return {
     backends: backendStatuses,
-    lastSyncEpoch: globalMarkerEpoch,
+    lastSyncEpoch,
     backupMeta,
     warnings,
-    syncInProgress: lockExists,
+    // OR, not assign: live sync-spaces activity and the legacy .sync-lock
+    // directory (extra-backups pushes) are independent signals — either one
+    // syncing means "in progress". Assigning would drop whichever ran second.
+    syncInProgress: isSyncSpacesSyncing() || lockExists,
     syncingBackendId: null, // Set by SyncService at runtime via event
     syncedCategories: categoryChecks.filter(Boolean) as string[],
     // Snapshot the SyncHub-carried per-device recency map (see interface note).

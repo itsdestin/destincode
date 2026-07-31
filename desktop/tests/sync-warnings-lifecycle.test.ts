@@ -1,7 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+// Fake sync-spaces "this device" evidence for the getSyncStatus() tests below.
+// vi.mock factories are hoisted above imports, so the mutable state they close
+// over must go through vi.hoisted. Real service.ts pulls in the sync engine,
+// chokidar, and electron (see sync-service.ts's comment on the same point) —
+// far too heavy for a unit test that only needs to control two return values.
+const svcMock = vi.hoisted(() => ({
+  selfLastSyncMs: null as number | null,
+  syncing: false,
+  lastSyncByDevice: {} as Record<string, number>,
+}));
+vi.mock('../src/main/sync-spaces/service', () => ({
+  getSelfLastSyncEpochMs: () => svcMock.selfLastSyncMs,
+  isSyncSpacesSyncing: () => svcMock.syncing,
+  getLastSyncByDevice: () => svcMock.lastSyncByDevice,
+}));
+
 import {
   readWarnings,
   writeWarnings,
@@ -10,6 +27,7 @@ import {
   clearWarningsByCode,
   dismissWarning,
   setClaudeDirForTests,
+  getSyncStatus,
 } from '../src/main/sync-state';
 import type { SyncWarning } from '../src/main/sync-state';
 
@@ -33,6 +51,9 @@ setClaudeDirForTests(tmpHome);
 beforeEach(() => {
   fs.mkdirSync(claudeDir, { recursive: true });
   try { fs.unlinkSync(warningsPath); } catch {}
+  svcMock.selfLastSyncMs = null;
+  svcMock.syncing = false;
+  svcMock.lastSyncByDevice = {};
 });
 
 afterEach(() => {
@@ -161,5 +182,85 @@ describe('cleanupStaleBackendErrorFiles', () => {
       try { fs.unlinkSync(staleA); } catch {}
       try { fs.unlinkSync(staleB); } catch {}
     }
+  });
+});
+
+// getSyncStatus() is the SyncPanel's on-mount snapshot read (the OTHER path
+// besides buildStatusData()'s 10s status:data push — Task 7 only rewired the
+// latter). Without this fix, a GitHub-era install (no legacy .sync-marker)
+// shows the wrong self "last seen" on every panel open until the first push
+// overwrites it ~10s later (2026-07-30 spec §4 gap). svcMock stands in for
+// the real sync-spaces service (see the vi.mock above) so these tests don't
+// need to boot the real engine/chokidar/electron just to control two values.
+describe('getSyncStatus — self recency and sync-in-progress (2026-07-30 spec §4 gap)', () => {
+  const toolkitStateDir = path.join(tmpHome, '.claude', 'toolkit-state');
+  const markerPath = path.join(toolkitStateDir, '.sync-marker');
+  const lockDir = path.join(toolkitStateDir, '.sync-lock');
+
+  beforeEach(() => {
+    fs.mkdirSync(toolkitStateDir, { recursive: true });
+    try { fs.unlinkSync(markerPath); } catch {}
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it('prefers sync-spaces evidence over the legacy marker, converting ms to wire seconds', async () => {
+    // Spaces evidence is NEWER than the marker. Old code read ONLY the marker
+    // (parseInt(markerText) || null), so it would return markerEpoch here —
+    // this assertion fails against that code because the two values differ.
+    const spacesMs = 1_785_446_434_842;
+    const markerEpoch = 1_700_000_000; // much older, in seconds
+    svcMock.selfLastSyncMs = spacesMs;
+    fs.writeFileSync(markerPath, String(markerEpoch));
+
+    const status = await getSyncStatus();
+    expect(status.lastSyncEpoch).toBe(Math.floor(spacesMs / 1000));
+  });
+
+  it('falls back to the legacy marker when sync-spaces has no evidence for this device', async () => {
+    // Guards the fallback path itself: if a future edit hard-codes
+    // deriveSelfLastSyncEpochSec's second argument to null instead of passing
+    // markerText through, this returns null instead of markerEpoch and fails.
+    const markerEpoch = 1_700_000_000;
+    svcMock.selfLastSyncMs = null;
+    fs.writeFileSync(markerPath, String(markerEpoch));
+
+    const status = await getSyncStatus();
+    expect(status.lastSyncEpoch).toBe(markerEpoch);
+  });
+
+  it('syncInProgress reflects live sync-spaces activity even with no legacy lock directory', async () => {
+    // No .sync-lock on disk. Old code (`syncInProgress: lockExists`) would
+    // return false here — this fails against that code.
+    svcMock.syncing = true;
+    expect(fs.existsSync(lockDir)).toBe(false);
+
+    const status = await getSyncStatus();
+    expect(status.syncInProgress).toBe(true);
+  });
+
+  it('syncInProgress ORs the legacy lock directory in, rather than being overwritten by it', async () => {
+    // sync-spaces reports NOT syncing but the legacy lock dir exists (an
+    // extra-backups push in flight). A common wrong fix is
+    // `syncInProgress: isSyncSpacesSyncing()` — assigning instead of ORing —
+    // which drops the legacy signal and would return false here.
+    svcMock.syncing = false;
+    fs.mkdirSync(lockDir, { recursive: true });
+
+    const status = await getSyncStatus();
+    expect(status.syncInProgress).toBe(true);
+  });
+
+  it('is falsy and does not throw when sync is off / sync-spaces is uninitialized', async () => {
+    // No marker file, no lock dir, service reports no evidence — the
+    // "sync never configured" state. Confirms the wiring doesn't coerce
+    // null/undefined into NaN or a truthy value, and doesn't throw.
+    svcMock.selfLastSyncMs = null;
+    svcMock.syncing = false;
+    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(fs.existsSync(lockDir)).toBe(false);
+
+    const status = await getSyncStatus();
+    expect(status.lastSyncEpoch).toBeNull();
+    expect(status.syncInProgress).toBe(false);
   });
 });

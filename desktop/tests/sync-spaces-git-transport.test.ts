@@ -179,6 +179,94 @@ describe('GitTransport specifics', () => {
     expect(await t.gitDirSizeBytes(empty)).toBe(0);
     await h.cleanup();
   });
+
+  // ---- Honest failures (2026-07-30 spec §1). Pins the 2026-07-27 bug: a
+  // crash-truncated loose object made every git op fail while push() returned
+  // {pushed:false} ("nothing to push") — sync dead 3 days, panel green. ----
+
+  /** Zero-byte-truncate the loose object HEAD points at — the exact artifact a
+   *  power loss leaves (rename landed, content never flushed). */
+  function corruptHeadObject(root: string): void {
+    const gd = path.join(root, '.youcoded', 'sync.git');
+    const env = { ...process.env, GIT_DIR: gd };
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { env }).toString().trim();
+    const objectPath = path.join(gd, 'objects', head.slice(0, 2), head.slice(2));
+    // Git writes loose objects read-only (mode 0444) — truncateSync needs
+    // write permission first, or it fails EACCES before it can corrupt anything.
+    fs.chmodSync(objectPath, 0o644);
+    fs.truncateSync(objectPath, 0);
+  }
+
+  it('push() on a crash-corrupted repo throws coded repo-corrupt — never a silent {pushed:false}', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');           // HEAD + origin/main now exist
+    corruptHeadObject(a.root);
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second');
+    await expect(h.transport.push(a, 'after crash')).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
+    await h.cleanup();
+  });
+
+  it('pull() on a crash-corrupted repo throws coded repo-corrupt — never a silent {updated:false}', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');
+    corruptHeadObject(a.root);
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second'); // dirty → pull's snapshot commit must run
+    await expect(h.transport.pull(a)).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
+    await h.cleanup();
+  });
+
+  it('benign paths stay silent: first push against an empty remote still works end-to-end', async () => {
+    // Guards the allowlist: unborn origin/main ("Invalid revision range"),
+    // empty-remote fetch ("couldn't find remote ref") must NOT throw.
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    const pulled = await h.transport.pull(a);          // empty remote — benign
+    expect(pulled.updated).toBe(false);
+    const r = await h.transport.push(a, 'first push'); // no origin/main yet — benign probe failure
+    expect(r.pushed).toBe(true);
+    await h.cleanup();
+  });
+
+  it('an unexplained local git failure surfaces the real stderr, not a guess', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    fs.writeFileSync(path.join(a.root, 'one.md'), 'first');
+    await h.transport.push(a, 'seed');
+    // Corruption vs. unexplained-failure discrimination: the PRIOR technique
+    // here — replacing objects/ with a plain file — was verified empirically
+    // to make git print
+    // `fatal: not a git repository: '<path>'`, which IS one of
+    // CORRUPTION_PATTERNS in sync-error-classifier.ts. So this test was
+    // silently exercising throwRepoCorrupt() while its assertion
+    // (`/Sync failed for|needs repair/`) passed for EITHER branch — the "real
+    // stderr, not a guess" half of the contract (the generic, non-coded throw)
+    // was never actually pinned.
+    //
+    // A git pre-commit hook gives us a LOCAL git failure we fully author:
+    // deterministic stderr, guaranteed not to match any CORRUPTION_PATTERNS or
+    // benign predicate (LOCK_CONTENDED / "nothing to commit" / NOTHING_TO_PUSH_YET),
+    // and portable — git invokes a hook with a `#!/bin/sh` shebang via its own
+    // bundled shell on every CI OS this suite runs on (Git for Windows ships
+    // one for exactly this reason).
+    const hooksDir = path.join(a.root, '.youcoded', 'sync.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    fs.writeFileSync(hookPath, '#!/bin/sh\necho "simulated-disk-hiccup: pre-commit refused" >&2\nexit 1\n');
+    fs.chmodSync(hookPath, 0o755);
+    fs.writeFileSync(path.join(a.root, 'two.md'), 'second');
+    const err = await h.transport.push(a, 'x').catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    // NOT the coded corruption path — proves this is the generic branch.
+    expect(err.syncErrorCode).toBeUndefined();
+    // AND the real git/hook-emitted text reached the message, not a guess.
+    expect(String(err.message)).toContain('simulated-disk-hiccup: pre-commit refused');
+    await h.cleanup();
+  });
 });
 
 // Stale git-lock recovery: a git write killed mid-operation (5-min timeout
@@ -386,6 +474,126 @@ describe('GitTransport auth-failure surfacing', () => {
     expect(String(err.message)).toContain('GitHub sign-in expired');
     expect(err.syncErrorCode).toBe('github-auth');
     expect(String(err.message)).not.toContain(TOKEN);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Benign-allowlist intent pins.
+// LOCK_CONTENDED and NOTHING_TO_PUSH_YET were previously covered only
+// INCIDENTALLY, by tests written before the constants existed (pinning the
+// OLD "swallow every failure" behavior, not the deliberate allowlist). Without
+// a test that names the intent, anyone narrowing these regexes later gets a
+// failure that reads as "stale-lock reaping broke" or "first-push broke",
+// never "you narrowed the benign allowlist". These state the intent directly,
+// via the same scripted-git() technique as the auth-failure block above (no
+// real git subprocess, no real race needed to prove a policy decision).
+// ---------------------------------------------------------------------------
+describe('GitTransport benign-allowlist intent', () => {
+  const space: SyncSpace = { id: 'personal', kind: 'personal', root: '/nowhere' };
+  const LOCK_STDERR = "Unable to create '/nowhere/.youcoded/sync.git/index.lock': File exists.";
+
+  /** Transport whose git() is scripted per leading arg — no real git runs. */
+  function scripted(responses: Record<string, { code: number; stdout?: string; stderr?: string }>) {
+    const t = new GitTransport({ deviceName: 'test' });
+    (t as any).git = vi.fn(async (_s: SyncSpace, args: string[]) => {
+      const r = responses[args[0]] ?? { code: 0 };
+      return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '', tokenUsed: false };
+    });
+    (t as any).reapStaleLocks = () => {};
+    return t;
+  }
+
+  it('LOCK_CONTENDED: a still-held lock on `add` during push stays silent (transient, self-resolving)', async () => {
+    const t = scripted({
+      add: { code: 128, stderr: LOCK_STDERR },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      diff: { code: 0, stdout: '' },
+      'rev-list': { code: 0, stdout: '0' },
+    });
+    await expect(t.push(space, 'msg')).resolves.toMatchObject({ pushed: false });
+  });
+
+  it('LOCK_CONTENDED now also covers `commit` (the same transient lock must not decide silent-vs-throw by which op loses the race)', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: 'file.md' }, // something staged, so push() attempts a commit
+      commit: { code: 128, stderr: LOCK_STDERR },
+    });
+    // Must resolve, not throw — the lock at commit is exactly as benign as at
+    // add. Pin the EXACT shape, not just "resolves": a bare `.toBeDefined()`
+    // passes identically whether the fix's early return runs (real result
+    // {pushed:false, oversize:[]}) or the fix is missing entirely and every
+    // downstream unscripted call falls through to its `{code:0}` default,
+    // producing {pushed:true, commit:'', oversize:[]} — a silently wrong
+    // result that still satisfies `toBeDefined()`.
+    await expect(t.push(space, 'msg')).resolves.toEqual({ pushed: false, oversize: [] });
+  });
+
+  it('LOCK_CONTENDED now also covers `checkout` (pull() adopting a fresh remote while a lock is still live) — but the checkout still did not happen, so it must not report updated:true', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: '' },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      fetch: { code: 0 },
+      'rev-parse': { code: 1 }, // no local `main` yet → pull() takes the adopt-remote/checkout branch
+      checkout: { code: 128, stderr: LOCK_STDERR },
+    });
+    // Must resolve (not throw — the lock is transient), but the checkout never
+    // ran, so `updated: true` here would be a success-shaped result for a
+    // verifiably failed op.
+    await expect(t.pull(space)).resolves.toMatchObject({ updated: false, conflictCopies: [] });
+  });
+
+  it('LOCK_CONTENDED on `add` in pull() resolves benignly and never falls through to merge (`add` is the FIRST lock-taking op, so losing the race there leaves the tree state unknown — proceeding to merge would risk running on a dirty tree)', async () => {
+    const t = scripted({
+      add: { code: 128, stderr: LOCK_STDERR },
+      // Every other call is left unscripted, so it defaults to `{code:0}`.
+      // If the early return after `add` were missing, execution would sail
+      // straight through diff/hasRemote/fetch/rev-parse/rev-list all the way
+      // to `merge`, which would ALSO default to success — silently reporting
+      // `updated: true` for a pull that never actually ran a merge. The
+      // exact-shape assertion below catches that value; the mock-calls check
+      // proves `merge` specifically never ran.
+    });
+    await expect(t.pull(space)).resolves.toEqual({ updated: false, conflictCopies: [] });
+    const calledMerge = (t as any).git.mock.calls.some((c: any[]) => c[1][0] === 'merge');
+    expect(calledMerge).toBe(false);
+  });
+
+  it('NOTHING_TO_PUSH_YET: a fresh space with zero local commits ever stays silent, not a throw', async () => {
+    const t = scripted({
+      add: { code: 0 },
+      diff: { code: 0, stdout: '' },
+      remote: { code: 0, stdout: 'https://example.com/r.git' },
+      fetch: { code: 0 },
+      'rev-list': { code: 1, stderr: 'fatal: Invalid revision range' }, // origin/main doesn't exist yet
+      push: { code: 1, stderr: 'error: src refspec main does not match any known revisions' },
+    });
+    // Exact-shape pin, not a partial match: a bare `pushed: false` partial
+    // match passes for ANY resolution shape, including a false positive where
+    // `commit` ends up truthy (e.g. from a lock-contended commit leaking the
+    // prior HEAD sha) — the field that actually decides whether the "nothing
+    // was pushed" story is honest never gets checked. Pin the full result so
+    // a future regression at any field surfaces here.
+    await expect(t.push(space, 'msg')).resolves.toEqual({
+      pushed: false, commit: undefined, oversize: [], updated: false, conflictCopies: [],
+    });
+  });
+
+  it('corruption evidence wins over a co-occurring lock line: a stderr carrying BOTH lock contention AND corruption evidence throws repo-corrupt, never gets swallowed as benign', async () => {
+    // The 2026-07-27 incident shape: an orphaned index.lock not yet aged past
+    // lockStaleMs, sitting alongside a truncated loose object in the same
+    // stderr. Corruption must win — assertLocalOk checks corruption evidence
+    // BEFORE the benign allowlist, so this case can't be misclassified as a
+    // simple lock race.
+    const t = scripted({
+      add: {
+        code: 128,
+        stderr: `${LOCK_STDERR}\nerror: object file .youcoded/sync.git/objects/ab/cdef is empty`,
+      },
+    });
+    const err = await t.push(space, 'msg').catch((e) => e);
+    expect(err.syncErrorCode).toBe('repo-corrupt');
   });
 });
 

@@ -46,6 +46,32 @@ let lastSyncByDevice: Record<string, number> = {};
 // (the status:data push) — the two paths SyncPanel reads recency from.
 export function getLastSyncByDevice(): Record<string, number> { return lastSyncByDevice; }
 
+/** Max persisted last-COMPLETED-sync-CYCLE across this device's spaces (ms), or
+ *  null when sync is off / has never completed a cycle. NOT "last successful
+ *  sync": corruption and auth failures now THROW (spec §1) and correctly stop
+ *  this from advancing, but a cycle that completes without shipping anything
+ *  still stamps it — the engine emits 'synced' after pull+push regardless of
+ *  push.pushed, and git-transport's offline path is silent-by-design (a failed
+ *  retry push whose stderr matches isNetworkFailureStderr falls through
+ *  without throwing, returning {pushed:false}). So a device offline for days,
+ *  or hitting a lock-contended cycle, still advances this value every ~120s
+ *  poll with nothing actually synced. Read it as "sync last ran", not "sync
+ *  last succeeded". */
+export function getSelfLastSyncEpochMs(): number | null {
+  if (!manager || !roots) return null;
+  let max: number | null = null;
+  for (const s of roots.spaces()) {
+    const t = manager.lastSyncFor(s.id);
+    if (t != null && (max === null || t > max)) max = t;
+  }
+  return max;
+}
+
+/** Live: any space's sync currently in flight. */
+export function isSyncSpacesSyncing(): boolean {
+  return engine?.anySyncing() ?? false;
+}
+
 // Auth store facade (marketplace token) wired from main.ts. Read lazily per
 // connect so a mid-session sign-in/out takes effect without an app restart.
 // Kept as a narrow facade so service.ts doesn't import the whole auth store.
