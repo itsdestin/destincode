@@ -132,6 +132,11 @@ export interface MakeSessionOver {
   model?: any;                       // a scriptModel()/scriptedModel() fake
   contextLength?: number | null;
   tools?: NativeTool[];
+  // Appended onto the default tool set (Glob+Read) WITHOUT replacing it — for
+  // tests that need one extra tool (e.g. an MCP-shaped tool with
+  // rawInputSchema) alongside the usual fakes, instead of hand-rolling the
+  // whole set via `tools`.
+  extraTools?: NativeTool[];
   decide?: (tool: string, subject: string | undefined) => Promise<PermissionDecision>;
   systemPrompt?: string;
   // Subscribe to the session's transcript-event stream (each emitted event is
@@ -152,6 +157,7 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
   const tools = over.tools ?? [
     fakeTool('Glob', { schema: z.object({ pattern: z.string() }) }),
     fakeTool('Read'),
+    ...(over.extraTools ?? []),
   ];
   const opts: HarnessSessionOpts = {
     sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,

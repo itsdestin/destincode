@@ -50,6 +50,14 @@ export interface NativeTool<A = any> {
    *  fall back to `description`. */
   shortDescription?: string;
   inputSchema: z.ZodType<A>;
+  /** JSON Schema straight from an MCP server, when this tool came from one.
+   *  buildAiTools() sends THIS to the model instead of translating inputSchema,
+   *  because converting JSON Schema → zod is lossy and a lossy conversion that
+   *  rejects a valid call would be a bug we invented. `inputSchema` stays
+   *  required and permissive for MCP tools: it keeps the driver's single
+   *  validation path (harness-session.ts safeParse) intact, and the SERVER is
+   *  the authority on its own arguments. */
+  rawInputSchema?: Record<string, unknown>;
   /** The permission SUBJECT for rule matching: Bash → command string; file
    *  tools → the file path; undefined → tool-name-only matching. */
   permissionSubject(args: A): string | undefined;

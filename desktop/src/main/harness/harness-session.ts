@@ -13,7 +13,7 @@
 // new event types.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import { streamText, tool, zodSchema, type LanguageModel, type ModelMessage } from 'ai';
+import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
@@ -440,7 +440,9 @@ export class HarnessSession extends EventEmitter {
     const simplified = this.profile.maxToolPresentation === 'simplified';
     const out: Record<string, any> = {};
     for (const t of this.toolByName.values()) {
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: zodSchema(t.inputSchema) });
+      // MCP tools carry the server's own JSON Schema; everything else is zod.
+      const schema = t.rawInputSchema ? jsonSchema(t.rawInputSchema as any) : zodSchema(t.inputSchema);
+      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: schema });
     }
     return out;
   }
