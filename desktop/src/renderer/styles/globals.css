@@ -625,6 +625,23 @@ body[data-mode="buddy-chat"] #theme-bg {
   background: var(--accent);
   animation: model-load-sweep 1.1s ease-in-out infinite;
 }
+/* Reduced Effects — the app's own setting must stop perpetual animations too,
+   not just the OS `prefers-reduced-motion` preference. Before this,
+   `[data-reduced-effects]` (set on <html> by theme-engine.ts) had ZERO css rules
+   gating on it: it was read only in JS by ThemeEffects and MascotRig, so turning
+   Reduced Effects on left every CSS keyframe animation running.
+   `model-load-sweep` animates `left`, which is not compositable and forces a
+   layout pass every frame — worse per-frame than the opacity/transform cases
+   that layer promotion fixed, though it only runs while a model loads.
+   The declarations are duplicated across an attribute rule and a media block
+   because CSS has no way to say "this selector OR this media condition" in one
+   rule. Keep the two bodies identical when editing either. */
+[data-reduced-effects] .model-load-track::after {
+  animation: none;
+  left: 0;
+  width: 100%;
+  opacity: 0.5;
+}
 @media (prefers-reduced-motion: reduce) {
   .model-load-track::after {
     animation: none;
@@ -657,6 +674,7 @@ body[data-mode="buddy-chat"] #theme-bg {
   );
   animation: model-load-sweep 1.25s ease-in-out infinite;
 }
+[data-reduced-effects] .model-load-finalize::after { animation: none; opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
   .model-load-finalize::after { animation: none; opacity: 0; }
 }
@@ -670,6 +688,30 @@ body[data-mode="buddy-chat"] #theme-bg {
 .timeline-entry {
   contain: layout style;
 }
+
+/* Perf: frame-budget the perpetual Tailwind animations with steps() timing.
+   On a high-refresh display, ANY smoothly-animating element makes Chromium
+   produce and present a frame at the full refresh rate — measured 2026-07-30 on
+   a 2560x1600@180Hz panel at ~1.5-1.9ms of CPU per frame, i.e. ~29% of one core
+   for a single 64px pulsing dot. The cost is per-FRAME, not per-element, and it
+   is NOT app-specific: a bare Electron window measured 33.7% and plain Google
+   Chrome 26.7% for the identical div. Layer promotion (`will-change`) was tried
+   first and measured useless (29.8% -> 27.8%); an 8px layer-promoted transform
+   animation still cost 31.9%. The only lever that works is presenting FEWER
+   frames.
+   steps() does exactly that: the animation only produces a new frame when its
+   value actually steps. Measured: the same pulse at steps(8) dropped 28.75% ->
+   9.33%. steps(N) applies PER KEYFRAME SEGMENT, so pulse (0/50/100 keyframes,
+   2s) at steps(8) = 8 opacity changes per second — visually indistinguishable
+   from the smooth fade on the small dots and badges that wear this class.
+   The spinner gets steps(12) on its 1s rotation = a classic 12-tick spinner;
+   slightly visible by design (30deg increments), accepted 2026-07-30 in
+   exchange for a 3x CPU cut on a control that shows during every install/sync.
+   These longhand declarations override the timing-function inside Tailwind's
+   `animation` shorthand by source order — this file's rules come after the
+   tailwindcss import. See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
+.animate-pulse { animation-timing-function: steps(8); }
+.animate-spin { animation-timing-function: steps(12); }
 
 /* Status bar — transparent in framed mode (chrome-glass behind provides
    the visible chrome surface). Floating-chrome themes add the pill
@@ -1342,7 +1384,23 @@ body[data-mode="buddy-chat"] #theme-bg {
           background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: flowing-word-pan 3s linear infinite;
+  /* Perf: plays twice on appearance, then settles — NOT infinite.
+     This animates background-position, which no compositor trick can make
+     cheap: the text has to be re-rasterized on the main thread every frame.
+     Both escapes were measured and both failed — `will-change: background-
+     position` gave 43.0% vs 43.8%, and forcing a real layer with
+     `will-change: transform` gave 65.9% vs 66.1%. steps() quantization (the
+     fix used for the opacity animations, see .animate-pulse) helps less here
+     because this property is main-thread painted — steps(24) still measured
+     ~40% — so for this effect the right shape is: play, then STOP.
+     One visible keyword cost ~44-66% of one CPU core, forever, and a chat
+     full of user messages is the app's most common state.
+     Two iterations keeps what the effect is actually for — drawing the eye to
+     a keyword as the message arrives — and then stops, at which point the cost
+     is exactly zero. `fill-mode` is deliberately left at `none` so it settles
+     back to the static start gradient, which is legible (screenshot-checked).
+     See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
+  animation: flowing-word-pan 3s linear 2;
   /* NOTE: font-weight intentionally omitted here. In the chat input mirror the
      keyword renders bolder than the same characters in the transparent
      textarea above it, which widens the keyword in the mirror only and
@@ -1369,6 +1427,20 @@ body[data-mode="buddy-chat"] #theme-bg {
   );
   font-weight: 600;
 }
+/* Stop the keyword gradient when motion is reduced, by OS preference or by the
+   app's own Reduced Effects setting.
+   This one matters most for CPU: `flowing-word-pan` animates background-position,
+   which is NOT a compositable property, so unlike opacity/transform animations it
+   cannot be fixed by layer promotion (`will-change` was measured at 43.0% vs 43.8%
+   — no help). The text repaints on the renderer main thread every frame, and a
+   single visible keyword measured ~43% of one CPU core on a 180Hz panel.
+   `.timeline-entry:not(.in-view)` already pauses offscreen keywords; this covers
+   the on-screen ones, which is the app's most common state (a chat full of user
+   messages). See docs/archive/investigations/2026-07-30-idle-cpu-burn.md.
+   Duplicated selector rather than one rule because CSS cannot combine an
+   attribute selector with a media query — see the Reduced Effects note above
+   .model-load-track. */
+[data-reduced-effects] .flowing-word { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .flowing-word { animation: none; }
 }

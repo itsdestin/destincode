@@ -675,8 +675,13 @@ export default function HeaderBar({
                   ? 'text-orange-400'
                   : 'text-fg-dim hover:text-fg-2'
             }`}
+            // Perf: steps(8) instead of ease-in-out — this pulses for as long
+            // as a challenge is pending, and a smooth animation costs ~29% of
+            // one core on a 180Hz panel (frame cost, not element cost). 8
+            // opacity changes/sec reads identically on a 16px icon. See the
+            // .animate-pulse comment in globals.css.
             style={challengePending && !gamePanelOpen ? {
-              animation: 'challenge-pulse 2.5s ease-in-out infinite',
+              animation: 'challenge-pulse 2.5s steps(8) infinite',
             } : undefined}
             title={challengePending ? 'Incoming challenge!' : 'Connect 4'}
           >
