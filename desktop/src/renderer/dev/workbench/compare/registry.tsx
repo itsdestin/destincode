@@ -326,6 +326,123 @@ function CardQuote() {
   );
 }
 
+// ── Round 4: the note's glyph and its text treatment ─────────────────────────
+// B (gutter + pencil) won round 3, so the layout is settled: glyphs in a fixed
+// left column, chips and note sharing one left edge, a pencil in the corner.
+//
+// TWO CHANGES, ONE COMPARED. The note glyph moves from the notebook-with-a-
+// pencil to a lined PAGE (NotePageGlyph below) in all three candidates — that
+// was a direct instruction, not a question, and the old glyph read as "edit a
+// note" when this row only DISPLAYS one. The pencil in the corner is the edit
+// affordance; two pencils in one card was the confusion.
+//
+// What IS being compared is the note TEXT: box it, quote it, or just let it be
+// the biggest thing in the card. The icon stays identical across all three on
+// purpose — varying two things at once means the pick can't tell you which one
+// you preferred.
+
+/** Boxed. The note sits in its own `bg-well` container, one step deeper than
+ *  the card, so it reads as CONTENT held by the card rather than another line
+ *  of metadata. Most structure, most pixels. Empty: the box goes with it. */
+function CardNoteBoxed() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <span className="grid grid-cols-[16px_1fr] items-center gap-x-1.5 gap-y-1.5 pr-6">
+          <TagGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="flex flex-wrap items-center gap-1 min-w-0">
+            <TagChip tag={PRIORITY_TAG} />
+            <TagChip tag={WORK_TAG} />
+          </span>
+          <NotePageGlyph className="w-3 h-3 text-fg-muted self-start mt-1" />
+          <span className="rounded-md bg-well px-2 py-1 text-2xs text-fg-2 leading-snug line-clamp-2 min-w-0">
+            {NOTE}
+          </span>
+        </span>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Quoted. Italic, muted, in typographic quotes — no box at all. Says "these
+ *  are your words" through typography instead of a container, which keeps the
+ *  card as light as round 3's. Empty: nothing left behind. */
+function CardNoteQuoted() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <span className="grid grid-cols-[16px_1fr] items-center gap-x-1.5 gap-y-1.5 pr-6">
+          <TagGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="flex flex-wrap items-center gap-1 min-w-0">
+            <TagChip tag={PRIORITY_TAG} />
+            <TagChip tag={WORK_TAG} />
+          </span>
+          <NotePageGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="text-2xs text-fg-muted italic truncate min-w-0">“{NOTE}”</span>
+        </span>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** Undecorated, but promoted. No box and no quotes — instead the note is simply
+ *  the most prominent thing in the card: full text colour at the chip row's
+ *  size, with the page glyph doing all the labelling. Lightest, and it bets
+ *  that the glyph is enough context. Empty: the row disappears. */
+function CardNotePlain() {
+  const [done, setDone] = React.useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <GutterCard>
+        <span className="grid grid-cols-[16px_1fr] items-center gap-x-1.5 gap-y-1.5 pr-6">
+          <TagGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="flex flex-wrap items-center gap-1 min-w-0">
+            <TagChip tag={PRIORITY_TAG} />
+            <TagChip tag={WORK_TAG} />
+          </span>
+          <NotePageGlyph className="w-3 h-3 text-fg-muted" />
+          <span className="text-xs text-fg truncate min-w-0">{NOTE}</span>
+        </span>
+      </GutterCard>
+      <CompleteRow done={done} onChange={setDone} />
+    </div>
+  );
+}
+
+/** The round-3 winner's shell, shared so round 4 can vary only what is inside
+ *  it — card, hover, and the corner pencil are identical across all three. */
+function GutterCard({ children }: { children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      className="group relative w-full text-left rounded-lg border border-edge-dim bg-inset px-3 py-2.5 flex flex-col gap-1.5 transition-colors hover:border-edge hover:bg-well"
+    >
+      {children}
+      <span className="absolute top-2.5 right-3 text-fg-faint group-hover:text-fg transition-colors">
+        <PencilGlyph className="w-3.5 h-3.5" />
+      </span>
+    </button>
+  );
+}
+
+/** A lined page with a folded corner — "there is a note here", as an object
+ *  rather than an action. Replaces the notebook-and-pencil glyph, which read as
+ *  "edit this note" and collided with the corner pencil that actually does. */
+function NotePageGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z" />
+      <path d="M14 3v5h5" />
+      <path d="M9 13h6M9 17h4" />
+    </svg>
+  );
+}
+
 /** Pencil — the edit glyph the app already uses on the tag-manager rows. */
 function PencilGlyph({ className = '' }: { className?: string }) {
   return (
@@ -454,6 +571,30 @@ export const COMPARE_SURFACES: CompareSurface[] = [
             label: 'Note as quotation',
             note: 'The note gets a left rule and the muted colour, so "labels I applied" and "a sentence I wrote" separate at a glance. Tallest of the three.',
             render: () => <InDialog><CardQuote /></InDialog>,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis: 'R3 · B (Gutter + pencil). Layout settled. Note glyph swapped to a lined PAGE in all three (an instruction, not a question — the old notebook-and-pencil read as "edit" and collided with the corner pencil). Compared: the note text treatment.',
+        candidates: [
+          {
+            id: 'boxed',
+            label: 'Note in a container',
+            note: 'The note sits in its own bg-well box, one step deeper than the card, so it reads as content the card holds rather than another metadata line. Most structure.',
+            render: () => <InDialog><CardNoteBoxed /></InDialog>,
+          },
+          {
+            id: 'quoted',
+            label: 'Italic in quotes',
+            note: 'Italic, muted, typographic quotes, no box — says "your words" through typography instead of a container, keeping the card as light as R3.',
+            render: () => <InDialog><CardNoteQuoted /></InDialog>,
+          },
+          {
+            id: 'plain',
+            label: 'Plain, promoted',
+            note: 'No box, no quotes — the note is simply the most prominent thing in the card, at full text colour and the chip row\'s size, with the page glyph as the only context.',
+            render: () => <InDialog><CardNotePlain /></InDialog>,
           },
         ],
       },
