@@ -25,9 +25,17 @@ const RENEW_MS = 30_000;
 export interface LeaseClientOpts {
   deviceId: string;
   deviceName: string;
-  // Returns the Personal sync-space root, or null when managed roots are
-  // unavailable (sync disabled / not yet initialized). Null => skip all file ops.
-  personalRoot: () => string | null;
+  // Returns the DIRECTORY that holds lease files, or null when it can't be
+  // resolved (=> skip all file ops).
+  //
+  // This MUST resolve outside any sync space. It used to be
+  // `<personalRoot>/Leases`, which meant every 30s renew was a file change the
+  // sync watcher committed to git: 93% of all file-changes in the real Personal
+  // repo were lease renews, 30k commits / 673 MB, and the resulting bloat pushed
+  // catch-up syncs past GIT_TIMEOUT so a device that fell behind could never
+  // recover (2026-07-30). Ephemeral heartbeat state does not belong in a
+  // permanent versioned store — the hub is the source of truth for leases.
+  leaseDir: () => string | null;
   // Injected transport (the SyncHub socket's request()). Resolves a LeaseResult,
   // or null when the hub is disconnected / timed out — never rejects.
   hubRequest: (op: string, sessionId: string, deviceId: string) => Promise<LeaseResult | null>;
@@ -69,6 +77,77 @@ export interface LeaseClient {
 
 interface LeaseFileContent { deviceId: string; device: string; expiresAt: number }
 
+/** Parse a lease file, or null when it is missing/malformed/not a lease. */
+function tryParseLease(file: string): LeaseFileContent | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed.expiresAt === 'number' && Number.isFinite(parsed.expiresAt)) {
+      return { deviceId: String(parsed.deviceId ?? ''), device: String(parsed.device ?? ''), expiresAt: parsed.expiresAt };
+    }
+  } catch { /* missing / malformed */ }
+  return null;
+}
+
+/** Delete expired (and unparseable) lease files from the ACTIVE lease dir.
+ *  Returns how many were removed.
+ *
+ *  WHY: nothing else ever deleted these. deleteLeaseFile only runs on a clean
+ *  release, so every crash, force-quit or killed session leaked a file forever —
+ *  59 of 60 lease files on the machine that surfaced this bug were long expired.
+ *  An unparseable file is removed too: readLeaseFile treats it as "no lease", so
+ *  it can never expire out on its own.
+ *
+ *  Only touches `*.json` REGULAR files (dirent.isFile() does not follow symlinks)
+ *  and never recurses — same discipline as sweepProjectSymlinks. */
+export function sweepExpiredLeases(dir: string): number {
+  let removed = 0;
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return 0; } // dir absent — nothing to sweep
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith('.json')) continue;
+    const file = path.join(dir, e.name);
+    const lease = tryParseLease(file);
+    if (lease && lease.expiresAt > Date.now()) continue; // still live
+    try { fs.rmSync(file, { force: true }); removed++; } catch { /* best-effort */ }
+  }
+  return removed;
+}
+
+/** One-time migration: empty the LEGACY in-space lease dir (`<personalRoot>/Leases`).
+ *  Returns how many lease files were removed.
+ *
+ *  WHY: before 2026-07-30 leases were written inside the personal sync space, so
+ *  the pre-existing files are tracked in that space's git repo. Removing them
+ *  produces ONE final delete-commit and then permanent silence — whereas leaving
+ *  them tracked means `git add -A` keeps re-staging them (exclude rules only
+ *  silence UNTRACKED files).
+ *
+ *  Deletes regardless of expiry: a still-live lease is re-written to the new
+ *  userData location within one renew (30s), so nothing is actually lost.
+ *
+ *  Deliberately conservative — this runs inside the user's own synced folder, so
+ *  it removes ONLY regular `*.json` files that positively parse as leases, never
+ *  recurses into subdirectories, and drops the directory itself only once it is
+ *  completely empty. */
+export function sweepLegacyLeaseDir(personalRoot: string): number {
+  const dir = path.join(personalRoot, 'Leases');
+  let removed = 0;
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return 0; } // never existed (fresh install) — nothing to migrate
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith('.json')) continue;
+    const file = path.join(dir, e.name);
+    if (!tryParseLease(file)) continue; // not ours — leave the user's file alone
+    try { fs.rmSync(file, { force: true }); removed++; } catch { /* best-effort */ }
+  }
+  // Only remove the dir when nothing at all survived; rmdirSync fails loudly on a
+  // non-empty dir, which is exactly the guard we want (never a recursive delete).
+  try { fs.rmdirSync(dir); } catch { /* something survived — correct to keep it */ }
+  return removed;
+}
+
 export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
   // sessionId -> renew timer. Membership IS "this device holds the lease".
   const held = new Map<string, NodeJS.Timeout>();
@@ -83,9 +162,9 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
   // ---- lease-file helpers (all best-effort, all try/caught) ----
 
   function leaseFile(sessionId: string): string | null {
-    const root = opts.personalRoot();
-    if (!root) return null; // managed roots unavailable — hub is the primary path anyway
-    return path.join(root, 'Leases', `${sessionId}.json`);
+    const dir = opts.leaseDir();
+    if (!dir) return null; // dir unavailable — hub is the primary path anyway
+    return path.join(dir, `${sessionId}.json`);
   }
 
   function writeLeaseFile(sessionId: string, expiresAt: number): void {

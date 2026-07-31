@@ -18,6 +18,14 @@ export function validateSyncName(name: string): string | null {
 // Spec §8 default ignore set: build junk + secrets. gitignore syntax — written
 // into each hidden repo's info/exclude (never into the user's tree).
 export const DEFAULT_IGNORES: string[] = [
+  // Leases/ — ephemeral session-holder heartbeats, rewritten every 30s per open
+  // session (lease-client RENEW_MS). They are NOT user data and must never be
+  // versioned: while they lived in the space, 93% of every file-change in the
+  // real Personal repo was a lease renew — 30k commits / 673 MB, which starved
+  // real conversation syncs badly enough that a device fell 3 days behind and
+  // could not catch up (2026-07-30). The writer now targets userData; this entry
+  // is the belt-and-braces guard for legacy dirs and any future stray writer.
+  'Leases/',
   'node_modules/', '.git/', '.youcoded/', 'dist/', 'build/', 'out/', 'target/',
   '.venv/', 'venv/', '__pycache__/', '.pytest_cache/', '.gradle/',
   '.DS_Store', 'Thumbs.db', 'desktop.ini',
