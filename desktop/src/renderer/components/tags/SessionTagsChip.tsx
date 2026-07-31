@@ -98,10 +98,10 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                     onToggle: (next) => meta.setFlag('priority', next),
                   }]}
                 />
-                <div>
-                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-                  <NoteEditor value={meta.note} onSave={meta.setNote} />
-                </div>
+                {/* No "NOTE" header — the placeholder says it, and the three
+                    tag/note surfaces agree on having none. The dialog's own
+                    title ("Tags & note") already names what is here. */}
+                <NoteEditor value={meta.note} onSave={meta.setNote} />
               </div>
             </OverlayPanel>
           </div>

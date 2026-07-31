@@ -732,13 +732,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // done is a one-click action that shouldn't cost opening a menu.
   const renderOrganizeControls = (s: PastSession) => (
     <>
+      {/* No "TAGS" / "NOTE" headers. A tag list and a text field do not need
+          naming — the search placeholder and the note placeholder already say
+          what each is, and the two labels were a third of the sheet's height.
+          Matched across all three tag/note surfaces (2026-07-31).
+          fieldClassName lifts the search box to `bg-well`: the sheet sits on
+          the card, which IS the FIELD surface (`bg-inset`), so without it the
+          field is the same colour as its background. Same override the close
+          prompt and the model picker make, for the same reason. */}
       <div onClick={(e) => e.stopPropagation()}>
-        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
         <TagPicker
           appliedIds={new Set(s.tags ?? [])}
           onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
           registry={registry}
           onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
+          fieldClassName="bg-well border-edge"
           builtIns={[{
             tag: PRIORITY_TAG,
             hint: PRIORITY_HINT,
@@ -751,8 +759,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       </div>
 
       <div className="border-t border-edge-dim pt-2" onClick={(e) => e.stopPropagation()}>
-        <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-        <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
+        <NoteEditor
+          value={s.note ?? ''}
+          onSave={(text) => saveNote(s.sessionId, text)}
+          fieldClassName="bg-well border-edge"
+        />
       </div>
     </>
   );
