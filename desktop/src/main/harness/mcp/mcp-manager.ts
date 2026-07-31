@@ -7,6 +7,7 @@
 // attaches them to a session.
 import type { ResolvedMcpServer } from './types';
 import type { McpToolDef } from './mcp-client';
+import { log } from '../../logger';
 
 // Structural subsets of McpRegistry/createConnection's real shapes — same
 // seam convention as NativeHomeLike/SecretsLike/ClientFactory elsewhere in
@@ -56,15 +57,19 @@ interface PooledEntry {
   // connect() again — the seam that makes "one broken/slow server, two
   // simultaneous acquire()s" connect once, not twice. See McpManager.acquire.
   connecting?: Promise<void>;
-  // sessionId -> the McpManager-wide touch sequence number as of the most
-  // recent ensureConnected() call for that session (first-ever hold OR a
-  // renewal of one already held). release() snapshots this per session
-  // before it does anything and compares again once it's safe to act — a
-  // changed number means some acquire() renewed this exact hold WHILE
-  // release() was running, which release() must not then undo. See
-  // release()'s fix comment for why a plain Set can't tell this apart on
-  // its own (adding an already-present sessionId is a same-membership no-op).
-  holderTouch: Map<string, number>;
+  // sessionId -> {seq, owner} as of the most recent ensureConnected() call
+  // for that session (first-ever hold OR a renewal of one already held).
+  // `seq` is the McpManager-wide touch sequence number; `owner` is the
+  // SPECIFIC acquire() call's token (see McpManager.activeAcquireTokens)
+  // that produced this stamp. release() snapshots this per session before it
+  // does anything and compares again once it's safe to act — a changed `seq`
+  // means some OTHER acquire() renewed this exact hold WHILE release() was
+  // running, which release() must not then undo (see release()'s fix
+  // comment for why a plain Set can't tell this apart on its own — adding an
+  // already-present sessionId is a same-membership no-op). `owner` covers a
+  // narrower, later window `seq` alone cannot (Minor 7, fix pass 2026-07-31):
+  // see release()'s "pass 2" fix comment.
+  holderTouch: Map<string, { seq: number; owner: symbol }>;
 }
 
 export class McpManager {
@@ -95,6 +100,31 @@ export class McpManager {
   // running," not to order anything globally. See PooledEntry.holderTouch
   // and release()'s fix comment.
   private touchSeq = 0;
+  // sessionId -> tokens of every acquire() call for that session that is
+  // STILL RUNNING — added at the very top of acquire() (same moment as
+  // `inflightAcquires`) but, unlike `inflightAcquires` (cleared right after
+  // pass 1's registration), only removed in the OUTER `finally`, i.e. after
+  // pass 2 (the connect() waits) has also finished. Fix (Minor 7, 2026-07-31):
+  // `inflightAcquires` alone only protects release() from a registration
+  // that hasn't happened YET — it says nothing about an acquire() that
+  // finished registering (and so is invisible to `inflightAcquires`) but is
+  // still awaiting `entry.connecting` in pass 2. Without this, a release()
+  // landing in exactly that window sees no in-flight registration to wait
+  // for, snapshots a touch that already reflects this acquire()'s OWN stamp
+  // (so the plain seq-comparison below sees no "change" either), and closes
+  // the connection that acquire is about to hand back — the real close()
+  // resets state, so that acquire's pass-2 ready-check then fails and the
+  // server is silently dropped. See release()'s fix comment for the other
+  // half of this fix.
+  //
+  // Value is the token's own "fully settled" promise (resolved in acquire()'s
+  // outer `finally`, right where the token is removed) rather than a bare
+  // Set — release() needs BOTH "is this token still active" (membership) AND
+  // a promise to attach to so a release() that defers can re-run itself once
+  // the owning acquire() finishes, instead of leaving the hold stranded
+  // forever with nothing left to ever call release() on it again. See
+  // release()'s fix comment.
+  private activeAcquireTokens = new Map<string, Map<symbol, Promise<void>>>();
 
   constructor(deps: { registry: McpRegistryLike; connectionFactory: McpConnectionFactory }) {
     this.registry = deps.registry;
@@ -149,6 +179,18 @@ export class McpManager {
       if (idx !== -1) list.splice(idx, 1);
       if (list.length === 0) this.inflightAcquires.delete(sessionId);
     };
+    // Fix (Minor 7) — this token identifies THIS acquire() call, from now
+    // until the outer `finally` below, spanning BOTH passes (unlike
+    // `registered`/`inflightAcquires`, which only cover pass 1). `settled`
+    // resolves at that same finally, so a release() that defers to this
+    // token can chain onto it to re-run itself once this call is done. See
+    // activeAcquireTokens' own comment and release()'s fix comment.
+    const token = Symbol('acquire');
+    let settleToken!: () => void;
+    const settled = new Promise<void>((resolve) => { settleToken = resolve; });
+    const activeForSession = this.activeAcquireTokens.get(sessionId);
+    if (activeForSession) activeForSession.set(token, settled);
+    else this.activeAcquireTokens.set(sessionId, new Map([[token, settled]]));
     try {
       const servers = await this.registry.resolveAllEnabled();
       // Pass 1 — registration, ZERO awaits between servers. ensureConnected()
@@ -168,7 +210,7 @@ export class McpManager {
       // That's a deliberate behavior change, not an accident of the
       // registration-ordering fix above: a hung or slow-to-spawn server no
       // longer blocks every server after it from even starting to connect.
-      const entries = servers.map((server) => this.ensureConnected(server, sessionId));
+      const entries = servers.map((server) => this.ensureConnected(server, sessionId, token));
       settleRegistered();
       clearSelf();
 
@@ -183,6 +225,17 @@ export class McpManager {
             label: entry.server.label,
             tools: entry.conn.listTools(),
             call: (tool, args, signal) => entry.conn.callTool(tool, args, signal),
+          });
+        } else {
+          // Fix (Finding 5): status()/lastError have always been correct —
+          // nothing has ever LOGGED them. A developer with a typo'd command
+          // got no tool, no error dialog, and (until now) no log line either:
+          // the exact silent failure this whole design exists to prevent, and
+          // the reason the dogfood checklist's "confirm the server drops and
+          // is reported" step could never actually pass. One line per
+          // excluded server, naming it and its real (never reworded) error.
+          log('WARN', 'McpManager', 'MCP server excluded from this session — not ready', {
+            sessionId, serverId: entry.server.id, state: entry.conn.state, error: entry.conn.lastError,
           });
         }
       }
@@ -200,6 +253,17 @@ export class McpManager {
       // release() call.
       settleRegistered();
       clearSelf();
+      // Fix (Minor 7): this acquire() call is now FULLY done (pass 1 AND
+      // pass 2) — settle its token's promise (waking any release() that
+      // deferred to it) and remove it, so a release() checking
+      // activeAcquireTokens from here on treats any hold this call stamped
+      // as safe to close.
+      settleToken();
+      const active = this.activeAcquireTokens.get(sessionId);
+      if (active) {
+        active.delete(token);
+        if (active.size === 0) this.activeAcquireTokens.delete(sessionId);
+      }
     }
   }
 
@@ -224,21 +288,53 @@ export class McpManager {
   // has no effect until every current holder releases (or the app
   // restarts) — see status(), which surfaces the real lastError so this
   // isn't silent.
-  private ensureConnected(server: ResolvedMcpServer, sessionId: string): PooledEntry {
+  private ensureConnected(server: ResolvedMcpServer, sessionId: string, token: symbol): PooledEntry {
     let entry = this.pool.get(server.id);
     if (!entry) {
-      const conn = this.connectionFactory(server);
+      // Fix (Finding 6): a server synced from another device without its
+      // secret ciphertext (`missingSecrets`, populated by
+      // McpRegistry.resolveEntry) must NEVER reach connect() — doing so hands
+      // a stdio server a spawned process missing a required env var (or an
+      // http server a request missing a required header), and whatever
+      // opaque auth error the server itself emits reaches the user instead of
+      // a message naming the actual missing secret. mcp-reconciler.ts's
+      // projectToClaudeJson already skips these for Claude Code's OWN
+      // config (`missingSecrets.length > 0` → not projected); this pool must
+      // hold the SAME line for native sessions. Build a synthetic
+      // 'needs-setup' connection instead of ever touching connectionFactory —
+      // McpConnection already HAS a 'needs-setup' state (used for the OAuth
+      // case in mcp-client.ts); this reuses that same state value rather than
+      // inventing a parallel one, so acquire()'s ready-check and status()
+      // both treat it exactly like any other not-ready server.
+      const conn: McpConnectionLike = server.missingSecrets.length > 0
+        ? {
+            state: 'needs-setup',
+            lastError: `${server.label} needs setup — missing secret(s): ${server.missingSecrets.join(', ')}.`,
+            // Never actually invoked (no retry while pooled — see this
+            // method's own "WHY no retry" note above) but kept as a real
+            // no-op so this object satisfies McpConnectionLike structurally.
+            connect: async () => {},
+            listTools: () => [],
+            callTool: async () => ({
+              text: `${server.label} needs setup — missing secret(s): ${server.missingSecrets.join(', ')}.`,
+              isError: true,
+            }),
+            close: async () => {},
+          }
+        : this.connectionFactory(server);
       entry = { server, conn, holders: new Set(), holderTouch: new Map() };
       this.pool.set(server.id, entry);
-      entry.connecting = conn.connect().finally(() => {
-        entry!.connecting = undefined;
-      });
+      if (server.missingSecrets.length === 0) {
+        entry.connecting = conn.connect().finally(() => {
+          entry!.connecting = undefined;
+        });
+      }
     }
     entry.holders.add(sessionId);
     // Stamp this touch regardless of whether sessionId was already a holder
     // — a renewal needs to be observable even though Set#add is a no-op on
     // an already-present member. See PooledEntry.holderTouch / release().
-    entry.holderTouch.set(sessionId, ++this.touchSeq);
+    entry.holderTouch.set(sessionId, { seq: ++this.touchSeq, owner: token });
     return entry;
   }
 
@@ -300,11 +396,37 @@ export class McpManager {
    * Window A/B shape, where the FIRST-ever hold is being established by the
    * very acquire() this call is waiting on) is never in the snapshot, so it
    * is unaffected by this check and is removed/closed as before.
+   *
+   * Fix (Minor 7, pass 2): the `seq` comparison above only catches a renewal
+   * that happens WHILE this call is waiting. It cannot catch one that already
+   * happened BEFORE this call started snapshotting — which is exactly what
+   * happens when an acquire()'s pass 1 (registration) has already run, but
+   * its pass 2 (`await entry.connecting`) has NOT: `inflightAcquires` is
+   * already empty (cleared right after pass 1, see acquire()'s `clearSelf`),
+   * so this release() doesn't wait at all, and `touchAtStart` captures that
+   * acquire's OWN fresh stamp as if it had always been there — no "change" is
+   * ever observed. `activeAcquireTokens` (see its own comment) is what closes
+   * this: it stays populated for the WHOLE acquire() call, through pass 2,
+   * not just pass 1. If the touch currently on an entry was stamped by a
+   * token still in that set, some acquire() call is still actively using
+   * this entry (whether or not IT renewed anything during THIS release()'s
+   * wait) — back off exactly as the seq-renewal case does.
+   *
+   * "Back off" here means defer, not abandon: this release() chains onto
+   * that token's OWN settle promise and re-invokes itself once the owning
+   * acquire() call is fully done (pass 1 AND pass 2). Unlike the plain
+   * seq-renewal case — where some OTHER acquire() is holding this session's
+   * spot and will eventually get its own release() call from whoever owns
+   * THAT session — deferring to your OWN still-running acquire() has nobody
+   * else who is ever going to call release() again for it. Re-invoking
+   * guarantees this entry is still cleaned up (no permanent leak) while
+   * guaranteeing the deferred acquire() gets to actually observe `ready`
+   * before the connection is torn down out from under it.
    */
   async release(sessionId: string): Promise<void> {
-    // Snapshot, per entry this session currently holds, the touch number as
+    // Snapshot, per entry this session currently holds, the touch record as
     // of RIGHT NOW — before any waiting. See the fix comment above.
-    const touchAtStart = new Map<string, number>();
+    const touchAtStart = new Map<string, { seq: number; owner: symbol }>();
     for (const [id, entry] of this.pool) {
       if (entry.holders.has(sessionId)) touchAtStart.set(id, entry.holderTouch.get(sessionId)!);
     }
@@ -315,12 +437,48 @@ export class McpManager {
     }
     for (const [id, entry] of [...this.pool.entries()]) {
       if (!entry.holders.has(sessionId)) continue;
+      const current = entry.holderTouch.get(sessionId)!;
       // Renewed since this call started — leave it, see the fix comment.
-      if (touchAtStart.has(id) && entry.holderTouch.get(sessionId) !== touchAtStart.get(id)) continue;
+      if (touchAtStart.has(id) && current.seq !== touchAtStart.get(id)!.seq) continue;
+      // Fix (Minor 7, pass 2): the owning acquire() call is still running
+      // (through pass 2) — defer to it rather than close now, see the fix
+      // comment above. Fire-and-forget: this release() call must not itself
+      // block on another acquire's connect() to finish. `owningSettled`
+      // never rejects (acquire()'s settleToken() is the only thing that
+      // ever resolves it, from a `finally` — see acquire()'s comment on
+      // `registered` for why the same shape never rejects there either), so
+      // this can never produce an unhandled rejection.
+      const owningSettled = this.activeAcquireTokens.get(sessionId)?.get(current.owner);
+      if (owningSettled) {
+        void owningSettled.then(() => { void this.release(sessionId); });
+        continue;
+      }
       entry.holders.delete(sessionId);
+      // Fix (Minor 8): drop this session's touch record along with its
+      // holder entry. Without this, a pooled entry that outlives many
+      // sessions (a long-lived server everyone shares) accumulates one
+      // {seq, owner} pair per session that ever held it, forever — the
+      // Set/Map equivalent of a listener that's never unsubscribed.
+      entry.holderTouch.delete(sessionId);
       if (entry.holders.size === 0) {
         this.pool.delete(id);
-        await entry.conn.close();
+        // Fix (Minor 9): unguarded — a close() that rejects (the real
+        // McpConnection's never does, but the injected McpConnectionLike
+        // type permits it) would otherwise throw out of this loop and strand
+        // every remaining holder this call has not yet processed. This
+        // connection is already being discarded either way, so a close()
+        // failure here isn't actionable for the caller — log the real error
+        // rather than swallow it silently (error-message-standards.md: never
+        // guess a cause, but a caught teardown failure is legitimately
+        // non-actionable, matching McpConnection.close()'s own best-effort
+        // teardown policy).
+        try {
+          await entry.conn.close();
+        } catch (err) {
+          log('ERROR', 'McpManager', 'closing a released MCP connection failed', {
+            serverId: id, error: String(err),
+          });
+        }
       }
     }
   }

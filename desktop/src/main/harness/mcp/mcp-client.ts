@@ -57,6 +57,17 @@ export interface McpClientLike {
 export type ClientFactory = () => McpClientLike;
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+// Fix (Finding 1): neither `client.connect()` nor `client.listTools()` below
+// thread request options, so the SDK applies its OWN
+// DEFAULT_REQUEST_TIMEOUT_MSEC (60_000ms, hardcoded in protocol.js) to EACH —
+// up to ~120s total — before McpManager.acquire() (which awaits this whole
+// method) would ever return. A server that spawns but never speaks the
+// protocol (wrong entrypoint, blocked on a stdin prompt, an unreachable HTTP
+// host) used to freeze "New session" for up to that long with no spinner
+// text, no error, and no log line. connect() now races both calls against
+// THIS bound instead — well under the SDK's own, so a hung server fails
+// FAST with a message naming both the server and the bound it exceeded.
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 // The SDK's own request timeout (threaded into callTool() below) is the
 // path that normally wins a hung call — it carries proper cleanup
 // (notifications/cancelled, handler teardown). This is only a backstop for
@@ -129,6 +140,7 @@ export class McpConnection {
 
   private readonly clientFactory: ClientFactory;
   private readonly callTimeoutMs: number;
+  private readonly connectTimeoutMs: number;
   private client: McpClientLike | null = null;
   private tools: McpToolDef[] = [];
   // Bounded ring of the piped stdio child's stderr — see buildTransport().
@@ -136,10 +148,11 @@ export class McpConnection {
 
   constructor(
     private readonly server: ResolvedMcpServer,
-    deps?: { clientFactory?: ClientFactory; callTimeoutMs?: number }
+    deps?: { clientFactory?: ClientFactory; callTimeoutMs?: number; connectTimeoutMs?: number }
   ) {
     this.clientFactory = deps?.clientFactory ?? defaultClientFactory;
     this.callTimeoutMs = deps?.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    this.connectTimeoutMs = deps?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
   // Never throws — one broken server must not be able to take down the
@@ -148,11 +161,38 @@ export class McpConnection {
   async connect(): Promise<void> {
     const client = this.clientFactory();
     this.client = client;
+    // Fix (Finding 1): race connect()+listTools() against connectTimeoutMs
+    // rather than awaiting them directly — see DEFAULT_CONNECT_TIMEOUT_MS's
+    // comment for why. `timedOut` resolves (never rejects) with a private
+    // marker object so the race's winner is distinguishable without relying
+    // on error identity across the `Promise.race`.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const TIMED_OUT = Symbol('connect-timeout');
+    const timedOut = new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), this.connectTimeoutMs);
+    });
     try {
       const transport = this.buildTransport();
-      await client.connect(transport);
-      const { tools } = await client.listTools();
-      this.tools = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+      const result = await Promise.race([
+        (async () => {
+          await client.connect(transport);
+          const { tools } = await client.listTools();
+          return tools;
+        })(),
+        timedOut,
+      ]);
+      if (result === TIMED_OUT) {
+        this._state = 'error';
+        this._lastError = `${this.server.label} did not respond within ${this.connectTimeoutMs}ms while connecting.`;
+        // Best-effort: we RACED the SDK's connect()/listTools() call, not
+        // cancelled it — it may still be running in the background. Try to
+        // tear down the abandoned client so a hung server doesn't outlive
+        // this failed attempt; a close() failure here isn't actionable for a
+        // connection we're already discarding.
+        void client.close().catch(() => {});
+        return;
+      }
+      this.tools = result.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
       this._state = 'ready';
       this._lastError = null;
     } catch (err) {
@@ -165,6 +205,8 @@ export class McpConnection {
       }
       this._state = 'error';
       this._lastError = this.describeConnectFailure(err);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

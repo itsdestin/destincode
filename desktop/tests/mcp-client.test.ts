@@ -154,6 +154,33 @@ describe('McpConnection', () => {
     expect(r.text).toContain('ECONNRESET: socket hang up');
   });
 
+  // Regression test for Finding 1: neither connect() nor listTools() threaded
+  // request options, so the SDK's own DEFAULT_REQUEST_TIMEOUT_MSEC (60_000ms)
+  // applied to EACH — a server that spawns but never speaks the protocol
+  // would freeze McpManager.acquire() (and so session creation) for up to
+  // ~120s with no message. This test's fake `connect()` NEVER settles at all,
+  // which the pre-fix code has no bound for whatsoever — it fails only once
+  // connectTimeoutMs is threaded in and raced against the real call.
+  it('bounds a hung connect() so it cannot freeze session creation', async () => {
+    vi.useFakeTimers();
+    const client = fakeClient({ connect: vi.fn(() => new Promise(() => {})) }); // never settles
+    const conn = createConnection(server, { clientFactory: () => client as any, connectTimeoutMs: 2000 });
+    const p = conn.connect();
+    let settled = false;
+    p.then(() => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await p;
+    expect(settled).toBe(true);
+    expect(conn.state).toBe('error');
+    expect(conn.lastError).toContain('Demo');   // names the SERVER
+    expect(conn.lastError).toContain('2000');   // and the bound it exceeded
+    vi.useRealTimers();
+  });
+
   it('marks a tool error result as an error without throwing', async () => {
     const client = fakeClient({ callTool: vi.fn().mockResolvedValue({
       isError: true, content: [{ type: 'text', text: 'query rejected: bad syntax' }],

@@ -84,10 +84,48 @@ function unwrapRefs(raw: unknown): Record<string, string> | undefined {
 // Wrong-shape tolerance: a garbage/corrupt file, or a hand-edited entry
 // missing even an id, reads as "not here" rather than throwing — same policy
 // as NativeHome.readJson treating corrupt JSON as absent.
+//
+// Fix pass (2026-07-31, Findings 3 + 4): this is the READ boundary every
+// production consumer (list()/resolve()/resolveAllEnabled(), and therefore
+// McpManager.acquire() and mcp-reconciler's projection) actually goes
+// through — assertSafeServerId only ever guarded upsert(), which has ZERO
+// production callers (phase 1 is hand-edit-only), so a hand-written
+// mcp.json was reaching every reader with NEITHER guard applied. Two fixes,
+// both at this one boundary:
+//
+// 1. Id safety (Finding 4): reject (read as absent) an id that's empty or
+//    contains "__" — the SAME reserved separator assertSafeServerId already
+//    protects on the write side. Left unguarded here, server `a` with tool
+//    `b__c` and server `a__b` with tool `c` both produce the tool name
+//    `mcp__a__b__c` — a remembered "always allow" for one silently
+//    auto-approves the other, and ensureConnected's pool key collision hands
+//    the second entry the FIRST's connection while double-counting its
+//    budget cost. A rejected entry is a no-op, never a throw — a malformed
+//    hand-edit is a user mistake, not a crash.
+// 2. No-plaintext-secrets (Finding 3): build the returned entry from KNOWN
+//    fields only, instead of spreading `raw` wholesale. `resolveEntry` (below)
+//    spreads THIS function's return value, so a hand-written `env`/`headers`
+//    key sitting in raw JSON used to survive verbatim into
+//    `ResolvedMcpServer.env`/`.headers` and reach both `buildTransport`
+//    (mcp-client.ts) and `buildRegistryServerConfig` (mcp-reconciler.ts) —
+//    the ONLY way (upsert() has no caller) to configure a secret-bearing
+//    server today, and it worked completely silently, defeating the one
+//    invariant the whole envRefs/headerRefs split exists to protect: a
+//    synced `~/.youcoded/mcp.json` never carries secret plaintext. Listing
+//    only the known fields means an extra `env`/`headers` key is simply
+//    dropped here — inert by construction, not merely "not the intended
+//    path" (see docs/native-runtime.md — phase 1 cannot configure a
+//    secret-bearing server at all; that is a documented limitation, not an
+//    oversight).
 function fromStored(raw: unknown): McpServerEntry | null {
   if (!isPlainObject(raw) || typeof raw.id !== 'string') return null;
+  if (raw.id.length === 0 || raw.id.includes('__')) return null;
   return {
-    ...(raw as unknown as McpServerEntry),
+    id: raw.id,
+    label: raw.label as McpServerEntry['label'],
+    enabled: raw.enabled as McpServerEntry['enabled'],
+    transport: raw.transport as McpServerEntry['transport'],
+    origin: raw.origin as McpServerEntry['origin'],
     envRefs: unwrapRefs(raw.envRefs),
     headerRefs: unwrapRefs(raw.headerRefs),
   };
@@ -117,9 +155,19 @@ export class McpRegistry {
     const servers = data?.servers;
     if (!Array.isArray(servers)) return [];
     const out: McpServerEntry[] = [];
+    // Fix pass (Finding 4): dedupe by id, keeping the FIRST occurrence. A
+    // duplicate id reaching resolveAllEnabled() would make ensureConnected
+    // (mcp-manager.ts) hand the SECOND entry the FIRST's pooled connection —
+    // its own transport silently ignored while its budget cost is still
+    // counted twice in syncMcpTools. A hand-edited mcp.json is the only way
+    // this can happen (no write path produces duplicates); reading only the
+    // first is a no-op fix, never a throw.
+    const seen = new Set<string>();
     for (const raw of servers) {
       const entry = fromStored(raw);
-      if (entry) out.push(entry);
+      if (!entry || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      out.push(entry);
     }
     return out;
   }

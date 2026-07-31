@@ -43,6 +43,7 @@ import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
 import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
 import type { ReadyServer } from './mcp/mcp-manager';
+import { log } from '../logger';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -514,6 +515,13 @@ export class HarnessSession extends EventEmitter {
         // server — so the recorded list must cover the whole remaining tail,
         // or the UI would under-report what the user actually lost.
         this._droppedMcpServers = servers.slice(i).map((s) => s.id);
+        // Fix (Finding 5): droppedMcpServers has had zero non-test consumers
+        // since it was written — a UI reading it is still a later task, but
+        // until one exists this is the ONLY place a dropped-for-budget server
+        // is observable at all. One line naming the whole dropped tail.
+        log('WARN', 'HarnessSession', 'MCP server(s) dropped from this session — over the tool budget', {
+          sessionId: this.opts.sessionId, droppedServerIds: this._droppedMcpServers, mcpToolBudgetTokens: this.profile.mcpToolBudgetTokens,
+        });
         break;
       }
       spent += cost;

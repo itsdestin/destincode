@@ -170,6 +170,76 @@ describe('McpRegistry', () => {
     expect(order).toEqual(['secrets.delete', 'mutateJson']);
   });
 
+  // Regression test for Finding 3: fromStored() used to spread `raw`
+  // wholesale, so a hand-written plaintext `env`/`headers` key sitting in
+  // ~/.youcoded/mcp.json (upsert() has no production caller, so hand-editing
+  // was the ONLY way to configure a secret-bearing server) survived verbatim
+  // into list()'s output and, via resolveEntry's spread, into
+  // ResolvedMcpServer.env/.headers — reaching mcp-client's buildTransport and
+  // mcp-reconciler's buildRegistryServerConfig. That is exactly the plaintext
+  // leak the envRefs/headerRefs split exists to prevent for a file that syncs
+  // across devices. Fails on the pre-fix spread (env survives); passes once
+  // fromStored builds the entry from known fields only.
+  it('a hand-written plaintext env key never reaches list() or resolve()', async () => {
+    const home = fakeHome(); const secrets = fakeSecrets();
+    // Simulate a hand-edit: write mcp.json directly, bypassing upsert()
+    // entirely (which never lets this happen) with a raw `env` field.
+    home.files.set('mcp.json', {
+      servers: [{
+        id: 'gmail', label: 'Gmail', enabled: true,
+        transport: { type: 'stdio', command: 'npx', args: ['gmail-mcp'] },
+        origin: { kind: 'user' },
+        env: { GMAIL_TOKEN: 'hand-written-plaintext-secret' },
+      }],
+    });
+    const reg = new McpRegistry(home, secrets);
+
+    const listed = reg.list();
+    expect(listed).toHaveLength(1);
+    expect((listed[0] as any).env).toBeUndefined();
+    expect(JSON.stringify(listed[0])).not.toContain('hand-written-plaintext-secret');
+
+    const resolved = await reg.resolve('gmail');
+    expect(resolved?.env).toBeUndefined();
+    expect(JSON.stringify(resolved)).not.toContain('hand-written-plaintext-secret');
+  });
+
+  // Regression tests for Finding 4: assertSafeServerId only ever guarded
+  // upsert() (zero production callers) — list()/resolve()/resolveAllEnabled()
+  // are what every production consumer (McpManager.acquire(), the Claude Code
+  // projection) actually reads, and NEITHER guard applied there before this
+  // fix. An id containing "__" would make two different servers' tool names
+  // collide (mcp__{server}__{tool}), silently merging their remembered
+  // "always allow" grants; a duplicate id would make ensureConnected hand the
+  // SECOND entry the FIRST's pooled connection.
+  it('an id containing the reserved "__" separator is rejected on the read path, not just on upsert()', () => {
+    const home = fakeHome(); const secrets = fakeSecrets();
+    home.files.set('mcp.json', {
+      servers: [{
+        id: 'a__b', label: 'Bad', enabled: true,
+        transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' },
+      }],
+    });
+    const reg = new McpRegistry(home, secrets);
+    // Rejected entry reads as absent — never a throw (a malformed hand-edit
+    // is a user mistake, not a crash).
+    expect(reg.list()).toEqual([]);
+  });
+
+  it('duplicate ids in a hand-edited file collapse to the first occurrence', () => {
+    const home = fakeHome(); const secrets = fakeSecrets();
+    home.files.set('mcp.json', {
+      servers: [
+        { id: 'gmail', label: 'First', enabled: true, transport: { type: 'stdio', command: 'a' }, origin: { kind: 'user' } },
+        { id: 'gmail', label: 'Second', enabled: true, transport: { type: 'stdio', command: 'b' }, origin: { kind: 'user' } },
+      ],
+    });
+    const reg = new McpRegistry(home, secrets);
+    const listed = reg.list();
+    expect(listed).toHaveLength(1);
+    expect(listed[0].label).toBe('First');
+  });
+
   it('is a no-op (not a throw) when removing a nonexistent id', async () => {
     // WHY: remove() is invoked from UI flows where the id may already be
     // gone (double-click, stale list refresh) — throwing here would surface

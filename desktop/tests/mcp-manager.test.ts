@@ -267,6 +267,146 @@ describe('McpManager', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  // Regression test for Finding 6: mcp-reconciler.ts's projectToClaudeJson
+  // already skips a server with missingSecrets (a synced entry whose secret
+  // ciphertext isn't on THIS device) so Claude Code never sees it — but
+  // McpManager.acquire() connected it anyway with a partial env/headers
+  // object, handing a real subprocess a missing token and surfacing whatever
+  // opaque auth error IT emits instead of a message naming the actual
+  // missing secret. Fails on the pre-fix code (connect IS called); passes
+  // once ensureConnected treats missingSecrets as needs-setup without ever
+  // touching connectionFactory.
+  it('a server with missingSecrets is never connected and reports needs-setup naming the key', async () => {
+    const connect = vi.fn();
+    const registry = {
+      resolveAllEnabled: async () => ([
+        {
+          id: 'gmail', label: 'Gmail', enabled: true,
+          transport: { type: 'stdio', command: 'npx', args: ['gmail-mcp'] },
+          origin: { kind: 'user' }, missingSecrets: ['GMAIL_TOKEN'],
+        },
+      ] as any),
+    };
+    // A connectionFactory that WOULD prove the bug if ever invoked — asserted
+    // never-called below rather than merely unused, so a regression that
+    // calls it is caught even if its behavior happens to look harmless.
+    const connectionFactory = () => ({
+      state: 'ready' as const, lastError: null,
+      connect: async () => { connect(); },
+      listTools: () => [{ name: 'search', inputSchema: { type: 'object' } }],
+      callTool: async () => ({ text: 'ok', isError: false }),
+      close: async () => {},
+    });
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+
+    const ready = await mgr.acquire('s1');
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(ready).toEqual([]); // excluded from the ready list, same as any other not-ready server
+    const status = mgr.status().find((s) => s.id === 'gmail');
+    expect(status?.state).toBe('needs-setup');
+    expect(status?.error).toContain('GMAIL_TOKEN');
+  });
+
+  // Regression test for Minor 7 (Finding 7 in the fix-pass review): every
+  // OTHER test in this file hardcodes `state: 'ready' as const` on its fake
+  // connection — which is exactly why this exact bug was invisible to the
+  // suite before this fix: with a hardcoded state, pass 2's
+  // `entry.conn.state === 'ready'` check can never observe the effect of a
+  // premature close(). This fake's `state` actually TRANSITIONS
+  // (idle -> ready -> idle) the same way the real McpConnection does.
+  //
+  // Scenario: acquire('s1') registers (pass 1) and is then stuck in pass 2
+  // awaiting connect(). A release('s1') lands in exactly that window — e.g.
+  // the OUTGOING instance of a resumed session being torn down under the
+  // same reused id, while the INCOMING instance's acquire() is still
+  // connecting. `inflightAcquires` is already empty by this point (cleared
+  // right after pass 1), so pre-fix, release() sees no reason to wait and
+  // closes the connection immediately — the real close() resets state, so
+  // pass 2's ready-check then reads 'idle', not 'ready', and the server is
+  // silently dropped from what THIS acquire() hands back. Fails on the
+  // pre-fix code (ready comes back empty); passes once release() defers to
+  // the still-active acquire() instead of closing immediately.
+  it('a release() racing an acquire() still in pass 2 does not close the connection out from under it', async () => {
+    let state: 'idle' | 'ready' = 'idle';
+    let closed = false;
+    let resolveConnect: () => void = () => {};
+    const closeCalls: number[] = [];
+    const registry = {
+      resolveAllEnabled: async () => ([
+        { id: 'demo', label: 'Demo', enabled: true, transport: { type: 'stdio', command: 'node' },
+          origin: { kind: 'user' }, missingSecrets: [] },
+      ] as any),
+    };
+    const connectionFactory = () => ({
+      get state() { return state; },
+      lastError: null as string | null,
+      // A close() that lands WHILE connect() is still in flight tears down
+      // the underlying transport — a real subprocess/HTTP connection killed
+      // mid-handshake does not go on to report success. Modeled here as
+      // "closed wins": if close() ran first, the pending connect() no longer
+      // flips state to 'ready'. (The real McpConnection.connect() has no
+      // such guard today — a separate, narrower gap this fix does not
+      // touch — so this fake's whole point is to make premature-close
+      // observable at the McpManager level regardless of that gap.)
+      connect: () => new Promise<void>((r) => { resolveConnect = () => { if (!closed) state = 'ready'; r(); }; }),
+      listTools: () => [{ name: 'search', inputSchema: { type: 'object' } }],
+      callTool: async () => ({ text: 'ok', isError: false }),
+      close: async () => { closed = true; state = 'idle'; closeCalls.push(closeCalls.length + 1); },
+    });
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+
+    // acquire('s1') runs past resolveAllEnabled() and pass 1's registration
+    // (which is synchronous), landing on `await entry.connecting` in pass 2 —
+    // connect() has NOT resolved yet.
+    const acquiring = mgr.acquire('s1');
+    await new Promise<void>((r) => setImmediate(r));
+
+    // release('s1') races it, exactly in the window inflightAcquires cannot
+    // see (pass 1 already finished registering and cleared itself).
+    const releasing = mgr.release('s1');
+
+    resolveConnect();
+    const [ready] = await Promise.all([acquiring, releasing]);
+    // Let the deferred re-release (chained onto acquire's own settle
+    // promise) finish running before asserting on it.
+    await new Promise<void>((r) => setImmediate(r));
+
+    // THE regression: pass 2 must have observed state === 'ready' — i.e.
+    // close() must NOT have run yet — at the moment it decided whether to
+    // include this server.
+    expect(ready.map((r) => r.id)).toEqual(['demo']);
+    // Not a leak either: the deferred release() still closes it once the
+    // owning acquire() is done using it.
+    expect(closeCalls.length).toBe(1);
+  });
+
+  // Regression test for Minor 9: `await entry.conn.close()` in release()'s
+  // holder-clearing loop was unguarded — a close() that rejects (the real
+  // McpConnection's never does, but the injected McpConnectionLike type
+  // permits it) would throw OUT of the loop, stranding every remaining
+  // holder release() had not yet reached in the SAME call. Fails on the
+  // pre-fix code (release() rejects, and the second server's close() is
+  // never even attempted); passes once the close() call is wrapped in its
+  // own try/catch.
+  it('a close() that rejects for one server does not strand the others in the same release() call', async () => {
+    const closeGood = vi.fn();
+    const registry = {
+      resolveAllEnabled: async () => ([
+        { id: 'bad', label: 'Bad', enabled: true, transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' }, missingSecrets: [] },
+        { id: 'good', label: 'Good', enabled: true, transport: { type: 'stdio', command: 'y' }, origin: { kind: 'user' }, missingSecrets: [] },
+      ] as any),
+    };
+    const connectionFactory = (s: any) => s.id === 'bad'
+      ? { state: 'ready' as const, lastError: null, connect: async () => {}, listTools: () => [], callTool: async () => ({ text: '', isError: false }), close: async () => { throw new Error('close failed'); } }
+      : { state: 'ready' as const, lastError: null, connect: async () => {}, listTools: () => [], callTool: async () => ({ text: '', isError: false }), close: async () => { closeGood(); } };
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+
+    await mgr.acquire('s1');
+    await expect(mgr.release('s1')).resolves.toBeUndefined();
+    expect(closeGood).toHaveBeenCalledTimes(1);
+  });
+
   it('a failing server does not prevent healthy ones from being returned', async () => {
     const registry = { resolveAllEnabled: async () => ([
       { id: 'bad', label: 'Bad', enabled: true, transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' }, missingSecrets: [] },

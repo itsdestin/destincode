@@ -190,6 +190,25 @@ budget-gated session wiring, and projection into Claude Code's `~/.claude.json` 
   hand-editing `~/.youcoded/mcp.json` — developer-operable only, per the design spec's own
   phasing. The registry is read only in the main process; nothing crosses to the renderer, so
   `ipc-channels.test.ts` has no `mcp:*` row to pin — its absence is not an oversight.
+- **Phase 1 cannot configure a secret-bearing server at all.** `McpRegistry.upsert()` — the ONLY
+  path that produces a `secretRef` — has zero production callers, so hand-editing a raw
+  `env`/`headers` key straight into `~/.youcoded/mcp.json` was, before a fix pass, the one way to
+  make a token-requiring server (Gmail, any OAuth-style API) work — and it worked by leaking
+  plaintext into the synced registry file, exactly the failure mode envRefs/headerRefs exists to
+  prevent. `fromStored()` (`mcp-registry.ts`) now builds a server entry from known fields only, so
+  a hand-written `env`/`headers` key is inert (silently dropped, never reaches `resolveEntry`'s
+  spread). Net effect: a stdio/http server needing a secret genuinely cannot be configured by hand
+  in phase 1 — it needs `upsert()`, which needs a settings UI, which is phase 2. Not a regression
+  (there was never a SAFE way to do this), but worth stating plainly since the unsafe way used to
+  quietly work.
+- **A server excluded from a session (not ready, over budget, or missing its secret) is now
+  logged, but still has no UI.** `McpManager.acquire()` logs one `WARN` per server it excludes
+  (naming the server and its real `lastError`) and `HarnessSession.syncMcpTools()` logs one for
+  the whole dropped-for-budget tail — closing the gap where `status()`/`droppedMcpServers` were
+  both accurate and completely unobserved (zero production callers of either). This is a
+  `~/.claude/desktop.log` line, not a user-facing surface: no toast, no session banner, no
+  settings-panel indicator exists yet. A developer can now grep the log for why a server never
+  showed up; an end user still can't tell from inside the app.
 
 **A leaked-subprocess caveat, app-wide and pre-existing — not MCP-specific.**
 `McpManager.destroyAll()` runs from `NativeSessionHost.destroyAll()`, which the app reaches only

@@ -6,6 +6,7 @@ import { listInstalledPluginDirs } from './claude-code-registry';
 import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { McpRegistry, type ResolvedMcpServer } from './harness/mcp/mcp-registry';
+import { log } from './logger';
 
 /**
  * MCP Reconciler (decomposition v3 §9.3; native MCP phase 1, Task 7)
@@ -109,11 +110,35 @@ function listManifests(): Array<{ entries: McpManifestEntry[]; pluginRoot: strin
   return out;
 }
 
-function readClaudeJson(): ClaudeJson {
+// Fix (Finding 2, 2026-07-31): "absent" and "present but unreadable" are NOT
+// the same thing, and the old catch-all `catch { return {}; }` treated them
+// identically. `~/.claude.json` is Destin's LIVE Claude Code config — 59
+// top-level keys, project history, onboarding state — and the caller below
+// (reconcileMcp) writes `projected` back out whenever `mcpServers`/ownership
+// differ from what it read. With a non-empty registry, an unreadable file
+// (corrupt JSON from a partial write, EACCES, a read racing an external
+// writer) reading as `{}` makes EVERY key look "changed" — the file gets
+// atomically REPLACED with a bare `{mcpServers, _youcodedOwnedMcpServers}`
+// skeleton, irrecoverably losing everything else, on every launch and every
+// plugin install. Returning `null` here (never a throw — this must not crash
+// launch) signals "abort, don't write" to the caller instead. Takes an
+// explicit path (rather than reading the module-level CLAUDE_JSON constant)
+// so tests can exercise this exact absent-vs-unreadable distinction against a
+// temp file — never the real file.
+export function readClaudeJsonFrom(filePath: string): ClaudeJson | null {
+  if (!fs.existsSync(filePath)) return {};
   try {
-    if (!fs.existsSync(CLAUDE_JSON)) return {};
-    return JSON.parse(fs.readFileSync(CLAUDE_JSON, 'utf8'));
-  } catch { return {}; }
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    log('ERROR', 'mcp-reconciler', 'unable to read an existing ~/.claude.json — aborting MCP reconcile rather than risk overwriting it', {
+      path: filePath, error: String(err),
+    });
+    return null;
+  }
+}
+
+function readClaudeJson(): ClaudeJson | null {
+  return readClaudeJsonFrom(CLAUDE_JSON);
 }
 
 function writeClaudeJsonAtomic(data: ClaudeJson): void {
@@ -264,11 +289,25 @@ export interface ReconcileMcpResult {
    *  case; a non-empty list is worth logging so a collision doesn't go
    *  unnoticed even though phase 1 has no UI to surface it yet. */
   skippedCollisions: string[];
+  /** Fix (Finding 2): true when ~/.claude.json existed but could not be read
+   *  (corrupt JSON, EACCES, a partial read racing an external writer) — the
+   *  reconcile aborted WITHOUT writing anything, real cause already logged by
+   *  readClaudeJsonFrom. Every other field is the zero-work default in this
+   *  case (manifests are scanned above the read, so manifestCount can still
+   *  be non-zero even though nothing was written). */
+  aborted: boolean;
 }
 
 export async function reconcileMcp(): Promise<ReconcileMcpResult> {
   const manifests = listManifests();
   const claudeJson = readClaudeJson();
+  if (claudeJson === null) {
+    // Fix (Finding 2): abort rather than proceed from `{}` — see
+    // readClaudeJsonFrom's comment. Returning a result (never throwing) keeps
+    // this from blocking the rest of app startup / a plugin install, which
+    // both call reconcileMcp() and only log its outcome.
+    return { added: 0, skippedPlatform: 0, skippedManual: 0, manifestCount: manifests.length, skippedCollisions: [], aborted: true };
+  }
   const servers = (claudeJson.mcpServers as Record<string, unknown>) || {};
 
   let added = 0;
@@ -317,5 +356,5 @@ export async function reconcileMcp(): Promise<ReconcileMcpResult> {
   if (manifestChanged || mcpServersChanged || ownershipChanged) {
     writeClaudeJsonAtomic(projected);
   }
-  return { added, skippedPlatform, skippedManual, manifestCount: manifests.length, skippedCollisions };
+  return { added, skippedPlatform, skippedManual, manifestCount: manifests.length, skippedCollisions, aborted: false };
 }
