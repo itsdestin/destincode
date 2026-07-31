@@ -15,22 +15,6 @@ const VIEWS = [
   { value: 'tools', label: 'tool gallery' },
 ];
 
-// Design variants under active comparison. Each entry drives a `dv_<key>` query
-// param that a production component reads through utils/design-variant.ts. This
-// list is meant to SHRINK — an entry here is an unresolved design question, and
-// picking a winner means deleting the losing branch, the entry, and eventually
-// design-variant.ts itself.
-const DESIGN_VARIANTS: { key: string; label: string; options: { value: string; label: string }[] }[] = [
-  {
-    key: 'organize',
-    label: 'Organize UI',
-    options: [
-      { value: 'popover', label: 'popover (⋯)' },
-      { value: 'tabs', label: 'tabs in card' },
-      { value: 'inline', label: 'inline chips' },
-    ],
-  },
-];
 
 export interface WorkbenchToolbarProps {
   narrow: boolean;
@@ -110,21 +94,6 @@ export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchTo
           onChange={(next) => { setLatency(Number(next)); setLatencyState(next); }}
         />
       </label>
-
-      {/* One switcher per unresolved design question. Reloads like Scenario
-          does — the surfaces read their variant once, at module load. */}
-      {DESIGN_VARIANTS.map((v) => (
-        <label key={v.key} className="flex items-center gap-1.5 text-3xs text-fg-muted">
-          {v.label}
-          <Select
-            size="sm"
-            aria-label={v.label}
-            value={new URLSearchParams(location.search).get(`dv_${v.key}`) ?? v.options[0].value}
-            options={v.options}
-            onChange={(next) => reloadWith(`dv_${v.key}`, next)}
-          />
-        </label>
-      ))}
 
       <span className="text-3xs text-fg-faint">
         Themes: Settings → Appearance

@@ -17,27 +17,10 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
+import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
-import { SegmentedTabs } from './ui';
-import { designVariant } from '../utils/design-variant';
-
-// Three candidate designs for where flags/tags/note live, switchable in the
-// workbench toolbar so they can be compared against real data. All three
-// present the SAME controls over the same store writes; only the container
-// differs. See utils/design-variant.ts for how the switch works and how to
-// finalize.
-//
-//   popover — a "⋯" on each card opens a floating panel. Organizing never
-//             requires expanding, and works on rows that can't be resumed here.
-//   tabs    — the expanded card gets Resume | Organize tabs. Nothing floats,
-//             nothing new on the collapsed row, but you must expand first.
-//   inline  — no menu. Flags and tags are toggle chips on one line inside the
-//             expanded card, the note is a single field under them. Fewest
-//             clicks, most weight in the card itself.
-const ORGANIZE_VARIANTS = ['popover', 'tabs', 'inline'] as const;
-type OrganizeVariant = typeof ORGANIZE_VARIANTS[number];
 
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
@@ -166,16 +149,15 @@ function useDropdownReposition(
   }, [isOpen, triggerRef, dropdownWidthPx, setPosition]);
 }
 
-// FlagName is imported from resume-browser-filters.ts (single source of truth).
-// Kept in sync with SESSION_FLAG_NAMES in shared/types.ts; that module is
-// CommonJS so we don't import it directly. FLAG_ORDER fixes the reserved-flag
-// toggle ordering in the UI (Priority first, then Complete). The old
-// informational flag is retired; custom tags are handled separately now.
-const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
-const FLAG_LABEL: Record<FlagName, string> = {
-  priority: 'Priority',
-  complete: 'Complete',
-};
+// FlagName is imported from resume-browser-filters.ts (single source of truth),
+// kept in sync with SESSION_FLAG_NAMES in shared/types.ts (that module is
+// CommonJS so we don't import it directly).
+//
+// The FLAG_ORDER / FLAG_LABEL pair that used to live here is gone: neither
+// reserved flag renders as a generic "flag" any more. Priority is a built-in
+// TAG (built-in-tags.ts) and Complete is the card's hide icon, so each carries
+// its own label at its own call site and a shared ordered list had nothing to
+// order.
 
 interface PastSession {
   sessionId: string;
@@ -295,9 +277,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // they moved out here. Side effect worth having: you can now tag or complete a
   // conversation WITHOUT expanding it, including rows that can't be resumed on
   // this device at all.
-  const organizeVariant: OrganizeVariant = designVariant('organize', 'popover', ORGANIZE_VARIANTS);
-  // Which pane an expanded card is showing — 'tabs' variant only.
-  const [expandedTab, setExpandedTab] = useState<'resume' | 'organize'>('resume');
   const [organizeId, setOrganizeId] = useState<string | null>(null);
   const [organizePos, setOrganizePos] = useState<{ top: number; left: number } | null>(null);
   const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -554,9 +533,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
       setNativeResumeBinding(null);
-      // A newly opened card always lands on Resume — that's what expanding a
-      // row is for. ('tabs' variant only; inert elsewhere.)
-      setExpandedTab('resume');
     }
   };
 
@@ -606,43 +582,28 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // (globals.css:951), and an opacity modifier emits `bg-inset/50` — a
   // different class the cascade does not match, so it would have gone
   // translucent on wallpaper themes.
-  // Flags, tags and note — the SAME controls every variant shows, so switching
-  // designs never changes what you can do, only where it sits. Used by the
-  // 'popover' and 'tabs' variants; 'inline' uses the compact chip form below.
+  // Tags and note. There is no separate "Flags" section any more: Priority is
+  // listed as a built-in TAG (it reads as a label you apply, because that is
+  // what it is to the user — see built-in-tags.ts), and Complete moved out of
+  // this popover entirely onto the card's hide icon, since marking something
+  // done is a one-click action that shouldn't cost opening a menu.
   const renderOrganizeControls = (s: PastSession) => (
     <>
-      {/* Flags as checkable rows rather than the old segmented button pair —
-          they read as the same KIND of thing as the tags beneath them, which
-          they are. They keep their own section because they drive sorting
-          (Priority pins to top) and filtering (Complete hides the row). */}
-      <div className="flex flex-col gap-0.5">
-        {FLAG_ORDER.map((flag) => {
-          const active = !!s.flags?.[flag];
-          return (
-            <button
-              key={flag}
-              type="button"
-              onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-              aria-pressed={active}
-              className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset text-left text-xs text-fg-2"
-            >
-              <span className={`w-3 h-3 shrink-0 rounded-sm border ${active ? 'bg-accent border-accent' : 'border-edge'}`} />
-              <span className="flex-1">{FLAG_LABEL[flag]}</span>
-              <span className="text-4xs text-fg-muted">
-                {flag === 'priority' ? 'pins to top' : 'hides from list'}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="border-t border-edge-dim pt-2" onClick={(e) => e.stopPropagation()}>
+      <div onClick={(e) => e.stopPropagation()}>
         <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
         <TagPicker
           appliedIds={new Set(s.tags ?? [])}
           onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
           registry={registry}
           onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
+          builtIns={[{
+            tag: PRIORITY_TAG,
+            hint: PRIORITY_HINT,
+            applied: !!s.flags?.priority,
+            // Stored as a flag, not a registry tag — the sort reads one known
+            // key rather than scanning a user-editable list.
+            onToggle: (next) => toggleFlag(s.sessionId, 'priority', next),
+          }]}
         />
       </div>
 
@@ -653,72 +614,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     </>
   );
 
-  // 'inline' variant: everything above compressed onto one chip line plus a
-  // note field, sitting inside the expanded card. No labelled sections, no
-  // separate surface — you edit the metadata where the card already shows it.
-  const renderInlineOrganize = (s: PastSession) => {
-    const applied = s.tags ?? [];
-    return (
-      <div className="flex flex-col gap-1.5 pt-1" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-1 flex-wrap">
-          {FLAG_ORDER.map((flag) => {
-            const active = !!s.flags?.[flag];
-            return (
-              <button
-                key={flag}
-                type="button"
-                onClick={() => toggleFlag(s.sessionId, flag, !active)}
-                aria-pressed={active}
-                className={`px-2 py-0.5 rounded-full text-2xs border transition-colors ${
-                  active ? 'bg-accent/10 border-accent/40 text-fg' : 'bg-inset border-edge-dim text-fg-muted hover:text-fg'
-                }`}
-              >
-                {FLAG_LABEL[flag]}
-              </button>
-            );
-          })}
-          {/* Applied tags are removable in place — clicking the chip unapplies
-              it, which is the direct-manipulation move this variant is testing. */}
-          {applied.map((id) => {
-            const t = registry.byId.get(id);
-            if (!t) return null;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => toggleTag(s.sessionId, id, false)}
-                title={`Remove ${t.label}`}
-                className="px-2 py-0.5 rounded-full text-2xs border border-edge-dim bg-inset text-fg-2 hover:border-edge flex items-center gap-1"
-              >
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: `var(--${t.color})` }} />
-                {t.label}
-                <span className="text-fg-faint">×</span>
-              </button>
-            );
-          })}
-          {/* Opens the SAME popover machinery the 'popover' variant uses, but
-              scoped to the tag picker alone. */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (organizeId === s.sessionId) { setOrganizeId(null); return; }
-              organizeTriggerRef.current = e.currentTarget;
-              setOrganizePos(measureAnchored(e.currentTarget, 256));
-              setOrganizeId(s.sessionId);
-            }}
-            aria-haspopup="dialog"
-            aria-expanded={organizeId === s.sessionId}
-            className="px-2 py-0.5 rounded-full text-2xs border border-dashed border-edge text-fg-muted hover:text-fg"
-          >
-            + Tag
-          </button>
-        </div>
-        <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} placeholder="Add a note…" />
-      </div>
-    );
-  };
-
   // The expanded panel answers ONE question: how do I relaunch this? Model,
   // the two launch toggles, Resume. Flags/tags/note used to be stacked in here
   // too, which is what made an open card a seven-field form with its primary
@@ -727,21 +622,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   return (
     <div className="border-t border-edge-dim">
       <div className="p-3 flex flex-col gap-2">
-        {/* 'tabs' variant: the card holds both jobs and you choose which one
-            you're doing, instead of one floating away into a popover. */}
-        {organizeVariant === 'tabs' && (
-          <div onClick={(e) => e.stopPropagation()}>
-            <SegmentedTabs
-              variant="contained"
-              aria-label="Card section"
-              tabs={[{ id: 'resume', label: 'Resume' }, { id: 'organize', label: 'Organize' }]}
-              value={expandedTab}
-              onChange={(id) => setExpandedTab(id as 'resume' | 'organize')}
-            />
-          </div>
-        )}
-        {organizeVariant === 'tabs' && expandedTab === 'organize' ? renderOrganizeControls(s) : (
-        <>
         {/* ONE model control for both runtimes. Was two: a Claude alias button
             row here and a separate native picker below, which is the duplication this
             picker exists to end. The list is SCOPED to the row's own runtime —
@@ -802,10 +682,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         )}
 
-        {/* 'inline' variant: metadata sits with the launch controls, above the
-            button, as chips rather than three labelled sections. */}
-        {organizeVariant === 'inline' && renderInlineOrganize(s)}
-
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}
         {(() => {
@@ -830,8 +706,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             </Button>
           );
         })()}
-        </>
-        )}
       </div>
     </div>
   );
@@ -927,11 +801,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {formatRelativeTime(s.lastModified)}
             </span>
           </div>
-          {/* Reserved-flag indicators + custom-tag chips, AFTER the name. */}
-          {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
+          {/* Tag chips after the name. Priority is FIRST and rendered with the
+              same TagChip as everything else — it is a built-in tag, not a
+              separate species of label (built-in-tags.ts). Complete has no chip:
+              its state is the hide icon on the right of this row. */}
+          {(s.flags?.priority || (s.tags && s.tags.length > 0) || s.note) && (
             <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-              {s.flags?.priority && <span className="text-4xs text-accent" title="Priority">Priority</span>}
-              {s.flags?.complete && <span className="text-4xs text-fg-muted" title="Complete">Complete</span>}
+              {s.flags?.priority && <TagChip tag={PRIORITY_TAG} />}
               {(s.tags ?? []).map((id) => {
                 const t = registry.byId.get(id);
                 return t ? <TagChip key={id} tag={t} /> : null;
@@ -959,14 +835,51 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           )}
         </div>
       </button>
-      {/* Organize: flags, tags, note. Always visible rather than hover-revealed
-          — a hover-only affordance is invisible on touch and undiscoverable on
-          desktop, and in this variant it is the ONLY route to tagging. Rendered
-          for inert rows too: the metadata is Conversation Store-backed, so a
-          conversation synced in from another device can be organized here even
-          though it can't be resumed on this one. That reach is what the other
-          two variants give up by living inside the expanded card. */}
-      {organizeVariant === 'popover' && (
+      {/* Complete — the classic "hide" eye-with-a-slash, because that is what
+          Complete DOES here: the row drops out of the list unless Show Complete
+          is on. It sits on the card rather than inside the Organize popover
+          because finishing with a conversation is a one-click action, and
+          costing a menu-open for it is what made the old flag row feel buried.
+          Hover copy is a question ("Mark this session complete?") so the icon
+          reads as an action, not a status badge. */}
+      {(() => {
+        const done = !!s.flags?.complete;
+        return (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, 'complete', !done); }}
+            aria-pressed={done}
+            title={done ? 'Marked complete — hidden unless Show Complete is on. Click to undo.' : 'Mark this session complete?'}
+            aria-label={done ? `Mark ${s.name} not complete` : `Mark ${s.name} complete`}
+            className={`shrink-0 pl-1 pr-0.5 pt-3 flex items-start focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
+            }`}
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              {done ? (
+                // Struck-through eye = hidden. The slash is the state.
+                <>
+                  <path d="M9.9 4.24A9.1 9.1 0 0112 4c5 0 9 5 9 5a15.5 15.5 0 01-2.8 3.24M6.6 6.6A15.6 15.6 0 003 9s4 5 9 5a9 9 0 003.4-.66" />
+                  <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+                  <path d="M3 3l18 18" />
+                </>
+              ) : (
+                // Plain eye = currently visible; clicking hides it.
+                <>
+                  <path d="M3 9s4-5 9-5 9 5 9 5-4 5-9 5-9-5-9-5z" />
+                  <circle cx="12" cy="9" r="2.5" />
+                </>
+              )}
+            </svg>
+          </button>
+        );
+      })()}
+      {/* Organize: tags and note. Always visible rather than hover-revealed —
+          a hover-only affordance is invisible on touch and undiscoverable on
+          desktop, and this is the ONLY route to tagging. Rendered for inert
+          rows too: the metadata is Conversation Store-backed, so a conversation
+          synced in from another device can be organized here even though it
+          can't be resumed on this one. */}
       <button
         type="button"
         onClick={(e) => {
@@ -990,7 +903,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />
         </svg>
       </button>
-      )}
       </div>
       {isExpanded && renderExpandedOptions(s)}
       </div>
@@ -1236,18 +1148,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             role="dialog"
             aria-label={`Organize ${s.name}`}
           >
-            {/* Body depends on the variant. 'popover' is the full set;
-                'inline' opens this same popover from its "+ Tag" chip and only
-                needs the picker, because the flags and the note are already
-                editable in the card. */}
-            {organizeVariant === 'inline' ? (
-              <TagPicker
-                appliedIds={new Set(s.tags ?? [])}
-                onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
-                registry={registry}
-                onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
-              />
-            ) : renderOrganizeControls(s)}
+            {renderOrganizeControls(s)}
           </div>,
           document.body,
         );

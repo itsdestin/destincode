@@ -17,7 +17,17 @@ import { TagRegistryApi } from '../../hooks/useTagRegistry';
 import { TagChip } from './TagChip';
 import { Button, InputGroup } from '../ui';
 
-export function TagPicker({ appliedIds, onToggle, registry, onManageTags }: {
+/** A reserved flag rendered as a tag (see built-in-tags.ts). Not in the
+ *  registry, so it carries its own applied state and setter, and never appears
+ *  in the tag manager. */
+export interface BuiltInTag {
+  tag: Pick<TagRecord, 'id' | 'label' | 'color'>;
+  hint?: string;
+  applied: boolean;
+  onToggle: (next: boolean) => void;
+}
+
+export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtIns = [] }: {
   appliedIds: Set<string>;
   onToggle: (tagId: string, next: boolean) => void;
   registry: TagRegistryApi;
@@ -25,6 +35,8 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags }: {
    *  the footer then simply isn't rendered (same optional-footer contract as
    *  ModelPicker's onManageModels / FolderSwitcher's onManageProjects). */
   onManageTags?: () => void;
+  /** Reserved flags shown as tags, listed first. */
+  builtIns?: BuiltInTag[];
 }) {
   const [query, setQuery] = useState('');
 
@@ -33,7 +45,15 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags }: {
     .filter((t) => !t.archived)
     .filter((t) => !q || t.label.toLowerCase().includes(q)), [registry.tags, q]);
 
-  const exactExists = registry.tags.some((t) => t.label.toLowerCase() === q && !t.archived);
+  const visibleBuiltIns = useMemo(
+    () => builtIns.filter((b) => !q || b.tag.label.toLowerCase().includes(q)),
+    [builtIns, q],
+  );
+
+  // A built-in's name is taken too — creating a second "Priority" would give
+  // the user two chips that look identical and behave differently.
+  const exactExists = registry.tags.some((t) => t.label.toLowerCase() === q && !t.archived)
+    || builtIns.some((b) => b.tag.label.toLowerCase() === q);
   const canCreate = q.length > 0 && !exactExists;
 
   const handleCreate = async () => {
@@ -63,11 +83,17 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags }: {
         )}
       </InputGroup>
       <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+        {/* Built-ins first and unseparated — they are meant to read as ordinary
+            tags. The hint is the only thing marking them apart in the list. */}
+        {visibleBuiltIns.map((b) => (
+          <TagRow key={b.tag.id} tag={b.tag} applied={b.applied} hint={b.hint}
+            onToggle={() => b.onToggle(!b.applied)} />
+        ))}
         {visible.map((t) => (
           <TagRow key={t.id} tag={t} applied={appliedIds.has(t.id)}
             onToggle={() => onToggle(t.id, !appliedIds.has(t.id))} />
         ))}
-        {visible.length === 0 && !canCreate && (
+        {visible.length === 0 && visibleBuiltIns.length === 0 && !canCreate && (
           <div className="px-2 py-1 text-3xs text-fg-muted">No tags yet — type a name to create one.</div>
         )}
       </div>
@@ -88,8 +114,8 @@ export function TagPicker({ appliedIds, onToggle, registry, onManageTags }: {
 }
 
 // Apply/unapply only. The checkbox-style swatch fills when applied.
-function TagRow({ tag, applied, onToggle }: {
-  tag: TagRecord; applied: boolean; onToggle: () => void;
+function TagRow({ tag, applied, onToggle, hint }: {
+  tag: Pick<TagRecord, 'label' | 'color'>; applied: boolean; onToggle: () => void; hint?: string;
 }) {
   return (
     <button onClick={onToggle} aria-pressed={applied}
@@ -98,6 +124,7 @@ function TagRow({ tag, applied, onToggle }: {
         style={{ backgroundColor: applied ? `var(--${tag.color})` : 'transparent',
                  borderColor: `var(--${tag.color})` }} />
       <TagChip tag={tag} />
+      {hint && <span className="text-4xs text-fg-muted shrink-0 ml-auto">{hint}</span>}
     </button>
   );
 }

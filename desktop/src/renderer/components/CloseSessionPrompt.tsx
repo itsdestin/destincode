@@ -8,7 +8,12 @@ import { Button, Dialog } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
-// Flag order must match ResumeBrowser's pill order so the UI is consistent.
+// This prompt still shows Priority and Complete as its own button pair. The
+// Resume Browser no longer does — there, Priority became a built-in TAG and
+// Complete became the card's hide icon (2026-07-30). Left alone deliberately:
+// this surface exists to ASK "done with this one?" at close time, so a plain
+// labelled pair reads better than an eye icon with no list to hide from. If the
+// two are ever unified, this is the copy that has to move.
 type FlagName = 'priority' | 'complete';
 const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
 const FLAG_LABEL: Record<FlagName, string> = { priority: 'Priority', complete: 'Complete' };
