@@ -782,7 +782,33 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
 
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
-      {tool.status === 'awaiting-approval' && tool.requestId && (() => {
+      {tool.status === 'awaiting-approval' && (tool.requestId || tool.expired) && (() => {
+        // Expired: the hook socket is dead (requestId cleared) but CC's Ink
+        // menu may still be live in the terminal. Task 9 adds digit-rebind
+        // buttons here; Dismiss is the universal out (only out for
+        // AskUserQuestion, which never rebinds — spec §3/§1b). Copy says what
+        // is known (buttons stopped working), not what is assumed (the ask
+        // failed) — the user may have already answered in the terminal.
+        if (tool.expired || !tool.requestId) {
+          const resolveLocally = () => {
+            if (!sessionId) return;
+            const action = { type: 'PERMISSION_CARD_RESOLVED' as const, sessionId, toolUseId: tool.toolUseId };
+            dispatch(action);
+            (window as any).claude?.remote?.broadcastAction(action);
+          };
+          return (
+            <div className="px-3 pb-3 pt-1 text-xs text-fg-dim">
+              <p className="mb-2">
+                The buttons on this card timed out, but Claude may still be
+                waiting in the terminal. Answer it there — or dismiss this if
+                you already did.
+              </p>
+              <Button variant="secondary" size="sm" onClick={resolveLocally}>
+                Dismiss — I answered in the terminal
+              </Button>
+            </div>
+          );
+        }
         // AskUserQuestion needs its own UI with option selection instead of Yes/No
         const isAskUser = tool.toolName === 'AskUserQuestion' && isValidQuestions(tool.input);
         // ExitPlanMode has a 4-option Ink menu in the CLI (bypass/manual/refine/feedback),
@@ -797,7 +823,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         };
         const onFailedCb = () => {
           if (sessionId && tool.requestId) {
-            const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId: tool.requestId };
+            // 'delivery-failed': the respond() write returned false or threw —
+            // the socket is provably gone, so this must RESOLVE the card, never
+            // retain it (retention would pin a card whose buttons cannot work).
+            const action = {
+              type: 'PERMISSION_EXPIRED' as const, sessionId,
+              requestId: tool.requestId, reason: 'delivery-failed' as const,
+            };
             dispatch(action);
             (window as any).claude?.remote?.broadcastAction(action);
           }
