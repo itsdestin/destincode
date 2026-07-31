@@ -190,9 +190,18 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
       />
 
       {/* Drawer — overflow-hidden clips the scroll-fade pseudos to the rounded-t-xl
-          corners so fades don't paint into the square corners above. */}
+          corners so fades don't paint into the square corners above.
+
+          `command-drawer` is a STYLING HOOK, not decoration: globals.css uses it
+          to cancel the backdrop-filter that theme-engine puts on every
+          .layer-surface under [data-wallpaper]. Every tile below is a
+          .layer-surface, so without it each one becomes its own live blur
+          compositing layer inside this overflow-hidden, transform-animating
+          box — and Windows Electron drops their paint (cards blink in and out).
+          Removing this class silently reopens that bug; guarded by
+          tests/drawer-card-glass.test.ts. */}
       <div
-        className={`fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl overflow-hidden transition-transform duration-300 ease-out ${
+        className={`command-drawer fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl overflow-hidden transition-transform duration-300 ease-out ${
           open ? 'translate-y-0' : 'translate-y-full'
         }`}
         style={{ maxHeight: '45vh' }}
