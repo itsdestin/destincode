@@ -83,6 +83,43 @@ describe('McpManager', () => {
     expect(connect).toHaveBeenCalledTimes(1);
   });
 
+  // Regression test for the "fast release() racing a slow acquire()" leak:
+  // holder registration used to happen AFTER connect() resolved, so a
+  // release() landing before that point found no holder to remove and
+  // no-op'd — then the resuming acquire() added the holder anyway, leaking
+  // it forever (nobody calls release() twice for one session). Fixed by
+  // registering the holder synchronously, before ensureConnected's caller
+  // ever awaits. This test fails on the pre-fix code (close() never called).
+  it('a release() that lands while acquire() is still connecting does not leak the holder', async () => {
+    const close = vi.fn();
+    let resolveConnect: () => void = () => {};
+    const registry = {
+      resolveAllEnabled: async () => ([
+        { id: 'demo', label: 'Demo', enabled: true, transport: { type: 'stdio', command: 'node' },
+          origin: { kind: 'user' }, missingSecrets: [] },
+      ] as any),
+    };
+    const connectionFactory = () => ({
+      state: 'ready' as const, lastError: null,
+      connect: () => new Promise<void>((r) => { resolveConnect = r; }),
+      listTools: () => [],
+      callTool: async () => ({ text: 'ok', isError: false }),
+      close: async () => { close(); },
+    });
+    const mgr = new McpManager({ registry: registry as any, connectionFactory: connectionFactory as any });
+    const acquiring = mgr.acquire('s1');
+    // Let acquire('s1') run past resolveAllEnabled() and register itself as
+    // a holder, landing on the `await entry.connecting` suspension point —
+    // connect() has NOT resolved yet.
+    await new Promise<void>((r) => setImmediate(r));
+    // release() arrives before connect() settles: the session was torn down
+    // almost immediately after being created.
+    await mgr.release('s1');
+    resolveConnect();
+    await acquiring;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('a failing server does not prevent healthy ones from being returned', async () => {
     const registry = { resolveAllEnabled: async () => ([
       { id: 'bad', label: 'Bad', enabled: true, transport: { type: 'stdio', command: 'x' }, origin: { kind: 'user' }, missingSecrets: [] },

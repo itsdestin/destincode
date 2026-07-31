@@ -82,8 +82,17 @@ export class McpManager {
     const servers = await this.registry.resolveAllEnabled();
     const ready: ReadyServer[] = [];
     for (const server of servers) {
-      const entry = await this.ensureConnected(server);
-      entry.holders.add(sessionId);
+      // Fix: ensureConnected() records `sessionId` as a holder SYNCHRONOUSLY,
+      // before the `await` below. If holder registration instead happened
+      // after awaiting connect() (as it used to), a release() for this same
+      // session arriving in that window (session torn down almost
+      // immediately after creation) would find no holder to remove and
+      // no-op — then this acquire() would add the holder anyway once
+      // connect() settled, leaking it forever (nobody calls release() twice
+      // for the same session). See mcp-manager.test.ts: "a release() that
+      // lands while acquire() is still connecting does not leak the holder".
+      const entry = this.ensureConnected(server, sessionId);
+      if (entry.connecting) await entry.connecting;
       if (entry.conn.state === 'ready') {
         ready.push({
           id: entry.server.id,
@@ -96,14 +105,26 @@ export class McpManager {
     return ready;
   }
 
-  // Looks up (or creates) the pooled entry for `server`, connecting it if
-  // this is the first-ever touch, and AWAITS an already-in-flight connect
-  // rather than starting a second one. This is the concurrency-safety seam:
-  // two acquire() calls racing on the same server both reach this method,
-  // both see the SAME entry.connecting promise (the entry + its promise are
-  // installed synchronously, before either await below), so only one
-  // connect() ever runs no matter how many sessions ask at once.
-  private async ensureConnected(server: ResolvedMcpServer): Promise<PooledEntry> {
+  // Looks up (or creates) the pooled entry for `server` and adds `sessionId`
+  // to its holder set, all SYNCHRONOUSLY (no `await` anywhere in this
+  // method) — connecting it if this is the first-ever touch. Staying
+  // synchronous is what lets acquire() register the holder before it awaits
+  // anything (see the fix comment there). It also remains the
+  // concurrency-safety seam for the double-connect race: two acquire() calls
+  // racing on the same server both reach this method, both see the SAME
+  // entry.connecting promise (the entry + its promise are installed
+  // synchronously, before acquire() ever awaits), so only one connect() ever
+  // runs no matter how many sessions ask at once.
+  //
+  // WHY no retry: if `entry` already exists — even in `error` or
+  // `needs-setup` state — it is returned as-is; connect() is never retried
+  // while the entry stays pooled (i.e. while any holder remains). This is
+  // deliberate, not an oversight: retry/backoff was out of scope for this
+  // manager. The user-visible effect is that fixing a broken server's config
+  // has no effect until every current holder releases (or the app
+  // restarts) — see status(), which surfaces the real lastError so this
+  // isn't silent.
+  private ensureConnected(server: ResolvedMcpServer, sessionId: string): PooledEntry {
     let entry = this.pool.get(server.id);
     if (!entry) {
       const conn = this.connectionFactory(server);
@@ -113,7 +134,7 @@ export class McpManager {
         entry!.connecting = undefined;
       });
     }
-    if (entry.connecting) await entry.connecting;
+    entry.holders.add(sessionId);
     return entry;
   }
 
