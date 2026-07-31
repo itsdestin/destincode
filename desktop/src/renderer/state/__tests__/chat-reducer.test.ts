@@ -770,4 +770,74 @@ describe('PERMISSION_EXPIRED reasons (2026-07-30 spec §2/§2a/§2c/§2d)', () =
     expect(stillFailed.status).toBe('failed');
     expect(stillFailed.error).toBe('Turn ended');
   });
+
+  it('TRANSCRIPT_TOOL_USE merging a retained hook-closed synthetic card preserves `expired`', () => {
+    // Retain via 'hook-closed': synthetic perm-r1 stays awaiting-approval,
+    // expired: true, requestId cleared (the exact shape the merge in
+    // TRANSCRIPT_TOOL_USE hand-picks fields off of).
+    let state = expire(withPendingAsk(), { reason: 'hook-closed' });
+
+    // The transcript watcher's real tool_use event arrives after the hook
+    // already expired — this is the merge branch that promotes perm-r1 to
+    // the real toolUseId.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 's1',
+      uuid: 'line-uuid-1',
+      toolUseId: 'toolu_real_1',
+      toolName: 'Bash',
+      toolInput: {},
+    } as any);
+
+    const synthetic = [...state.get('s1')!.toolCalls.keys()].filter((k) => k.startsWith('perm-'));
+    expect(synthetic).toHaveLength(0); // synthetic replaced, not duplicated
+
+    const merged = state.get('s1')!.toolCalls.get('toolu_real_1')!;
+    // Regression guard: the merge builds a NEW object off a hand-picked field
+    // list. `expired` was missing from that list, so a merged retained card
+    // used to end up awaiting-approval with no requestId (unanswerable) and
+    // no `expired` flag (unresolvable — PERMISSION_CARD_RESOLVED's guard
+    // requires it) — an orphan that keeps the red dot and pty gates stuck.
+    expect(merged.status).toBe('awaiting-approval');
+    expect(merged.expired).toBe(true);
+    expect(merged.requestId).toBeUndefined();
+
+    // And it must now actually be resolvable via PERMISSION_CARD_RESOLVED.
+    state = chatReducer(state, {
+      type: 'PERMISSION_CARD_RESOLVED',
+      sessionId: 's1',
+      toolUseId: 'toolu_real_1',
+    });
+    const resolved = state.get('s1')!.toolCalls.get('toolu_real_1')!;
+    expect(resolved.status).toBe('complete');
+    expect(resolved.expired).toBeUndefined();
+  });
+
+  it('PERMISSION_CARD_RESOLVED guard independently requires status === awaiting-approval, not just `expired`', () => {
+    // Discrimination test: a reviewer confirmed that reverting ONLY the
+    // guard's `status !== 'awaiting-approval'` clause still left the older
+    // regression test (above) passing, because endTurn()'s `expired`-
+    // stripping already blocks that particular path. This test builds a
+    // settled card that STILL carries `expired: true` (bypassing endTurn
+    // entirely) so it pins the guard clause on its own.
+    const state = withPendingAsk();
+    const toolCalls = new Map(state.get('s1')!.toolCalls);
+    toolCalls.set('perm-r1', {
+      ...toolCalls.get('perm-r1')!,
+      status: 'failed',
+      error: 'Some real failure',
+      expired: true, // settled, but the stale marker was never cleared
+    });
+    const settled = new Map(state);
+    settled.set('s1', { ...state.get('s1')!, toolCalls });
+
+    const next = chatReducer(settled, {
+      type: 'PERMISSION_CARD_RESOLVED',
+      sessionId: 's1',
+      toolUseId: 'perm-r1',
+    });
+    const tool = next.get('s1')!.toolCalls.get('perm-r1')!;
+    expect(tool.status).toBe('failed');
+    expect(tool.error).toBe('Some real failure');
+  });
 });

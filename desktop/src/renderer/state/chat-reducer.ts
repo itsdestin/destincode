@@ -832,7 +832,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       for (const [synId, synTool] of toolCalls) {
         if (synId.startsWith('perm-') && synTool.toolName === action.toolName
             && synTool.status === 'awaiting-approval') {
-          // Replace synthetic with real tool, preserving permission state
+          // Replace synthetic with real tool, preserving permission state.
+          // Fix: this field list is HAND-PICKED, not a spread — any ToolCallState
+          // field a synthetic card can carry that isn't listed here is silently
+          // dropped on merge. `expired` was missing: a hook-closed retained card
+          // (status stays 'awaiting-approval', expired: true, requestId cleared)
+          // that merges with its real TRANSCRIPT_TOOL_USE used to lose `expired`,
+          // leaving a card with no requestId (unanswerable) and no expired flag
+          // (unresolvable — PERMISSION_CARD_RESOLVED's guard requires it) — an
+          // orphan stuck awaiting-approval forever. If you add a new field to
+          // ToolCallState that a synthetic card can carry, add it here too.
           toolCalls.delete(synId);
           toolCalls.set(action.toolUseId, {
             toolUseId: action.toolUseId,
@@ -842,6 +851,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            expired: synTool.expired,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
