@@ -7,7 +7,7 @@ import { TagChip } from './tags/TagChip';
 import { TagGlyph, NotePageGlyph, PencilGlyph } from './tags/glyphs';
 import type { TagRecord } from '../../shared/tags';
 import { TagManagerPopup } from './tags/TagManagerPopup';
-import { Button, Dialog, Toggle } from './ui';
+import { Button, Dialog, SettingRow, Toggle } from './ui';
 import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
@@ -52,21 +52,30 @@ function SaveButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** Chosen from four candidates in the workbench, 2026-07-31. A Toggle rather
- *  than a card or a checkbox: it is the shape Skip Permissions and Show
- *  Complete already use, so the app has one way of asking a yes/no. The row is
- *  not itself a button — the Toggle owns the interaction — but the container
- *  still lights on hover so it reads as one object. */
+/** Chosen from four candidates in the workbench, 2026-07-31: a Toggle rather
+ *  than a card or a checkbox, because it is the shape Skip Permissions and Show
+ *  Complete already use and the app should have one way of asking a yes/no.
+ *
+ *  Built on SettingRow, not hand-rolled. `setting-row-authority.test.tsx` says a
+ *  label with a switch beside it IS a SettingRow — and this is exactly that, so
+ *  it belongs in the primitive rather than in that test's exception list. The
+ *  full suite caught the hand-rolled version; `verify.sh`'s related-tests pass
+ *  did not, because the authority test names no file this branch touched.
+ *
+ *  `className` restores the bordered-card treatment the workbench comparison
+ *  settled on: SettingRow's own base is the borderless `bg-inset/50` in-panel
+ *  row, which is right in a settings LIST but too quiet for the one decision
+ *  this dialog exists to ask. Structure from the primitive, weight from here. */
 function MarkComplete({ checked, onChange }: { checked: boolean; onChange: (next: boolean) => void }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-edge-dim bg-inset px-3 py-2.5 transition-colors hover:border-edge hover:bg-well">
-      <CompleteGlyph done={checked} className={`w-5 h-5 shrink-0 transition-colors ${checked ? 'text-accent' : 'text-fg-faint'}`} />
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs text-fg">{COMPLETE_TITLE}</span>
-        <span className="block text-3xs text-fg-muted leading-snug">{COMPLETE_HINT}</span>
-      </span>
-      <Toggle checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} />
-    </div>
+    <SettingRow
+      variant="item"
+      icon={<CompleteGlyph done={checked} className={`w-5 h-5 shrink-0 transition-colors ${checked ? 'text-accent' : 'text-fg-faint'}`} />}
+      title={COMPLETE_TITLE}
+      description={COMPLETE_HINT}
+      control={<Toggle checked={checked} onChange={onChange} aria-label={COMPLETE_TITLE} />}
+      className="border border-edge-dim !bg-inset hover:border-edge"
+    />
   );
 }
 
