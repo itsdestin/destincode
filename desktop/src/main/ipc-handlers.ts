@@ -58,7 +58,11 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
   syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
+  getSelfLastSyncEpochMs, isSyncSpacesSyncing,
 } from './sync-spaces/service';
+// Self-row recency derivation (spec §4) — pure fn so the ms→wire-seconds
+// conversion and the sync-spaces-vs-legacy-marker precedence are unit tested.
+import { deriveSelfLastSyncEpochSec } from './sync-spaces/self-sync-status';
 import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
@@ -1891,10 +1895,16 @@ export function registerIpcHandlers(
 
     // Sync state for live updates — SyncPanel also fetches via IPC,
     // but these fields let the compact section row update in real-time.
+    // Self recency comes from sync-spaces evidence FIRST (the persisted
+    // lastSync map); the legacy .sync-marker survives as a fallback/max for
+    // Drive/iCloud-only installs. WHY: the marker is absent on GitHub-era
+    // installs, so reading only it showed "last seen 22 hours ago" on a
+    // machine that was (supposedly) syncing every 90 seconds (2026-07-30 spec §4).
     const syncMarkerRaw = readTextFile(path.join(os.homedir(), '.claude', 'toolkit-state', '.sync-marker'));
-    const lastSyncEpoch = syncMarkerRaw ? parseInt(syncMarkerRaw, 10) || null : null;
-    let syncInProgress = false;
-    try { syncInProgress = fs.statSync(path.join(os.homedir(), '.claude', 'toolkit-state', '.sync-lock')).isDirectory(); } catch {}
+    const lastSyncEpoch = deriveSelfLastSyncEpochSec(getSelfLastSyncEpochMs(), syncMarkerRaw);
+    // Live spaces syncing OR the legacy lock dir (extra-backups pushes).
+    let syncInProgress = isSyncSpacesSyncing();
+    try { syncInProgress = syncInProgress || fs.statSync(path.join(os.homedir(), '.claude', 'toolkit-state', '.sync-lock')).isDirectory(); } catch {}
     const backupMeta = readJsonFile(path.join(os.homedir(), '.claude', 'backup-meta.json'));
     // Per-device sync recency (machineId → epoch-ms), carried over the SyncHub.
     // Rides the live push so the "Your devices" rows update in real-time without

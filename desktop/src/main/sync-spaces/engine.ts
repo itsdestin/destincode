@@ -5,6 +5,7 @@
 import path from 'path';
 import chokidar, { FSWatcher } from 'chokidar';
 import type { SpaceSyncEvent, SyncSpace, SyncTransport } from './types';
+import { REPO_CORRUPT_ERROR_CODE, REPO_REPAIR_FAILED_ERROR_CODE } from '../sync-error-classifier';
 
 interface EngineOpts {
   debounceMs?: number;  // default 15s (spec §8)
@@ -67,6 +68,10 @@ export class SpaceSyncEngine {
   // as the engine instance, so a space that's already over the threshold emits
   // the warning exactly once instead of on every sync.
   private warnedLargeSpaces = new Set<string>();
+  // One heal attempt per space per LAUNCH (spec §2 guardrail): a second
+  // corruption in the same run means something deeper than crash damage —
+  // surface it instead of thrashing repair/fail loops at poll cadence.
+  private healedSpaces = new Set<string>();
   private onEvent: (e: SpaceSyncEvent) => void;
 
   constructor(private transport: SyncTransport, opts: EngineOpts) {
@@ -185,10 +190,34 @@ export class SpaceSyncEngine {
           }
         } catch { /* maintenance is best-effort; the sync itself already succeeded */ }
       } catch (e: any) {
-        // Forward the typed marker (e.g. 'github-auth' from the transport /
-        // provisioning) so the panel can offer the matching CTA — the message
-        // alone is prose and must never be string-matched.
-        this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e), errorCode: typeof e?.syncErrorCode === 'string' ? e.syncErrorCode : undefined });
+        const errorCode = typeof e?.syncErrorCode === 'string' ? e.syncErrorCode : undefined;
+        // Crash-corrupted repo: repair automatically (approved policy — the
+        // heal never touches user files and, if it has to start the repo
+        // fresh, keeps the broken one aside as a backup), notify after, and
+        // rerun THIS space's sync so the panel goes green on real evidence.
+        // Guarded to once per space per launch: healedSpaces is marked BEFORE
+        // the repair call (not just on success), so a repair that throws or
+        // hangs still consumes the launch's one attempt — a second corruption
+        // in the same run means something deeper than crash damage, and
+        // re-attempting at poll cadence would thrash a repair/fail loop
+        // instead of surfacing it.
+        if (errorCode === REPO_CORRUPT_ERROR_CODE && this.transport.repair && !this.healedSpaces.has(space.id)) {
+          this.healedSpaces.add(space.id);
+          try {
+            await this.transport.repair(space);
+            this.onEvent({ type: 'notice', spaceId: space.id, message: 'Sync repaired itself after a crash. Your files were untouched.' });
+            st.rerun = true; // the finally block fires the healed sync
+          } catch (re: any) {
+            // Repair itself failed (e.g. Tier 2 with no network/auth). Cause
+            // genuinely unknown → surface the real detail, no guessed cause.
+            this.onEvent({ type: 'error', spaceId: space.id, message: `Sync self-repair failed: ${String(re?.message ?? re)}`, errorCode: REPO_REPAIR_FAILED_ERROR_CODE });
+          }
+        } else {
+          // Forward the typed marker (e.g. 'github-auth' from the transport /
+          // provisioning) so the panel can offer the matching CTA — the message
+          // alone is prose and must never be string-matched.
+          this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e), errorCode });
+        }
       } finally {
         st.syncing = false;
         st.current = null;
@@ -202,6 +231,12 @@ export class SpaceSyncEngine {
    *  reconcile to decide which stopped projects have a live space to detach. */
   liveSpaceIds(): string[] {
     return [...this.states.keys()];
+  }
+
+  /** True while any space's sync chain is in flight — feeds the self row's
+   *  live "Syncing…" band (the legacy .sync-lock stat never fires for spaces). */
+  anySyncing(): boolean {
+    return [...this.states.values()].some(s => s.syncing);
   }
 
   /** Detach ONE space (Stop-syncing) without touching the folder or the others.

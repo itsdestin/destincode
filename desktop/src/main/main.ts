@@ -44,7 +44,7 @@ import { createGithubClient, setGithubClient } from './github-client';
 // which device "holds" a conversation so two devices don't append to the same
 // transcript. Constructed in the main process (needs userData-scoped device id).
 import { getDeviceIdentity, getMachineIdentity } from './device-identity';
-import { createLeaseClient, type LeaseClient } from './conversations/lease-client';
+import { createLeaseClient, sweepExpiredLeases, sweepLegacyLeaseDir, type LeaseClient } from './conversations/lease-client';
 // Plan 2b Task 9: the requester-side takeover flow (ask-hand-off, poll, pull,
 // acquire). Built here where deviceId + hubLeaseRequest + materializeOne +
 // syncSpacesSyncNow are all reachable, then passed to registerIpcHandlers.
@@ -773,10 +773,31 @@ function createWindow(firstRunManager?: FirstRunManager) {
   leaseClient = createLeaseClient({
     deviceId: deviceIdentity.id,
     deviceName: os.hostname(),
-    personalRoot: () => getManagedRoots()?.personalRoot ?? null,
+    // Lease files live in userData, NOT in the personal sync space. They are a
+    // 30s-per-session heartbeat; while they lived in the space, every renew became
+    // a git commit — 93% of all file-changes in the real Personal repo, 30k
+    // commits / 673 MB, and the bloat pushed catch-up syncs past GIT_TIMEOUT so a
+    // device that fell behind could never recover (2026-07-30).
+    //
+    // Resolved AFTER the DEV_PROFILE setPath above, so a dev instance gets its own
+    // lease dir — deliberately matching deviceIdentity, which is also per-INSTALL
+    // (dev + built app must stay distinguishable as lease holders).
+    //
+    // TRADE-OFF: the file is the fallback consulted when the HUB is down, and it
+    // no longer reaches other devices. A peer's lease is now invisible in that
+    // window, so query() reports free and the caller proceeds optimistically.
+    // Accepted because the hub is the source of truth, the file was always
+    // "best-effort", and a lease never BLOCKS anything (never-block rule) — it
+    // only warns. Losing a warning in a narrow hub-down window is far cheaper
+    // than an unusable backup repo.
+    leaseDir: () => path.join(app.getPath('userData'), 'Leases'),
     hubRequest: hubLeaseRequest,
     onTakeoverRequest: (sid, from) => holderTakeoverRef.fn(sid, from),
   });
+  // Nothing else ever deleted expired lease files — deleteLeaseFile only runs on a
+  // clean release, so every crash/force-quit leaked one permanently (59 of 60 were
+  // stale on the machine that surfaced this). Cheap, synchronous, dir-local.
+  try { sweepExpiredLeases(path.join(app.getPath('userData'), 'Leases')); } catch { /* best-effort */ }
 
   // Plan 2b Task 9: build the requester-side takeover flow. It reuses the SAME
   // lease client (takeover/query/acquire), nudges a personal-space sync, pulls the
@@ -1878,6 +1899,15 @@ app.whenReady().then(async () => {
     const pr = getManagedRoots()?.personalRoot;
     if (pr && machineIdentity) void upsertSelf(pr, { id: machineIdentity.id, platform: process.platform }).catch(() => { /* best-effort */ });
     else if (pr) log('INFO', 'Main', 'Device registry: no durable machine identity — skipping self-registration');
+    // One-time migration off the LEGACY in-space lease dir. Those files are
+    // TRACKED in the space's git repo, and `git add -A` re-stages tracked files
+    // regardless of the ignore list — so adding 'Leases/' to DEFAULT_IGNORES
+    // silences new installs but cannot stop an existing repo churning. Removing
+    // them yields ONE final delete-commit, then permanent silence.
+    if (pr) {
+      const swept = sweepLegacyLeaseDir(pr);
+      if (swept > 0) log('INFO', 'Main', `Removed ${swept} legacy in-space lease file(s) — leases now live in userData`);
+    }
   } catch { /* sync not configured */ }
 
   // Conversation Store (Phase 2a): records + transcript sync ride the personal
