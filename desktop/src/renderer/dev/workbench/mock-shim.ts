@@ -4,6 +4,7 @@ import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
   CONTENT as ARTIFACT_CONTENT, contextGroups,
 } from './fixtures/artifacts';
+import type { MockState, MockSessionMeta } from './scenarios';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -14,7 +15,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'sendChatSnapshotResponse', 'fireRemoteAttentionChanged',
   'off', 'removeAllListeners',
   'session.list', 'session.create', 'session.browse', 'session.destroy',
-  'session.setFlag', 'session.setTag', 'session.setNote',
+  'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
@@ -323,6 +324,23 @@ interface UntypedSessionWrites {
   setFlag: (sessionId: string, flag: string, value: boolean) => Promise<{ ok: boolean }>;
   setTag: (sessionId: string, tagId: string, value: boolean) => Promise<{ ok: boolean }>;
   setNote: (sessionId: string, note: string) => Promise<{ ok: boolean }>;
+  getMeta: (sessionId: string) => Promise<{ tags: string[]; note: string; supported: boolean; flags: Record<string, boolean> }>;
+}
+
+/** Upsert one session's meta slice, seeding from a `past` row of the same id so
+ *  a first write doesn't drop metadata the fixtures already gave that row. */
+function mergeMeta(
+  s: MockState,
+  sessionId: string,
+  patch: (m: MockSessionMeta) => MockSessionMeta,
+): Record<string, MockSessionMeta> {
+  const row = s.past.find((p) => p.sessionId === sessionId);
+  const current: MockSessionMeta = s.meta[sessionId] ?? {
+    tags: row?.tags ?? [],
+    note: row?.note ?? '',
+    flags: (row?.flags ?? {}) as Record<string, boolean>,
+  };
+  return { ...s.meta, [sessionId]: patch(current) };
 }
 
 /** Hand-written channel implementations, backed by the store. */
@@ -386,9 +404,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       return true;
     },
 
+    // Reads the live-session meta slice, falling back to a `past` row of the
+    // same id, then to empty. `supported: true` always — the desktop refuses
+    // nothing here since Task 5, and a workbench that answered false would
+    // render every tag control disabled and hide the surfaces being designed.
+    getMeta: async (sessionId: string) => {
+      const st = store.getState();
+      const m = st.meta[sessionId];
+      if (m) return { tags: m.tags, note: m.note, supported: true, flags: m.flags };
+      const row = st.past.find((p) => p.sessionId === sessionId);
+      return {
+        tags: row?.tags ?? [],
+        note: row?.note ?? '',
+        supported: true,
+        flags: (row?.flags ?? {}) as Record<string, boolean>,
+      };
+    },
+
     setFlag: (sessionId, flag, value) => write(() => {
       store.setState((s) => ({
         ...s,
+        meta: mergeMeta(s, sessionId, (m) => ({ ...m, flags: { ...m.flags, [flag]: value } })),
         past: s.past.map((p) => (p.sessionId === sessionId
           ? { ...p, flags: { ...(p.flags ?? {}), [flag]: value } }
           : p)),
@@ -399,6 +435,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     setTag: (sessionId, tagId, value) => write(() => {
       store.setState((s) => ({
         ...s,
+        meta: mergeMeta(s, sessionId, (m) => ({
+          ...m,
+          tags: value ? [...new Set([...m.tags, tagId])] : m.tags.filter((t) => t !== tagId),
+        })),
         past: s.past.map((p) => (p.sessionId === sessionId
           ? {
             ...p,
@@ -414,6 +454,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     setNote: (sessionId, note) => write(() => {
       store.setState((s) => ({
         ...s,
+        meta: mergeMeta(s, sessionId, (m) => ({ ...m, note })),
         past: s.past.map((p) => (p.sessionId === sessionId ? { ...p, note } : p)),
       }));
       subs.meta.forEach((f) => f(sessionId, { note }));

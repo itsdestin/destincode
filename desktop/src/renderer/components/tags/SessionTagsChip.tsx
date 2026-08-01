@@ -9,11 +9,16 @@ import { useEscClose } from '../../hooks/use-esc-close';
 import { useTagRegistry } from '../../hooks/useTagRegistry';
 import { useSessionMeta } from '../../hooks/useSessionMeta';
 import type { TagRecord } from '../../../shared/tags';
-import { TagPicker } from './TagPicker';
-import { NoteEditor } from './NoteEditor';
+import { TagNoteEditor } from './TagNoteEditor';
+import { PRIORITY_TAG, PRIORITY_HINT } from './built-in-tags';
+import { TagManagerPopup } from './TagManagerPopup';
 
 export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
   const [open, setOpen] = useState(false);
+  // Tag registry editing moved out of TagPicker into its own surface; this is
+  // the route to it from the in-session chip. Layer 3 because this popup is
+  // itself layer 2.
+  const [manageOpen, setManageOpen] = useState(false);
   const registry = useTagRegistry();
   const meta = useSessionMeta(sessionId);
   useEscClose(open, () => setOpen(false));
@@ -21,7 +26,15 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
   const appliedTags = [...meta.tags]
     .map((id) => registry.byId.get(id))
     .filter((t): t is TagRecord => !!t);
-  const hasContent = appliedTags.length > 0 || meta.note.length > 0;
+  // Priority reads as an ordinary tag everywhere else (built-in-tags.ts), so it
+  // leads the chip's dots and its label the same way it leads the picker list.
+  // It is stored as a reserved FLAG, which is why it rides meta.flags rather
+  // than meta.tags.
+  const priority = !!meta.flags.priority;
+  const dotColors = [...(priority ? [PRIORITY_TAG.color] : []), ...appliedTags.map((t) => t.color)];
+  const leadLabel = priority ? PRIORITY_TAG.label : appliedTags[0]?.label;
+  const labelCount = dotColors.length;
+  const hasContent = labelCount > 0 || meta.note.length > 0;
 
   return (
     <>
@@ -37,13 +50,13 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
       >
         {hasContent ? (
           <span className="flex items-center gap-1 overflow-hidden">
-            {appliedTags.slice(0, 3).map((t) => (
-              <span key={t.id} className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: `var(--${t.color})` }} />
+            {dotColors.slice(0, 3).map((c, i) => (
+              <span key={`${c}-${i}`} className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: `var(--${c})` }} />
             ))}
             {meta.note && <NotebookIcon className="w-3 h-3 text-fg-muted shrink-0" />}
-            {appliedTags.length > 0 && (
+            {leadLabel && (
               <span className="truncate text-fg-2">
-                {appliedTags[0].label}{appliedTags.length > 1 ? ` +${appliedTags.length - 1}` : ''}
+                {leadLabel}{labelCount > 1 ? ` +${labelCount - 1}` : ''}
               </span>
             )}
           </span>
@@ -65,15 +78,37 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
                 <button onClick={() => setOpen(false)}
                   className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">×</button>
               </div>
-              <div className="px-4 py-3 space-y-3 overflow-y-auto">
-                <TagPicker appliedIds={meta.tags} onToggle={meta.setTag} registry={registry} />
-                <div>
-                  <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-                  <NoteEditor value={meta.note} onSave={meta.setNote} />
-                </div>
+              <div className="px-4 py-3 overflow-y-auto">
+                {/* The SAME editor the close prompt uses, not a copy of its
+                    styling — see TagNoteEditor's header for why that
+                    distinction earned its own component on this branch.
+                    Priority rides along as a built-in tag; Complete is
+                    deliberately NOT offered here, because a session you are
+                    sitting in is not finished and the close prompt owns that
+                    decision.
+                    Footer says "Done", not "Save": this surface persists every
+                    keystroke as you make it, so claiming there is something
+                    left to save would be a lie. The close prompt says "Save"
+                    because there, the writes really are still pending. */}
+                <TagNoteEditor
+                  appliedIds={meta.tags}
+                  onToggleTag={meta.setTag}
+                  registry={registry}
+                  onManageTags={() => setManageOpen(true)}
+                  note={meta.note}
+                  onNote={meta.setNote}
+                  footer={{ label: 'Done', onClick: () => setOpen(false) }}
+                  builtIns={[{
+                    tag: PRIORITY_TAG,
+                    hint: PRIORITY_HINT,
+                    applied: priority,
+                    onToggle: (next) => meta.setFlag('priority', next),
+                  }]}
+                />
               </div>
             </OverlayPanel>
           </div>
+          <TagManagerPopup open={manageOpen} onClose={() => setManageOpen(false)} registry={registry} layer={3} />
         </>,
         document.body,
       )}

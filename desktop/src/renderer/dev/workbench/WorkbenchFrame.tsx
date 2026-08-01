@@ -44,6 +44,10 @@ export function WorkbenchFrame() {
     child.set('view', view);
     child.set('scenario', params.get('scenario') ?? 'default');
     child.set('latency', String(getLatency()));
+    // Forward the stress-row override so `?stressRows=N` on the frame reaches
+    // the fixture factory, which reads it from the CHILD's search params.
+    const stressRows = params.get('stressRows');
+    if (stressRows) child.set('stressRows', stressRows);
     return `${location.pathname}?${child.toString()}`;
   }, [view]);
 

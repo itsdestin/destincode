@@ -754,6 +754,12 @@ export const META_UNSUPPORTED_FALLBACK =
 export interface SessionMetaResult {
   tags: string[];
   note: string;
+  /** Reserved flags (SESSION_FLAG_NAMES) currently set on the conversation.
+   *  OPTIONAL: an older remote peer or Android answers without it, and the
+   *  renderer must treat missing as "none set" rather than as an error. Added
+   *  2026-07-31 so the in-session tag chip can offer Priority the same way the
+   *  Resume Browser does — as a built-in tag rather than a separate control. */
+  flags?: Partial<Record<SessionFlagName, boolean>>;
   /** OPTIONAL on purpose: any remote peer running an older build answers get-meta
    *  without this field. Callers must treat a MISSING value as supported — only an
    *  explicit `false` disables the UI. */

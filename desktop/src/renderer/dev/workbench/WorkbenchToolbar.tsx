@@ -13,7 +13,11 @@ const LATENCIES = [
 const VIEWS = [
   { value: 'app', label: 'app' },
   { value: 'tools', label: 'tool gallery' },
+  { value: 'compare', label: 'comparisons' },
 ];
+
+
+
 
 export interface WorkbenchToolbarProps {
   narrow: boolean;

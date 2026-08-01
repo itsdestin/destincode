@@ -2080,6 +2080,11 @@ export function registerIpcHandlers(
 
   const transcriptWatcher = new TranscriptWatcher();
 
+  // Last model id written to the store per CLAUDE session id, so a repeat is
+  // never re-written. Unbounded in principle but bounded in practice by
+  // sessions opened this run, and one short string each.
+  const lastModelSeen = new Map<string, string>();
+
   transcriptWatcher.on('transcript-event', (event: any) => {
     sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event);
     if (remoteServer) {
@@ -2093,6 +2098,32 @@ export function registerIpcHandlers(
     // This listener is on the CC TranscriptWatcher only — native transcript
     // events are routed separately (Task 4 wires the native listener's feed).
     if (claudeId) noteTranscriptEvent(claudeId, event, 'claude');
+    // Record which model a CC turn ran on, mirroring what resolvePortableModel
+    // does for native sessions. The transcript watcher already parses
+    // `message.model` off every assistant message and forwards it on
+    // assistant-text (transcript-watcher.ts) — this just persists it.
+    //
+    // WHY BOTH THIS AND the browse-time transcript read (session-browser.ts
+    // readSessionTranscriptMeta): the read covers all EXISTING history without
+    // waiting for a turn, but only where the transcript is on this device. A
+    // conversation synced in from another machine has a store record and no
+    // local JSONL, so the read finds nothing. Writing the ref into the store
+    // here is what makes the model travel with the record.
+    //
+    // providerType is 'claude-code' — deliberately not a native provider type,
+    // so the resume prefill can never match it against the local model catalog.
+    if (claudeId && event.type === 'assistant-text') {
+      const model = (event.data as { model?: unknown } | undefined)?.model;
+      // Deduped: assistant-text fires per TEXT BLOCK, several times a turn, and
+      // noteModelUsed does a store read + write each call. The model only
+      // changes on an explicit /model switch, so writing on every block would
+      // mean hundreds of redundant record writes per conversation — each one a
+      // sync-visible change. Only a DIFFERENT model reaches the store.
+      if (typeof model === 'string' && model && lastModelSeen.get(claudeId) !== model) {
+        lastModelSeen.set(claudeId, model);
+        noteModelUsed(claudeId, { modelId: model, providerType: 'claude-code', providerLabel: 'Claude Code' });
+      }
+    }
   });
 
   // --- Native runtime stack (Phase 1 Plan A, Task 9) ---
@@ -2899,10 +2930,16 @@ export function registerIpcHandlers(
       const rec = await store.get(await sessionProviderFor(resolved), resolved);
       if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
+      // Reserved flags travel alongside the tags now: the in-session chip shows
+      // Priority as a built-in tag, so it needs the value, not just the tag
+      // list. Whitelisted to SESSION_FLAG_NAMES so an internal flag key can
+      // never leak to the renderer by being added to a record.
+      const reserved: Partial<Record<string, boolean>> = {};
       for (const [k, v] of Object.entries(rec.flags)) {
         if (v.value && k.startsWith('tag:')) tags.push(k.slice(4));
+        else if (v.value && (SESSION_FLAG_NAMES as string[]).includes(k)) reserved[k] = true;
       }
-      return { tags, note: rec.note || '', supported: true };
+      return { tags, note: rec.note || '', supported: true, flags: reserved };
     } catch { return { tags: [], note: '', supported: true }; }
   });
 
