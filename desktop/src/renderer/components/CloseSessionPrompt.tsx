@@ -227,7 +227,16 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               <p className="text-2xs text-fg-muted mt-1 truncate">{sessionName}</p>
             )}
           </div>
-          <div className="px-4 py-4 flex flex-col gap-3">
+          {/* min-h-0 + overflow-y-auto: this dialog passes scrollBody={false}
+              because it renders its own header and footer, and Dialog's own doc
+              is explicit that doing so makes the SCROLL REGION the caller's
+              job — "the symptom is a dialog that clips with no way to reach the
+              bottom". It did exactly that once the tag editor opened on a short
+              viewport (found 2026-07-31 reviewing captures at 900px): the
+              header and footer are fixed, so only this middle band may grow,
+              and without min-h-0 a flex child refuses to shrink below its
+              content and pushes "Close session" off the panel. */}
+          <div className="px-4 py-4 flex flex-col gap-3 min-h-0 overflow-y-auto">
             {!metaLoaded ? null : !metaSupported ? (
               <p className="text-2xs text-fg-muted leading-snug">{metaReason}</p>
             ) : (
