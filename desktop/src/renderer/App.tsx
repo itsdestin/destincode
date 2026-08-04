@@ -23,6 +23,7 @@ import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
+import { ReferenceProvider } from './state/reference-context';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
 import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
@@ -87,6 +88,7 @@ import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
+import { ReferenceOverlay } from './components/reference/ReferenceOverlay';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
 import { BuddyBarApp } from './components/buddy/BuddyBarApp';
@@ -2723,9 +2725,13 @@ function AppInner() {
   ) : null;
 
   return (
-    // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
-    // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
-    // etc.) because artifact operations may eventually consume chat/theme context.
+    // ReferenceProvider: holds the "Ask Claude about this" pending reference,
+    // parked per session so it can't leak between conversations. Outside
+    // ArtifactProvider because the artifact viewer is one of its two sources.
+    <ReferenceProvider sessionId={sessionId ?? ''}>
+    {/* ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
+        subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
+        etc.) because artifact operations may eventually consume chat/theme context. */}
     <ArtifactProvider value={{ state: artifactState, dispatch: dispatchArtifact }}>
     <div className={`app-shell flex w-screen h-full text-fg ${getPlatform() === 'android' && currentViewMode === 'terminal' ? '' : 'bg-canvas'}`}>
       {/* Mount-only: listens for chat:export-snapshot from main, serializes
@@ -2739,6 +2745,9 @@ function AppInner() {
           (copy/paste, Ask about this, file-pill actions). Opens only over
           surfaces it owns; leaves the terminal and other chrome untouched. */}
       <ContextMenuHost />
+      {/* Mount-only: the held "Ask Claude about this" reference — window-wide
+          dim, traced outline, and the lifted source card. */}
+      <ReferenceOverlay />
       {/* Main area — relative so bottom-float chrome can position against it.
           When a Phase-2 full-screen destination is active, hide the chat
           chrome entirely. Unmounting via `hidden` is cleaner than z-index
@@ -3542,6 +3551,7 @@ function AppInner() {
       />
     </div>
     </ArtifactProvider>
+    </ReferenceProvider>
   );
 }
 

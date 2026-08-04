@@ -13,6 +13,7 @@ import { render, act } from '@testing-library/react';
 import { buildContextMenu } from './build-menu';
 import { CodeEditorView } from '../artifact-views/CodeEditorView';
 import { editorViewWithin } from '../artifact-views/cm/editor-registry';
+import type { PendingReference } from '../../state/reference-context';
 
 // Minimal geometry shims CM6 needs under jsdom (it measures constantly; jsdom
 // implements none of it). Zero-rects are fine — we never assert layout.
@@ -59,21 +60,32 @@ function selectLine(view: any, lineNo: number, throughLine?: number) {
     view.dispatch({ selection: { anchor: from, head: to } });
   });
   const text = view.state.sliceDoc(from, to);
-  vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => text } as any);
+  // Fuller Selection stub: buildArtifactReference (Task 3 wiring) also calls
+  // captureRange() to populate the reference's anchor, which needs rangeCount /
+  // isCollapsed / getRangeAt — not just toString(). A real DOM Selection always
+  // has these; only this synthetic CM6 stub didn't.
+  vi.spyOn(window, 'getSelection').mockReturnValue({
+    toString: () => text,
+    rangeCount: 1,
+    isCollapsed: false,
+    getRangeAt: () => ({ cloneRange: () => ({} as Range) }),
+  } as any);
 }
 
 describe('CM6 artifact context menu (real component)', () => {
   it('cites the TRUE line number for a selection far beyond any rendered viewport', () => {
     const { container, view } = mountEditor();
     selectLine(view, 800);
-    const entries = buildContextMenu(container)!;
+    // Object wrapper, not a bare `let`: a `let` reassigned only inside the
+    // callback narrows to `never` at this read site under TS 5.9's control
+    // flow analysis (confirmed in isolation) — property access on it then
+    // fails to typecheck even though the runtime value is correct.
+    const captured: { ref: PendingReference | null } = { ref: null };
+    const entries = buildContextMenu(container, (r) => { captured.ref = r; })!;
     const ask = entries.find((e: any) => e.id === 'ask') as any;
     expect(ask, 'Ask about this must exist for a CM6 selection').toBeTruthy();
-    const spy = vi.fn();
-    window.addEventListener('youcoded:compose-insert', spy);
     ask.run();
-    window.removeEventListener('youcoded:compose-insert', spy);
-    const composed = (spy.mock.calls[0]?.[0] as CustomEvent)?.detail?.text ?? '';
+    const composed = captured.ref?.promptText ?? '';
     expect(composed).toContain('line 800');
     expect(composed).toContain('"src/big.ts"');
   });
@@ -81,13 +93,11 @@ describe('CM6 artifact context menu (real component)', () => {
   it('cites a range across lines', () => {
     const { container, view } = mountEditor();
     selectLine(view, 42, 45);
-    const entries = buildContextMenu(container)!;
+    const captured: { ref: PendingReference | null } = { ref: null };
+    const entries = buildContextMenu(container, (r) => { captured.ref = r; })!;
     const ask = entries.find((e: any) => e.id === 'ask') as any;
-    const spy = vi.fn();
-    window.addEventListener('youcoded:compose-insert', spy);
     ask.run();
-    window.removeEventListener('youcoded:compose-insert', spy);
-    const composed = (spy.mock.calls[0]?.[0] as CustomEvent)?.detail?.text ?? '';
+    const composed = captured.ref?.promptText ?? '';
     expect(composed).toContain('lines 42-45');
   });
 
@@ -97,7 +107,7 @@ describe('CM6 artifact context menu (real component)', () => {
     // Right-click lands on a node inside .cm-content (contenteditable=false in
     // read mode) — the artifact branch must win.
     const target = (container.querySelector('.cm-content') as HTMLElement) ?? container;
-    const entries = buildContextMenu(target)!;
+    const entries = buildContextMenu(target, () => {})!;
     expect(entries.some((e: any) => e.id === 'ask')).toBe(true);
     expect(entries.some((e: any) => e.id === 'paste')).toBe(false);
   });
@@ -132,7 +142,7 @@ describe('CM6 artifact context menu (real component)', () => {
     );
     const content = utils.container.querySelector('.cm-content[contenteditable="true"]') as HTMLElement;
     expect(content, 'editing CM6 must expose an editable .cm-content').toBeTruthy();
-    const entries = buildContextMenu(content)!;
+    const entries = buildContextMenu(content, () => {})!;
     expect(entries.some((e: any) => e.id === 'paste')).toBe(true);
     expect(entries.some((e: any) => e.id === 'select-all')).toBe(true);
   });

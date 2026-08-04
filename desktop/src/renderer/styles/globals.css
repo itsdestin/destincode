@@ -564,6 +564,29 @@ body[data-mode="buddy-chat"] #theme-bg {
   will-change: transform;
 }
 
+/* Review Finding 1/2 fix: while an "Ask Claude about this" reference is held,
+   the composer must paint ABOVE the reference scrim (Overlay.tsx's Scrim
+   layer={2}, z-60) so the textarea/Send button stay clickable. `.bottom-float`
+   already forms its OWN stacking context (position:absolute + z-index + the
+   transform/will-change above each independently qualify), so its z-index:20
+   only competes against OTHER stacking contexts at the SAME ancestor level as
+   the reference scrim — which is portalled straight onto document.body,
+   outside .app-shell entirely. Raising a z-index on some element NESTED
+   inside .bottom-float (the old approach, InputBar.tsx) can never win that
+   fight: a descendant's z-index only orders it against ITS OWN siblings
+   inside .bottom-float's stacking context, never against .bottom-float
+   itself. So this rule raises the stacking-context-forming box directly, and
+   ONLY while [data-reference-held] is set on <body> (ReferenceOverlay.tsx),
+   so normal chrome ordering (under every other L1/L3/L4 scrim) is untouched
+   otherwise. The actual number is NOT hardcoded here — Overlay.tsx is the
+   sole place a layer number is decided (design rule 11, guarded by
+   tests/overlay-layer-authority.test.ts); ReferenceOverlay.tsx publishes
+   REFERENCE_COMPOSER_Z as --reference-composer-z on <body> alongside the
+   attribute, and this rule just consumes the var. */
+body[data-reference-held] .bottom-float {
+  z-index: var(--reference-composer-z, 20);
+}
+
 /* Jump-to-bottom button — chrome floats over the content area,
    so push the button up above it. Task 12 review fix: + --queued-strip-height
    (published by ChatView.tsx's measurement effect, 0px when the queued strip
@@ -929,6 +952,196 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 [data-wallpaper] .layer-surface {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   "Ask Claude about this" held reference (spec 2026-07-26)
+   All values derive from theme tokens so the glow re-themes with everything
+   else — a literal colour here would break every community theme.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.reference-scrim {
+  --ref-stroke: var(--accent);
+  --ref-wash: color-mix(in oklab, var(--accent) 12%, transparent);
+  --ref-glow: color-mix(in oklab, var(--accent) 45%, transparent);
+  /* 2.5x the standard overlay shadow: reads as lifted on light themes
+     (0.2 -> 0.5) without going murky on dark ones (0.1 -> 0.25). */
+  --ref-lift-shadow: 0 24px 64px rgba(0, 0, 0, calc(var(--shadow-strength, 0.15) * 2.5));
+}
+
+/* Traced outline around the highlighted selection, restored 2026-07-28 after
+   a dev-review pass deleted it as "uneven and janky" / "a weird black box".
+   What's different this time (see reference-geometry.ts and
+   use-reference-geometry.ts for the full reasoning):
+     1. Anchored to the `<mark>` elements INSIDE THE CLONE, not the source —
+        so it traces wherever the highlight actually is, for a travelling
+        chat card too, instead of the empty space the source left behind.
+     2. The geometry itself is smoothed: pixel-snapped, near-identical
+        adjacent line edges merged, degenerate boxes dropped, every corner
+        rounded (clamped per-vertex) instead of a raw stepped polygon. A
+        stepped/notched shape with sharp 90° corners is what actually read as
+        "a weird black box" — a filled, hard-edged region looks heavier and
+        more like a UI glitch than a soft, rounded highlight does. */
+.reference-trace { position: fixed; inset: 0; pointer-events: none; overflow: visible; }
+.reference-trace path.wash { fill: var(--ref-wash); stroke: none; }
+.reference-trace path.outline {
+  fill: none;
+  stroke: var(--ref-stroke);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px var(--ref-glow));
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: reference-trace-in 620ms 120ms cubic-bezier(.4, 0, .2, 1) forwards,
+             reference-breathe 2800ms 740ms ease-in-out infinite;
+}
+@keyframes reference-trace-in { to { stroke-dashoffset: 0; } }
+@keyframes reference-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+/* The highlighted span inside a reference clone (chat and artifact both —
+   see apply-highlight.ts). Theme tokens only: a literal colour here would
+   break every community theme, same rule as the rest of this block.
+   Restoration note: this used to ALSO carry its own inset ring (added as a
+   stand-in while the traced outline above was deleted — "my highlighted
+   artifact viewer selections aren't focused/selected at all"). With the
+   outline restored, the ring is now a literal duplicate of it — same union
+   region, same accent colour, drawn twice — so it's removed here; the
+   background tint stays as a distinct, complementary signal (it marks the
+   EXACT covered text run character-for-character, which the smoothed/merged
+   outline geometry only approximates). See the outline-restore report for
+   the full "which treatments stay" reasoning, including why the travelling
+   card's own ring+glow (below) is judged NOT redundant with this outline:
+   the card ring means "this is the referenced message"; this outline means
+   "this is the specific span selected within it" — two different claims,
+   coincident only when the whole message is what's selected (the no-marks
+   case, where the outline doesn't render at all — see useReferenceGeometry). */
+.reference-mark {
+  background: color-mix(in oklab, var(--accent) 30%, transparent);
+  color: inherit;
+  border-radius: var(--radius-sm);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* The lifted clone. Chat references travel to centre; artifact references do
+   NOT (their selection is already where the user is looking) — spec 2.2. */
+.reference-lift {
+  position: fixed;
+  z-index: 61;                 /* CONTENT_Z[2]; the composer sits one above */
+  pointer-events: none;
+  transition: transform 460ms cubic-bezier(.22, 1, .36, 1);
+  will-change: transform;
+}
+/* Fix (deviation from the brief's literal `.reference-lift > *`): the cancel
+   button's wrapper is ALSO a direct child of .reference-lift (it's pinned to
+   the card at -top-3 -right-3), so a bare `> *` selector would hand the
+   button wrapper the same box-shadow/70vh-scroll treatment as the cloned
+   card. Scope to .reference-lift-card, the clone holder only. */
+.reference-lift > .reference-lift-card {
+  pointer-events: auto;
+}
+
+/* The cloned bubble must FILL the lifted wrapper.
+   Chat bubbles carry `max-w-[85%]` (AssistantTurnBubble.tsx / UserMessage.tsx)
+   so they occupy 85% of the transcript row. The wrapper is already sized to the
+   bubble's own measured rect, so that percentage resolves a SECOND time against
+   it — leaving the card 15% narrower than its wrapper, with dead space on the
+   right and the cancel button pinned out in it (Destin, dev review: "the weird
+   extra clear space to the right of the centered message bubble"). Unlayered
+   CSS beats Tailwind's @layer utilities, so this wins without !important. */
+.reference-lift > .reference-lift-card > * {
+  max-width: 100%;
+  width: 100%;
+  /* A message longer than the viewport must not overflow off-screen.
+     This lives on the CLONE, not the holder: box-shadow paints OUTSIDE the
+     border box and is clipped by an ANCESTOR's overflow, so holder-level
+     `overflow-y: auto` sliced the clone's ring off everywhere except where it
+     bled past the corners — the "weird corners" Destin saw in dev review.
+     An element's own overflow never clips its own shadow. */
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+/* Ring + glow on the CLONE, not the holder: the clone keeps the bubble's own
+   border-radius, so the ring follows its rounded shape instead of boxing it.
+   This replaces the source-anchored SVG trace for travelling references —
+   it hugs the card and travels with it, so nothing is left behind. */
+.reference-lift[data-travels="true"] > .reference-lift-card > * {
+  box-shadow:
+    0 0 0 1.5px var(--ref-stroke),
+    0 0 18px var(--ref-glow),
+    var(--ref-lift-shadow);
+}
+/* Non-travelling (artifact) clone: pinned over the original and clipped to the
+   selection, so only the referenced lines stay bright above the dim. */
+.reference-lift:not([data-travels="true"]) > .reference-lift-card,
+.reference-lift:not([data-travels="true"]) > .reference-lift-card > * {
+  box-shadow: none;
+  max-height: none;
+  overflow: visible;
+}
+
+/* Issue A/B (final review): detached source — the held reference survived a
+   session switch or a closed file tab, but the DOM node it pointed at
+   didn't. See the WHY comment on the positioning effects in
+   ReferenceOverlay.tsx: there is no meaningful FLIP "First" position for a
+   disconnected element, so this state is deliberately static, not animated.
+   `transition: none` stops any stray slide from whatever inline transform
+   this REUSED node happened to carry from its last attached measurement.
+   The card-level override comes after (and therefore beats, same
+   specificity) the artifact `:not([data-travels="true"])` rule above —
+   without it, a detached ARTIFACT reference's clone (which can be an entire
+   file's worth of content, since there's no live selection left to clip
+   against) would render with `overflow: visible` and no height cap. */
+.reference-lift[data-detached="true"] { transition: none; }
+.reference-lift[data-detached="true"] > .reference-lift-card > * {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+/* Reduced effects (Task 9): static outline, no trace-in animation, no
+   breathing pulse, no glow — plus a static accent ring on the travelling
+   card and the standard (non-amplified) overlay shadow. Every new visual
+   effect in this app gets one of these branches; no exceptions. Restored
+   alongside `.reference-trace` itself (2026-07-28).
+
+   Keyed off data-reduced stamped by ReferenceOverlay.tsx, NOT an html
+   attribute: verified 2026-07-26 that theme-engine.ts applies reducedEffects
+   by zeroing the blur vars and never writes a data-reduced-effects attribute
+   to <html>, so an attribute selector there would be dead CSS.
+
+   Corrected from the brief's literal selectors, which predate the Task 8
+   markup split: the brief targeted `.reference-lift[data-reduced="true"] >
+   *`, but `.reference-lift`'s only element children today are
+   `.reference-lift-card` (the clone holder) and, for travelling references,
+   the cancel-button wrapper (`-top-3 -right-3`) — a bare `> *` would hand
+   that wrapper the same box-shadow treatment as the card, same class of bug
+   the non-reduced `.reference-lift > .reference-lift-card` rule above was
+   already scoped to avoid. Scoped to `.reference-lift-card` here too. */
+.reference-trace[data-reduced="true"] path.outline {
+  animation: none;
+  stroke-dashoffset: 0;
+  stroke-width: 2;
+  filter: none;
+}
+.reference-lift[data-reduced="true"] { transition: none; }
+/* Only the travelling (chat) case gets the amplified `--ref-lift-shadow` in
+   the first place (the non-travelling/artifact rule just above sets
+   box-shadow: none unconditionally) — so this drop-back-to-standard rule is
+   scoped to `[data-travels="true"]` too, otherwise it would tie with that
+   rule's specificity and (by source order) incorrectly paint a shadow onto
+   the clipped artifact clone when reduced effects is on. */
+/* Targets the CLONE (`> * `), matching where the ring + glow now live. Keeps a
+   plain 1.5px ring so the card is still identifiable as the reference, drops
+   the accent glow and the amplified lift shadow. */
+.reference-lift[data-reduced="true"][data-travels="true"] > .reference-lift-card > * {
+  box-shadow:
+    0 0 0 1.5px var(--ref-stroke),
+    0 8px 32px rgba(0, 0, 0, var(--shadow-strength, 0.15));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reference-trace path.outline { animation: none; stroke-dashoffset: 0; }
+  .reference-lift { transition: none; }
 }
 
 /* Marketplace rail cards — tighter shadow scoped to the rail scroll
@@ -2166,4 +2379,25 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
 .artifact-content-pane,
 .artifact-content-pane * {
   overflow-anchor: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reference reply inside a user bubble (dev review: Destin picked B+D).
+   The pill is the COLLAPSED state, the panel the EXPANDED one — one control,
+   two states. Everything tints from --on-accent so it re-themes with the
+   bubble it sits inside and never needs a literal colour.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.reference-pill {
+  background: color-mix(in oklab, var(--on-accent) 14%, transparent);
+  /* The pill must ellipsise, not wrap: its whole point is that the bubble
+     stays about the size of what the user actually typed. */
+  min-width: 0;
+}
+.reference-pill:hover:not(.reference-pill--static) {
+  background: color-mix(in oklab, var(--on-accent) 22%, transparent);
+}
+.reference-pill--static { cursor: default; }
+
+.reference-panel {
+  background: color-mix(in oklab, var(--on-accent) 12%, transparent);
 }

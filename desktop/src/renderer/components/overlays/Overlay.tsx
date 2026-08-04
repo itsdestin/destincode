@@ -21,6 +21,14 @@ const SCRIM_Z: Record<OverlayLayer, number> = { 1: 40, 2: 60, 3: 70, 4: 100 };
 // design rule 11 is that this file is the only place a layer number is decided.
 export const CONTENT_Z: Record<OverlayLayer, number> = { 1: 50, 2: 61, 3: 71, 4: 100 };
 
+// The composer stays LIVE and interactive above the reference scrim while an
+// "Ask Claude about this" reference is held (spec 2026-07-26 §6) — you type
+// your question while the source sits pinned behind the dim. One above L2
+// content so it clears the lifted card without a magic number at the call site.
+// Declared HERE because Overlay.tsx is the only place a layer number is decided
+// (design rule 11, guarded by tests/overlay-layer-authority.test.ts).
+export const REFERENCE_COMPOSER_Z = CONTENT_Z[2] + 1;
+
 // Popover escape-hatch tier: a floating menu/panel SPAWNED FROM a host that
 // lives in the z-9000 exception band (SessionStrip dropdown, ProjectHero,
 // OverflowMenu — see docs/shared-ui-architecture.md → Overlay Layer System).

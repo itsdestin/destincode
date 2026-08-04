@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, act } from '@testing-library/react';
-import { EscCloseProvider, useEscClose, useEscStackEmpty, useDismissTop } from './use-esc-close';
+import { EscCloseProvider, useEscClose, useEscStackEmpty, useEscStackDepth, useDismissTop } from './use-esc-close';
 
 function pressEsc() {
   act(() => {
@@ -187,5 +187,27 @@ describe('useEscClose', () => {
       </EscCloseProvider>,
     );
     expect(() => act(() => { dismiss(); })).not.toThrow();
+  });
+
+  it('useEscStackDepth reports how many overlays are registered', () => {
+    const captured: number[] = [];
+    function Probe() {
+      captured.push(useEscStackDepth());
+      return null;
+    }
+    function Harness({ extra }: { extra: boolean }) {
+      return (
+        <EscCloseProvider>
+          <Probe />
+          <Overlay onClose={() => {}} />
+          {extra && <Overlay onClose={() => {}} />}
+        </EscCloseProvider>
+      );
+    }
+    const { rerender } = render(<Harness extra={false} />);
+    rerender(<Harness extra={true} />);
+    // Depth grows when a second overlay opens on top — this is the signal the
+    // reference overlay uses to cancel itself rather than paint under a drawer.
+    expect(Math.max(...captured)).toBe(2);
   });
 });

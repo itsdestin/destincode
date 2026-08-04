@@ -304,6 +304,50 @@ describe('AssistantTurnBubble — memo comparator (streaming perf)', () => {
 
     expect(mdRenders.length).toBeGreaterThan(rendersAfterMount);
   });
+
+  it('DOES re-render when `streaming` flips with the SAME turn object reference (crash/error path)', () => {
+    // Pins the bug: SESSION_PROCESS_EXITED / NATIVE_SESSION_ERROR call endTurn(session),
+    // which flips isThinking false WITHOUT replacing the turn object in
+    // session.assistantTurns (unlike TRANSCRIPT_TURN_COMPLETE / TRANSCRIPT_INTERRUPT,
+    // which both do assistantTurns.set(id, {...turn, ...})). For a text-only turn with
+    // no tool groups, `turn` stays === across the re-render and the per-group loop in
+    // the comparator never runs — `streaming` must be compared explicitly or the memo
+    // silently blocks the update and data-streaming stays "true" forever, permanently
+    // disabling "Ask about this" on a finished message.
+    const turn: AssistantTurn = {
+      id: 'turn_streaming',
+      segments: [{ type: 'text' as const, content: 'hello world', messageId: 'turn_streaming-msg' }],
+      timestamp: 0,
+      stopReason: null,
+      model: null,
+      usage: null,
+      anthropicRequestId: null,
+    };
+    const toolGroups = new Map<string, ToolGroupState>();
+    const toolCalls = new Map<string, ToolCallState>();
+
+    const props = { turn, toolGroups, toolCalls, sessionId: 'test', showTimestamps: false };
+    const { container, rerender } = render(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} streaming={true} />
+      </ChatProvider>
+    );
+
+    const bubbleEl = container.querySelector('.assistant-bubble');
+    expect(bubbleEl).not.toBeNull();
+    expect(bubbleEl).toHaveAttribute('data-streaming', 'true');
+
+    // Same `turn` object reference — only `streaming` changes, exactly what
+    // endTurn() produces on the crash/error paths.
+    rerender(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} turn={turn} streaming={false} />
+      </ChatProvider>
+    );
+
+    const bubbleElAfter = container.querySelector('.assistant-bubble');
+    expect(bubbleElAfter).not.toHaveAttribute('data-streaming');
+  });
 });
 
 describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleaved reasoning)', () => {

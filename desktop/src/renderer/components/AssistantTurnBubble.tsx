@@ -18,6 +18,9 @@ interface Props {
   /** Session provider — drives provider-aware stop-reason copy (native vs Claude). */
   provider?: SessionProvider;
   showTimestamps: boolean;
+  /** True only for the turn currently being written. Gates "Ask about this" —
+   *  the reference card is a static clone and would freeze mid-sentence. */
+  streaming?: boolean;
 }
 
 // Non-end_turn stop reasons rendered inline under the affected turn.
@@ -328,6 +331,14 @@ function assistantTurnPropsAreEqual(prev: Props, next: Props): boolean {
   if (prev.sessionId !== next.sessionId) return false;
   if (prev.provider !== next.provider) return false;
   if (prev.showTimestamps !== next.showTimestamps) return false;
+  // WHY: SESSION_PROCESS_EXITED / NATIVE_SESSION_ERROR call endTurn(session),
+  // which flips isThinking false WITHOUT replacing the turn object (unlike
+  // TRANSCRIPT_TURN_COMPLETE / TRANSCRIPT_INTERRUPT, which both do
+  // assistantTurns.set(id, {...turn, ...})). For a text-only turn with no
+  // tool groups, `streaming` going true->false is otherwise the ONLY prop
+  // that changes — miss it here and data-streaming stays "true" forever,
+  // permanently disabling "Ask about this" on a finished message.
+  if (prev.streaming !== next.streaming) return false;
 
   // Same turn object (checked above) ⇒ same segments ⇒ same group IDs. We only
   // need to walk one side's IDs.
@@ -344,7 +355,7 @@ function assistantTurnPropsAreEqual(prev: Props, next: Props): boolean {
   return true;
 }
 
-export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, provider, showTimestamps }: Props) {
+export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, provider, showTimestamps, streaming }: Props) {
   // Read opt-in metadata preference here so the strip below only renders when
   // the user has explicitly turned it on in PreferencesPopup (default false).
   const { showTurnMetadata } = useTheme();
@@ -372,7 +383,10 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
         const isLastBubble = i === bubbles.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
-            <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}>
+            <div
+              data-streaming={streaming ? 'true' : undefined}
+              className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}
+            >
               {bubble.reasoning && (
                 <ReasoningSection content={bubble.reasoning.content} />
               )}

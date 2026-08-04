@@ -20,18 +20,19 @@ import type { NativeSendResult } from '../../shared/types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
+import { useReference, type PendingReference } from '../state/reference-context';
 
 export interface InputBarHandle {
   clear: () => void;
   // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
   // existing "external surface reads/replaces InputBar's draft" mechanism —
-  // `initialInput` fills once per session id (already consumed for an ACTIVE
-  // session) and the `youcoded:compose-insert` CustomEvent only prepends
-  // fire-and-forget (no way to check emptiness first, which the brief's
-  // ordering — refuse BEFORE removing the queued entry — requires). Extending
-  // this existing ref (already used by App for `clear()`) with a synchronous
-  // read + an unconditional replace was the smallest addition that supports
-  // the required check-then-act sequence; see task-11-report.md.
+  // `initialInput` only fills once per session id (already consumed for an
+  // ACTIVE session), which can't support a check-then-act sequence (the
+  // brief's ordering — refuse BEFORE removing the queued entry — requires
+  // reading emptiness first). Extending this existing ref (already used by
+  // App for `clear()`) with a synchronous read + an unconditional replace was
+  // the smallest addition that supports the required sequence; see
+  // task-11-report.md.
   /** True when the composer currently holds a non-empty (trimmed) draft. */
   hasDraft: () => boolean;
   /** Replace the composer's content with `text` and focus it. Caller must call
@@ -103,6 +104,33 @@ function sendFailureCopy(result: NativeSendResult | undefined): string {
   return 'The message could not be sent — no response from the session host.';
 }
 
+/**
+ * Composer placeholder. A held reference replaces "Message Claude..." so the
+ * empty box states what the next message is about (spec 2026-07-26 §2.1).
+ * The approval gate outranks it — that copy is a hard block, not a hint.
+ */
+export function placeholderFor(reference: PendingReference | null, disabled: boolean, minimal = false): string {
+  if (disabled) return 'Waiting for approval...';
+  // Fix (gap 2, task-4-report.md): `minimal` (terminal view) send paths write
+  // straight to the PTY and never call composeOutgoing (see handleSubmit /
+  // the textarea's onKeyDown below) — the reference can never be consumed
+  // there, so announcing it here would promise a scaffold that will never be
+  // sent. The reference is a chat-composer concept; it goes silent in
+  // minimal mode. See the clearReference-on-minimal effect in the component
+  // for why nothing stays held invisibly either.
+  if (reference && !minimal) return `Ask Claude about ${reference.label}`;
+  return 'Message Claude...';
+}
+
+/**
+ * Assembles what actually goes to Claude. The scaffold lives in the reference,
+ * NOT in the textarea — this is the whole point of the 2026-07-26 redesign, so
+ * the user's draft is only ever their own words.
+ */
+export function composeOutgoing(draft: string, reference: PendingReference | null): string {
+  return reference ? reference.promptText + draft : draft;
+}
+
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -128,10 +156,43 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
   const showStop = useStreamingGate(sessionId);
 
+  // The "Ask Claude about this" held reference (spec 2026-07-26). Scoped by
+  // ReferenceProvider per-session (App.tsx), same parking idiom as draftsRef
+  // below — reference and draft are independent pieces of per-session state.
+  const { reference, setReference, clearReference } = useReference();
+
+  // Fix (gap 2, task-4-report.md): terminal view's send paths (handleSubmit's
+  // minimal branch, the textarea's onKeyDown minimal branch) write straight
+  // to the PTY and never touch composeOutgoing/sendMessage, so a reference
+  // held while the composer is in minimal mode can never be consumed or
+  // announced (placeholderFor also silences it above, in minimal mode). A
+  // reference held while its source is off-screen and unconsumable is worse
+  // than no reference — it would look live in chat view but do nothing here,
+  // then resurface in chat view later as a stale, forgotten scaffold.
+  // Deliberately NOT attempting to prepend the scaffold to the PTY write
+  // instead: desktop/CLAUDE.md documents Windows-ConPTY chunking constraints
+  // (SAFE_ATOMIC_LEN / echo-driven submit) that a multi-line scaffold prepend
+  // would trip. Clearing outright is the explicit, honest behavior.
+  // `reference` is in the dep array (not just `minimal`) so this also covers
+  // a reference getting set WHILE already in minimal mode (e.g. some future
+  // caller of setReference that isn't chat-view-gated) — not only the
+  // chat-to-terminal transition.
+  useEffect(() => {
+    if (minimal && reference) clearReference();
+  }, [minimal, reference, clearReference]);
+
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
   const draftsRef = useRef<Map<string, { text: string; attachments: Attachment[] }>>(new Map());
   const prevSessionRef = useRef<string>(sessionId);
+  // Fix (reviewer Critical, cross-session reference leak): always mirrors the
+  // CURRENTLY rendered sessionId prop — unlike the `sessionId` a send's async
+  // callback closes over (which is frozen at the moment that particular send
+  // started), this ref is live. The native-send failure path below compares
+  // its closure's sessionId against this ref to detect "the user switched
+  // sessions while the ack was still in flight" before restoring a reference.
+  const activeSessionIdRef = useRef<string>(sessionId);
+  useEffect(() => { activeSessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => {
     const prev = prevSessionRef.current;
     if (prev === sessionId) return;
@@ -294,27 +355,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     return () => window.removeEventListener('buddy:attach-file', listener);
   }, [addFiles]);
 
-  // External "insert into composer" entry point — the chat right-click menu's
-  // "Ask about this" action dispatches this window CustomEvent with a pre-built
-  // quote + follow-up scaffold. Mirrors buddy:attach-file so no prop threading
-  // is needed. We PREPEND the scaffold and drop the caret right after it, so any
-  // draft the user was already typing survives as the follow-up text.
-  useEffect(() => {
-    const listener = (e: Event) => {
-      const insert = (e as CustomEvent<{ text?: string }>).detail?.text;
-      if (!insert) return;
-      setText((prev) => insert + prev);
-      requestAnimationFrame(() => {
-        const el = inputRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(insert.length, insert.length);
-      });
-    };
-    window.addEventListener('youcoded:compose-insert', listener);
-    return () => window.removeEventListener('youcoded:compose-insert', listener);
-  }, []);
-
   const removeAttachment = useCallback((path: string) => {
     setAttachments((prev) => prev.filter((a) => a.path !== path));
   }, []);
@@ -396,12 +436,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // produces, but the compiler can't see that through the route value.
       const effectiveMessage = (!dispatchResult.handled && dispatchResult.rewritten) || message;
 
-      // One sanitized source string for BOTH the optimistic bubble and the PTY
-      // send. The transcript confirms the bubble by EXACT content match, so if
-      // the bubble kept newlines the send stripped, a multiline message could
-      // never be confirmed — `pending` stayed set forever and
-      // useSubmitConfirmation fired a stray recovery \r. See outgoing-message.ts.
-      const outgoing = buildOutgoingMessage(effectiveMessage, files.map((f) => f.path));
+      // The held reference's scaffold is prepended HERE, at send — it was
+      // never in the textarea. On a refused send (the gate above, or
+      // `disabled` below) we return before this point, so the reference
+      // survives alongside the draft (spec §7) — clearReference() only runs
+      // on the success path in `send()`.
+      const outgoing = buildOutgoingMessage(composeOutgoing(effectiveMessage, reference), files.map((f) => f.path));
       if (!outgoing) return true; // nothing to send — treat as consumed
       if (disabled) return false;
 
@@ -446,6 +486,36 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             // clobber newer input.
             setText((cur) => (cur.trim() ? cur : effectiveMessage));
             setAttachments((cur) => (cur.length > 0 ? cur : files));
+            // Fix (gap self-reported in task-4-report.md): `send()` also ran
+            // clearReference() synchronously in that same post-return block,
+            // so a failed ack was restoring the draft but leaving the
+            // reference gone — the user got their text back with the "Ask
+            // Claude about X" scaffold silently dropped, and resending would
+            // no longer include it. The draft and its reference are one unit
+            // (composeOutgoing prepends the scaffold to the draft at send
+            // time): restoring one without the other silently changes what
+            // gets sent. Guarded the same way as text/attachments above —
+            // only refill if nothing newer was set during the round-trip.
+            //
+            // Fix (reviewer Critical, cross-session reference leak): ALSO
+            // guarded on session identity. There is exactly one
+            // ReferenceProvider for the whole app, keyed to whichever session
+            // is currently active — its per-session parking effect swaps the
+            // live slot the instant the user switches sessions. `sessionId`
+            // here is frozen at the moment THIS send started (closure); if
+            // the user switched sessions before this ack came back,
+            // `activeSessionIdRef.current` now names the NEW session while
+            // `reference` still holds the OLD session's quoted content.
+            // Restoring unconditionally would silently write session A's
+            // reference into session B's live slot — the next message sent
+            // from session B would silently inject another conversation's
+            // quoted content into Claude's context. Only restore when the
+            // send's session is still the one on screen. (The setText/
+            // setAttachments restores just above have this same race but are
+            // out of scope for this fix — see task-4-report.md.)
+            if (sessionId === activeSessionIdRef.current) {
+              setReference((cur) => cur ?? reference);
+            }
             return;
           }
           // Task 12: a 'queued' ack dispatches QUEUED_MESSAGE_ADDED instead of
@@ -459,6 +529,15 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               type: 'QUEUED_MESSAGE_ADDED',
               sessionId,
               queueId: result.queueId,
+              // Fix (duplicate-bubble bug): must be outgoing.content, the exact
+              // string that was actually sent (scaffold included when a
+              // reference was held) — NOT the user's raw draft. chat-reducer's
+              // TRANSCRIPT_USER_MESSAGE dedup matches the confirming transcript
+              // event against this timeline entry by CONTENT EQUALITY. A raw
+              // draft here never equals what Claude echoes back (which includes
+              // the prepended scaffold), so no pending match is found and the
+              // transcript event appends a SECOND bubble — the user's own "?"
+              // in one bubble, the whole scaffold in another.
               content: outgoing.content,
               timestamp: Date.now(),
             });
@@ -466,6 +545,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             dispatch({
               type: 'USER_PROMPT',
               sessionId,
+              // Fix (duplicate-bubble bug) — see the QUEUED_MESSAGE_ADDED
+              // comment just above; same reasoning applies here.
               content: outgoing.content,
               timestamp: Date.now(),
               attachments: files.map((f) => f.path),
@@ -481,6 +562,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
+        // Fix (duplicate-bubble bug) — see the QUEUED_MESSAGE_ADDED comment
+        // in the native branch above: this must be outgoing.content, the
+        // exact string sent (scaffold included), so TRANSCRIPT_USER_MESSAGE's
+        // content-equality dedup actually finds this pending entry instead of
+        // appending a second bubble.
         content: outgoing.content,
         timestamp: Date.now(),
         // Exact attachment paths so UserMessage can render each as a clickable
@@ -519,7 +605,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       }, submitStart);
       return true;
     },
-    [sessionId, disabled, dispatch, view, provider, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
+    [sessionId, disabled, dispatch, view, provider, reference, setReference, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
   );
 
   // Auto-resize textarea to fit content, up to 3 lines then scroll
@@ -564,10 +650,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending
+    // Reference is consumed once its scaffold has been sent (spec §7). A
+    // refused send returns above, before this line, so the reference
+    // survives alongside the draft — see sendMessage's outgoing comment.
+    clearReference();
     onCloseDrawer?.();
     // Reset height after clearing
     if (inputRef.current) inputRef.current.style.height = 'auto';
-  }, [text, attachments, sendMessage, onCloseDrawer, sessionId]);
+  }, [text, attachments, sendMessage, onCloseDrawer, sessionId, clearReference]);
 
   // Keep sendRef pointing at the latest send so the global keydown handler
   // (which can't depend on send without thrashing the listener) stays current
@@ -646,6 +736,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   return (
     <div
       className="input-bar-container shrink-0"
+      // Fix (review Finding 1): this used to carry an inline
+      // `position: relative; zIndex: REFERENCE_COMPOSER_Z` while a reference
+      // was held, but it could never work — this container is a descendant
+      // of `.bottom-float`, which already forms its own stacking context
+      // (globals.css: position:absolute + z-index + transform/will-change).
+      // A descendant's z-index only orders it against ITS OWN siblings
+      // inside that context, never against `.bottom-float` itself, so the
+      // whole bottom chrome kept painting under the reference scrim (z-60)
+      // regardless of this value. The real fix lifts `.bottom-float` itself
+      // (globals.css' `body[data-reference-held] .bottom-float` rule) — no
+      // inline style needed here at all.
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
@@ -785,7 +886,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onPaste={handlePaste}
-            placeholder={disabled ? 'Waiting for approval...' : 'Message Claude...'}
+            placeholder={placeholderFor(reference, !!disabled, !!minimal)}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the
