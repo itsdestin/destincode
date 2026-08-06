@@ -26,6 +26,25 @@ export function resolveRgPath(raw: string = bundledRgPath): string {
   return raw;
 }
 
+/** Build the failure message from what ripgrep ACTUALLY said.
+ *
+ *  WHY (2026-08-01 review): the old code appended "Check the regex syntax." to
+ *  every exit-2, including a missing-path IO error. A reviewing model got
+ *  "No such file or directory ... Check the regex syntax." for a perfectly valid
+ *  regex and a mistyped path. Per docs/error-message-standards.md an error is
+ *  either specific and accurate or general and non-committal — never a guessed
+ *  cause bolted onto a real one. */
+export function grepErrorMessage(stderr: string, resolvedPath: string, cwd: string): string {
+  const raw = stderr.trim() || 'ripgrep error';
+  if (/regex parse error|error: (unclosed|repetition|unrecognized)/i.test(stderr)) {
+    return `Grep failed: ${raw}. Check the regex syntax.`;
+  }
+  if (/No such file or directory|IO error for operation/i.test(stderr)) {
+    return `Grep failed: ${resolvedPath} does not exist. Paths resolve from the workspace root (${cwd}); pass a path relative to it, or omit \`path\` to search the whole workspace.`;
+  }
+  return `Grep failed: ${raw}`;
+}
+
 export const GrepTool = defineTool({
   name: 'Grep',
   description:
@@ -47,7 +66,10 @@ export const GrepTool = defineTool({
     if (mode === 'count') rgArgs.push('--count');
     if (mode === 'content') rgArgs.push('-n');
     if (args.glob) rgArgs.push('--glob', args.glob);
-    rgArgs.push('--', args.pattern, resolveP(args.path ?? '.', ctx.cwd));
+    // Hoisted so the exit-2 error message (below) can name the exact path that
+    // failed, instead of a context-free "ripgrep error".
+    const resolvedTarget = resolveP(args.path ?? '.', ctx.cwd);
+    rgArgs.push('--', args.pattern, resolvedTarget);
     return new Promise((resolve) => {
       // Two spawn defenses, both learned from `spawn ENOTDIR` (2026-07-20):
       //  1. `cwd: ctx.cwd` explicitly — never inherit the Electron main process's
@@ -94,8 +116,7 @@ export const GrepTool = defineTool({
           return;
         }
         // rg exit 1 = no matches (not an error); 2 = real error.
-        if (code === 2)
-          resolve({ text: `Grep failed: ${err.trim() || 'ripgrep error'}. Check the regex syntax.`, isError: true });
+        if (code === 2) resolve({ text: grepErrorMessage(err, resolvedTarget, ctx.cwd), isError: true });
         else resolve({ text: out.trim() || 'No matches found.' });
       });
     });
