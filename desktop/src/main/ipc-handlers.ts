@@ -2896,6 +2896,12 @@ export function registerIpcHandlers(
       const tag = await reg.update(String(id), clean);
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Task 5 gap (final review): the chatsearch metadata snapshot denormalizes
+      // tag LABELS at build time (meta-builder.ts resolves tag ids -> labels once,
+      // into each conversation row) — renaming a tag here doesn't touch those
+      // rows, so without this the index would keep serving the OLD label until
+      // some unrelated refresh happened to rebuild it.
+      emitConversationMetaChanged();
       return { ok: true, tag };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2907,6 +2913,9 @@ export function registerIpcHandlers(
       await reg.delete(String(id));
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Same gap as TAGS_UPDATE above — a deleted tag's label must also drop
+      // out of the denormalized index, not just the registry.
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });

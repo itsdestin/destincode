@@ -1,24 +1,39 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  describe, it, expect, vi, beforeEach, afterEach,
+} from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Mock electron before importing ipc-handlers, which transitively imports
 // main.ts (for setPermissionOverrides). main.ts uses protocol.registerSchemesAsPrivileged
 // and Menu.setApplicationMenu at module scope, both of which crash without this mock.
-vi.mock('electron', () => ({
-  // whenReady must never resolve — otherwise main.ts runs its entire init chain
-  // (createWindow, RemoteServer, SyncService, etc.) which hits unmocked APIs.
-  app: { isPackaged: false, getPath: vi.fn(() => '/tmp'), getVersion: vi.fn(() => '0.0.0-test'), whenReady: vi.fn(() => new Promise(() => {})), on: vi.fn(), quit: vi.fn(), setAppUserModelId: vi.fn(), commandLine: { appendSwitch: vi.fn() }, getGPUInfo: vi.fn(() => new Promise(() => {})) },
-  ipcMain: { handle: vi.fn(), on: vi.fn() },
-  BrowserWindow: vi.fn(() => ({ loadURL: vi.fn(), on: vi.fn(), webContents: { send: vi.fn() } })),
-  Menu: { setApplicationMenu: vi.fn() },
-  protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
-  dialog: { showOpenDialog: vi.fn() },
-  clipboard: { readImage: vi.fn(() => ({ isEmpty: () => true })) },
-  nativeImage: {},
-  shell: { openExternal: vi.fn() },
-  powerSaveBlocker: { start: vi.fn(() => 0), stop: vi.fn() },
-}));
+vi.mock('electron', () => {
+  // getAllWindows is a static method on the real BrowserWindow class —
+  // broadcastToAllWindows (called after a successful tags:create/update/delete)
+  // needs it to return an iterable, or those handlers throw before ever
+  // reaching emitConversationMetaChanged.
+  const BrowserWindowMock: any = vi.fn(() => ({ loadURL: vi.fn(), on: vi.fn(), webContents: { send: vi.fn() } }));
+  BrowserWindowMock.getAllWindows = vi.fn(() => []);
+  return {
+    // whenReady must never resolve — otherwise main.ts runs its entire init chain
+    // (createWindow, RemoteServer, SyncService, etc.) which hits unmocked APIs.
+    app: { isPackaged: false, getPath: vi.fn(() => '/tmp'), getVersion: vi.fn(() => '0.0.0-test'), whenReady: vi.fn(() => new Promise(() => {})), on: vi.fn(), quit: vi.fn(), setAppUserModelId: vi.fn(), commandLine: { appendSwitch: vi.fn() }, getGPUInfo: vi.fn(() => new Promise(() => {})) },
+    ipcMain: { handle: vi.fn(), on: vi.fn() },
+    BrowserWindow: BrowserWindowMock,
+    Menu: { setApplicationMenu: vi.fn() },
+    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+    dialog: { showOpenDialog: vi.fn() },
+    clipboard: { readImage: vi.fn(() => ({ isEmpty: () => true })) },
+    nativeImage: {},
+    shell: { openExternal: vi.fn() },
+    powerSaveBlocker: { start: vi.fn(() => 0), stop: vi.fn() },
+  };
+});
 
 import { registerIpcHandlers } from '../src/main/ipc-handlers';
+import * as conversationsService from '../src/main/conversations/service';
+import { startTagRegistry } from '../src/main/conversations/tag-registry-service';
 
 describe('IPC Handlers', () => {
   it('registers all expected IPC channels', () => {
@@ -192,5 +207,90 @@ describe('session:create native resume — missing stored header', () => {
     expect(errorCall![1].sessionId).toBe('ghost-native-1');
     expect(typeof errorCall![1].data.text).toBe('string');
     expect(errorCall![1].data.text.length).toBeGreaterThan(0);
+  });
+});
+
+// Task 5 gap (final review): TAGS_UPDATE and TAGS_DELETE denormalize into the
+// chatsearch metadata snapshot (meta-builder.ts resolves tag ids -> LABELS once,
+// at build time, into each conversation row) but never told chatsearch to
+// rebuild — so renaming or deleting a tag left the index serving the old label
+// (or a since-deleted one) until an unrelated refresh happened to catch up.
+describe('tags:update / tags:delete signal chatsearch (Task 5 gap)', () => {
+  let tmp: string;
+  let mockIpcMain: { handle: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+  let mockSessionManager: any;
+  let mockWindow: any;
+  let mockSkillProvider: any;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-tags-ipc-'));
+    // Real tag registry against a tmp dir — no fs mocking, and the handlers
+    // short-circuit to {ok:false} if getTagRegistry() returns null, so a real
+    // registry is required to reach the success path at all.
+    startTagRegistry({ tagsRoot: tmp });
+
+    mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+    mockSessionManager = {
+      createSession: vi.fn(() => ({ id: '1', name: 'test', cwd: '/tmp', status: 'active' })),
+      destroySession: vi.fn(() => true),
+      listSessions: vi.fn(() => []),
+      sendInput: vi.fn(),
+      resizeSession: vi.fn(),
+      on: vi.fn(),
+    };
+    mockWindow = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    mockSkillProvider = {
+      configStore: { getPackages: vi.fn(() => ({})) },
+      install: vi.fn(),
+      installMany: vi.fn(),
+      ensureBundledPluginsInstalled: vi.fn(),
+      ensureMigrated: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  function handlerFor(channel: string) {
+    registerIpcHandlers(mockIpcMain as any, mockSessionManager as any, mockWindow as any, mockSkillProvider as any);
+    return (mockIpcMain.handle as any).mock.calls.find((c: any) => c[0] === channel)[1];
+  }
+
+  it('tags:update signals chatsearch after a successful rename', async () => {
+    const spy = vi.spyOn(conversationsService, 'emitConversationMetaChanged');
+    const update = handlerFor('tags:update');
+    const create = handlerFor('tags:create');
+    const created = await create({}, 'Old Label', 'tag-gray');
+
+    const result = await update({}, created.tag.id, { label: 'New Label' });
+
+    expect(result.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('tags:update does not signal chatsearch when the registry rejects the update', async () => {
+    const spy = vi.spyOn(conversationsService, 'emitConversationMetaChanged');
+    const update = handlerFor('tags:update');
+
+    const result = await update({}, 'tag_does_not_exist', { label: 'New Label' });
+
+    expect(result.ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('tags:delete signals chatsearch after a successful delete', async () => {
+    const spy = vi.spyOn(conversationsService, 'emitConversationMetaChanged');
+    const del = handlerFor('tags:delete');
+    const create = handlerFor('tags:create');
+    const created = await create({}, 'Doomed Tag', 'tag-gray');
+
+    const result = await del({}, created.tag.id);
+
+    expect(result.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

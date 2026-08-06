@@ -19,6 +19,7 @@ import { getTagRegistry } from '../conversations/tag-registry-service';
 import { NativeHome } from '../native-home';
 import { cwdToProjectSlug } from '../transcript-watcher';
 import { ccProjectSlug } from '../project-conversations';
+import { laneMatches } from '../conversations/lane-guards';
 import { buildMetaFile } from './meta-builder';
 import {
   acquireBuildLock, atomicWriteFileSync, chatsearchDir, metaPath, refreshTurns,
@@ -31,6 +32,9 @@ let started = false;
 let debounceTimer: NodeJS.Timeout | null = null;
 let unsubscribeMeta: (() => void) | null = null;
 let inFlight = false;
+// Set when a trigger arrives while a cycle is already running — see the WHY
+// comment at its check in refreshFromLiveState below.
+let pendingRerun = false;
 
 export interface LaneInput {
   provider: string;
@@ -43,6 +47,16 @@ export interface RefreshInput {
   homeRoot: string;
   lanes: LaneInput[];
   tagLabels: Map<string, string>;
+}
+
+/** True when `metaFile` exists, parses, and already has at least one conversation. */
+function hasNonEmptyMeta(metaFile: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as { conversations?: Record<string, unknown> };
+    return !!parsed?.conversations && Object.keys(parsed.conversations).length > 0;
+  } catch {
+    return false; // no file yet, or unreadable — nothing to protect
+  }
 }
 
 /**
@@ -65,8 +79,14 @@ export async function refreshChatsearchIndex(input: RefreshInput): Promise<boole
   // ones triggered from a different process — is skipped forever.
   try {
     for (const lane of input.lanes) {
+      // WHY laneMatches here too: meta-builder.ts applies the SAME filter when
+      // building the metadata rows. A record whose transcriptRef belongs to a
+      // different lane must be excluded from BOTH passes — otherwise the turns
+      // pass would write lines for a conversation that never gets a metadata
+      // row to join against (an orphaned entry the CLI can find turns for but
+      // never list, tag, or resolve a title for).
       const conversations = lane.records
-        .filter((r) => !!r.transcriptRef)
+        .filter((r) => !!r.transcriptRef && laneMatches(lane.provider, r.transcriptRef))
         .map((r) => ({ id: r.id, transcriptPath: lane.resolveTranscriptPath(r) }));
 
       const stats = await refreshTurns({
@@ -86,7 +106,23 @@ export async function refreshChatsearchIndex(input: RefreshInput): Promise<boole
         transcriptExists: (p) => { try { return fs.lstatSync(p).size >= 0; } catch { return false; } },
       });
 
-      atomicWriteFileSync(metaPath(dir, lane.provider), JSON.stringify(meta, null, 2));
+      // WHY guard a zero-conversation result: store.list() is fail-soft all the
+      // way down (conversation-store.ts returns [] on any read failure, with no
+      // error signal) — so a transiently unreadable sync space (unmounted
+      // drive, mid-restore, EACCES) looks IDENTICAL to "the user really has zero
+      // conversations." Writing that result unconditionally would overwrite a
+      // good metadata file with an empty one and stamp a fresh refreshedAt, so
+      // the CLI's staleness banner would not fire and it would report "nothing
+      // is indexed yet" — indistinguishable from an actually-empty index. A
+      // stale index is recoverable (the next successful refresh repairs it); a
+      // wiped one looks like data loss. So: only skip the write when there IS a
+      // pre-existing non-empty file to protect — a first-ever build (no file
+      // yet) still writes its empty result normally.
+      const target = metaPath(dir, lane.provider);
+      if (Object.keys(meta.conversations).length === 0 && hasNonEmptyMeta(target)) {
+        continue;
+      }
+      atomicWriteFileSync(target, JSON.stringify(meta, null, 2));
     }
     return true;
   } finally {
@@ -96,7 +132,19 @@ export async function refreshChatsearchIndex(input: RefreshInput): Promise<boole
 
 /** Gather live inputs from the store + tag registry and run one cycle. */
 async function refreshFromLiveState(): Promise<void> {
-  if (inFlight) return; // a cycle is already running; its result will be current enough
+  if (inFlight) {
+    // WHY remember instead of dropping: the 3s debounce only coalesces BURSTS
+    // of triggers before it fires. Once fired, a cycle can legitimately run
+    // longer than 3s (a large history, a slow disk) — a trigger that lands
+    // during that window used to just no-op here, so a tag/note applied mid-
+    // cycle stayed invisible to the CLI until the next session-end or
+    // app-launch refresh, all while refreshedAt kept reporting the index as
+    // current. Recording it and running one more cycle once this one finishes
+    // (see the finally block below) closes that gap without a second
+    // concurrent cycle racing the same build lock.
+    pendingRerun = true;
+    return;
+  }
   const store = getConversationStore();
   if (!store) return; // store unavailable this launch — nothing to index
 
@@ -145,6 +193,10 @@ async function refreshFromLiveState(): Promise<void> {
     // retries; a stale index is surfaced by the CLI's own age banner.
   } finally {
     inFlight = false;
+    if (pendingRerun) {
+      pendingRerun = false;
+      void refreshFromLiveState();
+    }
   }
 }
 

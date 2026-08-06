@@ -985,7 +985,7 @@ export class RemoteServer {
         break;
       }
       case 'session:set-tag': {
-        const { noteFlagChanged } = await import('./conversations/service');
+        const { noteFlagChanged, emitConversationMetaChanged } = await import('./conversations/service');
         const { tagFlagKey } = await import('../shared/tags');
         const tagId = String(payload?.tagId ?? '');
         if (!tagId.startsWith('tag_')) { this.respond(client.ws, type, id, { ok: false, error: 'invalid tag id' }); break; }
@@ -1008,11 +1008,15 @@ export class RemoteServer {
             break;
           }
         }
+        // Task 5 gap (final review): this remote mirror of session:set-tag
+        // never told chatsearch a tag changed, so a tag applied from a phone/
+        // browser stayed invisible to the CLI until an unrelated refresh.
+        emitConversationMetaChanged();
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
       case 'session:set-note': {
-        const { noteSessionNote } = await import('./conversations/service');
+        const { noteSessionNote, emitConversationMetaChanged } = await import('./conversations/service');
         const text = String(payload?.note ?? '');
         if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
         const rawId = String(payload?.sessionId ?? '');
@@ -1025,6 +1029,9 @@ export class RemoteServer {
             break;
           }
         }
+        // Same gap as session:set-tag above — the remote mirror of
+        // session:set-note must also tell chatsearch a note changed.
+        emitConversationMetaChanged();
         this.respond(client.ws, type, id, { ok: true });
         break;
       }

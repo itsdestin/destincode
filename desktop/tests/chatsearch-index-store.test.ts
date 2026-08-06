@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterEach, vi,
+} from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -192,6 +194,30 @@ describe('refreshTurns', () => {
     expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).toBe(before);
   });
 
+  // MINOR finding (final review): a transcript bigger than MAX_CHUNK_BYTES only
+  // gets partially read in one cycle (the rest catches up on the next trigger),
+  // but the recorded `size` was the FULL file size regardless — so the reported
+  // sizeBytes claimed the whole conversation was indexed when only the first
+  // chunk actually was. It must report what was actually consumed instead.
+  it('reports only what was actually consumed when a transcript exceeds one chunk', async () => {
+    // MAX_CHUNK_BYTES is 8MB; a handful of large lines clears that without
+    // needing thousands of tiny ones (keeps the test fast).
+    const bigText = 'x'.repeat(700_000); // ~700KB of content per line
+    let body = '';
+    for (let i = 0; i < 13; i++) body += ccLine(`${bigText}-${i}`);
+    const p = writeTranscript('t/big.jsonl', body);
+    const fullSize = fs.statSync(p).size;
+    expect(fullSize).toBeGreaterThan(8 * 1024 * 1024);
+
+    const stats = await refreshTurns({
+      dir, provider: 'claude', conversations: [{ id: 'big', transcriptPath: p }],
+    });
+
+    const reported = stats.get('big')!.sizeBytes;
+    expect(reported).toBeLessThan(fullSize); // must not claim more than was indexed
+    expect(reported).toBe(readState(dir, 'claude').conversations.big.offset); // matches what was actually consumed
+  });
+
   it('indexes a native session, skipping its header line', async () => {
     const header = JSON.stringify({ v: 1, sessionId: 'n1', harnessId: 'assistant', cwd: '/x', createdAt: 1 }) + '\n';
     const msg = JSON.stringify({
@@ -234,5 +260,48 @@ describe('acquireBuildLock', () => {
     const release = await acquireBuildLock(dir);
     expect(release).not.toBeNull();
     release!();
+  });
+
+  // MINOR finding (final review): the live app and a run-dev.sh instance
+  // sharing ~/.youcoded/ is the normal case, so two builders can both observe
+  // the same stale lock. The old rmSync-then-mkdirSync takeover was not
+  // atomic across them — one builder's rmSync could delete the lock directory
+  // the OTHER had just recreated, so both would believe they held it. The fix
+  // renames the stale lock to a unique claim path first; renameSync is a
+  // single atomic syscall, so only one process can ever win it.
+  //
+  // acquireBuildLock's body has no real await point (every fs call is sync),
+  // so two calls in the SAME process cannot genuinely interleave mid-function
+  // — reproducing the actual cross-process race needs real OS concurrency,
+  // which is disproportionate machinery for this fix. What IS deterministically
+  // testable here is the failure path the fix relies on: if the atomic claim
+  // step itself cannot complete (for any reason, including a concurrent
+  // builder already occupying that exact path), acquireBuildLock must back off
+  // cleanly with null rather than throw or leave a half-taken-over lock.
+  it('backs off cleanly instead of throwing when the atomic stale-lock claim cannot complete', async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      const lock = path.join(dir, '.build-lock');
+      fs.mkdirSync(lock, { recursive: true });
+      const old = now - 10 * 60_000;
+      fs.utimesSync(lock, new Date(old), new Date(old));
+
+      // Pre-occupy the exact claim path this takeover would rename into, with
+      // real content inside it — POSIX rename() onto a NON-empty existing
+      // directory fails, which is the same shape of failure a losing
+      // concurrent renameSync would hit (ENOENT on the source instead, but
+      // either way the claim step fails and must be handled the same way).
+      const claim = `${lock}.stale-${process.pid}-${now}`;
+      fs.mkdirSync(claim, { recursive: true });
+      fs.writeFileSync(path.join(claim, 'occupied'), 'x');
+
+      const release = await acquireBuildLock(dir);
+
+      expect(release).toBeNull();
+      fs.rmSync(claim, { recursive: true, force: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

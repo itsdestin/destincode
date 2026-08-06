@@ -68,7 +68,22 @@ export async function acquireBuildLock(dir: string): Promise<(() => void) | null
       const st = fs.lstatSync(lock);
       if (Date.now() - st.mtimeMs <= BUILD_LOCK_STALE_MS) return null;
       // Stale: a builder crashed without releasing. Take it over.
-      fs.rmSync(lock, { recursive: true, force: true });
+      //
+      // WHY rename instead of rmSync-then-mkdirSync: the live app and a
+      // run-dev.sh instance sharing ~/.youcoded/ is the NORMAL case, so two
+      // builders can both observe the same stale lock and both reach this
+      // branch. The old rmSync-then-mkdirSync sequence was not atomic across
+      // them — builder B's rmSync could delete the lock DIRECTORY builder A
+      // had just (re)created a moment earlier, and both would then believe
+      // they held it, defeating the whole point of the lock. A rename off
+      // the lock path IS atomic (fs.renameSync is a single filesystem
+      // syscall): only one of two concurrent renames of the same source can
+      // succeed — the loser's renameSync throws (ENOENT, source already
+      // moved) and is treated as "someone else is taking it over," same as
+      // any other failure to acquire.
+      const claim = `${lock}.stale-${process.pid}-${Date.now()}`;
+      fs.renameSync(lock, claim);
+      fs.rmSync(claim, { recursive: true, force: true });
       fs.mkdirSync(lock);
     } catch {
       return null;
@@ -233,9 +248,22 @@ export async function refreshTurns(opts: RefreshTurnsOpts): Promise<Map<string, 
   return stats;
 }
 
-function statsOf(s: { size: number; turnCount: number; firstTurnTs: string; lastTurnTs: string }): ConversationStats {
+function statsOf(s: {
+  offset: number; size: number; turnCount: number; firstTurnTs: string; lastTurnTs: string;
+}): ConversationStats {
   return {
-    sizeBytes: s.size,
+    // WHY offset, not size: `size` is the transcript's FULL size on disk, used
+    // internally for shrink detection — it's the truth the next cycle's stat
+    // gets compared against. `offset` is how many of those bytes have actually
+    // been READ AND INDEXED so far. They're equal in the overwhelming common
+    // case (a transcript fully caught up in one cycle), but for a transcript
+    // bigger than MAX_CHUNK_BYTES, `size` already reflects the whole file
+    // while indexing is still catching up over several cycles — reporting it
+    // as sizeBytes would claim more of the conversation is searchable than
+    // actually is. Full multi-chunk continuation within one cycle is out of
+    // scope (the next trigger picks up where this one left off); this only
+    // fixes the number so it stops overclaiming in the meantime.
+    sizeBytes: s.offset,
     turnCount: s.turnCount,
     firstTurnTs: s.firstTurnTs,
     lastTurnTs: s.lastTurnTs,
