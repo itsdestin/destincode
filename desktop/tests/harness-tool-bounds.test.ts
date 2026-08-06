@@ -78,3 +78,33 @@ describe('filesAtMaxCount', () => {
     expect(filesAtMaxCount('src/a.ts\nsrc/b.ts\n', 'files_with_matches', 500)).toEqual([]);
   });
 });
+
+describe('Glob completeness', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-cap-')); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('returns the genuinely newest N when it caps, not an arbitrary N', async () => {
+    // 2,100 files. The NEWEST is written last and lives in a directory the walk
+    // reaches late, so the old implementation — which aborted the walk at 2,000
+    // hits BEFORE sorting by mtime — could not have included it, while still
+    // claiming "newest first". Regression pin for that false claim.
+    fs.mkdirSync(path.join(dir, 'a'));
+    fs.mkdirSync(path.join(dir, 'z'));
+    for (let i = 0; i < 2_050; i++) fs.writeFileSync(path.join(dir, 'a', `f${i}.ts`), '');
+    const newest = path.join(dir, 'z', 'newest.ts');
+    fs.writeFileSync(newest, '');
+    fs.utimesSync(newest, new Date(), new Date(Date.now() + 60_000));
+
+    const r = await GlobTool.execute({ pattern: '**/*.ts' }, makeCtx(dir));
+    expect(r.text.split('\n')[0]).toBe('z/newest.ts');
+  }, 60_000);
+
+  it('declares how many files it withheld', async () => {
+    for (let i = 0; i < 2_050; i++) fs.writeFileSync(path.join(dir, `f${i}.ts`), '');
+    const r = await GlobTool.execute({ pattern: '*.ts' }, makeCtx(dir));
+    expect(r.bounds?.unit).toBe('files');
+    expect(r.bounds?.shown).toBe(2_000);
+    expect(r.bounds?.total).toBe(2_050);
+  }, 60_000);
+});

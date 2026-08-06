@@ -7,6 +7,11 @@ import { defineTool } from './registry';
 import { resolveP } from './guards';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next']);
+/** How many matches we RETURN. */
+const RESULT_LIMIT = 2_000;
+/** How many we are willing to hold in memory while walking. Far above any real
+ *  query; purely a runaway guard. */
+const WALK_CEILING = 50_000;
 
 // Fix (flagged bug): single-pass converter. The multi-pass sketch clobbered its
 // own output — the final `*`→`[^/]*` replace also rewrote the `*` inside the
@@ -49,13 +54,22 @@ export const GlobTool = defineTool({
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Find files matching a glob pattern, newest first.',
   inputSchema: z.object({ pattern: z.string(), path: z.string().optional() }),
+  // Bounds are now explicit here rather than borrowed from DEFAULT_CAPS, since
+  // Glob's own cap (RESULT_LIMIT, above) is what actually decides how much text
+  // comes back — the pipeline's char cap should not silently apply a different
+  // number to the same field.
+  caps: { maxChars: 30_000 },
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const root = resolveP(args.path ?? '.', ctx.cwd);
     const rx = fileGlobToRegex(args.pattern);
     const hits: Array<{ rel: string; mtime: number }> = [];
+    let ceilingHit = false;
     const walk = (dir: string, rel: string) => {
-      if (ctx.signal.aborted || hits.length >= 2000) return;
+      if (ctx.signal.aborted || hits.length >= WALK_CEILING) {
+        if (hits.length >= WALK_CEILING) ceilingHit = true;
+        return;
+      }
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -78,7 +92,29 @@ export const GlobTool = defineTool({
       }
     };
     walk(root, '');
+    // WHY the walk now completes before the cap is applied (2026-08-06): it used
+    // to abort at 2,000 hits BEFORE this sort, so a capped result was an arbitrary
+    // 2,000 files in directory order — while the tool description promised
+    // "sorted by modification time, newest first". That promise was false on any
+    // large tree, and nothing in the output said the list was partial.
     hits.sort((a, b) => b.mtime - a.mtime);
-    return { text: hits.length ? hits.map((h) => h.rel).join('\n') : 'No files matched.' };
+    const shown = hits.slice(0, RESULT_LIMIT);
+    // Paths are relative to the SEARCH ROOT above; re-base onto the workspace root
+    // so Glob and Grep return the same shape for the same file.
+    const base = path.relative(ctx.cwd, root);
+    const rebase = (r: string) => (base && !base.startsWith('..') ? `${base}/${r}` : r);
+    return {
+      text: shown.length ? shown.map((h) => rebase(h.rel)).join('\n') : 'No files matched.',
+      bounds: hits.length > shown.length
+        ? {
+            shown: shown.length,
+            // A ceiling hit means we stopped counting, so the total is unknown —
+            // report it as unknown rather than as the number we happened to reach.
+            total: ceilingHit ? null : hits.length,
+            unit: 'files' as const,
+            moreHint: 'narrow the glob pattern or pass a more specific path',
+          }
+        : undefined,
+    };
   },
 });
