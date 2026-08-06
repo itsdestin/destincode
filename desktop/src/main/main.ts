@@ -54,6 +54,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -1939,6 +1940,9 @@ app.whenReady().then(async () => {
   // resolved after managed roots exist (same ordering as startConversationStore).
   startTagRegistry();
 
+  // After the store AND tag registry — the index denormalizes both.
+  startChatsearchIndex();
+
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
   // conversation store, so there is no session-exit backup hook here anymore.
@@ -1988,6 +1992,7 @@ async function runShutdown(): Promise<void> {
   // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
+  try { stopChatsearchIndex(); } catch {}
   // Plan 2b Task 8: tear down the lease client so its per-session renew timers
   // don't linger past a hard quit (destroy clears all held timers). Sync fn.
   try { leaseClient?.destroy(); } catch {}

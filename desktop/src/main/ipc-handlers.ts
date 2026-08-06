@@ -119,7 +119,8 @@ import { listProjectConversations, projectConversationHistory, ccProjectSlug } f
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver, emitConversationMetaChanged } from './conversations/service';
+import { requestChatsearchRefresh } from './chatsearch-index/index-service';
 // Task 4: resolves a native session's live model binding into the store's
 // portable {modelId, providerType, providerLabel} shape — see
 // portable-model.ts's WHY comment for why the lookup itself is split out.
@@ -2737,6 +2738,9 @@ export function registerIpcHandlers(
       // apply any peer version now that this session ended — no restart needed.
       // Resolved from the map BEFORE the delete below, so the claude id is known.
       noteSessionEnded(claudeId);
+      // A session that just ended has new turns to index. Debounced, and it runs
+      // after noteSessionEnded's own quiescence-gated materialize.
+      requestChatsearchRefresh();
       // 2b Task 8: drop our lease so another device can acquire. Idempotent +
       // best-effort; release() never rejects, .catch guards a future change.
       void leaseWiring?.client.release(claudeId).catch(() => { /* best-effort */ });
@@ -2854,6 +2858,7 @@ export function registerIpcHandlers(
         type: IPC.SESSION_META_CHANGED,
         payload: { sessionId: resolved, ...payload },
       });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) };
@@ -2891,6 +2896,12 @@ export function registerIpcHandlers(
       const tag = await reg.update(String(id), clean);
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Task 5 gap (final review): the chatsearch metadata snapshot denormalizes
+      // tag LABELS at build time (meta-builder.ts resolves tag ids -> labels once,
+      // into each conversation row) — renaming a tag here doesn't touch those
+      // rows, so without this the index would keep serving the OLD label until
+      // some unrelated refresh happened to rebuild it.
+      emitConversationMetaChanged();
       return { ok: true, tag };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2902,6 +2913,9 @@ export function registerIpcHandlers(
       await reg.delete(String(id));
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Same gap as TAGS_UPDATE above — a deleted tag's label must also drop
+      // out of the denormalized index, not just the registry.
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2929,6 +2943,7 @@ export function registerIpcHandlers(
       const payload = { flag: key, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2950,6 +2965,7 @@ export function registerIpcHandlers(
       const payload = { note: text };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });

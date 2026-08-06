@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readSessionTranscriptMeta } from '../session-browser';
 import { ccProjectSlug } from '../project-conversations';
+import { transcriptSkipReason, MIN_TRANSCRIPT_BYTES } from './lane-guards';
 import type { ConversationStore } from './conversation-store';
 import type { ConversationRecord } from './store-core';
 
@@ -15,7 +16,6 @@ import type { ConversationRecord } from './store-core';
 // phantom-id lesson from the Resume Browser incident: never create records from
 // malformed ids (e.g. an auto-title typo like `3f3a5cccc-…`, nine c's).
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MIN_TRANSCRIPT_BYTES = 500; // junk threshold, same as listPastSessions
 
 export interface ReconcileOpts {
   projectsDir: string;   // ~/.claude/projects
@@ -144,9 +144,11 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
         // the link, so the symlink is detected here and skipped; the real
         // transcript is processed normally in its true cwd slug. A genuine
         // home-dir session is a REAL file and is kept.
+        // Symlink + junk-size gate now lives in lane-guards.ts so the chatsearch
+        // index builder and NativeHome share ONE implementation. lstat (not stat)
+        // is load-bearing: it does not follow the link.
         const st = fs.lstatSync(jsonlPath);
-        if (st.isSymbolicLink()) continue;
-        if (st.size < MIN_TRANSCRIPT_BYTES) continue;
+        if (transcriptSkipReason(st, MIN_TRANSCRIPT_BYTES)) continue;
 
         const existing = existingById.get(sessionId) ?? null;
         // Gate read: tail timestamp only (wantTitle=false). Computing the title

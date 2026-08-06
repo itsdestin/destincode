@@ -57,6 +57,7 @@ const mockConversationsService = {
   getConversationStore: vi.fn<any>(),
   noteFlagChanged: vi.fn(async () => ({ ok: true })),
   noteSessionNote: vi.fn(async () => ({ ok: true })),
+  emitConversationMetaChanged: vi.fn(),
 };
 vi.mock('../src/main/conversations/service', () => mockConversationsService);
 
@@ -361,6 +362,7 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
     mockConversationsService.getConversationStore.mockReset().mockReturnValue(null);
     mockConversationsService.noteFlagChanged.mockReset().mockResolvedValue({ ok: true });
     mockConversationsService.noteSessionNote.mockReset().mockResolvedValue({ ok: true });
+    mockConversationsService.emitConversationMetaChanged.mockReset();
     mockSessionBrowser.listPastSessions.mockReset().mockResolvedValue([]);
     mockSessionBrowser.loadHistory.mockReset().mockResolvedValue({ events: [] });
 
@@ -516,6 +518,34 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
       expect(sent[0].payload).toEqual({ ok: true });
     });
 
+    // Task 5 gap (final review): this remote mirror of ipc-handlers.ts's
+    // SESSION_SET_TAG never called emitConversationMetaChanged, so a tag
+    // applied from a phone/browser stayed invisible to the chatsearch index
+    // until an unrelated refresh happened to pick it up.
+    it('signals chatsearch that a tag changed once the write succeeds', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteFlagChanged.mockResolvedValue({ ok: true });
+
+      await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.emitConversationMetaChanged).toHaveBeenCalledTimes(1);
+    });
+
+    // The emit must never fire on a failed write — an early-return failure
+    // path must not tell chatsearch anything changed.
+    it('does not signal chatsearch when the write fails', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteFlagChanged.mockResolvedValue({ ok: false });
+
+      await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.emitConversationMetaChanged).not.toHaveBeenCalled();
+    });
+
     // Honesty invariant (Item 6): a write that actually reports failure must
     // not be smoothed over into ok:true the way the old fire-and-forget did.
     it('honesty invariant: a service write resolving ok:false produces an ok:false response', async () => {
@@ -601,6 +631,21 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
       expect(sent[0].payload).toEqual({ ok: true });
     });
 
+    // Task 5 gap (final review): this remote mirror of ipc-handlers.ts's
+    // SESSION_SET_NOTE never called emitConversationMetaChanged, so a note
+    // written from a phone/browser stayed invisible to the chatsearch index
+    // until an unrelated refresh happened to pick it up.
+    it('signals chatsearch that a note changed once the write succeeds', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteSessionNote.mockResolvedValue({ ok: true });
+
+      await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.emitConversationMetaChanged).toHaveBeenCalledTimes(1);
+    });
+
     it('honesty invariant: a service write resolving ok:false produces an ok:false response', async () => {
       const { RemoteServer } = await import('../src/main/remote-server');
       const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
@@ -610,6 +655,18 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
       const sent = await sendAndCollect(server, msg());
 
       expect(sent[0].payload.ok).toBe(false);
+    });
+
+    // The emit must never fire on a failed write.
+    it('does not signal chatsearch when the note write fails', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      mockConversationsService.noteSessionNote.mockResolvedValue({ ok: false });
+
+      await sendAndCollect(server, msg());
+
+      expect(mockConversationsService.emitConversationMetaChanged).not.toHaveBeenCalled();
     });
 
     it('derives the write provider via nativeHost.isNativeSessionId on the RESOLVED id', async () => {
