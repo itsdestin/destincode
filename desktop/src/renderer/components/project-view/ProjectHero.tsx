@@ -88,14 +88,17 @@ function ChevronDown({ size = 18 }: { size?: number }) {
 }
 
 import { createPortal } from 'react-dom';
-import {
-  FolderIcon, GitHubIcon, CogIcon,
-  CheckCircleIcon, AlertTriangleIcon, CircleSlashIcon, MonitorIcon,
-} from './icons';
+import { FolderIcon, GitHubIcon, CogIcon } from './icons';
 import { Button, TextInput } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { OverlayPanel } from '../overlays/Overlay';
 import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
+// Decision 2026-08-06: the sync pill reverted from per-state glyphs to the
+// plain colored dot — sync-spaces.md pins the dot as the ONE sanctioned
+// status-color use, and ProjectSwitcher rows already use it, so two visual
+// languages for one status was the wrong call. PROJECT_DESCRIPTION_MAX keeps
+// the input's cap in lockstep with the shared type instead of re-typing 200.
+import { PROJECT_DESCRIPTION_MAX } from '../../../shared/artifacts/types';
 
 const MENU_WIDTH = 240;
 const SYNC_POPOVER_WIDTH = 288;
@@ -172,10 +175,14 @@ export function ProjectHero({
     if (syncedFolderName) {
       // Synced: the description rides the cross-device project registry next to
       // displayName, so every device sees the same words.
-      await (window.claude as any).syncSpaces.setProjectDescription?.(syncedFolderName, d).catch(() => {});
+      // No `?.` — both channels are real now (Tasks 2-5), so a missing one
+      // should fail loudly instead of silently no-opping.
+      await (window.claude as any).syncSpaces.setProjectDescription(syncedFolderName, d).catch(() => {});
     } else {
       // Plain local folder: saved-folders record only — nothing to sync it to.
-      await (window.claude as any).folders.setDescription?.(project.path, d).catch(() => {});
+      // `d` is always a string (descDraft.trim()) — the local-folder handler's
+      // trim() has no null guard, so this must never pass null/undefined.
+      await (window.claude as any).folders.setDescription(project.path, d).catch(() => {});
     }
     onRenamed();
   };
@@ -236,20 +243,23 @@ export function ProjectHero({
   // rather than being cut — shortening the readout must not delete the honesty
   // copy. `action` is the one thing you can DO from that state, which the
   // popover also carries, so no state's action is stranded at any width.
+  // WHY no `icon` field (2026-08-06 revert): the mockup gave each state its
+  // own glyph; the repo owner reverted to the plain dot post-approval, so the
+  // pill/popover render `sync.dot.color` directly instead of a per-state icon.
   const syncPill: {
-    short: string; tone: string; icon: React.ReactNode;
+    short: string; tone: string;
     detail: string; action: { label: string; onClick: () => void } | null;
   } | null = !sync ? null
     : sync.dot.color === 'green'
       ? {
           short: sync.lastSynced ? `Synced ${sync.lastSynced}` : 'Synced',
-          tone: 'text-[#44A05C]', icon: <CheckCircleIcon size={13} />,
+          tone: 'text-[#44A05C]',
           detail: 'Syncs across your devices.',
           action: sync.spaceId ? { label: 'Sync now', onClick: () => onSyncNow(sync.spaceId!) } : null,
         }
     : sync.dot.color === 'red'
       ? {
-          short: 'Sync problem', tone: 'text-[#DD4444]', icon: <AlertTriangleIcon size={13} />,
+          short: 'Sync problem', tone: 'text-[#DD4444]',
           // The REAL error, never a guess — surfaced verbatim when the engine
           // gave one (error-message-standards.md).
           detail: sync.errorMessage
@@ -259,18 +269,18 @@ export function ProjectHero({
         }
     : sync.spaceId && sync.stopped
       ? {
-          short: 'Sync stopped', tone: 'text-fg-dim', icon: <CircleSlashIcon size={13} />,
+          short: 'Sync stopped', tone: 'text-fg-dim',
           detail: 'Sync stopped — this project stays on your devices but no longer syncs between them.',
           action: null, // Permanent tombstone: there is no Resume (spec §15).
         }
     : sync.spaceId
       ? {
-          short: 'Sync off', tone: 'text-fg-dim', icon: <CircleSlashIcon size={13} />,
+          short: 'Sync off', tone: 'text-fg-dim',
           detail: 'Sync is turned off — this project will sync once you turn it on in Settings.',
           action: null, // The switch is global; it lives in Settings, not here.
         }
       : {
-          short: 'Only on this computer', tone: 'text-fg-2', icon: <MonitorIcon size={13} />,
+          short: 'Only on this computer', tone: 'text-fg-2',
           detail: 'This project stays on this computer until you turn on sync for it.',
           // The action that had NO desktop home in the refresh-icon shape.
           action: { label: 'Turn on sync for this project', onClick: onTurnOnSync },
@@ -370,6 +380,10 @@ export function ProjectHero({
             aria-label="Project description"
             placeholder="What is this project?"
             className="mt-1.5 w-full text-sm"
+            // Cap at the keystroke, not just on commit — PROJECT_DESCRIPTION_MAX
+            // is the shared source of truth (shared/artifacts/types.ts), not a
+            // re-typed 200 that could drift from the main-process limit.
+            maxLength={PROJECT_DESCRIPTION_MAX}
             onChange={(e) => setDescDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void commitDescription();
@@ -446,7 +460,16 @@ export function ProjectHero({
                   syncMenu.open ? 'border-edge bg-well' : 'border-edge-dim bg-inset hover:border-edge'
                 }`}
               >
-                <span className={`shrink-0 ${syncPill.tone}`}>{syncPill.icon}</span>
+                {/* Plain colored dot (2026-08-06 revert) — same shape as
+                    ProjectSwitcher's row dot, the one sanctioned status-color
+                    use in this project (sync-spaces.md). */}
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    sync!.dot.color === 'green' ? 'bg-[#44A05C]'
+                    : sync!.dot.color === 'red' ? 'bg-[#DD4444]'
+                    : 'bg-fg-faint'
+                  }`}
+                />
                 <span className={`text-2xs font-medium ${syncPill.tone}`}>{syncPill.short}</span>
               </button>
             )}
@@ -558,7 +581,15 @@ export function ProjectHero({
           style={{ top: syncMenu.pos.top, left: syncMenu.pos.left, width: SYNC_POPOVER_WIDTH, borderRadius: 'var(--radius-lg)' }}
         >
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className={`shrink-0 ${syncPill.tone}`}>{syncPill.icon}</span>
+            {/* Same dot as the trigger — the popover header restates the pill,
+                so it must restate it with the same visual language. */}
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                sync!.dot.color === 'green' ? 'bg-[#44A05C]'
+                : sync!.dot.color === 'red' ? 'bg-[#DD4444]'
+                : 'bg-fg-faint'
+              }`}
+            />
             <span className={`text-2xs font-semibold ${syncPill.tone}`}>{syncPill.short}</span>
           </div>
           <p className="text-xs text-fg-dim leading-snug">{syncPill.detail}</p>
