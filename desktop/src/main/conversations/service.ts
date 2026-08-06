@@ -100,6 +100,25 @@ const pendingActivity = new Map<string, NodeJS.Timeout>();
 
 export function getConversationStore(): ConversationStore | null { return store; }
 
+// In-main notification that a conversation's user-visible metadata changed
+// (flag, tag, or note). SESSION_META_CHANGED is a webContents.send to the
+// RENDERER only — nothing in main could react to it, which the chatsearch index
+// needs so a tag applied in-app is visible to the CLI before the next launch.
+// Same Set-based shape as onSyncSpacesEvent.
+const metaChangedListeners = new Set<() => void>();
+
+export function onConversationMetaChanged(cb: () => void): () => void {
+  metaChangedListeners.add(cb);
+  return () => { metaChangedListeners.delete(cb); };
+}
+
+export function emitConversationMetaChanged(): void {
+  for (const cb of metaChangedListeners) {
+    // One bad listener must never break a metadata write.
+    try { cb(); } catch { /* listener errors are not the writer's problem */ }
+  }
+}
+
 export async function startConversationStore(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
   nativeHomeRoot?: string;  // tests only — production reads ~/.youcoded
