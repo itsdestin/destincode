@@ -54,6 +54,11 @@ export interface ProjectSidecar {
   manualIncludes: ManualInclude[];
 }
 
+// Max length of a user-written project description. Enforced in BOTH setters
+// (synced registry + saved folders) and as maxLength on the input, so a pasted
+// document can never bloat a file that syncs to every device.
+export const PROJECT_DESCRIPTION_MAX = 200;
+
 export interface CentralIndexProject {
   id: string;
   name: string;
