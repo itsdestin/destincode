@@ -2,7 +2,7 @@
 // Consent + name-confirm modal shared by BOTH spec-§3 import flows (row action
 // and folder-picker). The move is consequence-gated: the copy spells out that
 // the folder itself MOVES (old path stops existing) before anything happens.
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Button, Dialog, TextInput } from './ui';
 

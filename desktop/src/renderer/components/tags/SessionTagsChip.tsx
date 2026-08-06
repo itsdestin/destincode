@@ -2,7 +2,7 @@
 // The fixed in-session StatusBar element: colored tag dots + a notebook icon,
 // or an "Add tags" button when the session has none. Opens a popup with the
 // shared TagPicker + NoteEditor.
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel, CONTENT_Z } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';

@@ -1,7 +1,6 @@
 // Docked footer strip that lists in-flight skill/theme installs. Visible iff
 // installingIds.size > 0. Uses theme tokens (.layer-surface + accent accent)
 // so no hardcoded colors. Respects safe-area-inset-bottom for Android.
-import React from 'react';
 import { useMarketplace } from '../../state/marketplace-context';
 
 function labelForKey(

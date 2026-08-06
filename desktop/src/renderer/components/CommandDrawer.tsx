@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import type { SkillEntry, CommandEntry } from '../../shared/types';
 import SkillCard from './SkillCard';
 import { useSkills } from '../state/skill-context';

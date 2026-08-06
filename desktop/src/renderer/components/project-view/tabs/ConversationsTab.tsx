@@ -6,7 +6,6 @@
 // avatar + title/time + a one-line preview. Rows use
 // `bg-panel border border-edge-dim rounded-lg` (NOT .layer-surface — its
 // overflow:hidden + flex compression clips the text). No ●◐○ status glyphs.
-import React from 'react';
 import type { PastSession } from '../../../../shared/types';
 // Relative-time formatter for the per-row time hint (shared util).
 import { formatRelativeTime } from '../../../utils/format-time';

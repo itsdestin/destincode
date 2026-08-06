@@ -1,4 +1,3 @@
-import React from 'react';
 import { useTheme } from '../state/theme-context';
 
 // Pre-blurred wallpaper layer. Mirrors the treatment TerminalView uses to

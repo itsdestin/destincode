@@ -17,7 +17,7 @@
 //
 // Errors surface inline — no global toast needed.
 
-import React, {
+import {
   useState,
   useEffect,
   useRef,

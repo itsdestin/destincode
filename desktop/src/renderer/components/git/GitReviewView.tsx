@@ -2,7 +2,7 @@
 // not gate: everything shown here is a live read of git state; staging is the
 // real index; refresh rides git:changed. The standard drawer top bar stays in
 // the host — this component starts at the sub-header row.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
 import { formatRelativeTime } from '../../utils/format-time';
 import { Button, Textarea } from '../ui';

@@ -11,7 +11,7 @@
 // project:read-context-file / project:write-context-file IPC. Errors from the
 // write path (the main-process allow-list can reject) surface inline rather
 // than being swallowed.
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ContextFile, ContextScope } from '../../../shared/project-context-types';
 import { ProjectDetailOverlay } from './ProjectDetailOverlay';
 import MarkdownContent from '../MarkdownContent';

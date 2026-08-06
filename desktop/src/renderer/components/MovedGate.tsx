@@ -1,4 +1,3 @@
-import React from 'react';
 import { AppIcon, ThemeMascot } from './Icons';
 import { Button } from './ui';
 

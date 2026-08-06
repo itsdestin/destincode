@@ -13,7 +13,7 @@
 // ALL content-fetching (images included, now that they go through IPC) is gated
 // by an IntersectionObserver so a project with hundreds of artifacts doesn't
 // issue hundreds of IPC reads on mount.
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 
 interface Props {

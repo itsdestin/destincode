@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import type { SystemMarker as SystemMarkerData } from '../state/chat-types';
 
 // Thin horizontal divider used for /clear and /compact markers.

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePerformanceConfig } from '../hooks/usePerformanceConfig';
 import PerformancePopup from './PerformancePopup';

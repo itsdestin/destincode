@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import BrailleSpinner from './BrailleSpinner';
 
 // How long after the last token the model still counts as "actively streaming".

@@ -10,7 +10,7 @@
 // Archived tags are not offered here at all (they were behind a "Show archived"
 // toggle). Archiving means "stop offering me this" — surfacing it in the picker
 // anyway was the toggle undoing the feature. The manager can still show them.
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { TagRecord } from '../../../shared/tags';
 import { DEFAULT_TAG_COLOR } from '../../../shared/tags';
 import { TagRegistryApi } from '../../hooks/useTagRegistry';
