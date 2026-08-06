@@ -4,7 +4,11 @@
  * CONCURRENCY: ~/.youcoded/ is shared by the live app AND every run-dev.sh
  * instance (run-dev isolates only userData and ports). Two builders appending to
  * the same turns file would double-index it, so every refresh cycle runs under a
- * mkdir-based build lock. Every file lands via temp-then-rename.
+ * mkdir-based build lock. JSON files (state, meta) land via temp-then-rename; the
+ * turns file is appended in place under the build lock instead, since JSONL is
+ * append-friendly and a rename-per-cycle would mean rewriting the whole file. A
+ * reader that catches a torn trailing line (crash mid-append) drops it — the
+ * decoder returns null for malformed lines rather than throwing.
  */
 
 import fs from 'node:fs';
@@ -54,7 +58,12 @@ export async function acquireBuildLock(dir: string): Promise<(() => void) | null
     fs.mkdirSync(lock);
   } catch {
     try {
-      const st = fs.statSync(lock);
+      // lstatSync, never statSync: this stats the lock DIRECTORY itself rather
+      // than following it if something ever replaced it with a symlink. The
+      // staleness verdict below feeds fs.rmSync({recursive, force}) — statSync
+      // resolving through a symlink would judge staleness on, and then
+      // recursively force-delete, whatever the link points at.
+      const st = fs.lstatSync(lock);
       if (Date.now() - st.mtimeMs <= BUILD_LOCK_STALE_MS) return null;
       // Stale: a builder crashed without releasing. Take it over.
       fs.rmSync(lock, { recursive: true, force: true });
@@ -109,6 +118,26 @@ export async function refreshTurns(opts: RefreshTurnsOpts): Promise<Map<string, 
   const { dir, provider } = opts;
   const state = readState(dir, provider);
   const stats = new Map<string, ConversationStats>();
+  const file = turnsPath(dir, provider);
+
+  // WHY: refreshTurns writes the turns file, THEN the state file (see the
+  // comment on the write order below). If the process dies in between, the
+  // turns are on disk but the offset that would prevent re-reading them was
+  // never committed — the next cycle would re-append the same turns forever.
+  // Repair it here: if the turns file is larger than what the last successful
+  // state write recorded, a previous write was interrupted. Truncate the
+  // orphaned tail (whose offsets were never committed) so the normal
+  // offset-based logic below re-appends it correctly instead of duplicating
+  // it. `turnsBytes` absent/0 means "unknown" (no state yet, or an index built
+  // before this field existed) — never truncate on unknown, or a valid
+  // pre-existing index would be destroyed down to zero.
+  if (typeof state.turnsBytes === 'number' && state.turnsBytes > 0) {
+    let turnsSize: number | undefined;
+    try { turnsSize = fs.statSync(file).size; } catch { turnsSize = undefined; }
+    if (turnsSize !== undefined && turnsSize > state.turnsBytes) {
+      fs.truncateSync(file, state.turnsBytes);
+    }
+  }
 
   // Conversations needing a full re-read have their existing lines dropped.
   const rewrite = new Set<string>();
@@ -175,7 +204,6 @@ export async function refreshTurns(opts: RefreshTurnsOpts): Promise<Map<string, 
   // Rewrite the whole turns file when any conversation was re-read from zero;
   // otherwise append. Appending is the common path — a full rewrite only happens
   // when a transcript was truncated under us.
-  const file = turnsPath(dir, provider);
   const newLines = appended.map(encodeTurnLine);
 
   if (rewrite.size > 0) {
@@ -193,6 +221,12 @@ export async function refreshTurns(opts: RefreshTurnsOpts): Promise<Map<string, 
     fs.appendFileSync(file, newLines.join('\n') + '\n', 'utf8');
   }
 
+  // Record the turns file's post-write size so the next cycle can detect and
+  // repair an interruption between this write and the one above (see the WHY
+  // comment at the top of this function). Written LAST and from a fresh stat —
+  // never derived from the in-memory string — so it always reflects what
+  // actually landed on disk, not what we intended to write.
+  state.turnsBytes = fs.statSync(file).size;
   atomicWriteFileSync(statePath(dir, provider), JSON.stringify(state, null, 2));
   return stats;
 }

@@ -53,6 +53,14 @@ export interface ChatsearchMetaFile {
 export interface TurnsStateFile {
   v: number;
   provider: string;
+  /**
+   * Size (bytes) of the turns file as of the last successful write of THIS state
+   * file. Lets refreshTurns detect and repair a crash between the two writes
+   * (turns file written, process dies before state is updated) by truncating any
+   * orphaned tail back to this size. Undefined for state files written before
+   * this field existed — treated as "unknown," never as a signal to truncate.
+   */
+  turnsBytes?: number;
   conversations: Record<string, {
     /** Byte offset consumed so far. */
     offset: number;

@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   chatsearchDir, turnsPath, statePath, acquireBuildLock, refreshTurns, readState,
 } from '../src/main/chatsearch-index/index-store';
-import { decodeTurnLine } from '../src/main/chatsearch-index/index-format';
+import { decodeTurnLine, CHATSEARCH_FORMAT_VERSION } from '../src/main/chatsearch-index/index-format';
 
 let tmp: string;
 let dir: string;
@@ -133,6 +133,63 @@ describe('refreshTurns', () => {
     const st = readState(dir, 'claude');
     expect(st.conversations.a.firstTurnTs).toBe('2026-07-01T00:00:00.000Z');
     expect(st.conversations.a.lastTurnTs).toBe('2026-07-09T00:00:00.000Z');
+  });
+
+  // Finding 1: refreshTurns writes turns THEN state. If a process dies in
+  // between, the turns are on disk but the offset that would prevent
+  // re-reading them was never committed. `turnsBytes` in the state file lets
+  // the next cycle detect and truncate the orphaned tail before it can be
+  // duplicated.
+  it('repairs an interrupted write on the next refresh', async () => {
+    const p = writeTranscript('t/a.jsonl', ccLine('first') + ccLine('second'));
+    const conversations = [{ id: 'a', transcriptPath: p }];
+    await refreshTurns({ dir, provider: 'claude', conversations });
+
+    const committed = fs.readFileSync(turnsPath(dir, 'claude'), 'utf8');
+    expect(readState(dir, 'claude').turnsBytes).toBe(Buffer.byteLength(committed, 'utf8'));
+
+    // Simulate a crash between the turns write and the state write: an
+    // orphaned line lands on disk whose offset was never recorded in state.
+    fs.appendFileSync(turnsPath(dir, 'claude'), 'not-json-and-never-committed\n');
+    expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).not.toBe(committed);
+
+    await refreshTurns({ dir, provider: 'claude', conversations });
+
+    // The orphaned tail is gone and the real content is intact, un-duplicated.
+    expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).toBe(committed);
+    const turns = readTurns();
+    expect(turns.map((t) => t!.text)).toEqual(['first', 'second']);
+  });
+
+  // Guard the other edge: a state file written before `turnsBytes` existed
+  // (or one that simply has no entry yet) must never be read as "truncate to
+  // zero" — that would destroy a valid pre-existing index.
+  it('does not truncate when the state file has no turnsBytes yet', async () => {
+    const p = writeTranscript('t/a.jsonl', ccLine('legacy'));
+    const conversations = [{ id: 'a', transcriptPath: p }];
+    const size = fs.statSync(p).size;
+
+    // Write both files directly, as if produced by code that predates
+    // turnsBytes: the conversation's offset already covers the whole
+    // transcript, so a normal refresh is a no-op — the only way to observe a
+    // regression here is if the truncation guard fired anyway.
+    fs.writeFileSync(
+      turnsPath(dir, 'claude'),
+      JSON.stringify({ c: 'a', t: 1, ts: '2026-01-01T00:00:00.000Z', x: 'legacy' }) + '\n',
+    );
+    fs.writeFileSync(statePath(dir, 'claude'), JSON.stringify({
+      v: CHATSEARCH_FORMAT_VERSION,
+      provider: 'claude',
+      conversations: {
+        a: { offset: size, size, turnCount: 1, firstTurnTs: '2026-01-01T00:00:00.000Z', lastTurnTs: '2026-01-01T00:00:00.000Z' },
+      },
+    }));
+    expect(readState(dir, 'claude').turnsBytes).toBeUndefined();
+    const before = fs.readFileSync(turnsPath(dir, 'claude'), 'utf8');
+
+    await refreshTurns({ dir, provider: 'claude', conversations });
+
+    expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).toBe(before);
   });
 
   it('indexes a native session, skipping its header line', async () => {
