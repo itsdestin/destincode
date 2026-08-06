@@ -1279,6 +1279,10 @@ class SessionService : Service() {
                         put("nickname", wd.label)
                         put("addedAt", 0)
                         put("exists", File(wd.path).isDirectory)
+                        // WHY: serve the per-folder description on the wire so the shared
+                        // React folder switcher can render it, matching desktop's
+                        // youcoded-folders.json entries (Task 4).
+                        put("description", wd.description)
                     })
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
@@ -1326,6 +1330,23 @@ class SessionService : Service() {
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, renamed) }
+            }
+            "folders:set-description" -> {
+                // WHY: local-folder counterpart to desktop's saved-folder description
+                // (Task 4) — folders:rename has a real Android implementation, so this
+                // needs one too instead of silently no-oping on mobile (see Task 5 brief).
+                val folderPath = msg.payload.optString("folderPath", "")
+                val description = msg.payload.optString("description", "")
+                var ok = false
+                if (folderPath.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.youcoded.app.config.WorkingDirStore(homeDir)
+                    if (store.dirs.value.any { it.path == folderPath }) {
+                        store.setDescription(folderPath, description)
+                        ok = true
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, ok) }
             }
 
             "clipboard:save-image" -> {
