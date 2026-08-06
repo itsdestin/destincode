@@ -46,6 +46,34 @@ export function grepErrorMessage(stderr: string, resolvedPath: string, cwd: stri
   return `Grep failed: ${raw}`;
 }
 
+const MAX_COUNT = 500;
+
+/** Which files hit `--max-count`, i.e. whose results are silently short.
+ *
+ *  WHY per-mode: --max-count means something different in each output mode, and
+ *  in files_with_matches it cannot bind at all (`-l` stops at the first match).
+ *  Reporting a cap there would be a false alarm; not reporting it in the other
+ *  two modes is the silent truncation the 2026-08-01 review missed. */
+export function filesAtMaxCount(out: string, mode: string, maxCount = MAX_COUNT): string[] {
+  if (mode === 'files_with_matches') return [];
+  const perFile = new Map<string, number>();
+  for (const line of out.split('\n')) {
+    if (!line) continue;
+    if (mode === 'count') {
+      const at = line.lastIndexOf(':');
+      if (at === -1) continue;
+      const n = Number(line.slice(at + 1));
+      if (Number.isFinite(n)) perFile.set(line.slice(0, at), n);
+    } else {
+      const at = line.indexOf(':');
+      if (at === -1) continue;
+      const f = line.slice(0, at);
+      perFile.set(f, (perFile.get(f) ?? 0) + 1);
+    }
+  }
+  return [...perFile.entries()].filter(([, n]) => n >= maxCount).map(([f]) => f);
+}
+
 export const GrepTool = defineTool({
   name: 'Grep',
   description:
@@ -62,7 +90,7 @@ export const GrepTool = defineTool({
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const mode = args.output_mode ?? 'files_with_matches';
-    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git', '--max-count', '500'];
+    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git', '--max-count', String(MAX_COUNT)];
     if (mode === 'files_with_matches') rgArgs.push('-l');
     if (mode === 'count') rgArgs.push('--count');
     if (mode === 'content') rgArgs.push('-n');
@@ -100,10 +128,18 @@ export const GrepTool = defineTool({
         resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${ctx.cwd}).`, isError: true });
         return;
       }
-      let out = '';
+      // Same honest-total scheme as Bash: count every byte, retain a bounded
+      // head + tail. The old flat 200k ceiling made the reported total a lie —
+      // it silently dropped everything past 200k with no notice at all.
+      let head = '';
+      let tailBuf = '';
+      let totalChars = 0;
       let err = '';
       child.stdout.on('data', (d) => {
-        if (out.length < 200_000) out += String(d);
+        const s = String(d);
+        totalChars += s.length;
+        if (head.length < 24_000) head += s;
+        else tailBuf = (tailBuf + s).slice(-6_000);
       });
       child.stderr.on('data', (d) => {
         err += String(d);
@@ -127,8 +163,29 @@ export const GrepTool = defineTool({
           return;
         }
         // rg exit 1 = no matches (not an error); 2 = real error.
-        if (code === 2) resolve({ text: grepErrorMessage(err, resolvedTarget, ctx.cwd), isError: true });
-        else resolve({ text: out.trim() || 'No matches found.' });
+        if (code === 2) {
+          resolve({ text: grepErrorMessage(err, resolvedTarget, ctx.cwd), isError: true });
+          return;
+        }
+        const out = (tailBuf ? `${head}\n[...]\n${tailBuf}` : head).trim();
+        const capped = filesAtMaxCount(out, mode);
+        // WHY declare instead of silently accepting: `totalChars > out.length`
+        // is true whenever the head/tail scheme above actually dropped a middle
+        // section, so this is the SAME fact the pipeline's own truncateOutput
+        // uses — not a guess.
+        const dropped = totalChars > out.length;
+        if (!out) {
+          resolve({ text: 'No matches found.' });
+          return;
+        }
+        resolve({
+          text: capped.length
+            ? `${out}\n\nNote: these files hit the ${MAX_COUNT}-matches-per-file limit and have more: ${capped.join(', ')}`
+            : out,
+          bounds: dropped
+            ? { shown: out.length, total: totalChars, unit: 'chars' as const, moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"' }
+            : undefined,
+        });
       });
     });
   },

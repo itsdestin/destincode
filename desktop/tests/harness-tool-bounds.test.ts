@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { grepErrorMessage, GrepTool } from '../src/main/harness/tools/grep';
+import { grepErrorMessage, GrepTool, filesAtMaxCount } from '../src/main/harness/tools/grep';
 import { GlobTool } from '../src/main/harness/tools/glob';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
@@ -59,5 +59,22 @@ describe('Grep and Glob agree on path format', () => {
   it('Glob returns the same shape for the same file', async () => {
     const r = await GlobTool.execute({ pattern: '**/*.ts' }, makeCtx(dir));
     expect(r.text).toContain('src/a.ts');
+  });
+});
+
+describe('filesAtMaxCount', () => {
+  it('names files whose count-mode tally sits exactly at the cap', () => {
+    const out = 'src/a.ts:500\nsrc/b.ts:12\nsrc/c.ts:500\n';
+    expect(filesAtMaxCount(out, 'count', 500)).toEqual(['src/a.ts', 'src/c.ts']);
+  });
+
+  it('names files with exactly maxCount returned lines in content mode', () => {
+    const out = Array.from({ length: 500 }, (_, i) => `src/a.ts:${i + 1}:hit`).join('\n')
+      + '\n' + Array.from({ length: 3 }, (_, i) => `src/b.ts:${i + 1}:hit`).join('\n');
+    expect(filesAtMaxCount(out, 'content', 500)).toEqual(['src/a.ts']);
+  });
+
+  it('never reports a cap in files_with_matches mode, where -l stops at the first hit', () => {
+    expect(filesAtMaxCount('src/a.ts\nsrc/b.ts\n', 'files_with_matches', 500)).toEqual([]);
   });
 });
