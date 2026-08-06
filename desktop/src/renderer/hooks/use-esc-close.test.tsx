@@ -4,7 +4,7 @@
 // and would otherwise run in the default `node` env with no `window`.
 import React, { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent, act } from '@testing-library/react';
+import { render, act } from '@testing-library/react';
 import { EscCloseProvider, useEscClose, useEscStackEmpty, useDismissTop } from './use-esc-close';
 
 function pressEsc() {

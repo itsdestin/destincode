@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from
 import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
 import { Button, Toggle } from './ui';
-import { isAndroid, isRemoteMode } from '../platform';
+import { isAndroid } from '../platform';
 import FolderSwitcher from './FolderSwitcher';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
@@ -32,7 +32,10 @@ interface Props {
   onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
-  onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
+  // WHY: `onResumeSession` is no longer accepted here. The strip never invoked
+  // it — resuming is owned by the ResumeBrowser modal, opened via
+  // `onOpenResumeBrowser` below. App/HeaderBar were still passing it through;
+  // those call sites are updated in the same commit.
   onOpenResumeBrowser: () => void;
   onReorderSessions?: (fromIndex: number, toIndex: number) => void;
   defaultModel?: string;
@@ -68,13 +71,9 @@ const GLOW_SHADOW: Record<SessionStatusColor, string> = {
   gray: 'none',
 };
 
-const INDICATOR_COLOR: Record<SessionStatusColor, string> = {
-  green: '#4CAF50',
-  red: '#DD4444',
-  amber: '#F5A623',
-  blue: '#60A5FA',
-  gray: '#666666',
-};
+// WHY: `INDICATOR_COLOR` was the pre-tailwind status-dot palette. The strip
+// switched to theme-driven classes; the object was left behind. Removed in the
+// 2026-08-06 unused-code sweep.
 
 function SessionDot({ color, isActive }: { color: SessionStatusColor; isActive: boolean }) {
   const breathing = color !== 'gray';
@@ -157,7 +156,7 @@ function SessionName({ name }: { name: string }) {
 
 export default function SessionStrip({
   sessions, activeSessionId, onSelectSession,
-  onCreateSession, onCloseSession, sessionStatuses, onResumeSession,
+  onCreateSession, onCloseSession, sessionStatuses,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
@@ -776,7 +775,6 @@ export default function SessionStrip({
             ? isActive
             : pack.expanded.has(s.id) || isHovered || isActive;
           const isBeingDragged = dragIdx === idx && isDragging.current;
-          const isOver = overIdx === idx;
 
           return (
             <React.Fragment key={s.id}>
@@ -905,7 +903,6 @@ export default function SessionStrip({
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
                 const isBeingDragged = dragIdx === idx && isDragging.current;
-                const isOver = overIdx === idx;
                 return (
                   <div
                     key={s.id}

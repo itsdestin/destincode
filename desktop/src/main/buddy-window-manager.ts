@@ -14,7 +14,7 @@ import {
 // them too (renderer code can never import from src/main/, which pulls in
 // electron). Imported here for this file's own use, and re-exported below so
 // every existing `from './buddy-window-manager'` import keeps working.
-import { clampToWorkArea, type Rect, type Point, type Size } from '../shared/buddy-geometry';
+import { clampToWorkArea, type Rect, type Point } from '../shared/buddy-geometry';
 // WHY: `implements BuddyManager` is compile-time proof this class still
 // satisfies the shape main.ts depends on after the capture/attach refactor.
 import type { BuddyManager } from './buddy-manager';

@@ -45,7 +45,9 @@ export function describeStep(state: FirstRunState): string {
       return 'All set. Opening YouCoded…';
 
     default: {
-      // Exhaustiveness check — if a new FirstRunStep is added the compiler flags this.
+      // Exhaustiveness check — if a new FirstRunStep is added the compiler
+      // flags this. Underscore-prefixed so noUnusedLocals (being enabled
+      // repo-wide) doesn't flag the binding itself.
       const _exhaustive: never = state.currentStep;
       return '';
     }

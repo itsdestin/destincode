@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState, SettingRow } from './ui';
+import { Button, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState, SettingRow } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:

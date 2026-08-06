@@ -12,7 +12,10 @@
 // Escape hatch: leading backslash (e.g. "\/clear") strips the backslash and
 // returns { handled: false } so power users can bypass native handling.
 
-import type { ChatAction, TimelineEntry, UsageSnapshot, CopyPickerOption, SessionChatState } from './chat-types';
+// WHY: `CopyPickerOption` dropped from this import — the dispatcher routes
+// commands but never inspects picker options (CopyPicker.tsx and
+// extract-copy-blocks.ts still use the type). Found in the 2026-08-06 sweep.
+import type { ChatAction, TimelineEntry, UsageSnapshot, SessionChatState } from './chat-types';
 import { buildCopyPayload } from '../utils/extract-copy-blocks';
 
 export type ViewMode = 'chat' | 'terminal';

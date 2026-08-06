@@ -634,7 +634,6 @@ export default function HeaderBar({
         onCreateSession={onCreateSession}
         onCloseSession={onCloseSession}
         sessionStatuses={sessionStatuses}
-        onResumeSession={onResumeSession}
         onOpenResumeBrowser={onOpenResumeBrowser}
         onReorderSessions={onReorderSessions}
         defaultModel={defaultModel}
