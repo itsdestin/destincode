@@ -12,6 +12,7 @@ object BundledPlugins {
     val IDS = listOf(
         "wecoded-themes-plugin",
         "wecoded-marketplace-publisher",
+        "youcoded-chatsearch",
     )
 
     fun isBundled(id: String): Boolean = IDS.contains(id)
