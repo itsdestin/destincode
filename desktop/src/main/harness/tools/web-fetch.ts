@@ -698,12 +698,15 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
   // Compact form for small local models (simplified presentation).
   shortDescription: 'Fetch a public web page (http/https) and return its main content as Markdown.',
   inputSchema,
-  // Static fallback for composeNotice's no-bounds branch (Task 19): WebFetch
-  // never declares `bounds` (no self-bounding path — see the file-level WHY
-  // above), so every truncated fetch used to hit the bare no-advice fallback.
-  // Not reused from an existing `bounds.moreHint` (there isn't one); this is
-  // the tool's genuine widening vocabulary — a narrower target, since WebFetch
-  // has no offset/limit-style parameter to page through.
+  // WHY this exists as a static field AND gets copied verbatim into every
+  // `bounds.moreHint` below (fix: WebFetch declares its body caps instead of
+  // hand-writing them): `bounds` can only be built inside execute()'s object
+  // literals, which can't reference the const this file is still constructing
+  // (`WebFetchTool` isn't assigned yet at that point) — so the string is
+  // duplicated by hand, same as Bash's and Read's `moreHint` fields do. This is
+  // WebFetch's one genuine widening vocabulary (it has no offset/limit-style
+  // parameter to page through) and also composeNotice's no-bounds fallback
+  // (Task 19) for the rare defineTool pipeline-cap-only case.
   moreHint: 'fetch a more specific URL, or a narrower section of the page',
   permissionSubject: (args) => args.url,
   async execute(args, ctx) {
@@ -748,7 +751,17 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
       `Source: ${finalUrl}`,
     ].filter(Boolean).join('\n');
     if (!isHtml) {
-      return { text: `${header}\n\n${raw}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
+      return {
+        text: `${header}\n\n${raw}`,
+        // Fix: declare the 5MB cap via `bounds` instead of hand-writing
+        // "[body truncated at 5MB]" into `text` — the server never told us how
+        // much MORE there was past MAX_BODY_BYTES, so `total` MUST be `null`
+        // (composeNotice renders that as "at least N"); inventing a total here
+        // is the exact dishonesty this contract exists to remove.
+        bounds: truncated
+          ? { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
+          : undefined,
+      };
     }
     // Needed by both the too-complex fallback below and the normal path —
     // compute once up front.
@@ -761,16 +774,37 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     // and no way forward (2026-08-01 review, finding #1).
     const tooComplex = tooComplexToExtract(raw);
     if (tooComplex) {
-      // WHY stripToTextCapped (not stripToText) here, and WHY the 5MB-truncation
-      // notice is appended too (Important findings, 2026-08-06 review): this
-      // branch previously called the unbounded stripToText and dropped the
-      // "[body truncated at 5MB]" notice every other return path appends — so a
-      // 7MB tag-heavy page silently returned 5MB of text with no sign 2MB were
-      // discarded, inside the exact code path whose purpose is eliminating
-      // silent truncation.
+      // WHY stripToTextCapped (not stripToText) here (Important finding,
+      // 2026-08-06 review): this branch previously called the unbounded
+      // stripToText and silently returned an entire multi-megabyte tag-soup
+      // document as plain text — not a truncation-SAFETY issue (stripToText is
+      // linear on any input) but a usefulness one: FALLBACK_CHAR_CAP bounds it
+      // to something a model can actually read.
       const { text: fallbackText, truncated: fallbackCapped } = stripToTextCapped(raw);
-      const capNote = fallbackCapped
-        ? ` Showing only the first ${(FALLBACK_CHAR_CAP / 1000).toFixed(0)}KB of this page's raw HTML — the rest was not scanned.`
+      // Fix: declare the 200KB scan cap via `bounds` instead of hand-writing
+      // "Showing only the first NKB..." into `text`. WHY this cap — not the 5MB
+      // network cap — takes the single `bounds` slot when BOTH fire on the same
+      // response (only one `bounds` can ride a ToolResultPayload): whenever
+      // `truncated` (the 5MB cap) is true, `raw` decodes to well over 200,000
+      // UTF-16 code units (5,242,880 bytes is at minimum ~2.6M units even in the
+      // all-4-byte-codepoint worst case), so `fallbackCapped` is unconditionally
+      // also true — the 200KB cap is the one that actually bounds what the
+      // model reads. Its total (raw.length, the HTML actually scanned for this
+      // fallback) is known exactly, unlike the 5MB cap's total. The 5MB fact is
+      // not dropped: bodyCapNote below discloses it as plain prose whenever it
+      // also fired — a fact, not advice, so it isn't the retired "how do I get
+      // more" wording this contract removes.
+      const bounds = fallbackCapped
+        ? {
+            shown: FALLBACK_CHAR_CAP,
+            total: raw.length,
+            unit: 'chars' as const,
+            // Verbatim copy of WebFetchTool's own `moreHint` — see its WHY comment.
+            moreHint: 'fetch a more specific URL, or a narrower section of the page',
+          }
+        : undefined;
+      const bodyCapNote = truncated
+        ? '\n\n[The response body itself was cut off at the 5MB fetch cap before this extraction ran — the live page may be larger than what was received.]'
         : '';
       // WHY this is general-and-non-committal, not "no anchor named X" (round 3
       // design change): this branch never parses the page — that's the whole
@@ -782,7 +816,8 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
         ? `\n\n[This page could not be parsed for structured extraction, so whether "#${hash}" exists could not be checked.]`
         : '';
       return {
-        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.${capNote}]\n\n${fallbackText}${fragmentNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}`,
+        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.]\n\n${fallbackText}${fragmentNote}${bodyCapNote}`,
+        bounds,
       };
     }
     // Single parse of this page, reused for both fragment resolution and
@@ -827,6 +862,16 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
           : `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
       }
     }
-    return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
+    return {
+      text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}`,
+      // Fix: declare the 5MB cap via `bounds` instead of hand-writing
+      // "[body truncated at 5MB]" into `text` — identical reasoning to the
+      // non-HTML branch above: the server never told us how much more there
+      // was, so `total` stays `null` rather than inventing a number we never
+      // measured.
+      bounds: truncated
+        ? { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
+        : undefined,
+    };
   },
 });

@@ -271,23 +271,44 @@ describe('WebFetch', () => {
     expect(elapsed).toBeLessThan(1000);
   });
 
-  it('discloses the fallback char cap when the too-complex page exceeds it', async () => {
+  it('discloses the fallback char cap when the too-complex page exceeds it (fix: WebFetch declares its body caps)', async () => {
     // The adversarial body above (200,012 chars) is just past FALLBACK_CHAR_CAP
     // (200,000), so the guard-path fallback must say it only scanned a prefix —
     // the fallback exists to give the model something useful, not to silently
     // render an entire multi-megabyte document as plain text.
+    //
+    // WHY this now asserts on `bounds` (not a regex over hand-written prose):
+    // the 200KB scan cap has a genuinely KNOWN total — raw.length, the HTML
+    // actually received and scanned — so `bounds.total` must be that real
+    // number, not `null` and not a fabricated one.
     const adversarial = '<html><body>' + '<'.repeat(200_000);
     const r = await fetchWith(adversarial, 'https://example.com/adversarial-cap');
     expect(r.isError).toBeFalsy();
-    expect(r.text).toMatch(/first 200KB/);
+    expect(r.bounds).toEqual({
+      shown: 200_000,
+      total: adversarial.length,
+      unit: 'chars',
+      moreHint: 'fetch a more specific URL, or a narrower section of the page',
+    });
+    expect(r.text).toMatch(new RegExp(`showing 200000 of ${adversarial.length} chars`));
+    expect(r.text).not.toContain('first 200KB'); // the retired hand-rolled wording
+    expect(r.text).not.toContain('[output truncated: showing'); // the bare no-advice fallback
   });
 
-  it('appends the 5MB truncation notice on the too-complex fallback path too', async () => {
+  it('reports the 5MB network cap as separate prose when it fires alongside the 200KB fallback cap (fix: WebFetch declares its body caps)', async () => {
     // Important finding (2026-08-06 review): every OTHER return path appends
     // "[body truncated at 5MB]" when readBodyCapped cut the body short; the
     // too-complex fallback used to skip it, so a 7MB tag-heavy page silently
     // returned a prefix with no sign 2MB+ were discarded — inside the exact
     // code path whose purpose is eliminating silent truncation.
+    //
+    // WHY this now expects `bounds` to report the 200KB fallback cap, NOT the
+    // 5MB network cap, plus a plain-prose disclosure of the 5MB fact: only one
+    // `bounds` can ride a result, and the 200KB cap is the one that actually
+    // bounds what the model reads here (it's always the tighter of the two —
+    // see the WHY comment on `bounds` in web-fetch.ts). The 5MB fact must still
+    // be disclosed somewhere, so it stays in `text` as a plain fact rather than
+    // advice.
     // Body shaped to (a) exceed 5MB so readBodyCapped truncates it, and (b)
     // still trip the tag-count guard after truncation (repeating tags keep
     // tagCount high throughout).
@@ -299,9 +320,40 @@ describe('WebFetch', () => {
     const r = await WebFetchTool.execute({ url: 'https://example.com/huge' } as any, ctx());
     expect(r.isError).toBeFalsy();
     expect(r.text).toContain('simplified extraction');
-    expect(r.text).toContain('[body truncated at 5MB]');
     // sanity: readBodyCapped really did cut it down from the ~6MB source
     expect(r.text.length).toBeLessThan(oversized.length);
+    expect(r.bounds).toMatchObject({ shown: 200_000, total: 5 * 1024 * 1024, unit: 'chars' });
+    expect(r.text).toContain('cut off at the 5MB fetch cap'); // the 5MB fact, still disclosed
+    expect(r.text).not.toContain('[body truncated at 5MB]'); // the retired hand-rolled wording
+    expect(r.text).not.toContain('[output truncated: showing'); // the bare no-advice fallback
+  });
+
+  it('declares the 5MB body cap via bounds with an unknown total (fix: WebFetch declares its body caps)', async () => {
+    // WHY total: null (not raw.length or any other measured number): the
+    // server never said how much more there was past MAX_BODY_BYTES —
+    // readBodyCapped just stops reading. Reporting a specific total here would
+    // be inventing a number nobody measured, the exact dishonesty `bounds`
+    // exists to prevent. Uses the non-HTML path (text/plain) so the DOM
+    // extraction machinery never gets involved — this test is only about the
+    // network body cap.
+    const oversized = 'a'.repeat(6 * 1024 * 1024); // > MAX_BODY_BYTES (5MB)
+    __setWebFetchTestHooks({
+      lookup: publicLookup,
+      fetchImpl: async () => new Response(oversized, { status: 200, headers: { 'content-type': 'text/plain' } }),
+    });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/huge.txt' } as any, ctx());
+    expect(r.isError).toBeFalsy();
+    expect(r.bounds).toEqual({
+      shown: 5 * 1024 * 1024,
+      total: null,
+      unit: 'bytes',
+      moreHint: 'fetch a more specific URL, or a narrower section of the page',
+    });
+    // composeNotice renders total: null as "at least N" — never a fabricated count.
+    expect(r.text).toMatch(/at least 5242880 bytes/);
+    expect(r.text).toContain('fetch a more specific URL'); // real, tool-specific widening advice
+    expect(r.text).not.toContain('[body truncated at 5MB]'); // the retired hand-rolled wording
+    expect(r.text).not.toContain('[output truncated: showing'); // the bare no-advice fallback
   });
 
   // --- html/lower index aliasing in stripToText (Important finding, round
