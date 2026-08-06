@@ -61,8 +61,9 @@ Then:
 - `node test-engine/review-harness.mjs --dry-run` — prints the roster and the
   full battery prompt without spending anything or requiring a key. Use this
   to sanity-check the roster file before a real run.
-- `node test-engine/review-harness.mjs --only "Kimi K3"` — runs a single
-  model by its label from `review-roster.json`.
+- `OPENROUTER_API_KEY=sk-... node test-engine/review-harness.mjs --only "Kimi K3"` —
+  runs a single model by its label from `review-roster.json`. The key is
+  required even for a single model — only `--dry-run` skips the check.
 - `OPENROUTER_API_KEY=sk-... node test-engine/review-harness.mjs` — runs the
   whole roster. Requires an OpenRouter API key; the script refuses to start
   without one and never writes the key to disk.
