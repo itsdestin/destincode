@@ -10,7 +10,8 @@ import type { HarnessManifest } from '../../src/shared/harness-manifest';
 import type { NativeTool } from '../../src/main/harness/tools/types';
 import type { PermissionDecision } from '../../src/shared/permission-types';
 import type { AskRequest, AskDecision } from '../../src/main/harness/permission-broker';
-import type { CapabilityProfile } from '../../src/main/harness/capability-profile';
+import { resolveProfile, type CapabilityProfile } from '../../src/main/harness/capability-profile';
+import type { ReadyServer } from '../../src/main/harness/mcp/mcp-manager';
 import { textChunks, toolCallChunk, finishChunk, stream } from './scripted-model';
 
 // Default harness manifest for driver tests (matches the loop suite's).
@@ -132,6 +133,11 @@ export interface MakeSessionOver {
   model?: any;                       // a scriptModel()/scriptedModel() fake
   contextLength?: number | null;
   tools?: NativeTool[];
+  // Appended onto the default tool set (Glob+Read) WITHOUT replacing it — for
+  // tests that need one extra tool (e.g. an MCP-shaped tool with
+  // rawInputSchema) alongside the usual fakes, instead of hand-rolling the
+  // whole set via `tools`.
+  extraTools?: NativeTool[];
   decide?: (tool: string, subject: string | undefined) => Promise<PermissionDecision>;
   systemPrompt?: string;
   // Subscribe to the session's transcript-event stream (each emitted event is
@@ -142,6 +148,14 @@ export interface MakeSessionOver {
   // frees almost nothing — this is how a compaction test forces the SUMMARIZE
   // branch (pruning insufficient) instead of the cheap prune-only path.
   seedBulkHistoryTokens?: number;
+  // MCP servers this session may use (Task 6). Defaults to EMPTY in the shared
+  // factory — same reason as EMPTY_SKILL_CATALOG above: a test factory that
+  // silently reached some real/ambient server list would make the attached
+  // tool set depend on more than what the test itself passed in.
+  mcpServers?: ReadyServer[];
+  // Shorthand for the one profile field the tool-less-model test needs,
+  // without hand-building a whole CapabilityProfile object via `profile`.
+  supportsTools?: boolean;
 }
 
 // Construct a real HarnessSession over a scripted model. Defaults: an allow-all
@@ -152,7 +166,23 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
   const tools = over.tools ?? [
     fakeTool('Glob', { schema: z.object({ pattern: z.string() }) }),
     fakeTool('Read'),
+    ...(over.extraTools ?? []),
   ];
+  // Resolve through the REAL three-layer function (rather than defaulting
+  // straight to CLOUD_DEFAULT) whenever the caller doesn't hand-build a
+  // profile, so `contextLength` actually drives window-sized fields (Task 6's
+  // mcpToolBudgetTokens) the same way NativeSessionHost.resolveContextAndProfile
+  // does in production. This is a no-op for every OTHER field when the binding
+  // stays 'openrouter' (a FRONTIER provider — see capability-profile.ts):
+  // maxToolPresentation/promptVariant/doomLoopThreshold/etc. all still resolve
+  // identically to CLOUD_DEFAULT regardless of contextLength, so no existing
+  // contextLength-only test (which never asserted on profile fields) changes
+  // behavior. `supportsTools` layers a plain override on top, for the one test
+  // that needs a tool-less model without hand-building a whole profile.
+  const profile: CapabilityProfile = over.profile ?? {
+    ...resolveProfile({ providerType: 'openrouter', modelId: 'm', contextLength: over.contextLength ?? null }),
+    ...(over.supportsTools !== undefined ? { supportsTools: over.supportsTools } : {}),
+  };
   const opts: HarnessSessionOpts = {
     sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
@@ -163,9 +193,10 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
     skillCatalog: EMPTY_SKILL_CATALOG,
     decide: over.decide ?? (async () => ({ action: 'allow', denyListed: false })),
     ...(over.askUser ? { askUser: over.askUser } : {}),
-    ...(over.profile ? { profile: over.profile } : {}),
+    profile,
     ...(over.contextLength !== undefined ? { contextLength: over.contextLength } : {}),
     ...(over.systemPrompt ? { systemPrompt: over.systemPrompt } : {}),
+    mcpServers: over.mcpServers ?? [],
   };
   const session = new HarnessSession(opts, async () => model as any);
   // Forward every transcript event to the test's listener (before any turn runs).

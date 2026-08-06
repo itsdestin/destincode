@@ -22,6 +22,15 @@ export interface CapabilityProfile {
    *  text, nested project instructions). Sized from the REAL window, not the
    *  provider: a 128k local model has more room than a 32k hosted one. */
   injectionBudgetTokens: number;
+  /** Ceiling for MCP tool schemas attached to a session (Task 6, spec §6).
+   *  Sized from the window like injectionBudgetTokens, but deliberately
+   *  WITHOUT the frontier-provider "assume roomy" shortcut those use: an
+   *  attached tool schema rides the request on EVERY turn, so it is a hard
+   *  token cost regardless of which provider serves the model — a hosted
+   *  model with a genuinely small MEASURED window (e.g. an 8k OpenRouter
+   *  model) must be gated exactly like a local one. Only a truly UNMEASURED
+   *  window falls back to the conservative default. */
+  mcpToolBudgetTokens: number;
 }
 
 export type ProfileProviderType =
@@ -38,6 +47,7 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   doomLoopThreshold: 3, supportsParallelToolCalls: true,
   constrainToolArgs: false, supportsTools: true,
   exposeSkillCatalog: true, injectionBudgetTokens: 20_000,
+  mcpToolBudgetTokens: 20_000,
 };
 
 function cloudVariant(t: ProfileProviderType): PromptVariant {
@@ -99,15 +109,59 @@ function injectionSizing(d: DiscoveredModel, registry: KnownModelEntry[]): Pick<
   };
 }
 
+/** Task 6 — how many tokens of MCP tool schema this session may attach.
+ *  Shares injectionSizing's window boundaries (100k / SMALL_LOCAL_CONTEXT) —
+ *  no invented breakpoints — but deliberately does NOT reuse its blanket
+ *  FRONTIER-provider shortcut or its absolute numbers: a skill-catalog
+ *  description competes for a model's ATTENTION (a capability concern the
+ *  harness already trusts frontier providers to have regardless of window),
+ *  but an MCP tool schema competes for raw REQUEST BYTES on every single
+ *  turn — a hard technical limit no provider is exempt from. So a genuinely
+ *  MEASURED small window (a real 8k OpenRouter model, say) is gated exactly
+ *  like a local one, at smaller amounts than injectionBudgetTokens: a
+ *  handful of attached MCP servers should never be able to crowd out the
+ *  conversation itself. The ONE thing this keeps from injectionSizing's
+ *  FRONTIER treatment is what an UNMEASURED window means for those
+ *  providers — null there is "not measured" (we frequently never discover
+ *  it), not "small" — the identical justification injectionSizing already
+ *  documents, so it stays generous rather than starving the primary cloud
+ *  use case on a measurement gap. */
+function mcpBudgetSizing(d: DiscoveredModel, registry: KnownModelEntry[]): number {
+  if (FRONTIER_PROVIDERS.has(d.providerType) && d.contextLength == null) {
+    return CLOUD_DEFAULT.mcpToolBudgetTokens;
+  }
+  // Fix pass 1 / Finding 1: use the SAME effective-window expression
+  // injectionSizing (`:89`) uses, for every non-frontier provider — not just
+  // 'local-engine'. Gating the clamp on providerType made 'openai-compatible'
+  // (the Ollama/LM Studio shape, deliberately excluded from FRONTIER_PROVIDERS
+  // above because "an unmeasured one is a local model in disguise") skip the
+  // registry-ceiling clamp entirely: a model launched with a large declared
+  // `num_ctx` whose id happened to match a small registry entry got the
+  // 20,000-token tier here while injectionBudgetTokens correctly clamped it to
+  // 6,000 — twenty thousand tokens of tool schema on a model whose real window
+  // is far smaller. There is no separate "hosted model matching a local
+  // registry family" concern to protect here (that's resolveContextAndProfile's
+  // job, one layer up, for the CONTEXT WINDOW itself) — this function only
+  // ever sees a window that's already been resolved for THIS provider type, so
+  // clamping it again to a matching registry family's ceiling is exactly
+  // right for every provider, matching injectionSizing's own reasoning.
+  const window = effectiveContextForModel(d.contextLength, d.modelId, registry);
+  return window == null ? 750
+    : window >= 100_000 ? 20_000
+    : window >= SMALL_LOCAL_CONTEXT ? 4_000
+    : 750;
+}
+
 // LAYER 3 — conservative fallback for an UNKNOWN local model, tiered by the REAL
 // context window. Constrained args + serial-only are the safe llama-server default
 // at every size; presentation/variant/doom-loop tighten for a small window.
 // Returns the BEHAVIORAL layers only. Sizing (exposeSkillCatalog /
-// injectionBudgetTokens) is computed separately by injectionSizing and spread on
-// by resolveProfile, because it depends on the window rather than on which layer
-// won. Typing that honestly keeps tsc able to catch a missing field at every
-// construction site instead of letting a spread paper over it.
-type BehavioralProfile = Omit<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens'>;
+// injectionBudgetTokens / mcpToolBudgetTokens) is computed separately by
+// injectionSizing / mcpBudgetSizing and spread on by resolveProfile, because
+// it depends on the window rather than on which layer won. Typing that
+// honestly keeps tsc able to catch a missing field at every construction site
+// instead of letting a spread paper over it.
+type BehavioralProfile = Omit<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens' | 'mcpToolBudgetTokens'>;
 
 function localFallback(ctx: number | null): BehavioralProfile {
   const small = ctx == null || ctx <= SMALL_LOCAL_CONTEXT;
@@ -138,12 +192,16 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
   // Sizing is orthogonal to the behavioral layers below — it depends only on the
   // window — so it is computed once and spread onto whichever base is returned.
   const sizing = injectionSizing(d, registry);
+  // mcpToolBudgetTokens is computed SEPARATELY from `sizing` (not folded into
+  // injectionSizing itself) because it deliberately skips that function's
+  // FRONTIER-provider shortcut — see mcpBudgetSizing's header comment.
+  const mcpToolBudgetTokens = mcpBudgetSizing(d, registry);
   if (d.providerType !== 'local-engine') {
-    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing };
+    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens };
   }
   const base = localFallback(d.contextLength);
   const known = matchKnownModel(d.modelId, registry);   // LAYER 2 overlay
-  if (!known) return { ...base, ...sizing };
+  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens };
   return {
     maxToolPresentation: known.maxToolPresentation ?? base.maxToolPresentation,
     promptVariant: known.promptVariant ?? base.promptVariant,
@@ -152,5 +210,6 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     constrainToolArgs: base.constrainToolArgs,           // always true for local
     supportsTools: known.supportsTools ?? base.supportsTools,
     ...sizing,
+    mcpToolBudgetTokens,
   };
 }

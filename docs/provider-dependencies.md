@@ -9,6 +9,9 @@ in the youcoded-dev workspace).
 - **ai** — `7.0.22` (Vercel AI SDK). Stream-part, finish-reason, and
   tool-call/tool-result message shapes pinned by
   `desktop/tests/harness-*.test.ts`.
+- **@modelcontextprotocol/sdk** — `^1.30.0` (native MCP phase 1). `Client`,
+  `StdioClientTransport`, `StreamableHTTPClientTransport`, `UnauthorizedError`,
+  `ErrorCode`/`McpError` from `types.js`. Consumer: `harness/mcp/mcp-client.ts`.
 
 ## Touchpoints (to be filled as built)
 
@@ -36,6 +39,24 @@ in the youcoded-dev workspace).
   `{ type:'error' }` fullStream part AND rejects the awaited promises
   (`result.text` throws `AI_NoOutputGeneratedError`); the SDK already wraps
   calls in `retryWithExponentialBackoff` internally. (harness)
+- **`@modelcontextprotocol/sdk@1.30.0` `Client#callTool` positional signature** —
+  real signature is `(params, resultSchema, options)`; `mcp-client.ts` always
+  passes `undefined` for `resultSchema` (falls back to the SDK's default
+  `CallToolResultSchema` — this file never validates structured output) so
+  `signal`/`timeout` land in `options` (position 3). A "simplified" 2-arg call
+  would silently shift `options` into the `resultSchema` slot instead, dropping
+  `signal`/`timeout` — the SDK would then apply its own hardcoded
+  `DEFAULT_REQUEST_TIMEOUT_MSEC` (60_000ms) with an error naming neither the
+  server nor the configured bound. `UnauthorizedError` (thrown by
+  `StreamableHTTPClientTransport` when a server needs OAuth, unsupported in
+  phase 1) does NOT set `.name` — it inherits `Error.prototype.name`, so
+  `instanceof` is the only reliable check; `.name`/`.constructor.name` are
+  checked too so a test-built synthetic error is still recognized.
+  `StdioClientTransport`'s `stderr` option defaults to `'inherit'` — phase 1
+  overrides it to `'pipe'` so a failing server's stderr can be quoted in the
+  connect-failure message instead of vanishing into the app's own stderr.
+  Verified against `@modelcontextprotocol/sdk@1.30.0`'s shipped `.d.ts`/built
+  JS; pinned by `desktop/tests/mcp-client.test.ts`. (harness/mcp)
 - **models.dev `api.json` schema** — `https://models.dev/api.json`, shape
   `{ [providerKey]: { models: { [modelId]: {...} } } }`. Fields consumed per
   model row: `name` (string label), `limit.context` (number → contextLength),

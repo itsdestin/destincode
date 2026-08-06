@@ -1418,12 +1418,14 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to clean up stale update downloads', { error: String(e) });
   }
 
-  // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
-  // ~/.claude.json mcpServers. Only auto:true entries, filtered by platform.
-  // Never overwrites user-configured servers.
+  // Decomposition v3 §9.3 + native MCP phase 1 Task 7: reconcile plugin
+  // mcp-manifest.json AND the YouCoded MCP registry into ~/.claude.json
+  // mcpServers. reconcileMcp() is now async (registry secrets decrypt via
+  // Electron's safeStorage) — awaited so a rejection lands in this catch
+  // instead of becoming an unhandled promise rejection.
   try {
     const { reconcileMcp } = require('./mcp-reconciler');
-    const mcpSummary = reconcileMcp();
+    const mcpSummary = await reconcileMcp();
     log('INFO', 'Main', 'MCP servers reconciled', mcpSummary);
   } catch (e) {
     log('ERROR', 'Main', 'Failed to reconcile MCP servers', { error: String(e) });
@@ -1942,7 +1944,35 @@ app.whenReady().then(async () => {
   // conversation store, so there is no session-exit backup hook here anymore.
 });
 
-app.on('window-all-closed', () => {
+// Every teardown step the app owns, in one place, run at most once.
+//
+// WHY THIS EXISTS AS A FUNCTION (2026-08-05): this body used to live inline in
+// the `window-all-closed` handler, which was the app's ONLY quit-related
+// listener — verified by a repo-wide search for `app.on('before-quit'|
+// 'will-quit'|'quit')` and `process.on('SIGTERM'|'SIGINT')`, which returned
+// exactly one hit, this one. Every quit route that does NOT go through
+// window-all-closed therefore ran none of it:
+//   - macOS Cmd+Q and dock-quit call app.quit() directly, which fires
+//     before-quit/will-quit/quit but NOT window-all-closed.
+//   - An OS shutdown/logout SIGTERM bypasses Electron's quit events entirely,
+//     on every platform.
+// What leaked on those routes: llama-server (holding its fixed port for the
+// next launch to wrongly adopt), the hook relay's named pipe, the sync-spaces
+// watchers and timers, the presence WebSocket — and, since the native-MCP
+// work, every stdio MCP server's spawned subprocess, which is the one a user
+// would actually notice still running after quitting.
+//
+// The idempotence guard is not defensive coding: before-quit fires again on the
+// second pass below, and window-all-closed can fire alongside it, so this WILL
+// be called more than once on a normal quit.
+let shuttingDown: Promise<void> | null = null;
+function shutdownApp(): Promise<void> {
+  if (shuttingDown) return shuttingDown;
+  shuttingDown = runShutdown();
+  return shuttingDown;
+}
+
+async function runShutdown(): Promise<void> {
   // Capture the engine-stop promise: cleanup() starts llama-server teardown and we
   // must let it finish before app.quit(), else the engine outlives the app and keeps
   // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
@@ -1965,8 +1995,39 @@ app.on('window-all-closed', () => {
   try { setSyncService(null); } catch {}
   // Wait for the engine to actually die, but never let a wedged teardown hang quit:
   // race the teardown against a 4s cap (supervisor's own SIGTERM→SIGKILL bound is ~3s).
-  void Promise.race([
+  // Returned (not `void`-ed) so the callers below can sequence app.quit()/exit()
+  // after it — this function no longer decides on its own when to quit.
+  await Promise.race([
     engineStopped,
     new Promise<void>((r) => setTimeout(r, 4_000)),
-  ]).finally(() => app.quit());
+  ]).catch(() => {});
+}
+
+// Route 1: last window closed. Delegate to app.quit() rather than tearing down
+// here, so there is exactly ONE teardown path (before-quit, below) instead of
+// two that can drift apart.
+app.on('window-all-closed', () => {
+  app.quit();
 });
+
+// Route 2: app.quit() from anywhere — macOS Cmd+Q, dock quit, the menu, or
+// window-all-closed above. before-quit is cancellable, which is what lets an
+// async teardown finish before the process goes away; `quit`/`will-quit` are
+// not reliably awaitable.
+app.on('before-quit', (e) => {
+  // Second pass: shutdownApp() already ran (or is running) and re-issued the
+  // quit below — let it proceed rather than cancelling forever.
+  if (shuttingDown) return;
+  e.preventDefault();
+  void shutdownApp().finally(() => app.quit());
+});
+
+// Route 3: OS shutdown, logout, `kill`, or Ctrl+C in a dev terminal. These
+// never reach Electron's quit events at all, so they need their own hook.
+// app.exit() (not app.quit()) because teardown has already run by then and
+// re-entering the quit sequence would only add another wait.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    void shutdownApp().finally(() => app.exit(0));
+  });
+}
