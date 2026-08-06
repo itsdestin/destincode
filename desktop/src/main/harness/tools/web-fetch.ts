@@ -93,6 +93,19 @@ function tooComplexToExtract(rawHtml: string): string | null {
   return null;
 }
 
+/** Tag-strip to readable text. O(n) on the raw string, so it is safe on input
+ *  that would hang Readability's ~quadratic parse. */
+export function stripToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
 function htmlToMarkdown(rawHtml: string): { title: string | null; markdown: string } {
   // linkedom's parsed document satisfies Readability's DOM contract at runtime,
   // but its typings don't match @mozilla/readability's `Document` param — cast
@@ -159,12 +172,17 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     if (!isHtml) {
       return { text: `${header}\n\n${raw}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
     }
-    // DoS guard: reject pathological HTML BEFORE the synchronous quadratic
-    // Readability parse (see tooComplexToExtract). This is the only line standing
-    // between an attacker-controlled page and a multi-second main-thread freeze —
-    // defineTool's catch can't stop a sync hang, so the check must run HERE.
+    // DoS guard: never run the synchronous ~quadratic Readability parse on
+    // pathological HTML. But WHY this no longer hard-fails (2026-08-06): the guard
+    // is specifically about Readability's cost, and tag-stripping is O(n) and safe
+    // on any input — so we can still return honest content. The old refusal left
+    // the model with nothing and no way forward (2026-08-01 review, finding #1).
     const tooComplex = tooComplexToExtract(raw);
-    if (tooComplex) return { text: tooComplex, isError: true };
+    if (tooComplex) {
+      return {
+        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.]\n\n${stripToText(raw)}`,
+      };
+    }
     const { title, markdown } = htmlToMarkdown(raw);
     return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${markdown}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
   },

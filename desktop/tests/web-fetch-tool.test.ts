@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { Readability } from '@mozilla/readability';
 import { WebFetchTool, __setWebFetchTestHooks } from '../src/main/harness/tools/web-fetch';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 const html = (body: string) => new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+// Shared stub-and-execute helper (task 11 brief: reuse the existing test-hooks
+// pattern under one name instead of repeating the two-line stub at every call site).
+const fetchWith = async (body: string, url = 'https://example.com/deep') => {
+  __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(body) });
+  return WebFetchTool.execute({ url } as any, ctx());
+};
 
 // Reset the injected hooks after every test so lookup/fetch state can't leak
 // between cases (a stubbed fetch bleeding into the next test would be a silent lie).
@@ -59,28 +67,43 @@ describe('WebFetch', () => {
 
   // --- DoS complexity-guard tests (CRITICAL: main-thread freeze) ---
 
-  it('rejects hostile DOM depth BEFORE reaching Readability', async () => {
+  it('degrades hostile DOM depth to plain text WITHOUT reaching Readability', async () => {
     // 5000-deep nesting would take TENS of seconds in Readability's ~quadratic
-    // parse and freeze the whole app. The O(n) pre-check must reject it instantly
-    // (the guard fires long before parse), so this test also returns fast.
+    // parse and freeze the whole app. The O(n) pre-check must reject it BEFORE
+    // Readability runs (the guard fires long before parse), so this test also
+    // returns fast.
+    // UPDATED (task 11, 2026-08-06): the guard's outcome changed from a hard
+    // refusal to a degraded success — tag-stripping is O(n) and safe, so a
+    // rejected page can still return honest content instead of nothing. The
+    // Readability spy is what still proves the DoS guard itself is intact.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const deep = '<html><body>' + '<div>'.repeat(5000) + 'x' + '</div>'.repeat(5000) + '</body></html>';
     __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(deep) });
     const t0 = Date.now();
     const r = await WebFetchTool.execute({ url: 'https://example.com/deep' } as any, ctx());
     const elapsed = Date.now() - t0;
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
+    expect(r.text).toContain('simplified extraction');
+    expect(parseSpy).not.toHaveBeenCalled();
     // If Readability had run, this would be many seconds; the guard keeps it tiny.
     expect(elapsed).toBeLessThan(1000);
+    parseSpy.mockRestore();
   });
 
-  it('rejects a high tag count (huge table / anchor list)', async () => {
+  it('degrades a high tag count (huge table / anchor list) WITHOUT reaching Readability', async () => {
     // ~40k tags — far past MAX_TAGS. Cost here is breadth, not depth.
+    // UPDATED (task 11, 2026-08-06): see note above — refusal became a degraded
+    // success; the Readability spy proves the guard still stopped the parse.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const wide = '<html><body><table>' + '<tr><td>x</td></tr>'.repeat(20000) + '</table></body></html>';
     __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(wide) });
     const r = await WebFetchTool.execute({ url: 'https://example.com/wide' } as any, ctx());
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
+    expect(r.text).toContain('simplified extraction');
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
   });
 
   it('lets a normal article through the guard (depth/tags well under caps)', async () => {
@@ -120,6 +143,16 @@ describe('WebFetch', () => {
     const r = await WebFetchTool.execute({ url: 'https://example.com/bare' } as any, ctx());
     expect(r.isError).toBeUndefined();
     expect(r.text).toContain('Bare Server');
+  });
+
+  it('falls back to plain text instead of refusing when the page is too complex', async () => {
+    // 200 nested divs — past MAX_DEPTH 150, so Readability must not run. The old
+    // code hard-failed here, leaving the model with nothing (Kimi K3 finding #1).
+    const deep = '<div>'.repeat(200) + 'THE CONTENT' + '</div>'.repeat(200);
+    const r = await fetchWith(`<html><body>${deep}</body></html>`);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('THE CONTENT');
+    expect(r.text).toContain('simplified extraction');
   });
 
   it('falls back to whole-body markdown when Readability finds no article', async () => {
