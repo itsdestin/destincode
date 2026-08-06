@@ -42,6 +42,18 @@ describe('appendReview', () => {
   it('leaves every existing review byte-identical', () => {
     const out = appendReview(DOC, { label: 'New Model', modelId: 'v/new', review: 'My review.' }, '2026-08-06');
     expect(out).toContain('## Review: Existing Model — 2026-08-01\n\nBody of an existing review.');
+
+    // A substring-presence check only proves that text exists SOMEWHERE in the
+    // output — it would still pass if the new section duplicated the existing
+    // one, reordered content, or corrupted the intro/separators outside that one
+    // substring. Prove byte-identity for real: the output must equal the
+    // original document with exactly one contiguous block inserted at exactly
+    // one point (right above the prompt heading). Splitting the original at that
+    // point and comparing both halves against the corresponding slices of `out`
+    // establishes nothing outside the inserted block changed, in either direction.
+    const insertAt = DOC.indexOf('## Prompt for other agents');
+    expect(out.slice(0, insertAt)).toBe(DOC.slice(0, insertAt));
+    expect(out.slice(out.indexOf('## Prompt for other agents'))).toBe(DOC.slice(insertAt));
   });
 
   it('signs the section with the model label and id', () => {

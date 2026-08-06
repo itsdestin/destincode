@@ -24,6 +24,15 @@ export function appendReview(
     '',
     '---',
     '',
+    // Fix: the doc's own `---` separators (see the target investigation doc) are
+    // always followed by a BLANK line before the next heading, not just a lone
+    // newline. A single trailing '' here rendered as "---\n" — glued directly to
+    // whatever heading came next. Because insertion always happens right above
+    // the same "## Prompt for other agents" heading, every future append would
+    // glue its own `---` against the PREVIOUS append's heading too, so the seam
+    // degraded a little more on every run. The second '' adds the missing blank
+    // line so `join('\n')` produces "---\n\n" — matching the doc's convention.
+    '',
   ].join('\n');
 
   const at = docText.indexOf(PROMPT_HEADING);
