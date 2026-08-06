@@ -73,10 +73,15 @@ export const ReadTool = defineTool({
           }`,
       )
       .join('\n');
-    const trailer =
-      offset - 1 + limit < totalLines
-        ? `\n[showing lines ${offset}-${offset + slice.length - 1} of ${totalLines} — use offset=${offset + limit} to continue]`
-        : '';
-    return { text: numbered + trailer };
+    // WHY a declared bound instead of the hand-written trailer this used to carry:
+    // every tool now reports paging the same way, and the "use offset=N" advice is
+    // Read's own vocabulary rather than a shared string other tools inherited.
+    const more = offset - 1 + limit < totalLines;
+    return {
+      text: numbered,
+      bounds: more
+        ? { shown: slice.length, total: totalLines, unit: 'lines' as const, moreHint: `use offset=${offset + limit} to continue` }
+        : undefined,
+    };
   },
 });

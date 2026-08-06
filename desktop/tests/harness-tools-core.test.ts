@@ -108,7 +108,7 @@ describe('Read', () => {
     fs.writeFileSync(path.join(dir, 't.txt'), 'a\nb\nc\n'); // 3 real lines, trailing \n
     const r = await ReadTool.execute({ file_path: 't.txt', offset: 1, limit: 2 }, ctx);
     // 3 total, not 4 — the phantom empty split element is dropped.
-    expect(r.text).toContain('of 3 —');
+    expect(r.text).toContain('of 3 lines —');
     expect(r.text).not.toContain('of 4');
   });
 
@@ -117,6 +117,20 @@ describe('Read', () => {
     const r = await ReadTool.execute({ file_path: 't.txt', offset: 99 }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('offset 99 is past the end of the file (3 lines)');
+  });
+
+  it('Read declares bounds with an offset hint when a page is partial', async () => {
+    const f = path.join(dir, 'big.txt');
+    fs.writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'));
+    const r = await ReadTool.execute({ file_path: f, offset: 1, limit: 20 }, ctx);
+    expect(r.text).toContain('[showing 20 of 100 lines — use offset=21 to continue]');
+  });
+
+  it('Read declares no bounds when the whole file fits', async () => {
+    const f = path.join(dir, 'small.txt');
+    fs.writeFileSync(f, 'a\nb\nc');
+    const r = await ReadTool.execute({ file_path: f }, ctx);
+    expect(r.text).not.toContain('[showing');
   });
 });
 
