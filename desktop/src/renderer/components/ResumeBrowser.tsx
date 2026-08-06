@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { Button, Toggle, LoadingState, EmptyState } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -16,17 +15,13 @@ import {
 } from './resume-browser-filters';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
+import { TagManagerPopup } from './tags/TagManagerPopup';
 import { TagChip } from './tags/TagChip';
+import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
+import { TagGlyph } from './tags/glyphs';
 import { NoteEditor } from './tags/NoteEditor';
-import NativeModelSelect from './NativeModelSelect';
+import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
-
-const MODEL_LABELS: Record<string, string> = {
-  sonnet: 'Sonnet',
-  'opus[1m]': 'Opus',
-  haiku: 'Haiku',
-  fable: 'Fable',
-};
 
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
@@ -45,6 +40,16 @@ function formatSize(bytes: number): string {
   const kb = Math.round(bytes / 1024);
   if (kb < 1024) return `${kb}KB`;
   return `${(kb / 1024).toFixed(1)}MB`;
+}
+
+// Claude Code model ids carry a release date — `claude-sonnet-4-5-20250929`.
+// The date is noise on a card that already shows when the conversation last
+// ran, and it is the difference between the chip fitting and truncating. Only a
+// TRAILING 8-digit group is stripped, so a native id that happens to contain
+// digits (`gpt-5.6-sol`, `qwen3-coder-30b-a3b-instruct`) is untouched. The full
+// id stays in the chip's title attribute.
+function formatModelId(id: string): string {
+  return id.replace(/-\d{8}$/, '');
 }
 
 // Shared trigger-button shape for the filter row beneath the search bar.
@@ -146,16 +151,54 @@ function useDropdownReposition(
   }, [isOpen, triggerRef, dropdownWidthPx, setPosition]);
 }
 
-// FlagName is imported from resume-browser-filters.ts (single source of truth).
-// Kept in sync with SESSION_FLAG_NAMES in shared/types.ts; that module is
-// CommonJS so we don't import it directly. FLAG_ORDER fixes the reserved-flag
-// toggle ordering in the UI (Priority first, then Complete). The old
-// informational flag is retired; custom tags are handled separately now.
-const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
-const FLAG_LABEL: Record<FlagName, string> = {
-  priority: 'Priority',
-  complete: 'Complete',
-};
+// Right padding reserved on a card's upper rows for the absolutely-positioned
+// icon cluster. Derived, not eyeballed: cluster pr-2 (8) + two px-1 buttons
+// around 16px icons (24 each) = 56px = pr-14. The BOTTOM row deliberately omits
+// it so the timestamp reaches the card's own right padding. If the cluster's
+// padding or its button count changes, this changes with it.
+const ICON_GUTTER = 'pr-14';
+
+// How many list items the browser materializes at a time, and how many more
+// each top-up adds.
+//
+// WHY THIS EXISTS: the list used to render EVERY row on open. Measured against
+// Destin's real scale (1,642 conversations) on 2026-07-31: 37,920 DOM nodes,
+// ~1,050ms to open and ~470ms per search keystroke, scaling linearly with the
+// conversation count. ~23 DOM nodes per card is the multiplier. Roughly half of
+// that was React building the tree and a third was the browser's style+layout
+// for nodes nobody could see.
+//
+// 50 fills the panel (max-h-70vh ≈ 8 rows) several times over, so the first
+// paint is never waiting on rows below the fold, and a top-up lands well before
+// the user scrolls to the end.
+//
+// Deliberately NOT true virtualization: rows here are variable-height, grow when
+// their resume pane or tag sheet opens, and sit in a container whose scroll-fade
+// hook reads real content height. Chunked reveal needs none of that height
+// bookkeeping. The trade: the scrollbar is proportional to what's revealed, not
+// to the whole list, and scrolling through many hundreds of rows re-accumulates
+// DOM. If deep scrolling ever becomes a real usage pattern, a windowed list is
+// the upgrade — see the 2026-07-31 handoff.
+const REVEAL_CHUNK = 50;
+
+// One entry in the flattened list. Grouped mode interleaves project headers
+// with rows, so both modes reduce to a single ordered array — that is what lets
+// one slice() bound the whole list regardless of which mode is active.
+// Rows carry no `key` here on purpose — renderSessionRow already returns an
+// element keyed by sessionId, so a second copy would be dead data.
+type ListItem =
+  | { kind: 'header'; key: string; label: string; first: boolean }
+  | { kind: 'row'; session: PastSession; showPath: boolean };
+
+// FlagName is imported from resume-browser-filters.ts (single source of truth),
+// kept in sync with SESSION_FLAG_NAMES in shared/types.ts (that module is
+// CommonJS so we don't import it directly).
+//
+// The FLAG_ORDER / FLAG_LABEL pair that used to live here is gone: neither
+// reserved flag renders as a generic "flag" any more. Priority is a built-in
+// TAG (built-in-tags.ts) and Complete is the card's hide icon, so each carries
+// its own label at its own call site and a shared ordered list had nothing to
+// order.
 
 interface PastSession {
   sessionId: string;
@@ -170,12 +213,15 @@ interface PastSession {
   tags?: string[];   // applied custom-tag ids
   note?: string;
   // Which runtime owns this session: `'claude'` = a Claude Code transcript;
-  // `'native'` = a YouCoded native-harness session (gets a "YouCoded" badge and
-  // skips the CC-only resume options — model / skip-perms). Typed `string`
-  // because Conversation-Store rows (Phase 2a) populate it from a stored string.
+  // `'native'` = a YouCoded native-harness session (skips the CC-only resume
+  // options — model / skip-perms). Typed `string` because Conversation-Store
+  // rows (Phase 2a) populate it from a stored string. No longer SHOWN on the
+  // card: the runtime badge was replaced by the model chip (2026-07-31).
   provider?: string;
   // Native runtime only: the stored harness preset id ('assistant' | 'coder' |
-  // legacy 'chat'). Drives the preset label next to the YouCoded badge.
+  // legacy 'chat'). Currently unread here — it drove the "Coder"/"Assistant"
+  // badge the model chip replaced. Kept because session.browse() returns it and
+  // dropping it from the shape would hide it from any future surface.
   harnessId?: string;
   // Conversation Store (Phase 2a) fields, present on store-fed rows only.
   device?: string;   // last device that ran a turn
@@ -188,7 +234,19 @@ interface PastSession {
   notSyncedYet?: boolean;
   // Task 6: portable reference to the model this conversation last ran a turn
   // with (Conversation Store, Task 4/5). Pre-fills the native resume selector
-  // below when it matches a model available on THIS device.
+  // below when it matches a model available on THIS device, and drives the
+  // model chip on the card.
+  //
+  // ONLY NATIVE SESSIONS CARRY IT TODAY — verified 2026-07-31. The single
+  // writer is noteModelUsed (main/conversations/service.ts), fed exclusively by
+  // resolvePortableModel → nativeHost.getBinding (ipc-handlers.ts:2154), which
+  // returns null for a Claude Code session because there is no native binding
+  // to resolve. So a CC card shows no chip. The data EXISTS to fix that — CC
+  // transcripts carry `message.model` on every assistant message
+  // (transcript-watcher.ts:174) — but session.browse() never opens the
+  // transcript, so wiring it is backend work, not a renderer change. Do NOT
+  // "fix" the blank by falling back to the app default: that would print a
+  // guess as history.
   lastUsedModel?: import('../../shared/types').PortableModelRef;
 }
 
@@ -227,9 +285,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
   // Task 6 — native resume ALWAYS offers the provider-scoped model selector
   // (Destin's ruling: never auto-launch a binding). null until the user picks
-  // a row OR NativeModelSelect auto-selects a prefill match; the Resume button
+  // a row OR ModelPicker auto-selects a prefill match; the Resume button
   // stays disabled for a native row until this is set. Reset whenever a
-  // (possibly different) row expands/collapses — a fresh NativeModelSelect
+  // (possibly different) row expands/collapses — a fresh ModelPicker
   // mount per expansion is what actually resets ITS internal state; this just
   // keeps the Resume-button gate and the value threaded through onResume in
   // sync with that same lifecycle.
@@ -266,6 +324,23 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // Single state instead of two booleans so the dropdowns are mutually exclusive.
   const [openPill, setOpenPill] = useState<'projects' | 'tags' | null>(null);
 
+  // Which card's Organize popover is open (session id), plus its anchor position.
+  //
+  // WHY A POPOVER: flags, tags and the note used to sit in the expanded row,
+  // below the launch controls — so one open card stacked seven form fields and
+  // the Resume button ended up at the bottom of a form. They are a different
+  // JOB from resuming (organizing a conversation you are NOT about to open), so
+  // they moved out here. Side effect worth having: you can now tag or complete a
+  // conversation WITHOUT expanding it, including rows that can't be resumed on
+  // this device at all.
+  const [organizeId, setOrganizeId] = useState<string | null>(null);
+  const organizeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const organizePopRef = useRef<HTMLDivElement>(null);
+  // The tag registry editor (rename/recolor/archive/delete). Opened from the
+  // "Manage tags…" footer in either the Organize popover's TagPicker or the
+  // Tags filter dropdown, so there is ONE destination for tag management.
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+
   // Fetch sessions when opened
   useEffect(() => {
     if (open) {
@@ -274,6 +349,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setNativeResumeBinding(null);
+      setOrganizeId(null);
+      setTagManagerOpen(false);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
       // Reset filter pills each open — current spec: no persistence.
@@ -290,13 +367,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   }, [open]);
 
-  // Layered ESC: close an open filter dropdown first, then collapse the
-  // expanded row, then close the browser. Each ESC press peels one layer.
+  // Layered ESC: close the tag manager, then an open Organize popover, then an
+  // open filter dropdown, then collapse the expanded row, then close the
+  // browser. Each ESC press peels one layer.
   const handleEscClose = useCallback(() => {
-    if (openPill) setOpenPill(null);
+    if (tagManagerOpen) setTagManagerOpen(false);
+    else if (organizeId) setOrganizeId(null);
+    else if (openPill) setOpenPill(null);
     else if (expandedId) setExpandedId(null);
     else onClose();
-  }, [openPill, expandedId, onClose]);
+  }, [tagManagerOpen, organizeId, openPill, expandedId, onClose]);
   useEscClose(open, handleEscClose);
 
   // Close the active filter dropdown on outside click. Recognizes clicks
@@ -318,6 +398,28 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       document.removeEventListener('touchstart', handler);
     };
   }, [openPill]);
+
+  // Same outside-click close for the Organize popover. It is portaled to
+  // document.body, so the card's own subtree can't see it — the popover ref is
+  // checked explicitly (the portal trap that already bit the model picker and
+  // the folder switcher). The trigger is checked too so a second click on the
+  // "⋯" toggles rather than close-then-reopen.
+  useEffect(() => {
+    if (!organizeId) return;
+    const handler = (e: Event) => {
+      const target = e.target as Node;
+      if (organizePopRef.current?.contains(target)) return;
+      if (organizeTriggerRef.current?.contains(target)) return;
+      setOrganizeId(null);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [organizeId]);
+
 
   const filtered = useMemo(() => {
     // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
@@ -347,6 +449,91 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const flatSorted = useMemo(() => {
     return sortSessions(filtered, sortDir);
   }, [filtered, sortDir]);
+
+  // Flatten whichever mode is active into ONE ordered list of headers + rows.
+  // Both branches used to render inline in the JSX, which meant the grouped
+  // branch had no single index to bound — this is what makes the reveal window
+  // below mode-agnostic.
+  const items = useMemo<ListItem[]>(() => {
+    if (grouped) {
+      const out: ListItem[] = [];
+      for (const [projectPath, rows] of grouped.entries()) {
+        out.push({
+          kind: 'header',
+          key: `header:${projectPath}`,
+          label: projectPath.replace(/\\/g, '/').split('/').pop() || projectPath,
+          first: out.length === 0,
+        });
+        // No project label on the row: the header directly above names it.
+        for (const s of rows) out.push({ kind: 'row', session: s, showPath: false });
+      }
+      return out;
+    }
+    return flatSorted.map((s) => ({ kind: 'row' as const, session: s, showPath: true }));
+  }, [grouped, flatSorted]);
+
+  // How much of `items` is currently materialized. Grows as the user scrolls.
+  const [revealCount, setRevealCount] = useState(REVEAL_CHUNK);
+
+  // Reset the window to the top whenever the user changes WHAT THEY ARE LOOKING
+  // FOR — a new search, filter, or sort order is a new list, and it should start
+  // at the top and cost one chunk to draw.
+  //
+  // Keyed on the query VALUES, deliberately not on `items`' identity. `items`
+  // also changes when a session mutates (tagging a row, marking one complete,
+  // saving a note all rewrite `sessions`), and resetting on those would collapse
+  // the list back to 50 rows under a user who had scrolled down to organize
+  // something — yanking their scroll position as a side effect of tagging.
+  const queryKey = useMemo(() => JSON.stringify([
+    search.trim(), sortDir, showComplete,
+    [...selectedProjects].sort(), [...selectedTagIds].sort(),
+  ]), [search, sortDir, showComplete, selectedProjects, selectedTagIds]);
+  const [lastQueryKey, setLastQueryKey] = useState(queryKey);
+  if (queryKey !== lastQueryKey) {
+    // Adjusting state during render (the React-documented pattern) rather than
+    // in an effect. An effect would commit one render at the OLD revealCount
+    // first — for a user who had scrolled deep that is exactly the 1,000-row
+    // render this whole change exists to avoid, once per keystroke.
+    setLastQueryKey(queryKey);
+    setRevealCount(REVEAL_CHUNK);
+  }
+
+  // A new query starts at the top of its results. Load-bearing for the reveal
+  // window, not just manners: resetting revealCount while the container stays
+  // scrolled 250 rows down leaves the sentinel already in view, so the observer
+  // below immediately cascades the window back up to cover the scroll offset —
+  // measured doing exactly that (search after scrolling deep re-revealed 250
+  // rows instead of 50). Scrolling to the top is what makes the reset stick.
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current;
+    if (el) el.scrollTop = 0;
+  }, [queryKey, open, listRef]);
+
+  const visibleItems = revealCount >= items.length ? items : items.slice(0, revealCount);
+  const hasMore = items.length > visibleItems.length;
+
+  // Top up when the sentinel below the last revealed row comes into view.
+  // Same "don't do the work until it's needed" shape as ArtifactThumbnail's
+  // fetch gating. Re-arming on every revealCount change is what makes it
+  // cascade: if one chunk still doesn't reach past the sentinel (short rows, a
+  // tall window), observing again fires again until it does.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || !hasMore) return;
+    // No IntersectionObserver (jsdom under test, any exotic WebView) — reveal
+    // everything rather than stranding the list at 50 rows with no way to grow.
+    if (typeof IntersectionObserver === 'undefined') { setRevealCount(items.length); return; }
+    const el = sentinelRef.current;
+    const root = listRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) setRevealCount((n) => n + REVEAL_CHUNK); },
+      { root, rootMargin: '400px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [open, hasMore, revealCount, items.length, listRef]);
 
   // Distinct projects with counts — what the Projects pill dropdown displays.
   // Derived from the unfiltered session list so the dropdown always shows
@@ -480,6 +667,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setExpandedId(null);
     } else {
       setExpandedId(sessionId);
+      // Other half of the mutual exclusion (the tag button does the reverse):
+      // a card shows the resume pane OR the tag sheet, never both. Clears any
+      // card's open sheet, not just this one — two cards' panes open at once
+      // would be the same stacking problem spread across rows.
+      setOrganizeId(null);
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
@@ -487,12 +679,30 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   };
 
+  // Bridge the unified <ModelPicker> onto the two pieces of resume state that
+  // already existed: `resumeModel` (a Claude alias) and `nativeResumeBinding`.
+  // Which one a row uses is decided by its own provider, so the picker is
+  // scoped and only one can ever be in play.
+  const resumeChoice = (s: PastSession): ModelChoice | null => {
+    if (s.provider === 'native') {
+      return nativeResumeBinding
+        ? { runtime: 'native', providerId: nativeResumeBinding.providerId, modelId: nativeResumeBinding.modelId }
+        : null;
+    }
+    return resumeModel ? { runtime: 'claude', alias: resumeModel } : null;
+  };
+
+  const applyResumeChoice = (s: PastSession, c: ModelChoice) => {
+    if (c.runtime === 'native') setNativeResumeBinding({ providerId: c.providerId, modelId: c.modelId });
+    else setResumeModel(c.alias);
+  };
+
   const handleConfirmResume = async (s: PastSession) => {
     // Native sessions: the CC-only model / skip-permissions choices are
     // irrelevant (no PTY, no /model or /effort), so pass the current (default)
     // values but tag the row's provider so App takes the native path, PLUS the
     // binding the user just picked (or the prefill auto-selected) in the
-    // NativeModelSelect below — the Resume button is disabled until this is
+    // ModelPicker below — the Resume button is disabled until this is
     // set (see the (s.provider === 'native' && !nativeResumeBinding) guard on
     // the button), so it is always present here for a native row.
     //
@@ -508,36 +718,85 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
   if (!open) return null;
 
+  // The expanded panel is now INSIDE the card (see renderSessionRow), so it
+  // drops its own border/fill and separates with a rule instead. The old
+  // `bg-inset/50` also had to go: the protection cascade that keeps nested
+  // surfaces opaque inside an overlay is `.layer-surface .bg-inset`
+  // (globals.css:951), and an opacity modifier emits `bg-inset/50` — a
+  // different class the cascade does not match, so it would have gone
+  // translucent on wallpaper themes.
+  // Tags and note. There is no separate "Flags" section any more: Priority is
+  // listed as a built-in TAG (it reads as a label you apply, because that is
+  // what it is to the user — see built-in-tags.ts), and Complete moved out of
+  // this popover entirely onto the card's hide icon, since marking something
+  // done is a one-click action that shouldn't cost opening a menu.
+  const renderOrganizeControls = (s: PastSession) => (
+    <>
+      {/* No "TAGS" / "NOTE" headers. A tag list and a text field do not need
+          naming — the search placeholder and the note placeholder already say
+          what each is, and the two labels were a third of the sheet's height.
+          Matched across all three tag/note surfaces (2026-07-31).
+          fieldClassName lifts the search box to `bg-well`: the sheet sits on
+          the card, which IS the FIELD surface (`bg-inset`), so without it the
+          field is the same colour as its background. Same override the close
+          prompt and the model picker make, for the same reason. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <TagPicker
+          appliedIds={new Set(s.tags ?? [])}
+          onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+          registry={registry}
+          onManageTags={() => { setOrganizeId(null); setTagManagerOpen(true); }}
+          fieldClassName="bg-well border-edge"
+          builtIns={[{
+            tag: PRIORITY_TAG,
+            hint: PRIORITY_HINT,
+            applied: !!s.flags?.priority,
+            // Stored as a flag, not a registry tag — the sort reads one known
+            // key rather than scanning a user-editable list.
+            onToggle: (next) => toggleFlag(s.sessionId, 'priority', next),
+          }]}
+        />
+      </div>
+
+      <div className="border-t border-edge-dim pt-2" onClick={(e) => e.stopPropagation()}>
+        <NoteEditor
+          value={s.note ?? ''}
+          onSave={(text) => saveNote(s.sessionId, text)}
+          fieldClassName="bg-well border-edge"
+        />
+      </div>
+    </>
+  );
+
+  // The expanded panel answers ONE question: how do I relaunch this? Model,
+  // the two launch toggles, Resume. Flags/tags/note used to be stacked in here
+  // too, which is what made an open card a seven-field form with its primary
+  // action at the bottom.
   const renderExpandedOptions = (s: PastSession) => {
   return (
-    <div className="px-4 pb-2">
-      <div className="rounded-lg bg-inset/50 border border-edge-dim p-3 flex flex-col gap-2">
-        {/* Model + Skip Permissions are Claude-Code-only. A native session
-            resumes with the model binding stored in its header (there's nothing
-            to choose here) and has no PTY permission flow, so both are hidden
-            for native rows. */}
-        {s.provider !== 'native' ? (
-          <>
-            {/* Model selector */}
-            <div>
-              <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-              <div className="flex gap-1">
-                {MODELS.map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setResumeModel(m)}
-                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
-                      resumeModel === m
-                        ? 'bg-accent text-on-accent font-medium'
-                        : 'bg-inset text-fg-dim hover:bg-edge'
-                    }`}
-                  >
-                    {MODEL_LABELS[m] || m}
-                  </button>
-                ))}
-              </div>
-            </div>
+    <div className="border-t border-edge-dim">
+      <div className="p-3 flex flex-col gap-2">
+        {/* ONE model control for both runtimes. Was two: a Claude alias button
+            row here and a separate native picker below, which is the duplication this
+            picker exists to end. The list is SCOPED to the row's own runtime —
+            a resume cannot move a conversation across runtimes, so offering the
+            other side would be a pick that cannot be honoured. */}
+        <div onClick={(e) => e.stopPropagation()}>
+          <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
+          <ModelPicker
+            value={resumeChoice(s)}
+            onSelect={(c) => applyResumeChoice(s, c)}
+            includeClaude={s.provider !== 'native'}
+            includeNative={s.provider === 'native'}
+            prefill={s.lastUsedModel}
+            onManageModels={() => window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'))}
+          />
+        </div>
 
+        {/* Skip Permissions is Claude-Code-only — a native session has no PTY
+            permission flow. */}
+        {s.provider !== 'native' && (
+          <>
             {/* Skip Permissions */}
             <div className="flex items-center justify-between">
               <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase inline-flex items-center">
@@ -562,22 +821,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               <p className="text-3xs text-destructive-fg">Claude will execute tools without asking for approval.</p>
             )}
           </>
-        ) : (
-          <div>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Model</label>
-            {/* Task 6 — native resume ALWAYS offers this selector (never
-                auto-launches a binding). Prefilled from the conversation's
-                synced lastUsedModel when it matches a model available on
-                THIS device; no local match leaves it un-prefilled — never an
-                error, never a substitute. onSelect both handles a manual pick
-                AND the (only-once, first-load) prefill auto-select. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <NativeModelSelect
-                prefill={s.lastUsedModel}
-                onSelect={(binding) => setNativeResumeBinding(binding)}
-              />
-            </div>
-          </div>
         )}
 
         {/* Launch in new window — hidden on remote/Android (single-window) */}
@@ -592,51 +835,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             />
           </div>
         )}
-
-        {/* Flags / tags / note are Conversation Store-backed. Task 5 (2026-07-2x)
-            unlocked native sessions here too — they're real store records now
-            (Task 4), so there's no more "unsupported" branch to hide this
-            block behind. A write that somehow gets refused (store down, etc.)
-            is still caught by the revert in toggleFlag/toggleTag/saveNote. */}
-        <>
-          {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
-          <div>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Flags</label>
-            <div className="flex gap-1">
-              {FLAG_ORDER.map((flag) => {
-                const active = !!s.flags?.[flag];
-                return (
-                  <button
-                    key={flag}
-                    onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-                    className={`flex-1 px-1 py-1 rounded-sm text-3xs transition-colors ${
-                      active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
-                    }`}
-                    aria-pressed={active}
-                  >
-                    {FLAG_LABEL[flag]}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
-          <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Tags</label>
-            <TagPicker
-              appliedIds={new Set(s.tags ?? [])}
-              onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
-              registry={registry}
-            />
-          </div>
-
-          {/* Note — stopPropagation so editing doesn't collapse the row. */}
-          <div onClick={(e) => e.stopPropagation()}>
-            <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Note</label>
-            <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
-          </div>
-        </>
 
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}
@@ -667,48 +865,90 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   );
   };
 
-  const renderSessionRow = (s: PastSession, showPath?: boolean) => (
-    <div key={s.sessionId}>
+  const renderSessionRow = (s: PastSession, showPath?: boolean) => {
+    const isExpanded = expandedId === s.sessionId;
+    // Unresumable rows are inert: no card hover, no expand. See the note on the
+    // click handler below for the two reasons a row lands here.
+    const inert = !!(s.missingProject || s.notSyncedYet);
+    // px-4 matches the search bar and the project group headers above, so the
+    // card's outer edge lines up with the rest of the panel.
+    return (
+    <div key={s.sessionId} className="px-4 pb-2">
+      {/* Expandable card. The surface is `bg-inset` + `border-edge-dim`, NOT
+          `.layer-surface`.
+          `.layer-surface` is the FLOATING surface — panel fill + border +
+          `0 8px 32px` shadow + the wallpaper glass treatment — and it must
+          appear exactly ONCE per stack. It is right for a card sitting directly
+          on canvas (SkillCard.tsx:117, MarketplaceCard, FilesTab.tsx:393) and
+          for the overlay itself. Nesting one inside another stacks all four:
+          under `[data-wallpaper]` each `.layer-surface` is
+          `color-mix(--panel, panels-opacity%)`, so a card inside the Resume
+          OverlayPanel lays a second helping of --panel over the first and the
+          cards glow brighter than the panel holding them (reported 2026-07-30).
+          CommandDrawer gets away with `.layer-surface` tiles only because its
+          own container is a plain `bg-panel` utility (CommandDrawer.tsx:195),
+          which the wallpaper rule does not touch.
+          `bg-inset` is what every other item nested in an overlay uses —
+          ModelPicker rows, OpenTasksPopup, TagPicker, ContextPopup — and the
+          protection cascade (`.layer-surface .bg-inset`, globals.css:951) keeps
+          it opaque inside a glass panel.
+          Bare `bg-inset` here rather than change 25's `bg-inset/50` in-panel ROW
+          surface (EngineCard.tsx:92, LocalModelsSection, ModelProvidersPopup —
+          24 files): a row is a tint inside a section, a card is an object you
+          click, so it gets the full fill. Worth knowing that the /50 form falls
+          outside the protection cascade above, which matches on `.bg-inset`
+          exactly — so those rows do let a wallpaper through where a bare
+          `bg-inset` would not. That is long-standing and deliberate-looking;
+          it is NOT something to "fix" from this file.
+          `card-interactive` is deliberately absent — its own comment scopes it
+          to cards that ARE a `.layer-surface`, and its hover fill is
+          `var(--inset)`, a no-op on an inset base. Hover moves the border
+          instead, following SettingsPanel.tsx:1833's selectable cards.
+          The card wraps BOTH the trigger and the expanded panel so an open row
+          reads as one object instead of a row with a detached box under it. */}
+      <div
+        // `relative` is load-bearing: the icon cluster is positioned against
+        // this card, not the panel. The icon buttons are SIBLINGS of the expand
+        // trigger, never nested — a button inside a button is invalid HTML and
+        // the inner one would never receive its own click.
+        className={`relative rounded-lg border bg-inset overflow-hidden transition-colors ${
+          isExpanded ? 'border-accent' : inert ? 'border-edge-dim' : 'border-edge-dim hover:border-edge'
+        }`}
+      >
       <button
         // Resume is disabled for conversations whose project folder isn't on
         // this device (synced in from elsewhere) OR whose transcript hasn't
         // synced here yet — either way there's nothing to resume into, so the
         // row shows a plain-words note instead of expanding.
-        onClick={() => { if (!s.missingProject && !s.notSyncedYet) handleSelectSession(s.sessionId); }}
-        aria-disabled={s.missingProject || s.notSyncedYet || undefined}
-        className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-          s.missingProject || s.notSyncedYet
-            ? 'text-fg-dim cursor-default'
-            : expandedId === s.sessionId
-              ? 'bg-inset text-fg'
-              : 'text-fg-dim hover:bg-inset hover:text-fg'
+        onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
+        aria-disabled={inert || undefined}
+        aria-expanded={inert ? undefined : isExpanded}
+        className={`w-full text-left p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          inert ? 'text-fg-dim cursor-default' : isExpanded ? 'text-fg' : 'text-fg-dim'
         }`}
       >
-        <div className="flex-1 min-w-0">
-          <div className="text-sm truncate flex items-center gap-1.5">
-            {/* Runtime badge — native (YouCoded harness) sessions only. Plain
-                word, no glyph; distinguishes them from Claude Code transcripts. */}
-            {s.provider === 'native' && (
-              <span
-                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
-                title="YouCoded native session"
-              >YouCoded</span>
-            )}
-            {/* Preset label — which harness personality this native session runs
-                as. Legacy 'chat' (and any unknown id) falls back to Assistant. */}
-            {s.provider === 'native' && (
-              <span
-                className="text-4xs px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
-                title="YouCoded native session"
-              >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
-            )}
-            <span className="truncate">{s.name}</span>
-          </div>
-          {/* Reserved-flag indicators + custom-tag chips, AFTER the name. */}
-          {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
-            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-              {s.flags?.priority && <span className="text-4xs text-accent" title="Priority">Priority</span>}
-              {s.flags?.complete && <span className="text-4xs text-fg-muted" title="Complete">Complete</span>}
+        <div className="min-w-0">
+          {/* ICON_GUTTER on the two upper rows, none on the bottom one — that
+              asymmetry is the whole point. The icon buttons are absolutely
+              positioned over the card's top-right corner, so the trigger can
+              span the FULL card width and the timestamp on the bottom row lands
+              flush with the card's right padding. Laying the icons out as flex
+              siblings instead (as this did) shortened the trigger by their
+              width, which left the date visibly short of the right edge. */}
+          {/* Title only. The "YouCoded" + "Coder"/"Assistant" badges that used
+              to lead this line are gone: they named the RUNTIME and the harness
+              preset, which is internal vocabulary, and they pushed the actual
+              conversation title right on every native row. The model chip on
+              the line below says the same thing in the user's terms — a model
+              name — and says it for Claude Code rows too. */}
+          <div className={`text-sm truncate ${ICON_GUTTER}`}>{s.name}</div>
+          {/* Tag chips after the name. Priority is FIRST and rendered with the
+              same TagChip as everything else — it is a built-in tag, not a
+              separate species of label (built-in-tags.ts). Complete has no chip:
+              its state is the hide icon on the right of this row. */}
+          {(s.flags?.priority || (s.tags && s.tags.length > 0) || s.note) && (
+            <div className={`flex items-center gap-1 mt-0.5 flex-wrap ${ICON_GUTTER}`}>
+              {s.flags?.priority && <TagChip tag={PRIORITY_TAG} />}
               {(s.tags ?? []).map((id) => {
                 const t = registry.byId.get(id);
                 return t ? <TagChip key={id} tag={t} /> : null;
@@ -716,32 +956,159 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {s.note && <span className="text-4xs text-fg-muted" title={s.note}>📝 note</span>}
             </div>
           )}
-          {/* Second line: in flat (chronological) mode each row carries its
-              project label since there's no group header; size rides along so
-              no info is lost vs. the grouped view. Grouped rows keep size only
-              — the group header already names the project. */}
-          {s.missingProject || s.notSyncedYet ? (
-            // Plain words, no glyphs (house rule). The conversation is visible
-            // everywhere; resume needs the project folder AND its transcript
-            // present on this device — the two notes say which one is missing.
-            <div className="text-3xs text-fg-muted truncate">
-              {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
-            </div>
-          ) : (
-            <div className="text-3xs text-fg-muted truncate">
-              {showPath
-                ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
-                : formatSize(s.size)}
-            </div>
-          )}
+          {/* Bottom line: one dotted trail of context on the left — project,
+              model, size — then the timestamp on the right.
+              The model sits INSIDE that trail rather than floating right beside
+              the date: it is another fact ABOUT the conversation, and pinning
+              it to the right edge grouped it with the timestamp instead
+              (reported 2026-07-31 with a screenshot).
+              Built as segments joined by "·" rather than a template string,
+              because two of the three are conditional — grouped mode drops the
+              project (the group header names it) and a conversation with no
+              recorded model drops that — and a literal separator would leave
+              stray dots on either.
+              The timestamp lives here rather than on the title line: the two
+              icon buttons own the card's top-right corner, and a third item
+              crowding in beside them read as part of that control cluster. */}
+          <div className="flex items-center gap-1.5 text-3xs text-fg-muted">
+            {s.missingProject || s.notSyncedYet ? (
+              // Plain words, no glyphs (house rule). The conversation is visible
+              // everywhere; resume needs the project folder AND its transcript
+              // present on this device — the two notes say which one is missing.
+              <span className="truncate flex-1 min-w-0">
+                {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
+                {[
+                  // Same folder glyph as the project picker (FolderSwitcher.tsx:186)
+                  // so "which project" looks the same wherever it is answered.
+                  showPath ? (
+                    <span key="project" className="flex items-center gap-1 min-w-0">
+                      <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                      </svg>
+                      <span className="truncate">{s.projectPath.replace(/\\/g, '/').split('/').pop()}</span>
+                    </span>
+                  ) : null,
+                  // Last model this conversation actually RAN on, beside the same
+                  // layers glyph the model picker uses. Rendered only when the
+                  // record has one — showing the app default here would be a
+                  // guess dressed as history. See PastSession.lastUsedModel for
+                  // which conversations carry it.
+                  s.lastUsedModel ? (
+                    <span
+                      key="model"
+                      className="flex items-center gap-1 min-w-0"
+                      title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
+                    >
+                      <ModelIcon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{formatModelId(s.lastUsedModel.modelId)}</span>
+                    </span>
+                  ) : null,
+                  <span key="size" className="shrink-0">{formatSize(s.size)}</span>,
+                ]
+                  .filter(Boolean)
+                  // Separators are injected between surviving segments, so a
+                  // missing project or model never leaves a dangling dot.
+                  .flatMap((node, i) => (i === 0
+                    ? [node]
+                    : [<span key={`sep-${i}`} className="shrink-0">·</span>, node]))}
+              </span>
+            )}
+            <span className="shrink-0 ml-auto">{formatRelativeTime(s.lastModified)}</span>
+          </div>
         </div>
-        <span className="text-3xs text-fg-muted shrink-0">
-          {formatRelativeTime(s.lastModified)}
-        </span>
       </button>
-      {expandedId === s.sessionId && renderExpandedOptions(s)}
+      {/* The two icon buttons, overlaid on the card's top-right corner rather
+          than laid out beside the trigger. Order is TAG then COMPLETE, so
+          Complete — the one that changes what the list shows — sits outermost
+          and lands on the same vertical line as the timestamp below it.
+          Padding is what sets both the outer alignment and the space between
+          the pair: py-1.5/px-1 buttons put 8px between the two icons (4 + 4)
+          while the cluster's pr-2 puts the last icon's right edge 12px from the
+          card edge, matching the trigger's p-3. */}
+      <div className="absolute top-0 right-0 pt-1.5 pl-1.5 pr-2 flex items-start">
+      {/* Tags and note. Always visible rather than hover-revealed — a
+          hover-only affordance is invisible on touch and undiscoverable on
+          desktop, and this is the ONLY route to tagging. Rendered for inert
+          rows too: the metadata is Conversation Store-backed, so a conversation
+          synced in from another device can be organized here even though it
+          can't be resumed on this one. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (organizeId === s.sessionId) { setOrganizeId(null); return; }
+          organizeTriggerRef.current = e.currentTarget;
+          // The two panes are mutually exclusive: a card shows EITHER how to
+          // relaunch it or how to organize it, never both stacked. Without this
+          // an open card could grow two panels deep and the Resume button would
+          // slide down the screen as you tagged.
+          setExpandedId(null);
+          setOrganizeId(s.sessionId);
+        }}
+        aria-label={`Organize ${s.name}`}
+        aria-haspopup="dialog"
+        aria-expanded={organizeId === s.sessionId}
+        className={`px-1 py-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          organizeId === s.sessionId ? 'text-fg' : 'text-fg-faint hover:text-fg-2'
+        }`}
+      >
+        {/* A tag, not a generic dots menu — it names what the sheet holds.
+            Shared with the close prompt's summary (tags/glyphs.tsx) so the mark
+            can't drift between the two surfaces that draw it. */}
+        <TagGlyph className="w-4 h-4" />
+      </button>
+      {/* Complete. It sits on the card rather than inside the tag sheet because
+          finishing with a conversation is a one-click action, and costing a
+          menu-open for it is what made the old flag row feel buried. Hover copy
+          is a question ("Mark this session complete?") so the icon reads as an
+          action, not a status badge. */}
+      {(() => {
+        const done = !!s.flags?.complete;
+        return (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, 'complete', !done); }}
+            aria-pressed={done}
+            title={done ? 'Marked complete — hidden unless Show Complete is on. Click to undo.' : 'Mark this session complete?'}
+            aria-label={done ? `Mark ${s.name} not complete` : `Mark ${s.name} complete`}
+            className={`px-1 py-1.5 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              done ? 'text-accent' : 'text-fg-faint hover:text-fg-2'
+            }`}
+          >
+            {/* Check-in-a-circle, not the eye-with-a-slash this started as:
+                the control's NAME is Complete, and "done" is what the user is
+                actually saying. That its effect is to hide the row from the
+                list is a consequence, and one the Show Complete toggle already
+                explains. Filled when set so the state reads at a glance. */}
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="12" cy="12" r="9" fill={done ? 'currentColor' : 'none'} />
+              {/* Knocked out of the fill when set — var(--canvas), not a
+                  hardcoded white, so it survives a dark or community theme. */}
+              <path d="M8 12.5l2.5 2.5L16 9.5" stroke={done ? 'var(--canvas)' : 'currentColor'} />
+            </svg>
+          </button>
+        );
+      })()}
+      </div>
+      {/* 'sheet' variant: the organize controls drop INTO the card rather than
+          floating. No positioning maths and nothing to clamp — the trade is
+          that the card grows and pushes the rest of the list down.
+          It shares organizePopRef with the floating variants: only one of the
+          two is ever mounted, and the outside-click handler checks that ref to
+          know "the click landed inside the open organize UI". */}
+      {organizeId === s.sessionId && (
+        <div ref={organizePopRef} className="border-t border-edge-dim p-2.5 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+          {renderOrganizeControls(s)}
+        </div>
+      )}
+      {isExpanded && renderExpandedOptions(s)}
+      </div>
     </div>
-  );
+    );
+  };
 
   return (
     <>
@@ -887,6 +1254,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   {registry.tags.filter((t) => !t.archived).length === 0 && (
                     <div className="px-2.5 py-1.5 text-xs text-fg-muted">No tags yet.</div>
                   )}
+                  {/* Second route to the tag manager, so "where do I rename a
+                      tag?" is answerable from the filter too — not only from a
+                      conversation's Organize popover. */}
+                  <button
+                    type="button"
+                    onClick={() => { setOpenPill(null); setTagManagerOpen(true); }}
+                    className="w-full text-left px-2.5 py-1.5 text-2xs text-fg-muted tracking-wider uppercase hover:text-fg hover:bg-inset transition-colors border-b border-edge-dim"
+                  >
+                    Manage tags…
+                  </button>
                   {registry.tags.filter((t) => !t.archived).map((t) => {
                     const checked = selectedTagIds.has(t.id);
                     return (
@@ -934,27 +1311,38 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   message={search.trim() ? 'No matching sessions' : 'No previous sessions found'}
                   action={search.trim() ? { label: 'Clear search', onClick: () => setSearch('') } : undefined}
                 />
-              ) : grouped ? (
-                // Grouped by project — only when the Projects filter is active
-                [...grouped.entries()].map(([projectPath, items]) => (
-                  <div key={projectPath} className="mb-2">
-                    <div className="px-4 py-1">
-                      <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
-                        {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
-                      </span>
-                    </div>
-                    {items.map((s) => renderSessionRow(s))}
-                  </div>
-                ))
               ) : (
-                // Flat chronological list (default view + search results),
-                // priority-pinned; each row shows its own project label.
-                flatSorted.map((s) => renderSessionRow(s, true))
+                // ONE list for both modes — grouped (project header + its rows,
+                // only when the Projects filter is active) and flat chronological
+                // (default view + search results, each row showing its own
+                // project label). Bounded to `revealCount`; the sentinel below
+                // extends it as the user scrolls.
+                //
+                // The per-group wrapper this replaced carried `mb-2` for the gap
+                // between groups; a flat list has no wrapper to hang that on, so
+                // the spacing moves to a top margin on every header after the
+                // first — same 8px between groups.
+                <>
+                  {visibleItems.map((item) => (
+                    item.kind === 'header' ? (
+                      <div key={item.key} className={`px-4 py-1 ${item.first ? '' : 'mt-2'}`}>
+                        <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">
+                          {item.label}
+                        </span>
+                      </div>
+                    ) : renderSessionRow(item.session, item.showPath)
+                  ))}
+                  {/* Top-up trigger. Rendered only while rows remain, so the
+                      observer effect above tears down once the list is whole. */}
+                  {hasMore && <div ref={sentinelRef} aria-hidden className="h-px" />}
+                </>
               )}
             </div>
           </div>
         </OverlayPanel>
       </div>
+
+      <TagManagerPopup open={tagManagerOpen} onClose={() => setTagManagerOpen(false)} registry={registry} />
     </>
   );
 }

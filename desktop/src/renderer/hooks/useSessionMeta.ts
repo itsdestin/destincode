@@ -1,10 +1,14 @@
 // src/renderer/hooks/useSessionMeta.ts
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
+import { META_UNSUPPORTED_FALLBACK, type SessionFlagName, type SessionMetaResult } from '../../shared/types';
 
 export interface SessionMetaApi {
   tags: Set<string>;   // applied tag ids
   note: string;
+  /** Reserved flags currently set. Empty when the host doesn't report them
+   *  (Android, or an older remote peer) — missing is "none set", never an
+   *  error. Drives Priority-as-a-built-in-tag in the in-session chip. */
+  flags: Partial<Record<SessionFlagName, boolean>>;
   /** False when the backend will REFUSE writes for this session (a desktop native
    *  session, or an Android host where tags/notes aren't built yet). Render the
    *  controls disabled. */
@@ -14,10 +18,12 @@ export interface SessionMetaApi {
   unsupportedReason: string;
   setTag: (tagId: string, next: boolean) => void;
   setNote: (text: string) => void;
+  setFlag: (flag: SessionFlagName, next: boolean) => void;
 }
 
 export function useSessionMeta(sessionId: string | null): SessionMetaApi {
   const [tags, setTags] = useState<Set<string>>(new Set());
+  const [flags, setFlags] = useState<Partial<Record<SessionFlagName, boolean>>>({});
   const [note, setNoteState] = useState('');
   // Default TRUE so the controls don't flash disabled during the first getMeta.
   const [supported, setSupported] = useState(true);
@@ -39,10 +45,12 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
   }, []);
 
   const refetch = useCallback(() => {
-    if (!sessionId) { setTags(new Set()); setNoteState(''); savedNote.current = ''; setSupported(true); return; }
+    if (!sessionId) { setTags(new Set()); setFlags({}); setNoteState(''); savedNote.current = ''; setSupported(true); return; }
     Promise.resolve((window as any).claude.session.getMeta(sessionId))
       .then((m: SessionMetaResult) => {
         setTags(new Set(m?.tags ?? []));
+        // Missing is "none set" — an older peer omits the field entirely.
+        setFlags(m?.flags ?? {});
         setNoteState(m?.note ?? '');
         // Server truth resets the rollback target too, or a later refusal would
         // revert to a value the backend never held.
@@ -52,7 +60,7 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
         setSupported(m?.supported !== false);
         setUnsupportedReason(m?.unsupportedReason || META_UNSUPPORTED_FALLBACK);
       })
-      .catch(() => { setTags(new Set()); setNoteState(''); savedNote.current = ''; setSupported(true); });
+      .catch(() => { setTags(new Set()); setFlags({}); setNoteState(''); savedNote.current = ''; setSupported(true); });
   }, [sessionId]);
 
   useEffect(() => {
@@ -104,5 +112,18 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
     } catch { /* backend logs */ }
   }, [sessionId, noteRefusal]);
 
-  return { tags, note, supported, unsupportedReason, setTag, setNote };
+  // Same optimistic-then-revert contract as setTag: a refused write must roll
+  // the local value back, or the flag looks set until the next refetch.
+  const setFlag = useCallback((flag: SessionFlagName, next: boolean) => {
+    if (!sessionId) return;
+    const prev = !!flags[flag];
+    setFlags((f) => ({ ...f, [flag]: next }));
+    try {
+      Promise.resolve((window as any).claude.session.setFlag(sessionId, flag, next))
+        .then((res: any) => { if (res && res.ok === false) { setFlags((f) => ({ ...f, [flag]: prev })); noteRefusal(res); } })
+        .catch(() => {});
+    } catch { /* backend logs */ }
+  }, [sessionId, flags, noteRefusal]);
+
+  return { tags, flags, note, supported, unsupportedReason, setTag, setNote, setFlag };
 }

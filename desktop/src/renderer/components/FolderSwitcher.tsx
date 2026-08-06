@@ -192,12 +192,11 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
         </svg>
       </button>
 
-      {/* Full path hint below trigger */}
-      {value && (
-        <div className="mt-0.5 px-1 text-3xs text-fg-muted truncate" title={value}>
-          {value}
-        </div>
-      )}
+      {/* The full-path hint that used to sit here was removed 2026-07-30
+          (Destin): the trigger already names the folder, and the second line
+          pushed every field below it down while repeating information the
+          picker's own rows carry. The path still reaches assistive tech and
+          hover via each row's title attribute inside the dropdown. */}
 
       {/* Dropdown panel — uses .layer-surface for theme-driven background,
           border, shadow, and glassmorphism (blur/opacity from --panels-* vars).

@@ -8,10 +8,13 @@ const NOTE_MAX = 8000;
 // remaining-count appears near the limit. Saves on blur (only when changed),
 // and also on unmount so a note typed then ESC-closed (which fires no blur)
 // isn't lost.
-export function NoteEditor({ value, onSave, placeholder = 'Add a note…' }: {
+export function NoteEditor({ value, onSave, placeholder = 'Add a note…', fieldClassName = '' }: {
   value: string;
   onSave: (text: string) => void;
   placeholder?: string;
+  /** Extra classes for the textarea's surface — same reason as TagPicker's:
+   *  a host that is itself `bg-inset` needs the field one step deeper. */
+  fieldClassName?: string;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => { setDraft(value); }, [value]);
@@ -35,7 +38,7 @@ export function NoteEditor({ value, onSave, placeholder = 'Add a note…' }: {
       <Textarea
         size="sm"
         resizable
-        className="w-full resize-y"
+        className={`w-full resize-y ${fieldClassName}`.trim()}
         aria-label={placeholder}
         value={draft}
         maxLength={NOTE_MAX}

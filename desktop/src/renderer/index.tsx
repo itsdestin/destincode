@@ -215,12 +215,27 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
       // renders in place of <App/> rather than inside it. It DOES get a real
       // ThemeProvider — the ?mode=tool-sandbox route it replaces rendered
       // outside the provider tree and so was never themed.
-      if (new URLSearchParams(location.search).get('view') === 'tools') {
+      const __view = new URLSearchParams(location.search).get('view');
+      if (__view === 'tools') {
         const [{ ToolGallery }, { ThemeProvider }] = await Promise.all([
           import('./dev/workbench/ToolGallery'),
           import('./state/theme-context'),
         ]);
         __mount.render(<ThemeProvider><ToolGallery /></ThemeProvider>);
+        return;
+      }
+      // Comparison view — same deal as the tool gallery: its own surface, not
+      // part of the app shell, so it replaces <App/> rather than mounting
+      // inside it. ChatProvider rides along because a candidate may isolate a
+      // chat-side component (ToolCard calls useChatDispatch and would crash
+      // outside it); it costs nothing for candidates that don't.
+      if (__view === 'compare') {
+        const [{ CompareView }, { ThemeProvider }, { ChatProvider }] = await Promise.all([
+          import('./dev/workbench/CompareView'),
+          import('./state/theme-context'),
+          import('./state/chat-context'),
+        ]);
+        __mount.render(<ThemeProvider><ChatProvider><CompareView /></ChatProvider></ThemeProvider>);
         return;
       }
       // App is already statically imported above (Root renders it).

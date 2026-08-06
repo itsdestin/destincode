@@ -1,26 +1,63 @@
 // src/renderer/components/tags/TagPicker.tsx
+//
+// APPLY tags to one conversation. Deliberately does NOT manage the registry —
+// rename/recolor/archive/delete moved to TagManagerPopup, reachable from the
+// "Manage tags…" footer below. See that file's header for why the two jobs are
+// split; the short version is that this control is used constantly and wants to
+// be fast, and the editing UI it used to carry made every row a two-purpose
+// target with a ✎ that expanded a form inside a popover.
+//
+// Archived tags are not offered here at all (they were behind a "Show archived"
+// toggle). Archiving means "stop offering me this" — surfacing it in the picker
+// anyway was the toggle undoing the feature. The manager can still show them.
 import React, { useMemo, useState } from 'react';
 import type { TagRecord } from '../../../shared/tags';
-import { TAG_COLORS, DEFAULT_TAG_COLOR, TagColor } from '../../../shared/tags';
+import { DEFAULT_TAG_COLOR } from '../../../shared/tags';
 import { TagRegistryApi } from '../../hooks/useTagRegistry';
 import { TagChip } from './TagChip';
-import { Button, InputGroup, TextInput } from '../ui';
+import { Button, InputGroup } from '../ui';
 
-export function TagPicker({ appliedIds, onToggle, registry }: {
+/** A reserved flag rendered as a tag (see built-in-tags.ts). Not in the
+ *  registry, so it carries its own applied state and setter, and never appears
+ *  in the tag manager. */
+export interface BuiltInTag {
+  tag: Pick<TagRecord, 'id' | 'label' | 'color'>;
+  hint?: string;
+  applied: boolean;
+  onToggle: (next: boolean) => void;
+}
+
+export function TagPicker({ appliedIds, onToggle, registry, onManageTags, builtIns = [], fieldClassName = '' }: {
   appliedIds: Set<string>;
   onToggle: (tagId: string, next: boolean) => void;
   registry: TagRegistryApi;
+  /** Opens the tag manager. Omitted on surfaces that have nowhere to host it —
+   *  the footer then simply isn't rendered (same optional-footer contract as
+   *  ModelPicker's onManageModels / FolderSwitcher's onManageProjects). */
+  onManageTags?: () => void;
+  /** Reserved flags shown as tags, listed first. */
+  builtIns?: BuiltInTag[];
+  /** Extra classes for the search field's surface. Exists so a host whose own
+   *  background is already `bg-inset` — the FIELD surface — can lift the field
+   *  off it with `bg-well` rather than having an invisible control. */
+  fieldClassName?: string;
 }) {
   const [query, setQuery] = useState('');
-  const [showArchived, setShowArchived] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
 
   const q = query.trim().toLowerCase();
   const visible = useMemo(() => registry.tags
-    .filter((t) => showArchived || !t.archived)
-    .filter((t) => !q || t.label.toLowerCase().includes(q)), [registry.tags, q, showArchived]);
+    .filter((t) => !t.archived)
+    .filter((t) => !q || t.label.toLowerCase().includes(q)), [registry.tags, q]);
 
-  const exactExists = registry.tags.some((t) => t.label.toLowerCase() === q && !t.archived);
+  const visibleBuiltIns = useMemo(
+    () => builtIns.filter((b) => !q || b.tag.label.toLowerCase().includes(q)),
+    [builtIns, q],
+  );
+
+  // A built-in's name is taken too — creating a second "Priority" would give
+  // the user two chips that look identical and behave differently.
+  const exactExists = registry.tags.some((t) => t.label.toLowerCase() === q && !t.archived)
+    || builtIns.some((b) => b.tag.label.toLowerCase() === q);
   const canCreate = q.length > 0 && !exactExists;
 
   const handleCreate = async () => {
@@ -35,7 +72,7 @@ export function TagPicker({ appliedIds, onToggle, registry }: {
           canCreate. The row used to echo the typed name (+ Create “x”); inside the
           field that echo is redundant visually, so it survives as the aria-label —
           screen-reader users still hear which tag they're about to create. */}
-      <InputGroup size="sm">
+      <InputGroup size="sm" className={fieldClassName}>
         <InputGroup.Field
           aria-label="Search or create a tag"
           value={query}
@@ -50,65 +87,48 @@ export function TagPicker({ appliedIds, onToggle, registry }: {
         )}
       </InputGroup>
       <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+        {/* Built-ins first and unseparated — they are meant to read as ordinary
+            tags. The hint is the only thing marking them apart in the list. */}
+        {visibleBuiltIns.map((b) => (
+          <TagRow key={b.tag.id} tag={b.tag} applied={b.applied} hint={b.hint}
+            onToggle={() => b.onToggle(!b.applied)} />
+        ))}
         {visible.map((t) => (
           <TagRow key={t.id} tag={t} applied={appliedIds.has(t.id)}
-            editing={editing === t.id}
-            onToggle={() => onToggle(t.id, !appliedIds.has(t.id))}
-            onEdit={() => setEditing(editing === t.id ? null : t.id)}
-            registry={registry} />
+            onToggle={() => onToggle(t.id, !appliedIds.has(t.id))} />
         ))}
-        {visible.length === 0 && !canCreate && (
+        {visible.length === 0 && visibleBuiltIns.length === 0 && !canCreate && (
           <div className="px-2 py-1 text-3xs text-fg-muted">No tags yet — type a name to create one.</div>
         )}
       </div>
-      <button onClick={() => setShowArchived((v) => !v)}
-        className="self-start text-4xs text-fg-muted hover:text-fg-2">
-        {showArchived ? 'Hide archived' : 'Show archived'}
-      </button>
+      {/* Footer, not a list row: same shape as FolderSwitcher's "Manage
+          projects…" and ModelPicker's "Manage models…" — a way OUT of the
+          picker, kept visually separate from the things you can pick. */}
+      {onManageTags && (
+        <button
+          type="button"
+          onClick={onManageTags}
+          className="self-start text-4xs text-fg-muted hover:text-fg-2"
+        >
+          Manage tags…
+        </button>
+      )}
     </div>
   );
 }
 
-function TagRow({ tag, applied, editing, onToggle, onEdit, registry }: {
-  tag: TagRecord; applied: boolean; editing: boolean;
-  onToggle: () => void; onEdit: () => void; registry: TagRegistryApi;
+// Apply/unapply only. The checkbox-style swatch fills when applied.
+function TagRow({ tag, applied, onToggle, hint }: {
+  tag: Pick<TagRecord, 'label' | 'color'>; applied: boolean; onToggle: () => void; hint?: string;
 }) {
-  const [label, setLabel] = useState(tag.label);
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset">
-        <button onClick={onToggle} className="flex items-center gap-2 flex-1 text-left min-w-0">
-          <span className="w-3 h-3 shrink-0 rounded-sm border"
-            style={{ backgroundColor: applied ? `var(--${tag.color})` : 'transparent',
-                     borderColor: `var(--${tag.color})` }} />
-          <TagChip tag={tag} />
-          {tag.archived && <span className="text-4xs text-fg-muted shrink-0">archived</span>}
-        </button>
-        <button onClick={onEdit} className="text-fg-faint hover:text-fg-muted text-3xs shrink-0" title="Edit tag" aria-label="Edit tag">✎</button>
-      </div>
-      {editing && (
-        <div className="ml-5 mr-1 mb-1 flex flex-col gap-1.5 p-2 rounded-sm bg-inset border border-edge-dim">
-          {/* Change 20: bg-canvas + rounded-sm + no focus state → the shared FIELD
-              surface. aria-label added — this rename box previously had no
-              accessible name at all. */}
-          <TextInput size="sm" aria-label="Tag label" value={label} onChange={(e) => setLabel(e.target.value)}
-            onBlur={() => { if (label.trim() && label !== tag.label) registry.update(tag.id, { label: label.trim() }); }} />
-          <div className="flex flex-wrap gap-1">
-            {TAG_COLORS.map((c) => (
-              <button key={c} onClick={() => registry.update(tag.id, { color: c as TagColor })}
-                className={`w-4 h-4 rounded-full border ${tag.color === c ? 'ring-2 ring-offset-1 ring-offset-inset ring-fg-dim' : ''}`}
-                style={{ backgroundColor: `var(--${c})`, borderColor: `var(--${c})` }}
-                aria-label={c} title={c} />
-            ))}
-          </div>
-          <div className="flex gap-3">
-            <button onClick={() => registry.update(tag.id, { archived: !tag.archived })}
-              className="text-3xs text-fg-muted hover:text-fg">{tag.archived ? 'Unarchive' : 'Archive'}</button>
-            <button onClick={() => registry.remove(tag.id)}
-              className="text-3xs text-[#DD4444] hover:brightness-125">Delete</button>
-          </div>
-        </div>
-      )}
-    </div>
+    <button onClick={onToggle} aria-pressed={applied}
+      className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-inset text-left min-w-0">
+      <span className="w-3 h-3 shrink-0 rounded-sm border"
+        style={{ backgroundColor: applied ? `var(--${tag.color})` : 'transparent',
+                 borderColor: `var(--${tag.color})` }} />
+      <TagChip tag={tag} />
+      {hint && <span className="text-4xs text-fg-muted shrink-0 ml-auto">{hint}</span>}
+    </button>
   );
 }
