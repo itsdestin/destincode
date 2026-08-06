@@ -162,7 +162,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     expect(capturedCtorArgs![7]).toBeUndefined();
 
     const mcpManager = capturedCtorArgs![8] as {
-      acquire(sessionId: string): Promise<Array<{ id: string; label: string; tools: unknown[] }>>;
+      acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
     expect(typeof mcpManager.acquire).toBe('function');
@@ -172,7 +172,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // makes per-session (Task 6). If the wiring were removed (mcpManager left
     // undefined, or the registry pointed elsewhere), this would throw or
     // return [].
-    const ready = await mcpManager.acquire('test-session');
+    const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toHaveLength(1);
     expect(ready[0].id).toBe('demo');
     expect(ready[0].label).toBe('Demo Server');
@@ -205,8 +205,8 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![8] as { acquire(sessionId: string): Promise<unknown[]> };
-    const ready = await mcpManager.acquire('test-session');
+    const mcpManager = capturedCtorArgs![8] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
   });

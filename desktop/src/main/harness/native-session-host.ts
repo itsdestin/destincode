@@ -33,7 +33,7 @@ import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
-import type { ReadyServer } from './mcp/mcp-manager';
+import type { McpLease } from './mcp/mcp-manager';
 
 export interface CreateNativeSessionOpts {
   sessionId: string;
@@ -62,6 +62,23 @@ const SEND_QUEUE_LIMIT = 10;
 interface LiveEntry {
   session: HarnessSession;
   cwd: string;
+  // This generation's MCP lease (undefined when no manager is wired, or when
+  // acquireMcp() caught a whole-registry failure). It lives HERE, on the live
+  // entry, rather than in a sessionId-keyed map on the host.
+  //
+  // BE HONEST ABOUT WHY. This is structural insurance, NOT a fix for a bug
+  // observable today — a sessionId-keyed side map was tried as a mutation and
+  // no test could tell the difference, because it genuinely behaves the same
+  // right now. Two things make it equivalent: resume() awaits any live
+  // destroy() for the same id before acquiring, and destroy() has no await
+  // between `this.live.delete()` and the release call below, so nothing can
+  // interleave and swap the lease out. Both are properties of code that could
+  // change. Reading the lease off the entry destroy() already captured — at
+  // its top, before any await — makes "release the generation you are tearing
+  // down" true by construction rather than by that pair of coincidences, which
+  // is the same discipline McpLease applies inside the manager (where the
+  // equivalent bug WAS reachable and is mutation-tested).
+  mcpLease?: McpLease;
   // Per-session append serialization: each transcript event extends this chain
   // (append(prev).then(next)) so the SessionStore contract (serialized appends)
   // holds. Starts resolved; a failed append is logged but never breaks the
@@ -161,7 +178,11 @@ export class NativeSessionHost extends EventEmitter {
     // (create/resume/destroy below). Typed structurally (McpManager's real
     // shape, not the imported class) so tests can inject a fake pool without
     // this file depending on the concrete class for a few method calls.
-    private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<ReadyServer[]>; release(sessionId: string): Promise<void> },
+    // There is deliberately no `release(sessionId)` in this shape: a lease is
+    // given back through the object acquire() returns, which is what keeps two
+    // generations of one RESUMED session (same id, different lease) from
+    // releasing each other's connections. See McpLease in mcp-manager.ts.
+    private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<McpLease> },
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -325,7 +346,7 @@ export class NativeSessionHost extends EventEmitter {
    *  already handled inside McpManager itself (excluded from the returned
    *  list, never a rejection) — this only guards the rarer whole-registry
    *  failure. */
-  private async acquireMcp(sessionId: string): Promise<ReadyServer[] | undefined> {
+  private async acquireMcp(sessionId: string): Promise<McpLease | undefined> {
     if (!this.mcpManager) return undefined;
     try {
       return await this.mcpManager.acquire(sessionId);
@@ -337,8 +358,8 @@ export class NativeSessionHost extends EventEmitter {
 
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
-  private wire(sessionId: string, cwd: string, session: HarnessSession): void {
-    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false };
+  private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
+    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false, mcpLease };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
     // Persist "Always allow" decisions for THIS session's project. The session
@@ -404,7 +425,8 @@ export class NativeSessionHost extends EventEmitter {
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
     // Acquire this session's MCP servers (Task 6) BEFORE constructing the
     // session, so mcpServers is available for the very first buildAiTools().
-    const mcpServers = await this.acquireMcp(opts.sessionId);
+    const mcpLease = await this.acquireMcp(opts.sessionId);
+    const mcpServers = mcpLease?.servers;
     let session: HarnessSession;
     try {
       // Fix pass 1 / Finding 3: this whole block is fallible synchronous work
@@ -422,11 +444,11 @@ export class NativeSessionHost extends EventEmitter {
         this.modelFactory,
       );
     } catch (err) {
-      await this.mcpManager?.release(opts.sessionId);
+      await mcpLease?.release();
       throw err;
     }
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
-    this.wire(opts.sessionId, opts.cwd, session);
+    this.wire(opts.sessionId, opts.cwd, session, mcpLease);
   }
 
   /** Rebuild a live session from its stored header + events. Returns false when
@@ -471,15 +493,16 @@ export class NativeSessionHost extends EventEmitter {
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
-    // Acquire this session's MCP servers (Task 6). A RESUMED session reuses
-    // its old sessionId, so this acquire() can genuinely race a release()
-    // still in flight from an overlapping destroy() of the SAME id elsewhere
-    // (mcp-manager.ts's holderTouch is what makes that safe) — the guard at
-    // the top of this method already awaits any prior live session's OWN
-    // destroy() to completion before reaching here, so within a single
-    // resume() call there is no overlap; a genuine race needs a second,
-    // external destroy()/resume() pair for this id in flight concurrently.
-    const mcpServers = await this.acquireMcp(sessionId);
+    // Acquire this session's MCP servers (Task 6). A RESUMED session reuses its
+    // old sessionId, so this acquire() can overlap a release() still in flight
+    // from a destroy() of the SAME id. That used to be the bug: both
+    // generations wrote to one sessionId-keyed holder entry and the outgoing
+    // destroy() closed the incoming session's connections. It is now safe
+    // structurally — this acquire() mints its own lease, and the outgoing
+    // destroy() can only release the lease on the LiveEntry it captured. See
+    // McpLease in mcp-manager.ts.
+    const mcpLease = await this.acquireMcp(sessionId);
+    const mcpServers = mcpLease?.servers;
     let session: HarnessSession;
     try {
       // Fix pass 1 / Finding 3 — same leak as create(): everything in this
@@ -503,11 +526,11 @@ export class NativeSessionHost extends EventEmitter {
       // are runtime state, never persisted.
       session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
     } catch (err) {
-      await this.mcpManager?.release(sessionId);
+      await mcpLease?.release();
       throw err;
     }
     this.presetIdFor.set(sessionId, preset.manifest.id);
-    this.wire(sessionId, cwd, session);
+    this.wire(sessionId, cwd, session, mcpLease);
     return true;
   }
 
@@ -815,16 +838,14 @@ export class NativeSessionHost extends EventEmitter {
     this.rememberedFor.delete(sessionId);
     this.presetIdFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
-    // Release this session's hold on every pooled MCP server (Task 6), LAST —
-    // orthogonal to the transcript/live-map teardown above (MCP release never
-    // touches either), so ordering it after doesn't affect that invariant.
-    // Awaited like every other step here; safe even if a resume() for this
-    // SAME sessionId is racing in its own acquire() concurrently — that
-    // overlap is exactly what McpManager.release()'s holderTouch mechanism
-    // exists to get right (see mcp-manager.ts), not something this call needs
-    // to guard against itself. No-ops harmlessly when this session never
+    // Release THIS generation's MCP lease (Task 6), LAST — orthogonal to the
+    // transcript/live-map teardown above (releasing never touches either), so
+    // ordering it after doesn't affect that invariant. `entry` was captured at
+    // the top of this method, before any await, so a resume() for this same
+    // sessionId racing us installs its own LiveEntry with its own lease and
+    // this call cannot reach it. No-ops harmlessly when this session never
     // acquired anything (no manager wired, or acquireMcp caught a failure).
-    await this.mcpManager?.release(sessionId);
+    await entry.mcpLease?.release();
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */
@@ -841,15 +862,14 @@ export class NativeSessionHost extends EventEmitter {
     // app instead of being closed alongside it.
     //
     // SCOPE OF THAT PROMISE, precisely: this runs via ipc-handlers.ts cleanup(),
-    // which main.ts calls from its `window-all-closed` handler — and that is the
-    // ONLY quit-related listener the app registers. There is no `before-quit`,
-    // `will-quit`, `quit` or SIGTERM handler, so a quit route that skips
-    // window-all-closed (macOS Cmd+Q / dock quit, an OS-shutdown SIGTERM) skips
-    // this teardown too and DOES leak the subprocess. That gap is app-wide and
-    // pre-existing — sessionManager.destroyAll() and hookRelay.stop() ride the
-    // same single hook — so it is tracked as its own roadmap bug rather than
-    // patched here. Hooking in beside them is the correct move; just don't read
-    // this line as "covered at every quit."
+    // which main.ts calls from its shutdownApp() teardown. As of 2026-08-05 that
+    // teardown is reached from all three quit routes — window-all-closed,
+    // before-quit (macOS Cmd+Q, dock quit, menu quit), and a SIGTERM/SIGINT from
+    // an OS shutdown or logout — so this line can now be read as "covered at
+    // every quit." Before that fix, window-all-closed was the app's only
+    // quit-related listener and every other route leaked the subprocess.
+    // What is still NOT covered, and cannot be: SIGKILL, a power loss, or a
+    // main-process crash. Nothing in userland runs on those.
     await this.mcpManager?.destroyAll();
   }
 }

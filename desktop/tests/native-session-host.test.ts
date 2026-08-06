@@ -333,14 +333,18 @@ describe('NativeSessionHost', () => {
       id, label: id, tools: [], call: async () => ({ text: 'ok', isError: false }),
     });
 
+    // A lease whose release() is a spy — the manager's release is no longer a
+    // method on the manager, so the host can only give a hold back through the
+    // object acquire() returned. See McpLease in mcp-manager.ts.
+    const fakeLease = (servers: any[], release = vi.fn(async () => {})) => ({ servers, release });
+
     it('create() acquires this session\'s MCP servers and threads them into the session', async () => {
       const wanted = [fakeServer('srv0')];
-      const acquire = vi.fn(async () => wanted);
-      const release = vi.fn(async () => {});
+      const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
-        { destroyAll: async () => {}, acquire, release },
+        { destroyAll: async () => {}, acquire },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       expect(acquire).toHaveBeenCalledWith('s-1');
@@ -350,11 +354,11 @@ describe('NativeSessionHost', () => {
 
     it('resume() acquires MCP servers for the resumed session', async () => {
       const wanted = [fakeServer('srv1')];
-      const acquire = vi.fn(async () => wanted);
+      const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
-        { destroyAll: async () => {}, acquire, release: async () => {} },
+        { destroyAll: async () => {}, acquire },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       h.send('s-1', 'hello');
@@ -366,7 +370,7 @@ describe('NativeSessionHost', () => {
       const h2 = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
-        { destroyAll: async () => {}, acquire, release: async () => {} },
+        { destroyAll: async () => {}, acquire },
       );
       const resumed = await h2.resume('s-1', root);
       expect(resumed).toBe(true);
@@ -381,11 +385,50 @@ describe('NativeSessionHost', () => {
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
-        { destroyAll: async () => {}, acquire: async () => [], release },
+        { destroyAll: async () => {}, acquire: async () => fakeLease([], release) },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       await h.destroy('s-1');
-      expect(release).toHaveBeenCalledWith('s-1');
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    // Destroy → resume → destroy across two generations of ONE session id:
+    // each destroy releases exactly one lease, the right one, exactly once.
+    //
+    // WHAT THIS DOES NOT PROVE: it does not discriminate a per-entry lease from
+    // a sessionId-keyed "most recent lease" map — that mutation was run and
+    // this test still passed, because sequentially the most-recent lease IS the
+    // correct one. The generation-discrimination that IS load-bearing lives in
+    // McpManager and is mutation-tested there (mcp-manager.test.ts, "the
+    // outgoing generation of a resumed session..."). What this pins is the
+    // plainer contract: a resume acquires a FRESH lease rather than reusing the
+    // old one, and no generation's lease is ever released twice or skipped.
+    it('each generation of a resumed session releases its own lease exactly once', async () => {
+      const releaseA = vi.fn(async () => {});
+      const releaseB = vi.fn(async () => {});
+      const leases = [fakeLease([fakeServer('srv')], releaseA), fakeLease([fakeServer('srv')], releaseB)];
+      let n = 0;
+      const acquire = vi.fn(async () => leases[n++]);
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        undefined, undefined, undefined, undefined,
+        { destroyAll: async () => {}, acquire },
+      );
+      await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('s-1', 'hello');
+      await waitForTurnComplete(h, 1);
+      await h.drain('s-1');
+      // Generation 1 goes away; generation 2 resumes under the SAME id.
+      await h.destroy('s-1');
+      expect(releaseA).toHaveBeenCalledTimes(1);
+      expect(releaseB).not.toHaveBeenCalled();
+
+      await h.resume('s-1', root);
+      // Tearing generation 2 down must release ITS lease, and must not touch
+      // generation 1's again.
+      await h.destroy('s-1');
+      expect(releaseB).toHaveBeenCalledTimes(1);
+      expect(releaseA).toHaveBeenCalledTimes(1);
     });
 
     it('a registry-wide acquire failure does not block session creation — the session just opens with no MCP servers', async () => {
@@ -393,7 +436,7 @@ describe('NativeSessionHost', () => {
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
-        { destroyAll: async () => {}, acquire, release: async () => {} },
+        { destroyAll: async () => {}, acquire },
       );
       await expect(h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } })).resolves.toBeUndefined();
       const session = (h as any).live.get('s-1').session;

@@ -27,14 +27,16 @@ import { NativeSessionHost } from '../src/main/harness/native-session-host';
 describe('NativeSessionHost — MCP acquire/release leak guard (fix pass 1, Finding 3)', () => {
   it('releases the acquired MCP hold when create() throws before wire()', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-leak-'));
-    const acquire = vi.fn(async () => []);
     const release = vi.fn(async () => {});
+    // release() lives on the lease acquire() returns, not on the manager —
+    // see McpLease in mcp-manager.ts.
+    const acquire = vi.fn(async () => ({ servers: [], release }));
     const h = new NativeSessionHost(
       new SessionStore(new NativeHome(root)),
       (async () => { throw new Error('modelFactory unused in this test'); }) as any,
       async () => null, async () => null,
       undefined, undefined, undefined, undefined,
-      { destroyAll: async () => {}, acquire, release },
+      { destroyAll: async () => {}, acquire },
     );
 
     // The ORIGINAL error must surface unchanged (docs/error-message-standards.md
@@ -45,7 +47,7 @@ describe('NativeSessionHost — MCP acquire/release leak guard (fix pass 1, Find
     ).rejects.toThrow('boom — session construction failed');
 
     expect(acquire).toHaveBeenCalledWith('s-1');
-    expect(release).toHaveBeenCalledWith('s-1');
+    expect(release).toHaveBeenCalledTimes(1);
     // Confirms the id was never registered live — the exact condition that
     // makes the hold otherwise unreleasable (destroy() early-returns for a
     // non-live id).
