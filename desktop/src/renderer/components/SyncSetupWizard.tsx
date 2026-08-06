@@ -137,7 +137,10 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
   const [backendType, setBackendType] = useState<BackendType | null>(
     preselectedBackendType ?? initialType ?? null
   );
-  const [prereqs, setPrereqs] = useState<PrereqStatus | null>(null);
+  // WHY: `prereqs` state removed — the PrereqCheckStep's onAllReady callback
+  // destructures the fields it needs (remoteName, ghUsername, icloudPath)
+  // directly; the outer prereqs object was stored but never read. Found in
+  // the 2026-08-06 unused-code sweep.
   const [error, setError] = useState<string | null>(null);
 
   // Config fields — pre-populate label when jumping straight to auth/reconnect
@@ -240,7 +243,6 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
       <PrereqCheckStep
         backendType={backendType}
         onAllReady={(prereqStatus) => {
-          setPrereqs(prereqStatus);
           setRemoteName(prereqStatus.gdriveRemoteName);
           setGhUsername(prereqStatus.ghUsername);
           setIcloudPath(prereqStatus.icloudPath);
