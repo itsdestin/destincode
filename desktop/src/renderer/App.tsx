@@ -15,7 +15,6 @@ import FolderSwitcher from './components/FolderSwitcher';
 import { isTypingTarget } from './utils/is-typing-target';
 
 import ErrorBoundary from './components/ErrorBoundary';
-import { Scrim } from './components/overlays/Overlay';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
@@ -129,7 +128,6 @@ interface StatusDataState {
   contextMap: Record<string, number>;
   gitBranchMap: Record<string, string>;
   sessionStatsMap: Record<string, SessionStats>;
-  syncStatus: string | null;
   syncWarnings: SyncWarning[] | null;
   lastSyncEpoch: number | null;
   syncInProgress: boolean;
@@ -193,7 +191,7 @@ function AppInner() {
   const [statusData, setStatusData] = useState<StatusDataState>({
     usage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
-    syncStatus: null, syncWarnings: [],
+    syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
   });
 
@@ -231,7 +229,6 @@ function AppInner() {
     window.addEventListener('youcoded:open-model-providers', open);
     return () => window.removeEventListener('youcoded:open-model-providers', open);
   }, []);
-  const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
   const [resumeInfo, setResumeInfo] = useState<Map<string, { claudeSessionId: string; projectSlug: string }>>(new Map());
@@ -1356,7 +1353,6 @@ function AppInner() {
         usage: data.usage,
         announcement: data.announcement,
         updateStatus: data.updateStatus,
-        syncStatus: data.syncStatus,
         syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],
         lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
         syncInProgress: data.syncInProgress ?? prev.syncInProgress,
@@ -1794,29 +1790,15 @@ function AppInner() {
     };
   }, [dispatch]);
 
-  // Load skills once on mount
-  useEffect(() => {
-    window.claude.skills.list().then((list) => {
-      // Inject built-in resume skill at the top
-      const resumeSkill: SkillEntry = {
-        id: '_resume',
-        displayName: 'Resume Session',
-        description: 'Resume a previous conversation',
-        category: 'personal',
-        prompt: '',
-        source: 'youcoded-core',
-        type: 'prompt',
-        visibility: 'published',
-      };
-      setSkills([resumeSkill, ...list]);
-    }).catch(console.error);
-  }, []);
+  // (Removed) A mount effect used to fetch skills.list() and store it in a `skills`
+  // state that nothing ever read — a wasted IPC round-trip on every mount. The real
+  // skills provider is state/skill-context.tsx, which every consumer already uses.
 
   // Flush and reload session state when connection mode changes (local ↔ remote).
   // On Android, switching to remote means the WebSocket now talks to the desktop server —
   // all local session state is stale and must be replaced with the desktop's sessions.
   useEffect(() => {
-    const unsub = onConnectionModeChange((mode) => {
+    const unsub = onConnectionModeChange(() => {
       // Flush all session state
       setSessions([]);
       setSessionId(null);
@@ -2191,12 +2173,10 @@ function AppInner() {
 
   const handleSelectSkill = useCallback(
     (skill: SkillEntry) => {
-      if (skill.id === '_resume') {
-        setDrawerOpen(false);
-        setDrawerFilter(undefined);
-        setResumeRequested(true);
-        return;
-      }
+      // No '_resume' branch: resume was once a synthetic skill injected into the
+      // drawer list, but that list was the dead `skills` state above, so this was
+      // already unreachable. Resume is reached via onResumeCommand / the welcome
+      // card / onOpenResumeBrowser — all of which call setResumeRequested directly.
       if (!sessionId) return;
       setDrawerOpen(false);
       setDrawerFilter(undefined);
@@ -2969,7 +2949,6 @@ function AppInner() {
                     contextPercent: sessionId ? (statusData.contextMap[sessionId] ?? null) : null,
                     gitBranch: sessionId ? (statusData.gitBranchMap[sessionId] ?? null) : null,
                     sessionStats: sessionId ? (statusData.sessionStatsMap[sessionId] ?? null) : null,
-                    syncStatus: statusData.syncStatus,
                     syncWarnings: statusData.syncWarnings,
                   }}
                   onOpenSync={() => {
@@ -2985,7 +2964,6 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
-                  onCycleModel={cycleModel}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}

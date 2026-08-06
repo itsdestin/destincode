@@ -493,11 +493,10 @@ class SessionService : Service() {
                             } catch (_: Exception) {}
                         }
 
-                        // Sync status
-                        val syncFile = File(claudeDir, ".sync-status")
-                        if (syncFile.exists()) {
-                            try { payload.put("syncStatus", syncFile.readText().trim()) } catch (_: Exception) {}
-                        }
+                        // No "syncStatus" key: the desktop dropped its matching producer —
+                        // the value reached StatusBar and was never read. Keeping it here
+                        // would drift the status payload away from desktop for no consumer.
+                        // .sync-status itself is still read by assets/statusline.sh.
                         val warnFile = File(claudeDir, ".sync-warnings")
                         if (warnFile.exists()) {
                             try { payload.put("syncWarnings", warnFile.readText().trim()) } catch (_: Exception) {}
