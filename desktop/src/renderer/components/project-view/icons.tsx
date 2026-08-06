@@ -3,7 +3,6 @@
 // icons). These were previously re-declared per file — ProjectView, ProjectHero,
 // ProjectSwitcher, the tabs, and the context popups each carried their own copy
 // of the same paths. One module keeps the glyph language in lockstep.
-import React from 'react';
 
 interface IconProps { size?: number; strokeWidth?: number }
 

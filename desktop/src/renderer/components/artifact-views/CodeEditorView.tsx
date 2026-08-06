@@ -16,7 +16,7 @@
 //   "fix" this by shrinking the root container; that was reverted as jitter.
 // - Conflict resolution replaces the document via a FRESH EditorState, so undo
 //   can never walk back across the resolution boundary (§12.11).
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLineGutter } from '@codemirror/view';
 import { EditorState, Compartment, type Extension } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';

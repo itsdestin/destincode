@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { InteractivePrompt } from '../state/chat-types';
 import { TRUST_PROMPT_TITLE } from '../parser/ink-select-parser';

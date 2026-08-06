@@ -5,7 +5,7 @@
 //   discovery — no chips/search active → hero + rails + bottom grid
 //   search    — any chip or search active → filtered grid only
 
-import React, { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import MarketplaceHero from "./MarketplaceHero";
 import MarketplaceFilterBar, {

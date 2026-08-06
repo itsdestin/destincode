@@ -21,7 +21,6 @@
  * built for non-developers and these explainers double as in-app help.
  */
 
-import React from 'react';
 
 export interface ExplainerBullet {
   /** Optional bold lead-in (e.g. a setting name). */

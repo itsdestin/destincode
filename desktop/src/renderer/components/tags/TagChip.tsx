@@ -1,5 +1,4 @@
 // src/renderer/components/tags/TagChip.tsx
-import React from 'react';
 import type { TagRecord } from '../../../shared/tags';
 
 // A colored, plain-word tag chip (no status glyphs — per user preference). The

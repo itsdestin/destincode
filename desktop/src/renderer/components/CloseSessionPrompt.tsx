@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagNoteEditor } from './tags/TagNoteEditor';

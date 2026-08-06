@@ -1,4 +1,3 @@
-import React from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
 import { OverlayPanel } from '../overlays/Overlay';

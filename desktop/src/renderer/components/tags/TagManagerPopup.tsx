@@ -15,7 +15,7 @@
 //
 // Layer 2 (Dialog's default) so it stacks above the Resume Browser's layer-1
 // overlay, which is where it is opened from today.
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { TagRecord } from '../../../shared/tags';
 import { TAG_COLORS, DEFAULT_TAG_COLOR, TagColor } from '../../../shared/tags';
 import { TagRegistryApi } from '../../hooks/useTagRegistry';

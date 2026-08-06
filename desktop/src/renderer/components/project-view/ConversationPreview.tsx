@@ -7,7 +7,7 @@
 // "Resume in Claude" button leads to a live session, and that is handled entirely
 // by the parent via the `onResume` prop. "Open full transcript" just re-fetches
 // the same read-only history with `all: true`.
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { PastSession, HistoryMessage } from '../../../shared/types';
 import { ProjectDetailOverlay } from './ProjectDetailOverlay';
 import { TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PlayIcon } from './detail-tool-icons';

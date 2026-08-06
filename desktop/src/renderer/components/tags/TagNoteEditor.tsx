@@ -15,7 +15,6 @@
 // the documented surface ladder, and it is load-bearing: the shared FIELD
 // surface IS `bg-inset`, so without the lift a field sitting on this card is
 // exactly the colour of its own background.
-import React from 'react';
 import { TagPicker, type BuiltInTag } from './TagPicker';
 import { NoteEditor } from './NoteEditor';
 import type { TagRegistryApi } from '../../hooks/useTagRegistry';

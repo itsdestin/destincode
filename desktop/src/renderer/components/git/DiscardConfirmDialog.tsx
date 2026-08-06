@@ -2,7 +2,6 @@
 // overlay primitives — never a hand-rolled bg-black/40 (react-renderer rule).
 // The copy states EXACTLY what happens; the failure path (surfaced by the
 // caller) carries real git stderr.
-import React from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';

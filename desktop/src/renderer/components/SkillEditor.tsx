@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useSkills } from '../state/skill-context';
 import { Button, Dialog, Select, TextInput } from './ui';

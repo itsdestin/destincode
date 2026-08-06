@@ -7,7 +7,7 @@
 // `pv-context-intro-dismissed` (value '1'). On first render we read that key so a
 // previously-dismissed banner stays hidden across reloads, and we mirror it in
 // local state so clicking the × hides the banner immediately without a reload.
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 // localStorage key for the dismiss-forever flag. Kept in sync with the prototype
 // (docs/superpowers/prototypes/2026-06-14-project-view-redesign.html).

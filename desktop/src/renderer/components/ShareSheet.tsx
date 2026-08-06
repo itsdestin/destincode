@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useSkills } from '../state/skill-context';
 import { useEscClose } from '../hooks/use-esc-close';

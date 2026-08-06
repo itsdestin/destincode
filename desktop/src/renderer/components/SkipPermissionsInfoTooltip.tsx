@@ -1,4 +1,3 @@
-import React from 'react';
 import { AnchorTip } from './ui';
 
 // Info tooltip for the "Skip Permissions" toggle: a plain-language explanation of
