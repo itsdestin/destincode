@@ -48,7 +48,23 @@ const TEXT_TYPES = /^(text\/(plain|markdown|csv|xml)|application\/(json|xml|rss\
 // hang never throws, so nothing unwinds. This O(n)-on-the-raw-string pre-check is
 // therefore the ONLY guard — it must reject pathological input BEFORE it reaches
 // Readability. Thresholds sit far above real articles (which nest ~8-60 and carry
-// a few thousand tags) yet keep any page that PASSES under ~0.6s of parse time.
+// a few thousand tags).
+//
+// CORRECTION (Minor finding, round 4, 2026-08-06 review): this comment used to
+// claim a page that PASSES the guard stays "under ~0.6s of parse time" — false,
+// and not a promise this guard can make. Measured: a page of 145-deep nesting x
+// 50 sibling blocks (14,504 '<', max depth 147 — comfortably clearing both
+// MAX_DEPTH and MAX_TAGS) took 1,617ms through execute() in the review that
+// found this. That cost is Readability's scoring + turndown's conversion, NOT
+// this round's new DOM fragment query (measured 1,617ms with a fragment query
+// present vs 1,607ms without, on the same page — the query is noise next to
+// Readability). Independently re-measured on the machine fixing this: the same
+// construction (tag count and depth both matched exactly) completed in
+// 220-275ms across 5 runs — still well under a second, but the point stands
+// regardless of which number a given machine produces: this guard bounds
+// Readability's WORST case (pathological structure), not its typical-case
+// runtime, and clearing MAX_DEPTH/MAX_TAGS is not a bound on wall-clock time.
+// Do not add a number back here that a reader could rely on as a promise.
 const MAX_DEPTH = 150;
 const MAX_TAGS = 15_000;
 
@@ -102,7 +118,23 @@ interface TagToken { name: string; isClose: boolean; selfClosed: boolean; }
  *  characters — see the `name` assignment below, whose result is used only
  *  for value comparisons, never as a source of offsets into `html`) or, for
  *  the closer search below, by folding one ASCII character at a time as the
- *  comparison runs, so no second string of a different length is ever built. */
+ *  comparison runs, so no second string of a different length is ever built.
+ *
+ *  CORRECTION (round 4, 2026-08-06 review): the paragraph above describes
+ *  walkTags, which this function was written for and which never had a
+ *  second bug. But stripToText and withoutScriptAndStyle further down this
+ *  file each still built their OWN `lower = html.toLowerCase()` and indexed
+ *  it with `html`-cursor offsets — the identical aliasing bug, independently
+ *  introduced, just not yet caught. "There is only ever ONE string" was true
+ *  of walkTags but false of the file as a whole until this round: a
+ *  100-character 'İ' prefix ahead of a `<script>` tag made the guard-path
+ *  fallback silently drop real visible text (and leak the script's own
+ *  source) in one measured case, and separately let 60 leading 'İ'
+ *  characters turn off the JS-rendered-page disclosure on an otherwise
+ *  ordinary Next.js-shaped shell. Both are now fixed using this exact same
+ *  technique (see foldStartsWith below), so the claim is file-wide and
+ *  accurate again — see stripToText's and withoutScriptAndStyle's own WHY
+ *  comments for the specific measurements. */
 function indexOfFold(haystack: string, needle: string, from: number): number {
   const hn = haystack.length, nn = needle.length;
   outer: for (let i = from; i + nn <= hn; i++) {
@@ -116,6 +148,24 @@ function indexOfFold(haystack: string, needle: string, from: number): number {
     return i;
   }
   return -1;
+}
+
+/** Case-insensitive startsWith for a short, fixed, ASCII needle at a known
+ *  position, using the exact same bounded-fold technique as indexOfFold
+ *  above (and for the same reason — see its WHY comment). Exists so
+ *  stripToText and withoutScriptAndStyle below never need to build a
+ *  document-length lowercased copy either; see their WHY comments. */
+function foldStartsWith(haystack: string, needle: string, at: number): boolean {
+  const nn = needle.length;
+  if (at + nn > haystack.length) return false;
+  for (let j = 0; j < nn; j++) {
+    const a = haystack.charCodeAt(at + j);
+    const b = needle.charCodeAt(j); // needle is always already-lowercase ASCII
+    if (a === b) continue;
+    const folded = a >= 65 && a <= 90 ? a + 32 : a;
+    if (folded !== b) return false;
+  }
+  return true;
 }
 
 /** Shared linear tag walker for the complexity guard's depth count (its only
@@ -266,21 +316,44 @@ function tooComplexToExtract(rawHtml: string): string | null {
  *  handled by jumping straight to the end of the string ONCE, never retried
  *  character-by-character. Measured on the same 200,000-char adversarial
  *  input this replaces: see "does not freeze on 200,000 unterminated '<'
- *  characters" in tests/web-fetch-tool.test.ts for the pinned number. */
+ *  characters" in tests/web-fetch-tool.test.ts for the pinned number.
+ *
+ *  WHY there is no `lower = html.toLowerCase()` here (Important finding,
+ *  round 4, 2026-08-06 review): an earlier version of this function built
+ *  exactly that, then indexed it with offsets computed against `html`'s own
+ *  length — the same html/lower index-aliasing bug indexOfFold's comment
+ *  above documents for walkTags, independently reintroduced here. `'İ'`
+ *  (U+0130) is the ONE character in Unicode whose `.toLowerCase()` grows by
+ *  a UTF-16 unit ('i' + a combining dot), so a document with an 'İ' anywhere
+ *  ahead of a `<script>`/`<style>` tag shifted every check after it by a
+ *  constant offset. Measured, with the offset shifted by exactly 100 (a
+ *  100-character 'İ' prefix): `'İ'.repeat(100) + '<script>JUNK</script>' +
+ *  'x'.repeat(79) + '<p>DROPME_TEXT_HERE!</p>TAIL_OK'` returned text
+ *  containing "JUNK" (the script body leaked as visible prose, because the
+ *  shifted check failed to recognize the REAL `<script>` tag as one, so its
+ *  body was walked as ordinary markup) and — because that same shift then
+ *  made an UNRELATED later `<p>` tag land exactly on the shifted-back
+ *  position of the real "<script" text and get misidentified AS a script
+ *  open tag, whose "closer" search then found nothing and fell through to
+ *  `n` — dropped every character from that `<p>` onward, silently deleting
+ *  "DROPME_TEXT_HERE" and "TAIL_OK" both. The identical input with 'İ'
+ *  replaced by 'q' (same length, no expansion) is correct on both counts.
+ *  Fixed the same way as walkTags: fold only the bounded needle
+ *  ("<script"/"<style"/their closers) via foldStartsWith/indexOfFold, never
+ *  the whole document — see "does not leak script source or drop visible
+ *  text on an İ-prefixed too-complex fallback" in web-fetch-tool.test.ts. */
 export function stripToText(html: string): string {
   const n = html.length;
-  // One O(n) pass so script/style tag names and their closers can be located
-  // case-insensitively via indexOf, instead of lowercasing a slice per tag.
-  const lower = html.toLowerCase();
   const parts: string[] = [];
   let i = 0;
   let textStart = 0;
   while (i < n) {
     if (html.charCodeAt(i) !== 60 /* '<' */) { i++; continue; }
     if (i > textStart) parts.push(html.slice(textStart, i));
-    if (lower.startsWith('<script', i) || lower.startsWith('<style', i)) {
-      const closer = lower.startsWith('<script', i) ? '</script>' : '</style>';
-      const closeIdx = lower.indexOf(closer, i);
+    const isScript = foldStartsWith(html, '<script', i);
+    if (isScript || foldStartsWith(html, '<style', i)) {
+      const closer = isScript ? '</script>' : '</style>';
+      const closeIdx = indexOfFold(html, closer, i);
       // Not found: treat the rest of the document as inside this block and
       // stop — do NOT retry the search from i+1, which is what made the old
       // regex quadratic on input shaped like this.
@@ -307,18 +380,33 @@ export function stripToText(html: string): string {
  *  only to build a comparable denominator for looksJsRendered's density check
  *  below — see that function's WHY comment. Uses the same monotonic-cursor
  *  technique as stripToText above, for the same reason: linear regardless of
- *  content shape. */
+ *  content shape.
+ *
+ *  WHY there is no `lower = html.toLowerCase()` here either (Important
+ *  finding, round 4, 2026-08-06 review): this function carried the identical
+ *  html/lower index-aliasing bug as the old stripToText — see stripToText's
+ *  WHY comment for the mechanism. Here the consequence was on the OTHER side
+ *  of looksJsRendered's ratio: the aliasing could make this function fail to
+ *  recognize a real `<script>` tag as one (same shifted-check failure), so
+ *  its bytes stayed IN the returned string, inflating the density
+ *  denominator and pushing the ratio down. Measured: a Next.js-shaped shell
+ *  (`<div id="__next"></div>` + a `__NEXT_DATA__`-bearing `<script>`) that
+ *  correctly reports `looksJsRendered === true` flipped to `false` once 60
+ *  'İ' characters were placed before the `<script>` tag — meaning ordinary
+ *  Turkish-language pages (İstanbul, İzmir…) could silently lose the
+ *  JS-rendered disclosure, not just adversarial input. Fixed with the same
+ *  foldStartsWith/indexOfFold technique as stripToText. */
 function withoutScriptAndStyle(html: string): string {
   const n = html.length;
-  const lower = html.toLowerCase();
   const parts: string[] = [];
   let i = 0;
   let textStart = 0;
   while (i < n) {
-    if (html.charCodeAt(i) !== 60 || !(lower.startsWith('<script', i) || lower.startsWith('<style', i))) { i++; continue; }
+    const isTag = html.charCodeAt(i) === 60 && (foldStartsWith(html, '<script', i) || foldStartsWith(html, '<style', i));
+    if (!isTag) { i++; continue; }
     if (i > textStart) parts.push(html.slice(textStart, i));
-    const closer = lower.startsWith('<script', i) ? '</script>' : '</style>';
-    const closeIdx = lower.indexOf(closer, i);
+    const closer = foldStartsWith(html, '<script', i) ? '</script>' : '</style>';
+    const closeIdx = indexOfFold(html, closer, i);
     i = closeIdx === -1 ? n : closeIdx + closer.length;
     textStart = i;
   }
@@ -450,11 +538,15 @@ function escapeAttrSelectorValue(value: string): string {
 
 /** Resolves a URL fragment against an ALREADY-PARSED linkedom document. Exact
  *  match first (`getElementById`, `a[name="…"]`); falls back to a
- *  case-insensitive scan of every id/name in the document, same policy the
- *  hand-rolled version used (Minor finding, prior rounds: HTML `id` is
+ *  case-insensitive scan of every id/name VALUE in the document, same policy
+ *  the hand-rolled version used (Minor finding, prior rounds: HTML `id` is
  *  case-sensitive, but real pages do sometimes get linked with the "wrong"
  *  case, so a case-insensitive hit is still reported as useful — just
- *  flagged as inexact via `exactCase`).
+ *  flagged as inexact via `exactCase`); then a final fallback that also
+ *  tolerates the attribute NAME itself being written in a non-lowercase
+ *  spelling (`<h2 ID="x">`, `<a NAME="x">`), which linkedom does not
+ *  normalize the way a conforming HTML parser does (Important finding,
+ *  round 4, 2026-08-06 — see the loop below).
  *
  *  MUST be called before the same document is handed to Readability — see
  *  the WHY block above. */
@@ -473,6 +565,35 @@ function findAnchor(document: Document, fragment: string): { exactCase: boolean 
   for (const a of Array.from(document.querySelectorAll('a[name]'))) {
     const name = a.getAttribute('name');
     if (name && name.toLowerCase() === lowerFragment) return { exactCase: false };
+  }
+  // FALLBACK (Important finding, round 4, 2026-08-06): every probe above
+  // relies on getElementById or the `[id]`/`a[name]` CSS selectors, all of
+  // which match against the LITERAL attribute name "id"/"name". linkedom,
+  // unlike a conforming HTML parser, does NOT ASCII-lowercase attribute
+  // NAMES (only values pass through untouched too, but it's the name that
+  // matters here): for `<h2 ID="upattr">`, `getAttributeNames()` returns
+  // `["ID"]`, so `getElementById('upattr')` is null AND `[id]` matches zero
+  // elements -- every probe above misses. Same for `<a NAME="legacyU">`.
+  // Verified directly against linkedom: `parseHTML('<h2 ID="upattr">...')`
+  // gives `document.querySelectorAll('[id]').length === 0`. Both spellings
+  // are legal HTML5, and both used to work: the pre-round-3 `parseAttrs`
+  // lowercased the attribute name before comparing, so this is a regression
+  // this round introduced, not a pre-existing gap. Walk every element's OWN
+  // attribute names case-insensitively as the last resort -- deliberately
+  // placed after every cheaper selector-based probe above (and therefore
+  // only paid for on a miss), since the common case is a lowercase
+  // `id="..."` the fast path already resolves.
+  for (const el of Array.from(document.querySelectorAll('*'))) {
+    for (const attrName of el.getAttributeNames()) {
+      const lowerAttrName = attrName.toLowerCase();
+      const isIdAttr = lowerAttrName === 'id';
+      const isAnchorNameAttr = lowerAttrName === 'name' && el.tagName?.toLowerCase() === 'a';
+      if (!isIdAttr && !isAnchorNameAttr) continue;
+      const value = el.getAttribute(attrName);
+      if (!value) continue;
+      if (value === fragment) return { exactCase: true };
+      if (value.toLowerCase() === lowerFragment) return { exactCase: false };
+    }
   }
   return null;
 }

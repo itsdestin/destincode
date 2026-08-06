@@ -3,7 +3,7 @@ import * as path from 'path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
-import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment } from '../src/main/harness/tools/web-fetch';
+import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment, stripToText } from '../src/main/harness/tools/web-fetch';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
@@ -304,6 +304,72 @@ describe('WebFetch', () => {
     expect(r.text.length).toBeLessThan(oversized.length);
   });
 
+  // --- html/lower index aliasing in stripToText (Important finding, round
+  // 4, 2026-08-06 review) --- an earlier fix removed this aliasing bug from
+  // walkTags but stripToText and withoutScriptAndStyle independently carried
+  // the same one: each built its own `lower = html.toLowerCase()` and
+  // indexed it with offsets computed against `html`'s own length. U+0130
+  // ('İ') is the one character in Unicode whose `.toLowerCase()` grows by a
+  // UTF-16 unit, so an 'İ' anywhere ahead of a `<script>` tag shifts every
+  // later case-fold check by a constant offset.
+
+  it('does not leak script source or drop visible text on an İ-prefixed too-complex fallback (CRITICAL-adjacent honesty regression)', () => {
+    // Direct unit test of stripToText (what the guard-path fallback calls).
+    // The filler length (79 'x's) is engineered so the shifted offset lands
+    // an UNRELATED later '<p>' tag exactly on the shifted-back position of
+    // the real "<script" text, misidentifying it as a script open tag whose
+    // (nonexistent) closer search then falls through to the end of the
+    // string — dropping everything from that '<p>' onward.
+    const withIota = 'İ'.repeat(100) + '<script>JUNK</script>' + 'x'.repeat(79) + '<p>DROPME_TEXT_HERE!</p>TAIL_OK';
+    const t = stripToText(withIota);
+    expect(t).toContain('DROPME_TEXT_HERE');
+    expect(t).not.toContain('JUNK');
+    // Control: same shape and length, 'q' instead of 'İ' (no UTF-16 expansion
+    // on lowercasing) — must already be correct, proving the defect is
+    // specific to the aliasing, not the script-stripping logic in general.
+    const withQ = 'q'.repeat(100) + '<script>JUNK</script>' + 'x'.repeat(79) + '<p>DROPME_TEXT_HERE!</p>TAIL_OK';
+    const control = stripToText(withQ);
+    expect(control).toContain('DROPME_TEXT_HERE');
+    expect(control).not.toContain('JUNK');
+  });
+
+  it('does not leak script source or drop visible text on an İ-prefixed too-complex fallback, end-to-end through execute()', async () => {
+    // Same payload, routed through the real too-complex branch (via enough
+    // trailing nested <div>s to clear MAX_DEPTH) so this pins the guard-path
+    // fallback's actual output, not just the underlying stripToText unit.
+    const body = '<html><body>'
+      + 'İ'.repeat(100) + '<script>JUNK</script>' + 'x'.repeat(79) + '<p>DROPME_TEXT_HERE!</p>TAIL_OK'
+      + '<div>'.repeat(200) + 'y' + '</div>'.repeat(200)
+      + '</body></html>';
+    const r = await fetchWith(body, 'https://example.com/iota-fallback');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('simplified extraction'); // confirms this went through the guard path
+    expect(r.text).toContain('DROPME_TEXT_HERE');
+    expect(r.text).not.toContain('JUNK');
+  });
+
+  it('does not let a leading İ turn off the JS-rendered disclosure on a real Next.js-shaped page', () => {
+    // withoutScriptAndStyle carried the same aliasing bug on the OTHER side
+    // of looksJsRendered's ratio: a shifted check can fail to recognize a
+    // real <script> tag, so its bytes stay IN both the numerator (via
+    // stripToText) and the density denominator instead of being stripped —
+    // and once one script tag is missed this way, the offset it introduces
+    // is silently absorbed (no further drift), but the SAME check fails for
+    // every other <script> tag checked against that same fixed offset too,
+    // so a page with several script tags loses stripping on effectively all
+    // of them, not just one. On the committed vitest-config.html fixture
+    // (real page, __VP_HASH_MAP__ + several <script> tags) this is not a
+    // contrived edge case: prepending 60 'İ' characters — the sort of prefix
+    // an ordinary Turkish-language page could carry (İstanbul, İzmir…) —
+    // pushed the measured ratio from 7.18% (correctly flagged, matches the
+    // density comment above) to 30.5% under the OLD (aliased) code, clearing
+    // the 10% floor and silently turning the disclosure off. Verified this
+    // is fixed: same fixture, same 60-'İ' prefix, ratio stays flagged.
+    const html = fixture('vitest-config.html');
+    expect(looksJsRendered(html)).toBe(true); // baseline, no İ
+    expect(looksJsRendered('İ'.repeat(60) + html)).toBe(true); // must stay true
+  });
+
   it('falls back to whole-body markdown when Readability finds no article', async () => {
     // A dashboard/index page with no readable article — Readability returns null,
     // and we must still return SOMETHING structured, never a silent empty result.
@@ -424,6 +490,25 @@ describe('resolveFragment', () => {
     const r = resolveFragment(page, '## Foo', 'foo'); // requested lowercase, served id is "Foo"
     expect(r.kind).toBe('found');
     if (r.kind === 'found') expect(r.exactCase).toBe(false);
+  });
+
+  // --- uppercase/mixed-case ATTRIBUTE NAME (Important finding, round 4,
+  // 2026-08-06 review) --- linkedom, unlike a conforming HTML parser, does
+  // not ASCII-lowercase attribute NAMES. `getElementById`/`[id]`/`a[name]`
+  // all match against the literal name "id"/"name", so `<h2 ID="x">` and
+  // `<a NAME="x">` were invisible to every probe and reported a fabricated
+  // "no anchor named x" for an anchor that genuinely exists. Verified
+  // directly against linkedom: parsing `<h2 ID="upattr">` gives
+  // `document.querySelectorAll('[id]').length === 0`.
+
+  it('resolves an id whose ATTRIBUTE NAME is uppercase (<h2 ID="upattr">)', () => {
+    const page = '<html><body><h2 ID="upattr">Section Title</h2></body></html>';
+    expect(resolveFragment(page, '## Section Title', 'upattr').kind).not.toBe('absent');
+  });
+
+  it('resolves a legacy anchor whose ATTRIBUTE NAME is uppercase (<a NAME="legacyU">)', () => {
+    const page = '<html><body><a NAME="legacyU"></a><h2>Legacy</h2></body></html>';
+    expect(resolveFragment(page, '## Legacy', 'legacyU').kind).not.toBe('absent');
   });
 
   // --- truncation-aware wording (Important finding, 2026-08-06 review) ---
