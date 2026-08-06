@@ -4,7 +4,7 @@ import os from 'os';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
-import { installPlugin, uninstallPlugin, isPluginInstalled, type InstallResult } from './plugin-installer';
+import { installPlugin, uninstallPlugin, type InstallResult } from './plugin-installer';
 import { pluginInstallDir, YOUCODED_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileHooks } from './hook-reconciler';
@@ -266,7 +266,10 @@ export class LocalSkillProvider implements SkillProvider {
       try { reconcileHooks(); } catch (e) { log('ERROR', 'SkillProvider', 'hook reconcile after install failed', { error: String(e) }); }
       // Also reconcile MCP servers — packages like youcoded-core-messaging
       // declare MCP servers that need to land in .claude.json on install.
-      try { reconcileMcp(); } catch (e) { log('ERROR', 'SkillProvider', 'MCP reconcile after install failed', { error: String(e) }); }
+      // reconcileMcp() is async (registry secrets decrypt via safeStorage);
+      // awaited so a rejection is caught here, not left as an unhandled
+      // promise rejection (install() is already async, so this is free).
+      try { await reconcileMcp(); } catch (e) { log('ERROR', 'SkillProvider', 'MCP reconcile after install failed', { error: String(e) }); }
     }
 
     // Tag result so callers know a plugin (not prompt) was installed

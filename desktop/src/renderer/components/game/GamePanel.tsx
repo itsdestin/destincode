@@ -1,4 +1,3 @@
-import React from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import GameLobby from './GameLobby';
 import ConnectFourBoard from './ConnectFourBoard';

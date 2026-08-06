@@ -37,6 +37,12 @@ import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
+// Task 7b: the MCP registry (WHICH servers ~/.youcoded/mcp.json configures)
+// and the pooled connection manager that acquire()s them per session. See the
+// construction site below for the eager-vs-lazy invariant this must preserve.
+import { McpRegistry } from './harness/mcp/mcp-registry';
+import { McpManager } from './harness/mcp/mcp-manager';
+import { createConnection } from './harness/mcp/mcp-client';
 // WebSearch provider stack (Phase 2 Plan B): keyed Tavily/Exa upgrades + the
 // chain-walking SearchService injected into the native tool framework.
 import { SearchKeyStore } from './harness/search/search-key-store';
@@ -88,11 +94,10 @@ import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
-import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
-import { countArtifacts, countAllFiles, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
-import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
+import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
+import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
@@ -114,7 +119,8 @@ import { listProjectConversations, projectConversationHistory, ccProjectSlug } f
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, noteModelUsed, getConversationStore, flushSessionToSpace, buildLocalProjectResolver, emitConversationMetaChanged } from './conversations/service';
+import { requestChatsearchRefresh } from './chatsearch-index/index-service';
 // Task 4: resolves a native session's live model binding into the store's
 // portable {modelId, providerType, providerLabel} shape — see
 // portable-model.ts's WHY comment for why the lookup itself is split out.
@@ -744,7 +750,7 @@ export function registerIpcHandlers(
     });
   });
 
-  ipcMain.handle(IPC.SESSION_SWITCH, async (_event, sessionId: string) => {
+  ipcMain.handle(IPC.SESSION_SWITCH, async (_event, _sessionId: string) => {
     // Switch is a client-side concern on desktop — the renderer manages active session.
     // This handler exists for protocol parity with Android/remote.
     return { ok: true };
@@ -1481,7 +1487,11 @@ export function registerIpcHandlers(
     ipcMain.handle(IPC.REMOTE_AUTH_TAILSCALE, async () => {
       const result = await RemoteConfig.startTailscaleAuth();
       if (result.url) {
-        shell.openExternal(result.url);
+        // Fire-and-forget: openExternal rejects when the OS has no handler for
+        // the scheme. The URL is returned to the renderer either way, so the
+        // user can still copy it — but the rejection must not escape as an
+        // unhandled rejection.
+        void shell.openExternal(result.url).catch(() => {});
       }
       return result;
     });
@@ -1837,7 +1847,9 @@ export function registerIpcHandlers(
     }
   }
 
-  const syncStatusPath = path.join(os.homedir(), '.claude', '.sync-status');
+  // .sync-status is no longer read here: the value was threaded all the way to
+  // StatusBar and then dropped, so this was a disk read every 10s feeding nothing.
+  // The file itself still exists and is read by statusline.sh and /diagnose.
   // Legacy .sync-warnings text file is no longer read; typed warnings come from .sync-warnings.json.
   const syncWarningsJsonPath = path.join(os.homedir(), '.claude', '.sync-warnings.json');
 
@@ -1890,7 +1902,6 @@ export function registerIpcHandlers(
     const usage = readJsonFile(usageCachePath);
     const announcement = readJsonFile(announcementCachePath);
     const updateStatus = getUpdateStatus();
-    const syncStatus = readTextFile(syncStatusPath);
     const syncWarnings = readSyncWarningsSync();
 
     // Sync state for live updates — SyncPanel also fetches via IPC,
@@ -1963,7 +1974,7 @@ export function registerIpcHandlers(
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2156,6 +2167,26 @@ export function registerIpcHandlers(
     searchKeyStore,
     { exa: exaBackend, ddg: ddgBackend, tavily: tavilyBackend },
   );
+  // Task 7b: this is the ONLY production construction site for both classes —
+  // without it every piece of the native-MCP stack (registry, client, pooled
+  // manager, tool adapter) is unreachable dead code (see task-7b-brief.md).
+  // Registry rides the SAME nativeHome/secretsStore instances as everything
+  // else above (never a duplicate) — same precedent as SearchKeyStore just
+  // above. connectionFactory is mcp-client's real createConnection, unwrapped
+  // (no fake, no override) — every server it pools is a real subprocess/HTTP
+  // client once acquired.
+  //
+  // Construction itself is side-effect-free: McpRegistry.list()/
+  // resolveAllEnabled() only READ ~/.youcoded/mcp.json (NativeHome.readJson
+  // never creates the directory — see native-home.ts's lazy-creation
+  // invariant), and McpManager's constructor does no I/O at all. Nothing here
+  // connects to a server or spawns a subprocess: that only happens inside
+  // acquire(), called per-session by NativeSessionHost (Task 6's wiring)
+  // below. A user with no ~/.youcoded/mcp.json configured gets zero
+  // directory creation, zero subprocesses, and zero log output from this
+  // line — the normal case for almost every install.
+  const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
+  const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
@@ -2185,6 +2216,14 @@ export function registerIpcHandlers(
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
     { search: searchService },
+    // skillCatalog (8th param): NOT wired yet — a different task's scope (see
+    // task-7b-brief.md "Explicitly NOT in scope"). Passed explicitly so
+    // mcpManager lands in the 9th positional slot instead of silently taking
+    // skillCatalog's place.
+    undefined,
+    // mcpManager (9th param, Task 7b): makes the whole native-MCP stack
+    // reachable — see the construction comment above.
+    mcpManager,
   );
 
   // Task 4: resolves sessionId's CURRENT model binding into the portable ref
@@ -2703,6 +2742,9 @@ export function registerIpcHandlers(
       // apply any peer version now that this session ended — no restart needed.
       // Resolved from the map BEFORE the delete below, so the claude id is known.
       noteSessionEnded(claudeId);
+      // A session that just ended has new turns to index. Debounced, and it runs
+      // after noteSessionEnded's own quiescence-gated materialize.
+      requestChatsearchRefresh();
       // 2b Task 8: drop our lease so another device can acquire. Idempotent +
       // best-effort; release() never rejects, .catch guards a future change.
       void leaseWiring?.client.release(claudeId).catch(() => { /* best-effort */ });
@@ -2745,7 +2787,10 @@ export function registerIpcHandlers(
   // never the thing keeping native writes out — nativeMetaRefusal below (now
   // deleted) was. Retiring that refusal is only safe BECAUSE Task 4 landed
   // real native writes first — see the design's Task 5 note.
-  const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
+  // `_resolved` is unused on purpose: the phantom-record gate keys off the raw
+  // sessionId, not the resolved path. The param stays to match the `canWrite`
+  // signature RemoteServer.setSessionMetaWiring expects.
+  const canWriteStoreRecord = (sessionId: string, _resolved: string): boolean => {
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
 
@@ -2817,6 +2862,7 @@ export function registerIpcHandlers(
         type: IPC.SESSION_META_CHANGED,
         payload: { sessionId: resolved, ...payload },
       });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) };
@@ -2854,6 +2900,12 @@ export function registerIpcHandlers(
       const tag = await reg.update(String(id), clean);
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Task 5 gap (final review): the chatsearch metadata snapshot denormalizes
+      // tag LABELS at build time (meta-builder.ts resolves tag ids -> labels once,
+      // into each conversation row) — renaming a tag here doesn't touch those
+      // rows, so without this the index would keep serving the OLD label until
+      // some unrelated refresh happened to rebuild it.
+      emitConversationMetaChanged();
       return { ok: true, tag };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2865,6 +2917,9 @@ export function registerIpcHandlers(
       await reg.delete(String(id));
       remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
       broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      // Same gap as TAGS_UPDATE above — a deleted tag's label must also drop
+      // out of the denormalized index, not just the registry.
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2892,6 +2947,7 @@ export function registerIpcHandlers(
       const payload = { flag: key, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -2913,6 +2969,7 @@ export function registerIpcHandlers(
       const payload = { note: text };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      emitConversationMetaChanged();
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
@@ -3891,7 +3948,7 @@ export function registerIpcHandlers(
     void nativeHost.destroyAll().catch(() => {});
     // Awaited by the caller: never leave an orphaned llama-server on quit.
     const engineStopped = engineManager.stopAll().catch(() => {});
-    for (const [id, watcher] of topicWatchers) {
+    for (const watcher of topicWatchers.values()) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();
       } else {

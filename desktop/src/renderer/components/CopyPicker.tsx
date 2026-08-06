@@ -1,4 +1,3 @@
-import React from 'react';
 import type { CopyPickerOption } from '../state/chat-types';
 import { CloseButton } from './ui';
 

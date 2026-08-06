@@ -5,7 +5,7 @@ import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
-import { AnchorTip, Button, CloseButton, Dialog, InputGroup, TextInput, SettingRow } from './ui';
+import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),

@@ -6,7 +6,7 @@
 //   Use existing → move+sync   → the existing ImportProjectModal (consent+move)
 // Step 1 asks the only question a new user can answer instantly (new or
 // existing?); step 2 makes the sync decision explicit with its consequence.
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import ImportProjectModal from '../ImportProjectModal';

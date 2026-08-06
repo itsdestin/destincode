@@ -7,7 +7,6 @@
 //
 // All three are 24-viewBox, stroke-based, and take their size from `className`
 // so a caller can render w-3 or w-4 without the path changing shape.
-import React from 'react';
 
 /** Tag, MIRRORED so the wide punched end sits on the RIGHT. The mirror matters
  *  where the glyph sits at a container's right edge (the Resume Browser card's

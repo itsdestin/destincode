@@ -13,7 +13,7 @@
 // new event types.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import { streamText, tool, zodSchema, type LanguageModel, type ModelMessage } from 'ai';
+import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
@@ -41,6 +41,9 @@ import { createSkillTool } from './tools/skill';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
+import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
+import type { ReadyServer } from './mcp/mcp-manager';
+import { log } from '../logger';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -85,6 +88,10 @@ export interface HarnessSessionOpts {
    *  Absent → no path-triggered injection, which is exactly the pre-M3 behavior
    *  every existing caller and test relies on. */
   triggers?: TriggerIndex;
+  /** The MCP servers this session may use (Task 6), acquired by
+   *  NativeSessionHost from the process-level McpManager at create/resume.
+   *  Absent/[] → no MCP tools attached, exactly the pre-Task-6 behavior. */
+  mcpServers?: ReadyServer[];
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -305,6 +312,29 @@ export class HarnessSession extends EventEmitter {
    *  from what this session actually runs with (setBinding can have changed it). */
   get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
+  // Ids of MCP servers left off the LAST buildAiTools() pass for budget reasons
+  // (Task 6) — recomputed every call, so a UI reading this after buildAiTools
+  // always sees the CURRENT reason, not a stale one from a prior model/binding.
+  private _droppedMcpServers: string[] = [];
+  /** Read-only view for the UI (a later task wires the actual surface — this
+   *  task only guarantees the field exists and is accurate). Empty when every
+   *  configured MCP server fit the budget. */
+  get droppedMcpServers(): readonly string[] { return this._droppedMcpServers; }
+
+  // Tool names CURRENTLY attached by syncMcpTools (not merely name-prefixed
+  // "mcp__*") — tracked rather than pattern-matched so a tool that HAPPENS to
+  // be named like an MCP tool but was placed in toolByName some other way
+  // (e.g. harness-raw-schema.test.ts injects one directly via `extraTools` to
+  // test schema passthrough in isolation, with opts.mcpServers empty) is never
+  // touched by this sync. Only opts.mcpServers is this method's domain.
+  // (Fix pass 1 / Finding 5: moved up here with the rest of the Task 6 MCP
+  // fields — it was declared mid-class, between unrelated methods.)
+  private mcpToolNames = new Set<string>();
+  /** Fix pass 1 / Finding 4: the (budget, servers-array-identity) pair
+   *  syncMcpTools last computed itself against — its cheap dirty-check. undefined
+   *  until the first sync runs. See syncMcpTools' header for why this exists. */
+  private mcpSyncedFor: { budget: number; servers: ReadyServer[] | undefined } | undefined;
+
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
     super();
     this.binding = opts.binding;
@@ -424,15 +454,94 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
+  /** Add or remove MCP server tools to match the CURRENT profile's budget
+   *  (Task 6, spec §6).
+   *
+   *  WHOLE SERVERS ONLY: a server whose search tool is attached but whose send
+   *  tool is not is worse than an absent server — the model plans against a
+   *  capability it then cannot complete. So this walks registry order
+   *  accumulating cost, and the FIRST server that would push spend over
+   *  budget stops the walk entirely (`break`, not `continue`) — every server
+   *  from that point on is dropped too, which is what keeps the kept set a
+   *  contiguous PREFIX of registry order (pinned by
+   *  mcp-gating.test.ts "drops from the END…") rather than a scattered
+   *  best-fit subset. Drop order is registry order from the END so the user
+   *  controls what survives by ordering their own list.
+   *
+   *  Re-run per buildAiTools (not once in the constructor) for the same
+   *  reason syncSkillTool is: setBinding() re-resolves the profile on a model
+   *  swap, so a server attached under a 128k model must come back OFF on a
+   *  swap to an 8k one, and back on when swapping back.
+   *
+   *  Fix pass 1 / Finding 4: buildAiTools() runs on every turn (see its own
+   *  call site), and until this fix syncMcpTools rebuilt from scratch on
+   *  EVERY one of those calls regardless of whether anything actually
+   *  changed — mcpToolsFor() re-allocates every tool closure and
+   *  estimateToolSchemaTokens() re-JSON.stringifies every server's raw schema,
+   *  which is real, avoidable work on the common case (no binding swap this
+   *  turn). syncSkillTool has a real dirty-check (`toolByName.has('Skill')`);
+   *  this one didn't, despite the header above claiming the same "re-run
+   *  per buildAiTools" reasoning. mcpSyncedFor restores that parity: only the
+   *  budget VALUE and the mcpServers ARRAY REFERENCE are compared (not deep
+   *  equality), because those are the only two things this method's output
+   *  depends on — setBinding() always hands in a freshly resolved profile
+   *  object when the budget changes (mcp-gating.test.ts's re-gate test below
+   *  relies on exactly that), and opts.mcpServers only ever gets a new array
+   *  reference from NativeSessionHost re-acquiring (create/resume), never
+   *  mid-session. Clearing this sync's OWN previously-attached names first
+   *  (on an actual re-sync) makes both directions idempotent. */
+  private syncMcpTools(): void {
+    const rawServers = this.opts.mcpServers;
+    const budget = this.profile.mcpToolBudgetTokens;
+    // Nothing this method reads has changed since the last sync — skip the
+    // teardown/rebuild entirely. `rawServers` (not `servers` below) is the
+    // comparison target: defaulting to `[]` here would allocate a NEW empty
+    // array on every undefined-mcpServers call, which would never compare
+    // equal to itself and defeat the whole point of the check.
+    if (this.mcpSyncedFor && this.mcpSyncedFor.budget === budget && this.mcpSyncedFor.servers === rawServers) return;
+    this.mcpSyncedFor = { budget, servers: rawServers };
+
+    for (const name of this.mcpToolNames) this.toolByName.delete(name);
+    this.mcpToolNames.clear();
+    const servers = rawServers ?? [];
+    this._droppedMcpServers = [];
+    let spent = 0;
+    for (let i = 0; i < servers.length; i++) {
+      const server = servers[i];
+      const tools = mcpToolsFor(server);
+      const cost = estimateToolSchemaTokens(tools);
+      if (spent + cost > this.profile.mcpToolBudgetTokens) {
+        // Everything from HERE ON is dropped (see header) — not just this one
+        // server — so the recorded list must cover the whole remaining tail,
+        // or the UI would under-report what the user actually lost.
+        this._droppedMcpServers = servers.slice(i).map((s) => s.id);
+        // Fix (Finding 5): droppedMcpServers has had zero non-test consumers
+        // since it was written — a UI reading it is still a later task, but
+        // until one exists this is the ONLY place a dropped-for-budget server
+        // is observable at all. One line naming the whole dropped tail.
+        log('WARN', 'HarnessSession', 'MCP server(s) dropped from this session — over the tool budget', {
+          sessionId: this.opts.sessionId, droppedServerIds: this._droppedMcpServers, mcpToolBudgetTokens: this.profile.mcpToolBudgetTokens,
+        });
+        break;
+      }
+      spent += cost;
+      for (const t of tools) { this.toolByName.set(t.name, t); this.mcpToolNames.add(t.name); }
+    }
+  }
+
   /** NativeTool → ai `tool({description, inputSchema})` WITHOUT execute, keyed by
    *  name. No execute => the SDK emits 'tool-call' parts and finishes with
    *  'tool-calls' WITHOUT looping (verified ai@7 contract) — WE own the loop. */
   private buildAiTools(): Record<string, any> {
     // Plain-chat model (profile.supportsTools === false): attach NO tools so the
     // SDK never sends a tool schema. WHY: a small local model the registry marks
-    // tool-less would otherwise emit malformed tool-calls we can't honor.
-    if (!this.profile.supportsTools) return {};
+    // tool-less would otherwise emit malformed tool-calls we can't honor. Also
+    // clear any stale drop list from a PRIOR (tool-capable) binding — "no tools
+    // at all" is a different reason than "dropped for budget", and leaving the
+    // old list around would misreport why MCP servers are unavailable.
+    if (!this.profile.supportsTools) { this._droppedMcpServers = []; return {}; }
     this.syncSkillTool();
+    this.syncMcpTools();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
     // defines none) so the schema stays small enough for a weak model to follow.
@@ -440,7 +549,9 @@ export class HarnessSession extends EventEmitter {
     const simplified = this.profile.maxToolPresentation === 'simplified';
     const out: Record<string, any> = {};
     for (const t of this.toolByName.values()) {
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: zodSchema(t.inputSchema) });
+      // MCP tools carry the server's own JSON Schema; everything else is zod.
+      const schema = t.rawInputSchema ? jsonSchema(t.rawInputSchema as any) : zodSchema(t.inputSchema);
+      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: schema });
     }
     return out;
   }

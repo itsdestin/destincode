@@ -33,6 +33,7 @@ import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
+import type { McpLease } from './mcp/mcp-manager';
 
 export interface CreateNativeSessionOpts {
   sessionId: string;
@@ -61,6 +62,23 @@ const SEND_QUEUE_LIMIT = 10;
 interface LiveEntry {
   session: HarnessSession;
   cwd: string;
+  // This generation's MCP lease (undefined when no manager is wired, or when
+  // acquireMcp() caught a whole-registry failure). It lives HERE, on the live
+  // entry, rather than in a sessionId-keyed map on the host.
+  //
+  // BE HONEST ABOUT WHY. This is structural insurance, NOT a fix for a bug
+  // observable today — a sessionId-keyed side map was tried as a mutation and
+  // no test could tell the difference, because it genuinely behaves the same
+  // right now. Two things make it equivalent: resume() awaits any live
+  // destroy() for the same id before acquiring, and destroy() has no await
+  // between `this.live.delete()` and the release call below, so nothing can
+  // interleave and swap the lease out. Both are properties of code that could
+  // change. Reading the lease off the entry destroy() already captured — at
+  // its top, before any await — makes "release the generation you are tearing
+  // down" true by construction rather than by that pair of coincidences, which
+  // is the same discipline McpLease applies inside the manager (where the
+  // equivalent bug WAS reachable and is mutation-tested).
+  mcpLease?: McpLease;
   // Per-session append serialization: each transcript event extends this chain
   // (append(prev).then(next)) so the SessionStore contract (serialized appends)
   // holds. Starts resolved; a failed append is logged but never breaks the
@@ -153,6 +171,18 @@ export class NativeSessionHost extends EventEmitter {
     // supply a fake instead of scanning the real ~/.claude — which makes "no
     // skills installed" an expressible state rather than an environment accident.
     private skillCatalog?: SkillCatalog,
+    // The process-level MCP connection pool (Task 4, mcp-manager.ts). Optional +
+    // LAST so existing constructions still compile. Its destroyAll() was
+    // already wired at this host's own app-quit path (destroyAll() below)
+    // before this task; Task 6 adds the per-session acquire()/release() calls
+    // (create/resume/destroy below). Typed structurally (McpManager's real
+    // shape, not the imported class) so tests can inject a fake pool without
+    // this file depending on the concrete class for a few method calls.
+    // There is deliberately no `release(sessionId)` in this shape: a lease is
+    // given back through the object acquire() returns, which is what keeps two
+    // generations of one RESUMED session (same id, different lease) from
+    // releasing each other's connections. See McpLease in mcp-manager.ts.
+    private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<McpLease> },
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -306,10 +336,30 @@ export class NativeSessionHost extends EventEmitter {
     };
   }
 
+  /** Acquire this session's pooled MCP servers (Task 6) — the ONE production
+   *  caller of McpManager.acquire(). undefined when no manager is wired (every
+   *  existing test construction, which predates Task 6) or when acquisition
+   *  itself fails: a registry-wide failure (a corrupt `~/.youcoded/mcp.json`,
+   *  a secrets-store read error) must not block the session from opening at
+   *  all — MCP is one optional capability layered onto the tool set, not a
+   *  precondition for having a session at all. A single broken SERVER is
+   *  already handled inside McpManager itself (excluded from the returned
+   *  list, never a rejection) — this only guards the rarer whole-registry
+   *  failure. */
+  private async acquireMcp(sessionId: string): Promise<McpLease | undefined> {
+    if (!this.mcpManager) return undefined;
+    try {
+      return await this.mcpManager.acquire(sessionId);
+    } catch (err) {
+      log('ERROR', 'NativeSessionHost', 'mcp acquire failed — session opens with no MCP servers', { sessionId, error: String(err) });
+      return undefined;
+    }
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
-  private wire(sessionId: string, cwd: string, session: HarnessSession): void {
-    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false };
+  private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
+    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false, mcpLease };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
     // Persist "Always allow" decisions for THIS session's project. The session
@@ -373,13 +423,32 @@ export class NativeSessionHost extends EventEmitter {
     // The preset seeds the STARTING mode; an explicit setPermissionMode always
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
-    const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
-        ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
-      this.modelFactory,
-    );
+    // Acquire this session's MCP servers (Task 6) BEFORE constructing the
+    // session, so mcpServers is available for the very first buildAiTools().
+    const mcpLease = await this.acquireMcp(opts.sessionId);
+    const mcpServers = mcpLease?.servers;
+    let session: HarnessSession;
+    try {
+      // Fix pass 1 / Finding 3: this whole block is fallible synchronous work
+      // (toolWiring() calls assembleSystemPrompt(), buildTriggerIndex()) that
+      // runs AFTER the mcp acquire() above but BEFORE wire() ever registers
+      // this id in `this.live`. destroy() early-returns for a non-live id, so
+      // a throw here — with no catch — would strand the acquired MCP hold
+      // (and the pooled server's spawned child process) for the rest of the
+      // app's lifetime. Release the hold and rethrow the ORIGINAL error
+      // unchanged (never guess/replace a cause — error-message-standards.md).
+      session = new HarnessSession(
+        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+          ...(mcpServers ? { mcpServers } : {}),
+          ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
+        this.modelFactory,
+      );
+    } catch (err) {
+      await mcpLease?.release();
+      throw err;
+    }
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
-    this.wire(opts.sessionId, opts.cwd, session);
+    this.wire(opts.sessionId, opts.cwd, session, mcpLease);
   }
 
   /** Rebuild a live session from its stored header + events. Returns false when
@@ -424,20 +493,44 @@ export class NativeSessionHost extends EventEmitter {
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
-    const session = new HarnessSession(
-      // `binding` (not header.binding) — same override reason as above.
-      { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
-        ...this.toolWiring(sessionId, cwd, preset, profile) },
-      this.modelFactory,
-    );
+    // Acquire this session's MCP servers (Task 6). A RESUMED session reuses its
+    // old sessionId, so this acquire() can overlap a release() still in flight
+    // from a destroy() of the SAME id. That used to be the bug: both
+    // generations wrote to one sessionId-keyed holder entry and the outgoing
+    // destroy() closed the incoming session's connections. It is now safe
+    // structurally — this acquire() mints its own lease, and the outgoing
+    // destroy() can only release the lease on the LiveEntry it captured. See
+    // McpLease in mcp-manager.ts.
+    const mcpLease = await this.acquireMcp(sessionId);
+    const mcpServers = mcpLease?.servers;
+    let session: HarnessSession;
+    try {
+      // Fix pass 1 / Finding 3 — same leak as create(): everything in this
+      // block (construction, then the history rebuild) is fallible synchronous
+      // work that runs after the mcp acquire() above but before wire() ever
+      // registers this id in `this.live`. A throw anywhere in here — with no
+      // catch — would strand the acquired MCP hold permanently (destroy()
+      // early-returns for a non-live id). Release and rethrow the ORIGINAL
+      // error unchanged (error-message-standards.md).
+      session = new HarnessSession(
+        // `binding` (not header.binding) — same override reason as above.
+        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+          ...(mcpServers ? { mcpServers } : {}),
+          ...this.toolWiring(sessionId, cwd, preset, profile) },
+        this.modelFactory,
+      );
+      // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
+      // tool-call + tool-result pairs too (the old eventsToMessages dropped every
+      // tool event, so a resumed tool turn lost its tool context). seedHistory
+      // already clears readRegistry + todos (the reset-on-resume ruling) — those
+      // are runtime state, never persisted.
+      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
+    } catch (err) {
+      await mcpLease?.release();
+      throw err;
+    }
     this.presetIdFor.set(sessionId, preset.manifest.id);
-    // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
-    // tool-call + tool-result pairs too (the old eventsToMessages dropped every
-    // tool event, so a resumed tool turn lost its tool context). seedHistory
-    // already clears readRegistry + todos (the reset-on-resume ruling) — those
-    // are runtime state, never persisted.
-    session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
-    this.wire(sessionId, cwd, session);
+    this.wire(sessionId, cwd, session, mcpLease);
     return true;
   }
 
@@ -745,6 +838,14 @@ export class NativeSessionHost extends EventEmitter {
     this.rememberedFor.delete(sessionId);
     this.presetIdFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
+    // Release THIS generation's MCP lease (Task 6), LAST — orthogonal to the
+    // transcript/live-map teardown above (releasing never touches either), so
+    // ordering it after doesn't affect that invariant. `entry` was captured at
+    // the top of this method, before any await, so a resume() for this same
+    // sessionId racing us installs its own LiveEntry with its own lease and
+    // this call cannot reach it. No-ops harmlessly when this session never
+    // acquired anything (no manager wired, or acquireMcp caught a failure).
+    await entry.mcpLease?.release();
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */
@@ -756,5 +857,19 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(id);
     }
     await this.store.flushAll();
+    // Tear down every pooled MCP server connection HERE too. Without this, an
+    // MCP server's spawned subprocess (e.g. a stdio server) would outlive the
+    // app instead of being closed alongside it.
+    //
+    // SCOPE OF THAT PROMISE, precisely: this runs via ipc-handlers.ts cleanup(),
+    // which main.ts calls from its shutdownApp() teardown. As of 2026-08-05 that
+    // teardown is reached from all three quit routes — window-all-closed,
+    // before-quit (macOS Cmd+Q, dock quit, menu quit), and a SIGTERM/SIGINT from
+    // an OS shutdown or logout — so this line can now be read as "covered at
+    // every quit." Before that fix, window-all-closed was the app's only
+    // quit-related listener and every other route leaked the subprocess.
+    // What is still NOT covered, and cannot be: SIGKILL, a power loss, or a
+    // main-process crash. Nothing in userland runs on those.
+    await this.mcpManager?.destroyAll();
   }
 }

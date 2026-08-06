@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import type { SkillEntry, ChipConfig, MetadataOverride, CommandEntry } from '../../shared/types';
 
 interface SkillState {

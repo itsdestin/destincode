@@ -1,4 +1,3 @@
-import React from 'react';
 import type { UsageSnapshot } from '../state/chat-types';
 import { ProgressBar } from './ui';
 

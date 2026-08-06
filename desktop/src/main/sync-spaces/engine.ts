@@ -2,7 +2,6 @@
 // Watch → debounce → sync (pull-then-push) per space, plus a poll loop that
 // stands in for SyncHub signals until Plan 1b. Single-flight per space: a
 // change arriving mid-sync queues exactly one follow-up sync.
-import path from 'path';
 import chokidar, { FSWatcher } from 'chokidar';
 import type { SpaceSyncEvent, SyncSpace, SyncTransport } from './types';
 import { REPO_CORRUPT_ERROR_CODE, REPO_REPAIR_FAILED_ERROR_CODE } from '../sync-error-classifier';

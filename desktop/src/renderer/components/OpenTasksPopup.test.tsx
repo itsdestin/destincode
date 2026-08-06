@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import OpenTasksPopup from './OpenTasksPopup';
@@ -113,7 +112,7 @@ describe('OpenTasksPopup', () => {
 
   it('fires onClose when scrim is clicked', () => {
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <OpenTasksPopup
         open={true}
         tasks={[task({ id: '1', subject: 'X', status: 'pending' })]}

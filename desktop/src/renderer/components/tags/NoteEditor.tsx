@@ -1,5 +1,5 @@
 // src/renderer/components/tags/NoteEditor.tsx
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Textarea } from '../ui';
 
 const NOTE_MAX = 8000;

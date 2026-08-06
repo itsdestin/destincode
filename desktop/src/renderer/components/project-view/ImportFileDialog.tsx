@@ -9,7 +9,7 @@
 // per file. Styling matches the project-deletion modal in ProjectView.tsx
 // (Scrim + OverlayPanel, shared Button, useEscClose) rather than inventing new
 // markup for a one-off dialog.
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';

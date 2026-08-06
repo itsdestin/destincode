@@ -137,7 +137,9 @@ let claudeDir: string;
 let configPath: string;
 let syncMarkerPath: string;
 let backupMetaPath: string;
-let syncWarningsPath: string;
+// WHY: the plain `.sync-warnings` path was v1 of the warning store; the JSON
+// sibling (`.sync-warnings.json`) replaced it in 2a11feb9. The old path was
+// assigned but never read — removed in the 2026-08-06 sweep.
 let syncWarningsJsonPath: string;
 let syncLockDir: string;
 let backupLogPath: string;
@@ -147,7 +149,6 @@ function resolvePaths(home: string): void {
   configPath = path.join(claudeDir, 'toolkit-state', 'config.json');
   syncMarkerPath = path.join(claudeDir, 'toolkit-state', '.sync-marker');
   backupMetaPath = path.join(claudeDir, 'backup-meta.json');
-  syncWarningsPath = path.join(claudeDir, '.sync-warnings');
   syncWarningsJsonPath = path.join(claudeDir, '.sync-warnings.json');
   syncLockDir = path.join(claudeDir, 'toolkit-state', '.sync-lock');
   backupLogPath = path.join(claudeDir, 'backup.log');

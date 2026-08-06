@@ -13,7 +13,7 @@
 // without it likes/reviews silently fail, which surprises users who don't
 // realize there's an account at all.
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useAccount } from "../../state/account-context";
 
 function GitHubMark({ size = 16 }: { size?: number }) {

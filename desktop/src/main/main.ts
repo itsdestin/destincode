@@ -54,6 +54,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -71,6 +72,23 @@ import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-ex
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
 import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-config';
+
+// Last-resort safety net for async work nobody awaited. The main process runs
+// a lot of fire-and-forget I/O (watchers, poll timers, disk caches, loadURL);
+// under Node's default --unhandled-rejections=throw a single stray rejection
+// takes the whole app down, losing every open session. Logging and continuing
+// is strictly better: the app stays up and the real reason lands in the log
+// instead of a silent exit. These are NOT a license to drop .catch() at call
+// sites — a rejection reaching here is a bug worth fixing at its source.
+// Registering this listener is also what DISABLES Node's default conversion of
+// an unhandled rejection into a fatal uncaughtException — so this one handler
+// is the whole fix. No uncaughtException handler is added on purpose: a genuine
+// synchronous throw can leave state corrupt, and swallowing it is worse.
+process.on('unhandledRejection', (reason) => {
+  log('ERROR', 'main', 'unhandled promise rejection', {
+    reason: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+  });
+});
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -487,7 +505,10 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
     const delaySeconds = Math.min(attempts, 5);
     console.warn(`[dev-recovery] renderer load failed (${why}) — retry ${attempts} in ${delaySeconds}s`);
     setTimeout(() => {
-      if (!win.isDestroyed()) win.loadURL(devUrl);
+      // .catch is not error handling here — `did-fail-load` below is what
+      // actually drives recovery. This only stops a rejected load (ERR_ABORTED
+      // on a racing reload) from surfacing as an unhandled rejection.
+      if (!win.isDestroyed()) void win.loadURL(devUrl).catch(() => {});
     }, delaySeconds * 1000);
   };
   win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, _validatedURL, isMainFrame) => {
@@ -639,11 +660,13 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   });
   // Security: deny window.open() but route safe http(s)/mailto to the OS browser
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^(https?:|mailto:)/i.test(url)) shell.openExternal(url);
+    // Rejects when the OS has no handler for the scheme — nothing to recover,
+    // but it must not escape as an unhandled rejection.
+    if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url).catch(() => {});
     return { action: 'deny' as const };
   });
   // Disable Chromium's pinch-to-zoom so our IPC zoom handler is the sole zoom path
-  win.webContents.setVisualZoomLevelLimits(1, 1);
+  void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
 
   if (opts?.maximize) win.maximize();
 
@@ -659,13 +682,16 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     // is untouched because this whole branch runs under `!app.isPackaged`.
     const devUrlOverride = !opts?.buddy ? process.env.YOUCODED_DEV_URL : undefined;
     const devUrl = devUrlOverride || `${DEV_SERVER_URL}${modeQuery}`;
-    win.loadURL(devUrl);
+    // Rejections are recovered by wireDevLoadRecovery's did-fail-load handler;
+    // the .catch only keeps them off the unhandled-rejection path.
+    void win.loadURL(devUrl).catch(() => {});
     wireDevLoadRecovery(win, devUrl);
   } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'), {
+    void win.loadFile(path.join(__dirname, '../renderer/index.html'), {
       // loadFile expects search string WITHOUT the leading '?'
       search: modeQuery ? modeQuery.slice(1) : undefined,
-    });
+      // A failed prod load is surfaced by did-fail-load, not by this promise.
+    }).catch(() => {});
   }
 
   // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
@@ -1248,7 +1274,10 @@ if (!app.isPackaged && process.env.YOUCODED_DEVTOOLS_PORT) {
 // 41.10.3 and 43.2.0). Ground-truth the ozone backend before trusting any
 // transparency probe on this machine.
 
-app.whenReady().then(async () => {
+// `void`, not a .catch(): a bootstrap failure has no meaningful local recovery,
+// and the unhandledRejection listener registered at the top of this file logs
+// it and keeps the app alive rather than exiting silently.
+void app.whenReady().then(async () => {
   await rotateLog();
 
   // Fire-and-forget: never await. Respects the opt-out in About → Privacy
@@ -1418,12 +1447,14 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to clean up stale update downloads', { error: String(e) });
   }
 
-  // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
-  // ~/.claude.json mcpServers. Only auto:true entries, filtered by platform.
-  // Never overwrites user-configured servers.
+  // Decomposition v3 §9.3 + native MCP phase 1 Task 7: reconcile plugin
+  // mcp-manifest.json AND the YouCoded MCP registry into ~/.claude.json
+  // mcpServers. reconcileMcp() is now async (registry secrets decrypt via
+  // Electron's safeStorage) — awaited so a rejection lands in this catch
+  // instead of becoming an unhandled promise rejection.
   try {
     const { reconcileMcp } = require('./mcp-reconciler');
-    const mcpSummary = reconcileMcp();
+    const mcpSummary = await reconcileMcp();
     log('INFO', 'Main', 'MCP servers reconciled', mcpSummary);
   } catch (e) {
     log('ERROR', 'Main', 'Failed to reconcile MCP servers', { error: String(e) });
@@ -1937,12 +1968,43 @@ app.whenReady().then(async () => {
   // resolved after managed roots exist (same ordering as startConversationStore).
   startTagRegistry();
 
+  // After the store AND tag registry — the index denormalizes both.
+  startChatsearchIndex();
+
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
   // conversation store, so there is no session-exit backup hook here anymore.
 });
 
-app.on('window-all-closed', () => {
+// Every teardown step the app owns, in one place, run at most once.
+//
+// WHY THIS EXISTS AS A FUNCTION (2026-08-05): this body used to live inline in
+// the `window-all-closed` handler, which was the app's ONLY quit-related
+// listener — verified by a repo-wide search for `app.on('before-quit'|
+// 'will-quit'|'quit')` and `process.on('SIGTERM'|'SIGINT')`, which returned
+// exactly one hit, this one. Every quit route that does NOT go through
+// window-all-closed therefore ran none of it:
+//   - macOS Cmd+Q and dock-quit call app.quit() directly, which fires
+//     before-quit/will-quit/quit but NOT window-all-closed.
+//   - An OS shutdown/logout SIGTERM bypasses Electron's quit events entirely,
+//     on every platform.
+// What leaked on those routes: llama-server (holding its fixed port for the
+// next launch to wrongly adopt), the hook relay's named pipe, the sync-spaces
+// watchers and timers, the presence WebSocket — and, since the native-MCP
+// work, every stdio MCP server's spawned subprocess, which is the one a user
+// would actually notice still running after quitting.
+//
+// The idempotence guard is not defensive coding: before-quit fires again on the
+// second pass below, and window-all-closed can fire alongside it, so this WILL
+// be called more than once on a normal quit.
+let shuttingDown: Promise<void> | null = null;
+function shutdownApp(): Promise<void> {
+  if (shuttingDown) return shuttingDown;
+  shuttingDown = runShutdown();
+  return shuttingDown;
+}
+
+async function runShutdown(): Promise<void> {
   // Capture the engine-stop promise: cleanup() starts llama-server teardown and we
   // must let it finish before app.quit(), else the engine outlives the app and keeps
   // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
@@ -1958,6 +2020,7 @@ app.on('window-all-closed', () => {
   // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
+  try { stopChatsearchIndex(); } catch {}
   // Plan 2b Task 8: tear down the lease client so its per-session renew timers
   // don't linger past a hard quit (destroy clears all held timers). Sync fn.
   try { leaseClient?.destroy(); } catch {}
@@ -1965,8 +2028,39 @@ app.on('window-all-closed', () => {
   try { setSyncService(null); } catch {}
   // Wait for the engine to actually die, but never let a wedged teardown hang quit:
   // race the teardown against a 4s cap (supervisor's own SIGTERM→SIGKILL bound is ~3s).
-  void Promise.race([
+  // Returned (not `void`-ed) so the callers below can sequence app.quit()/exit()
+  // after it — this function no longer decides on its own when to quit.
+  await Promise.race([
     engineStopped,
     new Promise<void>((r) => setTimeout(r, 4_000)),
-  ]).finally(() => app.quit());
+  ]).catch(() => {});
+}
+
+// Route 1: last window closed. Delegate to app.quit() rather than tearing down
+// here, so there is exactly ONE teardown path (before-quit, below) instead of
+// two that can drift apart.
+app.on('window-all-closed', () => {
+  app.quit();
 });
+
+// Route 2: app.quit() from anywhere — macOS Cmd+Q, dock quit, the menu, or
+// window-all-closed above. before-quit is cancellable, which is what lets an
+// async teardown finish before the process goes away; `quit`/`will-quit` are
+// not reliably awaitable.
+app.on('before-quit', (e) => {
+  // Second pass: shutdownApp() already ran (or is running) and re-issued the
+  // quit below — let it proceed rather than cancelling forever.
+  if (shuttingDown) return;
+  e.preventDefault();
+  void shutdownApp().finally(() => app.quit());
+});
+
+// Route 3: OS shutdown, logout, `kill`, or Ctrl+C in a dev terminal. These
+// never reach Electron's quit events at all, so they need their own hook.
+// app.exit() (not app.quit()) because teardown has already run by then and
+// re-entering the quit sequence would only add another wait.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    void shutdownApp().finally(() => app.exit(0));
+  });
+}

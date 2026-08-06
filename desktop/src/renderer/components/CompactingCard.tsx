@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 // Spinner card shown during /compact (typed or triggered by resume-from-summary).
 // Claude Code's summarization takes 10-30s; before this card the user saw nothing

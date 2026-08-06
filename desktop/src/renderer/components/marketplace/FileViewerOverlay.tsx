@@ -5,7 +5,7 @@
 //   - raw GitHub URL (fallback for non-installed plugins)
 // The main process handler decides; this component just awaits the result.
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import MarkdownContent from "../MarkdownContent";
 import { useEscClose } from "../../hooks/use-esc-close";

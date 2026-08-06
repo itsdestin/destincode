@@ -1,4 +1,3 @@
-import React from 'react';
 
 interface Props {
   running: number;   // count of in_progress tasks

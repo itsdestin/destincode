@@ -1,4 +1,3 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { OverlayPanel } from './overlays/Overlay';
 
 /**

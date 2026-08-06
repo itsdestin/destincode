@@ -10,7 +10,6 @@
 // that collapse — they're inline links on the path/repo row instead, rendered
 // at every width (2026-07-23), so they're covered separately below rather
 // than through the cog-menu tests.
-import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { ProjectHero } from './ProjectHero';

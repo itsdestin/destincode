@@ -13,7 +13,6 @@
 // a fully-filled star row to `value/5 * 100%`, overlaid on top of an empty row.
 // This gives clean fractional fill without SVG clip-path complexity.
 
-import React from 'react';
 
 interface StarRatingProps {
   value: number;
