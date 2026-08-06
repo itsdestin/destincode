@@ -2,6 +2,7 @@
 import { spawn } from 'child_process';
 import { rgPath as bundledRgPath } from '@vscode/ripgrep';
 import * as fs from 'fs';
+import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { resolveP } from './guards';
@@ -69,7 +70,17 @@ export const GrepTool = defineTool({
     // Hoisted so the exit-2 error message (below) can name the exact path that
     // failed, instead of a context-free "ripgrep error".
     const resolvedTarget = resolveP(args.path ?? '.', ctx.cwd);
-    rgArgs.push('--', args.pattern, resolvedTarget);
+    // WHY a relative target: rg echoes back whatever form it was given, so an
+    // absolute target made Grep print absolute paths while Glob printed relative
+    // ones — the same file, two shapes, unpipeable between tools (2026-08-01
+    // review). rg already runs with `cwd: ctx.cwd`, so a relative target is
+    // equivalent. Targets OUTSIDE the workspace (reachable via the
+    // external_directory ask) stay absolute, which is the truthful form there.
+    // path.relative returns '' when the target IS cwd — map that to '.' rather
+    // than falling through to the (also correct, but needlessly verbose) absolute form.
+    const rel = path.relative(ctx.cwd, resolvedTarget);
+    const searchTarget = rel === '' ? '.' : (!rel.startsWith('..') && !path.isAbsolute(rel) ? rel : resolvedTarget);
+    rgArgs.push('--', args.pattern, searchTarget);
     return new Promise((resolve) => {
       // Two spawn defenses, both learned from `spawn ENOTDIR` (2026-07-20):
       //  1. `cwd: ctx.cwd` explicitly — never inherit the Electron main process's
