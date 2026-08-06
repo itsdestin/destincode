@@ -57,8 +57,8 @@ export function composeNotice(
   if (!bounds) {
     // A cap fired on a tool that declared nothing. Report the fact WITHOUT advice —
     // we have no idea what this tool's widening vocabulary is, and guessing is the
-    // exact bug this refactor removes. tool-registry-manifest.test.ts fails the
-    // build for this case, so it should be unreachable in shipped code.
+    // exact bug this refactor removes. A tool reaching this code path is a bounds
+    // declaration bug — it should be caught by the manifest guard before shipping.
     return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars]`;
   }
   const total = bounds.total === null ? `at least ${bounds.shown}` : String(bounds.total);

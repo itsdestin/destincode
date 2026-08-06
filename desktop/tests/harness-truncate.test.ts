@@ -20,7 +20,7 @@ describe('truncateOutput', () => {
   it('caps line count too', () => {
     const many = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join('\n');
     const r = truncateOutput(many, { maxChars: 1_000_000, maxLines: 100 });
-    expect(r.text.split('\n').length).toBeLessThanOrEqual(102); // 100 + trailer
+    expect(r.text.split('\n').length).toBeLessThanOrEqual(102); // 80 (head) + 1 (omitted marker) + 20 (tail)
     expect(r.truncated).toBe(true);
   });
   it('never grows the output at tiny caps (slice(-0) guard)', () => {
