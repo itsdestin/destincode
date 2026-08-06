@@ -211,30 +211,20 @@ export function ProjectHero({
   // outside-click and Escape dismissal behave identically to every other menu.
   const syncMenu = useAnchoredMenu<HTMLButtonElement>(SYNC_POPOVER_WIDTH, 'left');
 
-  const syncAction: MenuItem | null =
-    sync?.dot.color === 'green' && sync.spaceId
-      ? { key: 'sync-now', label: 'Sync now', onClick: () => onSyncNow(sync.spaceId!) }
-    : sync?.dot.color === 'red' && sync.spaceId
-      ? { key: 'sync-retry', label: 'Try syncing again', onClick: () => onSyncNow(sync.spaceId!) }
-    : sync?.dot.color === 'gray' && !sync.spaceId
-      ? { key: 'sync-on', label: 'Turn on sync for this project', onClick: onTurnOnSync }
-    : null;
-
+  // Sync actions are NOT here — they live in the sync pill's popover, which
+  // renders at every width (2026-08-06: the popover replaced the cog as the
+  // sync entry point on narrow, so keeping the rows here would just duplicate
+  // it). The cog is management only now.
   const destructiveAction: MenuItem | null =
     canRemove
       ? { key: 'remove', label: 'Remove from YouCoded', onClick: onRemove, danger: true }
-    : syncedFolderName && !sync?.stopped
-      // Arms the inline confirm below the sync strip rather than acting
-      // immediately — the consequence copy is too long for a menu row.
-      ? { key: 'stop-sync', label: 'Stop syncing', onClick: () => setConfirmingStop(true), danger: true }
-    : null;
+      : null;
 
   // 'reveal'/'repo' rows used to live here, duplicating "Open in File Explorer"/
   // "Open repo" — both are gone now that the path/repo line below is itself a
   // click target at every width, cog menu included.
   const menuItems: MenuItem[] = [
     { key: 'rename', label: 'Rename', onClick: () => setRenaming(true) },
-    ...(syncAction ? [syncAction] : []),
     ...(destructiveAction ? [destructiveAction] : []),
   ];
 

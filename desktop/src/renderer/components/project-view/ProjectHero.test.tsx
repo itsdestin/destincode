@@ -177,28 +177,44 @@ describe('ProjectHero action collapse (narrow)', () => {
     expect(labels.some(l => /GitHub|repository/.test(l))).toBe(false);
   });
 
-  // One sync ACTION per sync state — the strip itself is status-only now, so if
-  // the menu doesn't carry the action there is no way to trigger it at all.
+  // One sync ACTION per sync state — the cog no longer carries it (2026-08-06),
+  // so the guard now runs the other way: prove the cog stays silent AND the
+  // pill popover still offers the action, at narrow width, for every state.
+  // The popover trigger sits in the same (syncPill || !narrow) row as before,
+  // so it survives the narrow collapse — this is what keeps each state's one
+  // action from being stranded.
+  // cogLabel is the row this task deletes; popoverLabel is what the popover
+  // actually renders for that state — the red state's copy already differed
+  // ("Try syncing again" on the old cog row vs. "Try again" on the popover
+  // button, ProjectHero.tsx's syncPill definition) before this task touched
+  // either, so the two are asserted separately rather than assumed equal.
   it.each([
-    ['green', 'sp', 'Sync now'],
-    ['red', 'sp', 'Try syncing again'],
-    ['gray', null, 'Turn on sync for this project'],
-  ])('offers the %s-state sync action', (color, spaceId, label) => {
+    ['green', 'sp', 'Sync now', 'Sync now'],
+    ['red', 'sp', 'Try syncing again', 'Try again'],
+    ['gray', null, 'Turn on sync for this project', 'Turn on sync for this project'],
+  ])('does not offer the %s-state sync action from the cog, but the pill popover does', (color, spaceId, cogLabel, popoverLabel) => {
     renderHero({
       canRemove: false,
       sync: { dot: { color }, spaceId, lastSynced: null, errorMessage: null, stopped: false },
     });
     openCog();
-    expect(menuLabels()).toContain(label);
+    expect(menuLabels()).not.toContain(cogLabel);
+    // fireEvent bypasses visual hit-testing, so the still-open cog portal
+    // doesn't block this click — no need to close it first.
+    fireEvent.click(screen.getByLabelText(/^Sync status:/));
+    expect(screen.getByText(popoverLabel)).toBeTruthy();
   });
 
-  it('routes the sync action to onSyncNow with the space id', () => {
+  // Was routed through the cog; now the pill popover is the only entry point
+  // (2026-08-06) — same assertion, new (and only remaining) trigger, still
+  // exercised at narrow width to prove it isn't desktop-only.
+  it('routes the sync action to onSyncNow with the space id, via the pill popover', () => {
     const onSyncNow = vi.fn();
     renderHero({
       onSyncNow, canRemove: false,
       sync: { dot: { color: 'green' }, spaceId: 'project:x', lastSynced: null, errorMessage: null, stopped: false },
     });
-    openCog();
+    fireEvent.click(screen.getByLabelText('Sync status: Synced'));
     fireEvent.click(screen.getByText('Sync now'));
     expect(onSyncNow).toHaveBeenCalledWith('project:x');
   });
@@ -211,17 +227,19 @@ describe('ProjectHero action collapse (narrow)', () => {
     expect(screen.getByLabelText('Project nickname')).toBeTruthy();
   });
 
-  // Stop-syncing arms an inline confirm rather than acting from the menu row —
-  // the consequence copy is too long to live in a menu.
-  it('arms the stop-syncing confirm instead of stopping immediately', () => {
+  // The cog is management-only now (2026-08-06) — every sync action, including
+  // Stop syncing, lives behind the pill popover at every width instead, so
+  // there is no second entry point left to pin here. Rename stays as proof the
+  // cog itself still works, not just that it's emptied of sync rows.
+  it('leaves sync actions to the pill popover, not the cog', () => {
     renderHero({
       canRemove: false,
       sync: { dot: { color: 'green' }, spaceId: 'project:proj', lastSynced: null, errorMessage: null, stopped: false },
     });
     openCog();
-    fireEvent.click(screen.getByText('Stop syncing'));
-    expect(screen.getByText(/no longer sync between them/)).toBeTruthy();
-    expect(screen.getByText('Cancel')).toBeTruthy();
+    expect(screen.queryByText('Stop syncing')).toBeNull();
+    expect(screen.queryByText('Sync now')).toBeNull();
+    expect(screen.getByText('Rename')).toBeTruthy();
   });
 
   it('closes the menu after choosing an item', () => {
