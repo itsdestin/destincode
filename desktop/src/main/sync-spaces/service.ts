@@ -460,8 +460,10 @@ export async function syncSpacesStatus() {
         lastSyncAt: manager?.lastSyncFor(s.id) ?? null,
         // Read-time overlay (spec §8): synced display name + lifecycle state.
         displayName: rec?.displayName ?? name,
-        // Read-time overlay, exactly like displayName above: peers pick up a
-        // description written on another device without any local write.
+        // Read-time overlay: peers pick up a description written on another
+        // device without any local write. UNLIKE displayName above (which
+        // falls back to the space's own name), an unset description falls
+        // back to null, not to any name-shaped default.
         description: rec?.description ?? null,
         state: rec?.state ?? (s.kind === 'project' ? 'active' : undefined),
       };

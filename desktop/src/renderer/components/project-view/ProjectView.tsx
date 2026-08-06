@@ -702,7 +702,11 @@ export function ProjectView(props: ProjectViewProps) {
               <ProjectHero
                 project={activeProject}
                 displayName={(heroSpace as any)?.displayName ?? null}
-                description={(heroSpace as any)?.description ?? activeProject.description ?? null}
+                // WHY no `as any` here (unlike displayName above): SyncStatusData's
+                // spaces now declare `description` (2026-08-05), so this read
+                // type-checks directly — displayName's cast is untouched/out of
+                // scope for this fix.
+                description={heroSpace?.description ?? activeProject.description ?? null}
                 stats={heroStats}
                 repo={heroRepo}
                 onOpenSwitcher={() => setSwitcherOpen(true)}

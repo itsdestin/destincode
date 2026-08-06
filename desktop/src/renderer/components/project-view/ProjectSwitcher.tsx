@@ -158,8 +158,11 @@ export function ProjectSwitcher({
             const shown = ((findSpaceFor(p.path, syncStatus ?? null) as any)?.displayName as string | undefined) || p.name;
             // Same synced-wins precedence as the name above: registry overlay
             // for a synced project, saved-folders record for a plain folder.
-            const desc = ((findSpaceFor(p.path, syncStatus ?? null) as any)?.description as string | undefined)
-              || p.description || null;
+            // WHY no `as any` here (unlike displayName above): SyncStatusData's
+            // spaces now declare `description` (2026-08-05), so this read
+            // type-checks without a cast — the type hole this feature opened
+            // is closed. displayName's cast is untouched/out of scope.
+            const desc = findSpaceFor(p.path, syncStatus ?? null)?.description || p.description || null;
             const avatar = shown.charAt(0).toUpperCase() || '?';
             return (
               // group/relative so the row can host a hover-revealed × delete
