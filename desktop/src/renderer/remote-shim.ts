@@ -1158,6 +1158,10 @@ export function installShim(): void {
       renameProject: (name: string, displayName: string) =>
         invoke('syncspaces:rename-project', { name, displayName }),
       stopProject: (name: string) => invoke('syncspaces:stop-project', { name }),
+      // Synced project description (Task 3) — payload-object shape, matching
+      // preload's renameProject/setProjectDescription convention.
+      setProjectDescription: (name: string, description: string) =>
+        invoke('syncspaces:set-project-description', { name, description }),
       // Conversation-lease takeover (Plan 2b Task 9). Same shape as preload for
       // parity (PITFALLS rule) so a remote browser doesn't crash when the resume
       // dialog calls leaseQuery. Remote-server routing lands in Task 11 — until

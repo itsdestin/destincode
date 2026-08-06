@@ -29,7 +29,7 @@ import { listPastSessions, loadHistory } from './session-browser';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
-import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
+import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, syncSpacesSetProjectDescription, getManagedRoots } from './sync-spaces/service';
 import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 // Connect-GitHub modal (device-flow auth). status/install are stateless direct
@@ -1803,6 +1803,12 @@ export class RemoteServer {
       }
       case 'syncspaces:stop-project': {
         this.respond(client.ws, type, id, await syncSpacesStopProject(String(payload?.name ?? '')));
+        break;
+      }
+      // Synced project description (Task 3) — payload-object shape, matching rename-project.
+      case 'syncspaces:set-project-description': {
+        this.respond(client.ws, type, id, await syncSpacesSetProjectDescription(
+          String(payload?.name ?? ''), String(payload?.description ?? '')));
         break;
       }
       // Conversation-lease takeover (Plan 2b Task 9/11). Thin passthroughs to the

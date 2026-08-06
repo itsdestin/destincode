@@ -565,6 +565,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:create-project', 'IPC.SYNC_SPACES_CREATE_PROJECT'],
     ['syncspaces:import-project', 'IPC.SYNC_SPACES_IMPORT_PROJECT'],
     ['syncspaces:rename-project', 'IPC.SYNC_SPACES_RENAME_PROJECT'],
+    ['syncspaces:set-project-description', 'IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION'],
     ['syncspaces:stop-project', 'IPC.SYNC_SPACES_STOP_PROJECT'],
     // Plan 2b Task 11 — conversation leases + device registry. Full four-surface
     // desktop parity (preload / remote-shim / ipc-handlers constant / remote-server).

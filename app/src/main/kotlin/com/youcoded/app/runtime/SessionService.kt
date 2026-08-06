@@ -3736,6 +3736,10 @@ class SessionService : Service() {
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
+            // Synced project description (Task 3) — desktop-only for now; without this
+            // arm the description editor on a phone would wait ~30s for a response
+            // that never arrives instead of failing fast.
+            "syncspaces:set-project-description",
             "syncspaces:stop-project",
             // Plan 2b — conversation leases/takeover + device registry are
             // desktop-only (Android has no lease/takeover). The shared React UI

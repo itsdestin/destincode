@@ -182,6 +182,9 @@ const IPC = {
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  // Synced project description (Task 3) — preload inlines its own IPC constants
+  // because the sandboxed preload can't resolve relative imports.
+  SYNC_SPACES_SET_PROJECT_DESCRIPTION: 'syncspaces:set-project-description',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   // Conversation-lease takeover (Plan 2b Task 9) — inlined literals (preload can't import).
   SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
@@ -849,6 +852,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_PROJECT, { name, displayName }),
     stopProject: (name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_STOP_PROJECT, { name }),
+    // Synced project description (Task 3) — payload-object shape, same convention
+    // as renameProject above.
+    setProjectDescription: (name: string, description: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION, { name, description }),
     // Conversation-lease takeover (Plan 2b Task 9). The Resume Browser calls
     // leaseQuery before resuming a store-backed row; if held elsewhere it offers
     // leaseTakeover (ask-hand-off), falling back to leaseForce on timeout.
