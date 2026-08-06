@@ -290,6 +290,30 @@ describe('Bash', () => {
     expect(r.bounds).toBeUndefined();
   });
 
+  // Regression pin for the 30k-71.5k "dead zone" (2026-08-06 review): the old
+  // `if (head.length < HEAD_CHARS) head += s` guard checked BEFORE appending, so
+  // a chunk that crossed the boundary was retained whole — a single pipe read
+  // could push retention past 71k before Bash's own `dropped` flag ever tripped,
+  // while defineTool's pipeline cap (30_000) fired regardless. Everything in
+  // between landed in composeNotice's no-bounds fallback: a bare "[output
+  // truncated: showing N of M chars]" with NO moreHint. 50,000 chars sits
+  // squarely inside that old dead zone (above the 30k pipeline cap, below the
+  // ~71.5k the old accumulator actually retained) — this pins that Bash now
+  // declares its own bounds there instead of falling through to the pipeline's
+  // uninformative notice.
+  it('Bash declares bounds (not the bare pipeline notice) for output in the old 30k-71.5k dead zone', async () => {
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('z'.repeat(50000))"` },
+      ctx,
+    );
+    expect(r.bounds).toBeDefined();
+    expect(r.bounds?.moreHint).toBeTruthy();
+    expect(r.bounds?.moreHint?.length).toBeGreaterThan(0);
+    // The bare no-bounds fallback string from composeNotice (truncate.ts) —
+    // must NOT appear once Bash declares its own bounds for this size.
+    expect(r.text).not.toContain('[output truncated: showing');
+  }, 30_000);
+
   it('Bash always states the cwd and exit code', async () => {
     const r = await BashTool.execute({ command: 'echo hi' }, ctx);
     expect(r.text).toContain(`[cwd: ${dir} · exit 0]`);
@@ -299,6 +323,18 @@ describe('Bash', () => {
     const r = await BashTool.execute({ command: 'exit 42' }, ctx);
     expect(r.text).toContain('· exit 42]');
     expect(r.text).not.toContain('(exit code 42)');
+  });
+
+  // Regression pin: the original "(no output, exit N)" fallback text was lost
+  // when the unconditional metadata line replaced the old block — a command
+  // that produced NO stdout/stderr resolved to a bare leading blank line
+  // followed only by the metadata line, giving no positive signal that the
+  // command ran and simply produced nothing.
+  it('a command that exits non-zero with no output gets a readable "(no output)" body, not a leading blank line', async () => {
+    const r = await BashTool.execute({ command: 'exit 3' }, ctx);
+    expect(r.text).toContain('(no output)');
+    expect(r.text).not.toMatch(/^\n/);
+    expect(r.text.startsWith('(no output)')).toBe(true);
   });
 
   it('Bash reports the tracked cwd after a cd, so the model never has to guess', async () => {
@@ -496,6 +532,57 @@ describe('Bash', () => {
     const r = await promise;
     // Killed → non-zero/null exit surfaces as an error result, not a hang.
     expect(r.isError).toBe(true);
+  });
+
+  // Pin for the PowerShell fallback (Windows without Git Bash): probe === false,
+  // so the tool must be stateless — no __YC_CWD__ wrapping — and effectiveCwd
+  // must fall back to startCwd unconditionally, since PowerShell has no cwd
+  // tracking. Same fs/which-mocking technique as
+  // tests/harness-bash-shell-detect.test.ts, but scoped to THIS ONE test via
+  // vi.doMock + vi.resetModules + a dynamic import — a file-level vi.mock('fs')
+  // here would silently break every other test in this file that writes real
+  // fixtures with fs.writeFileSync (Read/Write/Edit/Glob/Grep all do). The
+  // statically-imported `BashTool` used by every other test in this file is
+  // bound at file-load time and is unaffected by resetModules mid-run.
+  describe('on Windows without Git Bash (probe === false)', () => {
+    const realPlatform = process.platform;
+    afterEach(async () => {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+      vi.doUnmock('fs');
+      vi.doUnmock('which');
+      vi.resetModules();
+    });
+
+    it('runs stateless: no cwd-probe wrapping, and the metadata line still reports the start directory', async () => {
+      vi.doMock('fs', async (importActual) => {
+        const actual = await importActual<typeof import('fs')>();
+        return { ...actual, existsSync: () => false }; // no Git Bash anywhere on the machine
+      });
+      vi.doMock('which', () => ({ sync: () => null })); // git itself not on PATH either
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      vi.resetModules();
+      vi.spyOn(console, 'warn').mockImplementation(() => {}); // detectShell's fallback warning
+      spawnSpy.mockClear();
+
+      const winBash = await import('../src/main/harness/tools/bash');
+      winBash.resetShellCache();
+      expect(winBash.getShell().label).toBe('PowerShell'); // confirms the fallback actually engaged
+
+      const r = await winBash.BashTool.execute({ command: 'echo hi' }, ctx);
+
+      // Stateless: the command must reach spawn() UNWRAPPED — no CWD_SENTINEL,
+      // no `pwd -W` probe appended. PowerShell has no $PWD-persistence story
+      // (tracksCwdFor() explicitly excludes it), so shipping it a bash-shaped
+      // wrapper would be a syntax error, not a no-op.
+      const call = spawnSpy.mock.calls.at(-1);
+      expect(call?.[1]?.at(-1)).toBe('echo hi');
+
+      // effectiveCwd falls back to startCwd unconditionally when !probe (the
+      // `if (probe) {...}` cwd-extraction block never runs) — the metadata line
+      // must still name the directory the command actually ran in, regardless of
+      // whether spawning powershell.exe itself succeeds on this machine.
+      expect(r.text).toContain(`[cwd: ${dir} ·`);
+    });
   });
 });
 

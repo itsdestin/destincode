@@ -256,20 +256,73 @@ export const BashTool = defineTool({
       // truncation notice reported the CAPPED buffer's length as the original
       // size. A 5MB command was announced as "204800 chars total", a number
       // nothing had measured. Counting every chunk whether or not we keep it makes
-      // the reported total true, and drops peak retention ~7x.
-      const HEAD_CHARS = 24_000;
+      // the reported total true.
+      //
+      // WHY HEAD_CHARS/TAIL_CHARS stay <= caps.maxChars (2026-08-06 review, dead
+      // zone fix): the original guard was `if (head.length < HEAD_CHARS) head +=
+      // s` — checked BEFORE appending, so a chunk that CROSSED the boundary was
+      // retained WHOLE. A single 64KB pipe read (Node's default highWaterMark)
+      // pushed `head` to ~71,500 chars before `tailBuf` ever engaged, so this
+      // tool's own `dropped` flag stayed false — and Bash never declared `bounds`
+      // — until output was already past ~71.5k measured, while defineTool's
+      // pipeline cap (caps.maxChars, 30_000) fired at 30k regardless. Everything
+      // in between (measured: 40k, 50k, 70k chars) landed in composeNotice's
+      // no-`bounds` fallback: a bare "[output truncated: showing N of M chars]"
+      // with no `moreHint`, for the single most common oversized-Bash-output size
+      // (npm test, git log, a mid-size search). The fix below caps `head` on
+      // APPEND (slicing the crossing chunk, so retention no longer depends on
+      // pipe chunk size) and keeps peak retention at or under caps.maxChars, so
+      // the pipeline cap can never fire for Bash — this tool's own `bounds` is
+      // the sole authority on what got dropped. Peak body retained: HEAD_CHARS +
+      // TAIL_CHARS + 7 (the "\n[...]\n" separator joined() inserts) =
+      // 22,000 + 6,000 + 7 = 28,007. That leaves ~1,993 chars of headroom under
+      // 30,000 (caps.maxChars above) for the metadata line and drop notice this
+      // function appends AFTER body (cwd path + byte counts) — necessary because
+      // defineTool's cap applies to the FULL text, body plus that trailer, and a
+      // sufficiently deep workspace path could otherwise push the total back over
+      // caps.maxChars even with body itself capped. If you change either
+      // constant, keep HEAD_CHARS + TAIL_CHARS + 7 comfortably under 30,000 — that
+      // margin is what keeps composeNotice's no-bounds branch unreachable for Bash.
+      const HEAD_CHARS = 22_000;
       const TAIL_CHARS = 6_000;
       let head = '';
       let tailBuf = '';
       let totalChars = 0;
+      // Explicit flag set exactly at the moment content is discarded, rather than
+      // inferred afterward by comparing lengths — the same shape grep.ts uses for
+      // its own `dropped`. A post-hoc length comparison gets two things wrong: a
+      // genuine drop of <= 7 chars reads as "no drop" (the "\n[...]\n" separator
+      // happens to absorb it), and a merely non-empty tailBuf reads as "something
+      // was cut" even when every char it currently holds is still fully present.
+      let discarded = false;
       // Separate uncapped 4KB tail purely for the cwd sentinel: a chatty command
       // ("cd sub && <huge output>") would otherwise push the sentinel out of the
       // retained text and silently lose the cd.
       let probeTail = '';
+      // Push into the rolling tail window, flagging `discarded` iff characters
+      // actually fall off the FRONT of that window (a genuine loss) — not merely
+      // because the window happens to be non-empty.
+      const pushTail = (s: string) => {
+        const combined = tailBuf + s;
+        if (combined.length > TAIL_CHARS) discarded = true;
+        tailBuf = combined.slice(-TAIL_CHARS);
+      };
       const cap = (s: string) => {
         totalChars += s.length;
-        if (head.length < HEAD_CHARS) head += s;
-        else tailBuf = (tailBuf + s).slice(-TAIL_CHARS);
+        if (head.length < HEAD_CHARS) {
+          const room = HEAD_CHARS - head.length;
+          if (s.length <= room) {
+            head += s;
+          } else {
+            // This chunk CROSSES the head boundary: slice it right here instead
+            // of retaining it whole (the old bug) — deterministic regardless of
+            // how large a single pipe chunk happens to be.
+            head += s.slice(0, room);
+            pushTail(s.slice(room));
+          }
+        } else {
+          pushTail(s);
+        }
         if (probe) probeTail = (probeTail + s).slice(-4096);
       };
       const joined = () => (tailBuf ? `${head}\n[...]\n${tailBuf}` : head);
@@ -333,13 +386,28 @@ export const BashTool = defineTool({
         // no cwd echoed back the only safe habit was prefixing every single call
         // with `cd <root> &&`. This line costs ~15 tokens and removes that ritual.
         // It ABSORBS the old `(exit code N)` prefix rather than adding to it.
-        const dropped = totalChars > rawLen;
+        //
+        // Whether anything was actually cut, tracked LIVE by `discarded` (set in
+        // pushTail above) rather than inferred here from a length comparison. The
+        // old `totalChars > rawLen` compare miscounted in both directions: it
+        // undercounted a genuine drop of <= 7 chars (the "\n[...]\n" separator's
+        // own length absorbed it) and overcounted whenever tailBuf was merely
+        // non-empty but every char it held was still fully present in the result.
+        const dropped = discarded;
         // The reported total also gets the sentinel-overhead correction above.
         const trueTotal = totalChars - sentinelOverhead;
         const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
         const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
         if (dropped) meta.push(`${trueTotal} bytes output, showing ${body.length}`);
-        const text = (`${prefix}${body}`.trim() + notice).trim() + `\n[${meta.join(' · ')}]`;
+        // Fix: when a command exits with genuinely no output (e.g. `exit 3`),
+        // `${prefix}${body}` was '' — trimming that and prepending the metadata
+        // line produced a result that STARTED with a blank line and said nothing
+        // happened, silently dropping the original "(no output, exit N)" fallback
+        // text when this block was rewritten around the metadata line. `(no
+        // output)` restores that signal without duplicating `exit N`, which the
+        // metadata line below already states.
+        const combined = `${prefix}${body}`.trim() || '(no output)';
+        const text = (combined + notice).trim() + `\n[${meta.join(' · ')}]`;
         resolve({
           text,
           isError,
