@@ -1487,7 +1487,11 @@ export function registerIpcHandlers(
     ipcMain.handle(IPC.REMOTE_AUTH_TAILSCALE, async () => {
       const result = await RemoteConfig.startTailscaleAuth();
       if (result.url) {
-        shell.openExternal(result.url);
+        // Fire-and-forget: openExternal rejects when the OS has no handler for
+        // the scheme. The URL is returned to the renderer either way, so the
+        // user can still copy it — but the rejection must not escape as an
+        // unhandled rejection.
+        void shell.openExternal(result.url).catch(() => {});
       }
       return result;
     });

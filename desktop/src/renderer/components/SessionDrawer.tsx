@@ -413,6 +413,18 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
   useEscClose(drawerOpen, handleBack);
 
+  // Drag-to-resize state (youcoded#105). These three hooks MUST stay above the
+  // `!drawerOpen` early return below — they used to sit next to the pointer
+  // handlers ~130 lines down, which made them conditional. Every mount site
+  // currently gates on the same drawerOpenBySession value, so the early return
+  // never actually fired and the bug stayed dormant; the moment anyone renders
+  // SessionDrawer unconditionally (which that guard invites) React throws
+  // "Rendered more hooks than during the previous render". Found by
+  // react-hooks/rules-of-hooks.
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+  const dragRaf = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
   if (!drawerOpen) return null;
 
   // ── List column (shared by the no-selection and push-sidebar layouts) ──
@@ -541,10 +553,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Live preview writes the <html> --drawer-width var once per frame (no
   // React re-render per mousemove); pointer-up commits via setDrawerWidth
   // (clamp + localStorage). Double-click resets to the 480px default.
-  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
-  const dragRaf = useRef(0);
-  const [dragging, setDragging] = useState(false);
-
+  // (dragState/dragRaf/dragging are declared above the early return — see there.)
   const onHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     dragState.current = { startX: e.clientX, startWidth: drawerWidth };
