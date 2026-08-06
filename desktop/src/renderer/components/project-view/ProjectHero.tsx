@@ -61,6 +61,10 @@ interface ProjectHeroProps {
   // Synced display name from the cross-device project registry (2026-07-12),
   // overlaid at read time — prefer it over the folder name for a synced project.
   displayName?: string | null;
+  // Synced description from the project registry when this project syncs, else
+  // the local saved-folders one. Same read-time-overlay shape as displayName;
+  // ProjectView picks which. null/empty → the "Add a description" affordance.
+  description?: string | null;
   stats: HeroStats;
   repo: HeroRepo | null;
   onOpenSwitcher: () => void;
@@ -84,13 +88,17 @@ function ChevronDown({ size = 18 }: { size?: number }) {
 }
 
 import { createPortal } from 'react-dom';
-import { FolderIcon, GitHubIcon, CogIcon } from './icons';
+import {
+  FolderIcon, GitHubIcon, CogIcon,
+  CheckCircleIcon, AlertTriangleIcon, CircleSlashIcon, MonitorIcon,
+} from './icons';
 import { Button, TextInput } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { OverlayPanel } from '../overlays/Overlay';
 import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
 
 const MENU_WIDTH = 240;
+const SYNC_POPOVER_WIDTH = 288;
 
 /** One row in the hero's cog menu. `danger` items render red at rest — these
  *  are consequential enough that hover is the wrong moment to find out
@@ -105,6 +113,7 @@ interface MenuItem {
 export function ProjectHero({
   project,
   displayName,
+  description,
   stats,
   repo,
   onOpenSwitcher,
@@ -150,6 +159,27 @@ export function ProjectHero({
     onRenamed();
   };
 
+  // Description — same inline-edit contract as rename (Enter commits, Escape
+  // reverts, blur commits) and the same reset-on-project-change guard, so a
+  // half-typed description can't bleed into the next project.
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState(description ?? '');
+  useEffect(() => { setDescDraft(description ?? ''); setEditingDesc(false); }, [project.path, description]);
+  const commitDescription = async () => {
+    const d = descDraft.trim();
+    setEditingDesc(false);
+    if (d === (description ?? '').trim()) return;
+    if (syncedFolderName) {
+      // Synced: the description rides the cross-device project registry next to
+      // displayName, so every device sees the same words.
+      await (window.claude as any).syncSpaces.setProjectDescription?.(syncedFolderName, d).catch(() => {});
+    } else {
+      // Plain local folder: saved-folders record only — nothing to sync it to.
+      await (window.claude as any).folders.setDescription?.(project.path, d).catch(() => {});
+    }
+    onRenamed();
+  };
+
   // Stop syncing — consequence-gated (destructive-UI convention): a first click
   // arms the confirm, a second confirms. Detaches this project's sync on every
   // device while keeping each local copy; permanent (no Resume — spec §15).
@@ -168,6 +198,11 @@ export function ProjectHero({
   // every action visible — collapsing there would cost a click for no gain.
   const narrow = useNarrowViewport();
   const menu = useAnchoredMenu<HTMLButtonElement>(MENU_WIDTH, 'right');
+  // The sync pill's own popover. Left-aligned (the pill sits at the LEFT of the
+  // actions row, unlike the cog) and wider than the cog menu because it carries
+  // a sentence rather than a list of one-line rows. Reuses the same hook, so
+  // outside-click and Escape dismissal behave identically to every other menu.
+  const syncMenu = useAnchoredMenu<HTMLButtonElement>(SYNC_POPOVER_WIDTH, 'left');
 
   const syncAction: MenuItem | null =
     sync?.dot.color === 'green' && sync.spaceId
@@ -195,6 +230,51 @@ export function ProjectHero({
     ...(syncAction ? [syncAction] : []),
     ...(destructiveAction ? [destructiveAction] : []),
   ];
+
+  // The pill's five states. `short` is what fits on the pill; `detail` is the
+  // full sentence the 2026-07-09 spec pins, which now lives in the popover
+  // rather than being cut — shortening the readout must not delete the honesty
+  // copy. `action` is the one thing you can DO from that state, which the
+  // popover also carries, so no state's action is stranded at any width.
+  const syncPill: {
+    short: string; tone: string; icon: React.ReactNode;
+    detail: string; action: { label: string; onClick: () => void } | null;
+  } | null = !sync ? null
+    : sync.dot.color === 'green'
+      ? {
+          short: sync.lastSynced ? `Synced ${sync.lastSynced}` : 'Synced',
+          tone: 'text-[#44A05C]', icon: <CheckCircleIcon size={13} />,
+          detail: 'Syncs across your devices.',
+          action: sync.spaceId ? { label: 'Sync now', onClick: () => onSyncNow(sync.spaceId!) } : null,
+        }
+    : sync.dot.color === 'red'
+      ? {
+          short: 'Sync problem', tone: 'text-[#DD4444]', icon: <AlertTriangleIcon size={13} />,
+          // The REAL error, never a guess — surfaced verbatim when the engine
+          // gave one (error-message-standards.md).
+          detail: sync.errorMessage
+            ? `Sync isn't working. ${sync.errorMessage}`
+            : "Sync isn't working.",
+          action: sync.spaceId ? { label: 'Try again', onClick: () => onSyncNow(sync.spaceId!) } : null,
+        }
+    : sync.spaceId && sync.stopped
+      ? {
+          short: 'Sync stopped', tone: 'text-fg-dim', icon: <CircleSlashIcon size={13} />,
+          detail: 'Sync stopped — this project stays on your devices but no longer syncs between them.',
+          action: null, // Permanent tombstone: there is no Resume (spec §15).
+        }
+    : sync.spaceId
+      ? {
+          short: 'Sync off', tone: 'text-fg-dim', icon: <CircleSlashIcon size={13} />,
+          detail: 'Sync is turned off — this project will sync once you turn it on in Settings.',
+          action: null, // The switch is global; it lives in Settings, not here.
+        }
+      : {
+          short: 'Only on this computer', tone: 'text-fg-2', icon: <MonitorIcon size={13} />,
+          detail: 'This project stays on this computer until you turn on sync for it.',
+          // The action that had NO desktop home in the refresh-icon shape.
+          action: { label: 'Turn on sync for this project', onClick: onTurnOnSync },
+        };
 
   return (
     // Stacks below 640px. Before the cog collapse the right column was shrink-0
@@ -277,57 +357,43 @@ export function ProjectHero({
           )}
         </div>
 
-        {/* Sync status line (2026-07-09 spec §4). Plain words + the one action
-            that matters for the state. Hidden when syncSpaces is unavailable. */}
-        {sync && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-inset px-3 py-2">
-            {/* On narrow the matching ACTION for each state moved into the cog
-                menu, leaving this strip a one-line readout. Desktop keeps the
-                button inline where it has always been. */}
-            {sync.dot.color === 'green' && (
-              <>
-                <span className="text-sm-tight font-semibold text-[#44A05C]">Syncs across your devices</span>
-                {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
-                {!narrow && sync.spaceId && (
-                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
-                    Sync now
-                  </Button>
-                )}
-              </>
-            )}
-            {sync.dot.color === 'red' && (
-              <>
-                <span className="text-sm-tight font-semibold text-[#DD4444]">Sync isn't working</span>
-                {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
-                {!narrow && sync.spaceId && (
-                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
-                    Try again
-                  </Button>
-                )}
-              </>
-            )}
-            {sync.dot.color === 'gray' && sync.spaceId && sync.stopped && (
-              // Stopped = permanent tombstone (detached on every device). Distinct
-              // copy so it doesn't falsely promise it'll resume when sync is on.
-              <span className="text-sm-tight text-fg-dim">Sync stopped — this project stays on your devices but no longer syncs between them</span>
-            )}
-            {sync.dot.color === 'gray' && sync.spaceId && !sync.stopped && (
-              // Managed but global Sync is off — the honesty rule.
-              <span className="text-sm-tight text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
-            )}
-            {sync.dot.color === 'gray' && !sync.spaceId && (
-              <>
-                <span className="text-sm-tight font-semibold text-fg-2">Only on this computer</span>
-                {/* py-1 keeps this button compact inside the sync status strip;
-                    everything else (accent fill, radius, hover) comes from Button. */}
-                {!narrow && (
-                  <Button onClick={onTurnOnSync} className="py-1">
-                    Turn on sync for this project
-                  </Button>
-                )}
-              </>
-            )}
-          </div>
+        {/* Description — the slot the sync strip used to occupy. Italic inside
+            curly quotes: it reads as the user's own words about the project
+            rather than as another piece of app chrome, and the quotes make an
+            empty-vs-set state legible without a label. Curly, matching the
+            stop-sync confirm copy below. */}
+        {editingDesc ? (
+          <TextInput
+            size="sm"
+            value={descDraft}
+            autoFocus
+            aria-label="Project description"
+            placeholder="What is this project?"
+            className="mt-1.5 w-full text-sm"
+            onChange={(e) => setDescDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void commitDescription();
+              if (e.key === 'Escape') { setDescDraft(description ?? ''); setEditingDesc(false); }
+            }}
+            onBlur={() => void commitDescription()}
+          />
+        ) : description ? (
+          <button
+            type="button"
+            onClick={() => setEditingDesc(true)}
+            className="mt-1.5 block text-left rounded-md -ml-1 px-1 py-0.5 hover:bg-inset transition-colors max-w-[46rem]"
+            title="Edit description"
+          >
+            <span className="text-sm italic text-fg-dim">“{description}”</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setEditingDesc(true)}
+            className="mt-1.5 block text-left rounded-md -ml-1 px-1 py-0.5 text-sm text-fg-muted hover:text-fg-2 hover:bg-inset transition-colors"
+          >
+            Add a description
+          </button>
         )}
 
         {/* Stop-syncing confirm. Armed from the cog menu; the consequence copy
@@ -355,14 +421,36 @@ export function ProjectHero({
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>
         </div>
 
-        {/* Management actions (spec §4) — DESKTOP ONLY. Narrow reaches these
-            through the cog menu instead; see the `narrow` note above.
+        {/* Management actions (spec §4). The ROW now renders at every width
+            because the sync pill lives in it and the readout is not a
+            desktop-only luxury — only the management BUTTONS stay behind the
+            narrow cog (see the `narrow` note above).
             Rename = picker nickname only; the field itself renders up at the
             heading (one rename UI at both widths). Remove hides for synced
             projects (move-out-of-sync is a deferred flow). */}
-        {!narrow && (
+        {(syncPill || !narrow) && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {!renaming && (
+            {/* Sync pill — the old status strip compressed to its state word,
+                sitting left of Rename. The dot colour is the ONE sanctioned
+                status-colour use (sync-spaces rule). The refresh button is the
+                whole action surface for the two states that HAVE a refresh;
+                see the states note on `syncPill` above for the other three. */}
+            {syncPill && (
+              <button
+                type="button"
+                ref={syncMenu.anchorRef}
+                onClick={syncMenu.toggle}
+                aria-expanded={syncMenu.open}
+                aria-label={`Sync status: ${syncPill.short}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors ${
+                  syncMenu.open ? 'border-edge bg-well' : 'border-edge-dim bg-inset hover:border-edge'
+                }`}
+              >
+                <span className={`shrink-0 ${syncPill.tone}`}>{syncPill.icon}</span>
+                <span className={`text-2xs font-medium ${syncPill.tone}`}>{syncPill.short}</span>
+              </button>
+            )}
+            {!narrow && !renaming && (
               <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>
                 Rename
               </Button>
@@ -375,24 +463,22 @@ export function ProjectHero({
                 find that out, so they read as destructive at rest. "Rename"
                 above stays neutral — being the only non-red one is what makes
                 it read as the safe action. */}
-            {canRemove ? (
+            {!narrow && (canRemove ? (
               <Button variant="danger-outline" size="sm" onClick={onRemove}>
                 Remove from YouCoded
               </Button>
-            ) : syncedFolderName && sync?.stopped ? (
-              // Already stopped (permanent) — no action to offer, just the state
-              // (review #4: don't re-render a "Stop syncing" button for a
-              // project that's already a tombstone).
-              <span className="text-2xs text-fg-muted">Sync stopped</span>
             ) : syncedFolderName ? (
-              !confirmingStop && (
-                <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
-                  Stop syncing
-                </Button>
-              )
+              // Nothing here for a synced project. "Stop syncing" moved INTO the
+              // sync popover (2026-08-05) so every sync action lives behind the
+              // pill, and the bare "Sync stopped" text that used to sit here is
+              // gone — the pill states that two inches to the left, and printing
+              // it twice in one row reads as a rendering bug.
+              null
             ) : (
+              // Kept — this explains why there is no Remove button, which is a
+              // different fact from the pill's sync state.
               <span className="text-2xs text-fg-muted">Managed by sync</span>
-            )}
+            ))}
           </div>
         )}
       </div>
@@ -453,6 +539,59 @@ export function ProjectHero({
               </button>
             </React.Fragment>
           ))}
+        </OverlayPanel>,
+        document.body,
+      )}
+
+      {/* Sync popover — the status strip's full copy and its one action, moved
+          off the card and behind the pill. Portaled at L4 like the cog menu
+          above, so it can't be clipped by the hero's own box, and it renders at
+          EVERY width: this is the only place the red state's real error message
+          and the "Turn on sync" action exist, so hiding it on narrow would
+          strand them (narrow-viewport.md — never hide a control unless another
+          entry point exists). */}
+      {syncPill && syncMenu.open && syncMenu.pos && createPortal(
+        <OverlayPanel
+          ref={syncMenu.menuRef}
+          layer={4}
+          className="overlay-no-drag fixed p-3"
+          style={{ top: syncMenu.pos.top, left: syncMenu.pos.left, width: SYNC_POPOVER_WIDTH, borderRadius: 'var(--radius-lg)' }}
+        >
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <span className={`shrink-0 ${syncPill.tone}`}>{syncPill.icon}</span>
+            <span className={`text-2xs font-semibold ${syncPill.tone}`}>{syncPill.short}</span>
+          </div>
+          <p className="text-xs text-fg-dim leading-snug">{syncPill.detail}</p>
+          {syncPill.action && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-2.5 w-full"
+              onClick={syncMenu.choose(syncPill.action.onClick)}
+            >
+              {syncPill.action.label}
+            </Button>
+          )}
+          {/* Stop syncing — moved off the actions row so every sync action sits
+              behind the pill. Still consequence-gated: this ARMS the on-card
+              confirm rather than acting, because the confirm's copy is far too
+              long for a 288px popover. Hairline above it for the same reason the
+              cog menu has one — a destructive action must not be hit by muscle
+              memory aimed at the button above it. Absent once stopped: the
+              tombstone is permanent, there is nothing left to stop (spec §15). */}
+          {syncedFolderName && !sync?.stopped && (
+            <>
+              <div className="my-2.5 border-t border-edge-dim" />
+              <Button
+                variant="danger-outline"
+                size="sm"
+                className="w-full"
+                onClick={syncMenu.choose(() => setConfirmingStop(true))}
+              >
+                Stop syncing
+              </Button>
+            </>
+          )}
         </OverlayPanel>,
         document.body,
       )}

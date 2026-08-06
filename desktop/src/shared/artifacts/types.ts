@@ -76,6 +76,12 @@ export interface CentralIndexProject {
   // (home dir / drive root) get NO fileCount at all (no scan runs there).
   fileCountTruncated?: boolean;
   conversationCount?: number;
+  // MOCKUP (2026-08-05 project-description design): the LOCAL-folder description,
+  // overlaid at list time from the saved-folders record exactly as `name` already
+  // is from `nickname` (saved-folder-projects.ts:53). A SYNCED project's
+  // description arrives instead on the syncSpaces status payload, mirroring how
+  // `displayName` is overlaid there — the hero prefers the synced one.
+  description?: string | null;
 }
 
 export interface CentralIndex {

@@ -24,6 +24,43 @@ export function SearchIcon({ size = 15, strokeWidth = 2 }: IconProps) {
   );
 }
 
+// Sync-pill status glyphs (2026-08-05 mockup). One per dot colour/state, so the
+// pill reads at a glance without relying on colour alone — which also gives the
+// colourblind and the reduced-effects path a second channel the bare dot lacked.
+export function CheckCircleIcon({ size = 13, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <circle cx="12" cy="12" r="9" /><path d="m8.5 12 2.5 2.5 4.5-5" />
+    </svg>
+  );
+}
+
+export function AlertTriangleIcon({ size = 13, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4" /><path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+export function CircleSlashIcon({ size = 13, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" />
+    </svg>
+  );
+}
+
+export function MonitorIcon({ size = 13, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8" /><path d="M12 17v4" />
+    </svg>
+  );
+}
+
 export function GitBranchIcon({ size = 13, strokeWidth = 2 }: IconProps) {
   return (
     <svg {...base(size, strokeWidth)}>

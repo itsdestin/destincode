@@ -6,6 +6,10 @@
 // Adding an entry is the SUPPORTED way to design UI ahead of its backend.
 // Deleting the guard test because a channel is "obviously fine" is not.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Empty today. Add entries as new UI is designed ahead of its backend, e.g.
-  // { channel: 'session.setColor', feature: 'per-session color coding' },
+  // Per-project description (2026-08-05 design). Two channels because a project
+  // has two metadata homes: a SYNCED project's description belongs in the
+  // cross-device project registry (alongside displayName), a plain local
+  // folder's in the saved-folders record (alongside nickname).
+  { channel: 'syncSpaces.setProjectDescription', feature: 'per-project description' },
+  { channel: 'folders.setDescription', feature: 'per-project description' },
 ];

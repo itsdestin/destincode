@@ -82,12 +82,70 @@ describe('ProjectHero on desktop', () => {
     expect(screen.getByText('New Conversation')).toBeTruthy();
   });
 
-  it('keeps the sync action inline in the status strip', () => {
+  it('keeps the sync action inline on the card', () => {
     renderHero({
       canRemove: false,
       sync: { dot: { color: 'green' }, spaceId: 'project:x', lastSynced: null, errorMessage: null, stopped: false },
     });
+    // MOCKUP (2026-08-05): the action moved into the sync pill's popover, so
+    // the assertion is now "pill on the card, action one click inside it".
+    // The guard's INTENT is unchanged and still enforced — the sync action is
+    // reachable from the card itself, never only from the narrow-only cog.
+    const pill = screen.getByLabelText('Sync status: Synced');
+    expect(pill).toBeTruthy();
+    fireEvent.click(pill);
     expect(screen.getByText('Sync now')).toBeTruthy();
+  });
+
+  // The state whose action had no home in the refresh-icon shape. Pinned so a
+  // later trim can't strand "Turn on sync" behind the narrow cog again.
+  it('offers Turn on sync for an unsynced project', () => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color: 'gray' }, spaceId: null, lastSynced: null, errorMessage: null, stopped: false },
+    });
+    fireEvent.click(screen.getByLabelText('Sync status: Only on this computer'));
+    expect(screen.getByText('Turn on sync for this project')).toBeTruthy();
+  });
+
+  // Stop-syncing moved from the actions row into the sync popover (2026-08-05).
+  // It must still ARM the on-card confirm rather than acting immediately — the
+  // consequence copy is too long for a 288px popover, and stopping is permanent.
+  it('arms the stop-syncing confirm from the sync popover', () => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color: 'green' }, spaceId: 'project:proj', lastSynced: null, errorMessage: null, stopped: false },
+    });
+    // Not on the actions row any more — the popover is the only entry point.
+    expect(screen.queryByText('Stop syncing')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Sync status: Synced'));
+    fireEvent.click(screen.getByText('Stop syncing'));
+    expect(screen.getByText(/no longer sync between them/)).toBeTruthy();
+    expect(screen.getByText('Cancel')).toBeTruthy();
+  });
+
+  // A stopped project is a permanent tombstone — never re-offer the action.
+  it('hides Stop syncing once the project is already stopped', () => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color: 'gray' }, spaceId: 'project:proj', lastSynced: null, errorMessage: null, stopped: true },
+    });
+    fireEvent.click(screen.getByLabelText('Sync status: Sync stopped'));
+    expect(screen.queryByText('Stop syncing')).toBeNull();
+  });
+
+  // The red state must surface the ENGINE's message, never a hardcoded guess
+  // (error-message-standards.md).
+  it('surfaces the real sync error message in the popover', () => {
+    renderHero({
+      canRemove: false,
+      sync: {
+        dot: { color: 'red' }, spaceId: 'project:x', lastSynced: null,
+        errorMessage: 'remote contains work you do not have locally', stopped: false,
+      },
+    });
+    fireEvent.click(screen.getByLabelText('Sync status: Sync problem'));
+    expect(screen.getByText(/remote contains work you do not have locally/)).toBeTruthy();
   });
 });
 
