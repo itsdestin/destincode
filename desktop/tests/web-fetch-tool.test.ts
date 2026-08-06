@@ -341,6 +341,126 @@ describe('WebFetch', () => {
     parseSpy.mockRestore();
   });
 
+  // --- self-closing raw-text tag bypass (round 6, 2026-08-06) ---
+  //
+  // htmlparser2's tokenizer resets `isSpecial = false` the instant it sees
+  // the self-closing `/>` on a <script>/<style> tag (Tokenizer.js
+  // stateInSelfClosingTag) — a self-closed raw-text tag never enters the
+  // InSpecialTag raw-text state at all. And linkedom's Parser (htmlparser2,
+  // HTML mode, not recognizeSelfClosing — verified in
+  // node_modules/linkedom/esm/shared/parse-from-string.js, `{xmlMode:
+  // !isHTML}`) ignores the self-closing slash on ANY non-void, non-foreign
+  // element, so it stays OPEN on the real parse stack exactly like a normal
+  // open tag. The two tests below pin the two ways the old walkTags/
+  // tooComplexToExtract disagreed with that and the fidelity fix.
+
+  it('rejects the <script/><body> escape-hatch bypass — CRITICAL, round 6', async () => {
+    // <script/> leaves an EMPTY, still-open <script> on the parse stack (self-
+    // close ignored). The following <body> tag triggers htmlparser2's
+    // openImpliesClose rule (`["body", new Set(["head","link","script"])]`,
+    // Parser.ts) and closes that empty script immediately — so every <div>
+    // after <body> is real, un-stripped top-level content, NOT a script
+    // descendant Readability's own _removeScripts would have discarded.
+    // The old walkTags searched for a literal LATER '</script...' closer
+    // that deliberately never appears, found none, and skipped every tag for
+    // the rest of the document (real depth included) as "still inside the
+    // script". Measured on this machine BEFORE this fix, through
+    // WebFetchTool.execute: 5,518ms (guard let the payload through,
+    // Readability ran on a genuinely ~14,895-deep document and eventually
+    // threw "Maximum call stack size exceeded" — 5.5s of main-thread block
+    // before that throw). Control (same divs, no script/body trick): 3ms,
+    // rejected as normal.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const N = 14_895;
+    const payload = '<html><head></head><script/><body>' + '<div>'.repeat(N) + '</body></html>';
+    const t0 = Date.now();
+    const r = await fetchWith(payload, 'https://example.com/script-selfclose-body-escape');
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(elapsed).toBeLessThan(1000); // was 5,518ms before the fix
+    parseSpy.mockRestore();
+
+    // <style/> is subject to the identical openImpliesClose-on-<body> escape
+    // (Parser.ts's rule names "script" specifically, but a self-closed
+    // <style/> that never gets a real closer has the identical
+    // "walkTags treats the rest of the document as hidden" failure mode via
+    // the SAME findRawTextEnd call — this pins that the fix covers style
+    // too, not just script).
+    const parseSpy2 = vi.spyOn(Readability.prototype, 'parse');
+    const stylePayload = '<html><head></head><style/><body>' + '<div>'.repeat(N) + '</body></html>';
+    const t1 = Date.now();
+    const r2 = await fetchWith(stylePayload, 'https://example.com/style-selfclose-body-escape');
+    const elapsed2 = Date.now() - t1;
+    expect(r2.isError).toBeFalsy();
+    expect(r2.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy2).not.toHaveBeenCalled();
+    expect(elapsed2).toBeLessThan(1000);
+    parseSpy2.mockRestore();
+  });
+
+  it('rejects self-closing non-void tags that stay open per the real HTML parser (no script/style needed) — CRITICAL, round 6', async () => {
+    // Broader sibling of the bug above, found while investigating it: ANY
+    // self-closing non-void HTML tag (not just script/style) stays open per
+    // linkedom's Parser (self-close is ignored outside SVG/MathML foreign
+    // context — see Parser.ts's `onselfclosingtag`), but the old
+    // tooComplexToExtract exempted EVERY selfClosed non-void tag from the
+    // depth count unconditionally, treating it like a void element
+    // (<br/>, <img/>). No script/style trick required — plain <div/>
+    // repeated is enough. Measured on this machine BEFORE this fix, through
+    // WebFetchTool.execute: '<html><body>' + '<div/>'.repeat(700) +
+    // 'x</body></html>' (no raw-text tag anywhere in the page) took 2,812ms
+    // (guard let it through — maxDepth stayed 0 the whole scan — Readability
+    // ran on a document that was genuinely 700 elements deep). Control (same
+    // divs, real '</div>' closers): 2-4ms, rejected as normal.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const N = 700;
+    const payload = '<html><body>' + '<div/>'.repeat(N) + 'x</body></html>';
+    const t0 = Date.now();
+    const r = await fetchWith(payload, 'https://example.com/div-selfclose-nonvoid');
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(elapsed).toBeLessThan(1000); // was 2,812ms before the fix
+    parseSpy.mockRestore();
+  });
+
+  it('does not falsely reject ordinary inline SVG icons for the self-closing-tag fix above (no new false positive)', async () => {
+    // The fix above only exempts a selfClosed non-void tag from the depth
+    // count while inside real <svg>/<math> foreign context (where
+    // htmlparser2 DOES honor self-closing) — matching Parser.ts's
+    // `foreignContext` check. This proves that carve-out actually works:
+    // an article with a small SVG icon (a few self-closing <path>/<circle>
+    // shapes, and a larger inline sprite of 120 sibling self-closing
+    // <path> elements) must still extract normally, not degrade to the
+    // "too large or deeply nested" fallback.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const article =
+      '<html><body><article><h1>Title</h1><p>' + 'Real content. '.repeat(40) + '</p>' +
+      '<svg viewBox="0 0 24 24"><path d="M1 2"/><circle cx="1" cy="2" r="3"/><path d="M3 4"/></svg>' +
+      '</article></body></html>';
+    const r = await fetchWith(article, 'https://example.com/svg-icon-not-rejected');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).not.toMatch(/too large or deeply nested/);
+    expect(r.text).toContain('Title');
+    expect(parseSpy).toHaveBeenCalled();
+    parseSpy.mockRestore();
+
+    const parseSpy2 = vi.spyOn(Readability.prototype, 'parse');
+    const shapes = '<path d="M1 2"/>'.repeat(120);
+    const sprite =
+      '<html><body><svg style="display:none">' + shapes + '</svg>' +
+      '<article><h1>Title</h1><p>' + 'Real content. '.repeat(40) + '</p></article></body></html>';
+    const r2 = await fetchWith(sprite, 'https://example.com/svg-sprite-not-rejected');
+    expect(r2.isError).toBeFalsy();
+    expect(r2.text).not.toMatch(/too large or deeply nested/);
+    expect(r2.text).toContain('Title');
+    expect(parseSpy2).toHaveBeenCalled();
+    parseSpy2.mockRestore();
+  });
+
   it('recognizes every htmlparser2 tag-name terminator after </script — space, tab, LF, FF, CR — not only an exact ">"', async () => {
     // htmlparser2's stateInSpecialTag terminator set is `c === '>' ||
     // isWhitespace(c)`, and isWhitespace covers space/LF/tab/FF/CR

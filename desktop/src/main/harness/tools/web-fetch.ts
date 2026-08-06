@@ -319,18 +319,55 @@ function walkTags(html: string, onTag: (tag: TagToken) => void): void {
     // offset back into `html`, which is what made the old document-wide
     // `lower` copy unsafe.
     const name = html.slice(nameStart, pos).toLowerCase();
-    if (!isClose && (name === 'script' || name === 'style')) {
-      const openGt = html.indexOf('>', pos);
-      if (openGt === -1) return;
-      // See findRawTextEnd's WHY block (BLOCKER B2) for why this is no
-      // longer a literal '</script>'/'</style>' search.
-      const end = findRawTextEnd(html, name, openGt + 1);
-      i = end === -1 ? n : end;
-      continue;
-    }
     const gt = html.indexOf('>', pos);
     if (gt === -1) return; // CRITICAL early-exit — see WHY above
     const selfClosed = html.charCodeAt(gt - 1) === 47; // '/'
+    // Raw-text elements (script/style) only actually open a raw-text region
+    // when NOT self-closed.
+    //
+    // WHY (CRITICAL, round 6, 2026-08-06 review — the mismatch flagged by the
+    // round-5 fixer): htmlparser2's tokenizer resets `isSpecial = false` the
+    // INSTANT it sees the self-closing `/>` on a <script>/<style> tag
+    // (Tokenizer.js `stateInSelfClosingTag`) — a self-closed raw-text tag
+    // NEVER reaches the `InSpecialTag` raw-text state, so it swallows nothing
+    // after it as text. The old code called findRawTextEnd unconditionally
+    // for any `<script`/`<style` OPEN tag, self-closed or not — so
+    // `<script/>` with no LATER real `</script...` anywhere in the document
+    // (the attacker's whole point) made findRawTextEnd return -1 and this
+    // walker jump straight to `n`, treating every tag for the REST of the
+    // document — real, attacker-supplied depth included — as "still inside
+    // the script" and invisible to the depth count.
+    //
+    // On its own that undercount is inert: linkedom's Parser (htmlparser2,
+    // HTML mode, not recognizeSelfClosing — verified in
+    // node_modules/linkedom/esm/shared/parse-from-string.js, which passes
+    // only `{ xmlMode: !isHTML }`) also ignores the self-closing slash on a
+    // non-void, non-foreign element, so `<script/>` itself stays OPEN and
+    // everything after it becomes its real DOM children — and Readability's
+    // own parse() removes every <script>/<style> subtree (`_removeScripts`,
+    // `_prepDocument`) before the expensive `_grabArticle()` pass ever runs,
+    // so a swallowed-whole subtree is safe by accident.
+    // BUT htmlparser2's `openImpliesClose` map (Parser.ts) closes an open
+    // `script` the instant a NEW `<body>` tag appears while `script` is the
+    // top of the parse stack (`["body", new Set(["head","link","script"])]`)
+    // — so `<script/><body>` closes the (empty) script immediately and
+    // everything typed after `<body>` is real, un-stripped top-level
+    // content, not a script descendant. Measured on this machine through
+    // WebFetchTool.execute: `'<html><head></head><script/><body>' +
+    // '<div>'.repeat(14_895) + '</body></html>'` (74,523 bytes, 14,902 '<'
+    // characters — under MAX_TAGS) took 5,518ms (guard let it through,
+    // Readability ran on a genuinely ~14,895-deep, un-stripped document and
+    // eventually threw "Maximum call stack size exceeded" — 5.5s of
+    // main-thread block before that throw). Control (same divs, no
+    // script/body trick): 3ms, rejected as normal. See "rejects the
+    // <script/><body> escape-hatch bypass" in web-fetch-tool.test.ts.
+    if (!isClose && !selfClosed && (name === 'script' || name === 'style')) {
+      // See findRawTextEnd's WHY block (BLOCKER B2) for why this is no
+      // longer a literal '</script>'/'</style>' search.
+      const end = findRawTextEnd(html, name, gt + 1);
+      i = end === -1 ? n : end;
+      continue;
+    }
     onTag({ name, isClose, selfClosed });
     i = gt + 1;
   }
@@ -364,13 +401,67 @@ function tooComplexToExtract(rawHtml: string): string | null {
   // scan. See "does not freeze" test pinning the fixed number.
   let depth = 0;
   let maxDepth = 0;
+  // Foreign-context (SVG/MathML) nesting counter — see the WHY block on
+  // `exemptSelfClose` below for what this corrects. Only a running COUNT is
+  // needed (not a stack of element names), because this guard only ever asks
+  // "are we inside svg/math right now", mirroring htmlparser2's own
+  // `foreignContext` stack (Parser.ts) at that single-bit granularity.
+  let foreignDepth = 0;
   walkTags(rawHtml, (tag) => {
+    const isForeignRoot = tag.name === 'svg' || tag.name === 'math';
     if (tag.isClose) {
       depth = Math.max(0, depth - 1);
-    } else if (!tag.selfClosed && !VOID_ELEMENTS.has(tag.name)) {
+      if (isForeignRoot) foreignDepth = Math.max(0, foreignDepth - 1);
+      return;
+    }
+    if (isForeignRoot) foreignDepth++;
+    // WHY selfClosed only exempts depth INSIDE foreign context (CRITICAL,
+    // round 6, 2026-08-06 review): linkedom's Parser (htmlparser2, HTML mode
+    // — see the WHY block on walkTags' script/style branch above for the
+    // verification) ignores the self-closing slash on ANY non-void,
+    // non-foreign element — `<div/>`, `<span/>`, `<script/>`, etc. all stay
+    // OPEN on the real parse stack exactly like `<div>` would, until an
+    // explicit close or EOF. It is honored ONLY inside an <svg>/<math>
+    // subtree (`this.foreignContext[0]` in `onselfclosingtag`, Parser.ts).
+    // The old code exempted EVERY selfClosed non-void tag from the depth
+    // count unconditionally — correct for an SVG icon's self-closing
+    // <path/>/<circle/> shapes, but WRONG for ordinary HTML, and exploitable
+    // WITHOUT any script/style trick at all. Measured on this machine
+    // through WebFetchTool.execute: `'<html><body>' + '<div/>'.repeat(700) +
+    // 'x</body></html>'` (a page with no raw-text tag anywhere) took
+    // 2,812ms — Readability ran on a document that was genuinely 700
+    // elements deep, because maxDepth stayed 0 for the whole scan (every one
+    // of those 700 real, still-open <div>s was excused as "self-closed, so
+    // like a void element"). Control (same divs, real '</div>' closers):
+    // 2-4ms, rejected as normal. See "rejects self-closing non-void tags
+    // that stay open per the real HTML parser (no script/style needed)" in
+    // web-fetch-tool.test.ts.
+    //
+    // KNOWN LIMITATION: htmlparser2 also flips back to normal (non-foreign)
+    // self-closing rules inside a small set of SVG/MathML "integration
+    // points" (`<foreignObject>`, `<desc>`, `<title>` inside <svg>; `<mi>`,
+    // `<mo>`, `<mn>`, `<ms>`, `<mtext>`, `<annotation-xml>` inside <math> —
+    // `htmlIntegrationElements` in Parser.ts). This counter does not track
+    // those, so a page would need real SVG content AND one of those specific
+    // integration elements AND many self-closing tags nested inside THAT to
+    // still undercount — a narrow, deliberately-crafted shape ordinary
+    // content does not produce, and strictly narrower than the gap that
+    // existed before this fix (which had no foreign-context awareness at
+    // all, so it was wrong for the whole document, not just inside these
+    // rare integration points).
+    const exemptSelfClose = tag.selfClosed && foreignDepth > 0;
+    if (!exemptSelfClose && !VOID_ELEMENTS.has(tag.name)) {
       depth++;
       if (depth > maxDepth) maxDepth = depth;
     }
+    // Self-closed svg/math ROOT elements close themselves immediately (net
+    // zero): htmlparser2 pushes foreignContext=true in emitOpenTag, THEN
+    // reads it back in onselfclosingtag for that SAME tag, then immediately
+    // pops it in closeCurrentTag. Without this line, a bare `<svg/>` would
+    // leave foreignDepth stuck open forever (nothing later will emit a
+    // matching close for it), wrongly exempting every self-closing tag for
+    // the REST of the document — reopening the exact bug this fixes.
+    if (isForeignRoot && tag.selfClosed) foreignDepth = Math.max(0, foreignDepth - 1);
   });
   if (maxDepth > MAX_DEPTH) {
     return 'WebFetch: this page is too large or deeply nested to extract safely. Try a more specific URL or a printer-friendly/article version.';
