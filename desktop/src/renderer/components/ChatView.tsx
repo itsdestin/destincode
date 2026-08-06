@@ -29,6 +29,12 @@ import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 interface Props {
   sessionId: string;
   visible: boolean;
+  /** True when this is the ACTIVE session, regardless of whether the user is
+   *  currently on its chat or terminal tab. Distinct from `visible`, which is
+   *  false for the active session's chat while its terminal is showing — see
+   *  the root element's style block for why the two axes are hidden
+   *  differently. */
+  sessionActive: boolean;
   resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
   /** Working directory of the session — used to resolve the active project for the artifact drawer. */
   cwd?: string;
@@ -97,7 +103,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
+export default function ChatView({ sessionId, visible, sessionActive, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -678,6 +684,26 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         visibility: visible ? 'visible' : 'hidden',
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
+        // Fix (window-resize jank): App renders a ChatView for EVERY open
+        // session, and visibility:hidden does NOT remove an element from
+        // layout — so every resize tick re-wrapped every open conversation,
+        // not just the one on screen. With 6 sessions of real content that
+        // measured 117ms per resize step (13 long tasks), which reads as the
+        // window content freezing and then snapping to the new size.
+        //
+        // content-visibility:hidden skips layout of the subtree like
+        // display:none, but preserves rendering state so re-showing is cheap.
+        // Measured on the same 6-pane fixture: resize 117ms → 43ms per step
+        // with zero long tasks, and session switching got FASTER than the
+        // visibility-only behaviour it replaces (5.3ms → 0.5ms median;
+        // display:none would have cost 25.3ms). Scroll position survives.
+        //
+        // Keyed on sessionActive, NOT visible: the chat↔terminal toggle within
+        // the active session must stay on the visibility path above, because
+        // that toggle is frequent and is exactly what the original fix
+        // addressed. Switching SESSIONS is deliberate and infrequent, so
+        // paying a skipped-subtree re-render there is the right trade.
+        contentVisibility: sessionActive ? 'visible' : 'hidden',
       }}
     >
       {/* framed-shell: horizontal flex row holding the chat pane + optional

@@ -420,7 +420,7 @@ export class TranscriptWatcher extends EventEmitter {
     // attached the global poll acts as a safety net (fs.watch on Windows can
     // silently miss notifications).
     if (fs.existsSync(jsonlPath)) {
-      this.readNewLines(session);
+      void this.readNewLines(session);
       this.attachFsWatch(session);
     }
     this.ensureGlobalPoll();
@@ -455,7 +455,7 @@ export class TranscriptWatcher extends EventEmitter {
   readNewLinesForSession(desktopSessionId: string): void {
     const session = this.sessions.get(desktopSessionId);
     if (session) {
-      this.readNewLines(session);
+      void this.readNewLines(session);
     }
   }
 
@@ -513,7 +513,7 @@ export class TranscriptWatcher extends EventEmitter {
   private attachFsWatch(session: WatchedSession): void {
     try {
       session.watcher = fs.watch(session.jsonlPath, () => {
-        this.readNewLines(session);
+        void this.readNewLines(session);
       });
       session.watcher.on('error', () => {
         // If the watcher errors, fall back to the global poll (already running)
@@ -543,7 +543,7 @@ export class TranscriptWatcher extends EventEmitter {
       for (const session of this.sessions.values()) {
         if (!session.needsPoll) continue;
         if (!fs.existsSync(session.jsonlPath)) continue;
-        this.readNewLines(session);
+        void this.readNewLines(session);
         // If fs.watch isn't attached yet, upgrade from poll-only to watch+poll.
         if (!session.watcher) {
           this.attachFsWatch(session);
@@ -595,6 +595,15 @@ export class TranscriptWatcher extends EventEmitter {
         session.rerunQueued = false;
         await this.readNewLinesOnce(session);
       } while (session.rerunQueued);
+    } catch (err) {
+      // Never reject: all four call sites are fire-and-forget (fs.watch
+      // callback, poll timer, startWatching, manual trigger), and the process
+      // has no unhandledRejection handler — an EIO out of handle.read would
+      // otherwise take down the main process under Node's default
+      // --unhandled-rejections=throw. `reading` is cleared in the finally
+      // below, so the next poll tick retries from the same offset.
+      // eslint-disable-next-line no-console
+      console.error('[TranscriptWatcher] read failed for', session.jsonlPath, err);
     } finally {
       session.reading = false;
     }

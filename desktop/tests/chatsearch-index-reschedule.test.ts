@@ -30,6 +30,13 @@ const state = vi.hoisted(() => ({
 
 vi.mock('../src/main/conversations/service', () => ({
   getConversationStore: () => ({
+    // Read by refreshFromLiveState's synced-space backstop (see the
+    // chatsearch-paths transcript-resolution fix) before store.list() is
+    // called — the mock must supply it or that read throws and the cycle
+    // never reaches list() at all. Its value is never exercised here since
+    // every list() call in this test resolves to [], so resolveTranscriptPath
+    // is never invoked.
+    root: () => os.homedir(),
     list: (provider: string) => {
       state.listCalls.push(provider);
       // Only the FIRST 'claude' call is held open — later calls (the
