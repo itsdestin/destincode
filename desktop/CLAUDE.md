@@ -58,6 +58,7 @@ The Chat View timeline is built from four event sources:
 - `npm run dev` — Start in development mode (hot reload)
 - `npm test` — Run tests
 - `npm run build` — Build distributable
+- `npm run lint` — ESLint. A **bug** gate, not a style gate: it carries only rules that catch real defects (conditional React hooks, floating promises in the main process, impossible comparisons), because tsc + vitest + knip were all green while exactly those classes shipped. Every enabled rule is at zero on the tree, so a failure means a NEW defect. The rules that are measured-but-not-yet-enabled — and what each would cost to adopt — are listed at the bottom of `desktop/eslint.config.mjs`; drive one to zero in the same commit that enables it.
 - `npm run knip` — Dead-code check. **This is the authority on "is X still used?" — do not answer that from a `grep`** (see the workspace `CLAUDE.md` → "Never assert a negative from a single search"). Config + the rationale for every ignore lives in `desktop/knip.jsonc`; it runs as its own step in `desktop-ci.yml`. It gates only on the categories that are clean today (`files`, `unresolved`, `duplicates`, `dependencies`) and reports the rest as warnings, so a green run does NOT mean zero findings — read the output.
 
 ## Remote Access

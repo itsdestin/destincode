@@ -1274,7 +1274,10 @@ if (!app.isPackaged && process.env.YOUCODED_DEVTOOLS_PORT) {
 // 41.10.3 and 43.2.0). Ground-truth the ozone backend before trusting any
 // transparency probe on this machine.
 
-app.whenReady().then(async () => {
+// `void`, not a .catch(): a bootstrap failure has no meaningful local recovery,
+// and the unhandledRejection listener registered at the top of this file logs
+// it and keeps the app alive rather than exiting silently.
+void app.whenReady().then(async () => {
   await rotateLog();
 
   // Fire-and-forget: never await. Respects the opt-out in About → Privacy
