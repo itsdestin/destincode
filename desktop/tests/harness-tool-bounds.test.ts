@@ -52,13 +52,75 @@ describe('Grep and Glob agree on path format', () => {
 
   it('Grep returns workspace-relative paths for targets inside the workspace', async () => {
     const r = await GrepTool.execute({ pattern: 'marker', output_mode: 'files_with_matches' }, makeCtx(dir));
-    expect(r.text).toContain('src/a.ts');
+    // Tightened (Critical 2, 2026-08-06 review): `.toContain('src/a.ts')` was
+    // satisfied by "./src/a.ts" too, so this passed against the buggy code
+    // that omitted the path arg's fix. Assert the exact line AND the absence
+    // of the "./" prefix ripgrep emits when handed '.' explicitly, so this
+    // fails again if that regresses.
+    expect(r.text).toBe('src/a.ts');
+    expect(r.text).not.toContain('./');
     expect(r.text).not.toContain(dir);
   });
 
   it('Glob returns the same shape for the same file', async () => {
     const r = await GlobTool.execute({ pattern: '**/*.ts' }, makeCtx(dir));
     expect(r.text).toContain('src/a.ts');
+  });
+
+  it('Glob returns absolute paths when the search root is outside the workspace, matching Grep', async () => {
+    // Regression pin for Important 3: `base` (search-root-relative to cwd)
+    // starts with '..' here since `dir` (the search root) is OUTSIDE the
+    // workspace passed as ctx.cwd. The buggy rebase() returned the
+    // search-root-relative string unchanged ("src/a.ts"), which reads as a
+    // workspace file when it is not one.
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-workspace-'));
+    try {
+      const r = await GlobTool.execute({ pattern: '**/*.ts', path: dir }, makeCtx(workspace));
+      expect(r.text).toBe(path.join(dir, 'src', 'a.ts'));
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Grep declares no bounds when nothing was dropped', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-nodrop-'));
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'export const marker = 1;\n');
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('a one-file, one-match search reports no bounds at all', async () => {
+    // Regression pin for Critical 1: the old `totalChars > out.length` check
+    // compared against a TRIMMED string, so ripgrep's own trailing '\n' made
+    // this fire on every non-empty result — including this one, which held
+    // everything. A real fix must declare `bounds: undefined` here.
+    const r = await GrepTool.execute({ pattern: 'marker', output_mode: 'content' }, makeCtx(dir));
+    expect(r.bounds).toBeUndefined();
+    expect(r.text).not.toContain('showing');
+    expect(r.text).not.toContain('narrow the pattern');
+  });
+});
+
+describe('Glob honesty on cancellation', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-cancel-'));
+    for (let i = 0; i < 50; i++) fs.writeFileSync(path.join(dir, `f${i}.ts`), '');
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('reports cancellation instead of a truncated partial list, matching Grep', async () => {
+    // Regression pin for Important 4: an aborted walk used to return silently,
+    // so a cancelled search that had gathered fewer than RESULT_LIMIT hits
+    // declared NO bounds and handed back whatever it found as if complete.
+    const ac = new AbortController();
+    ac.abort();
+    const ctx: ToolContext = { sessionId: 'test', cwd: dir, signal: ac.signal, readRegistry: new Map(), todos: [] };
+    const r = await GlobTool.execute({ pattern: '*.ts' }, ctx);
+    expect(r.text).toBe('Canceled: the user interrupted this search.');
+    expect(r.isError).toBe(true);
   });
 });
 

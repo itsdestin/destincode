@@ -107,8 +107,18 @@ export const GrepTool = defineTool({
     // path.relative returns '' when the target IS cwd — map that to '.' rather
     // than falling through to the (also correct, but needlessly verbose) absolute form.
     const rel = path.relative(ctx.cwd, resolvedTarget);
-    const searchTarget = rel === '' ? '.' : (!rel.startsWith('..') && !path.isAbsolute(rel) ? rel : resolvedTarget);
-    rgArgs.push('--', args.pattern, searchTarget);
+    // Fix (Critical 2, 2026-08-06 review): rg echoes back exactly the path
+    // argument it was given, and the old code passed '.' explicitly for the
+    // "target is cwd" case — so a default, whole-workspace Grep printed
+    // "./src/a.ts" while Glob (which never passes a path to fs.readdir)
+    // printed "src/a.ts" for the SAME file: one file, two shapes, unpipeable
+    // between the tools. Omitting the path argument entirely lets rg default
+    // to its own cwd (already pinned via `cwd: ctx.cwd` in spawn() below) and
+    // emit the same bare relative form Glob uses. Explicit relative/absolute
+    // targets are unaffected — still passed through so rg reports them as-is.
+    const searchTarget = rel === '' ? null : (!rel.startsWith('..') && !path.isAbsolute(rel) ? rel : resolvedTarget);
+    if (searchTarget !== null) rgArgs.push('--', args.pattern, searchTarget);
+    else rgArgs.push('--', args.pattern);
     return new Promise((resolve) => {
       // Two spawn defenses, both learned from `spawn ENOTDIR` (2026-07-20):
       //  1. `cwd: ctx.cwd` explicitly — never inherit the Electron main process's
@@ -123,7 +133,15 @@ export const GrepTool = defineTool({
       // <CODE>` that hides which path/cwd was at fault.
       let child;
       try {
-        child = spawn(rgBin, rgArgs, { cwd: ctx.cwd, windowsHide: true });
+        // stdin: 'ignore' — WHY (found while verifying Critical 2's fix): with
+        // Node's default stdio, fd 0 is an open, un-piped-into pipe. When no
+        // path argument is present (the new omit-path branch above), ripgrep's
+        // own heuristic is "no path + stdin is not a tty ⇒ search stdin, not
+        // the cwd" — so the child spawned and then blocked forever waiting for
+        // stdin input that would never arrive, hanging every default Grep
+        // call. Explicit path/absolute targets never hit this (rg only applies
+        // the heuristic when no path is given), so this is safe for those too.
+        child = spawn(rgBin, rgArgs, { cwd: ctx.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       } catch (e: any) {
         resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${ctx.cwd}).`, isError: true });
         return;
@@ -167,13 +185,22 @@ export const GrepTool = defineTool({
           resolve({ text: grepErrorMessage(err, resolvedTarget, ctx.cwd), isError: true });
           return;
         }
-        const out = (tailBuf ? `${head}\n[...]\n${tailBuf}` : head).trim();
+        // Fix (Critical 1, 2026-08-06 review): the old `dropped` check compared
+        // `totalChars` (a raw byte/char count) against `out.length` where `out`
+        // is `.trim()`-ed — and ripgrep always terminates non-empty stdout with
+        // a trailing '\n', which trim() strips on EVERY successful run whether
+        // or not anything was actually dropped. That made `totalChars ===
+        // out.length + 1` universally true, firing a fabricated truncation
+        // notice ("showing 10 of 11 chars — narrow the pattern...") on 100% of
+        // non-empty results, including ones that returned everything. Compare
+        // against the UNTRIMMED accumulator instead: head/tailBuf together
+        // equal every char received UNLESS the head cap was actually exceeded
+        // (tailBuf only holds a bounded rolling window in that case) — the same
+        // scheme bash.ts uses for its own `rawLen` check.
+        const joined = tailBuf ? `${head}\n[...]\n${tailBuf}` : head;
+        const dropped = totalChars > joined.length;
+        const out = joined.trim();
         const capped = filesAtMaxCount(out, mode);
-        // WHY declare instead of silently accepting: `totalChars > out.length`
-        // is true whenever the head/tail scheme above actually dropped a middle
-        // section, so this is the SAME fact the pipeline's own truncateOutput
-        // uses — not a guess.
-        const dropped = totalChars > out.length;
         if (!out) {
           resolve({ text: 'No matches found.' });
           return;
@@ -183,7 +210,16 @@ export const GrepTool = defineTool({
             ? `${out}\n\nNote: these files hit the ${MAX_COUNT}-matches-per-file limit and have more: ${capped.join(', ')}`
             : out,
           bounds: dropped
-            ? { shown: out.length, total: totalChars, unit: 'chars' as const, moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"' }
+            ? {
+                // Fix: `out.length` used to include the synthetic "\n[...]\n"
+                // separator (7 chars) inserted between head and tail — that
+                // separator is harness plumbing, not ripgrep output, so
+                // counting it overstated how much real content was shown.
+                shown: out.length - 7,
+                total: totalChars,
+                unit: 'chars' as const,
+                moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
+              }
             : undefined,
         });
       });

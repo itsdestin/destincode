@@ -65,11 +65,17 @@ export const GlobTool = defineTool({
     const rx = fileGlobToRegex(args.pattern);
     const hits: Array<{ rel: string; mtime: number }> = [];
     let ceilingHit = false;
+    // Fix (Important 4, 2026-08-06 review): the walk used to return silently on
+    // `ctx.signal.aborted` with nothing recording that it stopped early, so a
+    // cancelled search that had gathered fewer than RESULT_LIMIT hits declared
+    // no `bounds` and handed back a partial list as if it were the complete
+    // answer. Track it explicitly and short-circuit with the same cancellation
+    // shape Grep already uses (grep.ts) — one convention for "the user hit
+    // interrupt mid-search", not a second one invented here.
+    let interrupted = false;
     const walk = (dir: string, rel: string) => {
-      if (ctx.signal.aborted || hits.length >= WALK_CEILING) {
-        if (hits.length >= WALK_CEILING) ceilingHit = true;
-        return;
-      }
+      if (ctx.signal.aborted) { interrupted = true; return; }
+      if (hits.length >= WALK_CEILING) { ceilingHit = true; return; }
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -77,6 +83,15 @@ export const GlobTool = defineTool({
         return;
       }
       for (const e of entries) {
+        // Fix (Minor 5, 2026-08-06 review): this check used to run only once
+        // per walk() CALL (i.e. once per directory), so one directory holding
+        // 500k matching files pushed every single one onto `hits` before the
+        // NEXT recursive call ever re-checked the ceiling — the comment called
+        // WALK_CEILING a "runaway guard" but the code didn't bound a single
+        // directory's contribution. Checking inside the entry loop makes the
+        // code match the comment.
+        if (hits.length >= WALK_CEILING) { ceilingHit = true; break; }
+        if (ctx.signal.aborted) { interrupted = true; break; }
         if (e.isDirectory()) {
           if (!SKIP_DIRS.has(e.name)) walk(path.join(dir, e.name), rel ? `${rel}/${e.name}` : e.name);
           continue;
@@ -92,6 +107,9 @@ export const GlobTool = defineTool({
       }
     };
     walk(root, '');
+    if (interrupted) {
+      return { text: 'Canceled: the user interrupted this search.', isError: true };
+    }
     // WHY the walk now completes before the cap is applied (2026-08-06): it used
     // to abort at 2,000 hits BEFORE this sort, so a capped result was an arbitrary
     // 2,000 files in directory order — while the tool description promised
@@ -102,7 +120,25 @@ export const GlobTool = defineTool({
     // Paths are relative to the SEARCH ROOT above; re-base onto the workspace root
     // so Glob and Grep return the same shape for the same file.
     const base = path.relative(ctx.cwd, root);
-    const rebase = (r: string) => (base && !base.startsWith('..') ? `${base}/${r}` : r);
+    const rebase = (r: string) => {
+      if (!base) return r; // search root IS the workspace root — already bare-relative.
+      // Fix (Important 3, 2026-08-06 review): when `root` is outside the
+      // workspace (an approved external directory), path.relative returns a
+      // `..`-prefixed string (or, cross-drive on Windows, an absolute path
+      // outright) — the old code fell through its `!base.startsWith('..')`
+      // check and returned the search-root-relative string UNCHANGED, so Glob
+      // printed "src/a.ts" for a file that lives at /tmp/ext-X/src/a.ts. Grep
+      // already returns the absolute path for this exact case (grep.ts
+      // `searchTarget`); match it so the model doesn't read an external file as
+      // a workspace one.
+      if (base.startsWith('..') || path.isAbsolute(base)) return path.join(root, r);
+      // Fix (Minor 6, 2026-08-06 review): `base` comes from path.relative and
+      // uses the OS separator ('\' on Windows); `r` is built by walk() with a
+      // hardcoded '/'. Concatenating them unnormalized produced mixed paths
+      // like "src\sub/a.ts" on Windows. Normalize base to '/' so the whole
+      // returned path uses one separator.
+      return `${base.split(path.sep).join('/')}/${r}`;
+    };
     return {
       text: shown.length ? shown.map((h) => rebase(h.rel)).join('\n') : 'No files matched.',
       bounds: hits.length > shown.length
