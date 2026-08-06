@@ -32,12 +32,35 @@ export interface ToolContext {
   services?: ToolServices;
 }
 
+/** What a tool omitted from its own result, and how to see more.
+ *
+ *  WHY this is structured instead of a string the tool writes itself: the single
+ *  shared advice string in truncate.ts used to tell EVERY tool's caller to "use
+ *  offset/limit" — advice that is correct for Read and meaningless for Bash and
+ *  WebSearch, which have no such parameters. A tool now declares the FACT and the
+ *  pipeline renders the prose, so a tool structurally cannot suggest a parameter
+ *  it does not accept. See the 2026-08-01 multi-model harness review. */
+export interface ResultBounds {
+  /** Units actually represented in `text`. */
+  shown: number;
+  /** Units that exist. `null` = genuinely unknown, e.g. a walk that stopped early.
+   *  Rendered as "at least N" — never as a number we did not measure. */
+  total: number | null;
+  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results';
+  /** How to widen, in THIS tool's vocabulary: "| head -n 100", "offset=2390",
+   *  "narrow the glob". The pipeline never supplies a default. */
+  moreHint: string;
+}
+
 export interface ToolResultPayload {
   /** What the model sees (post-truncation). */
   text: string;
   isError?: boolean;
   /** Edit/Write attach jsdiff hunks so the existing diff card renders. */
   structuredPatch?: StructuredPatchHunk[];
+  /** Declared by any tool that bounded its own output. Rendered by defineTool —
+   *  never hand-written into `text`, or advice drifts from capability again. */
+  bounds?: ResultBounds;
 }
 
 export interface NativeTool<A = any> {

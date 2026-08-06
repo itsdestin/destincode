@@ -1,7 +1,21 @@
 // ONE truncation policy for every tool (spec §2.3): head+tail preservation and
-// an explicit trailer telling the model HOW to get more — never silent cuts.
+// an explicit notice telling the model HOW to get more — never silent cuts.
+//
+// WHY the advice string left this file (2026-08-06): it was hardcoded to
+// "Use offset/limit or a narrower query", which is correct for Read and WRONG for
+// Bash and WebSearch — neither accepts offset or limit. Two reviewing models
+// followed that advice into a dead end. Tools now declare a `moreHint` in their
+// own vocabulary and composeNotice renders it; this module only reports facts.
+import type { ResultBounds } from './types';
+
 export interface TruncateOpts { maxChars: number; maxLines?: number }
-export interface TruncateResult { text: string; truncated: boolean }
+export interface TruncateResult {
+  text: string;
+  truncated: boolean;
+  /** Length of the ORIGINAL input, always — the number a caller needs to decide
+   *  whether re-running with a narrower query is worth it. */
+  totalChars: number;
+}
 
 export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult {
   let out = text;
@@ -26,10 +40,29 @@ export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult
     out = `${head}\n[...]\n${tail}`;
     truncated = true;
   }
-  if (truncated) {
-    // Trailer reports the ORIGINAL length and points at the escape hatch — the
-    // model should never be left guessing whether output was silently cut.
-    out += `\n[truncated — ${text.length} chars total. Use offset/limit or a narrower query to see more.]`;
+  return { text: out, truncated, totalChars: text.length };
+}
+
+/** Render at most ONE notice line from the two independent bounds that can apply:
+ *  what the TOOL cut (`bounds`) and what the PIPELINE cap cut (`cap`).
+ *
+ *  WHY one line and not two: a result carrying two competing notices reads as if
+ *  something went wrong twice, and the model has to reconcile them. One line
+ *  states both facts and carries exactly one piece of advice — the tool's. */
+export function composeNotice(
+  bounds: ResultBounds | undefined,
+  cap: { shown: number; total: number } | null,
+): string {
+  if (!bounds && !cap) return '';
+  if (!bounds) {
+    // A cap fired on a tool that declared nothing. Report the fact WITHOUT advice —
+    // we have no idea what this tool's widening vocabulary is, and guessing is the
+    // exact bug this refactor removes. tool-registry-manifest.test.ts fails the
+    // build for this case, so it should be unreachable in shipped code.
+    return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars]`;
   }
-  return { text: out, truncated };
+  const total = bounds.total === null ? `at least ${bounds.shown}` : String(bounds.total);
+  const toolPart = `${bounds.shown} of ${total} ${bounds.unit}`;
+  if (!cap) return `\n[showing ${toolPart} — ${bounds.moreHint}]`;
+  return `\n[showing ${cap.shown} of ${cap.total} chars, and ${toolPart} — ${bounds.moreHint}]`;
 }
