@@ -258,6 +258,147 @@ describe('WebFetch', () => {
     parseSpy.mockRestore();
   });
 
+  // --- script/comment terminator bypass (BLOCKER B2, round 5, 2026-08-06) ---
+  //
+  // linkedom parses HTML via `htmlparser2` (verified by reading
+  // node_modules/linkedom/esm/shared/parse-from-string.js). Its tokenizer
+  // closes a <script>/<style> at '</name' followed by '>' or ASCII
+  // whitespace — NOT only an exact '</script>' literal — and closes a
+  // comment at '-->' while treating the opening '--' as already 2/3 of a
+  // potential closer, so '<!-->' and '<!--->' close immediately with empty
+  // content ("Allow short comments" in Tokenizer.js). The four tests below
+  // pin the two exploitable mismatches (the guard believed content the real
+  // parser had already closed was "still inside" a script/comment, so real
+  // <div> depth right after was never counted) and the fidelity fixes that
+  // came out of matching the real tokenizer exactly.
+
+  it('rejects a </script > (whitespace-terminated) close bypass — CRITICAL, BLOCKER B2', async () => {
+    // Payload and depth match the reviewer's PoC exactly: a script closed
+    // with a SPACE before '>' (still a real close to linkedom/htmlparser2 —
+    // its stateInSpecialTag accepts '>' or whitespace), followed by 14,900
+    // unclosed <div> opens. The old walkTags searched for the literal
+    // '</script>' substring, which never occurs here, so it treated
+    // everything from the <script> tag to the end of the string as "still
+    // inside the script" and never counted the divs toward MAX_DEPTH.
+    // Measured on this machine BEFORE this fix, through
+    // WebFetchTool.execute: 12,149ms (guard let the payload through,
+    // Readability then blocked the main thread). Control (unwrapped divs):
+    // 2ms, rejected.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const payload = '<script>x</script >' + '<div>'.repeat(14_900);
+    const t0 = Date.now();
+    const r = await fetchWith(payload, 'https://example.com/script-space-bypass');
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(elapsed).toBeLessThan(1000); // was 12,149ms before the fix
+    parseSpy.mockRestore();
+  });
+
+  it('rejects a <!--> (abrupt-closing comment) bypass — CRITICAL, BLOCKER B2', async () => {
+    // '<!-->' is a complete, empty comment to linkedom/htmlparser2 (its
+    // opening '--' doubles as the closer's own '--'). The old walkTags
+    // searched for '-->' starting AFTER those two dashes, and a bare
+    // '<!-->' (5 bytes total) has no room for a second, separate '-->', so
+    // the "comment" was treated as never closing and all 14,900 <div> opens
+    // after it were swallowed as "still inside a comment". Measured on this
+    // machine BEFORE this fix: 13,656ms (control: 2ms, rejected).
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const payload = '<!-->' + '<div>'.repeat(14_900);
+    const t0 = Date.now();
+    const r = await fetchWith(payload, 'https://example.com/comment-abrupt-bypass');
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(elapsed).toBeLessThan(1000); // was 13,656ms before the fix
+    parseSpy.mockRestore();
+  });
+
+  it('still rejects deep nesting when the script/comment closer is an EXACT, non-bypass match (regression sanity, 6,000 depth)', async () => {
+    // Confirms the B2 fix did not change behavior for ordinary, exactly
+    // closed wrappers — only the whitespace/abrupt-close forms were ever
+    // broken. Depth 6,000 (well past MAX_DEPTH 150) via <div>s placed
+    // OUTSIDE a properly closed <script> and a properly closed, non-abrupt
+    // comment.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const scriptVariant = '<script>x</script>' + '<div>'.repeat(6_000);
+    const t0 = Date.now();
+    const r1 = await fetchWith(scriptVariant, 'https://example.com/script-matched-6000');
+    const e1 = Date.now() - t0;
+    expect(r1.text).toMatch(/too large or deeply nested/);
+
+    const commentVariant = '<!-- a real comment -->' + '<div>'.repeat(6_000);
+    const t1 = Date.now();
+    const r2 = await fetchWith(commentVariant, 'https://example.com/comment-matched-6000');
+    const e2 = Date.now() - t1;
+    expect(r2.text).toMatch(/too large or deeply nested/);
+
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(e1).toBeLessThan(1000);
+    expect(e2).toBeLessThan(1000);
+    parseSpy.mockRestore();
+  });
+
+  it('recognizes every htmlparser2 tag-name terminator after </script — space, tab, LF, FF, CR — not only an exact ">"', async () => {
+    // htmlparser2's stateInSpecialTag terminator set is `c === '>' ||
+    // isWhitespace(c)`, and isWhitespace covers space/LF/tab/FF/CR
+    // (Tokenizer.js). Depth 200 is past MAX_DEPTH (150), so each of these
+    // must be recognized as a real close for the guard to see the <div>s
+    // that follow and reject.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    for (const term of [' ', '\t', '\n', '\f', '\r']) {
+      const payload = `<script>x</script${term}>${'<div>'.repeat(200)}`;
+      const r = await fetchWith(payload, `https://example.com/term-${term.charCodeAt(0)}`);
+      expect(r.text).toMatch(/too large or deeply nested/);
+    }
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
+  });
+
+  it('rejects deep nesting hidden behind a <!---> (three-dash abrupt comment) too', async () => {
+    // htmlparser2 "allows long sequences" of dashes before the closing '>'
+    // (Tokenizer.js comment on stateInCommentLike) — <!---> closes exactly
+    // like <!-->, just with one extra dash.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const payload = '<!--->' + '<div>'.repeat(200);
+    const r = await fetchWith(payload, 'https://example.com/comment-3dash');
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
+  });
+
+  it('does not let a near-miss "</scripts" inside a script body end the script early (correctness, not just DoS)', async () => {
+    // findRawTextEnd resumes searching strictly after a failed candidate
+    // rather than treating the first "</script" substring as authoritative —
+    // this pins that a script body merely CONTAINING the text "</scripts"
+    // (not a real close: 's' is not a terminator) doesn't fool the scan into
+    // stopping early, which would leak the rest of the script source as
+    // visible markup/text.
+    const article = '<html><head><script>var s = "</scripts are neat";</script></head><body><article><h1>API Guide</h1><p>'
+      + 'Real content. '.repeat(40) + '</p></article></body></html>';
+    const r = await fetchWith(article, 'https://example.com/near-miss-script-close');
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('API Guide');
+    expect(r.text).not.toContain('are neat'); // script source must not leak into the article
+  });
+
+  it('does not treat "/" as a </script terminator (fidelity: htmlparser2 excludes it here, unlike an ordinary tag)', async () => {
+    // htmlparser2's InSpecialTag terminator check is `c === Gt ||
+    // isWhitespace(c)` — no '/' branch (unlike isEndOfTagSection, used for
+    // ordinary tag names, which DOES include '/'). So '</script/>' must NOT
+    // close the script to either linkedom or this guard; the true close a
+    // few bytes later is what actually ends it, and content between the two
+    // stays (correctly) treated as inert script text on both sides.
+    const page = '<html><body><script>var a = 1; //</script/> not real markup</script><article><h1>Real</h1><p>'
+      + 'Real content. '.repeat(40) + '</p></article></body></html>';
+    const r = await fetchWith(page, 'https://example.com/slash-not-terminator');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('Real');
+    expect(r.text).not.toContain('not real markup'); // stayed inside the script on both sides of the '/>' — never counted or leaked
+  });
+
   it('does not freeze on 5MB of bare "<" characters (guard tag-count pre-check)', async () => {
     // WHY (task requirement): the cheapest possible adversarial shape for the
     // tag-count pre-check itself — pure '<' repeated to the body cap. This
@@ -349,11 +490,57 @@ describe('WebFetch', () => {
       unit: 'bytes',
       moreHint: 'fetch a more specific URL, or a narrower section of the page',
     });
-    // composeNotice renders total: null as "at least N" — never a fabricated count.
-    expect(r.text).toMatch(/at least 5242880 bytes/);
+    // composeNotice (truncate.ts, fixed alongside this round's B1 blocker)
+    // renders total: null as "more may exist — exact total unknown", never a
+    // tautological "N of at least N" (which read as "that's everything") and
+    // never a fabricated count.
+    expect(r.text).toMatch(/5242880 bytes \(more may exist — exact total unknown\)/);
+    expect(r.text).not.toMatch(/at least 5242880/); // the retired tautological wording
     expect(r.text).toContain('fetch a more specific URL'); // real, tool-specific widening advice
     expect(r.text).not.toContain('[body truncated at 5MB]'); // the retired hand-rolled wording
     expect(r.text).not.toContain('[output truncated: showing'); // the bare no-advice fallback
+  });
+
+  it('does not overstate what was shown when a >5MB HTML body extracts to a short article (fix: BLOCKER B1)', async () => {
+    // WHY this exact shape (BLOCKER B1, round 5, 2026-08-06 review): the
+    // reviewer's PoC was a 6,000,501-byte page whose real article was a
+    // single short paragraph, with the rest plain-text padding. Before this
+    // fix, `bounds` claimed `shown: MAX_BODY_BYTES` (5,242,880) regardless
+    // of how much survived extraction, so composeNotice rendered "showing
+    // 5242880 of at least 5242880 bytes" — telling the model it had seen (at
+    // minimum) everything, when in fact only a few hundred characters of
+    // markdown came back and hundreds of KB of the page were never even
+    // fetched. The padding here is plain text (no tags), so it stays well
+    // under MAX_TAGS/MAX_DEPTH and the normal Readability path runs — this
+    // is about the HTML/structured-extraction branch, not the too-complex
+    // guard-path fallback (which already had this right). Padding lives
+    // inside an HTML comment — inert to both the depth/tag guard (a single
+    // token, no nested tags) and to Readability (comments never become
+    // candidate content, so it reliably still picks the real <article>
+    // rather than scoring the padding as "the" content).
+    const filler = 'x'.repeat(6_000_000);
+    const page = `<html><head><title>Padded</title></head><body><article><h1>Article</h1><p>Short real article.</p></article><!--${filler}--></body></html>`;
+    __setWebFetchTestHooks({
+      lookup: publicLookup,
+      fetchImpl: async () => new Response(page, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }),
+    });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/padded-article' } as any, ctx());
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('Short real article.');
+    expect(r.bounds).toBeTruthy();
+    // sanity: the network fetch really did truncate at 5MB
+    expect(r.bounds!.total).toBeNull();
+    expect(r.bounds!.unit).toBe('chars');
+    // The core B1 assertion: `shown` must describe the ACTUAL text returned
+    // (a short article's worth of markdown), never the 5MB network cap.
+    expect(r.bounds!.shown).toBeLessThan(10_000);
+    // The rendered notice must not be able to read as "we showed you (at
+    // least) everything".
+    expect(r.text).not.toMatch(/5242880 of (at least )?5242880/);
+    expect(r.text).not.toMatch(/showing 5242880/);
+    // The 5MB network fact is real information and must still be disclosed,
+    // same pattern as the too-complex-extraction branch's own note.
+    expect(r.text).toContain('cut off at the 5MB fetch cap');
   });
 
   // --- html/lower index aliasing in stripToText (Important finding, round

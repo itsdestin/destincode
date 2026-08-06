@@ -168,6 +168,67 @@ function foldStartsWith(haystack: string, needle: string, at: number): boolean {
   return true;
 }
 
+/** Finds where a raw-text element's content (a `<script>` or `<style>` body)
+ *  actually ends, per the tokenizer THIS repo's HTML parser really runs —
+ *  linkedom parses via `htmlparser2` (verified by reading
+ *  node_modules/linkedom/esm/shared/parse-from-string.js, which imports
+ *  `htmlparser2` directly). htmlparser2's `stateInSpecialTag` (Tokenizer.js)
+ *  closes a script/style at the first case-insensitive `</script` or
+ *  `</style` whose NEXT character is `>` or ASCII whitespace (space, tab,
+ *  LF, FF, CR) — it does NOT require an exact `</script>` / `</style>`
+ *  literal, and a near-match whose next char is anything else (`</scripts`)
+ *  is rejected and scanning resumes.
+ *
+ *  WHY this exists (BLOCKER B2, round 5, 2026-08-06 review): the previous
+ *  code searched for the literal string `</script>` (needing the `>` to
+ *  immediately follow the name with no whitespace), so it disagreed with
+ *  linkedom about where a script ends. Payload `<script>x</script >` (one
+ *  space before `>`) is, to linkedom, an ordinary closed `<script>` followed
+ *  by ordinary markup; to the old code, the literal `</script>` substring
+ *  never occurs, so the script is treated as never closing and everything
+ *  after it — 14,900 `<div>` opens in the reviewer's PoC — was swallowed
+ *  into "still inside script, don't count it" and never reached
+ *  MAX_TAGS/MAX_DEPTH. Measured on this machine (`WebFetchTool.execute`,
+ *  `'<script>x</script >' + '<div>'.repeat(14900)`, 74,520 bytes): guard let
+ *  the payload through and Readability then blocked the main thread for
+ *  12,246ms (control, unwrapped divs: 2ms, rejected by the guard). See
+ *  "rejects a </script > (whitespace-terminated) close bypass" in
+ *  web-fetch-tool.test.ts for the pinned number.
+ *
+ *  Returns the index to resume scanning from (just past the recognized
+ *  closing tag's own `>`), or -1 if the element never closes in the rest of
+ *  the string — same failure contract as indexOfFold, so callers treat it
+ *  identically to the old closeIdx check.
+ *
+ *  Linear by construction, same discipline as indexOfFold: each retry after
+ *  a near-miss (`</scripts`) resumes searching strictly AFTER that miss's
+ *  start position, never earlier — so across every retry combined, each
+ *  character of `html` is examined by at most one of the scans, and total
+ *  work stays O(remaining length) regardless of how many false `</script`
+ *  prefixes an attacker plants. */
+function findRawTextEnd(html: string, name: 'script' | 'style', from: number): number {
+  const closer = '</' + name; // already-lowercase ASCII needle for indexOfFold
+  const n = html.length;
+  let i = from;
+  for (;;) {
+    const idx = indexOfFold(html, closer, i);
+    if (idx === -1) return -1;
+    const after = idx + closer.length;
+    const c = after < n ? html.charCodeAt(after) : -1;
+    // Terminator set matches htmlparser2's isEndOfTagSection minus '/' — its
+    // stateInSpecialTag checks ONLY `c === Gt || isWhitespace(c)` for a
+    // script/style closer specifically (unlike an ordinary tag's name, which
+    // also ends on '/'), so '/' is deliberately excluded here too.
+    if (c === 62 /* '>' */ || c === 32 || c === 9 || c === 10 || c === 12 || c === 13) {
+      const gt = html.indexOf('>', after);
+      return gt === -1 ? -1 : gt + 1;
+    }
+    // Not a real close (e.g. '</scripts') — resume strictly after this
+    // candidate's start so it is never re-examined; see the WHY block above.
+    i = idx + 1;
+  }
+}
+
 /** Shared linear tag walker for the complexity guard's depth count (its only
  *  remaining caller as of round 3 — see TagToken above). Before this, the
  *  guard's depth scan ran its own regex over the raw string and was
@@ -204,7 +265,32 @@ function walkTags(html: string, onTag: (tag: TagToken) => void): void {
       // '<!--' and '-->' are fixed, non-alphabetic delimiters — no case
       // folding applies, so this searches `html` directly with no second
       // string and no risk of the aliasing bug above.
-      const close = html.indexOf('-->', lt + 4);
+      //
+      // WHY the search starts at `lt + 2`, not `lt + 4` (BLOCKER B2, round 5,
+      // 2026-08-06 review): htmlparser2's stateBeforeComment (the tokenizer
+      // linkedom actually runs — see findRawTextEnd's WHY block above) treats
+      // the comment's own opening `--` as if it were ALREADY the first two
+      // characters of a potential closing `-->` — its comment reads "Allow
+      // short comments (eg. <!-->)". So `<!-->` and `<!--->` close
+      // immediately, with EMPTY content, using the opening dashes as the
+      // closer's own dashes; the old `lt + 4` search started AFTER those
+      // dashes and could never find a `-->` inside a bare `<!-->` (there
+      // are only 5 bytes total — no room for a second, separate `-->`), so
+      // the "comment" was treated as never closing and everything after it
+      // was swallowed as "still inside a comment, don't count it." Searching
+      // from `lt + 2` lets the match land ON the opening dashes for the
+      // abrupt-close forms while still finding the same real `-->` as before
+      // for every ordinary (non-abrupt) comment — verified: for a comment
+      // with real content, no `-->` substring can occur 2 characters earlier
+      // than the true closer without ALSO being the true closer's own
+      // dashes, so this never fires early on ordinary input.
+      //
+      // Payload: '<!-->' + '<div>'.repeat(14900), 74,530 bytes. Measured on
+      // this machine through WebFetchTool.execute: guard let it through and
+      // Readability blocked the main thread for 13,656ms at the old `lt + 4`
+      // offset (control, unwrapped divs: 2ms, rejected). See "rejects a
+      // <!--> (abrupt-closing comment) bypass" in web-fetch-tool.test.ts.
+      const close = html.indexOf('-->', lt + 2);
       i = close === -1 ? n : close + 3;
       continue;
     }
@@ -236,9 +322,10 @@ function walkTags(html: string, onTag: (tag: TagToken) => void): void {
     if (!isClose && (name === 'script' || name === 'style')) {
       const openGt = html.indexOf('>', pos);
       if (openGt === -1) return;
-      const closer = name === 'script' ? '</script>' : '</style>';
-      const closeIdx = indexOfFold(html, closer, openGt + 1);
-      i = closeIdx === -1 ? n : closeIdx + closer.length;
+      // See findRawTextEnd's WHY block (BLOCKER B2) for why this is no
+      // longer a literal '</script>'/'</style>' search.
+      const end = findRawTextEnd(html, name, openGt + 1);
+      i = end === -1 ? n : end;
       continue;
     }
     const gt = html.indexOf('>', pos);
@@ -758,6 +845,16 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
         // much MORE there was past MAX_BODY_BYTES, so `total` MUST be `null`
         // (composeNotice renders that as "at least N"); inventing a total here
         // is the exact dishonesty this contract exists to remove.
+        //
+        // NOT the same defect as BLOCKER B1 below (round 5, 2026-08-06
+        // review — checked deliberately, since this branch has the identical
+        // `{ shown: MAX_BODY_BYTES, ... }` shape): B1 was `shown` describing
+        // bytes that were fetched but then mostly DISCARDED by extraction
+        // before reaching `text`. Here `raw` is embedded in `text` VERBATIM —
+        // there is no extraction step for non-HTML content — so every one of
+        // the (up to) MAX_BODY_BYTES bytes readBodyCapped decoded into `raw`
+        // really is present in what the model reads. `shown: MAX_BODY_BYTES`
+        // stays an honest count of bytes actually shown, not an overstatement.
         bounds: truncated
           ? { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
           : undefined,
@@ -862,15 +959,32 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
           : `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
       }
     }
+    const resultText = `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}`;
+    // Fix (BLOCKER B1, round 5, 2026-08-06 review): this used to declare
+    // `bounds: { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' }` whenever
+    // the network fetch hit the 5MB cap — but `resultText` here is the
+    // EXTRACTED MARKDOWN, not the raw fetched bytes, so that claim collapsed
+    // "we fetched 5MB of HTML" into "we showed you 5MB of content". Measured
+    // on a 6,000,501-byte page whose article was one short paragraph: the
+    // tool returned 555 characters of markdown while `bounds` claimed
+    // `shown: 5242880`, and composeNotice rendered "showing 5242880 of at
+    // least 5242880 bytes" — telling the model it had seen (at minimum) the
+    // whole page when 758KB was never fetched and ~5.24MB was never shown.
+    // `shown` now measures what's actually in `resultText` (chars), which is
+    // the honest quantity; `total` stays `null` because the true size is
+    // still genuinely unknown (Readability ran on a body that was itself cut
+    // short, so there is no measured "how much more" to report). The 5MB
+    // network fact is real information and stays disclosed — as plain prose
+    // (bodyCapNote), the same pattern the too-complex-extraction branch above
+    // already uses for the identical fact, not folded back into a number
+    // that overstates coverage.
+    const bodyCapNote = truncated
+      ? '\n\n[The response body itself was cut off at the 5MB fetch cap before extraction ran — the live page may be larger than what was extracted.]'
+      : '';
     return {
-      text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}`,
-      // Fix: declare the 5MB cap via `bounds` instead of hand-writing
-      // "[body truncated at 5MB]" into `text` — identical reasoning to the
-      // non-HTML branch above: the server never told us how much more there
-      // was, so `total` stays `null` rather than inventing a number we never
-      // measured.
+      text: `${resultText}${bodyCapNote}`,
       bounds: truncated
-        ? { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
+        ? { shown: resultText.length, total: null, unit: 'chars' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
         : undefined,
     };
   },
