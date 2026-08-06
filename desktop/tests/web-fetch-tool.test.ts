@@ -1,10 +1,19 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Readability } from '@mozilla/readability';
-import { WebFetchTool, __setWebFetchTestHooks } from '../src/main/harness/tools/web-fetch';
+import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered } from '../src/main/harness/tools/web-fetch';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 const html = (body: string) => new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+// Real-page fixtures (task 12): vitest-config.html is the false-negative page —
+// its documented content arrives via client-side JS, so a reviewing model asking
+// about `include` gets a confident-but-wrong "not documented" answer. asyncio.html
+// is a server-rendered page of near-identical extraction ratio, pinned so a
+// threshold tweak that "fixes" one can't silently break the other.
+const fixture = (n: string) => fs.readFileSync(path.join(__dirname, 'fixtures', 'web', n), 'utf8');
 
 // Shared stub-and-execute helper (task 11 brief: reuse the existing test-hooks
 // pattern under one name instead of repeating the two-line stub at every call site).
@@ -165,5 +174,24 @@ describe('WebFetch', () => {
     expect(r.isError).toBeUndefined();
     expect(r.text).toContain('One');
     expect(r.text).toContain('Two');
+  });
+});
+
+describe('looksJsRendered', () => {
+  it('flags the VitePress page whose content never reaches an HTTP client', () => {
+    // 98KB of HTML carrying 5.2KB of text, __VP_HASH_MAP__, and an empty app root.
+    // A reviewing model asked this page about `include`, got a confident preamble,
+    // and concluded the docs do not document it. id="include" appears nowhere.
+    expect(looksJsRendered(fixture('vitest-config.html'))).toBe(true);
+  });
+
+  it('does NOT flag a server-rendered docs page of similar shape', () => {
+    // Same tool, same extraction ratio (69% vs 70%) — the discriminator has to be
+    // text density plus framework markers, not coverage.
+    expect(looksJsRendered(fixture('asyncio.html'))).toBe(false);
+  });
+
+  it('does not flag a small plain page', () => {
+    expect(looksJsRendered('<html><body><h1>Hi</h1><p>Some words here.</p></body></html>')).toBe(false);
   });
 });

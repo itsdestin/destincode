@@ -106,6 +106,34 @@ export function stripToText(html: string): string {
     .trim();
 }
 
+// --- JS-rendered-page disclosure (task 12) ------------------------------------
+// Diagnosed 2026-08-01: WebFetch returned a clean, well-under-cap extraction of
+// vitest.dev/config/ and the model confidently reported the `include` option
+// "is not documented" — the content simply never arrives in the server's HTML;
+// it is fetched by client-side JS after the page loads. Extraction-coverage ratio
+// CANNOT be the signal (measured 70.3% on this false-negative page vs 69.1% on a
+// known-good server-rendered page — indistinguishable), so detection instead
+// combines a framework marker with raw text density.
+
+/** Markers of a client-rendered app shell. */
+const JS_APP_MARKERS = /__VP_HASH_MAP__|__NEXT_DATA__|__NUXT__|__remixContext|__sveltekit|window\.__INITIAL_STATE__/;
+const EMPTY_ROOT = /<div id="(?:root|app|__next)"\s*>\s*<\/div>/i;
+/** Visible-text-to-bytes ratio below which a page is mostly scaffolding.
+ *  Measured 2026-08-06: vitest.dev/config 5.3%; docs.python.org asyncio 16.0%;
+ *  nodejs.org/api/fs 24.2%; example.com 25.4%. 10% sits in the gap. */
+const TEXT_DENSITY_FLOOR = 0.10;
+
+/** True when the served HTML looks like an app shell whose content arrives via
+ *  JavaScript. We CANNOT know what is missing — from the response's point of view
+ *  nothing is — so callers must phrase the disclosure non-committally per
+ *  docs/error-message-standards.md. */
+export function looksJsRendered(html: string): boolean {
+  const hasMarker = JS_APP_MARKERS.test(html) || EMPTY_ROOT.test(html);
+  if (!hasMarker) return false;
+  const density = stripToText(html).length / Math.max(html.length, 1);
+  return density < TEXT_DENSITY_FLOOR;
+}
+
 function htmlToMarkdown(rawHtml: string): { title: string | null; markdown: string } {
   // linkedom's parsed document satisfies Readability's DOM contract at runtime,
   // but its typings don't match @mozilla/readability's `Document` param — cast
@@ -184,6 +212,12 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
       };
     }
     const { title, markdown } = htmlToMarkdown(raw);
-    return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${markdown}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
+    // Honest, non-committal disclosure: state what was observed, never guess what
+    // is absent. Without this a JS-rendered docs page returns a confident preamble
+    // and the model reports "the docs do not document X" (2026-08-01 review).
+    const jsNote = looksJsRendered(raw)
+      ? `\n\n[This page is a JavaScript-rendered app. The server sent ${(stripToText(raw).length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. If a section you expected is absent, it is likely rendered client-side.]`
+      : '';
+    return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${markdown}${jsNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
   },
 });
