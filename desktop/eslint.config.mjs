@@ -30,6 +30,17 @@ import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
   {
+    // Build output. ESLint 9's flat config lints every file it is handed unless
+    // ignored, and `dist/` is gitignored — so it is absent in a fresh worktree
+    // and present in any checkout that has run `npm run build`. Without this the
+    // gate passes on a clean tree and fails on a developer's, which is the worst
+    // possible failure mode for a gate. dist/ also carries COMPILED copies of the
+    // renderer's `eslint-disable` comments, which then reference rules no config
+    // block defines (the src/** block doesn't match dist/**), so each one becomes
+    // its own error. knip.jsonc ignores dist/** for the same reason.
+    ignores: ['dist/**', 'release/**'],
+  },
+  {
     // Scoped to src/** to match tsconfig.json's `include`. tests/ is NOT linted
     // because it is not in a TS project, so the type-aware rules below can't
     // run there — see the note in scripts/verify.sh about tests/ being
