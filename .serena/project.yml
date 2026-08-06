@@ -130,12 +130,35 @@ ignored_paths: []
 # whether the project is in read-only mode
 # If set to true, all editing tools will be disabled and attempts to use them will result in an error
 # Added on 2025-04-18
-read_only: false
+#
+# TRUE ON PURPOSE — Serena must never write in this workspace. It resolves every
+# relative_path against the ONE project root it was started with
+# (--project .../youcoded-dev/youcoded, i.e. the main checkout), and rejects anything
+# outside it. But CLAUDE.md mandates that non-trivial work happen in a git worktree under
+# youcoded-dev/worktrees/<name>/. So during normal feature work an edit tool aimed at
+# "desktop/src/foo.ts" would silently write to the MAIN CHECKOUT while the session
+# believes it is editing the worktree — corrupting master and losing the edit.
+# Reads have the milder version of the same flaw (they return master's copy), which is
+# fine for the orientation/reference questions Serena is kept for, and wrong for
+# anything about your branch. Use the normal Edit tool for edits; use verify.sh for
+# branch-level truth.
+# Verified in serena source: project.py:230 joins relative_path onto project_root;
+# agent.py:1100 does `if read_only: tool_set.without_editing_tools()`.
+read_only: true
 
 # list of tool names to exclude.
 # This extends the existing exclusions (e.g. from the global configuration)
 # Find the list of tools here: https://oraios.github.io/serena/01-about/035_tools.html
-excluded_tools: []
+#
+# read_only already drops the 7 file/symbol editors and the 4 memory writers. These three
+# are the leftovers we don't want: Serena's memory store is an invisible knowledge base
+# competing with the workspace ladder in CLAUDE.md (pinning test > ast-grep rule > WHY
+# comment > .claude/rules/ > lazy doc), and `onboarding` writes into it.
+# Result: 7 exposed tools, all read-only symbol queries.
+excluded_tools:
+  - onboarding
+  - read_memory
+  - list_memories
 
 # list of tools to include that would otherwise be disabled (particularly optional tools that are disabled by default).
 # This extends the existing inclusions (e.g. from the global configuration).
