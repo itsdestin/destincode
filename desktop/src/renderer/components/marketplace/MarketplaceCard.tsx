@@ -3,7 +3,7 @@
 // InstallFavoriteCorner; integrations render through the same component via
 // optional iconUrl + accentColor props (no separate IntegrationCard).
 
-import React, { useId, useState } from "react";
+import { useId, useState } from "react";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";

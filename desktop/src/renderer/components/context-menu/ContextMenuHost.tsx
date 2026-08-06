@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { buildContextMenu, type MenuEntry } from './build-menu';
 import { ContextMenu } from './ContextMenu';
 

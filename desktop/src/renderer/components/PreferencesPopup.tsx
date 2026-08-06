@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';

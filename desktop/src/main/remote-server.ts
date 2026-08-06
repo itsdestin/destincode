@@ -11,7 +11,6 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { EventEmitter } from 'events';
 import type { SessionManager } from './session-manager';
 import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
@@ -90,8 +89,13 @@ export class RemoteServer {
   private failedAttempts = new Map<string, { count: number; resetAt: number }>();
   // Last-known topic names, fed by ipc-handlers.ts via setLastTopic()
   private lastTopics = new Map<string, string>();
-  // Last-known context remaining %, fed by ipc-handlers.ts via broadcastStatusData()
-  private contextMap: Record<string, number> = {};
+  // Last-known FULL status payload, fed by ipc-handlers.ts via broadcastStatusData(),
+  // replayed to each new client in replayBuffers(). Was previously `contextMap` — only
+  // the context-% slice was stored, and nothing ever read it, so a remote client that
+  // connected between polls showed a blank status bar for up to 10s (the ipc-handlers
+  // status interval). Storing the whole payload fixes that for every status field
+  // (usage, gitBranch, sessionStats, attention, sync) instead of just context %.
+  private lastStatusData: Record<string, any> | null = null;
   // Provider injected at construction — called when new clients connect to get the full chat state.
   // Task 6 wires this into replayBuffers(); declared here so the field exists before that step.
   private requestSnapshot: () => Promise<SerializedChatState>;
@@ -273,7 +277,7 @@ export class RemoteServer {
 
     // Dev mode: proxy WebSocket upgrades (non-/ws) to Vite for HMR
     if (!hasStaticBuild) {
-      this.httpServer.on('upgrade', (req, socket, head) => {
+      this.httpServer.on('upgrade', (req, socket, _head) => {
         if (req.url === '/ws') return; // handled by our WebSocketServer
         // Use http:// URL — WebSocket upgrade is an HTTP request with Upgrade header
         const proxyUrl = new URL(req.url || '/', viteDevUrl);
@@ -355,7 +359,7 @@ export class RemoteServer {
   /** Broadcast status data to all connected remote clients. Called by ipc-handlers.ts
    *  so that both the local renderer and remote clients share the same polling cycle. */
   broadcastStatusData(data: Record<string, any>): void {
-    this.contextMap = data.contextMap || {};
+    this.lastStatusData = data;
     this.broadcast({ type: 'status:data', payload: data });
   }
 
@@ -366,6 +370,7 @@ export class RemoteServer {
       this.uploadCleanupTimer = null;
     }
     this.lastTopics.clear();
+    this.lastStatusData = null;
     this.sessionManager.off('pty-output', this.onPtyOutput);
     this.hookRelay.off('hook-event', this.onHookEvent);
     this.sessionManager.off('session-exit', this.onSessionExit);
@@ -706,6 +711,14 @@ export class RemoteServer {
       ws.send(JSON.stringify({ type: 'session:renamed', payload: { sessionId: desktopId, name } }));
     }
 
+    // Replay the last status payload so a client connecting between the 10s polls
+    // renders a populated status bar immediately instead of waiting for the next tick.
+    // Same shape the poll broadcasts, so the renderer's existing status:data handler
+    // merges it with no special-casing.
+    if (this.lastStatusData) {
+      ws.send(JSON.stringify({ type: 'status:data', payload: this.lastStatusData }));
+    }
+
     // NEW: request a snapshot of the desktop's chat reducer state and push it
     // to the connecting client so they see the full chat history immediately.
     // Must happen before PTY/hook replay so the reducer has state to merge
@@ -976,7 +989,7 @@ export class RemoteServer {
         break;
       }
       case 'session:set-tag': {
-        const { noteFlagChanged } = await import('./conversations/service');
+        const { noteFlagChanged, emitConversationMetaChanged } = await import('./conversations/service');
         const { tagFlagKey } = await import('../shared/tags');
         const tagId = String(payload?.tagId ?? '');
         if (!tagId.startsWith('tag_')) { this.respond(client.ws, type, id, { ok: false, error: 'invalid tag id' }); break; }
@@ -999,11 +1012,15 @@ export class RemoteServer {
             break;
           }
         }
+        // Task 5 gap (final review): this remote mirror of session:set-tag
+        // never told chatsearch a tag changed, so a tag applied from a phone/
+        // browser stayed invisible to the CLI until an unrelated refresh.
+        emitConversationMetaChanged();
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
       case 'session:set-note': {
-        const { noteSessionNote } = await import('./conversations/service');
+        const { noteSessionNote, emitConversationMetaChanged } = await import('./conversations/service');
         const text = String(payload?.note ?? '');
         if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
         const rawId = String(payload?.sessionId ?? '');
@@ -1016,6 +1033,9 @@ export class RemoteServer {
             break;
           }
         }
+        // Same gap as session:set-tag above — the remote mirror of
+        // session:set-note must also tell chatsearch a note changed.
+        emitConversationMetaChanged();
         this.respond(client.ws, type, id, { ok: true });
         break;
       }

@@ -626,7 +626,7 @@ export async function connectToHost(host: string, port: number, password: string
   disconnect();
 
   // Reject any pending requests from the old server
-  for (const [id, entry] of pending) {
+  for (const entry of pending.values()) {
     clearTimeout(entry.timeout);
     entry.reject(new Error('Server switched'));
   }
@@ -674,7 +674,7 @@ export async function disconnectFromHost(): Promise<void> {
 
   disconnect();
 
-  for (const [id, entry] of pending) {
+  for (const entry of pending.values()) {
     clearTimeout(entry.timeout);
     entry.reject(new Error('Server switched'));
   }

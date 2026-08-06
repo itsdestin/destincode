@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
 import { useMarketplace } from '../state/marketplace-context';
 import FavoriteStar from './marketplace/FavoriteStar';
 import { computeOnAccent } from '../themes/theme-validator';
-import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
+import SettingsExplainer, { type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Button, Select, Toggle, SettingRow } from './ui';
@@ -81,7 +81,6 @@ interface Props {
    * header instead of reimplementing the one D1 already owns.
    */
   showInfo: boolean;
-  onShowInfo: (next: boolean) => void;
   /**
    * Lifted for the same reason as `showInfo`: the Dialog's header has to name
    * the theme being edited and offer the way back, and this component cannot
@@ -98,7 +97,11 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
   </svg>
 );
 
-export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpenMarketplace, onPublishTheme, showInfo, onShowInfo, editingSlug, onEditSlug }: Props) {
+// WHY: `onShowInfo` was lifted to the Dialog owner (SettingsPanel ThemeButton)
+// in D1 — the owner renders the (i) button into the header via `headerActions`.
+// ThemeScreen only reads the boolean; it never needs to flip it. Removing the
+// unused prop + `InfoIconButton` import found by the 2026-08-06 sweep.
+export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpenMarketplace, onPublishTheme, showInfo, editingSlug, onEditSlug }: Props) {
   // Always mounted when open (parent conditionally renders) — so open=true is correct here.
   useEscClose(true, onClose);
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();

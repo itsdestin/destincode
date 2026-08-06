@@ -7,7 +7,6 @@
 // (a selection at line 800 citing "line 41") straight into a prompt scaffold.
 // Line numbers must come from view.state.doc.lineAt(), which this test drives
 // through the real registry the menu uses.
-import React from 'react';
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
 import { buildContextMenu } from './build-menu';

@@ -606,8 +606,9 @@ export class ThemeMarketplaceProvider {
         const index: ThemeRegistryIndex = await res.json();
         this.cachedIndex = index;
         this.cacheTimestamp = Date.now();
-        // Write to disk cache (async, fire-and-forget)
-        this.writeDiskCache(index);
+        // Write to disk cache (async, fire-and-forget — writeDiskCache swallows
+        // its own errors, so `void` here is honest rather than a dropped catch)
+        void this.writeDiskCache(index);
         return index;
       }
     } catch {

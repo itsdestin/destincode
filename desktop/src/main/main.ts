@@ -54,6 +54,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -71,6 +72,23 @@ import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-ex
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
 import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-config';
+
+// Last-resort safety net for async work nobody awaited. The main process runs
+// a lot of fire-and-forget I/O (watchers, poll timers, disk caches, loadURL);
+// under Node's default --unhandled-rejections=throw a single stray rejection
+// takes the whole app down, losing every open session. Logging and continuing
+// is strictly better: the app stays up and the real reason lands in the log
+// instead of a silent exit. These are NOT a license to drop .catch() at call
+// sites — a rejection reaching here is a bug worth fixing at its source.
+// Registering this listener is also what DISABLES Node's default conversion of
+// an unhandled rejection into a fatal uncaughtException — so this one handler
+// is the whole fix. No uncaughtException handler is added on purpose: a genuine
+// synchronous throw can leave state corrupt, and swallowing it is worse.
+process.on('unhandledRejection', (reason) => {
+  log('ERROR', 'main', 'unhandled promise rejection', {
+    reason: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+  });
+});
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -487,7 +505,10 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
     const delaySeconds = Math.min(attempts, 5);
     console.warn(`[dev-recovery] renderer load failed (${why}) — retry ${attempts} in ${delaySeconds}s`);
     setTimeout(() => {
-      if (!win.isDestroyed()) win.loadURL(devUrl);
+      // .catch is not error handling here — `did-fail-load` below is what
+      // actually drives recovery. This only stops a rejected load (ERR_ABORTED
+      // on a racing reload) from surfacing as an unhandled rejection.
+      if (!win.isDestroyed()) void win.loadURL(devUrl).catch(() => {});
     }, delaySeconds * 1000);
   };
   win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, _validatedURL, isMainFrame) => {
@@ -639,11 +660,13 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   });
   // Security: deny window.open() but route safe http(s)/mailto to the OS browser
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^(https?:|mailto:)/i.test(url)) shell.openExternal(url);
+    // Rejects when the OS has no handler for the scheme — nothing to recover,
+    // but it must not escape as an unhandled rejection.
+    if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url).catch(() => {});
     return { action: 'deny' as const };
   });
   // Disable Chromium's pinch-to-zoom so our IPC zoom handler is the sole zoom path
-  win.webContents.setVisualZoomLevelLimits(1, 1);
+  void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
 
   if (opts?.maximize) win.maximize();
 
@@ -659,13 +682,16 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     // is untouched because this whole branch runs under `!app.isPackaged`.
     const devUrlOverride = !opts?.buddy ? process.env.YOUCODED_DEV_URL : undefined;
     const devUrl = devUrlOverride || `${DEV_SERVER_URL}${modeQuery}`;
-    win.loadURL(devUrl);
+    // Rejections are recovered by wireDevLoadRecovery's did-fail-load handler;
+    // the .catch only keeps them off the unhandled-rejection path.
+    void win.loadURL(devUrl).catch(() => {});
     wireDevLoadRecovery(win, devUrl);
   } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'), {
+    void win.loadFile(path.join(__dirname, '../renderer/index.html'), {
       // loadFile expects search string WITHOUT the leading '?'
       search: modeQuery ? modeQuery.slice(1) : undefined,
-    });
+      // A failed prod load is surfaced by did-fail-load, not by this promise.
+    }).catch(() => {});
   }
 
   // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
@@ -1248,7 +1274,10 @@ if (!app.isPackaged && process.env.YOUCODED_DEVTOOLS_PORT) {
 // 41.10.3 and 43.2.0). Ground-truth the ozone backend before trusting any
 // transparency probe on this machine.
 
-app.whenReady().then(async () => {
+// `void`, not a .catch(): a bootstrap failure has no meaningful local recovery,
+// and the unhandledRejection listener registered at the top of this file logs
+// it and keeps the app alive rather than exiting silently.
+void app.whenReady().then(async () => {
   await rotateLog();
 
   // Fire-and-forget: never await. Respects the opt-out in About → Privacy
@@ -1939,6 +1968,9 @@ app.whenReady().then(async () => {
   // resolved after managed roots exist (same ordering as startConversationStore).
   startTagRegistry();
 
+  // After the store AND tag registry — the index denormalizes both.
+  startChatsearchIndex();
+
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
   // conversation store, so there is no session-exit backup hook here anymore.
@@ -1988,6 +2020,7 @@ async function runShutdown(): Promise<void> {
   // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
+  try { stopChatsearchIndex(); } catch {}
   // Plan 2b Task 8: tear down the lease client so its per-session renew timers
   // don't linger past a hard quit (destroy clears all held timers). Sync fn.
   try { leaseClient?.destroy(); } catch {}

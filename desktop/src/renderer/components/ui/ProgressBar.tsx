@@ -1,4 +1,3 @@
-import React from 'react';
 
 /**
  * Determinate progress (change 46, §1.8).

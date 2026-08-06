@@ -348,7 +348,7 @@ export class FirstRunManager extends EventEmitter {
 
     // Return the URL to the caller so it can open it via shell.openExternal()
     // Then poll in the background for auth completion
-    pollAuthStatus(120000, 2000).then((success) => {
+    void pollAuthStatus(120000, 2000).then((success) => {
       oauth.kill();
       if (success) {
         this.updateState({ authComplete: true });
@@ -362,6 +362,15 @@ export class FirstRunManager extends EventEmitter {
         this.updateState({ authMode: 'none', lastError: 'Login timed out. Try again?' });
         this.updatePrereq('auth', { status: 'failed', error: 'Timed out' });
       }
+    }).catch((err: unknown) => {
+      // The poll itself failed (not "auth didn't complete"). Report the real
+      // reason rather than leaving the user on a spinner — and never let it
+      // escape as an unhandled rejection during first-run.
+      oauth.kill();
+      const detail = err instanceof Error ? err.message : String(err);
+      log('ERROR', 'first-run', 'OAuth poll failed', { detail });
+      this.updateState({ authMode: 'none', lastError: `Login check failed: ${detail}` });
+      this.updatePrereq('auth', { status: 'failed', error: detail });
     });
 
     return { url };

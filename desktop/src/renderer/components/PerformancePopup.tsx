@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
 import { Button, Dialog, Toggle, SettingRow } from './ui';

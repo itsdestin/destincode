@@ -1,4 +1,3 @@
-import React from 'react';
 import type { AttentionState } from '../state/chat-types';
 import BrailleSpinner from './BrailleSpinner';
 import { Button } from './ui';

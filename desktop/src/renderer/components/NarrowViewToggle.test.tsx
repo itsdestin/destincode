@@ -3,7 +3,6 @@
 // Pins the direction of the narrow toggle. It shows the view you'd switch TO,
 // not the one you're in — the kind of thing that reads as correct either way
 // when you're editing the file and is only obviously wrong in the running app.
-import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import NarrowViewToggle from './NarrowViewToggle';

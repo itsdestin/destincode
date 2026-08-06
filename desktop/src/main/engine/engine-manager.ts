@@ -83,7 +83,10 @@ export class EngineManager extends EventEmitter {
 
   constructor(
     private home: NativeHome,
-    private userDataDir: string,
+    // WHY: `userDataDir` is a plain constructor param, not a private property —
+    // it's used once to seed EngineAcquisition and never read again. The
+    // `private` modifier was storing a dead reference on every instance.
+    userDataDir: string,
     private port: number,
     /** Test seams (spec §5: mocked subprocess + fetch). */
     private opts: { fetchImpl?: typeof fetch; supervisorOpts?: Record<string, unknown> } = {}

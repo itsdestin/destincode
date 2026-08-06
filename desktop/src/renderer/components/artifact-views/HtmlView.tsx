@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ArtifactViewProps } from './types';
 import { inlineLocalAssets } from './html-inline-assets';
 

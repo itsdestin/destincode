@@ -6,7 +6,7 @@
 // 2026-07-09 follow-up: no per-row hover actions here).
 // Each row carries a sync dot (green syncing / red problem / gray not in
 // sync) whose tooltip holds the full plain-language phrase.
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';

@@ -14,7 +14,7 @@
 //   - React auto-escapes text content so review_text is XSS-safe as written
 //   - AbortController cancels the in-flight fetch on unmount or refreshKey change
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   createMarketplaceApiClient,
   MARKETPLACE_API_HOST,

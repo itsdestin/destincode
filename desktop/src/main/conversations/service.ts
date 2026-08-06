@@ -13,6 +13,7 @@ import { NativeHome } from '../native-home';
 import type { ConversationRecord, PortableModelRef } from './store-core';
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
+import { laneMatches } from './lane-guards';
 import { ccProjectSlug } from '../project-conversations';
 import { cwdToProjectSlug } from '../transcript-watcher';
 import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
@@ -98,6 +99,25 @@ const sessions = new Map<string, SessionCtx>();
 const pendingActivity = new Map<string, NodeJS.Timeout>();
 
 export function getConversationStore(): ConversationStore | null { return store; }
+
+// In-main notification that a conversation's user-visible metadata changed
+// (flag, tag, or note). SESSION_META_CHANGED is a webContents.send to the
+// RENDERER only — nothing in main could react to it, which the chatsearch index
+// needs so a tag applied in-app is visible to the CLI before the next launch.
+// Same Set-based shape as onSyncSpacesEvent.
+const metaChangedListeners = new Set<() => void>();
+
+export function onConversationMetaChanged(cb: () => void): () => void {
+  metaChangedListeners.add(cb);
+  return () => { metaChangedListeners.delete(cb); };
+}
+
+export function emitConversationMetaChanged(): void {
+  for (const cb of metaChangedListeners) {
+    // One bad listener must never break a metadata write.
+    try { cb(); } catch { /* listener errors are not the writer's problem */ }
+  }
+}
 
 export async function startConversationStore(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
@@ -507,7 +527,7 @@ async function materializeSweep(): Promise<void> {
     // here first; containment still runs unconditionally after for whatever
     // survives, since matching the lane prefix alone doesn't rule out
     // traversal inside it.
-    if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+    if (!laneMatches(sessionProvider, rec.transcriptRef)) {
       console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
       continue;
     }
@@ -602,7 +622,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   // Lane assertion (D5, never cross-materialize) — see the identical check +
   // WHY in materializeSweep. Runs before the containment guard for the same
   // reason: pure field check, no IO, catches a mislabeled ref first.
-  if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+  if (!laneMatches(sessionProvider, rec.transcriptRef)) {
     console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
     return;
   }

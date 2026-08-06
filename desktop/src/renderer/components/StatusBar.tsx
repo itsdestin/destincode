@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { createPortal } from 'react-dom';
 import { useTheme, type ContextDisplay } from '../state/theme-context';
@@ -45,7 +45,6 @@ interface StatusData {
   contextPercent: number | null;
   gitBranch: string | null;
   sessionStats: SessionStats | null;
-  syncStatus: string | null;
   syncWarnings: SyncWarning[] | null;
 }
 
@@ -312,7 +311,9 @@ interface Props {
   // gate, and the persisted model preference, none of which a third-party
   // model id may leak into.
   model?: ModelChip;
-  onCycleModel?: () => void;
+  // No onCycleModel: the model chip opens the picker (onOpenModelPicker) and
+  // click-to-cycle now lives on Shift+Space in App.tsx. The prop was still declared
+  // and passed but never called, so it read as a working affordance that did nothing.
   // CC sessions pass a PermissionMode; native sessions pass a NativePermissionMode.
   // The chip renders identically for both — only the value + cycle handler differ.
   permissionMode?: PermissionMode | NativePermissionMode | 'unknown';
@@ -789,13 +790,13 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 // --- Main StatusBar component ---
 
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  statusData, onRunSync, onOpenSync, model,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
   nativeUsage, nativeContextLength,
 }: Props) {
-  const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
+  const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncWarnings } = statusData;
 
   // Dev-instance label (run-dev.sh --label → preload's devLabel). Read here rather
   // than at module scope because the remote shim assigns window.claude during

@@ -8,7 +8,7 @@
 // {ok, login?, error?} fields do — so the whole flow works identically over the
 // remote WebSocket. The one platform difference is opening the verification URL
 // (shell.openExternal on Electron; a copyable link on remote — see below).
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import { getPlatform } from '../platform';
 import { Button, Dialog } from './ui';

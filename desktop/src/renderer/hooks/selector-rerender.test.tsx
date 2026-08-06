@@ -14,7 +14,7 @@
 // timeline but not its (status, attentionState, awaitingApproval) triple, so
 // the new pattern skips them. If this test's gap ever collapses, the perf win
 // regressed.
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { describe, it, expect } from 'vitest';
 import { render, act } from '@testing-library/react';
 import { ChatProvider, useChatDispatch, useChatStateMap } from '../state/chat-context';

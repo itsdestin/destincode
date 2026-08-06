@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';

@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { ChatProvider } from '../state/chat-context';

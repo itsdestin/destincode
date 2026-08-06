@@ -482,11 +482,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Sync font state: use theme's declared font, or fall back to default
+    // Sync font state: use theme's declared font, or fall back to default.
+    // WHY: `applyThemeFont` was imported but never called — the half-finished
+    // part of the theme-fonts feature. It handles Google Fonts <link> injection
+    // AND sets --font-sans/--font-mono, so a theme with a `font` block now
+    // actually loads its typeface instead of only updating React state.
     if (activeTheme.font?.family) {
       setFontState(activeTheme.font.family);
+      applyThemeFont(activeTheme.font);
     } else {
       setFontState(DEFAULT_FONT_FAMILY);
+      applyThemeFont(undefined); // clears any previously injected Google Font link
       applyFont(DEFAULT_FONT_FAMILY);
     }
     return () => { iconCancelled = true; };

@@ -10,10 +10,11 @@
 export const BUNDLED_PLUGIN_IDS = [
   'wecoded-themes-plugin',
   'wecoded-marketplace-publisher',
+  'youcoded-chatsearch',
 ] as const;
 
 export const BUNDLED_REASON =
-  'Bundled with YouCoded — required for theme customization and publishing.';
+  'Bundled with YouCoded — required for theme customization, publishing, and conversation search.';
 
 export function isBundledPlugin(id: string): boolean {
   return (BUNDLED_PLUGIN_IDS as readonly string[]).includes(id);

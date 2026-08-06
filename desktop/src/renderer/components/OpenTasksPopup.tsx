@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { TaskState } from '../state/task-state';
 import { Button, Dialog } from './ui';

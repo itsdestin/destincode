@@ -4,7 +4,7 @@
 // Class idioms (text sizes, accent buttons) mirror ProvidersSection's own rows
 // so the card reads as part of the section. As of change 25 the surface IS that
 // row surface (bg-inset/50, borderless), not a lookalike.
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, TextInput } from './ui';
 
 interface EngineStatusView {

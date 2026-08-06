@@ -14,7 +14,7 @@ import {
 // them too (renderer code can never import from src/main/, which pulls in
 // electron). Imported here for this file's own use, and re-exported below so
 // every existing `from './buddy-window-manager'` import keeps working.
-import { clampToWorkArea, type Rect, type Point, type Size } from '../shared/buddy-geometry';
+import { clampToWorkArea, type Rect, type Point } from '../shared/buddy-geometry';
 // WHY: `implements BuddyManager` is compile-time proof this class still
 // satisfies the shape main.ts depends on after the capture/attach refactor.
 import type { BuddyManager } from './buddy-manager';
@@ -611,9 +611,9 @@ export class BuddyWindowManager implements BuddyManager {
     if (!this.bar.isVisible()) this.bar.showInactive();
   }
 
-  private hideBar(): void {
-    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.hide();
-  }
+  // WHY: `hideBar` was removed — the buddy bar's visibility is driven by
+  // BarVisibilityTracker + CSS fade, not by imperative hide() calls. The
+  // method was defined but never invoked. Found in the 2026-08-06 sweep.
 
   /** Bar position for a given mascot rect (defaults to live bounds; glideGroup
    *  passes the post-snap rect). Falls back to bottom-right of the primary

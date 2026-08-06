@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { mutateFileUnderLock } from './artifacts/cas-write';
+import { transcriptSkipReason } from './conversations/lane-guards';
 
 export interface SessionFileInfo {
   slug: string;
@@ -241,7 +242,17 @@ export class NativeHome {
         if (!f.endsWith('.jsonl')) continue;
         const full = path.join(base, slug, f);
         try {
-          const st = fs.statSync(full);
+          // lstat, NOT stat: a symlinked session file must be skipped, not
+          // followed. The native lane has no symlinks today (verified: 0 of 128
+          // on a real machine), so this is defensive — but this listing is
+          // consumed by pruneNativePhantomRecords (conversations/service.ts) to
+          // detect phantom native records, and by harness/session-store.ts for
+          // session lookups; the chatsearch builder does NOT go through here —
+          // it resolves native transcript paths itself in index-service.ts. The
+          // CC lane proved what following a symlink costs. No size floor here:
+          // listSessionFiles must keep enumerating small native sessions.
+          const st = fs.lstatSync(full);
+          if (transcriptSkipReason(st)) continue;
           out.push({
             slug,
             sessionId: f.slice(0, -'.jsonl'.length),

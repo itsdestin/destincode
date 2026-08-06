@@ -147,7 +147,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     setText(restored?.text ?? '');
     setAttachments(restored?.attachments ?? []);
     prevSessionRef.current = sessionId;
-  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps — intentionally reads text/attachments from refs
+  // ESLint needs `--` before the reason; without it the whole trailing phrase is
+  // parsed as part of the rule name and the directive silently does nothing.
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally reads text/attachments from refs
 
   // Prefill support — used by dev:open-session-in (and any other caller that
   // supplies initialInput on a SessionInfo).  We track consumed session IDs in

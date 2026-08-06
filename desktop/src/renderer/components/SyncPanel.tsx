@@ -12,7 +12,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Dialog, TextInput, Toggle, LoadingState, SettingRow } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
-import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
+import { deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
@@ -1855,7 +1855,11 @@ function EditBackendForm({
   backend, onSave,
 }: {
   backend: BackendInstanceStatus | null;
-  onSave: (updates: { label?: string }) => void;
+  // Must include Promise<void>: the only caller passes an async handler and handleSave
+  // awaits it to keep the saving spinner up until the write lands. Typed bare `=> void`
+  // this read as "'await' has no effect", inviting someone to delete the await — which
+  // would drop setSaving(false) back to synchronous and end the spinner early.
+  onSave: (updates: { label?: string }) => void | Promise<void>;
 }) {
   const [label, setLabel] = useState(backend?.label ?? '');
   const [saving, setSaving] = useState(false);
