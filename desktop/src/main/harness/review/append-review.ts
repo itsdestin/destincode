@@ -3,7 +3,23 @@
 // WHY a pure string function: the doc says "Do not edit or delete other models'
 // reviews", and a pure transform makes that assertable in a unit test rather than
 // a habit the runner is trusted to keep. The runner reads, transforms, writes.
-const PROMPT_HEADING = '## Prompt for other agents';
+//
+// WHY a line-anchored regex, not `docText.indexOf('## Prompt for other agents')`:
+// indexOf matches that string ANYWHERE, including inside a fenced code block or
+// inside a review body that quotes the heading in prose — and the battery is
+// self-referential by design (every model reviews this harness, so the doc's
+// own conventions get discussed inside reviews). A future review whose text
+// mentions the heading would silently redirect the NEXT append into the middle
+// of that review's body instead of the real heading.
+//
+// WHY the LAST match, not the first: a quoted heading inside a review can sit
+// on its own line too (e.g. a fenced code block reproducing the doc's own
+// convention verbatim), which the line-anchored regex matches just as happily
+// as the real one — so anchoring alone doesn't disambiguate. The doc's own
+// convention (see the comment below) is that this heading is always the tail
+// of the file, so the LAST line-anchored match is the real one; anything
+// earlier is a quote.
+const PROMPT_HEADING_RE = /^## Prompt for other agents$/gm;
 
 export function appendReview(
   docText: string,
@@ -35,9 +51,11 @@ export function appendReview(
     '',
   ].join('\n');
 
-  const at = docText.indexOf(PROMPT_HEADING);
+  const matches = [...docText.matchAll(PROMPT_HEADING_RE)];
+  const last = matches.at(-1);
   // Insert ABOVE the prompt block, which the doc's own instructions designate as
   // the tail. Appending to the end would bury it below the prompt.
-  if (at === -1) return `${docText.trimEnd()}\n\n---\n\n${section}`;
+  if (!last || last.index === undefined) return `${docText.trimEnd()}\n\n---\n\n${section}`;
+  const at = last.index;
   return docText.slice(0, at) + section + docText.slice(at);
 }

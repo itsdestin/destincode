@@ -24,6 +24,10 @@ const DESKTOP = path.resolve(HERE, '..');
 // run to completion, and only the later doc read would fail. Walk upward and
 // look for the actual marker directory instead of assuming a fixed depth.
 const WORKSPACE_MARKER = 'docs/active/investigations';
+// The canonical checkout needs 2 levels up from desktop/ to reach the
+// workspace repo (youcoded-dev/youcoded/desktop -> youcoded-dev); the worktree
+// layout needs 4 (youcoded-dev/youcoded/worktrees/<name>/desktop -> youcoded-dev).
+// 6 leaves headroom for one more level of nesting beyond that.
 const SEARCH_DEPTH = 6;
 function findWorkspace(start) {
   let candidate = start;

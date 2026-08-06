@@ -50,10 +50,15 @@ workspace repo. It replaces the old workflow of copy-pasting a prompt by hand
 into five separate sessions.
 
 Build the compiled harness code first — the script imports `dist/`, never
-`src/`, so it never runs something different from what the app ships:
+`src/`, so it never runs something different from what the app ships. Use
+`build:main` (plain `tsc`), not the full `build` script — `build` also runs
+`vite build` and `electron-builder` to package the whole desktop app, which is
+slow and fails outright on a machine not set up for packaging (e.g. missing
+`rpmbuild`), even though the harness files it needs are written by `tsc` in
+the first few seconds:
 
 ```
-npm run build
+npm run build:main
 ```
 
 Then:

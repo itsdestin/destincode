@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { describe, it, expect } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
@@ -74,6 +75,52 @@ describe('appendReview', () => {
     const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r' }, '2026-08-06');
     expect(out).toContain('## Review: X — 2026-08-06');
   });
+
+  it('inserts at the real heading, not one quoted inside a fenced code block or review prose', () => {
+    // The battery is self-referential: every model reviews this harness, so an
+    // existing review's body can legitimately contain the literal string
+    // "## Prompt for other agents" — inside a code fence quoting the doc's own
+    // convention, or in prose discussing it. `indexOf` would match that
+    // occurrence FIRST (it appears earlier in the doc) and splice the new
+    // section into the middle of that review instead of above the real
+    // heading at the end.
+    const docWithQuotedHeading = `# Native Agent Harness Reviews
+
+Intro text.
+
+---
+
+## Review: Existing Model — 2026-08-01
+
+This model even quoted the doc's own heading back at me:
+
+\`\`\`
+## Prompt for other agents
+\`\`\`
+
+which is not the real thing.
+
+---
+
+## Prompt for other agents
+
+Prompt block here.
+`;
+    const out = appendReview(
+      docWithQuotedHeading,
+      { label: 'New Model', modelId: 'v/new', review: 'My review.' },
+      '2026-08-06',
+    );
+    // The new section must land above the REAL heading (the last one in the
+    // doc), not the quoted one inside the fence (the first occurrence).
+    const newSectionIndex = out.indexOf('## Review: New Model');
+    const fencedHeadingIndex = out.indexOf('```\n## Prompt for other agents');
+    expect(newSectionIndex).toBeGreaterThan(fencedHeadingIndex);
+    expect(newSectionIndex).toBeLessThan(out.lastIndexOf('## Prompt for other agents'));
+    // Sanity: the quoted heading inside the existing review is untouched and
+    // still appears exactly where it did before.
+    expect(out).toContain('```\n## Prompt for other agents\n```');
+  });
 });
 
 // Destin's ruling (overrides the plan brief): the brief's three runBattery
@@ -147,6 +194,55 @@ describe('runBattery', () => {
     expect(askResult).toBeDefined();
     expect(askResult!.data.toolResult).toContain('A: Red');
     expect(askResult!.data.toolResult).not.toContain('A: Blue');
+  });
+
+  it('denies a Write outside the fixture instead of rubber-stamping it (Critical fix)', async () => {
+    // HarnessSession funnels FOUR ask kinds through the single askUser callback
+    // (harness-session.ts:1478 external-path forced ask, :1432 doom_loop,
+    // :1100 max_steps, :1449 real AskUserQuestion). A prior version of
+    // run-battery's askUser answered all of them with `allow` because its
+    // `questions` loop silently ran zero times on anything that wasn't a real
+    // AskUserQuestion. That let a scripted Write escape the fixture and write
+    // to a real path on the machine running the CLI — this test is the one
+    // that would have caught it.
+    //
+    // The target lives under os.tmpdir() but is NOT inside the fixture root
+    // (a separate mkdtemp'd sibling directory), so the assertion "the file was
+    // never created" can't be satisfied by accident just because the fixture
+    // itself happens to live in tmpdir.
+    const outsideDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'yc-harness-review-test-outside-'));
+    const outsideFile = path.join(outsideDir, 'pwned.txt');
+    try {
+      const run = await runBattery({
+        modelFactory: async () =>
+          scriptModel([
+            { toolCalls: [{ name: 'Write', input: { file_path: outsideFile, content: 'pwned' } }] },
+            { text: 'Tried to write outside the fixture.' },
+          ]) as any,
+        modelId: 'fake/model',
+        label: 'Fake',
+        timeoutMs: 5_000,
+      });
+
+      // (a) The write never actually happened on disk.
+      expect(fs.existsSync(outsideFile)).toBe(false);
+
+      // The tool call still ran through the loop (doom-loop/decide/guard), it
+      // just got a deny result instead of executing — a coherent tool-result
+      // the model can read, not a stall or a crash.
+      const writeResult = run.events.find((e) => e.type === 'tool-result' && e.data.toolName === 'Write');
+      expect(writeResult).toBeDefined();
+      expect(writeResult!.data.isError).toBe(true);
+
+      // (b) `asks` counts this: run-battery's askUser increments `asks` for
+      // EVERY ask that reaches it, answered or denied, because the field means
+      // "how many times something needed a human" — a denied external-path
+      // ask is still one of those. See the WHY comment on askUser in
+      // run-battery.ts for the reasoning.
+      expect(run.asks).toBe(1);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it('cleans up the fixture directory when the run finishes, after actually creating it', async () => {

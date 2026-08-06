@@ -21,5 +21,8 @@ export function makeOpenRouterFactory(apiKey: string, modelId: string): ModelFac
   });
   // The binding argument is ignored: the runner pins one model per session, and
   // accepting a binding here would let a roster typo silently run a different one.
-  return async () => provider(modelId) as any;
+  // No `as any`: provider(modelId) returns LanguageModelV4, a member of `ai`'s
+  // LanguageModel union that ModelFactory expects — provider-registry.ts:249-255
+  // makes the identical call with no cast.
+  return async () => provider(modelId);
 }

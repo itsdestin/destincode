@@ -61,28 +61,58 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       harness: ASSISTANT_PRESET,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
       tools: CORE_TOOLS,
-      // Auto-approve everything the configured layers would ask about. The
-      // TOOL-LAYER guards (secret paths, external_directory) sit BELOW this and
-      // still apply, so the fixture jail holds even on a fully permissive decide.
+      // Auto-approve everything decide() is consulted about. WHY this does NOT
+      // by itself hold the fixture jail: the tool-layer path guard
+      // (harness-session.ts checkPathGuard, called from runOneTool step 3) sits
+      // BELOW decide and, for any path-subject tool (Read/Write/Edit) pointed
+      // outside the session cwd, forces `{ action: 'ask' }` BEFORE decide() is
+      // even called (harness-session.ts:1469-1471 — `externalAsk ? {action:'ask'} :
+      // decide()`). So decide() being fully permissive is irrelevant to those
+      // calls; askUser below is what actually has to hold the line.
       // Plan correction: this field IS spelled `action` (PermissionDecision,
       // shared/permission-types.ts:17-22) — unlike askUser below, which is not.
       decide: async () => ({ action: 'allow', denyListed: false }),
-      // Deterministic answerer: always take the first option. WHY this matters —
+      // Deterministic answerer for the ONE ask kind this fixture is meant to
+      // reach: a genuine AskUserQuestion tool call. WHY that matters —
       // AskUserQuestion was the one tool no reviewer reached (Kimi K3 finding
       // #6), because a human had to be present to answer it. A fixed answer
       // makes it reachable and keeps runs reproducible.
       //
-      // Plan correction: the brief read `req?.input?.questions` and returned
-      // `{ action: 'allow', ... }`. Neither matches the real AskRequest/
-      // AskDecision shapes (permission-broker.ts:14-30): the request's parsed
-      // tool input rides under `toolInput`, not `input`, and the decision's
-      // approve/deny field is `behavior`, not `action` — decide() above uses
-      // `action` and askUser uses `behavior`; that asymmetry is real, not a typo.
+      // WHY every OTHER ask kind is denied, not allowed: HarnessSession routes
+      // three unrelated ask kinds through this SAME callback, and none of them
+      // carry a `questions` field —
+      //   - harness-session.ts:1478 — the forced 'ask' described above (Write/
+      //     Read/Edit pointed outside the fixture root, e.g. Write("/home/x")).
+      //     Allowing this unconditionally is a real local-file write/read
+      //     against the machine running the CLI, not the fixture — the exact
+      //     hole a Critical finding caught (the fixture jail did not hold).
+      //   - harness-session.ts:1432 — the doom_loop guard's ask.
+      //   - harness-session.ts:1100 — the max_steps guard's ask.
+      // A prior version of this callback answered ALL of these with `allow`
+      // (its `questions` loop ran zero times on the ones above, then fell
+      // through to an unconditional allow) — silently disabling both spend
+      // guards and letting Write/Read escape the fixture. Denying instead is
+      // not just safer, it is CORRECT: a properly scoped battery run should
+      // never produce an external-directory ask, a doom loop, or a max-steps
+      // overrun, so a denial turns a regression into a loud error result in
+      // the transcript (harness-session.ts:1481 turns a non-allow into a
+      // model-facing error string — the model still gets a coherent reply,
+      // the run isn't aborted) instead of quietly executing outside the
+      // fixture or burning OpenRouter spend on a stuck model.
+      // NOT `{ behavior: 'canceled' }`: harness-session.ts:1479 treats
+      // 'canceled' as a user interrupt that aborts the whole turn — this is a
+      // policy denial, not an abort.
+      // `asks` counts every ask that reaches this callback, answered or
+      // denied — it is "how many times something needed a human," which is
+      // exactly what a denied doom-loop/max-steps/external-path ask still is.
       askUser: async (req: AskRequest): Promise<AskDecision> => {
         asks++;
-        const questions = (req.toolInput?.questions as
-          | Array<{ question: string; options?: { label: string }[] }>
-          | undefined) ?? [];
+        const questions = req.toolName === 'AskUserQuestion'
+          ? (req.toolInput?.questions as
+              | Array<{ question: string; options?: { label: string }[] }>
+              | undefined)
+          : undefined;
+        if (!Array.isArray(questions)) return { behavior: 'deny' };
         const answers: Record<string, string> = {};
         for (const q of questions) answers[q.question] = q.options?.[0]?.label ?? 'yes';
         return { behavior: 'allow', updatedInput: { questions, answers } };
