@@ -5,6 +5,9 @@ import type { UserSkillConfig, ChipConfig, MetadataOverride, SkillEntry, Package
 
 const CONFIG_PATH = path.join(os.homedir(), '.claude', 'youcoded-skills.json');
 
+// Per-writer counter for save()'s temp filename — see the comment there.
+let tmpSeq = 0;
+
 // Four built-in theme slugs, seeded as favorites on first-read so a new user
 // sees a populated Appearance panel. Mirrors the skill-favorites seeding in
 // createDefaultConfig. Must stay in sync with BUILTIN_THEMES in theme-context.tsx.
@@ -105,8 +108,21 @@ export class SkillConfigStore {
   private save(): void {
     const dir = path.dirname(CONFIG_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Atomic write: write to temp file then rename to prevent corruption on crash
-    const tmpPath = CONFIG_PATH + '.tmp';
+    // Atomic write: write to a temp file, then rename over the target.
+    //
+    // The temp name must be UNIQUE PER WRITER, not a fixed `<file>.tmp`.
+    // A shared name is atomic against a crash but NOT against a second writer:
+    // both write the same temp path, the first rename consumes it, and the
+    // second throws ENOENT renaming a file that no longer exists. That is
+    // reachable in production because `~/.claude/` is shared — run-dev.sh
+    // isolates userData and ports but NOT the home dir, so a dev instance and
+    // the installed app are two live writers of this exact file. It first
+    // showed up as a cross-file failure in the test suite, whose parallel
+    // workers are the same shape.
+    // Matches the convention already used by mcp-reconciler.ts,
+    // hook-reconciler.ts, saved-folders.ts, and transcript-mirror.ts. The
+    // counter covers workers that share a pid (vitest's thread pool).
+    const tmpPath = `${CONFIG_PATH}.${process.pid}.${++tmpSeq}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(this.config, null, 2), 'utf8');
     fs.renameSync(tmpPath, CONFIG_PATH);
   }
