@@ -265,7 +265,10 @@ describe('Bash', () => {
   it('a non-zero exit is an error and reports the code', async () => {
     const r = await BashTool.execute({ command: 'exit 3' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('(exit code 3)');
+    // The exit code now lives in the metadata line, not a leading prefix — it
+    // used to duplicate the same fact in two places once Task 4 added the line.
+    expect(r.text).toContain('· exit 3]');
+    expect(r.text).not.toContain('(exit code 3)');
   });
 
   it('Bash reports the TRUE output size, not the size of its retained buffer', async () => {
@@ -286,6 +289,32 @@ describe('Bash', () => {
     const r = await BashTool.execute({ command: 'echo hi' }, ctx);
     expect(r.bounds).toBeUndefined();
   });
+
+  it('Bash always states the cwd and exit code', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, ctx);
+    expect(r.text).toContain(`[cwd: ${dir} · exit 0]`);
+  });
+
+  it('Bash states a non-zero exit in the metadata line, not as a prefix', async () => {
+    const r = await BashTool.execute({ command: 'exit 42' }, ctx);
+    expect(r.text).toContain('· exit 42]');
+    expect(r.text).not.toContain('(exit code 42)');
+  });
+
+  it('Bash reports the tracked cwd after a cd, so the model never has to guess', async () => {
+    fs.mkdirSync(path.join(dir, 'sub'));
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(dir), shellCwd: undefined, setShellCwd: (n) => { tracked = n; } };
+    const r = await BashTool.execute({ command: 'cd sub' }, c);
+    expect(tracked).toBe(path.join(dir, 'sub'));
+    expect(r.text).toContain(`[cwd: ${path.join(dir, 'sub')} · exit 0]`);
+  });
+
+  it('Bash still reports the cwd when the command timed out', async () => {
+    const r = await BashTool.execute({ command: 'sleep 5', timeout: 500 }, ctx);
+    expect(r.text).toContain('Command timed out after 500ms.');
+    expect(r.text).toContain('[cwd:');
+  }, 15_000);
 
   it('times out and reports it', async () => {
     const r = await BashTool.execute({ command: 'node -e "setTimeout(()=>{},10000)"', timeout: 50 }, ctx);
@@ -343,6 +372,13 @@ describe('Bash', () => {
       }
     };
 
+    // Task 4 appends an unconditional `\n[cwd: ... · exit N]` metadata line after
+    // the command's own output, so a raw `.trim()` on `r.text` is no longer just
+    // the command's stdout — it also swallows the metadata line, which broke
+    // every one of these tests' path comparisons (ENOENT on a two-line string).
+    // Split it back off so these tests keep checking the actual command output.
+    const cmdOutput = (text: string) => text.split('\n[cwd:')[0].trim();
+
     it('a cd carries to the next call and the sentinel never reaches the model', async () => {
       fs.mkdirSync(path.join(dir, 'sub'));
       const c = trackingCtx(dir);
@@ -356,7 +392,7 @@ describe('Bash', () => {
       // assertions below can't catch that alone — they expect the ROOT, which is
       // also what a fully broken persistence returns, so they passed vacuously.
       expect(first.text).not.toMatch(/Shell cwd was reset/);
-      expect(canon(second.text.trim())).toBe(canon(path.join(dir, 'sub')));
+      expect(canon(cmdOutput(second.text))).toBe(canon(path.join(dir, 'sub')));
     });
 
     it('a cd outside the workspace is reverted WITH a notice (never silent)', async () => {
@@ -364,13 +400,13 @@ describe('Bash', () => {
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(canon(after.text.trim())).toBe(canon(dir));
+      expect(canon(cmdOutput(after.text))).toBe(canon(dir));
     });
 
     it('the probe preserves the command exit code', async () => {
       const r = await BashTool.execute({ command: 'exit 3' }, trackingCtx(dir));
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('(exit code 3)');
+      expect(r.text).toContain('· exit 3]');
     });
 
     it('falls back to the root when the tracked dir was deleted', async () => {
@@ -381,7 +417,7 @@ describe('Bash', () => {
       fs.rmSync(gone, { recursive: true });
       const r = await BashTool.execute({ command: PWD }, c);
       expect(r.isError).toBeFalsy();
-      expect(canon(r.text.trim())).toBe(canon(dir));
+      expect(canon(cmdOutput(r.text))).toBe(canon(dir));
     });
 
     // Regression (2026-07-18): without a trailing newline after the sentinel, a
@@ -409,7 +445,7 @@ describe('Bash', () => {
         c,
       );
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(canon(after.text.trim())).toBe(canon(path.join(dir, 'sub')));
+      expect(canon(cmdOutput(after.text))).toBe(canon(path.join(dir, 'sub')));
     });
 
     // Regression (2026-07-18): a dangling `&&` absorbs the probe's `__yc_rc=$?`
@@ -422,7 +458,7 @@ describe('Bash', () => {
 
     it('a context without setShellCwd still works (stateless fallback)', async () => {
       const r = await BashTool.execute({ command: 'echo plain' }, makeCtx(dir));
-      expect(r.text).toBe('plain');
+      expect(cmdOutput(r.text)).toBe('plain');
     });
   });
 

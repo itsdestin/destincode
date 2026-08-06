@@ -271,19 +271,23 @@ export const BashTool = defineTool({
         // WHY captured BEFORE extractCwd: the probe's `__YC_CWD__` sentinel line is
         // harness plumbing, not command output, and extractCwd strips it out of
         // `body` on virtually every non-Windows call. Comparing totalChars against
-        // the POST-strip body would call that routine stripping a "drop" and
-        // declare bogus bounds on every single Bash call, including 'echo hi' —
-        // caught by the "declares no bounds for small output" test. Comparing
-        // against the raw retained length (pre-strip) isolates the ONE thing that
-        // should count as dropped: the head/tail accumulator actually cutting
-        // real command output.
+        // the POST-strip body would call that stripping a "drop" and declare bogus
+        // bounds on every single Bash call, including 'echo hi' — caught by the
+        // "declares no bounds for small output" test. Comparing against the raw
+        // retained length (pre-strip) isolates the ONE thing that should count as
+        // dropped: the head/tail accumulator actually cutting real command output.
         const rawLen = body.length;
         let notice = '';
         // Bytes consumed by the probe's OWN generated sentinel line — harness
         // plumbing, not command output. Subtracted from the reported total so a
-        // command that printed exactly 400,000 bytes is announced as 400,000, not
-        // 400,000-plus-however-long-the-cwd-path-happens-to-be.
+        // command that printed exactly N bytes is announced as N, not
+        // N-plus-however-long-the-cwd-path-happens-to-be.
         let sentinelOverhead = 0;
+        // Track what the cwd ENDED as, so the metadata line can state it. Two
+        // separate facts: where the shell actually landed, and whether the scope
+        // guard pulled it back.
+        let reportedCwd: string | null = null;
+        let resetTo: string | null = null;
         if (probe) {
           const parsed = extractCwd(joined());
           sentinelOverhead = rawLen - parsed.text.length;
@@ -292,27 +296,38 @@ export const BashTool = defineTool({
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
             if (isInside(ctx.cwd, reported)) {
-              ctx.setShellCwd?.(path.resolve(reported));
+              reportedCwd = path.resolve(reported);
+              ctx.setShellCwd?.(reportedCwd);
             } else {
               // Scope guard: don't let the session wander out of the workspace,
               // and TELL the model — a silent revert is the exact failure mode
               // the Claude Code issues (#35058 et al.) complain about.
               ctx.setShellCwd?.(ctx.cwd);
+              resetTo = ctx.cwd;
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
             }
           }
         }
-        const text = (`${prefix}${body}`.trim() + notice).trim();
-        // Only declare a bound when we actually dropped something. `total` is the
-        // true byte count, `shown` what survived the head/tail retention.
+        // ONE metadata line, always. Four of five reviewing models independently
+        // asked for this (2026-08-01): file tools resolve relative paths from the
+        // workspace root while Bash resolves from its own persistent cwd, and with
+        // no cwd echoed back the only safe habit was prefixing every single call
+        // with `cd <root> &&`. This line costs ~15 tokens and removes that ritual.
+        // It ABSORBS the old `(exit code N)` prefix rather than adding to it.
         const dropped = totalChars > rawLen;
+        // The reported total also gets the sentinel-overhead correction above.
+        const trueTotal = totalChars - sentinelOverhead;
+        const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
+        const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
+        if (dropped) meta.push(`${trueTotal} bytes output, showing ${body.length}`);
+        const text = (`${prefix}${body}`.trim() + notice).trim() + `\n[${meta.join(' · ')}]`;
         resolve({
-          text: text || `(no output, exit ${code ?? '?'})`,
+          text,
           isError,
           bounds: dropped
             ? {
                 shown: body.length,
-                total: totalChars - sentinelOverhead,
+                total: trueTotal,
                 unit: 'bytes' as const,
                 moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
               }
@@ -338,7 +353,11 @@ export const BashTool = defineTool({
       // shell + cwd actually used, not just Node's bare `spawn <cmd> <CODE>` —
       // same diagnosability contract as the sync catch above.
       child.on('error', (err) => finish(`Failed to start shell: ${err.message} (shell=${shell.cmd}; cwd=${startCwd})\n`, true));
-      child.on('close', (code) => finish(code === 0 ? '' : `(exit code ${code})\n`, code !== 0, code));
+      // WHY no exit-code prefix here anymore: the metadata line above now states
+      // `exit N` for every result, so a leading "(exit code N)" duplicated the
+      // same fact in two places. The timeout/abort handlers keep their prefixes —
+      // those are messages, not exit codes.
+      child.on('close', (code) => finish('', code !== 0, code));
     });
   },
 });
