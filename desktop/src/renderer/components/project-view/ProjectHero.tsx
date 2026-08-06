@@ -89,7 +89,7 @@ function ChevronDown({ size = 18 }: { size?: number }) {
 
 import { createPortal } from 'react-dom';
 import { FolderIcon, GitHubIcon, CogIcon } from './icons';
-import { Button, TextInput } from '../ui';
+import { Button, TextInput, Textarea } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { OverlayPanel } from '../overlays/Overlay';
 import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
@@ -168,6 +168,19 @@ export function ProjectHero({
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(description ?? '');
   useEffect(() => { setDescDraft(description ?? ''); setEditingDesc(false); }, [project.path, description]);
+  // Size the description editor to its content so it matches the footprint of
+  // the rendered text it replaced. Set to 'auto' first: without that, height
+  // only ever grows (scrollHeight can't shrink below the height already set),
+  // so deleting a line would leave the box tall.
+  const fitDescHeight = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  // Ref callback rather than an effect — it fires once the node exists, which is
+  // the moment the height is measurable.
+  const autoGrowDesc = (el: HTMLTextAreaElement | null) => fitDescHeight(el);
+
   const commitDescription = async () => {
     const d = descDraft.trim();
     setEditingDesc(false);
@@ -280,9 +293,14 @@ export function ProjectHero({
     // Stacks below 640px. Before the cog collapse the right column was shrink-0
     // with two size="lg" buttons (~268px together), which on a 390px phone left
     // the entire left column — name, path, sync strip, stats — about 34px wide.
-    <div className="layer-surface p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
-      {/* Left: eyebrow + name switcher + path/repo + stat row */}
-      <div className="min-w-0">
+    <div className="layer-surface p-3 sm:p-5 flex flex-col gap-3 sm:gap-4">
+      {/* Top row: the content column, plus the narrow-only cog pinned right.
+          WHY the card is a COLUMN now (2026-08-06): New Conversation moved to
+          the bottom-right, so the old left/right split stopped describing the
+          layout — the cog is the only thing still anchored top-right. */}
+      <div className="flex items-start justify-between gap-3">
+        {/* Content: eyebrow + name switcher + path/repo + description + stats */}
+        <div className="min-w-0">
         <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">
           Project
         </div>
@@ -363,20 +381,31 @@ export function ProjectHero({
             empty-vs-set state legible without a label. Curly, matching the
             stop-sync confirm copy below. */}
         {editingDesc ? (
-          <TextInput
+          // A Textarea, not a TextInput, so the editor occupies the SAME box as
+          // the text it replaces: the rendered description wraps inside
+          // max-w-[46rem], and a single-line input made the card jump on click
+          // and hid the tail of a long description behind a scroll. Same
+          // max-width, same text-sm, and autoGrowDesc sizes it to its content on
+          // mount and on every keystroke. Enter still COMMITS (matching rename)
+          // — the wrap is for layout parity, not for multi-line values.
+          <Textarea
             size="sm"
+            ref={autoGrowDesc}
             value={descDraft}
+            rows={1}
             autoFocus
             aria-label="Project description"
             placeholder="What is this project?"
-            className="mt-1.5 w-full text-sm"
+            className="mt-1.5 w-full max-w-[46rem] text-sm italic overflow-hidden"
             // Cap at the keystroke, not just on commit — PROJECT_DESCRIPTION_MAX
             // is the shared source of truth (shared/artifacts/types.ts), not a
             // re-typed 200 that could drift from the main-process limit.
             maxLength={PROJECT_DESCRIPTION_MAX}
-            onChange={(e) => setDescDraft(e.target.value)}
+            onChange={(e) => { setDescDraft(e.target.value); fitDescHeight(e.currentTarget); }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void commitDescription();
+              // preventDefault so Enter commits instead of inserting the newline
+              // a textarea would otherwise take.
+              if (e.key === 'Enter') { e.preventDefault(); void commitDescription(); }
               if (e.key === 'Escape') { setDescDraft(description ?? ''); setEditingDesc(false); }
             }}
             onBlur={() => void commitDescription()}
@@ -425,7 +454,34 @@ export function ProjectHero({
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>
         </div>
 
-        {/* Management actions (spec §4). The ROW now renders at every width
+        </div>
+
+        {/* Narrow-only cog, now top-right of the card (it used to sit beside
+            New Conversation, which moved to the bottom). */}
+        {narrow && (
+          <button
+            ref={menu.anchorRef}
+            type="button"
+            onClick={menu.toggle}
+            className={`coarse-hit shrink-0 p-2 rounded-md border border-edge transition-colors ${
+              menu.open ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
+            }`}
+            title="Project settings"
+            aria-label="Project settings"
+            aria-haspopup="menu"
+            aria-expanded={menu.open}
+          >
+            <CogIcon size={16} />
+          </button>
+        )}
+      </div>
+
+      {/* Bottom row: management actions left, the primary action right
+          (2026-08-06 — New Conversation moved down here from the top-right).
+          It renders unconditionally because New Conversation always exists,
+          even when the actions cluster inside it does not. */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        {/* Management actions (spec §4). The cluster renders at every width
             because the sync pill lives in it and the readout is not a
             desktop-only luxury — only the management BUTTONS stay behind the
             narrow cog (see the `narrow` note above).
@@ -433,7 +489,7 @@ export function ProjectHero({
             heading (one rename UI at both widths). Remove hides for synced
             projects (move-out-of-sync is a deferred flow). */}
         {(syncPill || !narrow) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Sync pill — the old status strip compressed to its state word,
                 sitting left of Rename. The dot colour is the ONE sanctioned
                 status-colour use (sync-spaces rule). The refresh button is the
@@ -494,33 +550,18 @@ export function ProjectHero({
             ))}
           </div>
         )}
-      </div>
 
-      {/* Right: cog menu + New Conversation. Everything else that used to sit
-          here or on the actions row below is now behind the cog. */}
-      <div className="w-full sm:w-auto sm:shrink-0 flex items-center gap-2">
-        {/* "Open repo" used to live here — it's now the repo-slug link in the
-            path/repo row above, reachable at every width. */}
-        {/* The ONE accent use in this hero. */}
-        <Button size="lg" className="flex-1 sm:flex-none" onClick={() => onNewConversation(project.path)}>
+        {/* "Open repo" used to live in a right-hand column — it's now the
+            repo-slug link in the path/repo row above, at every width.
+            The ONE accent use in this hero. `sm:ml-auto` keeps it hard right
+            even when the actions cluster above is absent. */}
+        <Button
+          size="lg"
+          className="w-full sm:w-auto sm:shrink-0 sm:ml-auto"
+          onClick={() => onNewConversation(project.path)}
+        >
           New Conversation
         </Button>
-        {narrow && (
-          <button
-            ref={menu.anchorRef}
-            type="button"
-            onClick={menu.toggle}
-            className={`coarse-hit shrink-0 p-2 rounded-md border border-edge transition-colors ${
-              menu.open ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-            }`}
-            title="Project settings"
-            aria-label="Project settings"
-            aria-haspopup="menu"
-            aria-expanded={menu.open}
-          >
-            <CogIcon size={16} />
-          </button>
-        )}
       </div>
 
       {narrow && menu.open && menu.pos && createPortal(
