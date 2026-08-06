@@ -13,6 +13,7 @@ import { NativeHome } from '../native-home';
 import type { ConversationRecord, PortableModelRef } from './store-core';
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
+import { laneMatches } from './lane-guards';
 import { ccProjectSlug } from '../project-conversations';
 import { cwdToProjectSlug } from '../transcript-watcher';
 import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
@@ -507,7 +508,7 @@ async function materializeSweep(): Promise<void> {
     // here first; containment still runs unconditionally after for whatever
     // survives, since matching the lane prefix alone doesn't rule out
     // traversal inside it.
-    if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+    if (!laneMatches(sessionProvider, rec.transcriptRef)) {
       console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
       continue;
     }
@@ -602,7 +603,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   // Lane assertion (D5, never cross-materialize) — see the identical check +
   // WHY in materializeSweep. Runs before the containment guard for the same
   // reason: pure field check, no IO, catches a mislabeled ref first.
-  if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+  if (!laneMatches(sessionProvider, rec.transcriptRef)) {
     console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
     return;
   }

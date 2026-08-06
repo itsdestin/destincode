@@ -109,4 +109,36 @@ describe('NativeHome', () => {
     expect(typeof files[0].mtimeMs).toBe('number');
     expect(typeof files[0].sizeBytes).toBe('number');
   });
+
+  // The guard NativeHome gained from lane-guards.ts. Native sessions are real
+  // files today, so this pins the defensive behavior against a future regression
+  // (and against the CC lane's 687-symlink incident repeating here).
+  const canSymlinkNh = (() => {
+    const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-nh-symlink-probe-'));
+    try {
+      fs.writeFileSync(path.join(probeDir, 'target'), 'x');
+      fs.symlinkSync('target', path.join(probeDir, 'link'), 'file');
+      return true;
+    } catch { return false; }
+    finally { try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch {} }
+  })();
+
+  it.skipIf(!canSymlinkNh)('listSessionFiles skips a symlinked session file', () => {
+    const slugDir = path.join(root, '.youcoded', 'sessions', 'proj-a');
+    fs.mkdirSync(slugDir, { recursive: true });
+    fs.writeFileSync(path.join(slugDir, 'real.jsonl'), '{"v":1}\n');
+    fs.symlinkSync('real.jsonl', path.join(slugDir, 'linked.jsonl'), 'file');
+
+    const ids = home.listSessionFiles().map((f) => f.sessionId).sort();
+    expect(ids).toEqual(['real']);
+  });
+
+  it('listSessionFiles still enumerates a session smaller than the junk threshold', () => {
+    const slugDir = path.join(root, '.youcoded', 'sessions', 'proj-b');
+    fs.mkdirSync(slugDir, { recursive: true });
+    fs.writeFileSync(path.join(slugDir, 'tiny.jsonl'), '{"v":1}\n'); // ~8 bytes
+
+    const ids = home.listSessionFiles().map((f) => f.sessionId);
+    expect(ids).toContain('tiny');
+  });
 });
