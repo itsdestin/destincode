@@ -2,7 +2,6 @@
 // Fix: pin jsdom here because vitest.config.ts only auto-applies jsdom to
 // tests under `tests/**/*.tsx`; this file lives under `src/**/*.test.tsx`
 // and would otherwise run in the default `node` env with no `window`.
-import React, { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, act } from '@testing-library/react';
 import { EscCloseProvider, useEscClose, useEscStackEmpty, useDismissTop } from './use-esc-close';

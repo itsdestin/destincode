@@ -183,7 +183,9 @@ interface Props {
   settingsBadge?: boolean;
   settingsDangerBadge?: boolean;
   sessionStatuses?: Map<string, SessionStatusColor>;
-  onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
+  // WHY: `onResumeSession` removed — HeaderBar accepted it but never called it.
+  // Resuming is owned by ResumeBrowser, opened via `onOpenResumeBrowser` below.
+  // App.tsx was still passing it through; that call site is updated too.
   onOpenResumeBrowser: () => void;
   onReorderSessions?: (fromIndex: number, toIndex: number) => void;
   defaultModel?: string;
@@ -280,7 +282,7 @@ export default function HeaderBar({
   sessions, activeSessionId, onSelectSession, onCreateSession, onCloseSession,
   viewMode, onToggleView,
   gamePanelOpen, onToggleGamePanel, gameConnected, challengePending,
-  settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses, onResumeSession,
+  settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,

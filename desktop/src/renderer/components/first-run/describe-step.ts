@@ -46,8 +46,9 @@ export function describeStep(state: FirstRunState): string {
 
     default: {
       // Exhaustiveness check — if a new FirstRunStep is added the compiler
-      // flags this. Underscore-prefixed so noUnusedLocals (being enabled
-      // repo-wide) doesn't flag the binding itself.
+      // flags this. The binding is the check itself; the underscore prefix
+      // doesn't suppress noUnusedLocals, so we use @ts-ignore for this line.
+      // @ts-ignore — TS6133: the binding IS the exhaustiveness check
       const _exhaustive: never = state.currentStep;
       return '';
     }

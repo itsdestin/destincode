@@ -29,7 +29,10 @@ const intentStyles = {
  * Finds the active trust prompt in a session's timeline.
  * Returns null if no trust prompt is pending.
  */
-function findTrustPrompt(sessionId: string, state: ReturnType<typeof useChatState>): InteractivePrompt | null {
+// WHY: `sessionId` parameter removed — findTrustPrompt searches the timeline
+// for an uncompleted trust prompt; the sessionId was accepted but never used
+// in the filter. The caller already scoped the state to the right session.
+function findTrustPrompt(state: ReturnType<typeof useChatState>): InteractivePrompt | null {
   for (const entry of state.timeline) {
     if (entry.kind === 'prompt' && !entry.prompt.completed) {
       // Exact match on the parser's canonical trust title. A substring match
@@ -53,7 +56,7 @@ export default function TrustGate({ sessionId }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
 
-  const trustPrompt = findTrustPrompt(sessionId, state);
+  const trustPrompt = findTrustPrompt(state);
 
   const handleSelect = useCallback(
     (button: PromptCardButton, label: string) => {
@@ -107,5 +110,5 @@ export default function TrustGate({ sessionId }: Props) {
 export function useTrustGateActive(sessionId: string | null): boolean {
   const state = useChatState(sessionId || '');
   if (!sessionId) return false;
-  return findTrustPrompt(sessionId, state) !== null;
+  return findTrustPrompt(state) !== null;
 }

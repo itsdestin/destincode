@@ -680,7 +680,6 @@ export function FilesTab({
         <ArtifactDetail
           artifact={activeArtifact}
           project={project}
-          onRefreshArtifacts={() => { onMutated?.(); }}
           initialLine={pendingReveal?.id === activeArtifact.id ? pendingReveal.line : undefined}
           onInitialLineConsumed={() => setPendingReveal(null)}
         />
@@ -698,7 +697,10 @@ export function FilesTab({
 interface DetailProps {
   artifact: ArtifactRecord;
   project: CentralIndexProject;
-  onRefreshArtifacts: () => void;
+  // WHY: `onRefreshArtifacts` removed — ArtifactDetail accepted it but never
+  // called it. The parent (FilesTab) passes `onMutated` directly to the
+  // ActiveArtifactView inside; refresh signaling doesn't flow through this
+  // component. Found in the 2026-08-06 sweep.
   /** Search jump-to-hit: reveal this 1-indexed line once content loads.
    * Consumed exactly once (onInitialLineConsumed) so reopening the same file
    * later does not re-jump to a stale line. */
@@ -706,7 +708,7 @@ interface DetailProps {
   onInitialLineConsumed?: () => void;
 }
 
-function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, onInitialLineConsumed }: DetailProps) {
+function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed }: DetailProps) {
   const { dispatch } = useArtifact();
   const [content, setContent] = useState<string | null>(null);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
