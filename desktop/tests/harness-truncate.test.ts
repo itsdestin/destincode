@@ -52,11 +52,22 @@ describe('composeNotice', () => {
     );
   });
 
-  it('renders an unknown total as "at least", never as a fabricated number', () => {
+  // Correction, not a weakening: the OLD wording ('at least 2000' when shown
+  // is also 2000) read as a tautology — "showing 2000 of at least 2000 files"
+  // says "that's all of them", the opposite of what total: null means (the
+  // walk stopped counting; more may exist). This asserts the fixed wording,
+  // which states plainly that more may exist and the count is unknown.
+  it('renders an unknown total as "more may exist, count unknown" — never a number that reads as complete', () => {
     const open: ResultBounds = { shown: 2000, total: null, unit: 'files', moreHint: 'narrow the glob' };
-    expect(composeNotice(open, null)).toBe(
-      '\n[showing 2000 of at least 2000 files — narrow the glob]',
+    const out = composeNotice(open, null);
+    expect(out).toBe(
+      '\n[showing 2000 files (more may exist — exact total unknown) — narrow the glob]',
     );
+    // The bug this replaces: a rendering where the "total" side is the SAME
+    // number as `shown`, which reads as "that is all of them" rather than "we
+    // don't know how many more there are".
+    expect(out).not.toMatch(/of 2000 files/);
+    expect(out).not.toContain('at least');
   });
 
   it('names both facts in ONE line when a tool bound and a cap both fire', () => {

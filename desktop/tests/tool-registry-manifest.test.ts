@@ -19,6 +19,7 @@ import { ReadTool } from '../src/main/harness/tools/read';
 import { BashTool } from '../src/main/harness/tools/bash';
 import { GrepTool } from '../src/main/harness/tools/grep';
 import { WebSearchTool } from '../src/main/harness/tools/web-search';
+import { mcpToolsFor } from '../src/main/harness/mcp/mcp-tools';
 
 const registered = CORE_TOOLS.map((t) => t.name).sort();
 const advertised = [...NATIVE_TOOL_NAMES].sort();
@@ -113,7 +114,8 @@ const BOUNDS_EXEMPT: Record<string, string> = {
   // its own and no `bounds` — unlike Write/Edit/TodoWrite, its output scales
   // with an arbitrary SKILL.md on disk, so it genuinely CAN exceed the
   // pipeline's 30k-char cap. Corrected: removed from this list. See the
-  // dedicated (currently failing) test below — a real gap, not a test bug.
+  // dedicated test below, which now pins that skill.ts declares a static
+  // moreHint fallback for exactly this case.
 };
 
 describe('every bounded tool declares its bounds', () => {
@@ -173,17 +175,18 @@ describe('every bounded tool declares its bounds', () => {
     }
   }, 90_000);
 
-  it('the Skill tool has no self-bounding path and no static moreHint fallback (real gap — not fixed here)', () => {
+  it('the Skill tool declares a static moreHint fallback for its unbounded SKILL.md body', () => {
     // This is the test the corrected exemption comment above points at. Skill's
-    // execute() (skill.ts) returns an unbounded SKILL.md body with no `bounds`
-    // and NativeTool.moreHint is undefined (grep confirms no `moreHint:` in
-    // skill.ts), so a large skill file hits defineTool's pipeline cap with
-    // zero widening advice — the exact failure mode Task 19 exists to close
-    // for every OTHER tool. Left red on purpose: fixing skill.ts is out of
-    // scope for a test-only task, and a passing assertion here would hide the
-    // gap instead of pinning it for whichever task picks it up.
+    // execute() (skill.ts) still returns an unbounded SKILL.md body with no
+    // per-call `bounds` — a large skill file can still hit defineTool's
+    // pipeline cap. skill.ts:51 now supplies the STATIC fallback (types.ts
+    // NativeTool.moreHint) for exactly that case, naming only the `skill`
+    // param this schema actually has (the "no tool advises a parameter its
+    // own schema does not accept" guard below would fail the build otherwise).
+    // This was a deliberately-red pin before that fix landed; it is now a
+    // green regression guard, not a documented gap.
     const tool = createSkillTool({ list: () => [{ id: 'x', description: 'd' }], load: () => { throw new Error('unused'); } });
-    expect(tool.moreHint, 'Skill can exceed the pipeline cap (unbounded SKILL.md) but declares no static moreHint').toBeTruthy();
+    expect(tool.moreHint, 'Skill can exceed the pipeline cap (unbounded SKILL.md) and must keep declaring a static moreHint').toBeTruthy();
   });
 
   it('no tool advises a parameter its own schema does not accept', () => {
@@ -223,6 +226,47 @@ describe('every non-exempt CORE_TOOL declares a static moreHint', () => {
       // via defineTool, so the pipeline cap (and thus moreHint) never applies.
       if (BOUNDS_EXEMPT[tool.name] || tool.interactive) continue;
       expect(tool.moreHint, `${tool.name} can exceed its cap but declares no static moreHint fallback`).toBeTruthy();
+    }
+  });
+});
+
+// -----------------------------------------------------------------------
+// BLOCKER fix (2026-08-06): every guard above sweeps CORE_TOOLS — the
+// statically-registered set (index.ts). MCP-derived tools (mcp-tools.ts) are
+// NOT in that array; they are built at runtime, one per server, from
+// mcpToolsFor(). A guard that can structurally only see CORE_TOOLS cannot
+// catch a whole tool FAMILY shipping with no static moreHint — which is
+// exactly what happened here: MCP tools inherited the pipeline's default cap
+// with no fallback, so a big response from ANY MCP server hit composeNotice's
+// bare no-advice branch. This block exercises mcpToolsFor() directly so a
+// future regression (a moreHint accidentally dropped from mcp-tools.ts) fails
+// a test instead of shipping silently again.
+describe('MCP-derived tools declare a static moreHint too (structural gap the CORE_TOOLS sweep above cannot see)', () => {
+  function fakeServer(toolNames: string[]) {
+    return {
+      id: 'test-server',
+      label: 'Test Server',
+      tools: toolNames.map((name) => ({ name, description: `desc for ${name}`, inputSchema: { type: 'object' } })),
+      call: async () => ({ text: '', isError: false }),
+    } as any;
+  }
+
+  it('every tool mcpToolsFor() wraps declares a non-empty moreHint', () => {
+    const tools = mcpToolsFor(fakeServer(['search', 'send_email', 'wipe_all']));
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.moreHint, `${tool.name} (MCP-derived) declares no static moreHint fallback`).toBeTruthy();
+    }
+  });
+
+  it('the MCP static hint never guesses a parameter name — the arguments belong to the SERVER schema, not this file', () => {
+    // Same failure mode the CORE_TOOLS guard checks for offset/limit, applied
+    // to MCP tools' own vocabulary risk: mcp-tools.ts never validates
+    // `rawInputSchema` (it is passthrough), so a hint that named a specific
+    // parameter would be a guess this file cannot back up.
+    const tools = mcpToolsFor(fakeServer(['search_threads']));
+    for (const tool of tools) {
+      expect(tool.moreHint).not.toMatch(/\boffset\b|\blimit\b/);
     }
   });
 });

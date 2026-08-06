@@ -363,9 +363,21 @@ export const BashTool = defineTool({
         // guard pulled it back.
         let reportedCwd: string | null = null;
         let resetTo: string | null = null;
+        // Fix: length of the sentinel-stripped text BEFORE stripAnsi runs, used
+        // below for the reported "shown" count instead of `body.length`. `body`
+        // becomes ANSI-STRIPPED further down (what the model actually reads),
+        // while `totalChars` above accumulated RAW chunks — colour codes
+        // included — as they streamed in. Reporting shown: body.length
+        // (post-strip) against total: totalChars (pre-strip) mixed two
+        // different currencies in one line: a coloured 3,000-line run printed
+        // "showing 21491 of 117000 bytes" where the 117000 counted escape
+        // sequences the 21491 did not. Measuring both sides at the SAME point
+        // (before the ANSI strip) makes the comparison honest again.
+        let preAnsiLen: number;
         if (probe) {
           const parsed = extractCwd(joined());
           sentinelOverhead = rawLen - parsed.text.length;
+          preAnsiLen = parsed.text.length;
           // Strip AFTER extractCwd, not before: the sentinel must be parsed from
           // raw bytes, so a colour code that happened to straddle the sentinel
           // line can't mangle the cwd we hand back to the model.
@@ -386,6 +398,7 @@ export const BashTool = defineTool({
             }
           }
         } else {
+          preAnsiLen = joined().length;
           body = stripAnsi(joined());
         }
         // ONE metadata line, always. Four of five reviewing models independently
@@ -406,7 +419,19 @@ export const BashTool = defineTool({
         const trueTotal = totalChars - sentinelOverhead;
         const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
         const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
-        if (dropped) meta.push(`${trueTotal} bytes output, showing ${body.length}`);
+        // Fix: label matches what's actually counted. HEAD_CHARS/TAIL_CHARS,
+        // totalChars, and defineTool's own pipeline cap (caps.maxChars) all
+        // operate on the JS string produced by `String(d)` — UTF-16 code units,
+        // i.e. characters, never real UTF-8 byte counts. Calling that "bytes"
+        // was wrong for any multi-byte output: 60,000 CJK characters (180,000
+        // real UTF-8 bytes) were reported as "60005 bytes". Making the count
+        // byte-accurate would mean re-deriving the whole head/tail accumulator
+        // from Buffers instead of decoded strings — a much larger change than
+        // this fix — and it is not what a model deciding whether to re-run with
+        // `| head -n 100` actually needs (that decision is about lines/chars in
+        // the stream, not its wire byte size). Relabeling as 'chars' makes the
+        // existing count honest without changing what is measured.
+        if (dropped) meta.push(`${trueTotal} chars output, showing ${preAnsiLen}`);
         // Fix: when a command exits with genuinely no output (e.g. `exit 3`),
         // `${prefix}${body}` was '' — trimming that and prepending the metadata
         // line produced a result that STARTED with a blank line and said nothing
@@ -421,9 +446,9 @@ export const BashTool = defineTool({
           isError,
           bounds: dropped
             ? {
-                shown: body.length,
+                shown: preAnsiLen,
                 total: trueTotal,
-                unit: 'bytes' as const,
+                unit: 'chars' as const,
                 moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
               }
             : undefined,

@@ -22,6 +22,19 @@ export function mcpToolsFor(server: ReadyServer): NativeTool[] {
     // server's own annotations (readOnlyHint, destructiveHint) are IGNORED here
     // on purpose — a server is not a trusted authority about its own danger.
     permissionSubject: () => undefined,
+    // Fix: an MCP tool's result size is decided by the SERVER, not this file —
+    // there is no per-call way for execute() below to know how much the server
+    // held back, so `bounds` can never be set here and every MCP tool hit
+    // composeNotice's no-`bounds` fallback with no `moreHint`, which used to
+    // mean a bare "[output truncated: showing N of M chars]" with zero
+    // widening advice. That is the COMMON case for MCP tools (unbounded by
+    // construction), not an edge one. This is the STATIC fallback (types.ts
+    // NativeTool.moreHint) for exactly that branch. It deliberately names NO
+    // parameter: the schema in `rawInputSchema` belongs to the server, this
+    // file never validates it (see inputSchema above), and guessing a
+    // parameter name here would reintroduce the exact bug Task 1 removed the
+    // shared advice string to prevent — advice a tool's own schema can't back.
+    moreHint: `ask ${server.label}'s ${t.name} tool for a smaller result, or split the request into more, narrower calls to this server`,
     execute: async (args, ctx) => {
       const r = await server.call(t.name, args, ctx.signal);
       return { text: r.text, isError: r.isError };

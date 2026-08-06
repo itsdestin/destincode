@@ -81,8 +81,17 @@ export function composeNotice(
     const advice = fallbackHint ? ` — ${fallbackHint}` : '';
     return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars${advice}]`;
   }
-  const total = bounds.total === null ? `at least ${bounds.shown}` : String(bounds.total);
-  const toolPart = `${bounds.shown} of ${total} ${bounds.unit}`;
+  // WHY total === null gets its OWN phrasing, not "at least N" (2026-08-06,
+  // elevated-minor review): "showing N of at least N" collapses to "that is
+  // ALL of them" — the opposite of what `total: null` means (the tool stopped
+  // counting; more may exist beyond what's shown). Glob rendered "showing 2000
+  // of at least 2000 files" for a walk that may have seen 50,000+ — a
+  // tautology, not a warning. State plainly that more may exist and the count
+  // is unknown, without inventing a floor that reads as a ceiling. A KNOWN
+  // total keeps its exact "N of M" rendering below, unchanged.
+  const toolPart = bounds.total === null
+    ? `${bounds.shown} ${bounds.unit} (more may exist — exact total unknown)`
+    : `${bounds.shown} of ${bounds.total} ${bounds.unit}`;
   if (!cap) return `\n[showing ${toolPart} — ${bounds.moreHint}]`;
   return `\n[showing ${cap.shown} of ${cap.total} chars, and ${toolPart} — ${bounds.moreHint}]`;
 }

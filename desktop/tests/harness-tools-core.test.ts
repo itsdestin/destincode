@@ -279,10 +279,67 @@ describe('Bash', () => {
       { command: `node -e "process.stdout.write('z'.repeat(400000))"` },
       ctx,
     );
-    expect(r.bounds?.unit).toBe('bytes');
+    // Fix (2026-08-06): was labeled 'bytes' but always counted JS string
+    // length (UTF-16 code units) — see the two tests below for the mismatch
+    // this produced on multi-byte and coloured output.
+    expect(r.bounds?.unit).toBe('chars');
     expect(r.bounds?.total).toBe(400_000);
     expect(r.bounds?.moreHint).toContain('head');
     expect(r.text).not.toContain('204800');
+  }, 30_000);
+
+  // Fix (2026-08-06 review, elevated minor's Bash sibling finding): the unit
+  // said 'bytes' but the code always counted `.length` on the JS string
+  // `String(d)` decodes stdout into — UTF-16 code units, not real UTF-8 bytes.
+  // For any character outside the ASCII range those two numbers diverge.
+  it('labels a multi-byte-character run in the currency it actually counted (chars, not inflated bytes)', async () => {
+    // U+4F60 ("you") is one UTF-16 code unit but three UTF-8 bytes: 60,000
+    // repeats is 60,000 chars but 180,000 real bytes. Reporting either number
+    // is defensible; reporting 60,000 while LABELING it "bytes" is not.
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u4f60'.repeat(60000))"` },
+      ctx,
+    );
+    expect(r.bounds?.unit).toBe('chars');
+    // Not an exact 60,000: a multi-byte character CAN straddle a pipe chunk
+    // boundary and decode to a stray replacement char, so pin a tight range
+    // instead of a brittle exact count. The number that matters is that it is
+    // nowhere near the real UTF-8 byte count (180,000) — a wire-byte number
+    // would be a lie under the label 'chars', and a char-count under the
+    // label 'bytes' (the pre-fix bug) is the lie this test guards against.
+    expect(r.bounds?.total).toBeGreaterThan(55_000);
+    expect(r.bounds?.total).toBeLessThan(65_000);
+    expect(r.text).toContain('chars output');
+    expect(r.text).not.toContain('bytes output');
+  }, 30_000);
+
+  // Fix (2026-08-06 review): `shown` used to be measured AFTER stripAnsi ran
+  // (on the text the model actually reads) while `total` (totalChars) was
+  // measured BEFORE it, as raw chunks streamed in — two different currencies
+  // in the same "showing N of M" line. A coloured 3,000-line run pinned the
+  // symptom directly: "showing 21491 of 117000 bytes", where 117000 counted
+  // escape sequences 21491 did not. This pins that shown and total are now
+  // measured at the SAME point (before the ANSI strip), by checking that
+  // `shown` is honest about still including the colour-code overhead — i.e.
+  // it is NOT silently equal to the length of the ANSI-free text the model
+  // actually sees, which is what the old post-strip `shown` was.
+  it('measures shown and total in the same currency for coloured output that crosses the retention window', async () => {
+    const r = await BashTool.execute(
+      {
+        command: `node -e "for(let i=0;i<3000;i++)process.stdout.write('\\u001b[32mline'+i+'\\u001b[39m\\n')"`,
+      },
+      ctx,
+    );
+    expect(r.bounds).toBeDefined();
+    expect(r.bounds?.unit).toBe('chars');
+    expect(r.bounds!.total as number).toBeGreaterThanOrEqual(r.bounds!.shown);
+    // The ANSI-free body the model actually reads (metadata line split off).
+    const visibleBody = r.text.split('\n[cwd:')[0];
+    expect(r.text).not.toMatch(/\x1b\[/); // colour codes never reach the model
+    // `shown` still counts the stripped-out escape sequences (same currency
+    // as `total`), so it must exceed the length of what's actually visible —
+    // the pre-fix bug was `shown === visibleBody.length` exactly.
+    expect(r.bounds!.shown).toBeGreaterThan(visibleBody.length);
   }, 30_000);
 
   it('Bash declares no bounds for small output', async () => {
