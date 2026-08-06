@@ -59,34 +59,135 @@ const VOID_ELEMENTS = new Set([
   'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 
+/** ASCII letter/digit test for tag- and attribute-name characters. A plain
+ *  charCode range check (not a per-character regex) so walkTags below stays
+ *  cheap per character while still doing a single forward pass overall. */
+function isNameChar(code: number): boolean {
+  return (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code >= 48 && code <= 57);
+}
+
+/** One tag found by walkTags: lowercased name, whether it's a closing tag,
+ *  whether it's self-closed (`<br/>`), and its raw (case-preserved) attribute
+ *  text — the slice between the tag name and the terminating '>'. Close tags
+ *  carry no attrs in real HTML, so `attrs` is '' for them. */
+interface TagToken { name: string; isClose: boolean; selfClosed: boolean; attrs: string; }
+
+/** Shared linear tag walker for BOTH the complexity guard's depth count and
+ *  collectAnchorIds' id/name scan (CRITICAL + IMPORTANT findings, 2026-08-06
+ *  re-review — this is the SAME defect class as stripToText's fix above, not
+ *  a new one). Before this, each caller ran its own regex over the raw
+ *  string — tagRe here, and ID_ATTR_RE/ANCHOR_NAME_RE in collectAnchorIds —
+ *  and all three were quadratic on the same input shape: many '<' with no
+ *  matching '>' forces a backtracking-retry engine to reattempt the match at
+ *  every subsequent character, each attempt re-scanning to the end. Measured
+ *  on a 5.14MB body: tagRe on 14,999 unterminated '<a' (no '>' anywhere) took
+ *  9,965ms — inside THIS function, i.e. the guard that exists to stop a
+ *  main-thread freeze was itself the freeze. ANCHOR_NAME_RE on a body that
+ *  passes the guard (14,994 real '<', depth 0) but contains many <a> tags
+ *  with no `name=` took 9,810ms once a #fragment triggered resolveFragment.
+ *
+ *  This walker is linear BY CONSTRUCTION, same technique as stripToText: `i`
+ *  only moves forward. The load-bearing fix is the early `return` on a failed
+ *  indexOf('>', ...): the FIRST time no '>' is found searching from position
+ *  p to the end of the string, NO tag starting anywhere at or after p can
+ *  ever close either (a match must consume a literal '>' that indexOf just
+ *  proved does not exist in the remainder) — so stopping once, instead of
+ *  retrying at every subsequent '<', is what makes total work O(n) regardless
+ *  of content shape. See "does not freeze" tests in web-fetch-tool.test.ts for
+ *  the pinned numbers on both call sites.
+ *
+ *  Script/style bodies are skipped wholesale (not walked for nested tags),
+ *  same as stripToText's first phase, because their text can contain tag- or
+ *  attribute-shaped substrings that are not real DOM (`document.write('<div>')`,
+ *  `var s = 'id=leaked'`). A real HTML parser — including linkedom, which this
+ *  guard exists to protect Readability from — never parses script/style
+ *  contents as elements either, so this makes the guard's depth estimate and
+ *  collectAnchorIds' id scan track what Readability will actually see; it
+ *  does not relax MAX_DEPTH, MAX_TAGS, or which real anchors are found. */
+function walkTags(html: string, onTag: (tag: TagToken) => void): void {
+  const n = html.length;
+  const lower = html.toLowerCase();
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1) return;
+    if (lower.startsWith('<!--', lt)) {
+      const close = lower.indexOf('-->', lt + 4);
+      i = close === -1 ? n : close + 3;
+      continue;
+    }
+    if (html[lt + 1] === '!' || html[lt + 1] === '?') {
+      // Doctype/processing-instruction — no id/name of interest, no depth effect.
+      const gt = html.indexOf('>', lt);
+      if (gt === -1) return; // no '>' anywhere later — nothing further can ever match
+      i = gt + 1;
+      continue;
+    }
+    let pos = lt + 1;
+    const isClose = html[pos] === '/';
+    if (isClose) pos++;
+    const nameStart = pos;
+    while (pos < n && isNameChar(html.charCodeAt(pos))) pos++;
+    if (pos === nameStart) {
+      // '<' not followed by a valid tag-name start (stray '<', '<3', etc.) —
+      // not a tag. Advance past just this '<'; the next indexOf resumes from
+      // here, so this stays one forward pass over the whole string.
+      i = lt + 1;
+      continue;
+    }
+    const name = lower.slice(nameStart, pos);
+    if (!isClose && (name === 'script' || name === 'style')) {
+      const openGt = html.indexOf('>', pos);
+      if (openGt === -1) return;
+      const closer = name === 'script' ? '</script>' : '</style>';
+      const closeIdx = lower.indexOf(closer, openGt + 1);
+      i = closeIdx === -1 ? n : closeIdx + closer.length;
+      continue;
+    }
+    const gt = html.indexOf('>', pos);
+    if (gt === -1) return; // CRITICAL early-exit — see WHY above
+    const selfClosed = html.charCodeAt(gt - 1) === 47; // '/'
+    onTag({ name, isClose, selfClosed, attrs: isClose ? '' : html.slice(pos, gt) });
+    i = gt + 1;
+  }
+}
+
 /** Cheap O(n) rejection of pathological HTML BEFORE the quadratic Readability
  *  parse. Returns an honest error message when the page is too broad or too
  *  deeply nested to extract safely; returns null when it is safe to proceed. */
 function tooComplexToExtract(rawHtml: string): string | null {
   // Breadth proxy: count '<' across the whole string (includes text-node '<' and
   // comments — a deliberate cheap over-approximation). Bounds huge tables /
-  // anchor lists whose cost comes from tag COUNT, not depth.
+  // anchor lists whose cost comes from tag COUNT, not depth. This regex is a
+  // single literal-character scan (no backtracking risk), so it stays O(n)
+  // regardless of content shape — it was never the quadratic part.
   const tagCount = (rawHtml.match(/</g) || []).length;
   if (tagCount > MAX_TAGS) {
     return 'WebFetch: this page is too large or deeply nested to extract safely. Try a more specific URL or a printer-friendly/article version.';
   }
-  // Depth: single pass over tag matches, tracking a running open/close depth and
+  // Depth: single pass via walkTags, tracking a running open/close depth and
   // its max. Increment on a non-void, non-self-closed open tag; decrement on a
   // close tag; clamp at 0 so malformed close-heavy input can't underflow.
-  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(\/?)>/g;
+  //
+  // WHY walkTags and not the previous /<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(\/?)>/g
+  // (CRITICAL, 2026-08-06 re-review): that regex's [^>]*? is a lazy quantifier —
+  // when a '<tagname' is never followed by '>', the match attempt fails and the
+  // engine retries starting at the NEXT character, re-scanning to the end again.
+  // Measured on this machine: a 5.14MB body of 14,999 unterminated '<a' (zero
+  // '>' anywhere) took 9,965ms inside WebFetchTool.execute — the tag-count
+  // pre-check above does not save it, because it counts '<' characters, not
+  // parsed tags, so this exact shape sits right under MAX_TAGS and reaches this
+  // scan. See "does not freeze" test pinning the fixed number.
   let depth = 0;
   let maxDepth = 0;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(rawHtml)) !== null) {
-    const isClose = m[1] === '/';
-    const selfClosed = m[3] === '/';
-    if (isClose) {
+  walkTags(rawHtml, (tag) => {
+    if (tag.isClose) {
       depth = Math.max(0, depth - 1);
-    } else if (!selfClosed && !VOID_ELEMENTS.has(m[2].toLowerCase())) {
+    } else if (!tag.selfClosed && !VOID_ELEMENTS.has(tag.name)) {
       depth++;
       if (depth > maxDepth) maxDepth = depth;
     }
-  }
+  });
   if (maxDepth > MAX_DEPTH) {
     return 'WebFetch: this page is too large or deeply nested to extract safely. Try a more specific URL or a printer-friendly/article version.';
   }
@@ -216,7 +317,21 @@ const EMPTY_ROOT = /<div id="(?:root|app|__next)"\s*>\s*<\/div>/i;
  *  (server-rendered, near-identical extraction ratio before this fix) 19.07%.
  *  Both these are what the committed test fixtures actually measure, not the
  *  5.3%/16.0% an earlier draft of this comment claimed. 10% still sits in the
- *  gap between them. */
+ *  gap between them.
+ *
+ *  WHY the direction of this change matters (Minor finding, 2026-08-06
+ *  re-review): excluding script/style from the denominator can only RAISE the
+ *  ratio (the denominator only ever shrinks), so this change can only produce
+ *  false NEGATIVES (a JS-rendered page slipping under the floor undetected),
+ *  never false positives. Concretely, on vitest-config.html — the fixture
+ *  that MUST stay flagged — the margin between its density and the 10% floor
+ *  shrank from 4.64pp (old, raw html.length denominator: 5.36%) to 2.82pp
+ *  (new: 7.18%). That margin is now the safety cushion: a real VitePress page
+ *  with a larger __VP_HASH_MAP__ blob than this fixture's would push the
+ *  ratio closer to 10% and could clear the floor, silently losing the
+ *  JS-render disclosure. If that starts happening, raise TEXT_DENSITY_FLOOR,
+ *  not the denominator logic — lowering the floor is the direction that
+ *  re-admits false negatives; nothing here should ever LOWER it. */
 const TEXT_DENSITY_FLOOR = 0.10;
 
 /** Core of the JS-render check, taking an already-computed stripped text so
@@ -252,25 +367,102 @@ export function looksJsRendered(html: string): boolean {
 // WHY this scans both `id=` (any tag) and `<a name=...>` (Important finding,
 // 2026-08-06 review): the previous regex was /\sid="([^"]+)"/gi — double-quoted
 // only. Single-quoted id='x', unquoted id=x, and legacy <a name="x"> anchors
-// all missed silently; the committed vitest-config.html fixture alone carries
-// 9 `name="` attributes that the old scan never saw. `resolveFragment`'s
-// `absent` result is reported to the model as a categorical "this anchor does
-// not exist" (see execute() below), so under-scanning here directly produced
-// false claims.
-const ID_ATTR_RE = /\bid\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi;
-const ANCHOR_NAME_RE = /<a\b[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi;
+// all missed silently. `resolveFragment`'s `absent` result is reported to the
+// model as a categorical "this anchor does not exist" (see execute() below),
+// so under-scanning here directly produced false claims.
+//
+// WHY these are read from PARSED attributes (via walkTags' bounded `attrs`
+// slice + parseAttrs below), not a regex over the whole raw string (CRITICAL,
+// 2026-08-06 re-review): the broadened version of this fix originally used
+// /<a\b[^>]*?\bname\s*=.../g over the full document, and — same defect class
+// as tagRe above — retried at every <a with no `name=`, each retry
+// re-scanning to the next '>'. Measured on a 5.14MB body with many such <a>
+// tags plus a #fragment (which is what triggers this scan): 9,810ms. Scoping
+// to a single already-located tag's attrs slice keeps the work per tag
+// bounded and non-overlapping across the document, so total cost stays O(n)
+// — see the "does not freeze" fragment test below.
+//
+// WHY this reads parsed attribute NAMES, not a `\bid\s*=` regex scoped to the
+// tag's attrs text (Important finding, 2026-08-06 re-review, TWO layers deep):
+// scoping to a tag is not enough by itself — a regex search of the whole
+// attrs slice for `\bid\s*=` still matches `data-id="ghost"` (the `-` before
+// "id" is a non-word character, so \b sees a real boundary there too) AND
+// `href="/page?id=42"` (the id= sits inside a DIFFERENT attribute's quoted
+// VALUE, which the regex can't distinguish from a standalone attribute).
+// Actually tokenizing attrs into name/value pairs (parseAttrs) fixes both:
+// "id" is only recognized as an id when it is a complete attribute NAME, and
+// text inside another attribute's value is consumed as that attribute's
+// value and never re-scanned for "id=". `id=` inside a <script>/<style> body
+// or an HTML comment is excluded earlier, at the walkTags level (those
+// bodies are skipped wholesale, never handed to parseAttrs at all). Every
+// false hit here used to flip a correct `absent` verdict into a fabricated
+// `dropped` claim ("the page has an anchor ... but extraction did not keep
+// that section"). On the committed vitest-config.html fixture, the old
+// narrow (double-quoted-only) scan found 12 ids and the unscoped broad scan
+// also found 12 — broadening added no real anchors on that page, only
+// false-positive risk on adversarial ones.
+function isAttrSpace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13 || code === 12;
+}
 
-/** Every id= (any element, any quoting) and legacy <a name=...> anchor value
- *  in the document, case PRESERVED — case-sensitivity is resolved by the
- *  caller (resolveFragment), not here. */
+/** Splits one tag's attribute text into name→value pairs. Hand-written scan
+ *  (not a regex over the whole slice) for the same reason as walkTags: the
+ *  cursor only moves forward, one attribute at a time, so it can't reintroduce
+ *  a retry-at-every-position shape either. An unterminated quoted value (rare,
+ *  malformed input) is handled the same way as an unterminated tag elsewhere
+ *  in this file — indexOf fails ONCE, the rest of the slice is treated as
+ *  that value, no retry. */
+function parseAttrs(attrs: string): Map<string, string> {
+  const result = new Map<string, string>();
+  const n = attrs.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
+    if (i >= n) break;
+    const nameStart = i;
+    while (i < n && attrs[i] !== '=' && !isAttrSpace(attrs.charCodeAt(i))) i++;
+    const name = attrs.slice(nameStart, i).toLowerCase();
+    if (!name) { i++; continue; } // stray '=' with nothing before it — skip forward, don't loop
+    while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
+    let value = '';
+    if (attrs[i] === '=') {
+      i++;
+      while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
+      const quote = attrs[i];
+      if (quote === '"' || quote === "'") {
+        i++;
+        const closeIdx = attrs.indexOf(quote, i);
+        const valEnd = closeIdx === -1 ? n : closeIdx;
+        value = attrs.slice(i, valEnd);
+        i = closeIdx === -1 ? n : closeIdx + 1;
+      } else {
+        const valStart = i;
+        while (i < n && !isAttrSpace(attrs.charCodeAt(i))) i++;
+        value = attrs.slice(valStart, i);
+      }
+    }
+    result.set(name, value);
+  }
+  return result;
+}
+
+/** Every id= (any real element, any quoting) and legacy <a name=...> anchor
+ *  value in the document, case PRESERVED — case-sensitivity is resolved by
+ *  the caller (resolveFragment), not here. Built from walkTags + parseAttrs
+ *  so script, style, comment bodies, and other attributes' values are never
+ *  mistaken for a real id/name attribute. */
 function collectAnchorIds(rawHtml: string): Set<string> {
   const ids = new Set<string>();
-  for (const re of [ID_ATTR_RE, ANCHOR_NAME_RE]) {
-    for (const m of rawHtml.matchAll(re)) {
-      const value = m[1] ?? m[2] ?? m[3];
-      if (value) ids.add(value);
+  walkTags(rawHtml, (tag) => {
+    if (tag.isClose) return;
+    const attrs = parseAttrs(tag.attrs);
+    const idValue = attrs.get('id');
+    if (idValue) ids.add(idValue);
+    if (tag.name === 'a') {
+      const nameValue = attrs.get('name');
+      if (nameValue) ids.add(nameValue);
     }
-  }
+  });
   return ids;
 }
 

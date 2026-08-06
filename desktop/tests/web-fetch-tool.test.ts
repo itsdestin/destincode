@@ -127,6 +127,23 @@ describe('WebFetch', () => {
     expect(r.text).toContain('API Guide');
   });
 
+  it('DOES call Readability.parse on a normal page that clears the guard (positive control)', async () => {
+    // MINOR finding (2026-08-06 re-review): every other test in this describe
+    // block that spies on Readability.prototype.parse asserts it was NOT
+    // called (guard-path tests above). Nothing previously asserted it IS
+    // called on the normal path — a change that stopped invoking Readability
+    // entirely (e.g. always falling through to the plain-text path) would
+    // have left all three of those tests green. This is that missing control.
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const article = '<html><head><title>Docs</title></head><body><article><h1>API Guide</h1><p>'
+      + 'Real content that is long enough to be extractable. '.repeat(30) + '</p></article></body></html>';
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(article) });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/normal' } as any, ctx());
+    expect(r.isError).toBeUndefined();
+    expect(parseSpy).toHaveBeenCalled();
+    parseSpy.mockRestore();
+  });
+
   it('returns a clean isError (never an uncaught throw) on malformed HTML', async () => {
     // The reviewer saw `new Readability(document)` throw on some malformed input.
     // defineTool's try/catch must convert any such throw into an isError result,
@@ -185,6 +202,41 @@ describe('WebFetch', () => {
     expect(parseSpy).not.toHaveBeenCalled(); // guard still stopped Readability, not just stripToText
     expect(elapsed).toBeLessThan(1000); // was 12,194ms before the fix
     parseSpy.mockRestore();
+  });
+
+  it('does not freeze when the complexity guard itself scans ~5MB of unterminated "<a" tags (CRITICAL regression, guard tagRe)', async () => {
+    // WHY this exact shape (2026-08-06 re-review, finding "IMPORTANT — the
+    // guard's own tagRe is quadratic"): tooComplexToExtract's OLD depth-scan
+    // regex (/<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(\/?)>/g) is what froze here —
+    // NOT stripToText, which the previous round already fixed. The tag-COUNT
+    // pre-check (which just counts raw '<' characters) does not save it:
+    // 14,999 is deliberately just under MAX_TAGS (15,000), so this input
+    // reaches the depth scan. There is no '>' anywhere in the ~5MB document,
+    // so the old lazy-quantifier regex fails at every one of the 14,999 '<a'
+    // starts and retries at every subsequent character, each retry
+    // re-scanning to the (nonexistent) end. Measured directly against the old
+    // regex on this exact shape: 9,965ms, entirely inside
+    // WebFetchTool.execute, before Readability is ever reached.
+    const filler = 'x'.repeat(340); // pads to ~5MB while keeping the '<' count (14,999) under MAX_TAGS
+    const adversarial = ('<a ' + filler).repeat(14_999);
+    const t0 = Date.now();
+    const r = await fetchWith(adversarial, 'https://example.com/adversarial-guard');
+    const elapsed = Date.now() - t0;
+    expect(typeof r.text).toBe('string'); // never an uncaught throw
+    expect(elapsed).toBeLessThan(1000); // was 9,965ms before the fix
+  });
+
+  it('does not freeze on 5MB of bare "<" characters (guard tag-count pre-check)', async () => {
+    // WHY (task requirement): the cheapest possible adversarial shape for the
+    // tag-count pre-check itself — pure '<' repeated to the body cap. This
+    // pins that the O(n) /</g pre-check (never the quadratic part, but worth
+    // a floor test) keeps this instant even at the full 5MB cap.
+    const adversarial = '<'.repeat(5 * 1024 * 1024);
+    const t0 = Date.now();
+    const r = await fetchWith(adversarial, 'https://example.com/bare-lt');
+    const elapsed = Date.now() - t0;
+    expect(typeof r.text).toBe('string');
+    expect(elapsed).toBeLessThan(1000);
   });
 
   it('discloses the fallback char cap when the too-complex page exceeds it', async () => {
@@ -355,5 +407,61 @@ describe('resolveFragment', () => {
   it('reports bodyTruncated: true when the caller says the body was cut off', () => {
     const r = resolveFragment('<html><body>no anchors here</body></html>', '', 'missing', true);
     expect(r).toEqual({ kind: 'absent', bodyTruncated: true });
+  });
+
+  it('resolves quickly against thousands of <a> tags with no name= (CRITICAL regression, ANCHOR_NAME_RE)', () => {
+    // WHY this exact shape (2026-08-06 re-review, finding "CRITICAL —
+    // ANCHOR_NAME_RE is quadratic"): the OLD /<a\b[^>]*?\bname\s*=.../g scan
+    // (run via matchAll only when the request URL carries a #fragment)
+    // retried at every <a lacking name=, each retry re-scanning forward.
+    // Measured on a comparable 5.14MB body (14,994 '<', depth 0, passes the
+    // complexity guard, Readability runs fine): 59ms with no fragment vs
+    // 9,810ms with one — the entire ~9.75s delta is this one scan, on the
+    // main loop, uncatchable by defineTool's try/catch.
+    //
+    // This calls resolveFragment (which calls collectAnchorIds) directly
+    // rather than through the full WebFetchTool pipeline: turndown's own
+    // conversion cost on thousands of sibling <a> elements is a separate,
+    // pre-existing library characteristic (roughly O(n^1.7) empirically —
+    // 500 anchors: 33ms, 4000 anchors: 1,693ms) that is unrelated to this fix
+    // and out of scope for this round (the five findings here are all
+    // "regex over untrusted HTML" inside THIS file). Going through the full
+    // pipeline would let turndown's unrelated cost dominate the measurement
+    // and mask whether collectAnchorIds itself is actually fast.
+    const unit = '<a href="#">' + 'x'.repeat(660) + '</a>';
+    const body = '<html><body>' + unit.repeat(7000) + '</body></html>';
+    const t0 = Date.now();
+    const r = resolveFragment(body, '# nothing relevant', 'section');
+    const elapsed = Date.now() - t0;
+    expect(r.kind).toBe('absent');
+    expect(elapsed).toBeLessThan(1000); // was ~9,810ms (full old scan) before the fix
+  });
+
+  // --- false-anchor scoping (Important finding, 2026-08-06 re-review) ---
+  // The old \bid\s*= regex matched id= as a bare substring anywhere in the raw
+  // HTML, so each of these produced a fabricated anchor that flipped a correct
+  // `absent` verdict into a false `dropped` claim ("the page has an anchor
+  // named X, but extraction did not keep that section"). Each must report
+  // `absent`, never `dropped` — dropped means "id= was really matched but the
+  // section vanished during extraction", which is not what happened here.
+
+  it('does not treat data-id= as a real anchor id', () => {
+    const page = '<html><body><div data-id="ghost">text</div></body></html>';
+    expect(resolveFragment(page, '# Nothing relevant', 'ghost').kind).toBe('absent');
+  });
+
+  it('does not treat an id= inside a different attribute\'s value (href query string) as a real anchor id', () => {
+    const page = '<html><body><a href="/page?id=42">link</a></body></html>';
+    expect(resolveFragment(page, '# Nothing relevant', '42').kind).toBe('absent');
+  });
+
+  it('does not treat id= assigned inside a <script> body as a real anchor id', () => {
+    const page = '<html><body><script>el.id = "jsassigned"; var s = "id=leaked";</script></body></html>';
+    expect(resolveFragment(page, '# Nothing relevant', 'jsassigned').kind).toBe('absent');
+  });
+
+  it('does not treat id= written inside an HTML comment as a real anchor id', () => {
+    const page = '<html><body><!-- id="commented" --><p>text</p></body></html>';
+    expect(resolveFragment(page, '# Nothing relevant', 'commented').kind).toBe('absent');
   });
 });
