@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Readability } from '@mozilla/readability';
+import { parseHTML } from 'linkedom';
 import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment } from '../src/main/harness/tools/web-fetch';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
@@ -226,6 +227,37 @@ describe('WebFetch', () => {
     expect(elapsed).toBeLessThan(1000); // was 9,965ms before the fix
   });
 
+  it('does not misjudge depth on a comment body whose lowercase fold changes length (CRITICAL regression, round 3)', async () => {
+    // WHY this exact shape (2026-08-06 round-3 review): the guard's depth scan
+    // used to build one `lower = html.toLowerCase()` copy and index it with
+    // offsets computed against `html`'s own length. That is only safe if
+    // lowercasing never changes length, which is false for some codepoints —
+    // 'İ'.toLowerCase() (U+0130) is TWO UTF-16 units. A 200,000-char comment
+    // body of 'İ' makes `lower` 200,000 units longer than `html`, so the
+    // comment-close search (run against `lower`) finds '-->' at an index that
+    // overshoots the SAME position in `html` by 200,000 characters — the
+    // cursor skips straight over the 1,000-deep <div> nest that follows,
+    // the guard measures depth < 150, and Readability runs on a document
+    // that is ACTUALLY 1,000 deep. Measured directly against the OLD
+    // (aliased) guard logic on this exact payload: it returned "not too
+    // complex" in 5ms, i.e. it let the page through. Verified as a real
+    // regression at e1eee255^ (before this file's round-1 fix): the same
+    // payload was rejected by the guard in 3ms with Readability never
+    // called. The fix removes the second string entirely (see indexOfFold's
+    // WHY comment) so there is only ever one index space.
+    const payload = '<!--' + 'İ'.repeat(200_000) + '-->' + '<div>'.repeat(1000) + 'x' + '</div>'.repeat(1000);
+    const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+    const t0 = Date.now();
+    const r = await fetchWith(`<html><body>${payload}</body></html>`, 'https://example.com/aliasing');
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/too large or deeply nested/);
+    expect(r.text).toContain('simplified extraction');
+    expect(parseSpy).not.toHaveBeenCalled(); // guard must reject BEFORE Readability, not discover the hang inside it
+    expect(elapsed).toBeLessThan(1000); // was 8,376ms before the fix (Readability ran on an actually-1000-deep doc)
+    parseSpy.mockRestore();
+  });
+
   it('does not freeze on 5MB of bare "<" characters (guard tag-count pre-check)', async () => {
     // WHY (task requirement): the cheapest possible adversarial shape for the
     // tag-count pre-check itself — pure '<' repeated to the body cap. This
@@ -409,32 +441,99 @@ describe('resolveFragment', () => {
     expect(r).toEqual({ kind: 'absent', bodyTruncated: true });
   });
 
-  it('resolves quickly against thousands of <a> tags with no name= (CRITICAL regression, ANCHOR_NAME_RE)', () => {
-    // WHY this exact shape (2026-08-06 re-review, finding "CRITICAL —
-    // ANCHOR_NAME_RE is quadratic"): the OLD /<a\b[^>]*?\bname\s*=.../g scan
-    // (run via matchAll only when the request URL carries a #fragment)
-    // retried at every <a lacking name=, each retry re-scanning forward.
-    // Measured on a comparable 5.14MB body (14,994 '<', depth 0, passes the
-    // complexity guard, Readability runs fine): 59ms with no fragment vs
-    // 9,810ms with one — the entire ~9.75s delta is this one scan, on the
-    // main loop, uncatchable by defineTool's try/catch.
-    //
-    // This calls resolveFragment (which calls collectAnchorIds) directly
-    // rather than through the full WebFetchTool pipeline: turndown's own
-    // conversion cost on thousands of sibling <a> elements is a separate,
-    // pre-existing library characteristic (roughly O(n^1.7) empirically —
-    // 500 anchors: 33ms, 4000 anchors: 1,693ms) that is unrelated to this fix
-    // and out of scope for this round (the five findings here are all
-    // "regex over untrusted HTML" inside THIS file). Going through the full
-    // pipeline would let turndown's unrelated cost dominate the measurement
-    // and mask whether collectAnchorIds itself is actually fast.
+  it('resolves quickly against thousands of <a> tags with no name= (regression floor, was ANCHOR_NAME_RE)', () => {
+    // WHY this shape is still pinned (round 3): the ORIGINAL defect here was
+    // ANCHOR_NAME_RE, a hand-rolled regex that retried at every <a lacking
+    // name=, each retry re-scanning forward — 9,810ms on a comparable 5.14MB
+    // body vs 59ms with no fragment. That regex is long gone (fragment
+    // resolution is DOM-based now — see findAnchor in web-fetch.ts), but this
+    // test stays as a floor: linkedom's real parse + querySelectorAll over
+    // thousands of real <a> elements must ALSO stay well under a second, or a
+    // future change could reintroduce a slow path here.
     const unit = '<a href="#">' + 'x'.repeat(660) + '</a>';
     const body = '<html><body>' + unit.repeat(7000) + '</body></html>';
     const t0 = Date.now();
     const r = resolveFragment(body, '# nothing relevant', 'section');
     const elapsed = Date.now() - t0;
     expect(r.kind).toBe('absent');
-    expect(elapsed).toBeLessThan(1000); // was ~9,810ms (full old scan) before the fix
+    expect(elapsed).toBeLessThan(1000); // was ~9,810ms with the old regex before the original fix
+  });
+
+  // --- DOM-based fragment resolution (design change, round 3, 2026-08-06) ---
+  // Fragment resolution no longer hand-scans raw HTML at all: it queries the
+  // SAME linkedom document htmlToMarkdown builds for Readability (see
+  // findAnchor in web-fetch.ts). These pin the findings that motivated the
+  // switch — cases where the old hand-rolled scan (walkTags + parseAttrs)
+  // was demonstrably wrong, all fixed for free by asking a real parser.
+
+  it('finds an id on a <script> element\'s own opening tag (IMPORTANT — script/style attrs were discarded)', () => {
+    // On the committed vitest-config.html, id="check-dark-mode" and
+    // id="check-mac-os" live on <script id="..."> elements. The old walkTags
+    // `continue`d past script/style tags WITHOUT calling onTag, discarding
+    // the opening tag's own attributes along with its body — so the
+    // collector found only 10 of the fixture's 12 ids and WebFetch reported
+    // "the HTML contains no anchor named check-dark-mode" about an id that
+    // genuinely exists. linkedom parses a <script id="..."> element's
+    // attributes like any other element, so this is fixed for free.
+    const r = resolveFragment(html, '# irrelevant heading', 'check-dark-mode');
+    expect(r.kind).not.toBe('absent');
+  });
+
+  it('the WebFetchTool pipeline no longer falsely denies an id that lives on a <script> tag', async () => {
+    // End-to-end version of the case above, through the exact code path the
+    // finding described: fetching vitest.dev/config/#check-dark-mode used to
+    // emit a categorical "the HTML served for this URL contains no anchor
+    // named check-dark-mode" — false, since the id exists (just not as a
+    // markdown heading, so the honest verdict is "dropped", not "absent").
+    // NOTE: uses fetchWith (module-scope `html` Response-builder), not the
+    // bare `html` identifier — this describe block shadows it with the
+    // fixture string above.
+    const r = await fetchWith(html, 'https://example.com/config#check-dark-mode');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).not.toMatch(/contains no anchor named/);
+  });
+
+  it('finds an id past a `>` inside a different attribute\'s quoted value (IMPORTANT — old scan truncated the tag)', () => {
+    // <a title="a>b" id="realid"> and a sibling with an onclick handler
+    // containing `>` both lost every attribute after the stray `>` under the
+    // old hand-rolled tag walker (it took the first `>` as the tag's end,
+    // full stop). Both are legal HTML5. linkedom's real parser tracks quote
+    // state, so this is fixed for free.
+    const page = '<html><body><a title="a>b" id="realid"></a><div onclick="if(a>b)f()" id="clickid"></div></body></html>';
+    expect(resolveFragment(page, '# irrelevant', 'realid').kind).not.toBe('absent');
+    expect(resolveFragment(page, '# irrelevant', 'clickid').kind).not.toBe('absent');
+  });
+
+  it('does NOT fabricate an anchor from an id inside a <textarea> (MINOR — raw-text elements)', () => {
+    // <textarea>, <title>, and <xmp> are raw-text elements: their content is
+    // never parsed as child elements by a real browser or by linkedom, even
+    // though it's tag-shaped text. The old walkTags only special-cased
+    // script/style, so `<textarea><a id="tafake"></textarea>` produced a
+    // fabricated "the page has an anchor named tafake, but extraction didn't
+    // keep it" for an id that was never a real element. Realistic vector:
+    // any page that echoes user-submitted markup into a form field.
+    const page = '<html><body><textarea><a id="tafake"></textarea></body></html>';
+    expect(resolveFragment(page, '# irrelevant', 'tafake').kind).toBe('absent');
+  });
+
+  it('re-measures the id count with the collector itself, not grep (round-2 process note)', () => {
+    // The round-2 report claimed collector/HTML parity by running
+    // `grep -o 'id="[^"]*"' | wc -l`, which measures grep, not the collector
+    // that changed. Fragment resolution's "collector" as of round 3 is
+    // linkedom's own parsed DOM (the same one WebFetch queries via
+    // findAnchor) — so the correct re-measurement queries THAT, and then
+    // proves every id it finds actually resolves through the exported
+    // resolveFragment, not just that the counts happen to match.
+    const { document } = parseHTML(html);
+    const ids = new Set<string>();
+    for (const el of document.querySelectorAll('[id]')) {
+      const id = el.getAttribute('id');
+      if (id) ids.add(id);
+    }
+    expect(ids.size).toBe(12); // grep -o 'id="[^"]*"' tests/fixtures/web/vitest-config.html | sort -u | wc -l
+    for (const id of ids) {
+      expect(resolveFragment(html, '# irrelevant heading', id).kind).not.toBe('absent');
+    }
   });
 
   // --- false-anchor scoping (Important finding, 2026-08-06 re-review) ---

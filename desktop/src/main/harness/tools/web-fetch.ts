@@ -67,52 +67,94 @@ function isNameChar(code: number): boolean {
 }
 
 /** One tag found by walkTags: lowercased name, whether it's a closing tag,
- *  whether it's self-closed (`<br/>`), and its raw (case-preserved) attribute
- *  text — the slice between the tag name and the terminating '>'. Close tags
- *  carry no attrs in real HTML, so `attrs` is '' for them. */
-interface TagToken { name: string; isClose: boolean; selfClosed: boolean; attrs: string; }
+ *  and whether it's self-closed (`<br/>`). Used only by the depth guard as of
+ *  the 2026-08-06 round-3 redesign — anchor/id collection no longer scans
+ *  raw HTML at all (see findAnchor below), so the raw attribute text this
+ *  token used to carry is gone; nothing needs it anymore. */
+interface TagToken { name: string; isClose: boolean; selfClosed: boolean; }
 
-/** Shared linear tag walker for BOTH the complexity guard's depth count and
- *  collectAnchorIds' id/name scan (CRITICAL + IMPORTANT findings, 2026-08-06
- *  re-review — this is the SAME defect class as stripToText's fix above, not
- *  a new one). Before this, each caller ran its own regex over the raw
- *  string — tagRe here, and ID_ATTR_RE/ANCHOR_NAME_RE in collectAnchorIds —
- *  and all three were quadratic on the same input shape: many '<' with no
- *  matching '>' forces a backtracking-retry engine to reattempt the match at
- *  every subsequent character, each attempt re-scanning to the end. Measured
- *  on a 5.14MB body: tagRe on 14,999 unterminated '<a' (no '>' anywhere) took
- *  9,965ms — inside THIS function, i.e. the guard that exists to stop a
- *  main-thread freeze was itself the freeze. ANCHOR_NAME_RE on a body that
- *  passes the guard (14,994 real '<', depth 0) but contains many <a> tags
- *  with no `name=` took 9,810ms once a #fragment triggered resolveFragment.
+/** Case-insensitive indexOf for a short, fixed, ASCII-only needle (the
+ *  script/style closing tags below), WITHOUT allocating a lowercased copy of
+ *  the whole haystack.
  *
- *  This walker is linear BY CONSTRUCTION, same technique as stripToText: `i`
- *  only moves forward. The load-bearing fix is the early `return` on a failed
- *  indexOf('>', ...): the FIRST time no '>' is found searching from position
- *  p to the end of the string, NO tag starting anywhere at or after p can
- *  ever close either (a match must consume a literal '>' that indexOf just
- *  proved does not exist in the remainder) — so stopping once, instead of
- *  retrying at every subsequent '<', is what makes total work O(n) regardless
- *  of content shape. See "does not freeze" tests in web-fetch-tool.test.ts for
- *  the pinned numbers on both call sites.
+ *  WHY this exists (CRITICAL, 2026-08-06 round-3 review): walkTags used to
+ *  build one `lower = html.toLowerCase()` up front and index it with cursors
+ *  computed against `html`'s own length. That is only safe if lowercasing
+ *  never changes a string's length, which is false for some codepoints —
+ *  `'İ'.toLowerCase()` (U+0130) is TWO UTF-16 units ('i' + a combining dot).
+ *  Payload: a comment body of 200,000 'İ' characters. `lower.length` ends up
+ *  200,000 code units longer than `html.length`, so the comment-close search
+ *  — done against `lower` — finds `-->` at an index that overshoots the SAME
+ *  position in `html` by 200,000 characters, and `i = lower.indexOf(...) + 3`
+ *  fed that overshot index straight back into the `html` cursor. A 1,000-deep
+ *  `<div>` nest placed right after the comment was skipped over entirely, so
+ *  the guard measured depth < 150 (safe), Readability ran on a document that
+ *  was ACTUALLY 1,000 deep, and WebFetchTool.execute blocked the main loop
+ *  for 8,376ms. Measured at the commit before this fix (e1eee255^): the same
+ *  payload was rejected by the guard in 3ms with Readability never called —
+ *  see "does not freeze on comment bodies containing surrogate-expanding
+ *  lowercase folds" in web-fetch-tool.test.ts for the pinned numbers.
+ *
+ *  The fix removes the aliasing at the root: there is only ever ONE string
+ *  (`html`) and one index space. Where a case-insensitive comparison is
+ *  still needed (script/style tag names, their closing tags), it is done
+ *  either by folding a small BOUNDED slice (a tag name, a handful of
+ *  characters — see the `name` assignment below, whose result is used only
+ *  for value comparisons, never as a source of offsets into `html`) or, for
+ *  the closer search below, by folding one ASCII character at a time as the
+ *  comparison runs, so no second string of a different length is ever built. */
+function indexOfFold(haystack: string, needle: string, from: number): number {
+  const hn = haystack.length, nn = needle.length;
+  outer: for (let i = from; i + nn <= hn; i++) {
+    for (let j = 0; j < nn; j++) {
+      const a = haystack.charCodeAt(i + j);
+      const b = needle.charCodeAt(j); // needle is always already-lowercase ASCII
+      if (a === b) continue;
+      const folded = a >= 65 && a <= 90 ? a + 32 : a; // fold ASCII A-Z to a-z only
+      if (folded !== b) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/** Shared linear tag walker for the complexity guard's depth count (its only
+ *  remaining caller as of round 3 — see TagToken above). Before this, the
+ *  guard's depth scan ran its own regex over the raw string and was
+ *  quadratic on adversarial input shaped like many unterminated '<a' tags —
+ *  see the WHY comment on the tagCount/`maxDepth` check below for that
+ *  history, and indexOfFold's WHY comment above for the CURRENT (round 3)
+ *  defect this walker fixes.
+ *
+ *  This walker is linear BY CONSTRUCTION: `i` only moves forward. The
+ *  load-bearing fix is the early `return` on a failed indexOf('>', ...): the
+ *  FIRST time no '>' is found searching from position p to the end of the
+ *  string, NO tag starting anywhere at or after p can ever close either (a
+ *  match must consume a literal '>' that indexOf just proved does not exist
+ *  in the remainder) — so stopping once, instead of retrying at every
+ *  subsequent '<', is what makes total work O(n) regardless of content
+ *  shape. See "does not freeze" tests in web-fetch-tool.test.ts for the
+ *  pinned numbers.
  *
  *  Script/style bodies are skipped wholesale (not walked for nested tags),
  *  same as stripToText's first phase, because their text can contain tag- or
  *  attribute-shaped substrings that are not real DOM (`document.write('<div>')`,
  *  `var s = 'id=leaked'`). A real HTML parser — including linkedom, which this
  *  guard exists to protect Readability from — never parses script/style
- *  contents as elements either, so this makes the guard's depth estimate and
- *  collectAnchorIds' id scan track what Readability will actually see; it
- *  does not relax MAX_DEPTH, MAX_TAGS, or which real anchors are found. */
+ *  contents as elements either, so this keeps the guard's depth estimate
+ *  tracking what Readability will actually see; it does not relax MAX_DEPTH
+ *  or MAX_TAGS. */
 function walkTags(html: string, onTag: (tag: TagToken) => void): void {
   const n = html.length;
-  const lower = html.toLowerCase();
   let i = 0;
   while (i < n) {
     const lt = html.indexOf('<', i);
     if (lt === -1) return;
-    if (lower.startsWith('<!--', lt)) {
-      const close = lower.indexOf('-->', lt + 4);
+    if (html.startsWith('<!--', lt)) {
+      // '<!--' and '-->' are fixed, non-alphabetic delimiters — no case
+      // folding applies, so this searches `html` directly with no second
+      // string and no risk of the aliasing bug above.
+      const close = html.indexOf('-->', lt + 4);
       i = close === -1 ? n : close + 3;
       continue;
     }
@@ -135,19 +177,24 @@ function walkTags(html: string, onTag: (tag: TagToken) => void): void {
       i = lt + 1;
       continue;
     }
-    const name = lower.slice(nameStart, pos);
+    // Folds ONLY this bounded tag-name slice (a handful of characters, never
+    // the whole document) and the result is used solely for value equality
+    // (VOID_ELEMENTS.has, 'script'/'style' checks) — never as a source of an
+    // offset back into `html`, which is what made the old document-wide
+    // `lower` copy unsafe.
+    const name = html.slice(nameStart, pos).toLowerCase();
     if (!isClose && (name === 'script' || name === 'style')) {
       const openGt = html.indexOf('>', pos);
       if (openGt === -1) return;
       const closer = name === 'script' ? '</script>' : '</style>';
-      const closeIdx = lower.indexOf(closer, openGt + 1);
+      const closeIdx = indexOfFold(html, closer, openGt + 1);
       i = closeIdx === -1 ? n : closeIdx + closer.length;
       continue;
     }
     const gt = html.indexOf('>', pos);
     if (gt === -1) return; // CRITICAL early-exit — see WHY above
     const selfClosed = html.charCodeAt(gt - 1) === 47; // '/'
-    onTag({ name, isClose, selfClosed, attrs: isClose ? '' : html.slice(pos, gt) });
+    onTag({ name, isClose, selfClosed });
     i = gt + 1;
   }
 }
@@ -362,133 +409,125 @@ export function looksJsRendered(html: string): boolean {
   return jsRenderDensity(html, stripToText(html));
 }
 
-// --- URL fragment resolution (task 13) -----------------------------------------
+// --- URL fragment resolution (task 13, redesigned round 3 2026-08-06) ----------
 
-// WHY this scans both `id=` (any tag) and `<a name=...>` (Important finding,
-// 2026-08-06 review): the previous regex was /\sid="([^"]+)"/gi — double-quoted
-// only. Single-quoted id='x', unquoted id=x, and legacy <a name="x"> anchors
-// all missed silently. `resolveFragment`'s `absent` result is reported to the
-// model as a categorical "this anchor does not exist" (see execute() below),
-// so under-scanning here directly produced false claims.
+// WHY this queries the parsed DOM instead of hand-scanning raw HTML a fourth
+// time (design change, round 3): htmlToMarkdown already runs the page through
+// linkedom's real HTML parser to build a `document` for Readability. Every
+// prior round's fragment-resolution bug — the CRITICAL/IMPORTANT/MINOR
+// findings this round, and the two CRITICAL regexes fixed in rounds 1–2
+// (ID_ATTR_RE, ANCHOR_NAME_RE) — was a hand-rolled approximation of what a
+// real parser already does correctly: attribute quoting (double/single/
+// unquoted), script/style/comment/raw-text bodies, `>` inside a quoted
+// attribute value. linkedom handles all of it for free, so the fix is to
+// stop re-approximating and ask the parser directly.
 //
-// WHY these are read from PARSED attributes (via walkTags' bounded `attrs`
-// slice + parseAttrs below), not a regex over the whole raw string (CRITICAL,
-// 2026-08-06 re-review): the broadened version of this fix originally used
-// /<a\b[^>]*?\bname\s*=.../g over the full document, and — same defect class
-// as tagRe above — retried at every <a with no `name=`, each retry
-// re-scanning to the next '>'. Measured on a 5.14MB body with many such <a>
-// tags plus a #fragment (which is what triggers this scan): 9,810ms. Scoping
-// to a single already-located tag's attrs slice keeps the work per tag
-// bounded and non-overlapping across the document, so total cost stays O(n)
-// — see the "does not freeze" fragment test below.
-//
-// WHY this reads parsed attribute NAMES, not a `\bid\s*=` regex scoped to the
-// tag's attrs text (Important finding, 2026-08-06 re-review, TWO layers deep):
-// scoping to a tag is not enough by itself — a regex search of the whole
-// attrs slice for `\bid\s*=` still matches `data-id="ghost"` (the `-` before
-// "id" is a non-word character, so \b sees a real boundary there too) AND
-// `href="/page?id=42"` (the id= sits inside a DIFFERENT attribute's quoted
-// VALUE, which the regex can't distinguish from a standalone attribute).
-// Actually tokenizing attrs into name/value pairs (parseAttrs) fixes both:
-// "id" is only recognized as an id when it is a complete attribute NAME, and
-// text inside another attribute's value is consumed as that attribute's
-// value and never re-scanned for "id=". `id=` inside a <script>/<style> body
-// or an HTML comment is excluded earlier, at the walkTags level (those
-// bodies are skipped wholesale, never handed to parseAttrs at all). Every
-// false hit here used to flip a correct `absent` verdict into a fabricated
-// `dropped` claim ("the page has an anchor ... but extraction did not keep
-// that section"). On the committed vitest-config.html fixture, the old
-// narrow (double-quoted-only) scan found 12 ids and the unscoped broad scan
-// also found 12 — broadening added no real anchors on that page, only
-// false-positive risk on adversarial ones.
-function isAttrSpace(code: number): boolean {
-  return code === 32 || code === 9 || code === 10 || code === 13 || code === 12;
+// WHY the DOM lookup happens BEFORE Readability.parse() runs, not after (this
+// is the one place this round's design deviates from a literal "have
+// resolveFragment query the document" reading — see findAnchor below):
+// Readability's own workflow doc comment says "4. Replace the current DOM
+// tree with the new one" — it mutates `this._doc` in place, moving matched
+// content into a new detached container and removing everything else during
+// cleanup (verified by reading Readability.js: `_grabArticle` does
+// `articleContent.appendChild(sibling)`, which MOVES real nodes, not clones).
+// So the SAME document object queried after Readability has run may no
+// longer contain an id that genuinely existed in the served page — which
+// would misreport a real "the anchor exists but extraction dropped it" as a
+// false "the anchor never existed" (`absent` instead of `dropped`). The fix:
+// query the pristine, pre-Readability document once (findAnchor), carry
+// forward only its small boolean/exactCase verdict, and combine that with
+// the markdown once Readability has finished (classifyFragment). See
+// WebFetchTool.execute below for the call order this requires.
+
+/** Escapes a value for safe interpolation into a double-quoted CSS attribute
+ *  selector string (`a[name="…"]` below). The fragment is attacker-controlled
+ *  (it comes straight off the request URL), so a raw `"` or `\` in it must
+ *  not be able to break out of the quoted value. Not a general CSS.escape
+ *  substitute — sufficient because that's the only thing it needs to do. */
+function escapeAttrSelectorValue(value: string): string {
+  return value.replace(/[\\"]/g, '\\$&');
 }
 
-/** Splits one tag's attribute text into name→value pairs. Hand-written scan
- *  (not a regex over the whole slice) for the same reason as walkTags: the
- *  cursor only moves forward, one attribute at a time, so it can't reintroduce
- *  a retry-at-every-position shape either. An unterminated quoted value (rare,
- *  malformed input) is handled the same way as an unterminated tag elsewhere
- *  in this file — indexOf fails ONCE, the rest of the slice is treated as
- *  that value, no retry. */
-function parseAttrs(attrs: string): Map<string, string> {
-  const result = new Map<string, string>();
-  const n = attrs.length;
-  let i = 0;
-  while (i < n) {
-    while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
-    if (i >= n) break;
-    const nameStart = i;
-    while (i < n && attrs[i] !== '=' && !isAttrSpace(attrs.charCodeAt(i))) i++;
-    const name = attrs.slice(nameStart, i).toLowerCase();
-    if (!name) { i++; continue; } // stray '=' with nothing before it — skip forward, don't loop
-    while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
-    let value = '';
-    if (attrs[i] === '=') {
-      i++;
-      while (i < n && isAttrSpace(attrs.charCodeAt(i))) i++;
-      const quote = attrs[i];
-      if (quote === '"' || quote === "'") {
-        i++;
-        const closeIdx = attrs.indexOf(quote, i);
-        const valEnd = closeIdx === -1 ? n : closeIdx;
-        value = attrs.slice(i, valEnd);
-        i = closeIdx === -1 ? n : closeIdx + 1;
-      } else {
-        const valStart = i;
-        while (i < n && !isAttrSpace(attrs.charCodeAt(i))) i++;
-        value = attrs.slice(valStart, i);
-      }
-    }
-    result.set(name, value);
-  }
-  return result;
-}
-
-/** Every id= (any real element, any quoting) and legacy <a name=...> anchor
- *  value in the document, case PRESERVED — case-sensitivity is resolved by
- *  the caller (resolveFragment), not here. Built from walkTags + parseAttrs
- *  so script, style, comment bodies, and other attributes' values are never
- *  mistaken for a real id/name attribute. */
-function collectAnchorIds(rawHtml: string): Set<string> {
-  const ids = new Set<string>();
-  walkTags(rawHtml, (tag) => {
-    if (tag.isClose) return;
-    const attrs = parseAttrs(tag.attrs);
-    const idValue = attrs.get('id');
-    if (idValue) ids.add(idValue);
-    if (tag.name === 'a') {
-      const nameValue = attrs.get('name');
-      if (nameValue) ids.add(nameValue);
-    }
-  });
-  return ids;
-}
-
-/** Locate a URL fragment's section in the extracted markdown.
+/** Resolves a URL fragment against an ALREADY-PARSED linkedom document. Exact
+ *  match first (`getElementById`, `a[name="…"]`); falls back to a
+ *  case-insensitive scan of every id/name in the document, same policy the
+ *  hand-rolled version used (Minor finding, prior rounds: HTML `id` is
+ *  case-sensitive, but real pages do sometimes get linked with the "wrong"
+ *  case, so a case-insensitive hit is still reported as useful — just
+ *  flagged as inexact via `exactCase`).
  *
- *  WHY this exists at all: a #fragment is never sent to a server, so refetching
- *  with one returns identical bytes — correct HTTP that reads like a bug. The
- *  fixable part is resolving it AFTER extraction, which turns a silent false
- *  negative into an explicit statement.
+ *  MUST be called before the same document is handed to Readability — see
+ *  the WHY block above. */
+function findAnchor(document: Document, fragment: string): { exactCase: boolean } | null {
+  if (document.getElementById(fragment)) return { exactCase: true };
+  if (document.querySelector(`a[name="${escapeAttrSelectorValue(fragment)}"]`)) return { exactCase: true };
+  const lowerFragment = fragment.toLowerCase();
+  // Array.from (not a direct for-of) — linkedom's NodeListOf, reached through
+  // the ambient lib.dom Document type parseHTML's return type resolves to,
+  // doesn't type-check as directly iterable under this repo's tsconfig even
+  // though it's iterable at runtime; Array.from sidesteps that without a cast.
+  for (const el of Array.from(document.querySelectorAll('[id]'))) {
+    const id = el.getAttribute('id');
+    if (id && id.toLowerCase() === lowerFragment) return { exactCase: false };
+  }
+  for (const a of Array.from(document.querySelectorAll('a[name]'))) {
+    const name = a.getAttribute('name');
+    if (name && name.toLowerCase() === lowerFragment) return { exactCase: false };
+  }
+  return null;
+}
+
+/** Given an already-resolved DOM anchor match (or null) and the extracted
+ *  markdown, decides found / dropped / absent. Split out from findAnchor so
+ *  production can query the DOM once, before Readability mutates it, and
+ *  bring forward only the small `{ exactCase }` result to combine with the
+ *  markdown once extraction has finished (see the WHY block above).
  *
  *  WHY matching goes through anchor hrefs and not heading text: VitePress emits
  *  `## Config Options [​](#config-options)`, so slugifying the heading text yields
  *  "config-options-config-options" and misses. The `id="..."` attributes in the raw
  *  HTML are authoritative and independent of markdown rendering.
  *
- *  WHY id matching tries exact case first (Minor finding, 2026-08-06 review):
- *  HTML `id` is case-sensitive (`#Foo` and `id="foo"` are different anchors),
- *  but the old code lowercased both sides unconditionally, so a fragment could
- *  falsely resolve against a same-spelling-different-case id. The fallback
- *  case-insensitive match is kept (real pages do sometimes get linked with the
- *  "wrong" case and a hit is still useful) but the caller is told which kind
- *  of match it got so it can say so rather than imply an exact one.
- *
- *  `bodyTruncated` scopes the `absent` result's wording (Important finding):
- *  when the fetched body was cut off at the 5MB cap, "this anchor does not
- *  exist" is a claim about bytes that were never read, not about the page. */
+ *  `bodyTruncated` scopes the `absent` result's wording (Important finding,
+ *  prior round): when the fetched body was cut off at the 5MB cap, "this
+ *  anchor does not exist" is a claim about bytes that were never read, not
+ *  about the page. */
+function classifyFragment(
+  anchor: { exactCase: boolean } | null,
+  markdown: string,
+  fragment: string,
+  bodyTruncated: boolean,
+):
+  | { kind: 'found'; section: string; exactCase: boolean }
+  | { kind: 'dropped'; exactCase: boolean }
+  | { kind: 'absent'; bodyTruncated: boolean } {
+  if (anchor === null) return { kind: 'absent', bodyTruncated };
+  // Markdown heading/slug text is already case-normalized by the renderer
+  // (VitePress etc. lowercase slugs regardless of source id case), so this
+  // half of the match stays a lowercase comparison.
+  const frag = fragment.toLowerCase();
+  const lines = markdown.split('\n');
+  const start = lines.findIndex(
+    (l) => /^#{1,6} /.test(l) && (l.toLowerCase().includes(`(#${frag})`) || slugify(l) === frag),
+  );
+  if (start === -1) return { kind: 'dropped', exactCase: anchor.exactCase };
+  const level = (lines[start].match(/^#+/) ?? ['#'])[0].length;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6}) /);
+    if (m && m[1].length <= level) { end = i; break; }
+  }
+  return { kind: 'found', section: lines.slice(start, end).join('\n').trim(), exactCase: anchor.exactCase };
+}
+
+/** Test/convenience entry point matching the pre-round-3 API shape: parses
+ *  `rawHtml` itself and resolves the fragment against the result. NOT used by
+ *  WebFetchTool.execute in production — that path reuses the single document
+ *  it's about to hand to Readability and must query it BEFORE Readability
+ *  mutates it (see the WHY block above), so it calls findAnchor and
+ *  classifyFragment directly instead of parsing the page a second time here.
+ *  Kept as the public surface for tests and any future non-pipeline caller
+ *  that just wants a straight answer for one page. */
 export function resolveFragment(
   rawHtml: string,
   markdown: string,
@@ -498,35 +537,8 @@ export function resolveFragment(
   | { kind: 'found'; section: string; exactCase: boolean }
   | { kind: 'dropped'; exactCase: boolean }
   | { kind: 'absent'; bodyTruncated: boolean } {
-  const ids = collectAnchorIds(rawHtml);
-  let matched: string | null = null;
-  let exactCase = true;
-  if (ids.has(fragment)) {
-    matched = fragment;
-  } else {
-    const lowerFragment = fragment.toLowerCase();
-    for (const id of ids) {
-      if (id.toLowerCase() === lowerFragment) { matched = id; exactCase = false; break; }
-    }
-  }
-  if (matched === null) return { kind: 'absent', bodyTruncated };
-  // Markdown heading/slug text is already case-normalized by the renderer
-  // (VitePress etc. lowercase slugs regardless of source id case), so this
-  // half of the match stays a lowercase comparison — only the raw-HTML id
-  // lookup above needed the exact-case-first fix.
-  const frag = fragment.toLowerCase();
-  const lines = markdown.split('\n');
-  const start = lines.findIndex(
-    (l) => /^#{1,6} /.test(l) && (l.toLowerCase().includes(`(#${frag})`) || slugify(l) === frag),
-  );
-  if (start === -1) return { kind: 'dropped', exactCase };
-  const level = (lines[start].match(/^#+/) ?? ['#'])[0].length;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(#{1,6}) /);
-    if (m && m[1].length <= level) { end = i; break; }
-  }
-  return { kind: 'found', section: lines.slice(start, end).join('\n').trim(), exactCase };
+  const { document } = parseHTML(rawHtml);
+  return classifyFragment(findAnchor(document, fragment), markdown, fragment, bodyTruncated);
 }
 
 /** Heading text → slug, with any trailing anchor link removed first. */
@@ -540,11 +552,15 @@ function slugify(heading: string): string {
     .replace(/^-|-$/g, '');
 }
 
-function htmlToMarkdown(rawHtml: string): { title: string | null; markdown: string } {
+/** Runs Readability + turndown against an ALREADY-PARSED document (the
+ *  caller must have finished any DOM queries of its own first — see
+ *  findAnchor's WHY block above, since this call mutates `document` in
+ *  place). `rawHtml` is only the last-resort fallback source if Readability
+ *  finds no article AND the mutated document somehow has no body. */
+function htmlToMarkdown(document: Document, rawHtml: string): { title: string | null; markdown: string } {
   // linkedom's parsed document satisfies Readability's DOM contract at runtime,
   // but its typings don't match @mozilla/readability's `Document` param — cast
   // narrowly here rather than pull in a jsdom-shaped global Document type.
-  const { document } = parseHTML(rawHtml);
   const article = new Readability(document as unknown as Document).parse();
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
   if (article?.content) return { title: article.title ?? null, markdown: turndown.turndown(article.content) };
@@ -606,6 +622,9 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     if (!isHtml) {
       return { text: `${header}\n\n${raw}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
     }
+    // Needed by both the too-complex fallback below and the normal path —
+    // compute once up front.
+    const hash = (() => { try { return new URL(finalUrl).hash.replace(/^#/, ''); } catch { return ''; } })();
     // DoS guard: never run the synchronous ~quadratic Readability parse on
     // pathological HTML. But WHY this no longer hard-fails (2026-08-06): the guard
     // is specifically about Readability's cost, and tag-stripping is now genuinely
@@ -625,11 +644,27 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
       const capNote = fallbackCapped
         ? ` Showing only the first ${(FALLBACK_CHAR_CAP / 1000).toFixed(0)}KB of this page's raw HTML — the rest was not scanned.`
         : '';
+      // WHY this is general-and-non-committal, not "no anchor named X" (round 3
+      // design change): this branch never parses the page — that's the whole
+      // point of the guard — so there is no DOM to check the fragment against.
+      // Per docs/error-message-standards.md, a claim we cannot support (a
+      // categorical "this anchor does not exist") is worse than saying plainly
+      // that the check could not be done.
+      const fragmentNote = hash
+        ? `\n\n[This page could not be parsed for structured extraction, so whether "#${hash}" exists could not be checked.]`
+        : '';
       return {
-        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.${capNote}]\n\n${fallbackText}${truncated ? '\n\n[body truncated at 5MB]' : ''}`,
+        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.${capNote}]\n\n${fallbackText}${fragmentNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}`,
       };
     }
-    const { title, markdown } = htmlToMarkdown(raw);
+    // Single parse of this page, reused for both fragment resolution and
+    // Readability extraction below — see the WHY block above
+    // classifyFragment for why the fragment lookup MUST happen here, before
+    // htmlToMarkdown hands this same `document` to Readability and Readability
+    // mutates it in place.
+    const { document } = parseHTML(raw);
+    const anchorMatch = hash ? findAnchor(document, hash) : null;
+    const { title, markdown } = htmlToMarkdown(document, raw);
     // Minor finding (2026-08-06 review): stripToText(raw) used to be recomputed
     // separately for the density check and for the KB figure in jsNote below —
     // compute it once here and pass it into both.
@@ -644,9 +679,8 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     // directly, and be explicit when we cannot.
     let fragmentNote = '';
     let body = markdown;
-    const hash = (() => { try { return new URL(finalUrl).hash.replace(/^#/, ''); } catch { return ''; } })();
     if (hash) {
-      const f = resolveFragment(raw, markdown, hash, truncated);
+      const f = classifyFragment(anchorMatch, markdown, hash, truncated);
       if (f.kind === 'found') {
         body = f.section;
         const caseNote = f.exactCase ? '' : ' (matched case-insensitively — the served id differs in case from the fragment)';
