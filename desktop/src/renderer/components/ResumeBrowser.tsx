@@ -692,7 +692,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     return resumeModel ? { runtime: 'claude', alias: resumeModel } : null;
   };
 
-  const applyResumeChoice = (s: PastSession, c: ModelChoice) => {
+  const applyResumeChoice = (_s: PastSession, c: ModelChoice) => {
     if (c.runtime === 'native') setNativeResumeBinding({ providerId: c.providerId, modelId: c.modelId });
     else setResumeModel(c.alias);
   };

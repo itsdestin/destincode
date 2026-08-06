@@ -94,11 +94,10 @@ import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
-import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
-import { countArtifacts, countAllFiles, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
-import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
+import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
+import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
@@ -750,7 +749,7 @@ export function registerIpcHandlers(
     });
   });
 
-  ipcMain.handle(IPC.SESSION_SWITCH, async (_event, sessionId: string) => {
+  ipcMain.handle(IPC.SESSION_SWITCH, async (_event, _sessionId: string) => {
     // Switch is a client-side concern on desktop — the renderer manages active session.
     // This handler exists for protocol parity with Android/remote.
     return { ok: true };
@@ -1843,7 +1842,9 @@ export function registerIpcHandlers(
     }
   }
 
-  const syncStatusPath = path.join(os.homedir(), '.claude', '.sync-status');
+  // .sync-status is no longer read here: the value was threaded all the way to
+  // StatusBar and then dropped, so this was a disk read every 10s feeding nothing.
+  // The file itself still exists and is read by statusline.sh and /diagnose.
   // Legacy .sync-warnings text file is no longer read; typed warnings come from .sync-warnings.json.
   const syncWarningsJsonPath = path.join(os.homedir(), '.claude', '.sync-warnings.json');
 
@@ -1896,7 +1897,6 @@ export function registerIpcHandlers(
     const usage = readJsonFile(usageCachePath);
     const announcement = readJsonFile(announcementCachePath);
     const updateStatus = getUpdateStatus();
-    const syncStatus = readTextFile(syncStatusPath);
     const syncWarnings = readSyncWarningsSync();
 
     // Sync state for live updates — SyncPanel also fetches via IPC,
@@ -1969,7 +1969,7 @@ export function registerIpcHandlers(
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2779,7 +2779,10 @@ export function registerIpcHandlers(
   // never the thing keeping native writes out — nativeMetaRefusal below (now
   // deleted) was. Retiring that refusal is only safe BECAUSE Task 4 landed
   // real native writes first — see the design's Task 5 note.
-  const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
+  // `_resolved` is unused on purpose: the phantom-record gate keys off the raw
+  // sessionId, not the resolved path. The param stays to match the `canWrite`
+  // signature RemoteServer.setSessionMetaWiring expects.
+  const canWriteStoreRecord = (sessionId: string, _resolved: string): boolean => {
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
 
@@ -3925,7 +3928,7 @@ export function registerIpcHandlers(
     void nativeHost.destroyAll().catch(() => {});
     // Awaited by the caller: never leave an orphaned llama-server on quit.
     const engineStopped = engineManager.stopAll().catch(() => {});
-    for (const [id, watcher] of topicWatchers) {
+    for (const watcher of topicWatchers.values()) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();
       } else {

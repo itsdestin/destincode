@@ -11,7 +11,7 @@ import ThemeScreen from './ThemeScreen';
 import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import { useTheme } from '../state/theme-context';
-import { MODELS, type ModelAlias } from './StatusBar';
+import { MODELS } from './StatusBar';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -991,7 +991,7 @@ interface RemoteButtonProps {
 }
 
 function RemoteButton({
-  config, tailscale, clients, loading, hasActiveSession,
+  config, tailscale, clients, loading,
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
   onSetNewPassword, onSetPassword, onToggleEnabled, enableError, onToggleTailscaleTrust,
   onSetKeepAwake, onRunSetup, onConfirmSetup, onCancelSetup, setupStatus, setupError, onDisconnectClient, onCopyLink,
@@ -2185,7 +2185,7 @@ function ConnectToDesktopButton() {
   );
 }
 
-function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onRunCommand?: (command: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
+function AndroidSettings({ open, onSendInput, onRunCommand, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onRunCommand?: (command: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
@@ -2347,7 +2347,7 @@ function AndroidSettings({ open, onClose, onSendInput, onRunCommand, onOpenTheme
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
+function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;

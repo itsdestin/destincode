@@ -701,4 +701,40 @@ describe('RemoteServer account bridge', () => {
     const sent = await sendAndCollect(server, { type: 'account:signed-in', id: 'a3', payload: {} });
     expect(sent[0].payload).toBe(false);
   });
+
+  // Status data is polled every 10s in ipc-handlers, so without this replay a client
+  // that connects between ticks renders a blank status bar for up to 10 seconds.
+  // RemoteServer previously stored only `contextMap` here and never read it back.
+  describe('status:data replay on connect', () => {
+    function fakeWs() {
+      const frames: any[] = [];
+      return { frames, ws: { readyState: 1, send: (raw: string) => frames.push(JSON.parse(raw)) } as any };
+    }
+
+    it('replays the whole last status payload to a connecting client', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      const { frames, ws } = fakeWs();
+
+      server.broadcastStatusData({ contextMap: { s1: 42 }, gitBranchMap: { s1: 'main' }, usage: { x: 1 } });
+      await server.replayBuffers(ws);
+
+      const status = frames.filter((m) => m.type === 'status:data');
+      expect(status).toHaveLength(1);
+      // Not just the context slice — every field the poll carries.
+      expect(status[0].payload.contextMap).toEqual({ s1: 42 });
+      expect(status[0].payload.gitBranchMap).toEqual({ s1: 'main' });
+      expect(status[0].payload.usage).toEqual({ x: 1 });
+    });
+
+    it('sends no status frame when no poll has happened yet', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      const { frames, ws } = fakeWs();
+
+      await server.replayBuffers(ws);
+
+      expect(frames.some((m) => m.type === 'status:data')).toBe(false);
+    });
+  });
 });
