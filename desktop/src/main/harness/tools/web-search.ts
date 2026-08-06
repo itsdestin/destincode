@@ -32,8 +32,27 @@ export const WebSearchTool = defineTool<z.infer<typeof inputSchema>>({
       const SNIPPET_CHARS = 500;
       const trim = (s: string) => (s.length > SNIPPET_CHARS ? `${s.slice(0, SNIPPET_CHARS)}…` : s);
       // Dedup by normalized URL — backends routinely return the same page twice
-      // under a trailing-slash or scheme variant.
-      const key = (u: string) => u.replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
+      // under a trailing-slash or scheme variant. Only the scheme+host are
+      // lowercased; hostnames are case-insensitive but paths often aren't
+      // (en.wikipedia.org/wiki/JavaScript vs .../javascript, or
+      // github.com/User/Repo vs github.com/user/repo are different pages) —
+      // lowercasing the whole URL previously collapsed those into one and
+      // silently dropped a real result. When two URLs do collide, we keep
+      // whichever came first, since backends return results in relevance
+      // order and the first occurrence is the best-ranked one.
+      const key = (u: string) => {
+        try {
+          const parsed = new URL(u);
+          const host = parsed.host.toLowerCase();
+          const path = parsed.pathname.replace(/\/+$/, '') + parsed.search + parsed.hash;
+          return `${host}${path}`;
+        } catch {
+          // Untrusted backend string wasn't a parseable URL — dedup it only
+          // against an exact repeat of itself rather than throwing (a throw
+          // here would fail the whole tool call).
+          return u;
+        }
+      };
       const seen = new Set<string>();
       const unique = results.filter((r) => {
         const k = key(r.url);
