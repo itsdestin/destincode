@@ -20,6 +20,18 @@ const MAX_TIMEOUT_MS = 600_000;
  *  evaporated, costing ~6 wasted tool calls in one observed session. */
 const CWD_SENTINEL = '__YC_CWD__';
 
+/** Strip CSI (colour, cursor) and OSC (window title, hyperlink) sequences.
+ *
+ *  WHY both an env hint AND a strip: NO_COLOR/FORCE_COLOR cover most tools, but
+ *  not all honour them — a vitest run rendered as
+ *  `[1m[30m[46m RUN [49m[39m[22m` in the 2026-08-01 review. That is noise in every
+ *  test result the model reads, and it looks like corruption to a non-developer
+ *  reading the transcript. */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+}
+
 export interface ShellInfo { cmd: string; args: string[]; label: string }
 
 /** Every place Git Bash might live, best first. Two hardcoded Program Files
@@ -229,7 +241,9 @@ export const BashTool = defineTool({
         child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
           cwd: startCwd,
           windowsHide: true,
-          env: process.env,
+          // Ask tools to emit plain output rather than stripping it after the fact
+          // where possible — cleaner, and it keeps byte counts honest.
+          env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
         });
       } catch (e: any) {
         resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
@@ -291,7 +305,10 @@ export const BashTool = defineTool({
         if (probe) {
           const parsed = extractCwd(joined());
           sentinelOverhead = rawLen - parsed.text.length;
-          body = parsed.text;
+          // Strip AFTER extractCwd, not before: the sentinel must be parsed from
+          // raw bytes, so a colour code that happened to straddle the sentinel
+          // line can't mangle the cwd we hand back to the model.
+          body = stripAnsi(parsed.text);
           // Sentinel past the retention window → recover it from the uncapped tail.
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
@@ -307,6 +324,8 @@ export const BashTool = defineTool({
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
             }
           }
+        } else {
+          body = stripAnsi(joined());
         }
         // ONE metadata line, always. Four of five reviewing models independently
         // asked for this (2026-08-01): file tools resolve relative paths from the

@@ -316,6 +316,32 @@ describe('Bash', () => {
     expect(r.text).toContain('[cwd:');
   }, 15_000);
 
+  it('Bash strips ANSI colour codes from output', async () => {
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u001b[32m✓\\u001b[39m passed')"` },
+      ctx,
+    );
+    expect(r.text).toContain('✓ passed');
+    expect(r.text).not.toContain('\x1b[');
+  });
+
+  it('Bash sets NO_COLOR so tools emit plain output in the first place', async () => {
+    const r = await BashTool.execute({ command: 'echo "NO_COLOR=$NO_COLOR FORCE_COLOR=$FORCE_COLOR"' }, ctx);
+    expect(r.text).toContain('NO_COLOR=1');
+    expect(r.text).toContain('FORCE_COLOR=0');
+  });
+
+  it('ANSI stripping does not disturb the cwd sentinel', async () => {
+    fs.mkdirSync(path.join(dir, 'coloured'));
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(dir), setShellCwd: (n) => { tracked = n; } };
+    await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u001b[31mred\\u001b[0m')" && cd coloured` },
+      c,
+    );
+    expect(tracked).toBe(path.join(dir, 'coloured'));
+  });
+
   it('times out and reports it', async () => {
     const r = await BashTool.execute({ command: 'node -e "setTimeout(()=>{},10000)"', timeout: 50 }, ctx);
     expect(r.isError).toBe(true);
