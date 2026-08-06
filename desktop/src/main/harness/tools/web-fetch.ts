@@ -21,6 +21,7 @@ import { parseHTML } from 'linkedom';
 import TurndownService from 'turndown';
 import { defineTool } from './registry';
 import { guardedFetch, readBodyCapped, NetGuardError, type GuardedFetchOpts } from './net-guard';
+import type { ToolResultPayload } from './types';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -45,49 +46,65 @@ const TEXT_TYPES = /^(text\/(plain|markdown|csv|xml)|application\/(json|xml|rss\
 // ~15k tags ~0.6s, ~120k tags ~5s. The 5MB byte cap does NOT bound this — parse
 // cost scales with DOM STRUCTURE (depth/tag-count), not byte length (a 54KB file
 // can hang for seconds). And defineTool's try/catch CANNOT save us: a synchronous
-// hang never throws, so nothing unwinds. This O(n)-on-the-raw-string pre-check is
-// therefore the ONLY guard — it must reject pathological input BEFORE it reaches
-// Readability. Thresholds sit far above real articles (which nest ~8-60 and carry
-// a few thousand tags).
+// hang never throws, so nothing unwinds.
 //
-// CORRECTION (Minor finding, round 4, 2026-08-06 review): this comment used to
-// claim a page that PASSES the guard stays "under ~0.6s of parse time" — false,
-// and not a promise this guard can make. Measured: a page of 145-deep nesting x
-// 50 sibling blocks (14,504 '<', max depth 147 — comfortably clearing both
+// REDESIGN (round 7, 2026-08-06): six prior rounds each replaced this guard's
+// depth estimate with a more-faithful hand-rolled re-implementation of the
+// state machine the REAL parser (linkedom → htmlparser2) runs on raw HTML —
+// and each round's fix was itself later found to disagree with that real
+// parser in a NEW way (a close tag the real tokenizer ignores but the old
+// scan counted as a close; a self-closing tag honored only inside SVG/MathML
+// foreign content; a foreign-content INTEGRATION POINT like <foreignObject>/
+// <desc>/<mtext> where self-closing flips back to ordinary HTML rules mid-
+// subtree). Predicting the parser had a 0-for-7 track record across those
+// rounds. This round stops predicting it and asks it directly: parse the page
+// with the SAME parseHTML() call the rest of this file already needs, then
+// measure depth by walking the REAL tree that call built. A depth figure read
+// off the tree Readability is about to traverse cannot disagree with that
+// tree — the entire bypass class is retired structurally, not patched again.
+//
+// Verified this is affordable BEFORE building on it (measured on this
+// machine, Node v26.4.0):
+//   payload                                          parseHTML    Readability.parse
+//   60,024B / 10,004 stray-close '<div></span>' pairs   ~90ms      18,825.6ms (never reached — domTooDeep rejects first)
+//   4,820B  <svg><foreignObject> + 800 <div/>             6.5ms     never reached — domTooDeep rejects first
+//   5,242,880B bare '<' (no real tags anywhere)        5,425.9ms    never reached — tagCountTooHigh rejects BEFORE parseHTML runs
+//   167,450B realistic catalog page (12,272 tags, depth
+//     125 — legitimately UNDER both caps, must pass)      47.8ms       225.2ms
+// parseHTML is consistently the cheap half — tens to low hundreds of ms, even
+// on the adversarial shapes — against Readability's seconds-to-tens-of-
+// seconds on the same input. The one shape where parseHTML itself got
+// expensive (5MB of bare '<', 5.4s) never reaches parseHTML at all: it is
+// caught by the byte-count pre-check below, which runs BEFORE any parse is
+// attempted (see tagCountTooHigh's own WHY comment for why that ordering is
+// load-bearing, not incidental). Full numbers, every payload checked, and the
+// commands that produced them: see the fix commit's report
+// (final-fix-guard-redesign-report.md).
+//
+// Two-stage guard, in this order:
+//   1. tagCountTooHigh(rawHtml) — O(n) over raw bytes, runs BEFORE any parse.
+//      Can only OVER-count (every real tag needs a literal '<', but not every
+//      '<' becomes a real tag), so it can reject breadth the parser would
+//      have tolerated but can never fail to reject breadth the parser will
+//      actually build — same pre-check as before this round, unchanged.
+//   2. domTooDeep(document) — walks the ACTUAL parsed tree. Only reached once
+//      stage 1 has already bounded the input to something parseHTML can
+//      afford (see the split above).
+// Thresholds are unchanged by this redesign — still far above real articles
+// (which nest ~8-60 and carry a few thousand tags).
+//
+// CORRECTION (Minor finding, round 4, 2026-08-06 review — still true after
+// this redesign): a page that PASSES the guard is NOT promised to stay under
+// any particular parse time. Measured: a page of 145-deep nesting x 50
+// sibling blocks (14,504 '<', max depth 147 — comfortably clearing both
 // MAX_DEPTH and MAX_TAGS) took 1,617ms through execute() in the review that
-// found this. That cost is Readability's scoring + turndown's conversion, NOT
-// this round's new DOM fragment query (measured 1,617ms with a fragment query
-// present vs 1,607ms without, on the same page — the query is noise next to
-// Readability). Independently re-measured on the machine fixing this: the same
-// construction (tag count and depth both matched exactly) completed in
-// 220-275ms across 5 runs — still well under a second, but the point stands
-// regardless of which number a given machine produces: this guard bounds
-// Readability's WORST case (pathological structure), not its typical-case
-// runtime, and clearing MAX_DEPTH/MAX_TAGS is not a bound on wall-clock time.
-// Do not add a number back here that a reader could rely on as a promise.
+// found this; a same-shaped construction re-measured 220-275ms on a different
+// machine. This guard bounds Readability's WORST case (pathological
+// structure), not its typical-case runtime, and clearing MAX_DEPTH/MAX_TAGS
+// is not a bound on wall-clock time. Do not add a number back here that a
+// reader could rely on as a promise.
 const MAX_DEPTH = 150;
 const MAX_TAGS = 15_000;
-
-// Void elements never open a nesting level (no close tag), so they must not
-// increment depth or every <br>/<img>-heavy page would over-count.
-const VOID_ELEMENTS = new Set([
-  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
-  'link', 'meta', 'param', 'source', 'track', 'wbr',
-]);
-
-/** ASCII letter/digit test for tag- and attribute-name characters. A plain
- *  charCode range check (not a per-character regex) so walkTags below stays
- *  cheap per character while still doing a single forward pass overall. */
-function isNameChar(code: number): boolean {
-  return (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code >= 48 && code <= 57);
-}
-
-/** One tag found by walkTags: lowercased name, whether it's a closing tag,
- *  and whether it's self-closed (`<br/>`). Used only by the depth guard as of
- *  the 2026-08-06 round-3 redesign — anchor/id collection no longer scans
- *  raw HTML at all (see findAnchor below), so the raw attribute text this
- *  token used to carry is gone; nothing needs it anymore. */
-interface TagToken { name: string; isClose: boolean; selfClosed: boolean; }
 
 /** Case-insensitive indexOf for a short, fixed, ASCII-only needle (the
  *  script/style closing tags below), WITHOUT allocating a lowercased copy of
@@ -122,7 +139,10 @@ interface TagToken { name: string; isClose: boolean; selfClosed: boolean; }
  *
  *  CORRECTION (round 4, 2026-08-06 review): the paragraph above describes
  *  walkTags, which this function was written for and which never had a
- *  second bug. But stripToText and withoutScriptAndStyle further down this
+ *  second bug. walkTags itself was deleted in the round-7 redesign (the
+ *  depth guard now reads the real parser's own tree instead of hand-scanning
+ *  raw HTML — see tagCountTooHigh/domTooDeep above), but indexOfFold stays
+ *  load-bearing: stripToText and withoutScriptAndStyle further down this
  *  file each still built their OWN `lower = html.toLowerCase()` and indexed
  *  it with `html`-cursor offsets — the identical aliasing bug, independently
  *  introduced, just not yet caught. "There is only ever ONE string" was true
@@ -168,310 +188,78 @@ function foldStartsWith(haystack: string, needle: string, at: number): boolean {
   return true;
 }
 
-/** Finds where a raw-text element's content (a `<script>` or `<style>` body)
- *  actually ends, per the tokenizer THIS repo's HTML parser really runs —
- *  linkedom parses via `htmlparser2` (verified by reading
- *  node_modules/linkedom/esm/shared/parse-from-string.js, which imports
- *  `htmlparser2` directly). htmlparser2's `stateInSpecialTag` (Tokenizer.js)
- *  closes a script/style at the first case-insensitive `</script` or
- *  `</style` whose NEXT character is `>` or ASCII whitespace (space, tab,
- *  LF, FF, CR) — it does NOT require an exact `</script>` / `</style>`
- *  literal, and a near-match whose next char is anything else (`</scripts`)
- *  is rejected and scanning resumes.
+/** Cheap O(n) rejection of a page whose raw '<' count alone already exceeds
+ *  MAX_TAGS. The ONLY check that runs BEFORE parseHTML is attempted — see the
+ *  file-level WHY block above for the measured split that makes this
+ *  ordering load-bearing (parseHTML itself is not free on every shape: 5MB of
+ *  bare '<' took 5,425.9ms inside parseHTML alone, so this must reject that
+ *  shape without ever calling it).
  *
- *  WHY this exists (BLOCKER B2, round 5, 2026-08-06 review): the previous
- *  code searched for the literal string `</script>` (needing the `>` to
- *  immediately follow the name with no whitespace), so it disagreed with
- *  linkedom about where a script ends. Payload `<script>x</script >` (one
- *  space before `>`) is, to linkedom, an ordinary closed `<script>` followed
- *  by ordinary markup; to the old code, the literal `</script>` substring
- *  never occurs, so the script is treated as never closing and everything
- *  after it — 14,900 `<div>` opens in the reviewer's PoC — was swallowed
- *  into "still inside script, don't count it" and never reached
- *  MAX_TAGS/MAX_DEPTH. Measured on this machine (`WebFetchTool.execute`,
- *  `'<script>x</script >' + '<div>'.repeat(14900)`, 74,520 bytes): guard let
- *  the payload through and Readability then blocked the main thread for
- *  12,246ms (control, unwrapped divs: 2ms, rejected by the guard). See
- *  "rejects a </script > (whitespace-terminated) close bypass" in
- *  web-fetch-tool.test.ts for the pinned number.
- *
- *  Returns the index to resume scanning from (just past the recognized
- *  closing tag's own `>`), or -1 if the element never closes in the rest of
- *  the string — same failure contract as indexOfFold, so callers treat it
- *  identically to the old closeIdx check.
- *
- *  Linear by construction, same discipline as indexOfFold: each retry after
- *  a near-miss (`</scripts`) resumes searching strictly AFTER that miss's
- *  start position, never earlier — so across every retry combined, each
- *  character of `html` is examined by at most one of the scans, and total
- *  work stays O(remaining length) regardless of how many false `</script`
- *  prefixes an attacker plants. */
-function findRawTextEnd(html: string, name: 'script' | 'style', from: number): number {
-  const closer = '</' + name; // already-lowercase ASCII needle for indexOfFold
-  const n = html.length;
-  let i = from;
-  for (;;) {
-    const idx = indexOfFold(html, closer, i);
-    if (idx === -1) return -1;
-    const after = idx + closer.length;
-    const c = after < n ? html.charCodeAt(after) : -1;
-    // Terminator set matches htmlparser2's isEndOfTagSection minus '/' — its
-    // stateInSpecialTag checks ONLY `c === Gt || isWhitespace(c)` for a
-    // script/style closer specifically (unlike an ordinary tag's name, which
-    // also ends on '/'), so '/' is deliberately excluded here too.
-    if (c === 62 /* '>' */ || c === 32 || c === 9 || c === 10 || c === 12 || c === 13) {
-      const gt = html.indexOf('>', after);
-      return gt === -1 ? -1 : gt + 1;
-    }
-    // Not a real close (e.g. '</scripts') — resume strictly after this
-    // candidate's start so it is never re-examined; see the WHY block above.
-    i = idx + 1;
-  }
+ *  Counts every '<' in the raw string — text-node '<', comments, attribute
+ *  values, all of it — a deliberate over-approximation. That direction is
+ *  the only one that's safe: a real element the parser goes on to build
+ *  always consumed exactly one literal '<' in the source, so the parser can
+ *  never produce MORE real tags than this count. This can reject breadth the
+ *  parser would have tolerated, but can never fail to reject breadth the
+ *  parser will actually build — unchanged from the pre-redesign version of
+ *  this check, still a single literal-character scan with no backtracking
+ *  risk, still O(n) regardless of content shape. */
+function tagCountTooHigh(rawHtml: string): boolean {
+  return (rawHtml.match(/</g) || []).length > MAX_TAGS;
 }
 
-/** Shared linear tag walker for the complexity guard's depth count (its only
- *  remaining caller as of round 3 — see TagToken above). Before this, the
- *  guard's depth scan ran its own regex over the raw string and was
- *  quadratic on adversarial input shaped like many unterminated '<a' tags —
- *  see the WHY comment on the tagCount/`maxDepth` check below for that
- *  history, and indexOfFold's WHY comment above for the CURRENT (round 3)
- *  defect this walker fixes.
+/** True when the ACTUAL parsed DOM nests an element deeper than MAX_DEPTH —
+ *  read off the same tree parseHTML() built for the rest of the pipeline
+ *  (execute() passes in the one document it already parsed; this never
+ *  re-parses). See the file-level WHY block above for why this replaces
+ *  seven rounds of hand-rolled raw-HTML scanning: a depth figure read off
+ *  the tree Readability is about to traverse cannot disagree with that tree.
  *
- *  This walker is linear BY CONSTRUCTION: `i` only moves forward. The
- *  load-bearing fix is the early `return` on a failed indexOf('>', ...): the
- *  FIRST time no '>' is found searching from position p to the end of the
- *  string, NO tag starting anywhere at or after p can ever close either (a
- *  match must consume a literal '>' that indexOf just proved does not exist
- *  in the remainder) — so stopping once, instead of retrying at every
- *  subsequent '<', is what makes total work O(n) regardless of content
- *  shape. See "does not freeze" tests in web-fetch-tool.test.ts for the
- *  pinned numbers.
+ *  Bonus of asking the real parser instead of predicting it: void elements
+ *  (`<br>`, `<img>`, …) and self-closing-tag/foreign-content rules (SVG vs.
+ *  HTML, integration points like `<foreignObject>`) no longer need ANY
+ *  special-casing here — a real parser never gives a void element children,
+ *  and correctly toggles self-closing behavior at foreign-content
+ *  boundaries, so whatever tree it built already reflects both rules for
+ *  free. Verified directly: `parseHTML('<div><br><span>x</span></div>')`
+ *  gives `<br>` zero children (span is BR's sibling inside div, not its
+ *  child) with no code here asking for that.
  *
- *  Script/style bodies are skipped wholesale (not walked for nested tags),
- *  same as stripToText's first phase, because their text can contain tag- or
- *  attribute-shaped substrings that are not real DOM (`document.write('<div>')`,
- *  `var s = 'id=leaked'`). A real HTML parser — including linkedom, which this
- *  guard exists to protect Readability from — never parses script/style
- *  contents as elements either, so this keeps the guard's depth estimate
- *  tracking what Readability will actually see; it does not relax MAX_DEPTH
- *  or MAX_TAGS. */
-function walkTags(html: string, onTag: (tag: TagToken) => void): void {
-  const n = html.length;
-  let i = 0;
-  while (i < n) {
-    const lt = html.indexOf('<', i);
-    if (lt === -1) return;
-    if (html.startsWith('<!--', lt)) {
-      // '<!--' and '-->' are fixed, non-alphabetic delimiters — no case
-      // folding applies, so this searches `html` directly with no second
-      // string and no risk of the aliasing bug above.
-      //
-      // WHY the search starts at `lt + 2`, not `lt + 4` (BLOCKER B2, round 5,
-      // 2026-08-06 review): htmlparser2's stateBeforeComment (the tokenizer
-      // linkedom actually runs — see findRawTextEnd's WHY block above) treats
-      // the comment's own opening `--` as if it were ALREADY the first two
-      // characters of a potential closing `-->` — its comment reads "Allow
-      // short comments (eg. <!-->)". So `<!-->` and `<!--->` close
-      // immediately, with EMPTY content, using the opening dashes as the
-      // closer's own dashes; the old `lt + 4` search started AFTER those
-      // dashes and could never find a `-->` inside a bare `<!-->` (there
-      // are only 5 bytes total — no room for a second, separate `-->`), so
-      // the "comment" was treated as never closing and everything after it
-      // was swallowed as "still inside a comment, don't count it." Searching
-      // from `lt + 2` lets the match land ON the opening dashes for the
-      // abrupt-close forms while still finding the same real `-->` as before
-      // for every ordinary (non-abrupt) comment — verified: for a comment
-      // with real content, no `-->` substring can occur 2 characters earlier
-      // than the true closer without ALSO being the true closer's own
-      // dashes, so this never fires early on ordinary input.
-      //
-      // Payload: '<!-->' + '<div>'.repeat(14900), 74,530 bytes. Measured on
-      // this machine through WebFetchTool.execute: guard let it through and
-      // Readability blocked the main thread for 13,656ms at the old `lt + 4`
-      // offset (control, unwrapped divs: 2ms, rejected). See "rejects a
-      // <!--> (abrupt-closing comment) bypass" in web-fetch-tool.test.ts.
-      const close = html.indexOf('-->', lt + 2);
-      i = close === -1 ? n : close + 3;
-      continue;
-    }
-    if (html[lt + 1] === '!' || html[lt + 1] === '?') {
-      // Doctype/processing-instruction — no id/name of interest, no depth effect.
-      const gt = html.indexOf('>', lt);
-      if (gt === -1) return; // no '>' anywhere later — nothing further can ever match
-      i = gt + 1;
-      continue;
-    }
-    let pos = lt + 1;
-    const isClose = html[pos] === '/';
-    if (isClose) pos++;
-    const nameStart = pos;
-    while (pos < n && isNameChar(html.charCodeAt(pos))) pos++;
-    if (pos === nameStart) {
-      // '<' not followed by a valid tag-name start (stray '<', '<3', etc.) —
-      // not a tag. Advance past just this '<'; the next indexOf resumes from
-      // here, so this stays one forward pass over the whole string.
-      i = lt + 1;
-      continue;
-    }
-    // Folds ONLY this bounded tag-name slice (a handful of characters, never
-    // the whole document) and the result is used solely for value equality
-    // (VOID_ELEMENTS.has, 'script'/'style' checks) — never as a source of an
-    // offset back into `html`, which is what made the old document-wide
-    // `lower` copy unsafe.
-    const name = html.slice(nameStart, pos).toLowerCase();
-    const gt = html.indexOf('>', pos);
-    if (gt === -1) return; // CRITICAL early-exit — see WHY above
-    const selfClosed = html.charCodeAt(gt - 1) === 47; // '/'
-    // Raw-text elements (script/style) only actually open a raw-text region
-    // when NOT self-closed.
-    //
-    // WHY (CRITICAL, round 6, 2026-08-06 review — the mismatch flagged by the
-    // round-5 fixer): htmlparser2's tokenizer resets `isSpecial = false` the
-    // INSTANT it sees the self-closing `/>` on a <script>/<style> tag
-    // (Tokenizer.js `stateInSelfClosingTag`) — a self-closed raw-text tag
-    // NEVER reaches the `InSpecialTag` raw-text state, so it swallows nothing
-    // after it as text. The old code called findRawTextEnd unconditionally
-    // for any `<script`/`<style` OPEN tag, self-closed or not — so
-    // `<script/>` with no LATER real `</script...` anywhere in the document
-    // (the attacker's whole point) made findRawTextEnd return -1 and this
-    // walker jump straight to `n`, treating every tag for the REST of the
-    // document — real, attacker-supplied depth included — as "still inside
-    // the script" and invisible to the depth count.
-    //
-    // On its own that undercount is inert: linkedom's Parser (htmlparser2,
-    // HTML mode, not recognizeSelfClosing — verified in
-    // node_modules/linkedom/esm/shared/parse-from-string.js, which passes
-    // only `{ xmlMode: !isHTML }`) also ignores the self-closing slash on a
-    // non-void, non-foreign element, so `<script/>` itself stays OPEN and
-    // everything after it becomes its real DOM children — and Readability's
-    // own parse() removes every <script>/<style> subtree (`_removeScripts`,
-    // `_prepDocument`) before the expensive `_grabArticle()` pass ever runs,
-    // so a swallowed-whole subtree is safe by accident.
-    // BUT htmlparser2's `openImpliesClose` map (Parser.ts) closes an open
-    // `script` the instant a NEW `<body>` tag appears while `script` is the
-    // top of the parse stack (`["body", new Set(["head","link","script"])]`)
-    // — so `<script/><body>` closes the (empty) script immediately and
-    // everything typed after `<body>` is real, un-stripped top-level
-    // content, not a script descendant. Measured on this machine through
-    // WebFetchTool.execute: `'<html><head></head><script/><body>' +
-    // '<div>'.repeat(14_895) + '</body></html>'` (74,523 bytes, 14,902 '<'
-    // characters — under MAX_TAGS) took 5,518ms (guard let it through,
-    // Readability ran on a genuinely ~14,895-deep, un-stripped document and
-    // eventually threw "Maximum call stack size exceeded" — 5.5s of
-    // main-thread block before that throw). Control (same divs, no
-    // script/body trick): 3ms, rejected as normal. See "rejects the
-    // <script/><body> escape-hatch bypass" in web-fetch-tool.test.ts.
-    if (!isClose && !selfClosed && (name === 'script' || name === 'style')) {
-      // See findRawTextEnd's WHY block (BLOCKER B2) for why this is no
-      // longer a literal '</script>'/'</style>' search.
-      const end = findRawTextEnd(html, name, gt + 1);
-      i = end === -1 ? n : end;
-      continue;
-    }
-    onTag({ name, isClose, selfClosed });
-    i = gt + 1;
+ *  WHY the walk starts at `document.children`, not `document.documentElement`
+ *  (found while building this redesign, 2026-08-06): malformed or unwrapped
+ *  input (no `<html>` root) parses with sibling top-level nodes that are NOT
+ *  descendants of documentElement in linkedom's tree — verified directly:
+ *  `parseHTML('<script>x</script >' + '<div>'.repeat(20))` puts the 20 divs
+ *  as a SEPARATE top-level child of `document`, sibling to the `<script>`,
+ *  with `document.body` staying EMPTY. A walk rooted at documentElement (an
+ *  earlier draft of this function) missed that div chain entirely — it
+ *  measured depth 1 for a tree that was actually 20+ deep. `document.children`
+ *  enumerates every top-level node, so nothing reachable by Readability's own
+ *  document-wide passes (`_getAllNodesWithTag(doc, …)` in Readability.js
+ *  walks the whole document, not just documentElement) can hide from this
+ *  walk either.
+ *
+ *  Iterative with an explicit stack, not recursive: a document nested tens of
+ *  thousands deep — exactly the shape this guard exists to catch — would
+ *  blow the call stack in a recursive walk before MAX_DEPTH's own check does
+ *  anything useful (verified against a 10,004-deep tree without incident).
+ *  Exits the instant depth clears MAX_DEPTH rather than finishing a walk over
+ *  a document it has already decided to reject. */
+function domTooDeep(document: Document): boolean {
+  const stack: Array<{ el: Element; depth: number }> = [];
+  for (const el of Array.from(document.children) as Element[]) stack.push({ el, depth: 1 });
+  while (stack.length) {
+    const { el, depth } = stack.pop()!;
+    if (depth > MAX_DEPTH) return true;
+    for (const child of Array.from(el.children) as Element[]) stack.push({ el: child, depth: depth + 1 });
   }
-}
-
-/** Cheap O(n) rejection of pathological HTML BEFORE the quadratic Readability
- *  parse. Returns an honest error message when the page is too broad or too
- *  deeply nested to extract safely; returns null when it is safe to proceed. */
-function tooComplexToExtract(rawHtml: string): string | null {
-  // Breadth proxy: count '<' across the whole string (includes text-node '<' and
-  // comments — a deliberate cheap over-approximation). Bounds huge tables /
-  // anchor lists whose cost comes from tag COUNT, not depth. This regex is a
-  // single literal-character scan (no backtracking risk), so it stays O(n)
-  // regardless of content shape — it was never the quadratic part.
-  const tagCount = (rawHtml.match(/</g) || []).length;
-  if (tagCount > MAX_TAGS) {
-    return 'WebFetch: this page is too large or deeply nested to extract safely. Try a more specific URL or a printer-friendly/article version.';
-  }
-  // Depth: single pass via walkTags, tracking a running open/close depth and
-  // its max. Increment on a non-void, non-self-closed open tag; decrement on a
-  // close tag; clamp at 0 so malformed close-heavy input can't underflow.
-  //
-  // WHY walkTags and not the previous /<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(\/?)>/g
-  // (CRITICAL, 2026-08-06 re-review): that regex's [^>]*? is a lazy quantifier —
-  // when a '<tagname' is never followed by '>', the match attempt fails and the
-  // engine retries starting at the NEXT character, re-scanning to the end again.
-  // Measured on this machine: a 5.14MB body of 14,999 unterminated '<a' (zero
-  // '>' anywhere) took 9,965ms inside WebFetchTool.execute — the tag-count
-  // pre-check above does not save it, because it counts '<' characters, not
-  // parsed tags, so this exact shape sits right under MAX_TAGS and reaches this
-  // scan. See "does not freeze" test pinning the fixed number.
-  let depth = 0;
-  let maxDepth = 0;
-  // Foreign-context (SVG/MathML) nesting counter — see the WHY block on
-  // `exemptSelfClose` below for what this corrects. Only a running COUNT is
-  // needed (not a stack of element names), because this guard only ever asks
-  // "are we inside svg/math right now", mirroring htmlparser2's own
-  // `foreignContext` stack (Parser.ts) at that single-bit granularity.
-  let foreignDepth = 0;
-  walkTags(rawHtml, (tag) => {
-    const isForeignRoot = tag.name === 'svg' || tag.name === 'math';
-    if (tag.isClose) {
-      depth = Math.max(0, depth - 1);
-      if (isForeignRoot) foreignDepth = Math.max(0, foreignDepth - 1);
-      return;
-    }
-    if (isForeignRoot) foreignDepth++;
-    // WHY selfClosed only exempts depth INSIDE foreign context (CRITICAL,
-    // round 6, 2026-08-06 review): linkedom's Parser (htmlparser2, HTML mode
-    // — see the WHY block on walkTags' script/style branch above for the
-    // verification) ignores the self-closing slash on ANY non-void,
-    // non-foreign element — `<div/>`, `<span/>`, `<script/>`, etc. all stay
-    // OPEN on the real parse stack exactly like `<div>` would, until an
-    // explicit close or EOF. It is honored ONLY inside an <svg>/<math>
-    // subtree (`this.foreignContext[0]` in `onselfclosingtag`, Parser.ts).
-    // The old code exempted EVERY selfClosed non-void tag from the depth
-    // count unconditionally — correct for an SVG icon's self-closing
-    // <path/>/<circle/> shapes, but WRONG for ordinary HTML, and exploitable
-    // WITHOUT any script/style trick at all. Measured on this machine
-    // through WebFetchTool.execute: `'<html><body>' + '<div/>'.repeat(700) +
-    // 'x</body></html>'` (a page with no raw-text tag anywhere) took
-    // 2,812ms — Readability ran on a document that was genuinely 700
-    // elements deep, because maxDepth stayed 0 for the whole scan (every one
-    // of those 700 real, still-open <div>s was excused as "self-closed, so
-    // like a void element"). Control (same divs, real '</div>' closers):
-    // 2-4ms, rejected as normal. See "rejects self-closing non-void tags
-    // that stay open per the real HTML parser (no script/style needed)" in
-    // web-fetch-tool.test.ts.
-    //
-    // KNOWN LIMITATION: htmlparser2 also flips back to normal (non-foreign)
-    // self-closing rules inside a small set of SVG/MathML "integration
-    // points" (`<foreignObject>`, `<desc>`, `<title>` inside <svg>; `<mi>`,
-    // `<mo>`, `<mn>`, `<ms>`, `<mtext>`, `<annotation-xml>` inside <math> —
-    // `htmlIntegrationElements` in Parser.ts). This counter does not track
-    // those, so a page would need real SVG content AND one of those specific
-    // integration elements AND many self-closing tags nested inside THAT to
-    // still undercount — a narrow, deliberately-crafted shape ordinary
-    // content does not produce, and strictly narrower than the gap that
-    // existed before this fix (which had no foreign-context awareness at
-    // all, so it was wrong for the whole document, not just inside these
-    // rare integration points).
-    const exemptSelfClose = tag.selfClosed && foreignDepth > 0;
-    if (!exemptSelfClose && !VOID_ELEMENTS.has(tag.name)) {
-      depth++;
-      if (depth > maxDepth) maxDepth = depth;
-    }
-    // Self-closed svg/math ROOT elements close themselves immediately (net
-    // zero): htmlparser2 pushes foreignContext=true in emitOpenTag, THEN
-    // reads it back in onselfclosingtag for that SAME tag, then immediately
-    // pops it in closeCurrentTag. Without this line, a bare `<svg/>` would
-    // leave foreignDepth stuck open forever (nothing later will emit a
-    // matching close for it), wrongly exempting every self-closing tag for
-    // the REST of the document — reopening the exact bug this fixes.
-    if (isForeignRoot && tag.selfClosed) foreignDepth = Math.max(0, foreignDepth - 1);
-  });
-  if (maxDepth > MAX_DEPTH) {
-    return 'WebFetch: this page is too large or deeply nested to extract safely. Try a more specific URL or a printer-friendly/article version.';
-  }
-  return null;
+  return false;
 }
 
 /** Tag-strip to readable text — the guard-path fallback that runs on EXACTLY
- *  the input tooComplexToExtract() just rejected, so it must not reintroduce
- *  the freeze the guard exists to prevent.
+ *  the input tagCountTooHigh()/domTooDeep() just rejected (see execute()
+ *  below), so it must not reintroduce the freeze the guard exists to
+ *  prevent.
  *
  *  WHY this is a hand-written scan and not a regex (CRITICAL, 2026-08-06
  *  review): the previous implementation used /<[^>]*>/g and
@@ -482,8 +270,8 @@ function tooComplexToExtract(rawHtml: string): string | null {
  *  end of the string. Measured on this machine: /<[^>]*>/g against a run of
  *  200,000 unterminated '<' characters (200KB — far under the 5MB body cap)
  *  took 12,194ms. That exact shape (many '<' with no '>') is what makes
- *  tooComplexToExtract() reject a page in the first place (it counts every
- *  '<', matched or not) — so the "safe" fallback was reopening precisely the
+ *  tagCountTooHigh() reject a page in the first place (it counts every '<',
+ *  matched or not) — so the "safe" fallback was reopening precisely the
  *  main-thread freeze the guard exists to prevent.
  *
  *  This scan is linear BY CONSTRUCTION rather than by claim: cursor `i` only
@@ -608,6 +396,63 @@ const FALLBACK_CHAR_CAP = 200_000;
 function stripToTextCapped(html: string): { text: string; truncated: boolean } {
   const capped = html.length > FALLBACK_CHAR_CAP;
   return { text: stripToText(capped ? html.slice(0, FALLBACK_CHAR_CAP) : html), truncated: capped };
+}
+
+/** Builds the "too large or deeply nested" degraded-but-honest result shared
+ *  by BOTH DoS guard stages in execute() below (the breadth pre-check, which
+ *  never parses, and the real-DOM depth check, which does) — factored out so
+ *  splitting the guard into two check points (see the file-level WHY block
+ *  at the top of this file) didn't require duplicating this response shape
+ *  at both call sites. `raw` is always the untouched fetched HTML, not a
+ *  parsed document — neither guard stage keeps a `document` around for this:
+ *  the breadth stage never builds one, and the depth stage's whole point is
+ *  refusing to hand that document to any further processing. */
+function tooComplexResult(header: string, hash: string, raw: string, truncated: boolean): ToolResultPayload {
+  // WHY stripToTextCapped (not stripToText) here (Important finding,
+  // 2026-08-06 review): this branch previously called the unbounded
+  // stripToText and silently returned an entire multi-megabyte tag-soup
+  // document as plain text — not a truncation-SAFETY issue (stripToText is
+  // linear on any input) but a usefulness one: FALLBACK_CHAR_CAP bounds it
+  // to something a model can actually read.
+  const { text: fallbackText, truncated: fallbackCapped } = stripToTextCapped(raw);
+  // Fix: declare the 200KB scan cap via `bounds` instead of hand-writing
+  // "Showing only the first NKB..." into `text`. WHY this cap — not the 5MB
+  // network cap — takes the single `bounds` slot when BOTH fire on the same
+  // response (only one `bounds` can ride a ToolResultPayload): whenever
+  // `truncated` (the 5MB cap) is true, `raw` decodes to well over 200,000
+  // UTF-16 code units (5,242,880 bytes is at minimum ~2.6M units even in the
+  // all-4-byte-codepoint worst case), so `fallbackCapped` is unconditionally
+  // also true — the 200KB cap is the one that actually bounds what the
+  // model reads. Its total (raw.length, the HTML actually scanned for this
+  // fallback) is known exactly, unlike the 5MB cap's total. The 5MB fact is
+  // not dropped: bodyCapNote below discloses it as plain prose whenever it
+  // also fired — a fact, not advice, so it isn't the retired "how do I get
+  // more" wording this contract removes.
+  const bounds = fallbackCapped
+    ? {
+        shown: FALLBACK_CHAR_CAP,
+        total: raw.length,
+        unit: 'chars' as const,
+        // Verbatim copy of WebFetchTool's own `moreHint` — see its WHY comment.
+        moreHint: 'fetch a more specific URL, or a narrower section of the page',
+      }
+    : undefined;
+  const bodyCapNote = truncated
+    ? '\n\n[The response body itself was cut off at the 5MB fetch cap before this extraction ran — the live page may be larger than what was received.]'
+    : '';
+  // WHY this is general-and-non-committal, not "no anchor named X" (round 3
+  // design change): neither guard stage runs Readability, so there is no
+  // extracted markdown to check the fragment against. Per
+  // docs/error-message-standards.md, a claim we cannot support (a
+  // categorical "this anchor does not exist") is worse than saying plainly
+  // that the check could not be done.
+  const fragmentNote = hash
+    ? `\n\n[This page could not be parsed for structured extraction, so whether "#${hash}" exists could not be checked.]`
+    : '';
+  return {
+    text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.]\n\n${fallbackText}${fragmentNote}${bodyCapNote}`,
+    bounds,
+  };
 }
 
 // --- JS-rendered-page disclosure (task 12) ------------------------------------
@@ -937,83 +782,62 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
         // (composeNotice renders that as "at least N"); inventing a total here
         // is the exact dishonesty this contract exists to remove.
         //
-        // NOT the same defect as BLOCKER B1 below (round 5, 2026-08-06
-        // review — checked deliberately, since this branch has the identical
-        // `{ shown: MAX_BODY_BYTES, ... }` shape): B1 was `shown` describing
-        // bytes that were fetched but then mostly DISCARDED by extraction
-        // before reaching `text`. Here `raw` is embedded in `text` VERBATIM —
-        // there is no extraction step for non-HTML content — so every one of
-        // the (up to) MAX_BODY_BYTES bytes readBodyCapped decoded into `raw`
-        // really is present in what the model reads. `shown: MAX_BODY_BYTES`
-        // stays an honest count of bytes actually shown, not an overstatement.
+        // CORRECTION (round 7, 2026-08-06 review): a previous fixer argued
+        // this branch was safe with `shown: MAX_BODY_BYTES, unit: 'bytes'`
+        // because — unlike BLOCKER B1 below — `raw` is embedded in `text`
+        // VERBATIM, with no extraction step to discard anything. True on its
+        // own, but incomplete: defineTool (registry.ts) still runs `text`
+        // through its OWN 30,000-CHAR pipeline cap regardless of what this
+        // tool declares, and composeNotice renders BOTH bounds on one line.
+        // Measured on a 6,000,000-byte CJK text/plain body (decodes to
+        // 1,747,627 UTF-16 units before the 5MB byte cap trims it further):
+        //   [showing 30007 of 1747664 chars, and 5242880 bytes (more may exist — exact total unknown) — …]
+        // — one line claiming 5,242,880 BYTES shown in the same breath as
+        // 30,007 CHARS shown, two different units both purporting to measure
+        // the same `text`. Whenever `truncated` is true here, the pipeline
+        // cap has ALWAYS already fired too: MAX_BODY_BYTES (5,242,880 bytes)
+        // decodes to at least ~1.31M UTF-16 units even in the all-4-byte-
+        // codepoint worst case — unconditionally past defineTool's 30,000-char
+        // maxChars — so `shown: MAX_BODY_BYTES` overstates what's actually in
+        // `text` by 50-175x every time this branch fires, not just on
+        // pathological input. Fixed the same way as BLOCKER B1: `shown`
+        // measures `raw.length` — what this tool itself put into `text`, in
+        // the SAME unit (chars) the pipeline cap also uses — and `total`
+        // stays `null` (the true page size past the network cap is still
+        // genuinely unknown).
         bounds: truncated
-          ? { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
+          ? { shown: raw.length, total: null, unit: 'chars' as const, moreHint: 'fetch a more specific URL, or a narrower section of the page' }
           : undefined,
       };
     }
     // Needed by both the too-complex fallback below and the normal path —
     // compute once up front.
     const hash = (() => { try { return new URL(finalUrl).hash.replace(/^#/, ''); } catch { return ''; } })();
-    // DoS guard: never run the synchronous ~quadratic Readability parse on
-    // pathological HTML. But WHY this no longer hard-fails (2026-08-06): the guard
-    // is specifically about Readability's cost, and tag-stripping is now genuinely
+    // DoS guard, STAGE 1 (breadth): never let a page whose raw '<' count alone
+    // already exceeds MAX_TAGS reach parseHTML at all — see tagCountTooHigh's
+    // own WHY comment and the file-level WHY block above for the measured
+    // parseHTML-vs-Readability split that makes this ordering load-bearing.
+    // WHY this degrades instead of hard-failing (2026-08-06): the guard is
+    // specifically about Readability's cost, and tag-stripping is genuinely
     // linear (see stripToText's WHY comment) and safe on any input — so we can
     // still return honest content. The old refusal left the model with nothing
     // and no way forward (2026-08-01 review, finding #1).
-    const tooComplex = tooComplexToExtract(raw);
-    if (tooComplex) {
-      // WHY stripToTextCapped (not stripToText) here (Important finding,
-      // 2026-08-06 review): this branch previously called the unbounded
-      // stripToText and silently returned an entire multi-megabyte tag-soup
-      // document as plain text — not a truncation-SAFETY issue (stripToText is
-      // linear on any input) but a usefulness one: FALLBACK_CHAR_CAP bounds it
-      // to something a model can actually read.
-      const { text: fallbackText, truncated: fallbackCapped } = stripToTextCapped(raw);
-      // Fix: declare the 200KB scan cap via `bounds` instead of hand-writing
-      // "Showing only the first NKB..." into `text`. WHY this cap — not the 5MB
-      // network cap — takes the single `bounds` slot when BOTH fire on the same
-      // response (only one `bounds` can ride a ToolResultPayload): whenever
-      // `truncated` (the 5MB cap) is true, `raw` decodes to well over 200,000
-      // UTF-16 code units (5,242,880 bytes is at minimum ~2.6M units even in the
-      // all-4-byte-codepoint worst case), so `fallbackCapped` is unconditionally
-      // also true — the 200KB cap is the one that actually bounds what the
-      // model reads. Its total (raw.length, the HTML actually scanned for this
-      // fallback) is known exactly, unlike the 5MB cap's total. The 5MB fact is
-      // not dropped: bodyCapNote below discloses it as plain prose whenever it
-      // also fired — a fact, not advice, so it isn't the retired "how do I get
-      // more" wording this contract removes.
-      const bounds = fallbackCapped
-        ? {
-            shown: FALLBACK_CHAR_CAP,
-            total: raw.length,
-            unit: 'chars' as const,
-            // Verbatim copy of WebFetchTool's own `moreHint` — see its WHY comment.
-            moreHint: 'fetch a more specific URL, or a narrower section of the page',
-          }
-        : undefined;
-      const bodyCapNote = truncated
-        ? '\n\n[The response body itself was cut off at the 5MB fetch cap before this extraction ran — the live page may be larger than what was received.]'
-        : '';
-      // WHY this is general-and-non-committal, not "no anchor named X" (round 3
-      // design change): this branch never parses the page — that's the whole
-      // point of the guard — so there is no DOM to check the fragment against.
-      // Per docs/error-message-standards.md, a claim we cannot support (a
-      // categorical "this anchor does not exist") is worse than saying plainly
-      // that the check could not be done.
-      const fragmentNote = hash
-        ? `\n\n[This page could not be parsed for structured extraction, so whether "#${hash}" exists could not be checked.]`
-        : '';
-      return {
-        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.]\n\n${fallbackText}${fragmentNote}${bodyCapNote}`,
-        bounds,
-      };
+    if (tagCountTooHigh(raw)) {
+      return tooComplexResult(header, hash, raw, truncated);
     }
-    // Single parse of this page, reused for both fragment resolution and
-    // Readability extraction below — see the WHY block above
-    // classifyFragment for why the fragment lookup MUST happen here, before
-    // htmlToMarkdown hands this same `document` to Readability and Readability
-    // mutates it in place.
+    // Single parse of this page, reused for the depth check (STAGE 2 below)
+    // AND — once that passes — fragment resolution + Readability extraction
+    // further down. See classifyFragment's WHY block for why the fragment
+    // lookup MUST happen before htmlToMarkdown hands this same `document` to
+    // Readability, which mutates it in place.
     const { document } = parseHTML(raw);
+    // DoS guard, STAGE 2 (depth): now that we have the REAL parsed tree,
+    // reject before Readability if it nests past MAX_DEPTH. See domTooDeep's
+    // own WHY comment for why this replaces every hand-rolled raw-HTML depth
+    // scan that came before it.
+    if (domTooDeep(document)) {
+      return tooComplexResult(header, hash, raw, truncated);
+    }
     const anchorMatch = hash ? findAnchor(document, hash) : null;
     const { title, markdown } = htmlToMarkdown(document, raw);
     // Minor finding (2026-08-06 review): stripToText(raw) used to be recomputed

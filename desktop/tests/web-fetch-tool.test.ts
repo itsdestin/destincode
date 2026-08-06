@@ -4,6 +4,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment, stripToText } from '../src/main/harness/tools/web-fetch';
+import { truncateOutput, composeNotice } from '../src/main/harness/tools/truncate';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
@@ -461,6 +462,83 @@ describe('WebFetch', () => {
     parseSpy2.mockRestore();
   });
 
+  // --- round-7 redesign: depth now read off the REAL parsed DOM ------------
+  //
+  // Every hand-rolled scan from rounds 1-6 estimated depth by walking raw
+  // HTML and guessing how the real parser (linkedom -> htmlparser2) would
+  // nest it. The two bypasses below are what six rounds of that guessing
+  // eventually missed — proof the OLD approach was unfixable, not just
+  // unfixed. The redesign (tagCountTooHigh + domTooDeep in web-fetch.ts)
+  // deletes the guess entirely: it parses with the SAME parseHTML() call the
+  // rest of the pipeline uses and reads depth off that tree, so there is no
+  // second implementation left to disagree with the first.
+
+  it('rejects a stray unmatched close tag depth bypass for </span>, </p>, and </br> (CRITICAL, round 7)', async () => {
+    // htmlparser2's Parser.onclosetag (Parser.ts) looks up the closing tag's
+    // name on its OWN open-element stack via `stack.indexOf(name)` and does
+    // NOTHING if it isn't found — only 'p' (implicit open+close) and the void
+    // element 'br' (implicit open+close, contributes no real nesting) get
+    // special-cased; every other unmatched close (</span> here) is silently
+    // ignored. The OLD guard's depth scan decremented on EVERY close tag it
+    // saw, matched or not, so `('<div>' + '</span>').repeat(N)` kept its
+    // measured depth pinned near 1 (each <div> immediately "closed" by the
+    // next </span>) while the REAL DOM nested N divs deep — the </span>s
+    // never touch the real open-element stack at all.
+    //
+    // Measured on this machine through WebFetchTool.execute BEFORE this fix
+    // (the round-6 code, i.e. the shipped code this redesign replaces):
+    // 7,240 bytes -> 6,106ms; 30KB -> 13,682ms; 60,024 bytes (10,004 '<',
+    // comfortably under MAX_TAGS) -> 108,338ms. Control with real '</div>'
+    // closers: 1ms, rejected as normal.
+    const N = 5002; // 10,004 '<' total (span/p/br child), matches the measured PoC size
+    for (const closer of ['</span>', '</p>', '</br>']) {
+      const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+      const payload = ('<div>' + closer).repeat(N);
+      const t0 = Date.now();
+      const r = await fetchWith(payload, `https://example.com/stray-close-${closer.replace(/\W/g, '')}`);
+      const elapsed = Date.now() - t0;
+      expect(r.isError).toBeFalsy();
+      expect(r.text).toMatch(/too large or deeply nested/);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(elapsed).toBeLessThan(1000); // was up to 108,338ms before this fix
+      parseSpy.mockRestore();
+    }
+  });
+
+  it('rejects deep nesting hidden behind SVG/MathML foreign-content integration points: <foreignObject>, <desc>, <math><mtext> (CRITICAL, round 7)', async () => {
+    // The round-6 fix added a foreignDepth counter so a self-closing tag
+    // (`<div/>`) is only exempted from the depth count INSIDE real <svg>/
+    // <math> content — matching htmlparser2's `foreignContext` check. Its own
+    // "KNOWN LIMITATION" comment flagged the gap this test closes: inside a
+    // small set of "HTML integration points" (`htmlIntegrationElements` /
+    // `mathMLTextIntegrationPoints` in Parser.ts — <foreignObject>, <desc>,
+    // <title> under <svg>; <mi>/<mo>/<mn>/<ms>/<mtext>/<annotation-xml> under
+    // <math>), htmlparser2 flips back to ORDINARY (non-foreign) self-closing
+    // rules mid-subtree — so `<div/>` inside one of these stays OPEN on the
+    // real stack exactly like outside any svg/math at all, but the round-6
+    // counter still saw foreignDepth > 0 and exempted it, undercounting.
+    // Measured on this machine through WebFetchTool.execute BEFORE this fix:
+    // <svg><foreignObject> + 800 <div/> (4,820 bytes) -> 7,748ms; the <desc>
+    // and <math><mtext> variants below hang the same way. Control (same
+    // divs, no svg/math wrapper): rejected in a few ms.
+    for (const [label, prefix] of [
+      ['foreignObject', '<svg><foreignObject>'],
+      ['desc', '<svg><desc>'],
+      ['mtext', '<math><mtext>'],
+    ] as const) {
+      const parseSpy = vi.spyOn(Readability.prototype, 'parse');
+      const payload = prefix + '<div/>'.repeat(800);
+      const t0 = Date.now();
+      const r = await fetchWith(payload, `https://example.com/foreign-integration-${label}`);
+      const elapsed = Date.now() - t0;
+      expect(r.isError).toBeFalsy();
+      expect(r.text).toMatch(/too large or deeply nested/);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(elapsed).toBeLessThan(1000); // was 7,748ms (foreignObject case) before this fix
+      parseSpy.mockRestore();
+    }
+  });
+
   it('recognizes every htmlparser2 tag-name terminator after </script — space, tab, LF, FF, CR — not only an exact ">"', async () => {
     // htmlparser2's stateInSpecialTag terminator set is `c === '>' ||
     // isWhitespace(c)`, and isWhitespace covers space/LF/tab/FF/CR
@@ -490,12 +568,14 @@ describe('WebFetch', () => {
   });
 
   it('does not let a near-miss "</scripts" inside a script body end the script early (correctness, not just DoS)', async () => {
-    // findRawTextEnd resumes searching strictly after a failed candidate
-    // rather than treating the first "</script" substring as authoritative —
-    // this pins that a script body merely CONTAINING the text "</scripts"
-    // (not a real close: 's' is not a terminator) doesn't fool the scan into
-    // stopping early, which would leak the rest of the script source as
-    // visible markup/text.
+    // This page is small (well under MAX_TAGS/MAX_DEPTH), so it never reaches
+    // the guard-path fallback at all — script stripping here is REAL
+    // linkedom parsing (which correctly treats "</scripts" as ordinary script
+    // text, not a close: only an exact "</script" whose next char is '>' or
+    // whitespace ends the element) followed by Readability's own
+    // _removeScripts. Pinned as a regression floor for the round-7 redesign
+    // (the guard no longer hand-scans raw HTML at all, so this proves the
+    // real parser it now defers to gets this right without any help).
     const article = '<html><head><script>var s = "</scripts are neat";</script></head><body><article><h1>API Guide</h1><p>'
       + 'Real content. '.repeat(40) + '</p></article></body></html>';
     const r = await fetchWith(article, 'https://example.com/near-miss-script-close');
@@ -508,9 +588,10 @@ describe('WebFetch', () => {
     // htmlparser2's InSpecialTag terminator check is `c === Gt ||
     // isWhitespace(c)` — no '/' branch (unlike isEndOfTagSection, used for
     // ordinary tag names, which DOES include '/'). So '</script/>' must NOT
-    // close the script to either linkedom or this guard; the true close a
-    // few bytes later is what actually ends it, and content between the two
-    // stays (correctly) treated as inert script text on both sides.
+    // close the script to linkedom (the real parser the guard now defers to
+    // entirely — see the round-7 redesign); the true close a few bytes later
+    // is what actually ends it, and content between the two stays (correctly)
+    // treated as inert script text on both sides.
     const page = '<html><body><script>var a = 1; //</script/> not real markup</script><article><h1>Real</h1><p>'
       + 'Real content. '.repeat(40) + '</p></article></body></html>';
     const r = await fetchWith(page, 'https://example.com/slash-not-terminator');
@@ -597,6 +678,22 @@ describe('WebFetch', () => {
     // exists to prevent. Uses the non-HTML path (text/plain) so the DOM
     // extraction machinery never gets involved — this test is only about the
     // network body cap.
+    //
+    // WHY `unit: 'chars'` (not 'bytes') and a whole-line assertion (round 7,
+    // 2026-08-06 review): this test used to assert only `unit: 'bytes'` and a
+    // SUBSTRING of `r.text` — both true, but they hid a real bug. `raw` is
+    // all-ASCII here, so `raw.length` (5,242,880) happens to equal
+    // MAX_BODY_BYTES numerically, so the OLD `{ shown: MAX_BODY_BYTES, unit:
+    // 'bytes' }` and the FIXED `{ shown: raw.length, unit: 'chars' }` render
+    // the same NUMBER — the unit mislabel was invisible to a substring match
+    // on this fixture alone. It is not invisible once defineTool's 30,000-char
+    // pipeline cap ALSO fires (it always does here — resultText is ~5.24M
+    // chars): composeNotice folds both bounds onto one line, and the old code
+    // rendered "showing 30007 of <N> chars, and 5242880 BYTES" — two units on
+    // one line about the same `text`. Asserting the WHOLE line (not a
+    // substring) is what catches that contradiction; derived via the same
+    // truncateOutput/composeNotice calls defineTool itself runs, so this
+    // doesn't hardcode a number that would silently drift if either changed.
     const oversized = 'a'.repeat(6 * 1024 * 1024); // > MAX_BODY_BYTES (5MB)
     __setWebFetchTestHooks({
       lookup: publicLookup,
@@ -604,21 +701,67 @@ describe('WebFetch', () => {
     });
     const r = await WebFetchTool.execute({ url: 'https://example.com/huge.txt' } as any, ctx());
     expect(r.isError).toBeFalsy();
-    expect(r.bounds).toEqual({
-      shown: 5 * 1024 * 1024,
-      total: null,
-      unit: 'bytes',
-      moreHint: 'fetch a more specific URL, or a narrower section of the page',
-    });
+    const moreHint = 'fetch a more specific URL, or a narrower section of the page';
+    expect(r.bounds).toEqual({ shown: 5 * 1024 * 1024, total: null, unit: 'chars', moreHint });
+    const rawText = `Source: https://example.com/huge.txt\n\n${'a'.repeat(5 * 1024 * 1024)}`;
+    const t = truncateOutput(rawText, { maxChars: 30_000 });
+    const notice = composeNotice(r.bounds, t.truncated ? { shown: t.text.length, total: t.totalChars } : null, undefined);
+    expect(r.text).toBe(t.text + notice);
     // composeNotice (truncate.ts, fixed alongside this round's B1 blocker)
     // renders total: null as "more may exist — exact total unknown", never a
     // tautological "N of at least N" (which read as "that's everything") and
     // never a fabricated count.
-    expect(r.text).toMatch(/5242880 bytes \(more may exist — exact total unknown\)/);
+    expect(r.text).toMatch(/5242880 chars \(more may exist — exact total unknown\)/);
+    expect(r.text).not.toMatch(/5242880 bytes/); // the retired, unit-mismatched wording
     expect(r.text).not.toMatch(/at least 5242880/); // the retired tautological wording
     expect(r.text).toContain('fetch a more specific URL'); // real, tool-specific widening advice
     expect(r.text).not.toContain('[body truncated at 5MB]'); // the retired hand-rolled wording
     expect(r.text).not.toContain('[output truncated: showing'); // the bare no-advice fallback
+  });
+
+  it('does not claim two different units for the same text on a large non-HTML body (BLOCKER, round 7, CJK unit-mismatch regression)', async () => {
+    // WHY this exact shape (round 7, 2026-08-06 review): the ASCII test above
+    // can't tell `shown: MAX_BODY_BYTES, unit: 'bytes'` apart from `shown:
+    // raw.length, unit: 'chars'` on its own — for all-ASCII input the two
+    // numbers coincide. A body of multi-byte characters breaks that
+    // coincidence: 2,000,000 repetitions of '你' (3 bytes each in UTF-8) is
+    // exactly 6,000,000 bytes, so readBodyCapped's 5,242,880-byte cut lands
+    // mid-character and decodes to 1,747,627 UTF-16 units — NOT 5,242,880.
+    // The pre-fix code still reported `shown: 5242880 bytes`, so composeNotice
+    // rendered (verified against the pre-fix code path directly):
+    //   [showing 30007 of 1747664 chars, and 5242880 bytes (more may exist — exact total unknown) — …]
+    // — claiming 5,242,880 BYTES shown in the same breath as 30,007 CHARS
+    // shown of a 1,747,664-char total, though only 1,747,627 chars of `raw`
+    // ever existed to show. The fix reports `shown: raw.length` in `chars`,
+    // matching the unit truncateOutput/composeNotice already use for `total`.
+    const CJK = '你'; // 3 bytes in UTF-8 ('你')
+    const oversized = CJK.repeat(2_000_000); // exactly 6,000,000 bytes
+    expect(Buffer.byteLength(oversized, 'utf8')).toBe(6_000_000); // sanity: the premise this test rests on
+    __setWebFetchTestHooks({
+      lookup: publicLookup,
+      fetchImpl: async () => new Response(oversized, { status: 200, headers: { 'content-type': 'text/plain' } }),
+    });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/huge-cjk.txt' } as any, ctx());
+    expect(r.isError).toBeFalsy();
+    // The actual decoded length of what readBodyCapped put into `raw` —
+    // computed independently of web-fetch.ts's own logic (plain Buffer
+    // slice+decode, mirroring readBodyCapped's own implementation) so this
+    // isn't just re-asserting whatever the source code happens to compute.
+    const decodedRaw = Buffer.from(oversized, 'utf8').subarray(0, 5 * 1024 * 1024).toString('utf8');
+    expect(decodedRaw.length).toBe(1_747_627); // pins the premise's own numbers
+    expect(r.bounds).toEqual({
+      shown: decodedRaw.length,
+      total: null,
+      unit: 'chars',
+      moreHint: 'fetch a more specific URL, or a narrower section of the page',
+    });
+    // The whole-line, unit-consistency assertion: exactly one unit ("chars")
+    // appears in the notice, never two units describing the same `text`.
+    const noticeLine = r.text.slice(r.text.lastIndexOf('\n['));
+    const unitMentions = noticeLine.match(/\d[\d,]* (chars|bytes)/g) ?? [];
+    expect(unitMentions.length).toBeGreaterThan(0);
+    expect(unitMentions.every((m) => m.endsWith('chars'))).toBe(true); // never "bytes" alongside "chars"
+    expect(r.text).not.toMatch(/5242880 bytes/); // the retired, overstated, wrong-unit claim
   });
 
   it('does not overstate what was shown when a >5MB HTML body extracts to a short article (fix: BLOCKER B1)', async () => {
