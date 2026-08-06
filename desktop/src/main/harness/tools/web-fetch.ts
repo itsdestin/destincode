@@ -93,17 +93,107 @@ function tooComplexToExtract(rawHtml: string): string | null {
   return null;
 }
 
-/** Tag-strip to readable text. O(n) on the raw string, so it is safe on input
- *  that would hang Readability's ~quadratic parse. */
+/** Tag-strip to readable text — the guard-path fallback that runs on EXACTLY
+ *  the input tooComplexToExtract() just rejected, so it must not reintroduce
+ *  the freeze the guard exists to prevent.
+ *
+ *  WHY this is a hand-written scan and not a regex (CRITICAL, 2026-08-06
+ *  review): the previous implementation used /<[^>]*>/g and
+ *  /<script[\s\S]*?<\/script>/gi and its comment claimed this was O(n). That
+ *  claim was never measured and is false: both regexes backtrack — when a '<'
+ *  or '<script' is never followed by its terminator, the engine retries the
+ *  match starting at every subsequent character, each retry re-scanning to the
+ *  end of the string. Measured on this machine: /<[^>]*>/g against a run of
+ *  200,000 unterminated '<' characters (200KB — far under the 5MB body cap)
+ *  took 12,194ms. That exact shape (many '<' with no '>') is what makes
+ *  tooComplexToExtract() reject a page in the first place (it counts every
+ *  '<', matched or not) — so the "safe" fallback was reopening precisely the
+ *  main-thread freeze the guard exists to prevent.
+ *
+ *  This scan is linear BY CONSTRUCTION rather than by claim: cursor `i` only
+ *  ever moves forward, and every indexOf()/startsWith() lookahead begins where
+ *  the previous one finished, so the ranges scanned across the whole call
+ *  never overlap — total work is bounded by one pass over `html` regardless of
+ *  content shape. Concretely, an unterminated tag or script/style block is
+ *  handled by jumping straight to the end of the string ONCE, never retried
+ *  character-by-character. Measured on the same 200,000-char adversarial
+ *  input this replaces: see "does not freeze on 200,000 unterminated '<'
+ *  characters" in tests/web-fetch-tool.test.ts for the pinned number. */
 export function stripToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]*>/g, ' ')
+  const n = html.length;
+  // One O(n) pass so script/style tag names and their closers can be located
+  // case-insensitively via indexOf, instead of lowercasing a slice per tag.
+  const lower = html.toLowerCase();
+  const parts: string[] = [];
+  let i = 0;
+  let textStart = 0;
+  while (i < n) {
+    if (html.charCodeAt(i) !== 60 /* '<' */) { i++; continue; }
+    if (i > textStart) parts.push(html.slice(textStart, i));
+    if (lower.startsWith('<script', i) || lower.startsWith('<style', i)) {
+      const closer = lower.startsWith('<script', i) ? '</script>' : '</style>';
+      const closeIdx = lower.indexOf(closer, i);
+      // Not found: treat the rest of the document as inside this block and
+      // stop — do NOT retry the search from i+1, which is what made the old
+      // regex quadratic on input shaped like this.
+      i = closeIdx === -1 ? n : closeIdx + closer.length;
+    } else {
+      const gt = html.indexOf('>', i);
+      // Unterminated tag: drop everything after it rather than re-scanning
+      // for a '>' that will never arrive.
+      i = gt === -1 ? n : gt + 1;
+    }
+    parts.push(' ');
+    textStart = i;
+  }
+  if (n > textStart) parts.push(html.slice(textStart, n));
+  return parts.join('')
     .replace(/&nbsp;/g, ' ')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n')
     .trim();
+}
+
+/** Same script/style removal as stripToText's first phase, but keeps every
+ *  other byte (including other markup) instead of collapsing it to text. Used
+ *  only to build a comparable denominator for looksJsRendered's density check
+ *  below — see that function's WHY comment. Uses the same monotonic-cursor
+ *  technique as stripToText above, for the same reason: linear regardless of
+ *  content shape. */
+function withoutScriptAndStyle(html: string): string {
+  const n = html.length;
+  const lower = html.toLowerCase();
+  const parts: string[] = [];
+  let i = 0;
+  let textStart = 0;
+  while (i < n) {
+    if (html.charCodeAt(i) !== 60 || !(lower.startsWith('<script', i) || lower.startsWith('<style', i))) { i++; continue; }
+    if (i > textStart) parts.push(html.slice(textStart, i));
+    const closer = lower.startsWith('<script', i) ? '</script>' : '</style>';
+    const closeIdx = lower.indexOf(closer, i);
+    i = closeIdx === -1 ? n : closeIdx + closer.length;
+    textStart = i;
+  }
+  if (n > textStart) parts.push(html.slice(textStart, n));
+  return parts.join('');
+}
+
+// Cap on how much raw HTML the guard-path fallback (below) will turn into
+// plain text. WHY (Important finding, 2026-08-06 review): the fallback exists
+// to give the model SOMETHING useful when structured extraction was refused,
+// not to render an entire document up to the 5MB body cap as plain text — a
+// multi-megabyte tag-soup page would otherwise return megabytes of largely
+// unreadable text. This is independent of the CRITICAL fix above (stripToText
+// is linear now, so this cap is about usefulness, not runtime safety) and does
+// NOT change MAX_TAGS, MAX_DEPTH, or the 5MB body cap itself.
+const FALLBACK_CHAR_CAP = 200_000;
+
+/** stripToText, bounded to FALLBACK_CHAR_CAP raw characters, for the guard
+ *  (too-complex) path only. The JS-render density check below needs the FULL
+ *  text and calls stripToText directly. */
+function stripToTextCapped(html: string): { text: string; truncated: boolean } {
+  const capped = html.length > FALLBACK_CHAR_CAP;
+  return { text: stripToText(capped ? html.slice(0, FALLBACK_CHAR_CAP) : html), truncated: capped };
 }
 
 // --- JS-rendered-page disclosure (task 12) ------------------------------------
@@ -118,23 +208,71 @@ export function stripToText(html: string): string {
 /** Markers of a client-rendered app shell. */
 const JS_APP_MARKERS = /__VP_HASH_MAP__|__NEXT_DATA__|__NUXT__|__remixContext|__sveltekit|window\.__INITIAL_STATE__/;
 const EMPTY_ROOT = /<div id="(?:root|app|__next)"\s*>\s*<\/div>/i;
-/** Visible-text-to-bytes ratio below which a page is mostly scaffolding.
- *  Measured 2026-08-06: vitest.dev/config 5.3%; docs.python.org asyncio 16.0%;
- *  nodejs.org/api/fs 24.2%; example.com 25.4%. 10% sits in the gap. */
+/** Visible-text-to-bytes ratio below which a page is mostly scaffolding. The
+ *  denominator excludes <script>/<style> bytes — see the WHY comment on
+ *  looksJsRendered below for why that matters. Re-measured on the two
+ *  committed fixtures after that fix (2026-08-06): vitest-config.html (the
+ *  false-negative page from the 2026-08-01 incident) 7.18%; asyncio.html
+ *  (server-rendered, near-identical extraction ratio before this fix) 19.07%.
+ *  Both these are what the committed test fixtures actually measure, not the
+ *  5.3%/16.0% an earlier draft of this comment claimed. 10% still sits in the
+ *  gap between them. */
 const TEXT_DENSITY_FLOOR = 0.10;
+
+/** Core of the JS-render check, taking an already-computed stripped text so
+ *  callers that need that text anyway (execute(), below) don't pay for a
+ *  second stripToText() pass over the same html. */
+function jsRenderDensity(html: string, strippedText: string): boolean {
+  const hasMarker = JS_APP_MARKERS.test(html) || EMPTY_ROOT.test(html);
+  if (!hasMarker) return false;
+  const denominator = withoutScriptAndStyle(html).length;
+  return strippedText.length / Math.max(denominator, 1) < TEXT_DENSITY_FLOOR;
+}
 
 /** True when the served HTML looks like an app shell whose content arrives via
  *  JavaScript. We CANNOT know what is missing — from the response's point of view
  *  nothing is — so callers must phrase the disclosure non-committally per
- *  docs/error-message-standards.md. */
+ *  docs/error-message-standards.md.
+ *
+ *  WHY the denominator excludes <script>/<style> bytes (Important finding,
+ *  2026-08-06 review): stripToText already strips script/style bodies out of
+ *  the NUMERATOR, but the denominator used to be the raw html.length, which
+ *  still counted them — so a routine SSR hydration blob (e.g. Next.js'
+ *  __NEXT_DATA__) deflated the ratio regardless of whether the visible prose
+ *  was complete. A simulated SSR page with full article content plus a normal
+ *  __NEXT_DATA__ blob measured 7.31% under the old (html.length) denominator —
+ *  misfiring below the 10% floor on a page where nothing was missing — and
+ *  89.29% under this one. See the "SSR page with a hydration blob" test. */
 export function looksJsRendered(html: string): boolean {
-  const hasMarker = JS_APP_MARKERS.test(html) || EMPTY_ROOT.test(html);
-  if (!hasMarker) return false;
-  const density = stripToText(html).length / Math.max(html.length, 1);
-  return density < TEXT_DENSITY_FLOOR;
+  return jsRenderDensity(html, stripToText(html));
 }
 
 // --- URL fragment resolution (task 13) -----------------------------------------
+
+// WHY this scans both `id=` (any tag) and `<a name=...>` (Important finding,
+// 2026-08-06 review): the previous regex was /\sid="([^"]+)"/gi — double-quoted
+// only. Single-quoted id='x', unquoted id=x, and legacy <a name="x"> anchors
+// all missed silently; the committed vitest-config.html fixture alone carries
+// 9 `name="` attributes that the old scan never saw. `resolveFragment`'s
+// `absent` result is reported to the model as a categorical "this anchor does
+// not exist" (see execute() below), so under-scanning here directly produced
+// false claims.
+const ID_ATTR_RE = /\bid\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi;
+const ANCHOR_NAME_RE = /<a\b[^>]*?\bname\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi;
+
+/** Every id= (any element, any quoting) and legacy <a name=...> anchor value
+ *  in the document, case PRESERVED — case-sensitivity is resolved by the
+ *  caller (resolveFragment), not here. */
+function collectAnchorIds(rawHtml: string): Set<string> {
+  const ids = new Set<string>();
+  for (const re of [ID_ATTR_RE, ANCHOR_NAME_RE]) {
+    for (const m of rawHtml.matchAll(re)) {
+      const value = m[1] ?? m[2] ?? m[3];
+      if (value) ids.add(value);
+    }
+  }
+  return ids;
+}
 
 /** Locate a URL fragment's section in the extracted markdown.
  *
@@ -146,29 +284,57 @@ export function looksJsRendered(html: string): boolean {
  *  WHY matching goes through anchor hrefs and not heading text: VitePress emits
  *  `## Config Options [​](#config-options)`, so slugifying the heading text yields
  *  "config-options-config-options" and misses. The `id="..."` attributes in the raw
- *  HTML are authoritative and independent of markdown rendering. */
+ *  HTML are authoritative and independent of markdown rendering.
+ *
+ *  WHY id matching tries exact case first (Minor finding, 2026-08-06 review):
+ *  HTML `id` is case-sensitive (`#Foo` and `id="foo"` are different anchors),
+ *  but the old code lowercased both sides unconditionally, so a fragment could
+ *  falsely resolve against a same-spelling-different-case id. The fallback
+ *  case-insensitive match is kept (real pages do sometimes get linked with the
+ *  "wrong" case and a hit is still useful) but the caller is told which kind
+ *  of match it got so it can say so rather than imply an exact one.
+ *
+ *  `bodyTruncated` scopes the `absent` result's wording (Important finding):
+ *  when the fetched body was cut off at the 5MB cap, "this anchor does not
+ *  exist" is a claim about bytes that were never read, not about the page. */
 export function resolveFragment(
   rawHtml: string,
   markdown: string,
   fragment: string,
-): { kind: 'found'; section: string } | { kind: 'dropped' } | { kind: 'absent' } {
+  bodyTruncated = false,
+):
+  | { kind: 'found'; section: string; exactCase: boolean }
+  | { kind: 'dropped'; exactCase: boolean }
+  | { kind: 'absent'; bodyTruncated: boolean } {
+  const ids = collectAnchorIds(rawHtml);
+  let matched: string | null = null;
+  let exactCase = true;
+  if (ids.has(fragment)) {
+    matched = fragment;
+  } else {
+    const lowerFragment = fragment.toLowerCase();
+    for (const id of ids) {
+      if (id.toLowerCase() === lowerFragment) { matched = id; exactCase = false; break; }
+    }
+  }
+  if (matched === null) return { kind: 'absent', bodyTruncated };
+  // Markdown heading/slug text is already case-normalized by the renderer
+  // (VitePress etc. lowercase slugs regardless of source id case), so this
+  // half of the match stays a lowercase comparison — only the raw-HTML id
+  // lookup above needed the exact-case-first fix.
   const frag = fragment.toLowerCase();
-  const ids = new Set(
-    [...rawHtml.matchAll(/\sid="([^"]+)"/gi)].map((m) => m[1].toLowerCase()),
-  );
-  if (!ids.has(frag)) return { kind: 'absent' };
   const lines = markdown.split('\n');
   const start = lines.findIndex(
     (l) => /^#{1,6} /.test(l) && (l.toLowerCase().includes(`(#${frag})`) || slugify(l) === frag),
   );
-  if (start === -1) return { kind: 'dropped' };
+  if (start === -1) return { kind: 'dropped', exactCase };
   const level = (lines[start].match(/^#+/) ?? ['#'])[0].length;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
     const m = lines[i].match(/^(#{1,6}) /);
     if (m && m[1].length <= level) { end = i; break; }
   }
-  return { kind: 'found', section: lines.slice(start, end).join('\n').trim() };
+  return { kind: 'found', section: lines.slice(start, end).join('\n').trim(), exactCase };
 }
 
 /** Heading text → slug, with any trailing anchor link removed first. */
@@ -250,21 +416,37 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     }
     // DoS guard: never run the synchronous ~quadratic Readability parse on
     // pathological HTML. But WHY this no longer hard-fails (2026-08-06): the guard
-    // is specifically about Readability's cost, and tag-stripping is O(n) and safe
-    // on any input — so we can still return honest content. The old refusal left
-    // the model with nothing and no way forward (2026-08-01 review, finding #1).
+    // is specifically about Readability's cost, and tag-stripping is now genuinely
+    // linear (see stripToText's WHY comment) and safe on any input — so we can
+    // still return honest content. The old refusal left the model with nothing
+    // and no way forward (2026-08-01 review, finding #1).
     const tooComplex = tooComplexToExtract(raw);
     if (tooComplex) {
+      // WHY stripToTextCapped (not stripToText) here, and WHY the 5MB-truncation
+      // notice is appended too (Important findings, 2026-08-06 review): this
+      // branch previously called the unbounded stripToText and dropped the
+      // "[body truncated at 5MB]" notice every other return path appends — so a
+      // 7MB tag-heavy page silently returned 5MB of text with no sign 2MB were
+      // discarded, inside the exact code path whose purpose is eliminating
+      // silent truncation.
+      const { text: fallbackText, truncated: fallbackCapped } = stripToTextCapped(raw);
+      const capNote = fallbackCapped
+        ? ` Showing only the first ${(FALLBACK_CHAR_CAP / 1000).toFixed(0)}KB of this page's raw HTML — the rest was not scanned.`
+        : '';
       return {
-        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.]\n\n${stripToText(raw)}`,
+        text: `${header}\n\n[This page is too large or deeply nested for structured extraction, so this is a simplified extraction: plain text with no headings, links, or code formatting.${capNote}]\n\n${fallbackText}${truncated ? '\n\n[body truncated at 5MB]' : ''}`,
       };
     }
     const { title, markdown } = htmlToMarkdown(raw);
+    // Minor finding (2026-08-06 review): stripToText(raw) used to be recomputed
+    // separately for the density check and for the KB figure in jsNote below —
+    // compute it once here and pass it into both.
+    const strippedRaw = stripToText(raw);
     // Honest, non-committal disclosure: state what was observed, never guess what
     // is absent. Without this a JS-rendered docs page returns a confident preamble
     // and the model reports "the docs do not document X" (2026-08-01 review).
-    const jsNote = looksJsRendered(raw)
-      ? `\n\n[This page is a JavaScript-rendered app. The server sent ${(stripToText(raw).length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. If a section you expected is absent, it is likely rendered client-side.]`
+    const jsNote = jsRenderDensity(raw, strippedRaw)
+      ? `\n\n[This page is a JavaScript-rendered app. The server sent ${(strippedRaw.length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. If a section you expected is absent, it is likely rendered client-side.]`
       : '';
     // A fragment on the request URL is a question about ONE section. Answer it
     // directly, and be explicit when we cannot.
@@ -272,14 +454,23 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     let body = markdown;
     const hash = (() => { try { return new URL(finalUrl).hash.replace(/^#/, ''); } catch { return ''; } })();
     if (hash) {
-      const f = resolveFragment(raw, markdown, hash);
+      const f = resolveFragment(raw, markdown, hash, truncated);
       if (f.kind === 'found') {
         body = f.section;
-        fragmentNote = `\n\n[Showing the "#${hash}" section only. Refetch without the fragment for the whole page.]`;
+        const caseNote = f.exactCase ? '' : ' (matched case-insensitively — the served id differs in case from the fragment)';
+        fragmentNote = `\n\n[Showing the "#${hash}" section only${caseNote}. Refetch without the fragment for the whole page.]`;
       } else if (f.kind === 'dropped') {
-        fragmentNote = `\n\n[The page has an anchor named "#${hash}", but article extraction did not keep that section. The full text above is what was extracted.]`;
+        const caseNote = f.exactCase ? '' : ' (case-insensitive match)';
+        fragmentNote = `\n\n[The page has an anchor named "#${hash}"${caseNote}, but article extraction did not keep that section. The full text above is what was extracted.]`;
       } else {
-        fragmentNote = `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
+        // Important finding (2026-08-06 review): this used to be a flat "the
+        // HTML contains no anchor named X" regardless of whether the body was
+        // truncated at the 5MB cap — a categorical claim about bytes that, when
+        // truncated, were never actually read. Scope the wording to what was
+        // examined.
+        fragmentNote = f.bodyTruncated
+          ? `\n\n[No anchor named "#${hash}" was found in the portion of this page that was fetched. The body was truncated at 5MB, so a later part of the page may still contain it.]`
+          : `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
       }
     }
     return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
