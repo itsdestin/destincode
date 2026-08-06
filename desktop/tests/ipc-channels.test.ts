@@ -604,6 +604,12 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     'syncspaces:list-devices',
     'syncspaces:rename-device',
     'syncspaces:remove-device',
+    // Synced project description (project-description spec, Task 3). Desktop-only
+    // for now, so it rides the SAME not-implemented-on-mobile stub arm. Without
+    // it the phone's description editor waits ~30s for a response that never
+    // arrives instead of rejecting immediately — delete the Kotlin arm and this
+    // assertion is the only thing that notices.
+    'syncspaces:set-project-description',
   ];
   if (fs.existsSync(kotlinPath)) {
     const kotlin = fs.readFileSync(kotlinPath, 'utf8');
@@ -647,6 +653,22 @@ describe('folders:set-description channel parity (desktop surfaces)', () => {
       expect(handlers).toContain(constant);
       expect(remoteServer).toContain(ch);
     });
+  }
+
+  // Android carries a REAL handler for this one (not a stub): folders:rename
+  // already has a native implementation, so its description sibling needs one
+  // too — without the `"folders:set-description" ->` arm the phone silently
+  // no-ops, the card refreshes, and the user's text is gone with no error.
+  // Guarded by existsSync so a moved Kotlin path degrades to a skip rather
+  // than exploding, same as the syncspaces stub block above.
+  const kotlinFolderPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  if (fs.existsSync(kotlinFolderPath)) {
+    const kotlin = fs.readFileSync(kotlinFolderPath, 'utf8');
+    it('folders:set-description has a real Android handler arm in SessionService.kt', () => {
+      expect(kotlin).toContain('"folders:set-description" ->');
+    });
+  } else {
+    it.skip('SessionService.kt not found — skipping Android folders:set-description check', () => {});
   }
 });
 

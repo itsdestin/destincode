@@ -90,14 +90,27 @@ function parseEntry(json: string): ProjectRegistryEntry | null {
 // plain reduce over any copy order converges. UNLIKE the Conversation Store's
 // title rule, every field here is a clean join, so no special fold accumulator
 // is needed.
+//
+// THE TRAP that makes associativity true rather than merely claimed: `laterOf`
+// breaks an EQUAL-clock tie on `JSON.stringify(x) >= JSON.stringify(y)`, so
+// whatever you hand it becomes the tiebreak key. Each dimension must therefore
+// be passed a wrapper containing ONLY that dimension's own value + clock. Hand
+// it the whole entry and the tiebreak reads displayName/state/updatedAt first —
+// fields chosen by DIFFERENT rules, so the key mutates as the fold accumulates
+// and the answer starts depending on `fs.readdirSync` order (measured: 2,116 of
+// 32,768 triples diverged before this wrapper was added). Guard:
+// sync-spaces-project-registry.test.ts → "converges on the same record for
+// every fold order". Same shape as `notePick` in conversations/store-core.ts.
 export function mergeProjectEntries(a: ProjectRegistryEntry, b: ProjectRegistryEntry): ProjectRegistryEntry {
   const state: ProjectState = a.state === 'stopped' || b.state === 'stopped' ? 'stopped' : 'active';
   const newer = laterOf(a, b, a.updatedAt, b.updatedAt); // displayName LWW, content-tiebroken
-  // SEPARATE join for the description — see the type comment. The lattice is now
-  // state × (updatedAt, displayName) × (descriptionUpdatedAt, description); each
-  // dimension is still a clean join, so a plain reduce over any copy order
-  // converges exactly as before.
-  const descNewer = laterOf(a, b, a.descriptionUpdatedAt, b.descriptionUpdatedAt);
+  // SEPARATE join for the description — see the trap note above. Wrapped to
+  // {v, at} so an equal-clock tie can ONLY be broken by the description itself.
+  const descPick = laterOf(
+    { v: a.description, at: a.descriptionUpdatedAt },
+    { v: b.description, at: b.descriptionUpdatedAt },
+    a.descriptionUpdatedAt, b.descriptionUpdatedAt,
+  );
   return {
     schemaVersion: PROJECT_REGISTRY_SCHEMA,
     name: newer.name,
@@ -105,7 +118,7 @@ export function mergeProjectEntries(a: ProjectRegistryEntry, b: ProjectRegistryE
     displayName: newer.displayName,
     state,
     updatedAt: Math.max(a.updatedAt, b.updatedAt),
-    description: descNewer.description,
+    description: descPick.v,
     descriptionUpdatedAt: Math.max(a.descriptionUpdatedAt, b.descriptionUpdatedAt),
   };
 }

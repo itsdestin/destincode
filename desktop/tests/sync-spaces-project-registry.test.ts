@@ -44,6 +44,36 @@ describe('mergeProjectEntries — description', () => {
     const b = { ...base, description: 'x', descriptionUpdatedAt: 999 };
     expect(mergeProjectEntries(a, b).state).toBe('stopped');
   });
+
+  // THE associativity guard. readProjectRegistry folds conflict copies in
+  // fs.readdirSync order — which is filesystem-dependent — so a merge that is
+  // only commutative is NOT enough: two devices holding byte-identical files
+  // would otherwise display different descriptions.
+  //
+  // This case is built to break a description join whose equal-clock tiebreak
+  // can see fields OTHER than the description. `a` and `b` share an EXACT
+  // descriptionUpdatedAt (500) with different text, so the tiebreak decides;
+  // `c` has an older description clock but a displayName that outranks a's
+  // lexically. Fold (a,b) first and the tiebreak reads 'Zeta' vs 'Alpha';
+  // fold (b,c) first and the accumulator carries 'Zzz', so the SAME tiebreak
+  // reads 'Zzz' vs 'Zeta' and flips. Measured against the unwrapped version:
+  // (a∘b)∘c = 'from A' while (b∘c)∘a = 'from B'.
+  it('converges on the same record for every fold order, including an exact description-clock tie', () => {
+    const a = { ...base, displayName: 'Zeta',  updatedAt: 300, description: 'from A', descriptionUpdatedAt: 500 };
+    const b = { ...base, displayName: 'Alpha', updatedAt: 100, description: 'from B', descriptionUpdatedAt: 500 };
+    const c = { ...base, displayName: 'Zzz',   updatedAt: 200, description: 'from C', descriptionUpdatedAt: 400 };
+
+    const permutations: ProjectRegistryEntry[][] = [
+      [a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a],
+    ];
+    const folded = permutations.map(p => p.reduce((acc, e) => mergeProjectEntries(acc, e)));
+    for (const f of folded) expect(f).toEqual(folded[0]);
+
+    // And the winner must be decided by the DESCRIPTION, not by a neighbouring
+    // field: 'from B' > 'from A' on the tiebreak, so B's text wins everywhere.
+    expect(folded[0].description).toBe('from B');
+    expect(folded[0].displayName).toBe('Zeta'); // still LWW by updatedAt (300)
+  });
 });
 
 // THE schema trap, pinned. parseEntry is module-private, so this goes through

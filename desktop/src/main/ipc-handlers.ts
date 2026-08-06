@@ -1167,8 +1167,11 @@ export function registerIpcHandlers(
     const entry = folders.find(f => path.resolve(f.path) === normalized);
     if (!entry) return false;
     // Trim + cap here as well as in the UI: the renderer is a mirror, never the
-    // boundary (same rule as the artifact write policy).
-    entry.description = description.trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
+    // boundary (same rule as the artifact write policy). String(… ?? '') matches
+    // the remote-server path's coercion: the renderer always sends a string
+    // today, but the two transports must be equally defensive so a future
+    // null/undefined caller throws on neither surface rather than only one.
+    entry.description = String(description ?? '').trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
     writeFolders(folders);
     return true;
   });
