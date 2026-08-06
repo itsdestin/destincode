@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { seedFixtureWorkspace, FIXTURE_MANIFEST } from '../src/main/harness/review/fixture-workspace';
+import { BATTERY_PROMPT, loadRoster } from '../src/main/harness/review/battery';
 
 let made: string[] = [];
 afterEach(() => {
@@ -59,5 +60,43 @@ describe('seedFixtureWorkspace', () => {
     for (const { rel } of FIXTURE_MANIFEST) {
       expect(fs.readFileSync(path.join(a, rel)).equals(fs.readFileSync(path.join(b, rel))), rel).toBe(true);
     }
+  });
+});
+
+describe('battery prompt', () => {
+  it('names every one of the six battery sections', () => {
+    for (const section of ['Navigate', 'Read', 'Search', 'Write/Edit', 'Bash', 'Web']) {
+      expect(BATTERY_PROMPT).toContain(section);
+    }
+  });
+
+  it('tells the model to work in the fixture and not to hunt for the real repo', () => {
+    expect(BATTERY_PROMPT).toContain('fixture');
+  });
+
+  it('asks for the three review headings the doc expects', () => {
+    for (const h of ['What works well', 'Difficulties / wishes', 'Overall']) {
+      expect(BATTERY_PROMPT).toContain(h);
+    }
+  });
+});
+
+describe('loadRoster', () => {
+  it('rejects a roster entry missing a modelId, instead of running a nameless model', () => {
+    // Deviation from the brief: push the temp dir into `made` so afterEach cleans it
+    // up like every other fixture dir in this file, instead of leaking it in /tmp.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-'));
+    made.push(dir);
+    const f = path.join(dir, 'r.json');
+    fs.writeFileSync(f, JSON.stringify([{ label: 'No Model' }]));
+    expect(() => loadRoster(f)).toThrow(/modelId/);
+  });
+
+  it('loads a well-formed roster', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-'));
+    made.push(dir);
+    const f = path.join(dir, 'r.json');
+    fs.writeFileSync(f, JSON.stringify([{ label: 'Kimi K3', modelId: 'moonshotai/kimi-k3' }]));
+    expect(loadRoster(f)).toEqual([{ label: 'Kimi K3', modelId: 'moonshotai/kimi-k3' }]);
   });
 });
