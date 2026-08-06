@@ -216,6 +216,14 @@ export const BashTool = defineTool({
     description: z.string().optional().describe('One line: what this command does'),
   }),
   caps: { maxChars: 30_000 },
+  // Static fallback for composeNotice's no-bounds branch (Task 19): the
+  // HEAD_CHARS/TAIL_CHARS margin below keeps Bash's own `bounds` the sole
+  // authority in the common case, but the reset notice + metadata trailer
+  // embed ctx.cwd TWICE and are outside that margin — a long workspace root
+  // can still push the pipeline cap past 30k while `dropped` stays false.
+  // Verbatim copy of the `bounds.moreHint` string below: one widening
+  // vocabulary for this tool, not two wordings to keep in sync.
+  moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
   permissionSubject: (a) => a.command,
   async execute(args, ctx) {
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);

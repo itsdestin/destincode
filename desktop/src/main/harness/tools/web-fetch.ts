@@ -698,6 +698,13 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
   // Compact form for small local models (simplified presentation).
   shortDescription: 'Fetch a public web page (http/https) and return its main content as Markdown.',
   inputSchema,
+  // Static fallback for composeNotice's no-bounds branch (Task 19): WebFetch
+  // never declares `bounds` (no self-bounding path — see the file-level WHY
+  // above), so every truncated fetch used to hit the bare no-advice fallback.
+  // Not reused from an existing `bounds.moreHint` (there isn't one); this is
+  // the tool's genuine widening vocabulary — a narrower target, since WebFetch
+  // has no offset/limit-style parameter to page through.
+  moreHint: 'fetch a more specific URL, or a narrower section of the page',
   permissionSubject: (args) => args.url,
   async execute(args, ctx) {
     let res: Response, finalUrl: string;

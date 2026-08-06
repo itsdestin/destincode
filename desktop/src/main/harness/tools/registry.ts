@@ -18,8 +18,15 @@ export function defineTool<A>(
         const t = truncateOutput(raw.text, caps);
         // The tool's own bound and the pipeline cap are independent; composeNotice
         // folds both into one line and uses the TOOL's widening advice, never a
-        // default of ours. See the WHY block in truncate.ts.
-        const notice = composeNotice(raw.bounds, t.truncated ? { shown: t.text.length, total: t.totalChars } : null);
+        // default of ours. `def.moreHint` is that tool's STATIC vocabulary — the
+        // fallback for when the pipeline cap fires alone and `raw.bounds` is
+        // undefined (Task 19: three reviews found this is the COMMON case for
+        // content-mode Grep, not an edge one). See the WHY block in truncate.ts.
+        const notice = composeNotice(
+          raw.bounds,
+          t.truncated ? { shown: t.text.length, total: t.totalChars } : null,
+          def.moreHint,
+        );
         return { ...raw, text: t.text + notice };
       } catch (err: any) {
         // Abort is only surfaced here when the tool THREW — the driver (Task 9)

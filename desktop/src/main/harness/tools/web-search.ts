@@ -13,6 +13,12 @@ export const WebSearchTool = defineTool<z.infer<typeof inputSchema>>({
   // Compact form for small local models (simplified presentation).
   shortDescription: 'Search the web and return titles, URLs, and snippets for a query.',
   inputSchema,
+  // Static fallback for composeNotice's no-bounds branch (Task 19): `bounds`
+  // below is undefined whenever `unique.length <= 8` (nothing was withheld at
+  // the RESULT-COUNT level), but an untrimmed title/URL in one of those <= 8
+  // results could still push the joined text past the pipeline's default
+  // 30k-char cap. Verbatim copy of the `bounds.moreHint` string below.
+  moreHint: 'narrow the query, or WebFetch a result to read it in full',
   permissionSubject: (args) => args.query,
   async execute(args, ctx) {
     if (!ctx.services?.search) {

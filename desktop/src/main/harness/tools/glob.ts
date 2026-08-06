@@ -59,6 +59,12 @@ export const GlobTool = defineTool({
   // comes back — the pipeline's char cap should not silently apply a different
   // number to the same field.
   caps: { maxChars: 30_000 },
+  // Static fallback for composeNotice's no-bounds branch (Task 19): a result
+  // list can sit under WALK_CEILING/RESULT_LIMIT (so `bounds` stays undefined —
+  // nothing was withheld at the FILE-COUNT level) while still exceeding
+  // `maxChars` on sheer path length (e.g. 2,000 long paths). Verbatim copy of
+  // the `bounds.moreHint` string below.
+  moreHint: 'narrow the glob pattern or pass a more specific path',
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const root = resolveP(args.path ?? '.', ctx.cwd);

@@ -6,6 +6,16 @@
 // Bash and WebSearch — neither accepts offset or limit. Two reviewing models
 // followed that advice into a dead end. Tools now declare a `moreHint` in their
 // own vocabulary and composeNotice renders it; this module only reports facts.
+//
+// WHY a SECOND, static `moreHint` (Task 19, 2026-08-06): `bounds.moreHint` above
+// only exists when the TOOL bounded its own output on THIS call. The pipeline
+// cap (defineTool's `caps`) is a separate event with its own schedule — three
+// independent reviews found cases where it fires alone: content-mode Grep
+// capped by `maxLines` with `bounds` undefined, Glob capped by `maxChars` under
+// its own result limit, Bash's trailer pushing a small body over the cap. Each
+// tool's widening vocabulary doesn't change between calls, so `NativeTool.moreHint`
+// (types.ts) is declared once, statically, and composeNotice falls back to it
+// instead of leaving the model with a bare byte count.
 import type { ResultBounds } from './types';
 
 export interface TruncateOpts { maxChars: number; maxLines?: number }
@@ -48,18 +58,28 @@ export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult
  *
  *  WHY one line and not two: a result carrying two competing notices reads as if
  *  something went wrong twice, and the model has to reconcile them. One line
- *  states both facts and carries exactly one piece of advice — the tool's. */
+ *  states both facts and carries exactly one piece of advice — the tool's.
+ *
+ *  `fallbackHint` is the tool's STATIC widening vocabulary (`NativeTool.moreHint`,
+ *  passed in by defineTool) — used only when `bounds` is absent, since a real
+ *  `bounds.moreHint` is always the more specific, per-call advice. */
 export function composeNotice(
   bounds: ResultBounds | undefined,
   cap: { shown: number; total: number } | null,
+  fallbackHint?: string,
 ): string {
   if (!bounds && !cap) return '';
   if (!bounds) {
-    // A cap fired on a tool that declared nothing. Report the fact WITHOUT advice —
-    // we have no idea what this tool's widening vocabulary is, and guessing is the
-    // exact bug this refactor removes. A tool reaching this code path is a bounds
-    // declaration bug — it should be caught by the manifest guard before shipping.
-    return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars]`;
+    // A cap fired on a tool that declared no bounds of its own THIS call. This
+    // used to mean "we have no idea what this tool's widening vocabulary is" and
+    // render nothing — but the 2026-08-06 multi-review pass found that for
+    // content-mode Grep (capped by maxLines, which never sets `bounds`) this is
+    // the COMMON path, not a bug. `fallbackHint` carries the tool's static advice
+    // for exactly this branch; when the tool genuinely has none (fallbackHint
+    // undefined), still say nothing — inventing advice is the bug this exists to
+    // prevent, not a fallback for it.
+    const advice = fallbackHint ? ` — ${fallbackHint}` : '';
+    return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars${advice}]`;
   }
   const total = bounds.total === null ? `at least ${bounds.shown}` : String(bounds.total);
   const toolPart = `${bounds.shown} of ${total} ${bounds.unit}`;

@@ -73,6 +73,28 @@ describe('composeNotice', () => {
     expect(out).not.toContain('offset');
     expect(out).not.toContain('limit');
   });
+
+  // Task 19: the gap three independent reviews found. `bounds` describes what the
+  // TOOL dropped; the pipeline cap in defineTool is a SEPARATE event that fires on
+  // its own schedule. When only the cap fires, the model used to get a bare byte
+  // count and no way to widen — the COMMON case for content-mode Grep, not an edge.
+  it('uses the tool\'s static hint when the pipeline cap fires and the tool declared no bounds', () => {
+    const out = composeNotice(undefined, { shown: 4169, total: 6691 }, 'narrow the pattern');
+    expect(out).toContain('4169 of 6691 chars');
+    expect(out).toContain('narrow the pattern');
+  });
+
+  it('still emits no advice when neither a bound nor a static hint is available', () => {
+    // Honest fallback preserved: we never invent advice we do not have.
+    expect(composeNotice(undefined, { shown: 10, total: 20 }, undefined))
+      .toBe('\n[output truncated: showing 10 of 20 chars]');
+  });
+
+  it('prefers the bound\'s own hint over the static one when both exist', () => {
+    const b = { shown: 5, total: 9, unit: 'files' as const, moreHint: 'specific hint' };
+    expect(composeNotice(b, null, 'static hint')).toContain('specific hint');
+    expect(composeNotice(b, null, 'static hint')).not.toContain('static hint');
+  });
 });
 
 describe('truncateOutput reports the true input size', () => {

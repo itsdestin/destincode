@@ -87,6 +87,13 @@ export const GrepTool = defineTool({
     output_mode: z.enum(['content', 'files_with_matches', 'count']).optional(),
   }),
   caps: { maxChars: 30_000, maxLines: 250 },
+  // Static fallback for composeNotice's no-bounds branch (Task 19): this is the
+  // MEASURED common case, not a rare edge — a one-file, 400-match, content-mode
+  // search never sets `bounds` (nothing was dropped at the FILE/match level),
+  // but `maxLines: 250` above still caps the pipeline's LINE count while
+  // composeNotice only had a char count to report. Verbatim copy of the
+  // `bounds.moreHint` string below.
+  moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const mode = args.output_mode ?? 'files_with_matches';

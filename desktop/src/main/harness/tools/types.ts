@@ -88,5 +88,13 @@ export interface NativeTool<A = any> {
    *  askUser() — guards/decide are skipped (asking permission to ask a question
    *  is absurd) and execute() never runs. */
   interactive?: boolean;
+  /** How to widen THIS tool's output, in its own vocabulary — a static property,
+   *  independent of whether the tool or the pipeline did the cutting.
+   *
+   *  WHY static (2026-08-06): `bounds.moreHint` only exists when the TOOL bounded its
+   *  own output. The pipeline cap in defineTool is a separate event that fires on its
+   *  own schedule — for content-mode Grep it is the common one — and without a hint to
+   *  fall back on the model was told content vanished and given no way to get it back. */
+  moreHint?: string;
   execute(args: A, ctx: ToolContext): Promise<ToolResultPayload>;
 }
