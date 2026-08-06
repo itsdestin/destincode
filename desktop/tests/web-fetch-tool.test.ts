@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Readability } from '@mozilla/readability';
-import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered } from '../src/main/harness/tools/web-fetch';
+import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment } from '../src/main/harness/tools/web-fetch';
 
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
@@ -193,5 +193,32 @@ describe('looksJsRendered', () => {
 
   it('does not flag a small plain page', () => {
     expect(looksJsRendered('<html><body><h1>Hi</h1><p>Some words here.</p></body></html>')).toBe(false);
+  });
+});
+
+describe('resolveFragment', () => {
+  const html = fixture('vitest-config.html');
+
+  it('reports a fragment the served HTML never contained', () => {
+    // id="include" appears nowhere in the 98KB. This is the exact case that
+    // produced a confident false negative in the 2026-08-01 review.
+    expect(resolveFragment(html, '## Config Options\n\ntext', 'include').kind).toBe('absent');
+  });
+
+  it('reports a fragment present in the HTML but missing from the extraction', () => {
+    expect(resolveFragment(html, '# Nothing relevant here', 'config-options').kind).toBe('dropped');
+  });
+
+  it('returns the section when the fragment survived extraction', () => {
+    // Heading text carries a trailing anchor link in VitePress output
+    // (`## Config Options [​](#config-options)`), so matching MUST go through the
+    // anchor href, not a slug of the heading text. Verified 2026-08-06.
+    const md = '## Intro\n\nfirst\n\n## Config Options [​](#config-options)\n\nthe body\n\n## After\n\nlast';
+    const r = resolveFragment(html, md, 'config-options');
+    expect(r.kind).toBe('found');
+    if (r.kind === 'found') {
+      expect(r.section).toContain('the body');
+      expect(r.section).not.toContain('last');
+    }
   });
 });

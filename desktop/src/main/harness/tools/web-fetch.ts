@@ -134,6 +134,54 @@ export function looksJsRendered(html: string): boolean {
   return density < TEXT_DENSITY_FLOOR;
 }
 
+// --- URL fragment resolution (task 13) -----------------------------------------
+
+/** Locate a URL fragment's section in the extracted markdown.
+ *
+ *  WHY this exists at all: a #fragment is never sent to a server, so refetching
+ *  with one returns identical bytes — correct HTTP that reads like a bug. The
+ *  fixable part is resolving it AFTER extraction, which turns a silent false
+ *  negative into an explicit statement.
+ *
+ *  WHY matching goes through anchor hrefs and not heading text: VitePress emits
+ *  `## Config Options [​](#config-options)`, so slugifying the heading text yields
+ *  "config-options-config-options" and misses. The `id="..."` attributes in the raw
+ *  HTML are authoritative and independent of markdown rendering. */
+export function resolveFragment(
+  rawHtml: string,
+  markdown: string,
+  fragment: string,
+): { kind: 'found'; section: string } | { kind: 'dropped' } | { kind: 'absent' } {
+  const frag = fragment.toLowerCase();
+  const ids = new Set(
+    [...rawHtml.matchAll(/\sid="([^"]+)"/gi)].map((m) => m[1].toLowerCase()),
+  );
+  if (!ids.has(frag)) return { kind: 'absent' };
+  const lines = markdown.split('\n');
+  const start = lines.findIndex(
+    (l) => /^#{1,6} /.test(l) && (l.toLowerCase().includes(`(#${frag})`) || slugify(l) === frag),
+  );
+  if (start === -1) return { kind: 'dropped' };
+  const level = (lines[start].match(/^#+/) ?? ['#'])[0].length;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6}) /);
+    if (m && m[1].length <= level) { end = i; break; }
+  }
+  return { kind: 'found', section: lines.slice(start, end).join('\n').trim() };
+}
+
+/** Heading text → slug, with any trailing anchor link removed first. */
+function slugify(heading: string): string {
+  return heading
+    .replace(/^#+\s*/, '')
+    .replace(/\[.*?\]\(#.*?\)\s*$/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 function htmlToMarkdown(rawHtml: string): { title: string | null; markdown: string } {
   // linkedom's parsed document satisfies Readability's DOM contract at runtime,
   // but its typings don't match @mozilla/readability's `Document` param — cast
@@ -218,6 +266,22 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     const jsNote = looksJsRendered(raw)
       ? `\n\n[This page is a JavaScript-rendered app. The server sent ${(stripToText(raw).length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. If a section you expected is absent, it is likely rendered client-side.]`
       : '';
-    return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${markdown}${jsNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
+    // A fragment on the request URL is a question about ONE section. Answer it
+    // directly, and be explicit when we cannot.
+    let fragmentNote = '';
+    let body = markdown;
+    const hash = (() => { try { return new URL(finalUrl).hash.replace(/^#/, ''); } catch { return ''; } })();
+    if (hash) {
+      const f = resolveFragment(raw, markdown, hash);
+      if (f.kind === 'found') {
+        body = f.section;
+        fragmentNote = `\n\n[Showing the "#${hash}" section only. Refetch without the fragment for the whole page.]`;
+      } else if (f.kind === 'dropped') {
+        fragmentNote = `\n\n[The page has an anchor named "#${hash}", but article extraction did not keep that section. The full text above is what was extracted.]`;
+      } else {
+        fragmentNote = `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
+      }
+    }
+    return { text: `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}${truncated ? '\n\n[body truncated at 5MB]' : ''}` };
   },
 });
