@@ -59,6 +59,15 @@ jobs:
       - name: Dead-code check (knip)
         run: npm run knip
 
+      # Bug gate, not a style gate. tsc + vitest + knip were all green while a
+      # conditional React hook, a floating promise in main, and a runtime import
+      # of an undeclared package shipped — none of those tools can see those
+      # classes. Every enabled rule is at zero on the tree, so this fails only on
+      # a NEW defect. Rule set and the measured cost of each deferred rule:
+      # desktop/eslint.config.mjs.
+      - name: Lint (eslint)
+        run: npm run lint
+
       # Must run BEFORE the build — electron-builder's deb/rpm/pacman packagers
       # run inside `npm run build` (see desktop/electron-builder.yml linux.target).
       # PR #98 added rpm + pacman targets without updating CI, so every Desktop
