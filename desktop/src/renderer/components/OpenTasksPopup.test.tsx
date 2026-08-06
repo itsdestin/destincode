@@ -113,7 +113,7 @@ describe('OpenTasksPopup', () => {
 
   it('fires onClose when scrim is clicked', () => {
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <OpenTasksPopup
         open={true}
         tasks={[task({ id: '1', subject: 'X', status: 'pending' })]}

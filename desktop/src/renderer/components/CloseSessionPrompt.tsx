@@ -35,22 +35,9 @@ function CompleteGlyph({ done, className = '' }: { done: boolean; className?: st
   );
 }
 
-/** The editor's Save control. A filled NEUTRAL pill, deliberately not `primary`
- *  — the accent belongs to the dialog's own "Close session", and two accent
- *  buttons in one dialog is two primary actions. `secondary`'s outline was too
- *  quiet for the one control that closes a section. Chosen in the workbench,
- *  round 7/8. */
-function SaveButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="w-full rounded-full bg-well border border-edge-dim px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-edge hover:border-edge focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-    >
-      Save
-    </button>
-  );
-}
+// WHY: SaveButton was a leftover from an earlier draft of this dialog — the
+// component was defined but never rendered. Removed during the 2026-08-06
+// unused-code sweep. The collapsed summary has no save control of its own.
 
 /** Chosen from four candidates in the workbench, 2026-07-31: a Toggle rather
  *  than a card or a checkbox, because it is the shape Skip Permissions and Show
@@ -197,7 +184,6 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   const appliedTags = [...tagIds]
     .map((id) => registry.byId.get(id))
     .filter((t): t is TagRecord => !!t);
-  const hasMeta = sel.priority || appliedTags.length > 0 || note.trim().length > 0;
 
   const buildResult = useCallback(() => ({
     flags: Object.fromEntries(

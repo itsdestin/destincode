@@ -20,7 +20,7 @@ import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
-import { categorizeArtifact, fileTypeGroup } from '../../shared/artifacts/categorization';
+import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';

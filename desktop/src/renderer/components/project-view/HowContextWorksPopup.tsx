@@ -20,7 +20,6 @@ import React, { useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { CloseButton } from '../ui';
-import type { ContextScope } from '../../../shared/project-context-types';
 
 // The five teaching topics. `overview` is the broad→specific stack; the other
 // four are per-kind deep dives.

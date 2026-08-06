@@ -729,7 +729,6 @@ function ThemeButton({ onSendInput, onRunCommand, onOpenMarketplace, onPublishTh
           onOpenMarketplace={onOpenMarketplace}
           onPublishTheme={(slug) => { setOpen(false); onPublishTheme?.(slug); }}
           showInfo={showInfo}
-          onShowInfo={setShowInfo}
           editingSlug={editingSlug}
           onEditSlug={setEditingSlug}
         />

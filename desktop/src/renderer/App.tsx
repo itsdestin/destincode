@@ -2794,7 +2794,6 @@ function AppInner() {
                 settingsBadge={settingsBadge}
                 settingsDangerBadge={settingsDangerBadge}
                 sessionStatuses={sessionStatuses}
-                onResumeSession={handleResumeSession}
                 onOpenResumeBrowser={() => setResumeRequested(true)}
                 defaultModel={sessionDefaults.model}
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
