@@ -268,6 +268,25 @@ describe('Bash', () => {
     expect(r.text).toContain('(exit code 3)');
   });
 
+  it('Bash reports the TRUE output size, not the size of its retained buffer', async () => {
+    // 400k of output — past the old 200k accumulator ceiling. The old code
+    // reported the CAPPED buffer's length as "chars total", i.e. a number it
+    // invented. Regression pin for the 2026-08-01 review finding.
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('z'.repeat(400000))"` },
+      ctx,
+    );
+    expect(r.bounds?.unit).toBe('bytes');
+    expect(r.bounds?.total).toBe(400_000);
+    expect(r.bounds?.moreHint).toContain('head');
+    expect(r.text).not.toContain('204800');
+  }, 30_000);
+
+  it('Bash declares no bounds for small output', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, ctx);
+    expect(r.bounds).toBeUndefined();
+  });
+
   it('times out and reports it', async () => {
     const r = await BashTool.execute({ command: 'node -e "setTimeout(()=>{},10000)"', timeout: 50 }, ctx);
     expect(r.isError).toBe(true);

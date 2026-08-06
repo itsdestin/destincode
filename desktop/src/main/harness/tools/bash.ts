@@ -235,15 +235,30 @@ export const BashTool = defineTool({
         resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
         return;
       }
-      let out = '';
-      // The 200KB cap below would drop the trailing sentinel on a chatty command
-      // ("cd sub && <huge output>"), silently losing the cd. Keep a small rolling
-      // tail that is never capped so the probe survives regardless of volume.
-      let tail = '';
+      // Bounded head + rolling tail + an UNCONDITIONAL byte counter.
+      //
+      // WHY this replaced a flat 200KB accumulator (2026-08-06): the old buffer
+      // retained 200KB only for defineTool to cut it to 30k, and — worse — the
+      // truncation notice reported the CAPPED buffer's length as the original
+      // size. A 5MB command was announced as "204800 chars total", a number
+      // nothing had measured. Counting every chunk whether or not we keep it makes
+      // the reported total true, and drops peak retention ~7x.
+      const HEAD_CHARS = 24_000;
+      const TAIL_CHARS = 6_000;
+      let head = '';
+      let tailBuf = '';
+      let totalChars = 0;
+      // Separate uncapped 4KB tail purely for the cwd sentinel: a chatty command
+      // ("cd sub && <huge output>") would otherwise push the sentinel out of the
+      // retained text and silently lose the cd.
+      let probeTail = '';
       const cap = (s: string) => {
-        if (out.length < 200_000) out += s;
-        if (probe) tail = (tail + s).slice(-4096);
+        totalChars += s.length;
+        if (head.length < HEAD_CHARS) head += s;
+        else tailBuf = (tailBuf + s).slice(-TAIL_CHARS);
+        if (probe) probeTail = (probeTail + s).slice(-4096);
       };
+      const joined = () => (tailBuf ? `${head}\n[...]\n${tailBuf}` : head);
       child.stdout.on('data', (d) => cap(String(d)));
       child.stderr.on('data', (d) => cap(String(d)));
       let done = false;
@@ -252,13 +267,29 @@ export const BashTool = defineTool({
         done = true;
         clearTimeout(timer);
         ctx.signal.removeEventListener('abort', onAbort);
-        let body = out;
+        let body = joined();
+        // WHY captured BEFORE extractCwd: the probe's `__YC_CWD__` sentinel line is
+        // harness plumbing, not command output, and extractCwd strips it out of
+        // `body` on virtually every non-Windows call. Comparing totalChars against
+        // the POST-strip body would call that routine stripping a "drop" and
+        // declare bogus bounds on every single Bash call, including 'echo hi' —
+        // caught by the "declares no bounds for small output" test. Comparing
+        // against the raw retained length (pre-strip) isolates the ONE thing that
+        // should count as dropped: the head/tail accumulator actually cutting
+        // real command output.
+        const rawLen = body.length;
         let notice = '';
+        // Bytes consumed by the probe's OWN generated sentinel line — harness
+        // plumbing, not command output. Subtracted from the reported total so a
+        // command that printed exactly 400,000 bytes is announced as 400,000, not
+        // 400,000-plus-however-long-the-cwd-path-happens-to-be.
+        let sentinelOverhead = 0;
         if (probe) {
-          const parsed = extractCwd(out);
+          const parsed = extractCwd(joined());
+          sentinelOverhead = rawLen - parsed.text.length;
           body = parsed.text;
-          // Sentinel past the 200KB cap → recover it from the uncapped tail.
-          const reported = parsed.cwd ?? extractCwd(tail).cwd;
+          // Sentinel past the retention window → recover it from the uncapped tail.
+          const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
             if (isInside(ctx.cwd, reported)) {
               ctx.setShellCwd?.(path.resolve(reported));
@@ -272,7 +303,21 @@ export const BashTool = defineTool({
           }
         }
         const text = (`${prefix}${body}`.trim() + notice).trim();
-        resolve({ text: text || `(no output, exit ${code ?? '?'})`, isError });
+        // Only declare a bound when we actually dropped something. `total` is the
+        // true byte count, `shown` what survived the head/tail retention.
+        const dropped = totalChars > rawLen;
+        resolve({
+          text: text || `(no output, exit ${code ?? '?'})`,
+          isError,
+          bounds: dropped
+            ? {
+                shown: body.length,
+                total: totalChars - sentinelOverhead,
+                unit: 'bytes' as const,
+                moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
+              }
+            : undefined,
+        });
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
