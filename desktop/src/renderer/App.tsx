@@ -2848,6 +2848,11 @@ function AppInner() {
                     <ChatView
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
+                      // Drives content-visibility so INACTIVE sessions leave the
+                      // layout tree entirely — see ChatView's root style block.
+                      // Deliberately not folded into `visible`: the two hide
+                      // different things for different reasons.
+                      sessionActive={s.id === sessionId}
                       resumeInfo={resumeInfo}
                       provider={s.provider}
                       cwd={s.cwd}
