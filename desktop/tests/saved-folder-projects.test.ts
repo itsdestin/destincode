@@ -58,4 +58,24 @@ describe('buildSavedFolderProjects', () => {
     );
     expect(result.map((p) => p.name)).toEqual(['A', 'B']);
   });
+
+  it('carries a saved folder description onto the project record', () => {
+    const out = buildSavedFolderProjects(
+      [{ path: '/home/d/proj', nickname: 'Proj', description: 'my notes' }],
+      [],
+    );
+    expect(out[0].description).toBe('my notes');
+  });
+
+  it('prefers the saved folder description over an indexed entry', () => {
+    const indexed = {
+      id: '/home/d/proj', name: 'proj', path: '/home/d/proj', lastIndexed: '',
+      lastSession: null, contentTypes: [], stats: { artifactCount: 0 },
+    } as any;
+    const out = buildSavedFolderProjects(
+      [{ path: '/home/d/proj', nickname: 'Proj', description: 'mine' }],
+      [indexed],
+    );
+    expect(out[0].description).toBe('mine');
+  });
 });

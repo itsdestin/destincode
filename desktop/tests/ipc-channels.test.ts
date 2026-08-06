@@ -625,6 +625,31 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
   });
 });
 
+// Local-folder description (project-description spec, Task 4). Saved folders are
+// local-only — no sync surface — so parity is desktop-only, same four surfaces and
+// same "ipc-handlers carries the constant, everyone else carries the literal"
+// pattern as the syncspaces:* block above. NOTE: there was no pre-existing
+// folders:* parity block to add a row to (unlike syncspaces:*) — folders:list/
+// add/remove/rename were never covered here, so this new describe block is
+// scoped to the one channel this task adds rather than backfilling the rest.
+describe('folders:set-description channel parity (desktop surfaces)', () => {
+  const channels: Array<[string, string]> = [
+    ['folders:set-description', 'IPC.FOLDERS_SET_DESCRIPTION'],
+  ];
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const remoteServer = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload, remote-shim, ipc-handlers, remote-server`, () => {
+      expect(preload).toContain(ch);
+      expect(shim).toContain(ch);
+      expect(handlers).toContain(constant);
+      expect(remoteServer).toContain(ch);
+    });
+  }
+});
+
 // Connect-GitHub modal (device-flow auth, 2026-07-14). The four REQUEST channels
 // have full four-surface desktop parity (preload inlined literal / remote-shim
 // invoke literal / ipc-handlers IPC.* constant / remote-server switch case) plus

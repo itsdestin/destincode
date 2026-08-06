@@ -89,6 +89,9 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 // Saved-folder store — extracted so sync-spaces/ can share the reader/writer.
 import { SavedFolder, readFolders, writeFolders } from './saved-folders';
+// Shared cap so a local folder's description can't drift from the synced
+// registry's limit (project-registry.ts uses the same constant).
+import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
@@ -1154,6 +1157,18 @@ export function registerIpcHandlers(
     const entry = folders.find(f => path.resolve(f.path) === normalized);
     if (!entry) return false;
     entry.nickname = nickname;
+    writeFolders(folders);
+    return true;
+  });
+
+  ipcMain.handle(IPC.FOLDERS_SET_DESCRIPTION, async (_event, folderPath: string, description: string) => {
+    const folders = readFolders();
+    const normalized = path.resolve(folderPath);
+    const entry = folders.find(f => path.resolve(f.path) === normalized);
+    if (!entry) return false;
+    // Trim + cap here as well as in the UI: the renderer is a mirror, never the
+    // boundary (same rule as the artifact write policy).
+    entry.description = description.trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
     writeFolders(folders);
     return true;
   });

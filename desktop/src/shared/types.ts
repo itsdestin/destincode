@@ -978,6 +978,9 @@ export const IPC = {
   FOLDERS_ADD: 'folders:add',
   FOLDERS_REMOVE: 'folders:remove',
   FOLDERS_RENAME: 'folders:rename',
+  // Local-only description on a saved folder — sibling of FOLDERS_RENAME, same
+  // store (saved-folders.ts), never syncs (see SavedFolder.description).
+  FOLDERS_SET_DESCRIPTION: 'folders:set-description',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs

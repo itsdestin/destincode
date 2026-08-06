@@ -115,6 +115,12 @@ const IPC = {
   FOLDERS_ADD: 'folders:add',
   FOLDERS_REMOVE: 'folders:remove',
   FOLDERS_RENAME: 'folders:rename',
+  // Local-only description on a saved folder — sibling of FOLDERS_RENAME. Preload
+  // can't import shared/types.ts (sandboxed, no relative imports), so this literal
+  // must stay byte-identical to the one in shared/types.ts — the parity test only
+  // checks the CONSTANT NAME against ipc-handlers, not this literal against the
+  // shared one, so a typo here would pass tests silently.
+  FOLDERS_SET_DESCRIPTION: 'folders:set-description',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs
@@ -787,6 +793,8 @@ contextBridge.exposeInMainWorld('claude', {
     add: (folderPath: string, nickname?: string): Promise<any> => ipcRenderer.invoke(IPC.FOLDERS_ADD, folderPath, nickname),
     remove: (folderPath: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_REMOVE, folderPath),
     rename: (folderPath: string, nickname: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_RENAME, folderPath, nickname),
+    setDescription: (folderPath: string, description: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.FOLDERS_SET_DESCRIPTION, folderPath, description),
   },
   // Settings → Development feature (bug report, contribute, known issues)
   dev: {

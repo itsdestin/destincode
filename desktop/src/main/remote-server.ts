@@ -1,6 +1,10 @@
 import http from 'http';
 import zlib from 'zlib';
 import { listProjectsIndex } from './artifacts/projects-index';
+// Shared cap so a local folder's description (set via a remote browser client)
+// can't drift from the synced registry's limit — same constant project-registry.ts
+// and ipc-handlers.ts use.
+import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { staticAssetPolicy } from './remote-static-policy';
 import fs from 'fs';
 import path from 'path';
@@ -1586,6 +1590,29 @@ export class RemoteServer {
           const entry = folders.find((f: any) => path.resolve(f.path) === normalized);
           if (!entry) { this.respond(client.ws, type, id, false); break; }
           entry.nickname = payload.nickname;
+          await fs.promises.writeFile(foldersPrefPath, JSON.stringify(folders, null, 2));
+          this.respond(client.ws, type, id, true);
+        } catch {
+          this.respond(client.ws, type, id, false);
+        }
+        break;
+      }
+      // Sibling of folders:rename above. DELIBERATELY duplicates that case's
+      // inline read/find/write instead of importing saved-folders.ts — this
+      // file already re-implements the folders store rather than sharing it,
+      // and unifying that is out of scope for a description-only change to a
+      // shipped, uncovered code path. Only the length cap is shared (imported
+      // above), so it can't drift from the other setters.
+      case 'folders:set-description': {
+        const foldersPrefPath = path.join(os.homedir(), '.claude', 'youcoded-folders.json');
+        try {
+          let folders: any[] = [];
+          try { folders = JSON.parse(await fs.promises.readFile(foldersPrefPath, 'utf8')); } catch {}
+          if (!Array.isArray(folders)) folders = [];
+          const normalized = path.resolve(payload.folderPath);
+          const entry = folders.find((f: any) => path.resolve(f.path) === normalized);
+          if (!entry) { this.respond(client.ws, type, id, false); break; }
+          entry.description = String(payload.description ?? '').trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
           await fs.promises.writeFile(foldersPrefPath, JSON.stringify(folders, null, 2));
           this.respond(client.ws, type, id, true);
         } catch {

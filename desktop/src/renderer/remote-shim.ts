@@ -1202,6 +1202,8 @@ export function installShim(): void {
       add: (folderPath: string, nickname?: string) => invoke('folders:add', { folderPath, nickname }),
       remove: (folderPath: string) => invoke('folders:remove', { folderPath }),
       rename: (folderPath: string, nickname: string) => invoke('folders:rename', { folderPath, nickname }),
+      setDescription: (folderPath: string, description: string) =>
+        invoke('folders:set-description', { folderPath, description }),
     },
     artifacts: {
       listSession: (sessionId: string, projectRoot: string) =>
