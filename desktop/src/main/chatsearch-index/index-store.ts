@@ -4,11 +4,13 @@
  * CONCURRENCY: ~/.youcoded/ is shared by the live app AND every run-dev.sh
  * instance (run-dev isolates only userData and ports). Two builders appending to
  * the same turns file would double-index it, so every refresh cycle runs under a
- * mkdir-based build lock. JSON files (state, meta) land via temp-then-rename; the
- * turns file is appended in place under the build lock instead, since JSONL is
- * append-friendly and a rename-per-cycle would mean rewriting the whole file. A
- * reader that catches a torn trailing line (crash mid-append) drops it — the
- * decoder returns null for malformed lines rather than throwing.
+ * mkdir-based build lock. JSON files (state, meta) land via temp-then-rename. The
+ * turns file takes whichever fits: the common growth path APPENDS in place, since
+ * JSONL is append-friendly and a rename-per-cycle would mean rewriting the whole
+ * file; the shrink path, which must drop a conversation's old lines, rewrites the
+ * whole file via temp-then-rename like the JSON files. A reader that catches a
+ * torn trailing line (crash mid-append) drops it — the decoder returns null for
+ * malformed lines rather than throwing.
  */
 
 import fs from 'node:fs';
