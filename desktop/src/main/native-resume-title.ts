@@ -26,10 +26,14 @@ export interface ResumeTitleDeps {
  * Re-broadcast a resumed native session's stored title so its header pill
  * stops showing the 'Resuming…' placeholder.
  *
- * Returns the title that was applied, or null when there was nothing real to
- * apply. NEVER throws and NEVER rejects: a resume must not fail because a title
- * could not be read. A no-op here is harmless — the session is untitled, and
- * the title feeder will generate one at the next turn-complete.
+ * Returns the title that was applied, or null when nothing was applied — which
+ * covers both "there was no real title to apply" and "a collaborator threw".
+ * The two are deliberately not distinguished: no caller reads the value (it is
+ * `void`-called), and the return exists for the tests.
+ *
+ * NEVER throws and NEVER rejects: a resume must not fail because a title could
+ * not be read. A no-op here is harmless — the session is untitled, and the
+ * title feeder will generate one at the next turn-complete.
  */
 export async function reapplyStoredTitle(
   deps: ResumeTitleDeps,

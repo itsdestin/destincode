@@ -53,5 +53,9 @@ describe('reapplyStoredTitle', () => {
     const deps = mkDeps({ onTitle: vi.fn(() => { throw new Error('window destroyed'); }) });
 
     await expect(reapplyStoredTitle(deps, 's1')).resolves.toBeNull();
+    // Assert we actually REACHED the throwing call. Without this the test would
+    // still pass if a future edit made the default stored title a placeholder,
+    // short-circuiting before onTitle — a vacuous green.
+    expect(deps.onTitle).toHaveBeenCalledTimes(1);
   });
 });

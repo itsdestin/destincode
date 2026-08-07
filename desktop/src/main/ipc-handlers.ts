@@ -537,6 +537,11 @@ export function registerIpcHandlers(
   // App.tsx sessionRenamed handler; broadcastRename updates SessionInfo, the
   // remote clients, and the window directory).
   const resumeTitleDeps: ResumeTitleDeps = {
+    // NOTE: getConversationStore() is null for the whole launch when the managed
+    // roots are unavailable (conversations/service.ts sets storePhase
+    // 'unavailable'), so on such a machine this reads undefined every time and
+    // the re-apply is a permanent no-op. That is survivable, not silent breakage
+    // — the title feeder still generates a name at the next turn-complete.
     getStoredTitle: async (sessionId) => (await getConversationStore()?.get('native', sessionId))?.title,
     onTitle: (sessionId, title) => {
       sendForSession(sessionId, IPC.SESSION_RENAMED, sessionId, title);
@@ -565,6 +570,12 @@ export function registerIpcHandlers(
           remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
         });
       };
+      // Did a real resume of stored data actually happen? Distinct from
+      // `opts.resumeSessionId` being set: a resume can REFUSE (transcript not
+      // synced / project folder missing) or fall back to creating a fresh
+      // session under the same id. Only a true resume may wear the stored
+      // conversation's name — see the re-apply below.
+      let didResume = false;
       try {
         if (opts.resumeSessionId) {
           // Task 6: the resume-time model selector's pick (opts.binding, when the
@@ -615,9 +626,10 @@ export function registerIpcHandlers(
             emitNativeSessionError(refusal);
           } else if (resolvedCwd) {
             info.cwd = resolvedCwd; // fix the SessionInfo so downstream (noteSessionStarted, eager model, renderer) reads the validated cwd
-            await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
+            didResume = await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
           } else {
             const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
+            didResume = resumed;
             // No stored file (e.g. resuming an id that was never persisted) → start
             // a fresh session under the same id so the renderer isn't left with a
             // SessionInfo backed by no live HarnessSession.
@@ -662,7 +674,13 @@ export function registerIpcHandlers(
         // this deliberately does its OWN store read — the `rec` fetched during
         // cwd resolution above only exists on the foreign-cwd branch, not on
         // the common local-resume path.
-        if (opts.resumeSessionId) {
+        //
+        // Gated on didResume, NOT on opts.resumeSessionId: a REFUSED resume
+        // (transcript not synced / folder missing) and the "saved data missing,
+        // start fresh under the same id" fallback both leave a session that is
+        // empty or dead. Naming either after the stored conversation would put
+        // a real name on a session that isn't it — worse than the placeholder.
+        if (didResume) {
           void reapplyStoredTitle(resumeTitleDeps, info.id);
         }
         // Task 4: seed lastUsedModel the moment a native session comes up (fresh
