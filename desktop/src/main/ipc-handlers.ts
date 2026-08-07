@@ -8,6 +8,7 @@ import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
+import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -2257,11 +2258,15 @@ export function registerIpcHandlers(
     // window before the store's first upsert lands (mirrors the browse/store
     // title-overlay precedence Task 3/5 established — store wins unless
     // placeholder).
+    //
+    // Fix (2026-08-06): both halves now go through the SHARED placeholder
+    // predicate. The old fallback only excluded 'New Session', so a RESUMED
+    // session — whose live name is 'Resuming…' — answered "already titled" and
+    // this feeder skipped generation on every turn-complete, permanently. A
+    // resumed, never-titled native session could never get a title at all.
     hasTitle: async (sessionId: string) => {
       const rec = await getConversationStore()?.get('native', sessionId);
-      if (rec?.title && rec.title !== 'Untitled') return true;
-      const session = sessionManager.getSession(sessionId);
-      return !!session?.name && session.name !== 'New Session';
+      return hasRealTitle(rec?.title, sessionManager.getSession(sessionId)?.name);
     },
     // Both halves, or the Resume Browser (store title) and the live pill
     // (session.name) disagree. Native ids are identity-mapped (see the WHY
