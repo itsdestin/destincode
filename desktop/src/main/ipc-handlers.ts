@@ -510,6 +510,11 @@ export function registerIpcHandlers(
   // sendForSession fires before ownership is set and falls back to mainWindow,
   // making a session created in window 2 appear in window 1. Remote-created
   // sessions still fall back to mainWindow since no renderer owns them yet.
+  //
+  // This only holds because assignSession runs SYNCHRONOUSLY in that handler,
+  // before its first await — nextTick outranks the microtask queue, so an
+  // assignSession sitting after any await would drain too late. See the WHY on
+  // the assignSession block itself; pinned by tests/session-create-ownership-order.test.ts.
   sessionManager.on('session-created', (info) => {
     process.nextTick(() => sendForSession(info.id, IPC.SESSION_CREATED, info));
   });
@@ -552,6 +557,35 @@ export function registerIpcHandlers(
   // Session CRUD
   ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
     const info = sessionManager.createSession(opts);
+    // Assign the new session to the calling window so per-session events (transcript,
+    // pty output, permission prompts) route here once Task 1.4 migrates the emits.
+    //
+    // MUST stay here — synchronously after createSession, BEFORE the native block's
+    // awaits. createSession emits 'session-created' synchronously, and the listener
+    // above defers the SESSION_CREATED forward by one process.nextTick precisely so
+    // ownership is set first. But nextTick outranks the promise microtask queue, so
+    // it drains the moment this handler suspends at its FIRST await — and the native
+    // branch below awaits nativeHost.resume/create long before the end of the
+    // handler. With this block at the bottom (where it lived until 2026-08-06), a
+    // native session created or resumed from a SECOND main window was forwarded with
+    // no owner registered, took sendForSession's ownerless mainWindow fallback, and
+    // appeared in window 1 instead. Claude Code never hit it: that path runs straight
+    // through with no intervening await. Pinned by tests/session-create-ownership-order.test.ts.
+    //
+    // Exception: if the sender is a buddy window (the floater's compact chat),
+    // assign to the leader main window instead. Buddies don't appear in the
+    // switcher directory and shouldn't own sessions — otherwise the session
+    // would be invisible to every main window's session list. The buddy still
+    // sees the session via its subscribe() call in SessionPill.selectSession.
+    if (windowRegistry) {
+      let targetId = event.sender.id;
+      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
+        const leader = windowRegistry.getLeaderId();
+        if (leader != null) targetId = leader;
+      }
+      try { windowRegistry.assignSession(info.id, targetId); }
+      catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
+    }
     // Native sessions have no PTY worker — start (or resume) their HarnessSession
     // in the host now that createSession has minted the SessionInfo. The native
     // branch of createSession uses resumeSessionId AS the id, so info.id already
@@ -729,23 +763,6 @@ export function registerIpcHandlers(
       // the first message. Fire-and-forget; the model poll drives the UI.
       const eagerModelId = nativeHost.modelForSession(info.id);
       if (eagerModelId) { void engineManager.loadModel(eagerModelId).catch(() => { /* engine not installed / boot failed — the first send surfaces it */ }); }
-    }
-    // Assign the new session to the calling window so per-session events (transcript,
-    // pty output, permission prompts) route here once Task 1.4 migrates the emits.
-    //
-    // Exception: if the sender is a buddy window (the floater's compact chat),
-    // assign to the leader main window instead. Buddies don't appear in the
-    // switcher directory and shouldn't own sessions — otherwise the session
-    // would be invisible to every main window's session list. The buddy still
-    // sees the session via its subscribe() call in SessionPill.selectSession.
-    if (windowRegistry) {
-      let targetId = event.sender.id;
-      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
-        const leader = windowRegistry.getLeaderId();
-        if (leader != null) targetId = leader;
-      }
-      try { windowRegistry.assignSession(info.id, targetId); }
-      catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
     }
     return info;
   });
