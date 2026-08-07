@@ -147,6 +147,12 @@ export function laterOf<T>(x: T, y: T, tx: number, ty: number): T {
 // is a legacy placeholder some older clients wrote (see PITFALLS → Resume
 // Browser) and must never shadow an actual name. Shared by the pairwise merge
 // and the fold's set-based title pick so the two definitions can't drift.
+//
+// DO NOT unify this with shared/session-title.ts's isRealSessionName. That one
+// also rejects 'New Session' and the 'Resuming…' placeholders, which is right
+// for a LIVE session name but wrong here: this predicate decides which title
+// wins the cross-device CRDT merge, and widening it changes sync results on
+// records that already exist on other devices.
 const realTitle = (t: string) => (t && t !== 'Untitled' ? t : '');
 
 // Earliest-claim pick for createdAt, with the same content tiebreak: two
