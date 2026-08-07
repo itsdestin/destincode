@@ -70,6 +70,7 @@ import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
+import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -2355,7 +2356,10 @@ function AppInner() {
     }
     if (provider === 'native') {
       const nativeSession = await (window.claude.session.create as any)({
-        name: 'Resuming…',
+        // WHY the constant: main's title feeder must be able to RECOGNIZE this
+        // as a placeholder (shared/session-title.ts). A bare literal here is
+        // what let it pass as a real title and block auto-titling on resume.
+        name: RESUMING_NATIVE,
         cwd,
         skipPermissions: false, // native sessions have no PTY permission flow
         provider: 'native',
@@ -2393,7 +2397,7 @@ function AppInner() {
 
     // Pass --resume flag so Claude Code boots directly into the resumed session
     const newSession = await (window.claude.session.create as any)({
-      name: 'Resuming...',
+      name: RESUMING_CLAUDE, // see RESUMING_NATIVE above — different spelling, same contract
       cwd,
       skipPermissions: resumeDangerous || false,
       resumeSessionId: claudeSessionId,
