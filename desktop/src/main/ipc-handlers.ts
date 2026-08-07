@@ -28,6 +28,7 @@ import { ProviderRegistry } from './providers/provider-registry';
 import { generateText } from 'ai';
 import type { ModelBinding } from '../shared/provider-types';
 import { createNativeTitleFeeder } from './native-title-feeder';
+import { reapplyStoredTitle, type ResumeTitleDeps } from './native-resume-title';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
@@ -530,6 +531,19 @@ export function registerIpcHandlers(
     }
   });
 
+  // Deps for the resume-time title re-apply (native-resume-title.ts). These are
+  // exactly the two calls the title feeder's own onTitle makes — the pill only
+  // updates when BOTH fire (sendForSession reaches the owning window's
+  // App.tsx sessionRenamed handler; broadcastRename updates SessionInfo, the
+  // remote clients, and the window directory).
+  const resumeTitleDeps: ResumeTitleDeps = {
+    getStoredTitle: async (sessionId) => (await getConversationStore()?.get('native', sessionId))?.title,
+    onTitle: (sessionId, title) => {
+      sendForSession(sessionId, IPC.SESSION_RENAMED, sessionId, title);
+      broadcastRename(sessionId, title);
+    },
+  };
+
   // Session CRUD
   ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
     const info = sessionManager.createSession(opts);
@@ -639,6 +653,18 @@ export function registerIpcHandlers(
         // dead session.
         sessionIdMap.set(info.id, info.id);
         noteSessionStarted(info.id, info.cwd, 'native');
+        // Fix (2026-08-06): fill the header pill in on resume. The renderer
+        // named this session 'Resuming…' as a placeholder, and the title feeder
+        // only ever pushes a rename when it GENERATES a title — which it
+        // correctly refuses to do for an already-titled session. Without this,
+        // the placeholder is the last name ever written to the pill.
+        // Fire-and-forget: never let a title read delay or fail a resume. Note
+        // this deliberately does its OWN store read — the `rec` fetched during
+        // cwd resolution above only exists on the foreign-cwd branch, not on
+        // the common local-resume path.
+        if (opts.resumeSessionId) {
+          void reapplyStoredTitle(resumeTitleDeps, info.id);
+        }
         // Task 4: seed lastUsedModel the moment a native session comes up (fresh
         // create OR resume) — rides AFTER noteSessionStarted (noteModelUsed is a
         // no-op with no ctx) and AFTER create/resume above (resolvePortableModel
