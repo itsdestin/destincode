@@ -114,10 +114,18 @@ for (const entry of roster) {
     const slug = entry.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     fs.writeFileSync(
       path.join(runDir, `${slug}.json`),
-      JSON.stringify({ label: entry.label, modelId: entry.modelId, toolCalls: run.toolCalls, asks: run.asks, events: run.events }, null, 2),
+      JSON.stringify(
+        { label: entry.label, modelId: entry.modelId, toolCalls: run.toolCalls, asks: run.asks, stepGates: run.stepGates, events: run.events },
+        null,
+        2,
+      ),
     );
     fs.writeFileSync(DOC, appendReview(fs.readFileSync(DOC, 'utf8'), run, stamp));
-    console.log(`  ${run.toolCalls} tool calls, ${run.asks} asks → review appended`);
+    // stepGates surfaced alongside tool calls/asks (fix for the 2026-08-09 Opus 5
+    // incident, run-battery.ts's STEP_GATE_ALLOWANCE): a nonzero count means the
+    // model needed extra step-budget continuations, which is real signal when
+    // reading its review — previously invisible until a gated run failed outright.
+    console.log(`  ${run.toolCalls} tool calls, ${run.asks} asks, ${run.stepGates} step-gate hits → review appended`);
   } catch (err) {
     // Report the real failure. One model erroring must not abort the roster.
     console.error(`  FAILED: ${err?.message ?? err}`);
