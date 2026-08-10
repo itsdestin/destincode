@@ -23,16 +23,37 @@ const PROMPT_HEADING_RE = /^## Prompt for other agents$/gm;
 
 export function appendReview(
   docText: string,
-  run: { label: string; modelId: string; review: string },
-  dateISO: string,
+  run: { label: string; modelId: string; review: string; buildSha: string },
+  runAtISO: string,
 ): string {
   if (!run.review.trim()) {
     throw new Error(`Refusing to append an empty review for ${run.label} — the run produced no final text.`);
   }
+  // Fix (2026-08-10 incident): the heading used to carry only a day-granularity
+  // date, and the battery ran three times in one day — Grok 4.5, GPT 5.6 Luna,
+  // and Deepseek v4 flash 0731 each produced two "## Review: <label> — <date>"
+  // headings that were indistinguishable from each other, with no way to tell
+  // which review came from which harness build. `runAtISO` is now a full
+  // timestamp (the CLI already had this — it only ever truncated it to a date
+  // before calling in), so the heading gets minute-precision time too:
+  // sortable, and readable to a non-developer without opening the body.
+  // Splitting the string on 'T' rather than constructing a `Date` keeps this a
+  // plain string transform — no timezone/locale dependence, no new impurity.
+  const [datePart, timePart = ''] = runAtISO.split('T');
+  const hhmm = timePart.slice(0, 5);
+  const stamp = hhmm ? `${datePart} ${hhmm}` : datePart;
+
   const section = [
-    `## Review: ${run.label} — ${dateISO}`,
+    `## Review: ${run.label} — ${stamp}`,
     '',
-    `**Model:** \`${run.modelId}\` · **Battery:** \`src/main/harness/review/battery.ts\` · run in a disposable fixture workspace.`,
+    // Fix: build identity (which commit — and whether the worktree was dirty —
+    // produced this review) is what actually distinguishes two runs of the
+    // same model beyond "when": a git SHA would be ideal, but appendReview is
+    // pure and cannot shell out to git itself. It's too verbose for the
+    // heading anyway (which needs to stay skimmable via `grep '^## Review:'`),
+    // so it lives on the metadata line instead. The CLI (review-harness.mjs)
+    // resolves it via `git rev-parse`/`git status` and passes it in as data.
+    `**Model:** \`${run.modelId}\` · **Battery:** \`src/main/harness/review/battery.ts\` · **Build:** \`${run.buildSha}\` · run in a disposable fixture workspace.`,
     '',
     run.review.trim(),
     '',

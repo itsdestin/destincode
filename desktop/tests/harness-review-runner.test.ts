@@ -39,14 +39,30 @@ Body of an existing review.
 Prompt block here.
 `;
 
+// Fix (2026-08-10 incident): appendReview used to take a day-granularity
+// `dateISO` (e.g. '2026-08-06'). The battery ran three times in one day and
+// produced byte-identical-looking headings for the same model — the doc
+// couldn't say which review came from which run. The third argument is now a
+// full ISO timestamp; tests below use a fixed instant so heading assertions
+// stay deterministic.
+const RUN_AT = '2026-08-06T09:15:00.000Z';
+
 describe('appendReview', () => {
   it('inserts the new section above the prompt block, not at the end of the file', () => {
-    const out = appendReview(DOC, { label: 'New Model', modelId: 'v/new', review: 'My review.' }, '2026-08-06');
+    const out = appendReview(
+      DOC,
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      RUN_AT,
+    );
     expect(out.indexOf('## Review: New Model')).toBeLessThan(out.indexOf('## Prompt for other agents'));
   });
 
   it('leaves every existing review byte-identical', () => {
-    const out = appendReview(DOC, { label: 'New Model', modelId: 'v/new', review: 'My review.' }, '2026-08-06');
+    const out = appendReview(
+      DOC,
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      RUN_AT,
+    );
     expect(out).toContain('## Review: Existing Model — 2026-08-01\n\nBody of an existing review.');
 
     // A substring-presence check only proves that text exists SOMEWHERE in the
@@ -62,19 +78,58 @@ describe('appendReview', () => {
     expect(out.slice(out.indexOf('## Prompt for other agents'))).toBe(DOC.slice(insertAt));
   });
 
-  it('signs the section with the model label and id', () => {
-    const out = appendReview(DOC, { label: 'New Model', modelId: 'v/new', review: 'My review.' }, '2026-08-06');
-    expect(out).toContain('## Review: New Model — 2026-08-06');
+  it('signs the section with the model label, id, and heading timestamp', () => {
+    const out = appendReview(
+      DOC,
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      RUN_AT,
+    );
+    // Minute-precision time is now part of the heading — see the fix comment
+    // on `stamp` in append-review.ts for why day-granularity alone caused the
+    // 2026-08-10 duplicate-heading incident.
+    expect(out).toContain('## Review: New Model — 2026-08-06 09:15');
     expect(out).toContain('v/new');
+    // Build identity is verbose (a git SHA), so it lives on the metadata line
+    // rather than the heading — still greppable, just not at heading level.
+    expect(out).toContain('abc1234');
   });
 
   it('refuses to write an empty review rather than adding a hollow section', () => {
-    expect(() => appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ' }, '2026-08-06')).toThrow(/empty/i);
+    expect(() =>
+      appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ', buildSha: 'abc1234' }, RUN_AT),
+    ).toThrow(/empty/i);
   });
 
   it('appends at the end when the doc has no prompt block', () => {
-    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r' }, '2026-08-06');
-    expect(out).toContain('## Review: X — 2026-08-06');
+    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r', buildSha: 'abc1234' }, RUN_AT);
+    expect(out).toContain('## Review: X — 2026-08-06 09:15');
+  });
+
+  it('two runs of the same model on the same day get distinguishable headings, not identical ones', () => {
+    // Root cause reproduction: the battery ran three times in one day and the
+    // heading only carried a DATE, so Grok 4.5 / GPT 5.6 Luna / Deepseek v4
+    // flash 0731 each produced two byte-identical-looking "## Review: <label>
+    // — <date>" headings with nothing distinguishing which run was which.
+    // Appending twice for the same model on the same calendar day but at
+    // different times (as two real runs on the same day would) must now
+    // produce two DIFFERENT headings, checkable via `grep '^## Review:'`
+    // without opening either body.
+    const firstRunDoc = appendReview(
+      DOC,
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'First run review.', buildSha: 'aaa1111' },
+      '2026-08-10T09:00:00.000Z',
+    );
+    const bothRunsDoc = appendReview(
+      firstRunDoc,
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'Second run review.', buildSha: 'bbb2222' },
+      '2026-08-10T15:30:00.000Z',
+    );
+
+    const headings = [...bothRunsDoc.matchAll(/^## Review: Grok 4\.5 — .+$/gm)].map((m) => m[0]);
+    expect(headings).toHaveLength(2);
+    expect(headings[0]).not.toBe(headings[1]);
+    expect(headings).toContain('## Review: Grok 4.5 — 2026-08-10 09:00');
+    expect(headings).toContain('## Review: Grok 4.5 — 2026-08-10 15:30');
   });
 
   it('inserts at the real heading, not one quoted inside a fenced code block or review prose', () => {
@@ -109,8 +164,8 @@ Prompt block here.
 `;
     const out = appendReview(
       docWithQuotedHeading,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.' },
-      '2026-08-06',
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      RUN_AT,
     );
     // The new section must land above the REAL heading (the last one in the
     // doc), not the quoted one inside the fence (the first occurrence).

@@ -11,9 +11,31 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { execFileSync } from 'child_process';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP = path.resolve(HERE, '..');
+
+// Fix (2026-08-10 incident): appendReview's heading now needs a build
+// identity (see the WHY comment on the metadata line in append-review.ts) —
+// but appendReview is pure and can't shell out to git itself. This script
+// already isn't pure (it reads/writes the doc), so it resolves the build here
+// and hands it in as data. `execFileSync` (not `execSync`) avoids a shell,
+// and both calls are wrapped: a missing git binary, a non-repo checkout, or
+// any other git failure must not abort a real, paid model run over metadata.
+function resolveBuildSha(cwd) {
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim().length > 0;
+    return dirty ? `${sha}+dirty` : sha;
+  } catch {
+    return 'unknown';
+  }
+}
 
 // WHY a walk instead of a fixed `../..`: that only lands on the workspace repo
 // (youcoded-dev) from the canonical checkout (youcoded-dev/youcoded/desktop).
@@ -100,6 +122,10 @@ const stamp = new Date().toISOString().slice(0, 10);
 const runDir = path.join(WORKSPACE, 'docs/active/investigations/harness-review-runs', stamp);
 fs.mkdirSync(runDir, { recursive: true });
 
+// Resolved once per roster run, not per model: the harness build doesn't
+// change mid-run, and it's one fewer pair of subprocess calls per entry.
+const buildSha = resolveBuildSha(DESKTOP);
+
 for (const entry of roster) {
   console.log(`\n=== ${entry.label} (${entry.modelId}) ===`);
   try {
@@ -120,7 +146,11 @@ for (const entry of roster) {
         2,
       ),
     );
-    fs.writeFileSync(DOC, appendReview(fs.readFileSync(DOC, 'utf8'), run, stamp));
+    // Fix (2026-08-10 incident): a bare date-only `stamp` let three same-day
+    // runs produce indistinguishable headings (see append-review.ts). Pass
+    // the actual completion instant (full ISO timestamp, not just the date)
+    // plus the resolved build identity so appendReview can render both.
+    fs.writeFileSync(DOC, appendReview(fs.readFileSync(DOC, 'utf8'), { ...run, buildSha }, new Date().toISOString()));
     // stepGates surfaced alongside tool calls/asks (fix for the 2026-08-09 Opus 5
     // incident, run-battery.ts's STEP_GATE_ALLOWANCE): a nonzero count means the
     // model needed extra step-budget continuations, which is real signal when
