@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
 import { runBattery } from '../src/main/harness/review/run-battery';
@@ -297,5 +297,78 @@ describe('runBattery', () => {
     expect(run.review).toBe('Final review text.');
     expect(run.fixtureRoot.startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
     expect(run.fixtureRoot).toContain('yc-harness-review-');
+  });
+
+  it('review is the FINAL assistant message, not every assistant-text delta in the run (Defect 1)', async () => {
+    // The live Kimi K3 run emitted 2,501 assistant-text events across the whole
+    // battery — streaming deltas for every turn's narration, not just the last
+    // one. The old code joined ALL of them, so the appended review began with
+    // run commentary ("I'll start by getting oriented...") glued directly onto
+    // the real review with no separator. Script a model that narrates BEFORE a
+    // tool call, then writes a distinct final message after — the review must
+    // contain only the latter.
+    const run = await runBattery({
+      modelFactory: async () =>
+        scriptModel([
+          {
+            text: 'Pre-tool narration that must not leak into the review.',
+            toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }],
+          },
+          { text: 'This is the actual final review.' },
+        ]) as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 5_000,
+    });
+
+    expect(run.review).toBe('This is the actual final review.');
+    expect(run.review).not.toContain('Pre-tool narration');
+  });
+
+  it('review is still the whole answer when the model never calls a tool (Defect 1 edge case)', async () => {
+    // There is no tool-result to anchor on when a model just answers — every
+    // assistant-text event in the run IS the final message, so the "after the
+    // last tool-result" rule must not collapse to an empty string here.
+    const run = await runBattery({
+      modelFactory: async () => scriptModel([{ text: 'No tools needed, here is my review.' }]) as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 5_000,
+    });
+
+    expect(run.review).toBe('No tools needed, here is my review.');
+  });
+
+  it('wires WebSearch to the keyless DDG backend instead of leaving it unconfigured (Defect 2)', async () => {
+    // The live run got "Web search is not wired for this session; this is a
+    // configuration error" because runBattery never passed toolServices.
+    // Stub global fetch with the captured DDG fixture (tests/search-backends.test.ts
+    // uses the same file) so this proves real end-to-end wiring — model calls
+    // WebSearch, the tool reaches ctx.services.search, the adapter calls the
+    // real ddgBackend parser — without making an actual network request.
+    const fixtureHtml = fs.readFileSync(path.join(__dirname, 'fixtures', 'search', 'ddg-response.html'), 'utf8');
+    const fetchSpy = vi.fn(async () => new Response(fixtureHtml));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const run = await runBattery({
+        modelFactory: async () =>
+          scriptModel([
+            { toolCalls: [{ name: 'WebSearch', input: { query: 'node lts version' } }] },
+            { text: 'Search worked.' },
+          ]) as any,
+        modelId: 'fake/model',
+        label: 'Fake',
+        timeoutMs: 5_000,
+      });
+
+      const searchResult = run.events.find((e) => e.type === 'tool-result' && e.data.toolName === 'WebSearch');
+      expect(searchResult).toBeDefined();
+      expect(searchResult!.data.isError).toBeFalsy();
+      expect(searchResult!.data.toolResult).not.toContain('not wired');
+      expect(searchResult!.data.toolResult).toContain('via ddg');
+      expect(fetchSpy).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
