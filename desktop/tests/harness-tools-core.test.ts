@@ -641,6 +641,125 @@ describe('Bash', () => {
       expect(r.text).toContain(`[cwd: ${dir} ·`);
     });
   });
+
+  // 2026-08-10 review: reviewers measured a `seq 1 20000` costing ~7k tokens
+  // of pure noise at the OLD ~28,000-char cap ("more expensive than everything
+  // else combined"). New contract: ~4,000-char head+tail sandwich, line-aware
+  // cut, full output always spilled to disk on overflow, path named in the
+  // notice. See docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md.
+  describe('output cap tightening (2026-08-10 review)', () => {
+    const seqCmd = `node -e "for(let i=1;i<=20000;i++)console.log(i)"`;
+    const visibleBody = (text: string) => text.split('\n[cwd:')[0];
+
+    afterEach(() => {
+      // Best-effort: don't leave spill files behind between test runs.
+      try {
+        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', 'test'), { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    });
+
+    it('caps the visible slice at roughly 4,000 chars, not the old ~28,000', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      // Generous margin over the 4,000-char target (marker + minor overhead),
+      // but must be an order of magnitude below the old ~28,000-char body.
+      expect(visibleBody(r.text).length).toBeLessThan(4_500);
+    }, 30_000);
+
+    it('keeps BOTH ends — the head+tail sandwich, not tail-only or head-only', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      const body = visibleBody(r.text);
+      expect(body.startsWith('1\n')).toBe(true); // the very first line the command printed
+      expect(body.trimEnd().endsWith('20000')).toBe(true); // the very last line
+      expect(body).toContain('[...]'); // the elision marker sits between them
+    }, 30_000);
+
+    it('the cut is line-aware: no line at the boundary is corrupted mid-token', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      const body = visibleBody(r.text);
+      for (const line of body.split('\n')) {
+        if (line === '[...]' || line === '') continue;
+        // A character-based cut (the old bug) would produce a truncated
+        // numeral like '46' where '4621' should be — every surviving line
+        // must be a clean, complete integer.
+        expect(line).toMatch(/^\d+$/);
+      }
+    }, 30_000);
+
+    it('spills the full output to disk on overflow and names the real path in the result', async () => {
+      const r: any = await BashTool.execute({ command: seqCmd }, ctx);
+      expect(r.truncated).toBe(true);
+      expect(r.outputPath).toBeTruthy();
+      expect(fs.existsSync(r.outputPath)).toBe(true);
+      const spilled = fs.readFileSync(r.outputPath, 'utf8');
+      // The elided middle (e.g. line 10000) is NOT in the visible slice but
+      // MUST be present in the spill file — that's the whole point of spilling.
+      expect(visibleBody(r.text)).not.toContain('\n10000\n');
+      expect(spilled).toContain('10000');
+      expect(spilled).toContain('1\n2\n3'); // head survives in the file too
+      expect(r.text).toContain(r.outputPath); // the notice names the real path
+    }, 30_000);
+
+    it('does not spill and declares no bounds when output fits inline', async () => {
+      const r: any = await BashTool.execute({ command: 'echo hi' }, ctx);
+      expect(r.truncated).toBe(false);
+      expect(r.outputPath).toBeUndefined();
+      expect(r.bounds).toBeUndefined();
+    });
+
+    it('the notice names the elided line count, the total, and a next action', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      expect(r.bounds?.moreHint).toMatch(/lines elided/);
+      expect(r.bounds?.moreHint).toMatch(/head|tail|grep/);
+      expect(r.text).toMatch(/lines elided/);
+    }, 30_000);
+
+    // vi.spyOn cannot override an ESM named export directly ("Module namespace
+    // is not configurable"), so this uses the same vi.doMock + vi.resetModules +
+    // dynamic-import technique the "on Windows without Git Bash" suite below
+    // already relies on — scoped to THIS ONE test, restored in the finally, so
+    // it can't leak into any other test in this file that writes real fixtures.
+    it('is honest when the spill write itself fails, instead of claiming a fake path', async () => {
+      vi.doMock('fs', async (importActual) => {
+        const actual = await importActual<typeof import('fs')>();
+        return {
+          ...actual,
+          mkdirSync: () => {
+            throw new Error('EACCES: permission denied (simulated)');
+          },
+        };
+      });
+      vi.resetModules();
+      try {
+        const failing = await import('../src/main/harness/tools/bash');
+        const r: any = await failing.BashTool.execute({ command: seqCmd }, ctx);
+        expect(r.outputPath).toBeUndefined();
+        expect(r.text).toMatch(/could NOT be saved to disk/);
+        expect(r.text).toContain('EACCES');
+      } finally {
+        vi.doUnmock('fs');
+        vi.resetModules();
+      }
+    }, 30_000);
+  });
+
+  describe('timeout representation (2026-08-10 review)', () => {
+    it('reports a sentinel exit code (124), a typed timedOut flag, and SIGKILL-aware prose', async () => {
+      const r: any = await BashTool.execute({ command: 'sleep 5', timeout: 500 }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('· exit 124]');
+      expect(r.timedOut).toBe(true);
+      expect(r.text).toMatch(/force-killed|SIGKILL/);
+      expect(r.text).toMatch(/incomplete/);
+    }, 15_000);
+
+    it('a normal non-zero exit is NOT reported as timedOut', async () => {
+      const r: any = await BashTool.execute({ command: 'exit 3' }, ctx);
+      expect(r.timedOut).toBe(false);
+      expect(r.text).toContain('· exit 3]');
+    });
+  });
 });
 
 describe('Glob', () => {

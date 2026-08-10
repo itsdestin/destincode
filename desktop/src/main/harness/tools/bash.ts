@@ -2,7 +2,9 @@
 // that is a CC-TUI constraint, not an exec constraint.
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 // `which` ships no type declarations and @types/which is not a dependency here.
 // Kept as a static import (not require) so the module-mocking layer can reach it
 // — that is what makes gitBashCandidates() unit-testable off-Windows.
@@ -10,6 +12,8 @@ import * as path from 'path';
 import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
+import { takeHeadLines, takeTailLines } from './truncate';
+import type { ToolResultPayload } from './types';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -192,13 +196,110 @@ function bashDescription(): string {
     (tracksCwdFor(s)
       ? 'The working directory PERSISTS between calls: a `cd` carries to your next Bash call. ' +
         'Changing directory outside the workspace root is reverted (you get a reset notice). ' +
-        'Environment variables, aliases, and shell functions do NOT persist — each call is a fresh shell. ' +
+        // Fix (2026-08-10 review): 5 of 5 reviewing models flagged this asymmetry as a
+        // trap even though it was already documented — buried in a longer sentence
+        // wasn't enough. Its own labeled sentence states it plainly: cwd survives
+        // between calls, nothing else about the shell does.
+        'ASYMMETRY: only the working directory persists. Environment variables, aliases, ' +
+        'and shell functions do NOT carry to your next call (e.g. `export FOO=bar` here is ' +
+        'gone by your next call) — every call is a fresh shell that inherits your `cd` and ' +
+        'nothing else. ' +
         'Note that the other tools (Read/Edit/Write/Glob/Grep) resolve relative paths from the ' +
         'workspace root, NOT from this shell directory — prefer absolute paths with them. '
       : 'Each call starts fresh in the workspace directory — `cd` does NOT carry to the next call, ' +
-        'so use absolute paths or chain with `cd X && ...` in one command. ') +
-    'Output is capped; long-running commands time out (default 2 minutes, max 10 via timeout).'
+        'so use absolute paths or chain with `cd X && ...` in one command. Environment variables ' +
+        'never carry over either. ') +
+    // Fix (2026-08-10 review, Claim 7): verified against a real transcript — this
+    // runs plain `bash -c`, no `set -e`/`pipefail` injected. `false; echo hi` reports
+    // exit 0 because the LAST command decides the code, same as typing the chain into
+    // a real terminal. Not a bug (Claude Code's own Bash tool works the same way);
+    // stated here so it stops getting re-reported as one.
+    'No `set -e`: a multi-command chain (`a; b; c`) reports the LAST command\'s exit code, ' +
+    'so an earlier failure in the middle can be silently absorbed — use `&&` between commands, ' +
+    'or check intermediate results yourself, when that matters. ' +
+    // Fix (2026-08-10 review): cap tightened from ~28,000 to ~4,000 chars — reviewers
+    // measured a `seq 1 20000` costing ~7k tokens of pure noise, "more expensive than
+    // everything else combined." The visible slice shrank; nothing is lost — the full
+    // output is always saved to disk when it overflows, path included in the result.
+    'Output over ~4,000 chars shows only the first and last ~50 lines; the FULL output is ' +
+    'then always saved to a file, with its path in the result — read that file (e.g. with ' +
+    'the Read tool) or re-run the ORIGINAL command piped through head/tail/grep rather than ' +
+    'guessing from the truncated preview; do not just re-run the same command hoping for more. ' +
+    // Fix (2026-08-10 review): 3 of 5 models found the old `exit ?` timeout marker
+    // opaque. A timeout now reports exit 124 (matching `timeout(1)` and Codex CLI) —
+    // stated here so the model recognizes it without guessing.
+    'Long-running commands time out (default 2 minutes, max 10 via `timeout`); a timeout ' +
+    'force-kills the process (SIGKILL) and is reported as exit 124.'
   );
+}
+
+// Where Bash spills full output that doesn't fit inline (2026-08-10 review —
+// see the recommendation in
+// docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md).
+// Session-scoped (each session gets its own subfolder) so one conversation's
+// spill files are easy to reason about in isolation, but all rooted under one
+// parent so the retention sweep below can walk every session's leftovers —
+// including ones from sessions that ended long ago — in a single pass.
+function spillRoot(): string {
+  return path.join(os.tmpdir(), 'youcoded-harness-bash-output');
+}
+function spillDirFor(sessionId: string): string {
+  // Never trust sessionId as a path segment verbatim — strip anything that
+  // isn't alnum/dash/underscore so a pathological id can't escape spillRoot().
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'unknown';
+  return path.join(spillRoot(), safe);
+}
+
+// WHY a module-level once-flag, not a timer (2026-08-10 review — OpenCode's
+// precedent is a 7-day TTL swept hourly): a spill-to-file design that never
+// cleans up is a slow disk leak, real in every surveyed design that adds this
+// affordance without a retention policy (even Claude Code's docs don't state
+// one). We have no scheduler primitive here worth adding a dependency for, so
+// instead sweep once per process lifetime, on the first spill this process
+// ever writes — for a long-running desktop app that lands close enough to
+// OpenCode's cadence without a timer that outlives every session.
+const SPILL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+let sweepScheduled = false;
+function sweepOldSpillFilesOnce(): void {
+  if (sweepScheduled) return;
+  sweepScheduled = true;
+  const root = spillRoot();
+  const cutoff = Date.now() - SPILL_TTL_MS;
+  fs.promises
+    .readdir(root, { withFileTypes: true })
+    .then(async (sessionDirs) => {
+      for (const d of sessionDirs) {
+        if (!d.isDirectory()) continue;
+        const sessDir = path.join(root, d.name);
+        let files: string[] = [];
+        try {
+          files = await fs.promises.readdir(sessDir);
+        } catch {
+          continue;
+        }
+        for (const f of files) {
+          const fp = path.join(sessDir, f);
+          try {
+            const st = await fs.promises.stat(fp);
+            if (st.mtimeMs < cutoff) await fs.promises.unlink(fp);
+          } catch {
+            // Best-effort: a file that vanished mid-sweep, or that we can't
+            // stat/unlink for permission reasons, isn't worth failing the
+            // whole sweep over — it'll be retried next process launch.
+          }
+        }
+        // Tidy up an emptied session dir too, so orphaned folders don't pile up.
+        try {
+          const remaining = await fs.promises.readdir(sessDir);
+          if (remaining.length === 0) await fs.promises.rmdir(sessDir);
+        } catch {
+          /* best-effort */
+        }
+      }
+    })
+    .catch(() => {
+      /* spillRoot() doesn't exist yet (first spill ever on this machine) — nothing to sweep */
+    });
 }
 
 export const BashTool = defineTool({
@@ -216,13 +317,15 @@ export const BashTool = defineTool({
     description: z.string().optional().describe('One line: what this command does'),
   }),
   caps: { maxChars: 30_000 },
-  // Static fallback for composeNotice's no-bounds branch (Task 19): the
-  // HEAD_CHARS/TAIL_CHARS margin below keeps Bash's own `bounds` the sole
-  // authority in the common case, but the reset notice + metadata trailer
-  // embed ctx.cwd TWICE and are outside that margin — a long workspace root
-  // can still push the pipeline cap past 30k while `dropped` stays false.
-  // Verbatim copy of the `bounds.moreHint` string below: one widening
-  // vocabulary for this tool, not two wordings to keep in sync.
+  // Static fallback for composeNotice's no-bounds branch (Task 19): Bash's own
+  // visible budget (HEAD_CHARS_TARGET + TAIL_CHARS_TARGET = 4,000 chars, see
+  // execute() below) keeps its own `bounds` the sole authority in the common
+  // case, but the reset notice + metadata trailer embed ctx.cwd TWICE and sit
+  // OUTSIDE that budget — an extreme workspace root path could in theory still
+  // push the pipeline cap (30k) past its limit while `truncated` stays false.
+  // This is generic advice for that now-rarer edge case, not a copy of the
+  // per-call `bounds.moreHint` built in execute() (which names the real spill
+  // path and can't be known statically).
   moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
   permissionSubject: (a) => a.command,
   async execute(args, ctx) {
@@ -266,123 +369,132 @@ export const BashTool = defineTool({
       // nothing had measured. Counting every chunk whether or not we keep it makes
       // the reported total true.
       //
-      // WHY HEAD_CHARS/TAIL_CHARS stay <= caps.maxChars (2026-08-06 review, dead
-      // zone fix): the original guard was `if (head.length < HEAD_CHARS) head +=
-      // s` — checked BEFORE appending, so a chunk that CROSSED the boundary was
-      // retained WHOLE. A single 64KB pipe read (Node's default highWaterMark)
-      // pushed `head` to ~71,500 chars before `tailBuf` ever engaged, so this
-      // tool's own `dropped` flag stayed false — and Bash never declared `bounds`
-      // — until output was already past ~71.5k measured, while defineTool's
-      // pipeline cap (caps.maxChars, 30_000) fired at 30k regardless. Everything
-      // in between (measured: 40k, 50k, 70k chars) landed in composeNotice's
-      // no-`bounds` fallback: a bare "[output truncated: showing N of M chars]"
-      // with no `moreHint`, for the single most common oversized-Bash-output size
-      // (npm test, git log, a mid-size search). The fix below caps `head` on
-      // APPEND (slicing the crossing chunk, so retention no longer depends on
-      // pipe chunk size) and keeps peak retention at or under caps.maxChars, so
-      // the pipeline cap can never fire for Bash — this tool's own `bounds` is
-      // the sole authority on what got dropped. Peak body retained: HEAD_CHARS +
-      // TAIL_CHARS + 7 (the "\n[...]\n" separator joined() inserts) =
-      // 22,000 + 6,000 + 7 = 28,007. That leaves ~1,993 chars of headroom under
-      // 30,000 (caps.maxChars above) for the metadata line and drop notice this
-      // function appends AFTER body (cwd path + byte counts) — necessary because
-      // defineTool's cap applies to the FULL text, body plus that trailer, and a
-      // sufficiently deep workspace path could otherwise push the total back over
-      // caps.maxChars even with body itself capped. If you change either
-      // constant, keep HEAD_CHARS + TAIL_CHARS + 7 comfortably under 30,000 — that
-      // margin is what keeps composeNotice's no-bounds branch unreachable for Bash.
-      const HEAD_CHARS = 22_000;
-      const TAIL_CHARS = 6_000;
-      let head = '';
+      // WHY independent head/tail buffers, not one accumulator with overflow
+      // (2026-08-10 review, cap tightened ~28,000 -> ~4,000 chars — reviewers
+      // measured a `seq 1 20000` costing ~7k tokens of pure noise, "more
+      // expensive than everything else combined"): the OLD single-accumulator
+      // design ("fill head, then overflow into a rolling tail") had a real gap —
+      // if total output stayed under the head cap but exceeded the LINE budget
+      // (many short lines), the tail buffer would never receive anything, losing
+      // "how it ended" entirely. `headBuf` (grows once, stops at its cap, never
+      // shrinks) and `tailBuf` (a rolling window of the last N raw chars,
+      // ALWAYS fed regardless of whether headBuf is still filling) are now two
+      // independent, unconditionally-maintained buffers — each is simply "the
+      // true first ~4,000 chars" and "the true last ~4,000 chars" of whatever
+      // has streamed so far, which also eliminates the old "dead zone" bug
+      // class outright rather than just shrinking it.
+      const HEAD_RETAIN_CHARS = 4_000; // margin over the 2,000-char visible target below, so a line-aware trim always has real lines to choose from
+      const TAIL_RETAIN_CHARS = 4_000;
+      const HEAD_CHARS_TARGET = 2_000;
+      const HEAD_LINES_TARGET = 50;
+      const TAIL_CHARS_TARGET = 2_000;
+      const TAIL_LINES_TARGET = 50;
+      let headBuf = '';
       let tailBuf = '';
       let totalChars = 0;
-      // Explicit flag set exactly at the moment content is discarded, rather than
-      // inferred afterward by comparing lengths — the same shape grep.ts uses for
-      // its own `dropped`. A post-hoc length comparison gets two things wrong: a
-      // genuine drop of <= 7 chars reads as "no drop" (the "\n[...]\n" separator
-      // happens to absorb it), and a merely non-empty tailBuf reads as "something
-      // was cut" even when every char it currently holds is still fully present.
-      let discarded = false;
+      let totalNewlines = 0;
       // Separate uncapped 4KB tail purely for the cwd sentinel: a chatty command
       // ("cd sub && <huge output>") would otherwise push the sentinel out of the
       // retained text and silently lose the cd.
       let probeTail = '';
-      // Push into the rolling tail window, flagging `discarded` iff characters
-      // actually fall off the FRONT of that window (a genuine loss) — not merely
-      // because the window happens to be non-empty.
-      const pushTail = (s: string) => {
-        const combined = tailBuf + s;
-        if (combined.length > TAIL_CHARS) discarded = true;
-        tailBuf = combined.slice(-TAIL_CHARS);
+      // Full-output spill (2026-08-10 review: 4 of 5 surveyed harnesses with a
+      // real cap pair a small visible slice with a mandatory disk spill — see
+      // docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md).
+      // Started the MOMENT headBuf can no longer capture everything (inside
+      // cap() below), not lazily at finish() — by finish() any un-retained
+      // middle content is already gone from memory, so waiting would spill an
+      // incomplete file. spillDirFor/sweepOldSpillFilesOnce are declared at
+      // module scope, above BashTool.
+      let spillStream: fs.WriteStream | null = null;
+      let spillPath: string | null = null;
+      let spillError: string | null = null;
+      const startSpill = () => {
+        try {
+          const dir = spillDirFor(ctx.sessionId);
+          fs.mkdirSync(dir, { recursive: true });
+          sweepOldSpillFilesOnce();
+          spillPath = path.join(dir, `bash-${Date.now()}-${randomUUID()}.txt`);
+          spillStream = fs.createWriteStream(spillPath);
+          spillStream.on('error', (e) => {
+            spillError = e.message;
+          });
+          // Backfill with everything captured so far — headBuf is complete up to
+          // this exact instant (nothing has been dropped yet), so the file
+          // starts with zero gap. ANSI-stripped so the spilled file reads the
+          // same clean way the visible slice does.
+          spillStream.write(stripAnsi(headBuf));
+        } catch (e: any) {
+          spillError = e?.message ?? String(e);
+          spillStream = null;
+          spillPath = null;
+        }
       };
       const cap = (s: string) => {
         totalChars += s.length;
-        if (head.length < HEAD_CHARS) {
-          const room = HEAD_CHARS - head.length;
+        for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) totalNewlines++;
+        if (headBuf.length < HEAD_RETAIN_CHARS) {
+          const room = HEAD_RETAIN_CHARS - headBuf.length;
           if (s.length <= room) {
-            head += s;
+            headBuf += s;
           } else {
-            // This chunk CROSSES the head boundary: slice it right here instead
-            // of retaining it whole (the old bug) — deterministic regardless of
-            // how large a single pipe chunk happens to be.
-            head += s.slice(0, room);
-            pushTail(s.slice(room));
+            headBuf += s.slice(0, room);
+            // headBuf just became full and can never capture anything past this
+            // point — the earliest moment we KNOW the middle will be lost from
+            // memory, so start the spill now rather than at finish(), by which
+            // point the un-retained middle is already gone.
+            if (!spillStream && !spillError) startSpill();
+            spillStream?.write(stripAnsi(s.slice(room)));
           }
         } else {
-          pushTail(s);
+          if (!spillStream && !spillError) startSpill();
+          spillStream?.write(stripAnsi(s));
         }
+        tailBuf = (tailBuf + s).slice(-TAIL_RETAIN_CHARS);
         if (probe) probeTail = (probeTail + s).slice(-4096);
       };
-      const joined = () => (tailBuf ? `${head}\n[...]\n${tailBuf}` : head);
       child.stdout.on('data', (d) => cap(String(d)));
       child.stderr.on('data', (d) => cap(String(d)));
       let done = false;
-      const finish = (prefix: string, isError: boolean, code?: number | null) => {
+      // `timedOut` distinguishes a SIGKILL-on-timeout result from a normal
+      // non-zero exit (2026-08-10 review: 3 of 5 models found the old `exit ?`
+      // opaque; Opus wanted to know whether the process died cleanly or was
+      // force-killed — "matters when deciding whether a partial write may have
+      // been left behind"). Codex CLI's approach, adopted here: a sentinel exit
+      // code (124, matching `timeout(1)`) + a typed flag + explicit prose, all
+      // three at once rather than picking one.
+      const finish = (prefix: string, isError: boolean, code?: number | null, timedOut?: boolean) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         ctx.signal.removeEventListener('abort', onAbort);
-        let body = joined();
-        // WHY captured BEFORE extractCwd: the probe's `__YC_CWD__` sentinel line is
-        // harness plumbing, not command output, and extractCwd strips it out of
-        // `body` on virtually every non-Windows call. Comparing totalChars against
-        // the POST-strip body would call that stripping a "drop" and declare bogus
-        // bounds on every single Bash call, including 'echo hi' — caught by the
-        // "declares no bounds for small output" test. Comparing against the raw
-        // retained length (pre-strip) isolates the ONE thing that should count as
-        // dropped: the head/tail accumulator actually cutting real command output.
-        const rawLen = body.length;
+
+        const totalLines = totalNewlines + 1;
+        // The ONLY authoritative truncation decision: if the true total exceeds
+        // what head+tail can EVER cover (their combined budgets), something in
+        // the middle is unavoidably elided — no heuristic, just arithmetic.
+        const truncated = totalChars > HEAD_CHARS_TARGET + TAIL_CHARS_TARGET || totalLines > HEAD_LINES_TARGET + TAIL_LINES_TARGET;
+
         let notice = '';
         // Bytes consumed by the probe's OWN generated sentinel line — harness
         // plumbing, not command output. Subtracted from the reported total so a
         // command that printed exactly N bytes is announced as N, not
         // N-plus-however-long-the-cwd-path-happens-to-be.
         let sentinelOverhead = 0;
-        // Track what the cwd ENDED as, so the metadata line can state it. Two
-        // separate facts: where the shell actually landed, and whether the scope
-        // guard pulled it back.
         let reportedCwd: string | null = null;
         let resetTo: string | null = null;
-        // Fix: length of the sentinel-stripped text BEFORE stripAnsi runs, used
-        // below for the reported "shown" count instead of `body.length`. `body`
-        // becomes ANSI-STRIPPED further down (what the model actually reads),
-        // while `totalChars` above accumulated RAW chunks — colour codes
-        // included — as they streamed in. Reporting shown: body.length
-        // (post-strip) against total: totalChars (pre-strip) mixed two
-        // different currencies in one line: a coloured 3,000-line run printed
-        // "showing 21491 of 117000 bytes" where the 117000 counted escape
-        // sequences the 21491 did not. Measuring both sides at the SAME point
-        // (before the ANSI strip) makes the comparison honest again.
-        let preAnsiLen: number;
+
         if (probe) {
-          const parsed = extractCwd(joined());
-          sentinelOverhead = rawLen - parsed.text.length;
-          preAnsiLen = parsed.text.length;
-          // Strip AFTER extractCwd, not before: the sentinel must be parsed from
-          // raw bytes, so a colour code that happened to straddle the sentinel
-          // line can't mangle the cwd we hand back to the model.
-          body = stripAnsi(parsed.text);
-          // Sentinel past the retention window → recover it from the uncapped tail.
+          // The sentinel is always the LAST thing printed (withCwdProbe), so it
+          // always lives in whichever buffer holds the true tail: tailBuf when
+          // truncated (headBuf can't see it — it stopped growing long ago), or
+          // headBuf when not (headBuf holds 100% of the output in that case,
+          // sentinel included — see the cap() invariant: totalChars <=
+          // HEAD_RETAIN_CHARS implies headBuf never dropped a single char).
+          const sentinelSource = truncated ? tailBuf : headBuf;
+          const parsed = extractCwd(sentinelSource);
+          sentinelOverhead = sentinelSource.length - parsed.text.length;
+          if (truncated) tailBuf = parsed.text;
+          else headBuf = parsed.text;
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
             if (isInside(ctx.cwd, reported)) {
@@ -397,41 +509,74 @@ export const BashTool = defineTool({
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
             }
           }
-        } else {
-          preAnsiLen = joined().length;
-          body = stripAnsi(joined());
         }
+
+        const trueTotal = totalChars - sentinelOverhead;
+        let body: string;
+        // `shown` measured pre-ANSI-strip (same currency as `totalChars`, which
+        // accumulated raw chunks including colour codes) — mixing currencies here
+        // was a real bug: a coloured run printed "showing 21491 of 117000 bytes"
+        // where 117000 counted escape sequences 21491 did not.
+        let preAnsiShown: number;
+        let outputPath: string | undefined;
+        let moreHintText: string | undefined;
+
+        if (truncated) {
+          const headResult = takeHeadLines(headBuf, HEAD_CHARS_TARGET, HEAD_LINES_TARGET);
+          const tailResult = takeTailLines(tailBuf, TAIL_CHARS_TARGET, TAIL_LINES_TARGET);
+          preAnsiShown = headResult.chars + tailResult.chars;
+          const elidedLines = Math.max(0, totalLines - headResult.lines - tailResult.lines);
+          body = `${stripAnsi(headResult.text)}\n[...]\n${stripAnsi(tailResult.text)}`;
+
+          if (spillStream && spillPath) {
+            outputPath = spillPath;
+          } else if (!spillError) {
+            // truncated=true but the streaming trigger in cap() never fired —
+            // only possible when totalChars <= HEAD_RETAIN_CHARS (the LINE
+            // budget alone tripped `truncated`), which by the same invariant
+            // means headBuf/tailBuf both hold the complete, gap-free output.
+            // Write it out now instead of leaving the model with no file.
+            try {
+              const dir = spillDirFor(ctx.sessionId);
+              fs.mkdirSync(dir, { recursive: true });
+              sweepOldSpillFilesOnce();
+              const p = path.join(dir, `bash-${Date.now()}-${randomUUID()}.txt`);
+              fs.writeFileSync(p, stripAnsi(tailBuf));
+              outputPath = p;
+            } catch (e: any) {
+              spillError = e?.message ?? String(e);
+            }
+          }
+
+          // Fix: never claim a spill succeeded when it did not — a fabricated
+          // path would be a misleading result (see the project's error-message
+          // standards). Honest either way: name the real path, or say plainly
+          // that the save failed and why.
+          const linesPart = `${elidedLines} line${elidedLines === 1 ? '' : 's'} elided`;
+          moreHintText = outputPath
+            ? `${linesPart} — full output saved to ${outputPath}. Read that file (e.g. with the Read tool), or pipe the ORIGINAL command through head/tail/grep to narrow it.`
+            : `${linesPart} — full output could NOT be saved to disk (${spillError ?? 'unknown error'}); pipe the ORIGINAL command through head/tail/grep to narrow it instead.`;
+        } else {
+          preAnsiShown = headBuf.length;
+          body = stripAnsi(headBuf);
+          // Nothing to keep — this call's spill (if the streaming trigger ever
+          // somehow started one, which the truncated=false arithmetic above
+          // guarantees it did not) would be a wasted file; there is none here.
+        }
+
         // ONE metadata line, always. Four of five reviewing models independently
         // asked for this (2026-08-01): file tools resolve relative paths from the
         // workspace root while Bash resolves from its own persistent cwd, and with
         // no cwd echoed back the only safe habit was prefixing every single call
         // with `cd <root> &&`. This line costs ~15 tokens and removes that ritual.
         // It ABSORBS the old `(exit code N)` prefix rather than adding to it.
-        //
-        // Whether anything was actually cut, tracked LIVE by `discarded` (set in
-        // pushTail above) rather than inferred here from a length comparison. The
-        // old `totalChars > rawLen` compare miscounted in both directions: it
-        // undercounted a genuine drop of <= 7 chars (the "\n[...]\n" separator's
-        // own length absorbed it) and overcounted whenever tailBuf was merely
-        // non-empty but every char it held was still fully present in the result.
-        const dropped = discarded;
-        // The reported total also gets the sentinel-overhead correction above.
-        const trueTotal = totalChars - sentinelOverhead;
         const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
         const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
-        // Fix: label matches what's actually counted. HEAD_CHARS/TAIL_CHARS,
-        // totalChars, and defineTool's own pipeline cap (caps.maxChars) all
-        // operate on the JS string produced by `String(d)` — UTF-16 code units,
-        // i.e. characters, never real UTF-8 byte counts. Calling that "bytes"
+        // Fix: label matches what's actually counted — UTF-16 code units (JS
+        // string .length), never real UTF-8 byte counts. Calling that "bytes"
         // was wrong for any multi-byte output: 60,000 CJK characters (180,000
-        // real UTF-8 bytes) were reported as "60005 bytes". Making the count
-        // byte-accurate would mean re-deriving the whole head/tail accumulator
-        // from Buffers instead of decoded strings — a much larger change than
-        // this fix — and it is not what a model deciding whether to re-run with
-        // `| head -n 100` actually needs (that decision is about lines/chars in
-        // the stream, not its wire byte size). Relabeling as 'chars' makes the
-        // existing count honest without changing what is measured.
-        if (dropped) meta.push(`${trueTotal} chars output, showing ${preAnsiLen}`);
+        // real UTF-8 bytes) were reported as "60005 bytes".
+        if (truncated) meta.push(`${trueTotal} chars output, showing ${preAnsiShown}`);
         // Fix: when a command exits with genuinely no output (e.g. `exit 3`),
         // `${prefix}${body}` was '' — trimming that and prepending the metadata
         // line produced a result that STARTED with a blank line and said nothing
@@ -441,22 +586,38 @@ export const BashTool = defineTool({
         // metadata line below already states.
         const combined = `${prefix}${body}`.trim() || '(no output)';
         const text = (combined + notice).trim() + `\n[${meta.join(' · ')}]`;
-        resolve({
+        const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean } = {
           text,
           isError,
-          bounds: dropped
+          truncated,
+          outputPath,
+          timedOut: !!timedOut,
+          bounds: truncated
             ? {
-                shown: preAnsiLen,
+                shown: preAnsiShown,
                 total: trueTotal,
                 unit: 'chars' as const,
-                moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
+                moreHint: moreHintText!,
               }
             : undefined,
-        });
+        };
+        // Flush the spill file to disk before resolving — otherwise the model
+        // could Read the path from the notice before the write stream's buffer
+        // has actually landed on disk.
+        if (spillStream && !(spillStream as fs.WriteStream).destroyed) {
+          (spillStream as fs.WriteStream).end(() => resolve(payload));
+        } else {
+          resolve(payload);
+        }
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(`Command timed out after ${timeout}ms.\n`, true);
+        finish(
+          `Command timed out after ${timeout}ms. The process was force-killed (SIGKILL) — if it was mid-write to a file, that write may be incomplete.\n`,
+          true,
+          124,
+          true,
+        );
       }, timeout);
       // Interrupt kills the child (spec §2.1 interrupt-mid-tool ruling) and
       // resolves NOW — we can't wait for 'close', because on Windows a surviving

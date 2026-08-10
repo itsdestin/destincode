@@ -63,6 +63,75 @@ export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult
  *  `fallbackHint` is the tool's STATIC widening vocabulary (`NativeTool.moreHint`,
  *  passed in by defineTool) — used only when `bounds` is absent, since a real
  *  `bounds.moreHint` is always the more specific, per-call advice. */
+// Line-aware head/tail slicing (2026-08-10 harness review, Claim 5): added
+// PURELY ADDITIVELY, alongside truncateOutput/composeNotice above rather than
+// changing them, because those two functions are the SHARED pipeline backstop
+// every tool routes through (registry.ts's defineTool) — WebFetch's ~30,000-char
+// cap was explicitly praised by reviewers and must not move. Only bash.ts calls
+// these; nothing else is affected.
+//
+// WHY line-aware, not char-aware: the review measured a real defect — a
+// character-based cut on `seq 1 20000` sliced the line '4621' into '46' plus a
+// silently discarded '21', with no signal to the model that the number was
+// corrupted by truncation rather than being the command's real output. These
+// two functions never return a partial line except in the one case where a
+// SINGLE line alone exceeds the whole budget (e.g. a minified JSON blob with no
+// newlines) — there "show nothing" and "show a labeled partial" both have a
+// downside, and showing a fallback partial slice beats showing nothing at all.
+export interface LineSliceResult {
+  text: string;
+  /** Full lines actually kept (0 for the single-long-line fallback slice). */
+  lines: number;
+  /** Chars actually kept (the true length of `text`). */
+  chars: number;
+}
+
+/** Keep up to `maxLines` lines / `maxChars` chars from the START of `text`,
+ *  stopping at whichever budget is hit first — never cutting a kept line
+ *  short. */
+export function takeHeadLines(text: string, maxChars: number, maxLines: number): LineSliceResult {
+  if (text === '') return { text: '', lines: 0, chars: 0 };
+  const lines = text.split('\n');
+  let count = 0;
+  let chars = 0;
+  for (; count < lines.length && count < maxLines; count++) {
+    const sep = count > 0 ? 1 : 0; // the '\n' that joins this line to the previous one
+    const len = lines[count].length + sep;
+    if (chars + len > maxChars) break;
+    chars += len;
+  }
+  if (count === 0 && maxChars > 0) {
+    // The very first line alone is bigger than the entire budget — the one
+    // case where "never cut mid-line" and "show something" conflict. Fall
+    // back to a plain char slice of just that line rather than an empty head.
+    const slice = lines[0].slice(0, maxChars);
+    return { text: slice, lines: 0, chars: slice.length };
+  }
+  return { text: lines.slice(0, count).join('\n'), lines: count, chars };
+}
+
+/** Keep up to `maxLines` lines / `maxChars` chars from the END of `text`,
+ *  same line-boundary guarantee as `takeHeadLines`. */
+export function takeTailLines(text: string, maxChars: number, maxLines: number): LineSliceResult {
+  if (text === '') return { text: '', lines: 0, chars: 0 };
+  const lines = text.split('\n');
+  let count = 0;
+  let chars = 0;
+  for (; count < lines.length && count < maxLines; count++) {
+    const idx = lines.length - 1 - count;
+    const sep = count > 0 ? 1 : 0; // the '\n' that joins this line to the next one
+    const len = lines[idx].length + sep;
+    if (chars + len > maxChars) break;
+    chars += len;
+  }
+  if (count === 0 && maxChars > 0) {
+    const last = lines[lines.length - 1];
+    const slice = last.slice(Math.max(0, last.length - maxChars));
+    return { text: slice, lines: 0, chars: slice.length };
+  }
+  return { text: lines.slice(lines.length - count).join('\n'), lines: count, chars };
+}
+
 export function composeNotice(
   bounds: ResultBounds | undefined,
   cap: { shown: number; total: number } | null,

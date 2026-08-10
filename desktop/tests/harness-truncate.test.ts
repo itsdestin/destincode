@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncateOutput, composeNotice } from '../src/main/harness/tools/truncate';
+import { truncateOutput, composeNotice, takeHeadLines, takeTailLines } from '../src/main/harness/tools/truncate';
 import type { ResultBounds } from '../src/main/harness/tools/types';
 
 describe('truncateOutput', () => {
@@ -121,5 +121,89 @@ describe('truncateOutput reports the true input size', () => {
     const r = truncateOutput(big, { maxChars: 10_000 });
     expect(r.text).not.toContain('offset/limit');
     expect(r.text).not.toContain('[truncated —');
+  });
+});
+
+// Bash-only line-aware slicing (2026-08-10 harness review, Claim 5). Additive
+// to truncateOutput/composeNotice above, not a replacement — see the WHY block
+// in truncate.ts for why these stay separate functions rather than changing
+// the shared pair WebFetch also routes through.
+describe('takeHeadLines', () => {
+  it('passes short text through untouched when it fits both budgets', () => {
+    const r = takeHeadLines('a\nb\nc', 100, 10);
+    expect(r).toEqual({ text: 'a\nb\nc', lines: 3, chars: 5 });
+  });
+
+  it('stops at the LINE budget when lines are short (chars would allow more)', () => {
+    const text = Array.from({ length: 100 }, (_, i) => `line${i}`).join('\n');
+    const r = takeHeadLines(text, 1_000_000, 5);
+    expect(r.lines).toBe(5);
+    expect(r.text.split('\n')).toEqual(['line0', 'line1', 'line2', 'line3', 'line4']);
+  });
+
+  it('stops at the CHAR budget when lines are long (line count would allow more)', () => {
+    // 5 lines of 20 chars each (21 with the joining '\n'): a 60-char budget
+    // fits exactly 2 full lines (42 chars) but not a 3rd (63 chars), while the
+    // line budget (100) would allow all 5 — the char budget must win.
+    const text = Array.from({ length: 5 }, (_, i) => `line${i}`.padEnd(20, '_')).join('\n');
+    const r = takeHeadLines(text, 60, 100);
+    expect(r.lines).toBe(2);
+    expect(r.chars).toBeLessThanOrEqual(60);
+    // Never a partial line: every kept line is one of the original whole lines.
+    const originalLines = text.split('\n');
+    for (const line of r.text.split('\n')) expect(originalLines).toContain(line);
+  });
+
+  // The exact defect the review measured: a seq-like run must never hand back
+  // a line with digits missing from either end.
+  it('never returns a line cut mid-token — the seq 1 20000 regression', () => {
+    const text = Array.from({ length: 20_000 }, (_, i) => String(i + 1)).join('\n');
+    const r = takeHeadLines(text, 2_000, 50);
+    for (const line of r.text.split('\n')) {
+      expect(line).toMatch(/^\d+$/); // a corrupted cut would produce a truncated numeral or empty fragment
+    }
+  });
+
+  it('falls back to a labeled partial slice when a single line alone exceeds the whole budget', () => {
+    const oneHugeLine = 'y'.repeat(5000);
+    const r = takeHeadLines(oneHugeLine, 2000, 50);
+    expect(r.chars).toBe(2000);
+    expect(r.lines).toBe(0); // signals "not a whole line" to the caller
+    expect(r.text.length).toBe(2000);
+  });
+
+  it('returns empty for empty input', () => {
+    expect(takeHeadLines('', 100, 10)).toEqual({ text: '', lines: 0, chars: 0 });
+  });
+});
+
+describe('takeTailLines', () => {
+  it('passes short text through untouched when it fits both budgets', () => {
+    const r = takeTailLines('a\nb\nc', 100, 10);
+    expect(r).toEqual({ text: 'a\nb\nc', lines: 3, chars: 5 });
+  });
+
+  it('keeps the LAST N lines, not the first', () => {
+    const text = Array.from({ length: 100 }, (_, i) => `line${i}`).join('\n');
+    const r = takeTailLines(text, 1_000_000, 5);
+    expect(r.text.split('\n')).toEqual(['line95', 'line96', 'line97', 'line98', 'line99']);
+  });
+
+  it('never returns a line cut mid-token from the end — the seq 1 20000 regression', () => {
+    const text = Array.from({ length: 20_000 }, (_, i) => String(i + 1)).join('\n');
+    const r = takeTailLines(text, 2_000, 50);
+    for (const line of r.text.split('\n')) {
+      expect(line).toMatch(/^\d+$/);
+    }
+    // The very last kept line must be the command's true last line, unmangled.
+    expect(r.text.split('\n').at(-1)).toBe('20000');
+  });
+
+  it('falls back to a labeled partial slice (from the END of the line) when a single line exceeds the budget', () => {
+    const oneHugeLine = 'a'.repeat(3000) + 'TAIL-MARK';
+    const r = takeTailLines(oneHugeLine, 2000, 50);
+    expect(r.lines).toBe(0);
+    expect(r.text.endsWith('TAIL-MARK')).toBe(true);
+    expect(r.text.length).toBe(2000);
   });
 });
