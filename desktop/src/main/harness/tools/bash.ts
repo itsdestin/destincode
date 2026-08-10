@@ -24,6 +24,22 @@ const MAX_TIMEOUT_MS = 600_000;
  *  evaporated, costing ~6 wasted tool calls in one observed session. */
 const CWD_SENTINEL = '__YC_CWD__';
 
+/** Marker for the opt-in env-persistence probe (17/17 harness reviews, four
+ *  rounds 2026-08-01 through 2026-08-09): announces the path of a bash-generated
+ *  temp file holding the child's post-command exported vars. Only emitted when a
+ *  call passes `persistent_env: true` — see withCwdProbe(). */
+const ENV_SENTINEL = '__YC_ENVFILE__';
+
+/** Bash vars that change on EVERY command regardless of what the user's command
+ *  did (SHLVL increments per shell, `_`/RANDOM/SECONDS/LINENO are bash-volatile
+ *  builtins, PPID is process-identity noise) — diffing them against baseline
+ *  would flag "new state" on every single persistent_env call, drowning any
+ *  real export in noise. PWD/OLDPWD are excluded for a different reason: they'd
+ *  fight ctx.shellCwd, which already owns directory persistence exclusively. */
+const ENV_PERSIST_DENYLIST = new Set([
+  'PWD', 'OLDPWD', 'SHLVL', '_', 'RANDOM', 'SECONDS', 'LINENO', 'PPID', 'BASH', 'BASHPID',
+]);
+
 /** Strip CSI (colour, cursor) and OSC (window title, hyperlink) sequences.
  *
  *  WHY both an env hint AND a strip: NO_COLOR/FORCE_COLOR cover most tools, but
@@ -132,8 +148,27 @@ function tracksCwdFor(s: ShellInfo): boolean {
 
 /** Wrap the command so the shell prints its final $PWD without clobbering the
  *  exit code. Newline-separated (not `;`) so trailing `&`, `# comments`, and
- *  heredocs in the user's command don't turn into syntax errors. */
-function withCwdProbe(command: string): string {
+ *  heredocs in the user's command don't turn into syntax errors.
+ *
+ *  `captureEnv` (opt-in persistence, 17/17 harness reviews): when true, ALSO
+ *  writes the child's full exported-var set to a bash-generated temp file and
+ *  announces its path via ENV_SENTINEL, mirroring the cwd probe exactly. Two
+ *  deliberate choices, both load-bearing:
+ *  - `mktemp` generates the path INSIDE bash, never Node. A Node-side path (e.g.
+ *    from os.tmpdir()) is a Windows path like `C:\Users\...`; embedding that text
+ *    into a Git Bash script and hoping its POSIX layer translates it correctly is
+ *    exactly the class of fragility `pwd -W` below was already built to dodge.
+ *  - The dump is NUL-delimited (`printf '...\0'`), never newline-joined and never
+ *    GNU `env -0` (BSD `env` on macOS has no `-0`). A shell var cannot contain a
+ *    NUL byte, so `\0` is the one delimiter that can never collide with a real
+ *    value — including embedded newlines or binary bytes, which a newline-joined
+ *    dump would silently corrupt. */
+function withCwdProbe(command: string, captureEnv: boolean): string {
+  const envPart = captureEnv
+    ? `__yc_envfile=$(mktemp 2>/dev/null || printf '/tmp/yc-env-%s' "$$")\n` +
+      `{ for __yc_v in $(compgen -e); do printf '%s=%s\\0' "$__yc_v" "\${!__yc_v}"; done; } > "$__yc_envfile" 2>/dev/null\n` +
+      `printf '\\n${ENV_SENTINEL}%s\\n' "$__yc_envfile"\n`
+    : '';
   // TRAILING newline is load-bearing: a background writer ('cmd &') can flush to
   // the pipe AFTER the sentinel, and without a terminator that text concatenates
   // onto the path — yielding a garbage cwd, a spurious reset notice, and output
@@ -143,7 +178,7 @@ function withCwdProbe(command: string): string {
   // Windows turns into C:\\c\\Users\\... — never inside ctx.cwd, so EVERY call
   // would emit a bogus reset notice. Invalid on Linux/macOS bash, where the
   // `|| pwd` fallback takes over (stderr suppressed so it can't reach output).
-  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s\\n' "$(pwd -W 2>/dev/null || pwd)"\nexit $__yc_rc`;
+  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s\\n' "$(pwd -W 2>/dev/null || pwd)"\n${envPart}exit $__yc_rc`;
 }
 
 /** Split the sentinel back off the combined stdout+stderr. Returns the text the
@@ -157,6 +192,94 @@ function extractCwd(out: string): { text: string; cwd: string | null } {
   const reported = (nl === -1 ? after : after.slice(0, nl)).trim();
   const rest = nl === -1 ? '' : after.slice(nl + 1);
   return { text: out.slice(0, at) + rest, cwd: reported || null };
+}
+
+/** Same shape as extractCwd but for the env-probe's temp-file marker. MUST run
+ *  BEFORE extractCwd on the same buffer: withCwdProbe prints ENV_SENTINEL AFTER
+ *  CWD_SENTINEL, so it sits closer to the tail — extracting cwd first would
+ *  leave this line stuck inside cwd's "rest" text instead of being stripped. */
+function extractEnvFile(out: string): { text: string; envFile: string | null } {
+  const at = out.lastIndexOf(`\n${ENV_SENTINEL}`);
+  if (at === -1) return { text: out, envFile: null };
+  const after = out.slice(at + 1 + ENV_SENTINEL.length);
+  const nl = after.indexOf('\n');
+  const filePath = (nl === -1 ? after : after.slice(0, nl)).trim();
+  const rest = nl === -1 ? '' : after.slice(nl + 1);
+  return { text: out.slice(0, at) + rest, envFile: filePath || null };
+}
+
+/** Parse the NUL-delimited `NAME=VALUE` dump the probe wrote. Malformed entries
+ *  (no `=`) are skipped rather than guessed at — this reads a file OUR OWN probe
+ *  wrote, so a malformed entry means something unexpected happened, not that we
+ *  should invent a value. */
+function parseEnvDump(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of raw.split('\0')) {
+    if (!entry) continue;
+    const eq = entry.indexOf('=');
+    if (eq === -1) continue;
+    out[entry.slice(0, eq)] = entry.slice(eq + 1);
+  }
+  return out;
+}
+
+/** What should actually carry to the next call: only vars that are NEW or
+ *  CHANGED relative to `baseline` (the exact env object this child was spawned
+ *  with — ambient process.env plus whatever was already persisted). This is the
+ *  security-relevant filter: an ambient credential inherited from process.env is
+ *  identical in `dump` and `baseline`, so it's filtered out here and never
+ *  crosses into `shellEnv` — only a var the command's OWN `export`/`source`
+ *  actually touched gets captured. `prevPersisted` entries the command unset
+ *  (no longer in `dump`) are dropped so a stale value doesn't linger forever. */
+function diffPersistableEnv(
+  dump: Record<string, string>,
+  baseline: Record<string, string | undefined>,
+  prevPersisted: Record<string, string>,
+): Record<string, string> {
+  const next: Record<string, string> = { ...prevPersisted };
+  for (const [name, value] of Object.entries(dump)) {
+    if (ENV_PERSIST_DENYLIST.has(name)) continue;
+    if (baseline[name] !== value) next[name] = value;
+  }
+  for (const name of Object.keys(prevPersisted)) {
+    if (!(name in dump)) delete next[name];
+  }
+  return next;
+}
+
+/** The warning half of the fix (17/17 harness reviews, more commonly requested
+ *  than the persistence escape hatch): best-effort regex heuristic, not a shell
+ *  parser — it under-warns on cleverly-quoted or multi-line commands rather than
+ *  risk a false positive, since a warning that fires on CORRECT usage is exactly
+ *  the noise the reviews complained about elsewhere in this tool.
+ *
+ *  - `export FOO=...` only warns if FOO is never referenced ($FOO / ${FOO})
+ *    anywhere else in this same call — using it later in the same call is
+ *    correct usage, not the mistake this warns about.
+ *  - `source foo` / `. foo` only warns when it is the LAST statement in the
+ *    call — chaining the command that needs it (`source venv/bin/activate &&
+ *    pytest`) already consumes it inside the same live shell. `./foo` (no space
+ *    after the dot) is a plain execution, not a source, and is intentionally NOT
+ *    matched — a subshell it runs in cannot export anything back to this shell
+ *    regardless. */
+function unpersistedEnvCulprits(command: string): string[] {
+  const culprits: string[] = [];
+  const exportRe = /\bexport\s+([A-Za-z_][A-Za-z0-9_]*)=/g;
+  let m: RegExpExecArray | null;
+  while ((m = exportRe.exec(command))) {
+    const name = m[1];
+    const usedElsewhere = new RegExp(`\\$\\{?${name}\\b`).test(command);
+    if (!usedElsewhere) culprits.push(`export ${name}`);
+  }
+  const statements = command
+    .split(/\n|;|&&|\|\|/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const last = statements[statements.length - 1];
+  if (last && /^(?:source|\.)\s+\S/.test(last)) {
+    culprits.push(last.length > 60 ? `${last.slice(0, 57)}...` : last);
+  }
+  return culprits;
 }
 
 /** Containment check for the scope guard. realpath both sides so a symlinked
@@ -202,8 +325,9 @@ function bashDescription(): string {
         // between calls, nothing else about the shell does.
         'ASYMMETRY: only the working directory persists. Environment variables, aliases, ' +
         'and shell functions do NOT carry to your next call (e.g. `export FOO=bar` here is ' +
-        'gone by your next call) — every call is a fresh shell that inherits your `cd` and ' +
-        'nothing else. ' +
+        'gone by your next call, unless you pass `persistent_env: true` to carry exported ' +
+        'vars — not aliases/functions — forward) — every call is a fresh shell that inherits ' +
+        'your `cd` and nothing else. ' +
         'Note that the other tools (Read/Edit/Write/Glob/Grep) resolve relative paths from the ' +
         'workspace root, NOT from this shell directory — prefer absolute paths with them. '
       : 'Each call starts fresh in the workspace directory — `cd` does NOT carry to the next call, ' +
@@ -315,6 +439,13 @@ export const BashTool = defineTool({
     command: z.string(),
     timeout: z.number().int().optional().describe('Timeout in milliseconds'),
     description: z.string().optional().describe('One line: what this command does'),
+    // Opt-in escape hatch (17/17 harness reviews across four rounds asked for
+    // this): default OFF so existing behavior (fresh env every call) is
+    // unchanged unless a call explicitly asks otherwise.
+    persistent_env: z
+      .boolean()
+      .optional()
+      .describe('Carry this call\'s exported env vars (not aliases/functions) to your next Bash call. Default off.'),
   }),
   caps: { maxChars: 30_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): Bash's own
@@ -341,6 +472,28 @@ export const BashTool = defineTool({
     // Such commands are malformed anyway; skipping restores the plain behavior.
     const shell = getShell();
     const probe = tracksCwdFor(shell) && !/(\\|&&|\|\||\|)\s*$/.test(args.command);
+    // Opt-in persistence only runs where the cwd probe already runs (real bash,
+    // no dangling operator) — same platform gate `tracksCwdFor` already applies
+    // to cwd tracking, not worth a second stateful mechanism on the PowerShell
+    // fallback. `captureEnv` (not the raw request flag) is what actually gates
+    // the warning below too, so a request that silently can't be honored still
+    // gets an honest "won't persist" note instead of a false all-clear.
+    const captureEnv = probe && args.persistent_env === true;
+    // The exact env this child is spawned with — process.env plus whatever a
+    // PRIOR persistent_env call already captured, minus nothing. Doubles as the
+    // diff baseline in finish(): only a var that changed FROM this becomes
+    // newly-persisted, so an ambient credential merely inherited from
+    // process.env (identical before/after) never crosses into shellEnv.
+    const shellEnvIn = ctx.shellEnv ?? {};
+    const spawnEnv = { ...process.env, ...shellEnvIn, NO_COLOR: '1', FORCE_COLOR: '0' };
+    // Warn at the moment of the mistake (17/17 harness reviews, more commonly
+    // requested than persistence itself): computed once, up front, since it
+    // depends only on the command text and whether persistence is actually
+    // active for this call — never on anything the child process does.
+    const envCulprits = captureEnv ? [] : unpersistedEnvCulprits(args.command);
+    const envNotice = envCulprits.length
+      ? `\nNote: ${envCulprits.join(', ')} won't persist to your next Bash call (env resets each call) — pass persistent_env: true to carry it forward, or use it in this same command.`
+      : '';
     return new Promise((resolve) => {
       // spawn() throws SYNCHRONOUSLY when the shell path or startCwd has a
       // non-directory prefix (e.g. a stale/deleted tracked cwd that raced past
@@ -349,12 +502,12 @@ export const BashTool = defineTool({
       // it escapes to defineTool as a bare `Bash failed: spawn <CODE>`.
       let child;
       try {
-        child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
+        child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command, captureEnv) : args.command], {
           cwd: startCwd,
           windowsHide: true,
           // Ask tools to emit plain output rather than stripping it after the fact
           // where possible — cleaner, and it keeps byte counts honest.
-          env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+          env: spawnEnv,
         });
       } catch (e: any) {
         resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
@@ -491,11 +644,22 @@ export const BashTool = defineTool({
           // sentinel included — see the cap() invariant: totalChars <=
           // HEAD_RETAIN_CHARS implies headBuf never dropped a single char).
           const sentinelSource = truncated ? tailBuf : headBuf;
-          const parsed = extractCwd(sentinelSource);
+          // Env sentinel is printed AFTER the cwd one (withCwdProbe), so it sits
+          // closer to the tail — extract it FIRST or its line stays stuck inside
+          // the cwd extraction's "rest" text instead of being stripped.
+          let working = sentinelSource;
+          let envFileFromStream: string | null = null;
+          if (captureEnv) {
+            const envParsed = extractEnvFile(working);
+            working = envParsed.text;
+            envFileFromStream = envParsed.envFile;
+          }
+          const parsed = extractCwd(working);
           sentinelOverhead = sentinelSource.length - parsed.text.length;
           if (truncated) tailBuf = parsed.text;
           else headBuf = parsed.text;
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
+          const envFilePath = captureEnv ? envFileFromStream ?? extractEnvFile(probeTail).envFile : null;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
             if (isInside(ctx.cwd, reported)) {
               reportedCwd = path.resolve(reported);
@@ -507,6 +671,28 @@ export const BashTool = defineTool({
               ctx.setShellCwd?.(ctx.cwd);
               resetTo = ctx.cwd;
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
+            }
+          }
+          // Opt-in persistence (17/17 harness reviews): read the temp file
+          // bash's own `mktemp` wrote — never the stdout/stderr stream — so a
+          // multi-KB env dump can never corrupt the command's own output or trip
+          // the truncation/spill path built for THAT. Deleted immediately after
+          // reading either way, so the full-environment snapshot it briefly held
+          // (same data any Bash call could already get by running `env` itself)
+          // doesn't linger on disk longer than it has to.
+          if (captureEnv && envFilePath) {
+            try {
+              const dump = parseEnvDump(fs.readFileSync(envFilePath, 'utf8'));
+              ctx.setShellEnv?.(diffPersistableEnv(dump, spawnEnv, shellEnvIn));
+            } catch {
+              // Best-effort: a vanished/unreadable temp file just means nothing
+              // new persists from this call — not worth failing the command over.
+            } finally {
+              try {
+                fs.unlinkSync(envFilePath);
+              } catch {
+                /* best-effort cleanup */
+              }
             }
           }
         }
@@ -585,7 +771,7 @@ export const BashTool = defineTool({
         // output)` restores that signal without duplicating `exit N`, which the
         // metadata line below already states.
         const combined = `${prefix}${body}`.trim() || '(no output)';
-        const text = (combined + notice).trim() + `\n[${meta.join(' · ')}]`;
+        const text = (combined + notice + envNotice).trim() + `\n[${meta.join(' · ')}]`;
         const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean } = {
           text,
           isError,

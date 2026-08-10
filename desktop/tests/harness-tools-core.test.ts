@@ -675,6 +675,84 @@ describe('Bash', () => {
     });
   });
 
+  // 17/17 harness reviews across four rounds (2026-08-01 through 2026-08-09)
+  // flagged the same thing: cwd persists between calls but env does not, and the
+  // failure is SILENT — the second call just runs without the state and nothing
+  // says why. Two fixes: a warning at the moment of the mistake, and an opt-in
+  // `persistent_env` escape hatch. Default behavior (env stays ephemeral) must
+  // not change — Opus 5 was the one dissenting voice defending that tradeoff.
+  describe('env-state warning + opt-in persistence (persistent_env)', () => {
+    function envTrackingCtx(root: string): ToolContext {
+      const c = makeCtx(root);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      c.setShellEnv = (next) => {
+        c.shellEnv = next;
+      };
+      return c;
+    }
+
+    it('warns when an exported var is never used in the same call', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar' }, ctx);
+      expect(r.text).toContain('export FOO');
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when the exported var is consumed in the same call (correct usage, not a mistake)', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar && echo $FOO' }, ctx);
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when persistent_env is on for that call', async () => {
+      const r = await BashTool.execute(
+        { command: 'export FOO=bar', persistent_env: true },
+        envTrackingCtx(dir),
+      );
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('warns on a bare `source` (the venv case) when nothing after it consumes the activation', async () => {
+      // No real venv needed — the warning fires on the shape of the command
+      // (a bare source/. as the last statement), not on venv-specific detection.
+      fs.writeFileSync(path.join(dir, 'act.sh'), 'export ACTIVATED=1\n');
+      const r = await BashTool.execute({ command: 'source act.sh' }, ctx);
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('a persistent_env call carries an exported var to the NEXT call', async () => {
+      const c = envTrackingCtx(dir);
+      const first = await BashTool.execute(
+        { command: 'export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      expect(first.isError).toBeFalsy();
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:abc123');
+    });
+
+    it('a normal call (no persistent_env) does NOT carry an exported var to the next call — default behavior unchanged', async () => {
+      const c = envTrackingCtx(dir);
+      await BashTool.execute({ command: 'export MY_TOKEN=abc123' }, c);
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:');
+      expect(second.text).not.toContain('abc123');
+    });
+
+    it('cwd persistence is unaffected by env persistence running in the same call', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = envTrackingCtx(dir);
+      await BashTool.execute(
+        { command: 'cd sub && export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      const second = await BashTool.execute({ command: 'pwd -W 2>/dev/null || pwd' }, c);
+      const secondOutput = second.text.split('\n[cwd:')[0].trim();
+      expect(secondOutput.replace(/\\/g, '/')).toContain('/sub');
+      expect(second.text).not.toMatch(/Shell cwd was reset/);
+    });
+  });
+
   it('an aborted signal kills the child', async () => {
     const ac = new AbortController();
     const actx = makeCtx(dir, ac.signal);
