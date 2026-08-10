@@ -492,6 +492,34 @@ const EMPTY_ROOT = /<div id="(?:root|app|__next)"\s*>\s*<\/div>/i;
  *  re-admits false negatives; nothing here should ever LOWER it. */
 const TEXT_DENSITY_FLOOR = 0.10;
 
+// --- empty-extraction honesty (2026-08-10 review, Claim 9 / DeepSeek finding) --
+// DeepSeek fetched a JS-heavy IntelliJ docs page and got back "Title: ..." with
+// NOTHING after it — isError: false, no jsNote (JS_APP_MARKERS/EMPTY_ROOT didn't
+// match that page's shell, so jsRenderDensity never fired). DeepSeek's own words:
+// "I'd prefer a 'here's the first N chars, it was truncated' so I can decide
+// whether to retry, rather than a blank I have to interpret as 'page is
+// JS-rendered.'" An empty body is honest (nothing was fabricated) but reads as
+// confidently as a real short-page result, a JS-render miss, and a genuine
+// extraction bug — three different situations the model has no way to tell apart.
+//
+// WHY this is a SEPARATE pair of thresholds, not a widening of TEXT_DENSITY_FLOOR
+// / JS_APP_MARKERS above (deliberate, per the verification doc's own
+// recommendation — "a low-content-length heuristic ALONGSIDE the existing
+// JS-render density check"): looksJsRendered's calibration is pinned by name
+// against two committed fixtures (vitest-config.html / asyncio.html, see the
+// `looksJsRendered` describe block below) — loosening its marker set or floor to
+// catch more pages risks silently flipping one of those. This check instead asks
+// a narrower, marker-independent question: did structured extraction (Readability
+// + turndown) come back thin despite the raw page carrying real visible text
+// somewhere? That's a fact measured about THIS response, not a guess about why.
+/** Extraction below this many characters is treated as "near-empty" — the
+ *  DeepSeek transcript's actual case was literally 0. */
+const MIN_EXTRACTED_CHARS = 40;
+/** Raw-page stripped-text length above which the page demonstrably carried real
+ *  text somewhere (even if Readability didn't keep it) — below this, "the page
+ *  itself is short" is a supported claim, not a guess. */
+const SUBSTANTIAL_PAGE_CHARS = 500;
+
 /** Core of the JS-render check, taking an already-computed stripped text so
  *  callers that need that text anyway (execute(), below) don't pay for a
  *  second stripToText() pass over the same html. */
@@ -844,12 +872,45 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
     // separately for the density check and for the KB figure in jsNote below —
     // compute it once here and pass it into both.
     const strippedRaw = stripToText(raw);
+    const jsRendered = jsRenderDensity(raw, strippedRaw);
+    // Fix (2026-08-10 review, Claim 9): the three-way split described in the
+    // MIN_EXTRACTED_CHARS/SUBSTANTIAL_PAGE_CHARS WHY comment above. `markdown`
+    // (not `body`) is the signal — `body` may already be sliced down to one
+    // #fragment section further below, which is short ON PURPOSE and not a
+    // gap to disclose.
+    const trimmedMarkdown = markdown.trim();
+    const extractedIsThin = trimmedMarkdown.length < MIN_EXTRACTED_CHARS;
+    const pageHadSubstantialText = strippedRaw.length >= SUBSTANTIAL_PAGE_CHARS;
     // Honest, non-committal disclosure: state what was observed, never guess what
     // is absent. Without this a JS-rendered docs page returns a confident preamble
     // and the model reports "the docs do not document X" (2026-08-01 review).
-    const jsNote = jsRenderDensity(raw, strippedRaw)
-      ? `\n\n[This page is a JavaScript-rendered app. The server sent ${(strippedRaw.length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. If a section you expected is absent, it is likely rendered client-side.]`
+    // When extraction is also thin, "a section may be missing" understates it —
+    // say plainly that NOTHING came back and give an actual next step (fix:
+    // Claim 9 — every other tool in this harness names a concrete alternative
+    // when it truncates; this is WebFetch's equivalent for a total miss).
+    const jsNote = jsRendered
+      ? `\n\n[This page is a JavaScript-rendered app${extractedIsThin ? ', and extraction found no readable content at all' : ''}. The server sent ${(strippedRaw.length / 1024).toFixed(1)} KB of text; content that loads in a browser is not included. ${
+          extractedIsThin
+            ? 'This tool cannot run that JavaScript, so there is nothing more to extract from this URL — try WebSearch for this topic, or look for an API endpoint or a server-rendered mirror of the page.'
+            : 'If a section you expected is absent, it is likely rendered client-side.'
+        }]`
       : '';
+    // Fix (2026-08-10 review, Claim 9): the two cases jsNote's marker+density
+    // heuristic can miss — confirmed against the actual DeepSeek transcript,
+    // where NEITHER JS_APP_MARKERS nor EMPTY_ROOT matched the fetched page, so
+    // jsNote stayed silent even though extraction came back empty. Mutually
+    // exclusive with jsNote (only meaningful when the JS-render heuristic did
+    // NOT already explain the gap).
+    const emptyExtractionNote = jsRendered || !extractedIsThin
+      ? ''
+      : pageHadSubstantialText
+        // The raw page measurably carried real text (title, nav, whatever) that
+        // never made it into the extraction, and the JS-render heuristic didn't
+        // fire — so the honest answer is "unclear", never a guessed cause.
+        ? `\n\n[Extraction returned almost no content (${trimmedMarkdown.length} characters), even though the page's raw HTML carried about ${Math.round(strippedRaw.length / 1024)} KB of text overall. It isn't clear why — this page doesn't show the signs of client-rendered content this tool checks for, so don't assume that's the cause. Try WebSearch for this topic, or refetch with a specific #section if the page has one.]`
+        // Both the extraction AND the raw page itself are small — genuinely
+        // little was ever there to find.
+        : `\n\n[This page's extracted content is short (${trimmedMarkdown.length} characters), and the page's raw HTML did not contain much more text either (${strippedRaw.length} characters total) — this looks like a genuinely short or mostly-empty page, not a fetch problem.]`;
     // A fragment on the request URL is a question about ONE section. Answer it
     // directly, and be explicit when we cannot.
     let fragmentNote = '';
@@ -874,7 +935,7 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
           : `\n\n[The HTML served for this URL contains no anchor named "#${hash}".]`;
       }
     }
-    const resultText = `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}`;
+    const resultText = `${header}${title ? `\nTitle: ${title}` : ''}\n\n${body}${fragmentNote}${jsNote}${emptyExtractionNote}`;
     // Fix (BLOCKER B1, round 5, 2026-08-06 review): this used to declare
     // `bounds: { shown: MAX_BODY_BYTES, total: null, unit: 'bytes' }` whenever
     // the network fetch hit the 5MB cap — but `resultText` here is the

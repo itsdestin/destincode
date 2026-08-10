@@ -883,6 +883,83 @@ describe('WebFetch', () => {
     expect(r.text).toContain('One');
     expect(r.text).toContain('Two');
   });
+
+  // --- empty-extraction honesty (2026-08-10 review, Claim 9 / DeepSeek finding) ---
+  //
+  // DeepSeek fetched an IntelliJ docs URL and got back "Title: ... " followed by
+  // NOTHING — isError: false, no jsNote disclosure (the existing marker+density
+  // heuristic didn't fire for that page). DeepSeek's own framing: "I'd prefer a
+  // 'here's the first N chars, it was truncated' so I can decide whether to retry,
+  // rather than a blank I have to interpret as 'page is JS-rendered'." An empty
+  // body is indistinguishable from a genuinely short page AND from a partial
+  // failure — three different situations reading identically. These three tests
+  // pin that they must now read differently, and that none of them ever assert a
+  // cause (e.g. "requires JavaScript") the code hasn't actually established.
+
+  it('says plainly when a page is genuinely short (little content anywhere, not a fetch problem)', async () => {
+    // Trivial real page: Readability finds no article (falls back to body
+    // innerHTML), and the WHOLE raw page — not just the extraction — carries
+    // almost no text. This must read as "this page is just short", not as a
+    // failure and not as a JS-rendering guess (there is no marker here at all).
+    const r = await fetchWith('<html><body><h1>Hi</h1></body></html>', 'https://example.com/tiny-page');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/short|mostly-empty/i);
+    expect(r.text).not.toMatch(/JavaScript-rendered/i);
+    expect(r.text).not.toMatch(/isn't clear why|is not clear why/i);
+  });
+
+  it('names the JS-rendered cause and gives a concrete next step when extraction is empty AND the JS-render heuristic fires', async () => {
+    // Shaped like the committed JS-shell fixtures (empty #__next root + a
+    // __NEXT_DATA__ marker + enough non-script markup to push density under the
+    // 10% floor) but with NO real body content anywhere, so Readability (and
+    // its whole-body fallback) come back empty. Unlike the plain jsNote
+    // disclosure on a partial page, a THIN extraction needs an actual next
+    // action, not just "a section may be missing" — the reviewers praised
+    // exactly this shape of advice on every other tool in this harness.
+    const filler = '<div class="pad-0123456789012345678901234567890123456789"></div>'.repeat(250);
+    const page = '<html><head><title>App Shell</title></head><body>' + filler
+      + '<div id="__next"></div>'
+      + '<script id="__NEXT_DATA__" type="application/json">' + JSON.stringify({ x: 'y'.repeat(500) }) + '</script>'
+      + '</body></html>';
+    const r = await fetchWith(page, 'https://example.com/js-shell-empty');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/JavaScript-rendered/i);
+    expect(r.text).toMatch(/WebSearch/); // concrete next step, house style
+    expect(r.text).not.toMatch(/short|mostly-empty/i);
+    expect(r.text).not.toMatch(/isn't clear why|is not clear why/i);
+  });
+
+  it('admits the cause is unclear when extraction is empty, the page had real text elsewhere, and the JS-render heuristic did NOT fire', async () => {
+    // Long <title> text (captured by the raw-text density check, but NEVER
+    // fed to Readability/turndown — document.body.innerHTML excludes <head>)
+    // paired with an empty <body>. Readability finds nothing, its fallback
+    // (body innerHTML) is empty, so extraction is thin — but the raw page
+    // plainly carried substantial text (the title), and neither JS_APP_MARKERS
+    // nor EMPTY_ROOT appears anywhere, so the existing heuristic correctly
+    // stays silent. This is the DeepSeek/IntelliJ shape: the honest answer is
+    // "extraction came back empty and it's not clear why" — NEVER "this page
+    // requires JavaScript", because nothing here established that.
+    const longTitle = 'word '.repeat(150); // 750 raw chars, well past the substantial-text floor
+    const page = `<html><head><title>${longTitle}</title></head><body></body></html>`;
+    const r = await fetchWith(page, 'https://example.com/unexplained-empty');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/isn't clear why|is not clear why/i);
+    expect(r.text).not.toMatch(/JavaScript-rendered/i);
+    expect(r.text).not.toMatch(/genuinely short|mostly-empty/i);
+    expect(r.text).toMatch(/WebSearch/); // still gets a concrete next step, house style
+  });
+
+  it('does not disturb the existing JS-render disclosure when extraction is NOT thin (regression floor)', async () => {
+    // vitest-config.html is the committed false-negative-page fixture: it DOES
+    // trip looksJsRendered, and normal extraction through it returns a
+    // non-trivial amount of markdown (real config-doc content), so this must
+    // keep the ORIGINAL "a section may be missing" phrasing, not the new
+    // empty-specific wording meant only for a thin extraction.
+    const r = await fetchWith(fixture('vitest-config.html'), 'https://example.com/vitest-config-full');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/JavaScript-rendered/i);
+    expect(r.text).toContain('If a section you expected is absent, it is likely rendered client-side.');
+  });
 });
 
 describe('looksJsRendered', () => {
