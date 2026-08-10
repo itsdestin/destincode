@@ -18,7 +18,7 @@
 // So the code contradicts its own documented invariant. These tests pin the
 // invariant, not the current behavior.
 import { describe, it, expect } from 'vitest';
-import { HarnessSession } from '../src/main/harness/harness-session';
+import { HarnessSession, truncateToolMessage } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { ModelMessage } from 'ai';
@@ -111,5 +111,73 @@ describe('fitToContext — never returns an empty message list', () => {
     const value = (tool.content as any[])[0].output.value as string;
     expect(value).toContain('truncated');
     expect(value.length).toBeLessThan(100_000);
+  });
+});
+
+// Task 18: fitToContext's own trim notice (via truncateToolMessage, its salvage
+// helper) hardcoded "Re-run with offset/limit, or use Grep" for EVERY tool's
+// oversized result — including Bash and WebSearch, which accept neither
+// parameter. This is the same defect the bounds contract removed from the
+// defineTool pipeline (registry.ts), on the path that fires when a single
+// result alone blows the context window, i.e. when the advice is most likely
+// to be read and acted on. These pin that the advice is now derived from
+// toolName instead of copy-pasted onto every result.
+describe('truncateToolMessage — advice matches the tool that produced the result', () => {
+  it('does not advise offset/limit for a tool that has neither parameter', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Bash',
+        output: { type: 'text', value: 'x'.repeat(50_000) },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000);
+    const value = (out as any).content[0].output.value;
+    expect(value).toContain('truncated');
+    expect(value).not.toContain('offset/limit');
+    expect(value).toMatch(/head|tail|narrower/i);
+  });
+
+  it('still advises offset for Read, which does accept it', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: { type: 'text', value: 'y'.repeat(50_000) },
+      }],
+    } as any;
+    const value = (truncateToolMessage(msg, 1_000) as any).content[0].output.value;
+    expect(value).toContain('offset');
+  });
+
+  it('states the true dropped count', () => {
+    const msg = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolName: 'Bash', output: { type: 'text', value: 'z'.repeat(10_000) } }],
+    } as any;
+    const value = (truncateToolMessage(msg, 2_000) as any).content[0].output.value;
+    // 10,000 in, `per` characters kept — the notice must name the real difference,
+    // never a rounded or invented figure.
+    expect(value).toMatch(/[\d,]+ more characters/);
+  });
+
+  it('says nothing extra for a tool absent from the hint map — a bare fact, not a guessed action', () => {
+    // docs/error-message-standards.md: specific+accurate or general+non-committal,
+    // never a plausible-sounding guess. A tool we don't have a real hint for must
+    // not get one invented for it.
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'SomeFutureTool',
+        output: { type: 'text', value: 'w'.repeat(50_000) },
+      }],
+    } as any;
+    const value = (truncateToolMessage(msg, 1_000) as any).content[0].output.value;
+    expect(value).toContain('truncated');
+    expect(value).not.toContain('offset/limit');
+    expect(value).not.toMatch(/re-run/i);
   });
 });

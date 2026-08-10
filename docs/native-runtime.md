@@ -36,7 +36,7 @@ Cloud-first slice: `~/.youcoded/` home, provider registry + keychain keys, `Harn
 Native sessions now write through the same Conversation Store (`conversations/service.ts`) CC sessions use, riding `sessionProvider='native'`. Full invariants (lane assertion, `PortableModelRef`, meta-write buffering) live in `docs/conversations.md` → "Native provider participation"; this is the native-runtime-specific surface.
 
 - **`session:get-meta`/`session:browse` are provider-aware on desktop IPC and the remote WS** — the 2026-07-19 hardcoded native refusal is retired. The renderer sentinel string survives the rename `NATIVE_META_UNSUPPORTED` → `META_UNSUPPORTED_FALLBACK` (still exercised by the Android stub below) rather than being deleted, so no renderer branch needed to change.
-- **Resume ALWAYS offers `NativeModelSelect`, pre-filled from the stored record's `lastUsedModel`.** This holds from every native-resume entry point (inline ResumeBrowser, MovedGate's `onResume`, ProjectView's `onResumeConversation` — the latter two pre-existing 3-arg callers wired through App.tsx's `pendingNativeResume` modal). The selection is applied as `resume(id, cwd, bindingOverride?)`'s `bindingOverride`, which wins over the stored header's binding, and is applied BEFORE the eager transcript load so the UI never flashes the stale binding.
+- **Resume ALWAYS offers the unified `ModelPicker` (`components/model/ModelPicker.tsx`, which replaced `NativeModelSelect`), pre-filled from the stored record's `lastUsedModel`.** This holds from every native-resume entry point (inline ResumeBrowser, MovedGate's `onResume`, ProjectView's `onResumeConversation` — the latter two pre-existing 3-arg callers wired through App.tsx's `pendingNativeResume` modal). The selection is applied as `resume(id, cwd, bindingOverride?)`'s `bindingOverride`, which wins over the stored header's binding, and is applied BEFORE the eager transcript load so the UI never flashes the stale binding.
 - **Auto-titling (`native-title-feeder.ts`) fires once, at the session's first `turn-complete`**, using the session's own bound model (`providerRegistry.languageModel` + `generateText`, 15s abort, max 3 attempts, synchronous in-flight guard). It writes through the store's title path exactly like a CC auto-title and never touches the native session's own JSONL — titles are store-only metadata, not part of the replay log.
 - **Takeover quiesces instead of interrupting** — see the `quiesce(id)` bullet above. The native session lease acquire (SessionStart-equivalent for native) is re-enabled behind `isSyncSpacesEnabled()` with warn-on-denied, mirroring the CC lease-acquire path; `pushMoved` now carries `provider` so the requester's resume flow launches the correct runtime.
 - **Android has none of this.** No Android Kotlin code reads the Conversation Store, `~/.youcoded/`, or `lastUsedModel` — native provider support is desktop-only as of M2 (Android's `session:browse`/`get-meta` still answer from the legacy `~/.claude/conversation-index.json` + local project scan only; see `SessionService.kt`).
@@ -119,6 +119,132 @@ earlier text or the code's own comments got wrong.
   `~/.claude` scan, which made the attached tool set depend on the machine: Ubuntu CI failed
   "expected 10 tools, got 11" while macOS, Windows and local all passed. `EMPTY_SKILL_CATALOG`
   is the default in both shared factories AND in the seven suites that build their own opts.
+
+## Tool output honesty (bounds contract, 2026-08-06)
+
+Branch `fix/harness-tool-honesty`, prompted by the 2026-08-01 multi-model harness
+review (`docs/active/investigations/2026-08-01-native-agent-harness-reviews.md` in
+the `youcoded-dev` workspace). Every native tool result may carry an optional
+`bounds` field (`desktop/src/main/harness/tools/types.ts`) instead of writing its
+own truncation sentence into `text`:
+
+```ts
+interface ResultBounds {
+  shown: number;
+  total: number | null;   // null = genuinely unknown (e.g. a walk that stopped early)
+  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results';
+  moreHint: string;       // this tool's own widening vocabulary, this call
+}
+```
+
+A tool sets `bounds` only on the call where it actually cut its own output.
+`defineTool` (`tools/registry.ts`) wraps every tool, truncates the result through a
+pipeline cap (`DEFAULT_CAPS.maxChars = 30_000` unless the tool declares its own
+`caps`), and hands both bounds — the tool's own and the pipeline's — to
+`composeNotice` (`tools/truncate.ts`), which renders **at most one** notice line
+appended to the text. `truncateOutput` itself only measures; it no longer writes
+advice — that was the bug (one hardcoded "Use offset/limit or a narrower query"
+string told every tool's caller the same thing, which is meaningless for Bash and
+WebSearch since neither accepts those parameters).
+
+**Two `moreHint`s, deliberately.** `bounds.moreHint` is per-call: it only exists
+when the tool bounded something on *this* result. `NativeTool.moreHint` lives on
+the tool definition instead of the result and is a static fallback, because the
+pipeline's own cap is a separate event with its own schedule — three cases found
+during implementation fire the pipeline cap with no tool-level `bounds` at all:
+content-mode Grep capped by `maxLines` (not `maxChars`, so nothing sets `bounds`),
+Glob capped by `maxChars` while its own hit count is under `RESULT_LIMIT`, and an
+oversized Skill body (Skill's `execute()` returns a SKILL.md file verbatim with no
+internal cap of its own). Without the static fallback, each of those handed the
+model a byte count and no way to widen. `composeNotice` uses `bounds.moreHint` when
+present, falls back to the tool's static `moreHint` only when `bounds` is absent,
+and prints nothing when neither exists — inventing advice is exactly the failure
+mode this contract removes.
+
+**Composition when both bounds can fire** (`composeNotice`):
+- Neither present → no notice line.
+- Pipeline cap only (no tool `bounds` this call) → `[output truncated: showing X of
+  Y chars — <static moreHint>]`, or no advice suffix at all if the tool declared
+  none.
+- Tool `bounds` only → `[showing S of T <unit> — <bounds.moreHint>]`, where `T`
+  renders as `at least S` when `total` is `null`.
+- Both → one line naming the pipeline cap first, then the tool's own bound, then
+  the tool's `moreHint` once — never two competing notices.
+
+**Each tool's widening vocabulary**, verbatim from its own file:
+
+| Tool | `moreHint` |
+|---|---|
+| Bash | `pipe through head -n 100, tail -n 100, or wc -l to narrow it` |
+| Grep | `narrow the pattern, add a glob filter, or use output_mode: "count"` |
+| Glob | `narrow the glob pattern or pass a more specific path` |
+| Read | static: `use offset and limit to read a smaller slice of the file`; the per-call `bounds.moreHint` instead interpolates the exact next offset, `use offset=N to continue` |
+| WebSearch | `narrow the query, or WebFetch a result to read it in full` |
+| WebFetch | `fetch a more specific URL, or a narrower section of the page` |
+| Skill | `load a narrower or different skill instead, or ask the user to split this oversized SKILL.md into smaller skills` |
+| Write, Edit, TodoWrite | none declared — each returns a fixed-shape one-line confirmation (Write/Edit's diff rides `structuredPatch`, which truncation never touches) that cannot approach the pipeline cap under normal use |
+| AskUserQuestion | none declared — `defineTool` never wraps it; the driver routes it straight to `askUser()` and `execute()` never runs |
+
+The exemptions are enumerated, not implicit, in `tests/tool-registry-manifest.test.ts`'s
+`BOUNDS_EXEMPT` map — a test in the same file asserts every exempted name is still a
+real, current tool, so a rename or removal can't leave a stale, vacuously-passing
+exemption behind.
+
+**What each bounded tool actually withholds**, briefly:
+- **Bash** counts every stdout/stderr byte with an unconditional counter and
+  retains a bounded head (22,000 chars) plus a rolling tail (6,000 chars), so the
+  reported total is the real command output size rather than the length of an
+  already-capped buffer (the earlier version reported the capped buffer's own
+  length as the "total", which was fabricated).
+- **Grep** does the same head/tail accounting (24,000 / 6,000 chars) for its own
+  stdout ceiling, and separately — per output mode — reports which files hit
+  ripgrep's own `--max-count` of 500 (meaningless in `files_with_matches` mode,
+  where `-l` stops at the first match per file, so it's skipped there).
+- **Glob** completes its directory walk under an internal 50,000-hit safety
+  ceiling, sorts every hit it found by mtime, and only then slices to the 2,000
+  hits it returns — so "sorted newest first" is actually true of the returned
+  list. `total` is `null` when the 50,000-hit ceiling itself was reached, since
+  the real count past that point was never counted.
+- **WebSearch** dedups results by normalized URL, caps each snippet at 500 chars,
+  and returns the first 8 of whatever's left.
+- **Read**'s bound is `more = offset - 1 + limit < totalLines` — true whenever the
+  requested slice stops before end of file.
+
+**WebFetch's own caps** (`tools/web-fetch.ts`): a 5 MB fetched-body cap
+(`MAX_BODY_BYTES`) always reports `total: null` for a truncated body, since the
+server never states how much more content exists past that point. Two structural
+guards run before Readability, because Readability's parse is roughly quadratic in
+DOM nesting depth and runs synchronously on Electron's main loop — a hang there
+can't be caught by `defineTool`'s try/catch, so nothing can recover once it starts:
+`MAX_TAGS = 15,000` (a raw count of `<` characters) and `MAX_DEPTH = 150` (a
+single linear forward tag-depth scan). A page that trips either guard gets a
+linear-scan plain-text fallback capped at `FALLBACK_CHAR_CAP = 200,000` characters,
+replacing the earlier hard refusal that left the model with nothing.
+
+**WebFetch's JS-shell detection.** An extraction-coverage ratio cannot tell a
+JS-rendered page from a normal one apart — the page that triggered this
+investigation (`vitest.dev/config/`) measured 70.3% Readability extraction
+coverage, indistinguishable from a known-good server-rendered page's 69.1%.
+Detection instead requires BOTH a framework marker
+(`__VP_HASH_MAP__|__NEXT_DATA__|__NUXT__|__remixContext|__sveltekit|window.__INITIAL_STATE__`,
+or an empty `<div id="root">`/`<div id="app">`/`<div id="__next">`) AND a
+visible-text-to-raw-bytes density under `TEXT_DENSITY_FLOOR = 0.10` (10%), where
+the denominator deliberately excludes `<script>`/`<style>` bytes so a routine
+hydration blob can't deflate the ratio on its own (including it would misfire on a
+normal server-rendered Next.js page). Measured against the two committed fixtures
+(`tests/fixtures/web/vitest-config.html`, `.../asyncio.html`): vitest-config — the
+actual JS-shell page from the original incident — measures 7.18% density and is
+flagged; asyncio.org, server-rendered with a near-identical 69% extraction
+coverage, measures 19.07% and is not flagged. A simulated SSR page carrying a large
+`__NEXT_DATA__` hydration blob measures 89.29% density under this
+script/style-excluded denominator versus 7.31% under the naive raw-byte
+denominator — confirming the exclusion is what keeps an ordinary hydration blob
+from producing a false positive.
+
+On a hit, WebFetch appends a non-committal note stating only what was directly
+observed (how much visible text the server actually sent) without guessing what is
+missing — never a categorical claim like "this section doesn't exist," since the
+tool has no way to know that from a shell it never rendered.
 
 ## MCP in native sessions (M3 item 4, phase 1)
 
