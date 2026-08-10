@@ -297,6 +297,157 @@ describe('chatReducer tool card duplication', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// A permission ask must render the input IT is about. Reported symptom: the
+// second AskUserQuestion of a session re-displayed the FIRST one's question
+// and options in chat view, while the terminal showed the correct one.
+//
+// PERMISSION_REQUEST binds a requestId to an existing card via a 3-tier match
+// (exact input → same name → any running tool) but never refreshed that card's
+// `input`. Tier 1 cannot match a *new* AskUserQuestion by construction — its
+// questions differ from every earlier ask — so whenever the hook beat the
+// transcript watcher (the documented ordering) tier 2 bound the new request to
+// an older AskUserQuestion card and rendered its stale questions.
+// ─────────────────────────────────────────────────────────────────────────
+describe('chatReducer permission ask renders the requesting tool input', () => {
+  const Q1 = { questions: [{ question: 'Which framework?', header: 'Framework', options: [{ label: 'React' }] }] };
+  const Q2 = { questions: [{ question: 'Which database?', header: 'Database', options: [{ label: 'Postgres' }] }] };
+
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  /** The card the given requestId is currently asking through. */
+  function cardFor(state: ChatState, requestId: string): ToolCallState | undefined {
+    return [...state.get('sess-1')!.toolCalls.values()]
+      .find((t) => t.requestId === requestId && t.status === 'awaiting-approval');
+  }
+
+  const perm = (requestId: string, input: unknown) => ({
+    type: 'PERMISSION_REQUEST' as const,
+    sessionId: 'sess-1', requestId, toolName: 'AskUserQuestion', input,
+  });
+
+  it('shows the NEW questions when a later ask binds to an earlier ask card', () => {
+    // Ask #1: transcript first, then hook, then answered. PERMISSION_RESPONDED
+    // returns the card to 'running' and it stays there until the watcher
+    // delivers its tool_result — a window in which it is still a match target.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+
+    // Ask #2: the hook beats the transcript, so no card for it exists yet.
+    state = chatReducer(state, perm('req-2', Q2) as any);
+
+    const card = cardFor(state, 'req-2');
+    expect(card).toBeDefined();
+    expect((card!.input as any).questions[0].question).toBe('Which database?');
+  });
+
+  it('does not strand an answered perm-* placeholder as a permanent match target', () => {
+    // Answering before the watcher delivers the tool_use breaks the synthetic
+    // merge in TRANSCRIPT_TOOL_USE (it required status 'awaiting-approval'), so
+    // the placeholder was never reclaimed, never received a tool_result, and
+    // stayed 'running' for the rest of the session — catching every later ask.
+    let state = initState();
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_1', result: 'answered', isError: false,
+    } as any);
+
+    const stranded = [...state.get('sess-1')!.toolCalls.entries()]
+      .filter(([id, t]) => id.startsWith('perm-') && t.status === 'running');
+    expect(stranded).toHaveLength(0);
+  });
+
+  it('does not let a later same-name tool_use steal an answered placeholder', () => {
+    // The reclaim widening must not swallow the EARLIER card: reclaiming by
+    // name alone would delete perm-req-1 and drop ask #2 into its timeline
+    // slot, erasing ask #1 from the transcript view entirely.
+    let state = initState();
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+    // Ask #2's tool_use lands before ask #1's did — different questions.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_2', toolName: 'AskUserQuestion', toolInput: Q2,
+    } as any);
+
+    const calls = state.get('sess-1')!.toolCalls;
+    expect(calls.has('toolu_ask_2')).toBe(true);
+    expect((calls.get('toolu_ask_2')!.input as any).questions[0].question).toBe('Which database?');
+    // ask #1's placeholder survives with its own questions intact
+    const ph = calls.get('perm-req-1');
+    expect((ph?.input as any).questions[0].question).toBe('Which framework?');
+  });
+
+  it('does not swap input onto a card matched by the any-running fallback', () => {
+    // Tier 3 matches a DIFFERENT tool name. Overwriting there would render
+    // Bash's name above AskUserQuestion's questions.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_bash_1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, perm('req-1', Q1) as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect((bash.input as any).command).toBe('ls');
+  });
+
+  it('does not blank a card when the hook omits tool_input', () => {
+    // hook-dispatcher.ts defaults a missing payload.tool_input to `{}`.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'none',
+    } as any);
+    state = chatReducer(state, perm('req-2', {}) as any);
+
+    const card = state.get('sess-1')!.toolCalls.get('toolu_ask_1')!;
+    expect((card.input as any).questions[0].question).toBe('Which framework?');
+  });
+
+  it('still prefers the exact-input match over an older same-name card', () => {
+    // Guards against "fixing" this by always overwriting input: when the real
+    // card for ask #2 already exists, the request must bind to THAT card.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_2', toolName: 'AskUserQuestion', toolInput: Q2,
+    } as any);
+    state = chatReducer(state, perm('req-2', Q2) as any);
+
+    const card = cardFor(state, 'req-2');
+    expect(card?.toolUseId).toBe('toolu_ask_2');
+    expect((state.get('sess-1')!.toolCalls.get('toolu_ask_1')!.input as any).questions[0].question)
+      .toBe('Which framework?');
+  });
+});
+
 // Remote-access hydration guards. Both invariants here are the kind that fail
 // silently in production — a wrong-looking timeline, or a chat that vanishes —
 // so they are pinned rather than left to manual verification.
