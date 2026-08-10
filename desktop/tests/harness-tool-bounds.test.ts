@@ -154,6 +154,117 @@ describe('filesAtMaxCount', () => {
   });
 });
 
+// New (2026-08-10 review): content-mode Grep was the harness's last oversized
+// tool result — a live run measured 17,860-17,898 chars from ONE search,
+// flagged by name (Grok 4.5). Per the prior-art doc's Grep-specific
+// recommendation (docs/active/investigations/2026-08-10-harness-output-
+// truncation-prior-art.md, "Grep / search-result policy"), a grep result's
+// value is COMPLETENESS of matches, so the fix caps by MATCH COUNT (~100),
+// not chars/lines — mirroring OpenCode's shipped 100-match cap.
+describe('Grep content mode: match-count cap', () => {
+  let dir: string;
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('caps content mode at 100 matches with an EXACT total when nothing else was dropped', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-matchcap-'));
+    // 400 matches, one file, well under both the 24k head-buffer window and
+    // ripgrep's own 500-per-file --max-count — so the ONLY thing that trims
+    // this result is our new match cap, and 400 is a real, measured total
+    // (not a floor), so bounds.total must be the exact number, not null.
+    const lines = Array.from({ length: 400 }, (_, i) => `export const MATCH_${i} = ${i};`);
+    fs.writeFileSync(path.join(dir, 'big.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content' }, makeCtx(dir));
+    expect(r.bounds).toEqual({
+      shown: 100,
+      total: 400,
+      unit: 'matches',
+      moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
+    });
+    // House style: the notice names real numbers, not a vague "truncated".
+    expect(r.text).toContain('showing 100 of 400 matches');
+    expect(r.text).toContain('narrow the pattern');
+    // Exactly 100 match lines actually present, not "up to" 100.
+    const shownLines = r.text.split('\n').filter((l) => /^big\.ts:\d+:export const MATCH_/.test(l));
+    expect(shownLines).toHaveLength(100);
+  });
+
+  it('reports an UNKNOWN total (never a false exact number) when ripgrep\'s own per-file cap also fired', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-matchcap-unknown-'));
+    // 600 matches in one file: ripgrep itself stops counting this file at its
+    // own 500-match --max-count BEFORE our 100-match display cap ever sees
+    // the rest, so the true total is unknowable from what we captured. The
+    // 2026-08-06 review's "total: null" precedent (composeNotice) applies:
+    // never claim an exact total when a DIFFERENT cap already excluded data.
+    const lines = Array.from({ length: 600 }, (_, i) => `MATCH line ${i}`);
+    fs.writeFileSync(path.join(dir, 'single.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', path: 'single.ts', output_mode: 'content' }, makeCtx(dir));
+    expect(r.bounds?.unit).toBe('matches');
+    expect(r.bounds?.shown).toBe(100);
+    expect(r.bounds?.total).toBeNull();
+    expect(r.text).toContain('more may exist — exact total unknown');
+    // The pre-existing per-file cap disclosure (filesAtMaxCount) must still
+    // fire independently of our new cap — preserved behavior, not replaced.
+    expect(r.text).toContain('Note:');
+    expect(r.text).toContain('single.ts');
+  });
+
+  it('never truncates a KEPT match\'s context, even when -C multiplies volume enough to trip the line-safety margin first', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-matchcap-context-'));
+    // 60 matches, each carrying 5 lines of context on both sides (-C 5 = 11
+    // content lines + 1 "--" group separator = 12 lines/match), spaced 40
+    // filler lines apart so ripgrep never merges neighboring context windows.
+    // 60 * 12 = 720 lines of REAL ripgrep output would sail past the 200-line
+    // safety margin (CONTENT_LINE_SAFETY in grep.ts) well before 100 matches
+    // are reached — this is the exact "-C legitimately multiplies volume"
+    // scenario the task flagged. The property under test: whichever match is
+    // the LAST one shown must have its FULL trailing context intact — a cap
+    // that silently ate context would be its own honesty problem.
+    const C = 5;
+    const NUM_MATCHES = 60;
+    const GAP = 40;
+    const fixtureLines: string[] = [];
+    for (let i = 0; i < NUM_MATCHES; i++) {
+      for (let b = C; b >= 1; b--) fixtureLines.push(`before_${i}_${b}`);
+      fixtureLines.push(`MATCH_${i}`);
+      for (let a = 1; a <= C; a++) fixtureLines.push(`after_${i}_${a}`);
+      for (let g = 0; g < GAP; g++) fixtureLines.push(`filler_${i}_${g}`);
+    }
+    fs.writeFileSync(path.join(dir, 'spaced.txt'), fixtureLines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH_', output_mode: 'content', '-C': C }, makeCtx(dir));
+
+    const shownIndices = [...r.text.matchAll(/MATCH_(\d+)/g)].map((m) => Number(m[1]));
+    expect(shownIndices.length).toBeGreaterThan(0);
+    const shownCount = shownIndices.length;
+
+    // The line-safety margin (not the 100-match cap) is what stopped this run.
+    expect(shownCount).toBeLessThan(100);
+    expect(shownCount).toBeLessThan(NUM_MATCHES);
+    expect(r.bounds?.shown).toBe(shownCount);
+    // Nothing beyond the ~200-line margin was silently dropped mid-file: the
+    // per-file cap never fired here (60 << 500), and the buffer never
+    // overflowed (720 real output lines is well under the 24k-char window),
+    // so the total is exact, not "unknown" — same honesty guarantee as above.
+    expect(r.bounds?.total).toBe(NUM_MATCHES);
+
+    // The defining assertion: the LAST shown match's full trailing context
+    // (all the way out to `after_<idx>_<C>`) is present...
+    expect(r.text).toContain(`after_${shownCount - 1}_${C}`);
+    // ...and the FIRST match past the cutoff is entirely absent — the cut
+    // landed cleanly at a group boundary, not mid-block.
+    expect(r.text).not.toContain(`MATCH_${shownCount}`);
+  });
+
+  it('leaves files_with_matches uncapped (path lists are cheap — per the prior-art doc)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-matchcap-fwm-'));
+    for (let i = 0; i < 150; i++) fs.writeFileSync(path.join(dir, `f${i}.ts`), 'export const MATCH = 1;\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'files_with_matches' }, makeCtx(dir));
+    expect(r.bounds).toBeUndefined();
+    expect(r.text.split('\n').filter(Boolean)).toHaveLength(150);
+  });
+});
+
 describe('Glob completeness', () => {
   let dir: string;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-cap-')); });

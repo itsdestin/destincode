@@ -51,19 +51,40 @@ describe('Task 19: pipeline cap fires with no tool-declared bounds, but advice s
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('content-mode Grep capped by maxLines (not maxChars) still carries widening advice', async () => {
+  it('content-mode Grep over 100 matches now self-bounds by match count, closing this gap at the SOURCE', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-maxlines-'));
-    // 400 matching lines in ONE file, ~6.7k chars total — the exact shape of the
-    // measured case: well under Grep's own 24k retention window (so `bounds`
-    // stays undefined — nothing was dropped at the byte level) but over
-    // caps.maxLines: 250, so the PIPELINE cap is the ONLY one that fires.
+    // 400 matching lines in ONE file — the exact shape of the case this test
+    // used to pin: well under Grep's own 24k retention window (nothing dropped
+    // at the byte level) but over caps.maxLines: 250, so at the time this was
+    // written the generic PIPELINE cap was the ONLY thing that fired, and Grep
+    // itself declared no bounds (the Task 19 gap).
+    //
+    // SUPERSEDED (2026-08-10 review, following the prior-art doc's Grep-
+    // specific recommendation): a live run measured 17,860-17,898 chars from
+    // ONE search — this exact shape — flagged by name (Grok 4.5). Grep now
+    // caps content mode by MATCH COUNT (~100) in grep.ts itself, so this
+    // scenario no longer reaches the generic pipeline fallback at all — it's a
+    // strictly better outcome (match-count semantics instead of a raw line
+    // count) but it DOES mean the old "bounds stays undefined" premise is now
+    // false. Updated to pin the new, better behavior rather than deleted,
+    // since the underlying fixture is still worth guarding.
     const lines = Array.from({ length: 400 }, (_, i) => `export const MATCH_${i} = ${i};`);
     fs.writeFileSync(path.join(dir, 'big.ts'), lines.join('\n') + '\n');
     const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content' }, makeCtx(dir));
     ALL_RESULTS.push(r.text);
-    // Confirms the actual gap: the TOOL saw nothing worth bounding.
-    expect(r.bounds).toBeUndefined();
-    assertAdviceNotBare(r.text);
+    expect(r.bounds).toEqual({
+      shown: 100,
+      total: 400,
+      unit: 'matches',
+      moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
+    });
+    // NOT assertAdviceNotBare(): that helper checks composeNotice's NO-BOUNDS
+    // branch ("[output truncated: showing N of M chars]"), which is exactly
+    // the branch this scenario used to hit and no longer does — Grep declares
+    // real bounds now, so composeNotice takes the bounds-present branch
+    // instead ("[showing N of M matches — hint]"). Assert that shape directly.
+    expect(r.text).toMatch(/\[showing 100 of 400 matches — narrow the pattern/);
+    expect(r.text).not.toMatch(BARE_NO_ADVICE);
     expect(r.text).toContain('narrow the pattern');
   });
 

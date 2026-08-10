@@ -6,6 +6,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { resolveP } from './guards';
+import type { ResultBounds } from './types';
 
 /** Resolve the ripgrep binary the tool will actually spawn.
  *
@@ -94,10 +95,121 @@ export function filesAtMaxCount(out: string, mode: string, maxCount = MAX_COUNT,
   return [...perFile.entries()].filter(([, n]) => n >= maxCount).map(([f]) => f);
 }
 
+// Fix (2026-08-10 review, following the prior-art doc's Grep-specific
+// recommendation — docs/active/investigations/2026-08-10-harness-output-
+// truncation-prior-art.md, "Grep / search-result policy"): content-mode Grep
+// was the harness's last oversized tool result — a live run measured
+// 17,860-17,898 chars from ONE pattern search, flagged BY NAME (Grok 4.5).
+// Bash's own fix (~4,000-char head+tail slice, see bash.ts/truncate.ts) does
+// NOT apply here: a grep result's value is COMPLETENESS of matches, and
+// silently dropping matches from the middle is a correctness risk, not just a
+// cost one — the model may believe it saw every occurrence. The doc's
+// recommendation (also OpenCode's shipped precedent: a hardcoded 100-match
+// cap, no byte cap) is to cap by MATCH COUNT instead, with an honest count of
+// what was omitted.
+const MAX_CONTENT_MATCHES = 100;
+// Safety margin under the generic pipeline's own `maxLines: 250` cap (below,
+// in GrepTool's `caps`) — WHY: a heavy -A/-B/-C value can blow past 250 lines
+// well before MAX_CONTENT_MATCHES matches are reached (e.g. -C 5 = 11 content
+// lines + 1 "--" separator = 12 lines/match; 100 matches = 1,200 lines).
+// Without also watching total lines here, the GENERIC pipeline cap in
+// registry.ts would fire on top of ours and middle-elide with an 80/20
+// head/tail split that can land mid-context — silently discarding the back
+// half of a context block we deliberately kept whole below. Stopping at 200
+// (not 250) leaves margin so OUR match-aware, context-preserving cut is what
+// the model actually sees; the generic cap becomes a rare last-resort backstop.
+const CONTENT_LINE_SAFETY = 200;
+
+/** Classify one line of ripgrep CONTENT-mode output.
+ *
+ *  WHY a repeated-delimiter regex, not `line.indexOf(':')` (this fix):
+ *  ripgrep's own format is POSITIONAL — a match line is `path:N:text` (or
+ *  bare `N:text` for a single-file target, matching filesAtMaxCount's own
+ *  singleFile branch above); a `-A`/`-B`/`-C` CONTEXT line is `path-N-text`
+ *  (or bare `N-text`) — same shape, hyphen instead of colon. A path
+ *  containing its own ':' or '-' (a Windows drive letter, a hyphenated
+ *  filename) can't produce a false match: requiring the SAME delimiter both
+ *  before and after a run of digits only lines up at the real line-number
+ *  field, and JS regex backtracking finds that position even past an earlier
+ *  false delimiter earlier in the line. A lone "--" is ripgrep's own group
+ *  separator between non-adjacent context windows. */
+function classifyContentLine(line: string, singleFile?: string): 'match' | 'context' | 'separator' | 'other' {
+  if (line === '--') return 'separator';
+  if (singleFile) {
+    const m = /^(\d+)([:-])/.exec(line);
+    if (!m) return 'other';
+    return m[2] === ':' ? 'match' : 'context';
+  }
+  const m = /^.*?([:-])(\d+)\1/.exec(line);
+  if (!m) return 'other';
+  return m[1] === ':' ? 'match' : 'context';
+}
+
+export interface ContentCapResult {
+  text: string;
+  /** Matches actually kept. */
+  matchesShown: number;
+  /** Matches present in `out` BEFORE capping — see the `total` honesty note
+   *  at the call site: this is only the TRUE global total when nothing else
+   *  (the char/line capture buffer, or ripgrep's own --max-count) already
+   *  trimmed `out` before this function ever saw it. */
+  matchesTotal: number;
+  truncated: boolean;
+}
+
+/** Trim CONTENT-mode ripgrep output to at most `maxMatches` matches, never
+ *  cutting a KEPT match's context short.
+ *
+ *  The cut only ever lands at a MATCH or SEPARATOR line — context lines
+ *  (from -A/-B/-C) are always let through once their match has been counted,
+ *  so an included match's full requested context is always intact. This also
+ *  means a single "group" with many matches close enough for ripgrep to merge
+ *  their context windows (no "--" between them) can push slightly past
+ *  `maxMatches` or `CONTENT_LINE_SAFETY` — accepted, because the alternative
+ *  (splitting mid-group) is the exact honesty problem this function exists to
+ *  avoid. Two independent stop conditions: `maxMatches` (the common case, no
+ *  or light context) and `CONTENT_LINE_SAFETY` (a heavy -C run that would
+ *  otherwise blow past hundreds of lines before reaching `maxMatches`
+ *  matches) — see CONTENT_LINE_SAFETY's own WHY comment above. */
+export function capContentMatches(out: string, maxMatches: number, singleFile?: string): ContentCapResult {
+  const lines = out.split('\n');
+  let matchesTotal = 0;
+  for (const line of lines) if (classifyContentLine(line, singleFile) === 'match') matchesTotal++;
+  // Fix: the short-circuit used to check ONLY matchesTotal, which misses the
+  // exact scenario CONTENT_LINE_SAFETY exists for — a heavy -C run can stay
+  // well under `maxMatches` matches while its context lines push `lines.length`
+  // past the line-safety margin (60 matches * (11 context + 1 separator) =
+  // 720 lines, way over 200, while 60 < 100 matches). Both conditions must
+  // hold for "nothing to cap" to be true.
+  if (matchesTotal <= maxMatches && lines.length <= CONTENT_LINE_SAFETY) {
+    return { text: out, matchesShown: matchesTotal, matchesTotal, truncated: false };
+  }
+  const kept: string[] = [];
+  let matchesShown = 0;
+  for (const line of lines) {
+    const kind = classifyContentLine(line, singleFile);
+    if (kind === 'match' || kind === 'separator') {
+      // Only a match/separator line can END the kept region — this is what
+      // guarantees a kept match's context (pure 'context'/'other' lines,
+      // which fall to the `else` below) is never partially included.
+      if (matchesShown >= maxMatches || kept.length >= CONTENT_LINE_SAFETY) break;
+      if (kind === 'match') matchesShown++;
+    }
+    kept.push(line);
+  }
+  return { text: kept.join('\n'), matchesShown, matchesTotal, truncated: true };
+}
+
 export const GrepTool = defineTool({
   name: 'Grep',
   description:
-    'Search file contents with a regex (ripgrep). output_mode: "content" (matching lines), "files_with_matches" (default), or "count".',
+    'Search file contents with a regex (ripgrep). output_mode: "content" (matching lines), "files_with_matches" (default), or "count". ' +
+    // Fix (2026-08-10 review — this fix, see MAX_CONTENT_MATCHES above): a
+    // live run measured 17,860-17,898 chars of content-mode output from ONE
+    // search, flagged by name (Grok 4.5). Stated here so the model knows the
+    // shape of the limit up front rather than discovering it after the call.
+    'In "content" mode, output stops after the first 100 matches (each with its full requested ' +
+    'context, never cut short) — narrow the pattern, add a `glob` filter, or use output_mode: "count" for an exhaustive total.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Search file contents with a regular expression.',
   // Fix (2026-08-10 review, item 5): `path`, `pattern`, and `output_mode` had
@@ -286,22 +398,63 @@ export const GrepTool = defineTool({
           resolve({ text: 'No matches found.' });
           return;
         }
+
+        // Fix (2026-08-10 review — this fix, see MAX_CONTENT_MATCHES above):
+        // content mode used to hand back everything up to the GENERIC
+        // pipeline caps (30,000 chars / 250 lines) with no bounds of its own —
+        // this is what let the 17,860-char case through. Cap by MATCH COUNT
+        // instead, computed on the ORIGINAL `out` (same input filesAtMaxCount
+        // already used above) so the per-file --max-count disclosure keeps
+        // working unchanged — only the DISPLAYED text is trimmed further.
+        let displayText = out;
+        let matchBounds: ResultBounds | undefined;
+        if (mode === 'content') {
+          const capResult = capContentMatches(out, MAX_CONTENT_MATCHES, singleFileLabel);
+          if (capResult.truncated) {
+            displayText = capResult.text;
+            matchBounds = {
+              shown: capResult.matchesShown,
+              // Only claim an EXACT total when NOTHING else already trimmed
+              // `out` before this ran: not the char/line capture buffer
+              // (`dropped`), and not ripgrep's own per-file --max-count
+              // (`capped.length`). Either one means capResult.matchesTotal is
+              // a FLOOR, not the real total — composeNotice's `total: null`
+              // path already renders "more may exist — exact total unknown"
+              // for exactly this case (2026-08-06 review precedent), so reuse
+              // it rather than inventing a number we didn't measure.
+              total: !dropped && capped.length === 0 ? capResult.matchesTotal : null,
+              unit: 'matches',
+              moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
+            };
+          }
+        }
+
         resolve({
           text: capped.length
-            ? `${out}\n\nNote: these files hit the ${MAX_COUNT}-matches-per-file limit and have more: ${capped.join(', ')}`
-            : out,
-          bounds: dropped
-            ? {
-                // Fix: `out.length` used to include the synthetic "\n[...]\n"
-                // separator (7 chars) inserted between head and tail — that
-                // separator is harness plumbing, not ripgrep output, so
-                // counting it overstated how much real content was shown.
-                shown: out.length - 7,
-                total: totalChars,
-                unit: 'chars' as const,
-                moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
-              }
-            : undefined,
+            ? `${displayText}\n\nNote: these files hit the ${MAX_COUNT}-matches-per-file limit and have more: ${capped.join(', ')}`
+            : displayText,
+          // matchBounds (content mode's own match-count cap) takes priority
+          // over the char-drop bounds below — when BOTH could apply (a
+          // pathological single huge match line blowing the char buffer AND
+          // exceeding the match cap), the match-count framing is the more
+          // useful and specific one for a search tool; the char-drop branch
+          // stays as the fallback for cases matchBounds never fires (e.g.
+          // files_with_matches/count modes, or a content search under 100
+          // matches whose lines are individually enormous).
+          bounds:
+            matchBounds ??
+            (dropped
+              ? {
+                  // Fix: `out.length` used to include the synthetic "\n[...]\n"
+                  // separator (7 chars) inserted between head and tail — that
+                  // separator is harness plumbing, not ripgrep output, so
+                  // counting it overstated how much real content was shown.
+                  shown: out.length - 7,
+                  total: totalChars,
+                  unit: 'chars' as const,
+                  moreHint: 'narrow the pattern, add a glob filter, or use output_mode: "count"',
+                }
+              : undefined),
         });
       });
     });
