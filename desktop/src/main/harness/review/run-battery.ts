@@ -60,6 +60,47 @@ export interface BatteryRun {
 // Promise.race below, unchanged by this fix).
 export const STEP_GATE_ALLOWANCE = 4;
 
+// Fix (2026-08-10 incident): HarnessSession passes `harness.limits?.maxTokens`
+// straight through to streamText's `maxOutputTokens` (harness-session.ts) with
+// NO fallback when it's unset — and ASSISTANT_PRESET (the shared preset every
+// real app session also uses) leaves `limits` undefined. With no explicit
+// ceiling, the OpenRouter request omits `max_tokens` entirely, and OpenRouter
+// falls back to reserving the MODEL's own advertised max output against the
+// account balance up front — 65,536 for Claude Opus 5. That is not "out of
+// credits": the account failed twice with "You requested up to 65536 tokens,
+// but can only afford 63293" while Opus's last SUCCESSFUL battery run used
+// only 8,379 output tokens in total, across the entire run. Real per-run
+// totals measured from live transcripts (turn-complete's data.usage.output-
+// Tokens, which HarnessSession accumulates across every step of the whole
+// run — see harness-session.ts's turnUsage): Opus 8,379 (prior successful
+// run), Qwen 3.8 Max 11,766, Deepseek v4 Flash 0731 9,530, GPT 5.6 Luna
+// 4,098, Grok 4.5 3,662 — and even each run's own final free-form review
+// message (the longest single step) never exceeded ~2,200 estimated tokens.
+// 32,000 is chosen as a ceiling with real headroom above every measured
+// number (≈2.7x the highest observed whole-run total) while staying under
+// half of the 65,536 that broke Opus, so the upfront reservation is no
+// longer wildly disproportionate to real spend.
+//
+// WHY here, not on ASSISTANT_PRESET: ASSISTANT_PRESET is shared configuration
+// used by every real app session (see harness-manifest.ts), so raising or
+// lowering it globally would change Destin's live app behavior — out of
+// scope for a battery-runner defect. This constant, and the harness object
+// below that layers it onto a COPY of ASSISTANT_PRESET, are runBattery-only;
+// they never touch the shared preset object or its live-app consumers.
+export const BATTERY_MAX_OUTPUT_TOKENS = 32_000;
+
+// A battery-only harness: same shape as ASSISTANT_PRESET (tools, permission
+// posture, prompt) but with an explicit output ceiling layered on top via a
+// fresh object — ASSISTANT_PRESET itself is a shared module-level const, so
+// mutating it in place would leak the override into every other consumer
+// (real app sessions included). Spreading `limits` too, not just replacing
+// it, keeps this forward-compatible if ASSISTANT_PRESET ever gains a
+// maxSteps override of its own.
+const BATTERY_HARNESS = {
+  ...ASSISTANT_PRESET,
+  limits: { ...ASSISTANT_PRESET.limits, maxTokens: BATTERY_MAX_OUTPUT_TOKENS },
+};
+
 export interface RunBatteryOpts {
   modelFactory: ModelFactory;
   modelId: string;
@@ -136,7 +177,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     {
       sessionId: `review-${Date.now()}`,
       cwd: fixtureRoot,
-      harness: ASSISTANT_PRESET,
+      harness: BATTERY_HARNESS,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
       tools: CORE_TOOLS,
       // Auto-approve everything decide() is consulted about. WHY this does NOT

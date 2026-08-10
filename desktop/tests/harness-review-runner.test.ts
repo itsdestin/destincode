@@ -4,7 +4,7 @@ import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS } from '../src/main/harness/review/run-battery';
 import { DEFAULT_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 
@@ -19,6 +19,39 @@ describe('makeOpenRouterFactory', () => {
     const factory = makeOpenRouterFactory('sk-test', 'moonshotai/kimi-k3');
     const model = await factory({ providerId: 'openrouter', modelId: 'moonshotai/kimi-k3' });
     expect(model).toBeTruthy();
+  });
+});
+
+// Regression test for the 2026-08-10 incident: OpenRouter reserves the FULL
+// requested max_tokens against the account balance up front, regardless of
+// actual usage. Leaving harness-session's maxOutputTokens unset (the
+// ASSISTANT_PRESET default) lets the provider fall back to the MODEL's own
+// max output — 65,536 for Claude Opus 5 — and the account failed twice with
+// "requested up to 65536 tokens, but can only afford 63293" even though
+// Opus's last successful battery run used only 8,379 output tokens total.
+// runBattery must send an explicit, proportionate ceiling instead of
+// inheriting that undefined-maximum behavior. Real HarnessSession.opts.harness
+// (ai/test's MockLanguageModelV4 records every doStream call's options in
+// doStreamCalls, which is how this proves the SENT value, not an inferred one).
+describe('runBattery output ceiling (2026-08-10 incident)', () => {
+  it('caps maxOutputTokens instead of leaving it unset (which lets OpenRouter reserve the model max)', async () => {
+    const model = scriptModel([{ text: 'Final review.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 5_000,
+    });
+
+    expect(run.review).toBe('Final review.');
+    expect(model.doStreamCalls.length).toBeGreaterThan(0);
+    for (const call of model.doStreamCalls) {
+      expect(call.maxOutputTokens).toBe(BATTERY_MAX_OUTPUT_TOKENS);
+    }
+    // The measured ceiling must stay well under a model's typical hosted max
+    // (65,536 was the number that broke Opus) so the upfront reservation is
+    // never absurd relative to real usage.
+    expect(BATTERY_MAX_OUTPUT_TOKENS).toBeLessThan(65_536);
   });
 });
 
