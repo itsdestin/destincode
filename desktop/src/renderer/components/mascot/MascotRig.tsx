@@ -247,12 +247,19 @@ export function MascotRig({
   // cursor and full refresh rate is genuinely the point. stepSpring integrates
   // real elapsed time (dt), so the handoff between cadences changes no physics.
   //
-  // Freeze-safety: the interval never stops; `rafActive` only decides who
-  // calls step(). Drag start is noticed on the next interval tick (≤33ms —
-  // imperceptible for a grab); the rAF chain retires itself the frame after
-  // `dragging` clears. If rAF is ever suspended mid-drag (window hidden), the
-  // interval resumes idle stepping as soon as `dragging` clears — no wake
-  // source can be missed because the interval IS the wake source.
+  // Freeze-safety: while the document is visible the interval never stops;
+  // `rafActive` only decides who calls step(). Drag start is noticed on the
+  // next interval tick (≤33ms — imperceptible for a grab); the rAF chain
+  // retires itself the frame after `dragging` clears. If rAF is ever suspended
+  // mid-drag, the interval resumes idle stepping as soon as `dragging` clears —
+  // no wake source can be missed because the interval IS the wake source.
+  //
+  // The one case where the interval DOES stop is a hidden document (see the
+  // startIdle/stopIdle pair below), and that is freeze-safe for the same
+  // reason: a drag cannot be in flight while hidden — the pointer can't be
+  // grabbing a window nobody is showing — so there is no in-progress gesture
+  // to strand, and `visibilitychange` itself is the wake source that restarts
+  // the interval (which then re-arms rAF if a drag has since begun).
   useEffect(() => {
     if (reducedEffects) return;
     const IDLE_TICK_MS = 33;
@@ -331,15 +338,47 @@ export function MascotRig({
       raf = requestAnimationFrame(rafTick);
       step(now);
     };
-    const interval = setInterval(() => {
+    const idleTick = () => {
       if (motionRef.current.dragging) {
         if (!rafActive) { rafActive = true; raf = requestAnimationFrame(rafTick); }
         return; // rAF owns step() while dragging — don't double-step
       }
       step(performance.now());
-    }, IDLE_TICK_MS);
-    step(performance.now()); // first paint immediately, not 33ms late
-    return () => { clearInterval(interval); cancelAnimationFrame(raf); };
+    };
+    // Pause idle motion while the document is hidden. The rig loops are
+    // character motion, so they are deliberately exempt from steps()
+    // quantization (juddery breathing is worse than the CPU) — which makes this
+    // gate the thing that keeps that exemption honest. Without it, a minimized
+    // window still presents ambient sway at the panel's full refresh rate
+    // forever. visibilityState, not focus: it stays 'visible' on a secondary
+    // monitor, where the user CAN still see the mascot. Matches the
+    // ThemeEffects pattern (ThemeEffects.tsx:243).
+    let idleTimer: ReturnType<typeof setInterval> | null = null;
+    const startIdle = () => {
+      if (idleTimer !== null) return;
+      // Reset the clock BEFORE the first tick. stepSpring integrates real
+      // elapsed time, so resuming after a 10-minute hide would otherwise feed
+      // it dt = 600000ms in one step and fling every spring off-model.
+      last = performance.now();
+      idleTimer = setInterval(idleTick, IDLE_TICK_MS);
+      step(performance.now()); // first paint immediately, not 33ms late
+    };
+    const stopIdle = () => {
+      if (idleTimer === null) return;
+      clearInterval(idleTimer);
+      idleTimer = null;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') startIdle();
+      else stopIdle();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (document.visibilityState === 'visible') startIdle();
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      stopIdle();
+      cancelAnimationFrame(raf);
+    };
   }, [reducedEffects, motionRef]);
 
   return (

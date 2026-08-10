@@ -548,6 +548,17 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     [data-wallpaper] [data-input-style='floating'] .framed-shell > .drawer-pane {
       backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
       -webkit-backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
+    }
+
+    /* A .bg-inset card INSIDE an already-blurred assistant bubble is a
+       redundant blur layer: it samples a backdrop that is already blurred, so it
+       adds almost nothing visually while costing a full blur re-rasterisation on
+       every repaint inside the card — including each frame of a hover fade. Same
+       shape as the drawer-tile bug this repo shipped twice (globals.css:1095-1129).
+       The bubble keeps its blur; only the nested layers drop out. */
+    [data-wallpaper] .in-view .assistant-bubble .bg-inset {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }` : '';
     // Slide polish: while the settings drawer is mid-slide we drop the blur
     // radius to ~30% so Chrome re-samples a much cheaper region per frame,

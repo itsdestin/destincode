@@ -111,4 +111,121 @@ describe('perpetual animations are frame-budgeted', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  // ── Blind spots closed 2026-08-07 ──
+  // The assertions below exist because a real violation
+  // (`animate-[version-glow_2s_ease-in-out_infinite]`, StatusBar.tsx) sat
+  // undetected in a suite written specifically to catch it. The inline-style
+  // sweep above only matches `animation: '...'` string literals, so a Tailwind
+  // arbitrary-value class is invisible to it, and CSS keyframes were asserted
+  // three-by-name rather than swept.
+
+  // Infinite animations that deliberately do NOT carry steps(), each with the
+  // reason. An entry here is a decision, not an oversight — adding one should
+  // take the same thought as quantizing the animation instead.
+  const ANIMATION_EXCEPTIONS: Record<string, string> = {
+    'rig-breathe': 'character motion — steps() reads as juddering; gated on visibilitychange instead (MascotRig)',
+    'rig-bounce-loop': 'character motion — see rig-breathe',
+    'rig-float-loop': 'character motion — see rig-breathe',
+    'rig-sleep-loop': 'character motion — see rig-breathe',
+    'rig-dizzy-sway': 'character motion — see rig-breathe',
+    'comp-twinkle': 'theme companion SVG — visibility-gated with the scene',
+    'comp-spin': 'theme companion SVG — 26s period, visibility-gated with the scene',
+    'comp-pulse': 'theme companion SVG — visibility-gated with the scene',
+    'comp-bob': 'theme companion SVG — visibility-gated with the scene',
+    'mascot-comp-float': 'theme companion float — visibility-gated with the scene',
+    'buddy-breathe': 'buddy window is alwaysOnTop so visibilitychange never fires, and quantizing breathing is visible; accepted cost of an opt-in feature',
+    'model-load-sweep': 'bounded by the model load, and already disabled by Reduced Effects + prefers-reduced-motion',
+  };
+
+  it('bans Tailwind arbitrary-value infinite animations without steps()', () => {
+    // `animate-[name_2s_ease-in-out_infinite]` never appears as an `animation:`
+    // property in TSX, so the inline sweep above cannot see it.
+    const { readdirSync, statSync } = require('fs') as typeof import('fs');
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((e: string) => {
+        const full = join(dir, e);
+        return statSync(full).isDirectory() ? walk(full) : full.endsWith('.tsx') ? [full] : [];
+      });
+    const offenders: string[] = [];
+    for (const f of walk(join(RENDERER, 'components'))) {
+      const src = readFileSync(f, 'utf8');
+      for (const m of src.matchAll(/animate-\[([^\]]*infinite[^\]]*)\]/g)) {
+        const name = m[1].split('_')[0];
+        if (!/steps\(/.test(m[1]) && !(name in ANIMATION_EXCEPTIONS)) {
+          offenders.push(`${f.split('/components/')[1]}: ${m[1]}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('sweeps every stylesheet for unbudgeted infinite animations', () => {
+    // Replaces three-by-name spot checks with an actual sweep, so a NEW
+    // infinite keyframe in any stylesheet has to be a deliberate decision.
+    const sheets = ['globals.css', 'mascot.css', 'buddy.css'];
+    const offenders: string[] = [];
+    for (const sheet of sheets) {
+      const css = read('styles', sheet);
+      for (const m of css.matchAll(/animation:\s*([\w-]+)([^;]*infinite[^;]*);/g)) {
+        const [, name, rest] = m;
+        if (!/steps\(/.test(rest) && !(name in ANIMATION_EXCEPTIONS)) {
+          offenders.push(`${sheet}: ${name}${rest}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('defines .stepped-hover and applies it to the dense hover surfaces', () => {
+    // The transcript hover fix (steps(4) scoped to .timeline-entry) generalises
+    // to any surface where many hover targets are swept by one pointer motion.
+    // These are the app's dense lists; a one-off button is deliberately NOT in
+    // scope — it animates once, and a smooth fade there is free.
+    const globals = read('styles', 'globals.css');
+    expect(globals).toMatch(/\.stepped-hover\s*\{[^}]*transition-timing-function:\s*steps\(/);
+    expect(globals).toMatch(/\.hover-lift\s*\{[^}]*steps\(/);
+    expect(globals).toMatch(/\.card-interactive\s*\{[^}]*steps\(/);
+
+    const settingRow = readFileSync(join(RENDERER, 'components', 'ui', 'SettingRow.tsx'), 'utf8');
+    expect(settingRow).toMatch(/ROW_BASE\s*=\s*'[^']*stepped-hover/);
+
+    const strip = readFileSync(join(RENDERER, 'components', 'SessionStrip.tsx'), 'utf8');
+    expect(strip).toMatch(/transition:\s*'opacity 150ms steps\(4\), background 150ms steps\(4\)'/);
+  });
+
+  it('transitions explicit properties on session pills, never `all`', () => {
+    // `transition: all` animates every animatable property that changes,
+    // layout properties included, and each one presents at the full refresh
+    // rate. Only transform/border-color/background-color change on these pills.
+    // Match the value, not `transition:` + value — the declaration is a
+    // multi-line ternary, so an adjacency regex passes vacuously.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).not.toMatch(/'all \d+ms/);
+  });
+
+  it('sweeps the model-load bar with transform, not left', () => {
+    // `left` is not compositable and forces a layout pass on every presented
+    // frame — the most expensive per-frame shape in the app, running for the
+    // whole duration of a local model load.
+    const globals = read('styles', 'globals.css');
+    const kf = globals.match(/@keyframes model-load-sweep\s*\{[^}]*\}[^}]*\}/);
+    expect(kf, '@keyframes model-load-sweep not found').toBeTruthy();
+    expect(kf![0]).toMatch(/translateX\(/);
+    expect(kf![0]).not.toMatch(/\bleft:/);
+  });
+
+  it('pauses mascot motion when the document is hidden', () => {
+    // The rig loops are character motion, so they are exempt from steps() in
+    // ANIMATION_EXCEPTIONS above. That exemption is only honest if they stop
+    // when nobody can see them. The interval must also reset its timestamp on
+    // resume, or stepSpring integrates the entire hidden period as one dt and
+    // the springs fling off-model on the first visible frame.
+    const rig = read('components', 'mascot', 'MascotRig.tsx');
+    expect(rig).toMatch(/visibilitychange/);
+    expect(rig).toMatch(/last\s*=\s*performance\.now\(\)/);
+
+    const mascotCss = read('styles', 'mascot.css');
+    expect(mascotCss).toMatch(/data-doc-hidden[^{]*\{[^}]*animation-play-state:\s*paused/);
+  });
 });

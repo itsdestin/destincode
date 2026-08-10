@@ -87,3 +87,14 @@ svg #rig-root.rig-dizzy-sway { transform-origin: 50% 85%; animation: rig-dizzy-s
 .mascot-scene[data-effects-off='1'] .mascot-comp * {
   animation: none !important;
 }
+
+/* Hidden document: stop the rig and companion keyframe loops. These are
+   character motion and so are exempt from steps() budgeting — this rule is what
+   makes that exemption honest, since an unpaused smooth loop presents at the
+   panel's full refresh rate whether or not anyone is looking.
+   Set by index.tsx on visibilitychange. */
+html[data-doc-hidden='1'] svg #rig-root,
+html[data-doc-hidden='1'] .mascot-comp,
+html[data-doc-hidden='1'] .mascot-comp * {
+  animation-play-state: paused;
+}

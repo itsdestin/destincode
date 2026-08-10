@@ -606,9 +606,15 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 /* Indeterminate progress bar (llama-server gives no load %). A highlight sweeps
    across the track. Reduced-effects users get a static filled track instead. */
+/* translateX, not `left` — `left` is not compositable and forces a layout pass
+   on every presented frame, which on a 180Hz panel is the most expensive
+   per-frame animation shape in the app. The element is width:35% of the track,
+   and translateX percentages are relative to the element's OWN width, so -100%
+   parks it fully off the left edge and 285.7% (100/35) clears the right edge.
+   Visually identical to the old `left` sweep. */
 @keyframes model-load-sweep {
-  0%   { left: -35%; }
-  100% { left: 100%; }
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(285.7%); }
 }
 .model-load-track {
   position: relative;
@@ -620,7 +626,9 @@ body[data-mode="buddy-chat"] #theme-bg {
   top: 0;
   bottom: 0;
   width: 35%;
-  left: -35%;
+  /* left:0 so the transform origin is the track's left edge — the keyframe's
+     translateX(-100%) now supplies the off-screen park the old `left:-35%` did. */
+  left: 0;
   border-radius: 9999px;
   background: var(--accent);
   animation: model-load-sweep 1.1s ease-in-out infinite;
@@ -630,15 +638,18 @@ body[data-mode="buddy-chat"] #theme-bg {
    `[data-reduced-effects]` (set on <html> by theme-engine.ts) had ZERO css rules
    gating on it: it was read only in JS by ThemeEffects and MascotRig, so turning
    Reduced Effects on left every CSS keyframe animation running.
-   `model-load-sweep` animates `left`, which is not compositable and forces a
-   layout pass every frame — worse per-frame than the opacity/transform cases
-   that layer promotion fixed, though it only runs while a model loads.
+   `model-load-sweep` now animates `transform: translateX()` (compositor-only);
+   it used to animate `left`, which forced a layout pass on every presented
+   frame. `transform: none` below is REQUIRED alongside `animation: none` —
+   cancelling the animation alone would leave the bar wherever its transform
+   last put it, which for a static full-width fallback must be untranslated.
    The declarations are duplicated across an attribute rule and a media block
    because CSS has no way to say "this selector OR this media condition" in one
    rule. Keep the two bodies identical when editing either. */
 [data-reduced-effects] .model-load-track::after {
   animation: none;
   left: 0;
+  transform: none;
   width: 100%;
   opacity: 0.5;
 }
@@ -646,6 +657,7 @@ body[data-mode="buddy-chat"] #theme-bg {
   .model-load-track::after {
     animation: none;
     left: 0;
+    transform: none;
     width: 100%;
     opacity: 0.5;
   }
@@ -665,7 +677,10 @@ body[data-mode="buddy-chat"] #theme-bg {
   top: 0;
   bottom: 0;
   width: 35%;
-  left: -35%;
+  /* left:0 for the same reason as .model-load-track::after — it shares the
+     model-load-sweep keyframe, which now parks the highlight off-screen with
+     translateX(-100%) instead of a negative `left`. */
+  left: 0;
   background: linear-gradient(
     90deg,
     transparent,
@@ -674,9 +689,12 @@ body[data-mode="buddy-chat"] #theme-bg {
   );
   animation: model-load-sweep 1.25s ease-in-out infinite;
 }
-[data-reduced-effects] .model-load-finalize::after { animation: none; opacity: 0; }
+/* transform:none alongside animation:none for the same reason as the track
+   fallbacks above — a cancelled animation must not leave the highlight
+   translated. Keep these two bodies identical. */
+[data-reduced-effects] .model-load-finalize::after { animation: none; transform: none; opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .model-load-finalize::after { animation: none; opacity: 0; }
+  .model-load-finalize::after { animation: none; transform: none; opacity: 0; }
 }
 
 /* Lightweight containment — skip layout/style for off-screen chat messages.
@@ -712,6 +730,29 @@ body[data-mode="buddy-chat"] #theme-bg {
    tailwindcss import. See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
 .animate-pulse { animation-timing-function: steps(8); }
 .animate-spin { animation-timing-function: steps(12); }
+
+/* Perf: frame-budget transcript HOVER transitions with the same steps() lever.
+   A hover fade is a smoothly-animating element, so it pays the exact per-frame
+   cost documented above: 150ms of `transition-colors` on a 180Hz panel is ~27
+   presented frames, and both enter AND leave transition. Sweeping the pointer
+   across a turn full of tool cards keeps a dozen overlapping fades permanently
+   alive — measured 2026-08-07 at ~33% of one core (renderer) while circling the
+   cursor over a tool-heavy conversation, with the compositor still presenting
+   at a full 180Hz and the GPU at 13%. That ruled out React (there is no JS
+   hover state anywhere in the transcript — hover is pure CSS) and ruled out
+   layout; the cost is paint driven by frame count.
+   Layer promotion is NOT the fix here — see the note above, it was measured
+   useless (29.8% -> 27.8%). Presenting fewer frames is the only lever that
+   works. steps(4) over 150ms = 4 discrete tint steps on a subtle hover
+   highlight, ~7x fewer frames for a change that is imperceptible at these
+   contrast levels.
+   Scoped to .timeline-entry so chrome affordances (buttons, drawers, pickers)
+   keep their smooth fades — those are hovered one at a time, not swept across
+   by the dozen. See docs/archive/investigations/2026-07-30-idle-cpu-burn.md */
+.timeline-entry .transition-colors,
+.timeline-entry .transition-opacity {
+  transition-timing-function: steps(4);
+}
 
 /* Status bar — transparent in framed mode (chrome-glass behind provides
    the visible chrome surface). Floating-chrome themes add the pill
@@ -1061,7 +1102,10 @@ body[data-mode="buddy-chat"] #theme-bg {
    property that `transition: transform` does NOT animate, which would make the
    lift snap instead of ease. */
 .hover-lift {
-  transition: transform 200ms ease;
+  /* steps(5), not ease — see the .stepped-hover note below. Grid cards are a
+     dense sweep surface, so a smooth 200ms scale here presents ~36 frames per
+     card crossed. */
+  transition: transform 200ms steps(5);
 }
 @media (hover: hover) {
   .hover-lift:hover {
@@ -1081,12 +1125,32 @@ body[data-mode="buddy-chat"] #theme-bg {
    Hover fill matches the SettingsRow family; :active goes one step deeper so a
    click reads as a press. */
 .card-interactive {
-  transition: background-color 120ms ease;
+  /* steps(4), not ease — see the .stepped-hover note below. */
+  transition: background-color 120ms steps(4);
 }
 @media (hover: hover) {
   .card-interactive:hover {
     background-color: var(--inset);
   }
+}
+
+/* Perf: frame-budget hover transitions on DENSE surfaces — lists and grids
+   where one pointer sweep crosses many targets at once, keeping a dozen
+   overlapping transitions alive continuously. Measured 2026-08-07 at ~33% of
+   one core while circling the cursor over a tool-heavy transcript, with the
+   compositor presenting a full 180Hz and the GPU at 13% — i.e. paint driven by
+   frame count, not load. Layer promotion does NOT help (see the steps() note
+   above: measured useless, 29.8% -> 27.8%); presenting fewer frames is the only
+   lever that works.
+   Deliberately NOT global: a one-off button animates once and its smooth fade
+   costs nothing worth reclaiming. Applied only where density x sweep is real —
+   the drawer tile grid, the file/marketplace grids, settings rows, and the
+   session dropdown. Unlayered so it beats Tailwind's `transition-*` utilities
+   (which live in @layer utilities) without !important.
+   steps(4) over 120-200ms is 4 discrete steps on a subtle tint: imperceptible
+   at these contrast levels, ~7x fewer presented frames. */
+.stepped-hover {
+  transition-timing-function: steps(4);
 }
 .card-interactive:active {
   background-color: var(--edge);
