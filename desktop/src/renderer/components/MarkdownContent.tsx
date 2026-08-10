@@ -9,11 +9,51 @@ import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
 import { Button } from './ui';
 import { FilepathToken } from './FilepathToken';
 
+/**
+ * Rehype plugin: tag every <code> that lives inside a <pre> with data-block.
+ *
+ * Fix: `code()` used to infer "inline" from the ABSENCE of a className, but a
+ * fenced block with no language (```\n…) gets no class from rehype-highlight
+ * either — so it was rendered with the inline-code styling while every
+ * languaged block got hljs styling. Two visibly different code blocks for the
+ * same markdown construct. The parent chain is the only reliable signal;
+ * react-markdown v10 dropped the `inline` prop it used to pass.
+ */
+const rehypeMarkBlockCode: Plugin<[], Root> = () => (tree: Root) => {
+  visitParents(tree, 'element', (node, ancestors) => {
+    const el = node as Element;
+    if (el.tagName !== 'code') return;
+    const inPre = ancestors.some(
+      (a) => a.type === 'element' && (a as Element).tagName === 'pre',
+    );
+    if (inPre) el.properties = { ...el.properties, 'data-block': 'true' };
+  });
+};
+
 // Stable plugin arrays — avoids re-creating on every render when sessionId
 // is absent (non-artifact contexts). When filepath detection is active,
 // the rehype plugin array is memoized per-sessionId in the component below.
 const remarkPluginsStable = [remarkGfm];
-const rehypePluginsStable = [rehypeHighlight];
+const rehypePluginsStable = [rehypeHighlight, rehypeMarkBlockCode];
+
+/**
+ * Collect the raw text of a hast subtree.
+ *
+ * Fix: the Copy button used to read `child.props.children` and only accepted a
+ * STRING, but rehype-highlight replaces the code element's single text node
+ * with a tree of <span>s the moment highlight.js recognises any token — so the
+ * button silently vanished on exactly the blocks worth copying (```json,
+ * ```python, any bash with a comment) and survived only on blocks the
+ * highlighter failed to tokenise. Reading the hast node instead is immune to
+ * whatever the highlighter did to the element tree.
+ */
+function hastText(node: unknown): string {
+  if (!node || typeof node !== 'object') return '';
+  const n = node as { type?: string; value?: string; children?: unknown[] };
+  if (n.type === 'text') return n.value ?? '';
+  if (Array.isArray(n.children)) return n.children.map(hastText).join('');
+  return '';
+}
 
 /**
  * Rehype plugin: walks hast text nodes that are NOT inside <code> or <pre>
@@ -142,28 +182,26 @@ const mdComponents = {
   em({ children, ...props }: any) {
     return <em className="italic text-fg-2" {...props}>{children}</em>;
   },
-  pre({ children, ...props }: any) {
-    let codeText = '';
-    React.Children.forEach(children, (child) => {
-      if (React.isValidElement(child) && child.props) {
-        const c = child as React.ReactElement<{ children?: React.ReactNode }>;
-        if (typeof c.props.children === 'string') {
-          codeText = c.props.children;
-        }
-      }
-    });
+  pre({ children, node, ...props }: any) {
+    // Text comes from the source AST, not the rendered children — see hastText.
+    const codeText = hastText(node);
     return (
       <div className="relative group my-3">
-        <pre className="rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm" {...props}>
+        {/* yc-code is the hook the globals.css rule needs to out-specify
+            highlight.js's own `pre code.hljs` box (see the .yc-code block
+            there). Don't drop it. */}
+        <pre className="yc-code rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm text-fg" {...props}>
           {children}
         </pre>
         {codeText && <CopyButton text={codeText} />}
       </div>
     );
   },
-  code({ className, children, ...props }: any) {
-    const isInline = !className;
-    if (isInline) {
+  code({ className, children, node, ...props }: any) {
+    // Block vs inline comes from the parent chain (rehypeMarkBlockCode), NOT
+    // from "has a className" — an unlanguaged fence has neither.
+    const isBlock = props['data-block'] !== undefined;
+    if (!isBlock) {
       return (
         <code className="text-sm text-code" {...props}>
           {children}
@@ -231,7 +269,7 @@ export default React.memo(function MarkdownContent({ content, sessionId }: Props
   //     remains stable across re-renders for the same session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rehypePlugins = useMemo(
-    () => sessionId ? [rehypeHighlight, rehypeFilepathTokens] : rehypePluginsStable,
+    () => sessionId ? [rehypeHighlight, rehypeMarkBlockCode, rehypeFilepathTokens] : rehypePluginsStable,
     // Intentionally omitting rehypeFilepathTokens from deps — it's stable (module-level function).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId],

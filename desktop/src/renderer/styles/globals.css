@@ -1156,6 +1156,28 @@ body[data-mode="buddy-chat"] #theme-bg {
   background-color: var(--edge);
 }
 
+/* highlight.js ships a container, not just token colors:
+     pre code.hljs { display:block; overflow-x:auto; padding:1em }
+     .hljs        { background:#ffffff; color:#24292e }   (#0d1117 in dark)
+   That painted a SECOND filled rectangle inside our own bordered <pre>, inset
+   by 1em — the "outer border" only languaged blocks had, because an
+   unlanguaged fence never gets the .hljs class. The hardcoded background also
+   ignored the theme entirely, so code blocks stayed github-white on Creme and
+   on every wallpaper theme.
+   We keep the .hljs-* TOKEN colors (ThemeProvider already swaps the light/dark
+   sheet) and reclaim the box: the container is ours and follows the theme.
+   Specificity matters here — applyHighlightTheme() appends its <style> to
+   <head> at RUNTIME, so it sits after this file in the cascade and wins any
+   tie. `pre.yc-code code.hljs` is (0,2,2) against their (0,1,2), so this wins
+   on specificity rather than order. Keep the .yc-code class on the <pre> in
+   MarkdownContent.tsx or these rules stop matching. */
+pre.yc-code code.hljs,
+pre.yc-code code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
 /* Command-drawer tiles opt OUT of glassmorphism.
    theme-engine.ts injects `[data-wallpaper] .layer-surface { backdrop-filter:
    blur(<panels-blur>px) ... }`, and change 22 moved every drawer tile (skill
