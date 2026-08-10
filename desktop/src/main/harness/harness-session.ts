@@ -201,7 +201,25 @@ export function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelM
 // user-fixable detail lives in the body. OpenRouter, for example, nests the
 // upstream reason at `error.metadata.raw` (e.g. "<model> is temporarily
 // rate-limited upstream. Please retry shortly, or add your own key…").
+// A "message" that is blank, or is the literal text '[object Object]', carries
+// zero information — the second case is what a naive `String(nonError)` or
+// `${nonError}` template interpolation produces (confirmed: runStreamOnce used
+// to do exactly that before the 2026-08-10 fix, and produced this literal
+// string as a real session-error's ENTIRE text). Treat both as "no message"
+// rather than parroting either back — error-message-standards.md requires
+// every user-facing error to be specific+accurate OR general+non-committal;
+// '[object Object]' is neither.
+function isUsableMessage(s: unknown): s is string {
+  return typeof s === 'string' && s.trim().length > 0 && s.trim() !== '[object Object]';
+}
+
 export function describeProviderError(err: any): string {
+  // A thrown value isn't always an object at all — `throw 'rate limited'` is
+  // legal JS and describeProviderError must not turn that into the generic
+  // fallback when the string itself is the real, useful detail.
+  if (typeof err === 'string') {
+    return isUsableMessage(err) ? err.trim() : 'The model request failed.';
+  }
   const api = err?.lastError ?? err;            // unwrap the retry wrapper
   const status = api?.statusCode ?? api?.status;
   let detail: string | undefined;
@@ -215,11 +233,13 @@ export function describeProviderError(err: any): string {
   })();
   const errObj = parsedBody?.error ?? parsedBody;
   detail = errObj?.metadata?.raw ?? errObj?.message ?? parsedBody?.message;
-  if (typeof detail === 'string' && detail.trim()) {
+  if (isUsableMessage(detail)) {
     return status ? `${detail.trim()} (provider error ${status})` : detail.trim();
   }
-  // No structured detail (network error, etc.) — the SDK message beats nothing.
-  return api?.message ?? err?.message ?? 'The model request failed.';
+  // No structured detail (network error, etc.) — the SDK message beats nothing,
+  // as long as it's not itself the poisoned '[object Object]' literal.
+  const sdkMessage = api?.message ?? err?.message;
+  return isUsableMessage(sdkMessage) ? sdkMessage.trim() : 'The model request failed.';
 }
 // Back-filled into a tool-result when a turn is interrupted mid-step (during a
 // permission ask). Every collected tool-call MUST get a matching tool-result or
@@ -1209,6 +1229,20 @@ export class HarnessSession extends EventEmitter {
       messages: this.fitToContext(this.history),
       maxOutputTokens: this.opts.harness.limits?.maxTokens,
       abortSignal: this.abort!.signal,
+      // Fix (2026-08-10 incident): streamText's DEFAULT onError is
+      // `({ error }) => console.error(error)` — Node's console.error on a raw
+      // Error/object prints its FULL shape (stack, statusCode, responseBody,
+      // and responseHeaders — which can include a set-cookie value) as a
+      // multi-line dump. That is exactly what the live roster run's CLI
+      // printed to the console for an OpenRouter 402: dozens of lines where
+      // one would do. describeProviderError() already extracts the real,
+      // bounded, actionable detail from ANY error shape (see below) — reuse
+      // it here so a stream failure logs ONE legible line instead of the
+      // SDK's raw dump. Not silenced: the failure is still visible, and the
+      // SAME error still reaches session-error via the 'error' case below.
+      onError: ({ error }: { error: unknown }) => {
+        console.error(`[harness] stream error: ${describeProviderError(error)}`);
+      },
     };
     // Only pass tools when there are any — keeps the no-tools path byte-identical
     // to v0 (no tool plumbing reaches the SDK).
@@ -1391,7 +1425,27 @@ export class HarnessSession extends EventEmitter {
             interrupted = true;
             break;
           case 'error':
-            throw part.error instanceof Error ? part.error : new Error(String(part.error));
+            // Fix (2026-08-10 Kimi K3 incident): a fullStream 'error' part's
+            // `.error` is NOT guaranteed to be an Error instance — the AI SDK
+            // hands back whatever the provider layer produced. The old
+            // fallback, `new Error(String(part.error))`, threw every useful
+            // field away: String() on a plain object always yields the
+            // literal text '[object Object]', which is exactly what reached
+            // the user as the session's ENTIRE error message that day — a
+            // real OpenRouter 402 ("This request requires more credits...")
+            // whose statusCode/message/data were already sitting on the
+            // object, just never read before being stringified into oblivion.
+            // Preserve them instead: copy the object's own fields onto a real
+            // Error (so downstream code that expects `instanceof Error` still
+            // works, e.g. withRetry's statusCode-based retry check) rather
+            // than collapsing it to a string first. describeProviderError()
+            // (send()'s catch, below) already knows how to read
+            // statusCode/responseBody/data/message off ANY shape.
+            throw part.error instanceof Error
+              ? part.error
+              : (part.error && typeof part.error === 'object'
+                ? Object.assign(new Error(), part.error as object)
+                : new Error(String(part.error)));
         }
       }
     } finally {
