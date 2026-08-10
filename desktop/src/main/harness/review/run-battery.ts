@@ -12,6 +12,8 @@ import { BATTERY_PROMPT } from './battery';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { AskRequest, AskDecision } from '../permission-broker';
 import type { SkillCatalog } from '../skills/skill-catalog';
+import type { ToolServices } from '../tools/types';
+import { ddgBackend } from '../search/backends/ddg';
 
 export interface BatteryRun {
   label: string;
@@ -47,6 +49,46 @@ const EMPTY_SKILL_CATALOG: SkillCatalog = {
     throw new Error(`no skills installed (review fixture): ${id}`);
   },
 };
+
+// Defect 2 fix: runBattery previously never passed `toolServices` at all, so
+// WebSearchTool's `if (!ctx.services?.search)` guard always tripped and every
+// live run reported "Web search is not wired for this session" — a false
+// finding, not a real harness limitation, and it left battery area 6 (Web)
+// permanently untestable.
+//
+// WHY the keyless DDG backend and not the full SearchService
+// (search-service.ts): SearchService wants a chain resolver + a key store,
+// neither of which this disposable Node-only fixture has any business
+// touching (constructing one would mean reading the app's saved
+// provider keys — exactly the live-app boundary this runner exists to stay
+// outside of, per the file's top-of-file WHY comment). The runner's only
+// credential is OPENROUTER_API_KEY, so the backend must need none — ddg is
+// the one entry in the chain (search/backends/) that qualifies. `ToolServices`
+// (tools/types.ts) is structural, so a minimal adapter satisfying
+// `search(query, signal): Promise<{results, source}>` is enough; ddgBackend's
+// real signature is `search(query, { key, signal, fetchImpl? })` returning
+// `SearchResult[]` directly, so the adapter is a plain shape translation, not
+// a workaround — `key: null` because ddg needs none, `fetchImpl` left
+// undefined so it falls through to ddgBackend's own default (the real global
+// `fetch`) in production, and is the one seam tests inject to avoid a live
+// DuckDuckGo request.
+//
+// Errors are NOT caught here. A DDG failure (rate-limit, network, markup
+// drift — see ddg.ts) throws SearchBackendError, which is not a
+// SearchUnavailableError, so WebSearchTool's own catch re-throws it and
+// defineTool's outer catch (registry.ts) turns it into
+// "WebSearch failed: <ddg's real message>" — DDG's own honest failure text,
+// never a guessed-at substitute (error-message-standards.md).
+export function makeReviewSearchServices(fetchImpl?: typeof fetch): ToolServices {
+  return {
+    search: {
+      async search(query: string, signal: AbortSignal) {
+        const results = await ddgBackend.search(query, { key: null, signal, fetchImpl });
+        return { results, source: ddgBackend.id };
+      },
+    },
+  };
+}
 
 export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   const fixtureRoot = seedFixtureWorkspace();
@@ -118,6 +160,11 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
         return { behavior: 'allow', updatedInput: { questions, answers } };
       },
       skillCatalog: EMPTY_SKILL_CATALOG,
+      // Defect 2 fix: without this, WebSearchTool's execute() always hits its
+      // `!ctx.services?.search` guard (harness-session.ts:1498 only spreads
+      // `services` when `toolServices` is set) — see makeReviewSearchServices'
+      // WHY comment above for the rest of the reasoning.
+      toolServices: makeReviewSearchServices(),
       // triggers absent → no path-triggered injection, same as every other
       // pre-M3 caller (HarnessSessionOpts.triggers doc comment).
     },
@@ -152,11 +199,33 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 
-  // The review is the model's final assistant text. `data.text` is already
-  // typed `string | undefined` (shared/types.ts) — the brief's `(e.data as
-  // any)?.text` cast was unnecessary.
+  // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
+  // throughout the WHOLE run, not one-per-message — the old comment here
+  // ("the model's final assistant text") was simply false about what the code
+  // below it did. It joined EVERY assistant-text event, so a live run's
+  // turn-by-turn narration ("I'll start by getting oriented...", "Now let me
+  // try...") got glued onto the front of the actual review with no separator
+  // (confirmed on the Kimi K3 run: 2,501 assistant-text events, 36% of the
+  // joined text was pre-review commentary).
+  //
+  // The model's real final message is whatever assistant-text it emits AFTER
+  // its last tool call finishes — verified against that same transcript:
+  // taking only the text after the last tool-result event yields exactly the
+  // review's true start ("I ran the full battery...") through its true end,
+  // nothing more. `data.text` is already typed `string | undefined`
+  // (shared/types.ts) — the brief's `(e.data as any)?.text` cast was
+  // unnecessary.
+  //
+  // Edge case: a model that answers without ever calling a tool has no
+  // tool-result to anchor on. `lastToolResultIndex` is then -1, and `i > -1`
+  // is true for every index, so the filter falls back to "every assistant-text
+  // event" — which in a no-tool-call run IS the whole (and only) message.
+  const lastToolResultIndex = events.reduce(
+    (last, e, i) => (e.type === 'tool-result' ? i : last),
+    -1,
+  );
   const review = events
-    .filter((e) => e.type === 'assistant-text')
+    .filter((e, i) => e.type === 'assistant-text' && i > lastToolResultIndex)
     .map((e) => e.data.text ?? '')
     .join('')
     .trim();
