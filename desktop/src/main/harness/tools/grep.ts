@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
-import { resolveP } from './guards';
+import { resolveP, shellCwdMissHint } from './guards';
 import type { ResultBounds } from './types';
 
 /** Resolve the ripgrep binary the tool will actually spawn.
@@ -368,7 +368,20 @@ export const GrepTool = defineTool({
         }
         // rg exit 1 = no matches (not an error); 2 = real error.
         if (code === 2) {
-          resolve({ text: grepErrorMessage(err, resolvedTarget, ctx.cwd), isError: true });
+          let msg = grepErrorMessage(err, resolvedTarget, ctx.cwd);
+          // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8
+          // Max — see guards.ts's WHY block above shellCwdMissHint): only worth
+          // checking when ripgrep's OWN message says the path is missing (the
+          // same test grepErrorMessage uses internally, just re-run here since
+          // grepErrorMessage's 3-arg signature is pinned by existing tests) — a
+          // regex-syntax exit-2 has nothing to do with cwd resolution, and
+          // firing there would be exactly the "wrong suggestion worse than
+          // none" failure mode the reviews warned about.
+          if (/No such file or directory|IO error for operation/i.test(err)) {
+            const hint = shellCwdMissHint(args.path ?? '.', ctx, (p) => fs.existsSync(p));
+            msg += hint;
+          }
+          resolve({ text: msg, isError: true });
           return;
         }
         // Fix (Critical 1, 2026-08-06 review): the old `dropped` check compared

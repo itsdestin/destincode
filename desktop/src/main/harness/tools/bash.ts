@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
+import { workspaceRootMissHint } from './guards';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
 
@@ -771,7 +772,28 @@ export const BashTool = defineTool({
         // output)` restores that signal without duplicating `exit N`, which the
         // metadata line below already states.
         const combined = `${prefix}${body}`.trim() || '(no output)';
-        const text = (combined + notice + envNotice).trim() + `\n[${meta.join(' · ')}]`;
+        // Requirement B / the harder mirror of Read-Glob-Grep's shellCwdMissHint
+        // (guards.ts): the shell's cwd persists across calls, so a `cd` several
+        // calls earlier can make a plain, previously-safe relative path
+        // suddenly miss with no clue why (Qwen 3.8 Max hit exactly this — a
+        // `cd config` several calls back turned `grep -n port config/app.toml`
+        // into a confusing ENOENT). The failure happens INSIDE the child
+        // process, so all the harness ever sees is a non-zero exit and the
+        // child's OWN stderr text, not a structured path error — deliberately
+        // narrow per the 2026-08-10 review requirement, to avoid a false "did
+        // you mean" on arbitrary command text: fires only when (a) this is a
+        // genuine non-zero close, not a timeout/abort/spawn-error prefix, (b)
+        // the output names a missing path in the ONE unambiguous coreutils
+        // shape (`tool: path: No such file or directory`), and (c) that exact
+        // path is CONFIRMED to exist under the workspace root.
+        let shellCwdMiss = '';
+        if (code != null && code !== 0 && !timedOut) {
+          const missingPathLine = /^[\w./-]+: ([^\n:]+): No such file or directory$/m.exec(combined);
+          if (missingPathLine) {
+            shellCwdMiss = workspaceRootMissHint(missingPathLine[1], startCwd, ctx, (p) => fs.existsSync(p));
+          }
+        }
+        const text = (combined + shellCwdMiss + notice + envNotice).trim() + `\n[${meta.join(' · ')}]`;
         const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean } = {
           text,
           isError,

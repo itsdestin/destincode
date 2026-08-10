@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import { z } from 'zod';
 import { defineTool } from './registry';
-import { canonicalize, resolveP } from './guards';
+import { canonicalize, resolveP, shellCwdMissHint } from './guards';
 
 const BINARY_SNIFF_BYTES = 8000;
 
@@ -66,7 +66,30 @@ export const ReadTool = defineTool({
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);
-    const st = fs.statSync(abs);
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(abs);
+    } catch (err: any) {
+      // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max —
+      // see guards.ts's WHY block above shellCwdMissHint): Read always resolves
+      // a relative path from the workspace root, but the model may have just
+      // `cd`-moved Bash's cwd and assumed Read followed it. Before letting the
+      // raw ENOENT stand alone, check whether the SAME path exists relative to
+      // the shell's actual persisted cwd — only ever named when confirmed on
+      // disk. Any other stat failure (permission, etc.) is unrelated to this
+      // asymmetry and falls through unchanged to defineTool's generic catch.
+      if (err?.code === 'ENOENT') {
+        const hint = shellCwdMissHint(args.file_path, ctx, (p) => {
+          try {
+            return fs.statSync(p).isFile();
+          } catch {
+            return false;
+          }
+        });
+        return { text: `Read failed: ${err.message}${hint}`, isError: true };
+      }
+      throw err;
+    }
     const sizeErr = readSizeError(st.size, args.file_path);
     if (sizeErr) return { text: sizeErr, isError: true };
     const buf = fs.readFileSync(abs);
