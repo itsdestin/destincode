@@ -1,7 +1,7 @@
 [
   { "label": "Kimi K3", "modelId": "moonshotai/kimi-k3" },
-  { "label": "DeepSeek v4", "modelId": "deepseek/deepseek-v4" },
+  { "label": "Deepseek v4 flash 0731", "modelId": "deepseek/deepseek-v4-flash-0731" },
   { "label": "Grok 4.5", "modelId": "x-ai/grok-4.5" },
-  { "label": "GPT 5.6", "modelId": "openai/gpt-5.6" },
+  { "label": "GPT 5.6 Luna", "modelId": "openai/gpt-5.6-luna" },
   { "label": "Claude Opus 5", "modelId": "anthropic/claude-opus-5" }
 ]
