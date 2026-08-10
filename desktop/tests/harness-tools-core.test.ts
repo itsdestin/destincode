@@ -788,6 +788,38 @@ describe('Glob', () => {
     const r = await GlobTool.execute({ pattern: '**/*.nomatch' }, ctx);
     expect(r.text).toBe('No files matched.');
   });
+
+  // Regression pin (2026-08-10 review, Claim 3): our hand-rolled glob->regex
+  // converter used to ESCAPE '{'/'}' as literal characters, so
+  // '**/*.{ts,kt,toml}' compiled to a regex requiring the literal substring
+  // ".{ts,kt,toml}" in the path -- no real file ever has that -- and the tool
+  // returned "No files matched." even though matching files existed. Two
+  // reviewing models hit this independently (Kimi K3, Grok 4.5); Kimi called
+  // it "the only result in the whole battery I'd call misleading" -- a false
+  // negative indistinguishable from a genuinely empty result. See
+  // docs/active/investigations/2026-08-10-harness-search-tools-prior-art.md item 1.
+  it('expands non-nested brace alternation ({a,b,c}), matching ripgrep/Claude Code semantics', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), '');
+    fs.writeFileSync(path.join(dir, 'b.kt'), '');
+    fs.writeFileSync(path.join(dir, 'c.toml'), '');
+    fs.writeFileSync(path.join(dir, 'd.json'), ''); // must NOT match
+    const r = await GlobTool.execute({ pattern: '**/*.{ts,kt,toml}' }, ctx);
+    expect(r.text).toContain('a.ts');
+    expect(r.text).toContain('b.kt');
+    expect(r.text).toContain('c.toml');
+    expect(r.text).not.toContain('d.json');
+  });
+
+  // Nested braces are NOT expanded, matching ripgrep's own pre-15.0.0
+  // restriction (the shape our converter follows). This is a documented
+  // limitation, not silent corruption -- same "fails loud with a
+  // plausible-looking zero-match" shape the tool already had, just narrowed
+  // to a rarer construct.
+  it('treats nested braces as unsupported rather than expanding them incorrectly', async () => {
+    fs.writeFileSync(path.join(dir, 'x.ts'), '');
+    const r = await GlobTool.execute({ pattern: '**/*.{a,{b,c}}' }, ctx);
+    expect(r.text).toBe('No files matched.');
+  });
 });
 
 describe('Grep', () => {
@@ -898,6 +930,88 @@ describe('Grep', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/could not start ripgrep/);
     expect(r.text).toContain(fileCwd); // the offending path is surfaced, not hidden
+  });
+
+  // Regression pin (2026-08-10 review, Claim 4): grep.ts used to pass
+  // `--max-count 500` to ripgrep ITSELF for every output_mode, including
+  // count -- so ripgrep stopped counting at 500 and the true total was never
+  // computed anywhere in the pipeline. 2,400 mirrors fixture-workspace.ts's
+  // BIG_MODULE generator (`Array.from({ length: 2_400 }, ...)`), verified by
+  // reading that file, not assumed.
+  it('count mode reports the true exhaustive total, not the 500-per-file cap', async () => {
+    const lines = Array.from({ length: 2_400 }, (_, i) => `export const value${i} = ${i};`);
+    fs.writeFileSync(path.join(dir, 'big.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'export const value', output_mode: 'count' }, ctx);
+    expect(r.text).toContain('2400');
+    expect(r.text).not.toContain(':500');
+  });
+
+  // Same shape as the filesAtMaxCount unit test in harness-tool-bounds.test.ts,
+  // exercised end-to-end: `path` naming a single FILE (not a directory) means
+  // ripgrep's single-file output format omits the filename column entirely, so
+  // the old parser silently never populated its per-file map and the "hit the
+  // limit" note never rendered -- same wrong number, minus the disclosure.
+  it('the cap-hit disclosure note fires for content mode even when path names a single file', async () => {
+    const lines = Array.from({ length: 600 }, (_, i) => `MATCH line ${i}`);
+    fs.writeFileSync(path.join(dir, 'single.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', path: 'single.ts', output_mode: 'content' }, ctx);
+    expect(r.text).toContain('Note:');
+    expect(r.text).toContain('single.ts');
+  });
+
+  // Compatibility gap flagged independently by two reviewing models (2026-08-10
+  // review): Claude Code exposes -A/-B/-C verbatim and we had no context
+  // parameter at all, forcing a follow-up Read after every Grep hit. Wired
+  // straight through to ripgrep, matching CC's exact parameter names (not a
+  // synthesized `context` field).
+  it('context lines: -C adds symmetric context around a match', async () => {
+    const lines = ['one', 'two', 'MATCH', 'four', 'five'];
+    fs.writeFileSync(path.join(dir, 'ctx.txt'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content', '-C': 1 }, ctx);
+    expect(r.text).toContain('two');
+    expect(r.text).toContain('MATCH');
+    expect(r.text).toContain('four');
+    expect(r.text).not.toContain('one');
+    expect(r.text).not.toContain('five');
+  });
+
+  it('context lines: -A and -B are independently honored', async () => {
+    const lines = ['one', 'two', 'MATCH', 'four', 'five'];
+    fs.writeFileSync(path.join(dir, 'ctx2.txt'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content', '-A': 2, '-B': 0 }, ctx);
+    expect(r.text).toContain('four');
+    expect(r.text).toContain('five');
+    expect(r.text).not.toContain('two');
+  });
+});
+
+// Regression pin (2026-08-10 review): DeepSeek reported "`path` for Grep is a
+// directory, but `path` on Glob is a base" -- verification REFUTED this: the
+// parameter means the identical thing (search-root directory) in both tools'
+// code. The confusion came from neither schema having a description at all,
+// letting the model infer a difference that isn't there. Fix the cause
+// (describe both, with the SAME string) rather than the symptom.
+describe('Grep/Glob schema descriptions', () => {
+  it('path means the same thing on both tools and both schemas say so, in the same words', () => {
+    const grepPath = GrepTool.inputSchema.shape.path;
+    const globPath = GlobTool.inputSchema.shape.path;
+    expect(grepPath.description).toBeTruthy();
+    expect(globPath.description).toBeTruthy();
+    expect(grepPath.description).toBe(globPath.description);
+  });
+
+  it('every Grep parameter has a description', () => {
+    const shape = GrepTool.inputSchema.shape;
+    for (const key of Object.keys(shape)) {
+      expect((shape as any)[key].description, key).toBeTruthy();
+    }
+  });
+
+  it('every Glob parameter has a description', () => {
+    const shape = GlobTool.inputSchema.shape;
+    for (const key of Object.keys(shape)) {
+      expect((shape as any)[key].description, key).toBeTruthy();
+    }
   });
 });
 

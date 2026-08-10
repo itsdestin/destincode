@@ -87,19 +87,47 @@ describe('Task 19: pipeline cap fires with no tool-declared bounds, but advice s
   // HEAD_CHARS/TAIL_CHARS rework closed the body-only overflow, but the cwd-reset
   // notice AND the metadata line both embed ctx.cwd a SECOND time, outside that
   // budget. A long workspace root can push the total past the pipeline's 30k cap
-  // while Bash's own head+tail capture stays comfortably inside its 28k budget —
+  // while Bash's own head+tail capture stays comfortably inside its budget —
   // this is the argument for a STRUCTURAL fix (tool-level static hint) over
   // fixing each tool's arithmetic again, which is exactly what got missed before.
+  //
+  // HISTORY (2026-08-06 review, when this test was written): Bash's own
+  // head+tail budget was ~28,000 chars at the time — just above this scenario's
+  // 27,000-char body — so Bash's own `dropped` flag stayed false and `bounds`
+  // stayed undefined, and ONLY the pipeline's 30,000-char cap could fire,
+  // because the reset notice + metadata trailer embed the ~2,300-char root
+  // TWICE, outside Bash's per-call budget.
+  //
+  // WHY the assertions below changed (2026-08-10 review): Bash's own cap was
+  // separately tightened from ~28,000 to ~4,000 chars — reviewers measured a
+  // `seq 1 20000` costing ~7k tokens of "pure noise... more expensive than
+  // everything else combined" at the old cap (see bash.ts's HEAD_CHARS_TARGET/
+  // TAIL_CHARS_TARGET WHY block). At 4,000 chars, Bash's own budget is now FAR
+  // below this scenario's 27,000-char body, so Bash declares its OWN bounds —
+  // {shown: 4_000, total: 27_000} — long before the trailer's extra ~5,000
+  // chars (the doubled root + reset notice + metadata) could matter: total
+  // response text stays under 10,000 chars end to end, nowhere near the
+  // 30,000-char pipeline cap. **The exact scenario this test used to reproduce
+  // is UNREACHABLE via Bash today** — the smaller per-call cap closed the gap
+  // by making Bash bound itself much earlier, not by changing the trailer's
+  // arithmetic (which is unchanged and still embeds the root twice).
+  //
+  // This test still earns its place as a GUARD, not just a fossil: if Bash's
+  // own cap is ever raised back above roughly 25,000 chars (i.e. back near
+  // this scenario's 27,000-char body), the gap reopens — Bash's own budget
+  // would again exceed the body, `bounds` would again go undefined, and the
+  // doubled-root trailer could again push the pipeline cap past 30,000 with no
+  // tool-declared bounds to fall back on.
   it.skipIf(process.platform !== 'linux')(
-    'Bash: a long workspace root pushes the cwd-reset trailer over the pipeline cap without Bash declaring bounds',
+    'Bash: the tightened ~4k cap makes Bash declare its own bounds on a 27k-char body, well before the doubled-root trailer could reach the pipeline cap',
     async () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-longroot-'));
       // Build a REAL, deeply nested directory so ctx.cwd itself is long — this
-      // reproduces the actual bug (the trailer embeds the genuine ctx.cwd, not a
-      // stand-in string the tool never touches). Linux-only: PATH_MAX headroom
-      // (4096) comfortably fits ~2.3k chars; macOS (1024) and Windows (MAX_PATH
-      // 260) impose OS-level limits that would make this an OS-specific
-      // reproduction, not evidence of the gap itself.
+      // reproduces the actual scenario (the trailer embeds the genuine
+      // ctx.cwd, not a stand-in string the tool never touches). Linux-only:
+      // PATH_MAX headroom (4096) comfortably fits ~2.3k chars; macOS (1024)
+      // and Windows (MAX_PATH 260) impose OS-level limits that would make this
+      // an OS-specific reproduction, not evidence of the underlying gap.
       let root = dir;
       const seg = 'a'.repeat(200);
       while (root.length < 2_300) {
@@ -108,22 +136,39 @@ describe('Task 19: pipeline cap fires with no tool-declared bounds, but advice s
         root = next;
       }
       const ctx = makeCtx(root);
-      // 27,000 chars of stdout: under Bash's own HEAD_CHARS + TAIL_CHARS budget
-      // (28,000 — see the WHY block above BashTool's HEAD_CHARS constant), so
-      // Bash's own `dropped` flag stays false and `bounds` stays undefined.
-      // `cd /` is genuinely outside this workspace root, so the scope guard
-      // fires and both the reset notice and the metadata line embed the
-      // ~2,300-char root TWICE — the thing the per-call HEAD/TAIL budget never
-      // accounted for.
+      // 27,000 chars of stdout — still nearly 7x Bash's OWN ~4,000-char
+      // visible budget, so Bash's own `dropped` check trips on the body alone
+      // now, independent of the trailer. `cd /` is genuinely outside this
+      // workspace root, so the scope guard still fires and the reset notice +
+      // metadata line still embed the ~2,300-char root TWICE — that part of
+      // the scenario is unchanged; it's just no longer enough to matter.
       const r = await BashTool.execute(
         { command: `cd / && node -e "process.stdout.write('x'.repeat(27000))"` },
         ctx,
       );
       ALL_RESULTS.push(r.text);
-      expect(r.bounds).toBeUndefined();
       expect(r.text).toMatch(/Shell cwd was reset to/);
-      assertAdviceNotBare(r.text);
-      expect(r.text).toContain('pipe through head -n 100');
+      expect(r.bounds).toEqual({
+        shown: 4_000,
+        total: 27_000,
+        unit: 'chars',
+        moreHint: expect.stringMatching(/\d+ lines? elided/),
+      });
+      // NOT assertAdviceNotBare(): that helper checks the OTHER composeNotice
+      // branch ("[output truncated: showing N of M chars]" — fires when the
+      // PIPELINE cap trips with no tool-declared bounds, Task 19's gap). Bash
+      // declares its own bounds here, so composeNotice takes the
+      // bounds-present branch instead ("[showing N of M chars — hint]") — a
+      // real notice with real advice, just a different shape. Assert that
+      // shape directly, and confirm the bare no-advice string is still absent
+      // either way.
+      expect(r.text).toMatch(/\[showing 4000 of 27000 chars — \d+ lines? elided/);
+      expect(r.text).not.toMatch(BARE_NO_ADVICE);
+      // The whole point of the recalibration: total response text (body +
+      // reset notice + metadata trailer + Bash's own notice) never approaches
+      // the pipeline's 30,000-char cap — verified at under half of it, with
+      // generous margin, so this doesn't become a new flaky boundary check.
+      expect(r.text.length).toBeLessThan(15_000);
     },
     30_000,
   );

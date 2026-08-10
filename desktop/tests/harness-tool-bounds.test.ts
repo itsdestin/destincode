@@ -139,6 +139,19 @@ describe('filesAtMaxCount', () => {
   it('never reports a cap in files_with_matches mode, where -l stops at the first hit', () => {
     expect(filesAtMaxCount('src/a.ts\nsrc/b.ts\n', 'files_with_matches', 500)).toEqual([]);
   });
+
+  // Regression pin (2026-08-10 review, Claim 4, GPT-5.6's specific call): ripgrep
+  // omits the filename column ENTIRELY when the search target IS a single file
+  // rather than a directory -- content-mode lines are bare "N:matchtext", not
+  // "file:N:matchtext". The old parser read the first colon-delimited token as
+  // the filename, so it silently treated each LINE NUMBER as a distinct "file"
+  // (never reaching maxCount under any one key) and the cap-hit disclosure note
+  // never rendered for single-file Grep calls, even though the same 500-match
+  // cap fired identically. Fixed by passing the known single-file label in.
+  it('names the single file when content-mode output has no filename prefix (single-file target)', () => {
+    const out = Array.from({ length: 500 }, (_, i) => `${i + 1}:hit`).join('\n');
+    expect(filesAtMaxCount(out, 'content', 500, 'src/big-module.ts')).toEqual(['src/big-module.ts']);
+  });
 });
 
 describe('Glob completeness', () => {

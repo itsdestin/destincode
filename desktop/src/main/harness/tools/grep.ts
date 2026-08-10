@@ -53,12 +53,32 @@ const MAX_COUNT = 500;
  *  WHY per-mode: --max-count means something different in each output mode, and
  *  in files_with_matches it cannot bind at all (`-l` stops at the first match).
  *  Reporting a cap there would be a false alarm; not reporting it in the other
- *  two modes is the silent truncation the 2026-08-01 review missed. */
-export function filesAtMaxCount(out: string, mode: string, maxCount = MAX_COUNT): string[] {
+ *  two modes is the silent truncation the 2026-08-01 review missed.
+ *
+ *  WHY `singleFile` (2026-08-10 review, item 3): ripgrep OMITS the filename
+ *  column entirely when the search target is a single file rather than a
+ *  directory — content-mode lines come back as bare "N:matchtext", not
+ *  "file:N:matchtext" (and count-mode as a bare "500", not "file:500"). The
+ *  parsing below reads the first colon-delimited token as the filename, so
+ *  without this it silently misread each LINE NUMBER as a distinct one-line
+ *  "file" (never reaching maxCount under any single key) — the cap-hit
+ *  disclosure note never rendered for single-file Grep calls, even though the
+ *  same cap fired identically. Pass the already-known target name in for that
+ *  case instead of trying to parse a filename that ripgrep never printed. */
+export function filesAtMaxCount(out: string, mode: string, maxCount = MAX_COUNT, singleFile?: string): string[] {
   if (mode === 'files_with_matches') return [];
   const perFile = new Map<string, number>();
   for (const line of out.split('\n')) {
     if (!line) continue;
+    if (singleFile) {
+      if (mode === 'count') {
+        const n = Number(line);
+        if (Number.isFinite(n)) perFile.set(singleFile, n);
+      } else {
+        perFile.set(singleFile, (perFile.get(singleFile) ?? 0) + 1);
+      }
+      continue;
+    }
     if (mode === 'count') {
       const at = line.lastIndexOf(':');
       if (at === -1) continue;
@@ -80,11 +100,25 @@ export const GrepTool = defineTool({
     'Search file contents with a regex (ripgrep). output_mode: "content" (matching lines), "files_with_matches" (default), or "count".',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Search file contents with a regular expression.',
+  // Fix (2026-08-10 review, item 5): `path`, `pattern`, and `output_mode` had
+  // no `.describe()` at all — DeepSeek inferred a (nonexistent) difference
+  // between Grep's `path` and Glob's `path` purely from that absence, since
+  // verification showed both mean the identical thing (the search-root
+  // directory) in code. `path` here uses the SAME wording as Glob's for that
+  // reason. `-A`/`-B`/`-C` (item 4) are named to match Claude Code's own
+  // parameter shape exactly, not a synthesized `context` field, since our
+  // tool surface is explicitly meant to mirror CC's.
   inputSchema: z.object({
-    pattern: z.string(),
-    path: z.string().optional(),
+    pattern: z.string().describe('Regular expression pattern to search for in file contents (Rust regex syntax, via ripgrep).'),
+    path: z.string().optional().describe('The directory to search in (relative to the working directory). Defaults to the current directory.'),
     glob: z.string().optional().describe('Filter files, e.g. "*.ts"'),
-    output_mode: z.enum(['content', 'files_with_matches', 'count']).optional(),
+    output_mode: z
+      .enum(['content', 'files_with_matches', 'count'])
+      .optional()
+      .describe('"content" prints matching lines, "files_with_matches" (default) lists file paths only, "count" reports an exhaustive match total per file.'),
+    '-A': z.number().int().nonnegative().optional().describe('Number of lines of context to show AFTER each match (like ripgrep/grep -A). Only affects output_mode: "content".'),
+    '-B': z.number().int().nonnegative().optional().describe('Number of lines of context to show BEFORE each match (like ripgrep/grep -B). Only affects output_mode: "content".'),
+    '-C': z.number().int().nonnegative().optional().describe('Number of lines of context to show before AND after each match (like ripgrep/grep -C). Only affects output_mode: "content".'),
   }),
   caps: { maxChars: 30_000, maxLines: 250 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): this is the
@@ -97,11 +131,29 @@ export const GrepTool = defineTool({
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const mode = args.output_mode ?? 'files_with_matches';
-    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git', '--max-count', String(MAX_COUNT)];
+    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git'];
+    // Fix (2026-08-10 review, item 2): `--max-count` used to be passed
+    // UNCONDITIONALLY, including for count mode — so ripgrep itself stopped
+    // counting a file at 500 matches, and the true total (e.g. 2,400 in the
+    // review battery's fixture) was never computed anywhere in the pipeline.
+    // That is not a display cap on an already-complete count; there was no
+    // real number to recover after the fact. Claude Code's count mode is an
+    // exhaustive total (its docs: the count "covers every match even when
+    // head_limit/offset truncate the listed entries"), so we only cap what is
+    // PRINTED (content/files_with_matches), never what is COUNTED.
+    if (mode !== 'count') rgArgs.push('--max-count', String(MAX_COUNT));
     if (mode === 'files_with_matches') rgArgs.push('-l');
     if (mode === 'count') rgArgs.push('--count');
     if (mode === 'content') rgArgs.push('-n');
     if (args.glob) rgArgs.push('--glob', args.glob);
+    // Fix (2026-08-10 review, item 4): straight pass-through to ripgrep's own
+    // flags, matching Claude Code's exact parameter names. Verified these are
+    // harmless no-ops when combined with --count/-l (ripgrep 15.0.0: `rg -C 1
+    // --count` still prints a bare count, `rg -C 1 -l` still lists just the
+    // path) — no need to gate these by output_mode ourselves.
+    if (args['-C'] != null) rgArgs.push('-C', String(args['-C']));
+    if (args['-A'] != null) rgArgs.push('-A', String(args['-A']));
+    if (args['-B'] != null) rgArgs.push('-B', String(args['-B']));
     // Hoisted so the exit-2 error message (below) can name the exact path that
     // failed, instead of a context-free "ripgrep error".
     const resolvedTarget = resolveP(args.path ?? '.', ctx.cwd);
@@ -126,6 +178,21 @@ export const GrepTool = defineTool({
     const searchTarget = rel === '' ? null : (!rel.startsWith('..') && !path.isAbsolute(rel) ? rel : resolvedTarget);
     if (searchTarget !== null) rgArgs.push('--', args.pattern, searchTarget);
     else rgArgs.push('--', args.pattern);
+    // Fix (2026-08-10 review, item 3): ripgrep drops the filename column
+    // entirely when the search target is a single FILE rather than a
+    // directory — filesAtMaxCount() (above) can't recover a name that was
+    // never printed, so give it the one we already know. `searchTarget` is
+    // guaranteed non-null here whenever this branch matters: the only way it
+    // is null is `rel === ''` (target IS ctx.cwd), and a cwd is always a
+    // directory, never a file. Best-effort: a race between rg exiting and
+    // this stat (file deleted mid-search) just means the note falls back to
+    // its prior (safe) behavior of not firing, not a crash.
+    let singleFileLabel: string | undefined;
+    try {
+      if (fs.statSync(resolvedTarget).isFile()) singleFileLabel = searchTarget ?? resolvedTarget;
+    } catch {
+      /* raced delete or genuinely gone — treat as not-a-single-file */
+    }
     return new Promise((resolve) => {
       // Two spawn defenses, both learned from `spawn ENOTDIR` (2026-07-20):
       //  1. `cwd: ctx.cwd` explicitly — never inherit the Electron main process's
@@ -207,7 +274,14 @@ export const GrepTool = defineTool({
         const joined = tailBuf ? `${head}\n[...]\n${tailBuf}` : head;
         const dropped = totalChars > joined.length;
         const out = joined.trim();
-        const capped = filesAtMaxCount(out, mode);
+        // Fix (2026-08-10 review, item 2/3): count mode no longer passes
+        // `--max-count` (see above), so it is exhaustive and there is nothing
+        // to disclose — calling filesAtMaxCount for it would be checking a
+        // cap that no longer applies. The disclosure note is still needed for
+        // content mode (files_with_matches never sets it; filesAtMaxCount
+        // already excludes that mode internally), where --max-count still
+        // caps what gets PRINTED.
+        const capped = mode === 'count' ? [] : filesAtMaxCount(out, mode, MAX_COUNT, singleFileLabel);
         if (!out) {
           resolve({ text: 'No matches found.' });
           return;

@@ -21,6 +21,25 @@ const WALK_CEILING = 50_000;
 //   '**'   crosses separators                                     → .*
 //   '*'    does not cross separators                              → [^/]*
 //   '?'    single non-separator char                              → [^/]
+//   '{a,b,c}' non-nested brace alternation                        → (?:a|b|c)
+//
+// Fix (2026-08-10 review, item 1 — braces): this converter used to ESCAPE '{'
+// and '}' as literal regex characters, so `**/*.{ts,kt,toml}` compiled to a
+// regex requiring the literal substring ".{ts,kt,toml}" in the path — no real
+// file ever has that, so the tool returned "No files matched." with zero
+// signal that the SYNTAX, not the search, was the problem. Two reviewing
+// models hit this independently; Kimi K3 called it "the only result in the
+// whole battery I'd call misleading." Claude Code supports braces because it
+// shells out to ripgrep, whose globset engine handles them natively — we stay
+// on this hand-rolled converter (rewriting Glob to shell to ripgrep would also
+// mean re-deriving mtime sort, WALK_CEILING, cancellation, and the external-
+// root path rebasing around a child process, none of which brace support
+// needs) and instead expand `{a,b,c}` into a regex alternation ourselves,
+// non-nested only — the same restriction ripgrep's own globset enforced
+// pre-15.0.0, so a plain extension list (the reported bug shape) is fully
+// supported and a nested construct fails the same loud, honest "No files
+// matched." it always did, rather than silently mismatching. See
+// docs/active/investigations/2026-08-10-harness-search-tools-prior-art.md item 1.
 function fileGlobToRegex(glob: string): RegExp {
   let rx = '';
   for (let i = 0; i < glob.length; i++) {
@@ -39,6 +58,23 @@ function fileGlobToRegex(glob: string): RegExp {
       }
     } else if (c === '?') {
       rx += '[^/]';
+    } else if (c === '{') {
+      const close = glob.indexOf('}', i + 1);
+      const inner = close === -1 ? '' : glob.slice(i + 1, close);
+      if (close !== -1 && !inner.includes('{')) {
+        // Recurse per alternative through this SAME converter so an
+        // alternative can itself contain '*'/'?' (e.g. "{a*.ts,b.kt}"), then
+        // strip the '^'/'$' anchors the recursive call adds before splicing
+        // into the surrounding alternation group.
+        const alts = inner.split(',').map((part) => fileGlobToRegex(part).source.slice(1, -1));
+        rx += `(?:${alts.join('|')})`;
+        i = close;
+      } else {
+        // No matching '}', or a nested '{' inside (unsupported — matches
+        // ripgrep's own restriction): fall through to the prior literal-
+        // escape behavior rather than guessing at a meaning.
+        rx += '\\{';
+      }
     } else if ('.+^${}()|[]\\'.includes(c)) {
       rx += '\\' + c;
     } else {
@@ -53,7 +89,19 @@ export const GlobTool = defineTool({
   description: 'Find files by glob pattern (e.g. "src/**/*.ts"). Returns paths sorted by modification time, newest first.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Find files matching a glob pattern, newest first.',
-  inputSchema: z.object({ pattern: z.string(), path: z.string().optional() }),
+  // Fix (2026-08-10 review, item 5): neither parameter had a `.describe()` at
+  // all, which let a model infer meaning (or a difference from Grep's `path`)
+  // it wasn't told. `path` uses the SAME wording as Grep's — verification
+  // showed they mean the identical thing (the search-root directory) in both
+  // tools' code; DeepSeek's "Grep's path is a directory but Glob's is a base"
+  // claim was refuted, and the fix for a model inferring a non-existent
+  // distinction is documenting both, identically, not renaming either.
+  inputSchema: z.object({
+    pattern: z
+      .string()
+      .describe('Glob pattern to match file paths against, e.g. "src/**/*.ts" or "**/*.{ts,tsx}". Supports *, **, ?, and non-nested {a,b,c} alternation.'),
+    path: z.string().optional().describe('The directory to search in (relative to the working directory). Defaults to the current directory.'),
+  }),
   // Bounds are now explicit here rather than borrowed from DEFAULT_CAPS, since
   // Glob's own cap (RESULT_LIMIT, above) is what actually decides how much text
   // comes back — the pipeline's char cap should not silently apply a different
