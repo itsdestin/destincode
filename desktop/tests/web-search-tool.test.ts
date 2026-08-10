@@ -40,4 +40,52 @@ describe('WebSearch tool', () => {
   it('permissionSubject is the query', () => {
     expect(WebSearchTool.permissionSubject({ query: 'abc' } as any)).toBe('abc');
   });
+  it('caps each snippet so one query cannot dump 30k of page text', async () => {
+    const long = 'word '.repeat(5_000);
+    const r = await WebSearchTool.execute({ query: 'q' } as any, ctxWith({
+      search: async () => ({ results: [{ title: 'T', url: 'https://a.example', snippet: long }], source: 'fake' }),
+    }) as any);
+    expect(r.text.length).toBeLessThan(2_000);
+    expect(r.text).toContain('…');
+  });
+  it('dedups results that share a URL', async () => {
+    const mk = (u: string) => ({ title: 'T', url: u, snippet: 's' });
+    const r = await WebSearchTool.execute({ query: 'q' } as any, ctxWith({
+      search: async () => ({ results: [mk('https://a.example/x'), mk('https://a.example/x/'), mk('https://b.example')], source: 'fake' }),
+    }) as any);
+    expect(r.text.match(/a\.example/g)).toHaveLength(1);
+  });
+  it('does NOT dedup URLs that differ only in path case (distinct resources)', async () => {
+    const mk = (u: string) => ({ title: 'T', url: u, snippet: 's' });
+    const r = await WebSearchTool.execute({ query: 'q' } as any, ctxWith({
+      search: async () => ({
+        results: [mk('https://en.wikipedia.org/wiki/JavaScript'), mk('https://en.wikipedia.org/wiki/javascript')],
+        source: 'fake',
+      }),
+    }) as any);
+    expect(r.text).toContain('/wiki/JavaScript');
+    expect(r.text).toContain('/wiki/javascript');
+    expect(r.text.match(/^\d+\. /gm)).toHaveLength(2);
+  });
+  it('DOES dedup URLs that differ only in host case (hostnames are case-insensitive)', async () => {
+    const mk = (u: string) => ({ title: 'T', url: u, snippet: 's' });
+    const r = await WebSearchTool.execute({ query: 'q' } as any, ctxWith({
+      search: async () => ({
+        results: [mk('https://GitHub.com/user/repo'), mk('https://github.com/user/repo')],
+        source: 'fake',
+      }),
+    }) as any);
+    expect(r.text.match(/^\d+\. /gm)).toHaveLength(1);
+  });
+  it('declares how many results it withheld, with an advice string it can honour', async () => {
+    const results = Array.from({ length: 20 }, (_, i) => ({ title: `T${i}`, url: `https://x${i}.example`, snippet: 's' }));
+    const r = await WebSearchTool.execute({ query: 'q' } as any, ctxWith({
+      search: async () => ({ results, source: 'fake' }),
+    }) as any);
+    expect(r.bounds?.shown).toBe(8);
+    expect(r.bounds?.total).toBe(20);
+    // WebSearch has neither an offset nor a limit parameter — it must never say so.
+    expect(r.bounds?.moreHint).not.toContain('offset');
+    expect(r.bounds?.moreHint).not.toContain('limit');
+  });
 });

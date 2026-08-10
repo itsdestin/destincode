@@ -39,3 +39,48 @@ The pinned version + per-platform asset table live in
 
 Each probe exits 0 on pass and prints the raw JSON it saw (that output is what
 goes into `engine-dependencies.md` entries).
+
+## Review harness
+
+`review-harness.mjs` drives a roster of cloud models through the same battery
+of agentic tasks (navigate, read, search, edit, bash, web) against YouCoded's
+native agent harness, and appends each model's free-form review to
+`docs/active/investigations/2026-08-01-native-agent-harness-reviews.md` in the
+workspace repo. It replaces the old workflow of copy-pasting a prompt by hand
+into five separate sessions.
+
+Build the compiled harness code first — the script imports `dist/`, never
+`src/`, so it never runs something different from what the app ships. Use
+`build:main` (plain `tsc`), not the full `build` script — `build` also runs
+`vite build` and `electron-builder` to package the whole desktop app, which is
+slow and fails outright on a machine not set up for packaging (e.g. missing
+`rpmbuild`), even though the harness files it needs are written by `tsc` in
+the first few seconds:
+
+```
+npm run build:main
+```
+
+Then:
+
+- `node test-engine/review-harness.mjs --dry-run` — prints the roster and the
+  full battery prompt without spending anything or requiring a key. Use this
+  to sanity-check the roster file before a real run.
+- `OPENROUTER_API_KEY=sk-... node test-engine/review-harness.mjs --only "Kimi K3"` —
+  runs a single model by its label from `review-roster.json`. The key is
+  required even for a single model — only `--dry-run` skips the check.
+- `OPENROUTER_API_KEY=sk-... node test-engine/review-harness.mjs` — runs the
+  whole roster. Requires an OpenRouter API key; the script refuses to start
+  without one and never writes the key to disk.
+
+Each model gets its own disposable fixture workspace (a small seeded project
+tree under `os.tmpdir()`, deleted after the run) so every model is tested
+against identical files and no model can see another's leftovers. The full
+event transcript for each model is saved to
+`docs/active/investigations/harness-review-runs/<date>/<model-slug>.json`
+**before** the review is appended to the doc, so any claim a review makes can
+be checked against what the harness actually returned. Those transcripts are
+git-ignored — the appended reviews are the durable record.
+
+One model failing (a bad API response, a timeout) does not stop the rest of
+the roster; the script prints the failure and moves on to the next model.

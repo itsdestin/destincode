@@ -8,9 +8,18 @@
 // the Plan B Task 13 review, where the manifest briefly listed WebSearch/
 // AskUserQuestion before they were registered.)
 import { describe, it, expect } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { CORE_TOOLS } from '../src/main/harness/tools';
 import { NATIVE_TOOL_NAMES, CONDITIONAL_TOOL_NAMES } from '../src/shared/harness-manifest';
 import { createSkillTool } from '../src/main/harness/tools/skill';
+import { GlobTool } from '../src/main/harness/tools/glob';
+import { ReadTool } from '../src/main/harness/tools/read';
+import { BashTool } from '../src/main/harness/tools/bash';
+import { GrepTool } from '../src/main/harness/tools/grep';
+import { WebSearchTool } from '../src/main/harness/tools/web-search';
+import { mcpToolsFor } from '../src/main/harness/mcp/mcp-tools';
 
 const registered = CORE_TOOLS.map((t) => t.name).sort();
 const advertised = [...NATIVE_TOOL_NAMES].sort();
@@ -59,5 +68,205 @@ describe('conditional tools stay OUT of the advertised set', () => {
 
   it('every conditional name is genuinely absent from the advertised set', () => {
     for (const name of CONDITIONAL_TOOL_NAMES) expect(advertised).not.toContain(name);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Guard (Task 14): the bounds contract applies to every tool, including ones
+// nobody has written yet. Two halves, both pinned here:
+//   (1) a tool that CAN cut its own output must set `bounds` on the call
+//       where it actually cut something (spec §2.3 / Task 1).
+//   (2) a tool that can be capped by the PIPELINE's own char limit (Task 19)
+//       must declare a static `moreHint` — the fallback composeNotice uses
+//       when the tool itself declared no `bounds` for that call. Without it,
+//       a capped result gives the model a byte count and no way to widen.
+// Both are "silent regression" bugs: nothing throws, nothing red-lines in a
+// manual test of the tool. Only a sweep across the whole registry catches
+// them, which is what makes this the guard for FUTURE tools, not just the
+// ones already fixed on this branch.
+
+// Tools that CANNOT exceed their cap, with the reason — verified against each
+// tool's own execute() on 2026-08-06, not copied from the brief unread.
+// Keeping exemptions LISTED (rather than an implicit "not tested") is the
+// point: the list is reviewable, and a wrong reason here is the same failure
+// mode as a wrong test — it hides a real gap instead of catching one.
+const BOUNDS_EXEMPT: Record<string, string> = {
+  // Not wrapped by defineTool at all (ask-user-question.ts) — the driver
+  // routes it straight to askUser() and execute() never runs, so neither
+  // half of the contract applies.
+  AskUserQuestion: 'interactive; defineTool never wraps it and execute() never runs',
+  // text is `Todo list updated: N items, M completed.` — depends only on the
+  // COUNT of todos in the call, never their content, so it cannot approach
+  // the 30k-char cap under normal use.
+  TodoWrite: 'returns a fixed-size acknowledgement, never file or process output',
+  // text is `Overwrote/Created ${file_path} (${content.length} chars).` — a
+  // one-line confirmation; the actual diff rides `structuredPatch`, which
+  // defineTool's truncation never touches.
+  Write: 'returns a one-line confirmation; the diff rides structuredPatch',
+  // text is `Edited ${file_path}.` — same shape as Write.
+  Edit: 'returns a one-line confirmation; the diff rides structuredPatch',
+  // The brief also exempted Skill here ("returns catalog text already bounded
+  // by the injection budget"). That description belongs to a DIFFERENT code
+  // path: native-session-host.ts's invokeSkill() (the /skill-name slash
+  // command) calls fitInjection() on the skill body before it ever reaches
+  // history. The Skill TOOL's own execute() (skill.ts) returns
+  // catalog.load(id).body VERBATIM through defineTool with no length cap of
+  // its own and no `bounds` — unlike Write/Edit/TodoWrite, its output scales
+  // with an arbitrary SKILL.md on disk, so it genuinely CAN exceed the
+  // pipeline's 30k-char cap. Corrected: removed from this list. See the
+  // dedicated test below, which now pins that skill.ts declares a static
+  // moreHint fallback for exactly this case.
+};
+
+describe('every bounded tool declares its bounds', () => {
+  it('exemptions are all real tools, so the list cannot rot', () => {
+    // Prevents a renamed or removed tool from silently keeping a stale
+    // exemption around, which would then apply to nothing (a check that
+    // always passes vacuously and gives false confidence).
+    const known = new Set([...NATIVE_TOOL_NAMES, ...CONDITIONAL_TOOL_NAMES]);
+    for (const name of Object.keys(BOUNDS_EXEMPT)) expect(known).toContain(name);
+  });
+
+  it('Bash, Grep, Glob, Read and WebSearch all declare bounds when driven past their cap', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bounds-manifest-'));
+    try {
+      for (let i = 0; i < 2_100; i++) fs.writeFileSync(path.join(dir, `f${i}.ts`), 'needle\n');
+      const ctx = { sessionId: 't', cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [] } as any;
+
+      // Glob: RESULT_LIMIT (2,000) < the 2,100 files just created, so the walk
+      // withholds real hits — the exact case `bounds` exists to describe.
+      const glob = await GlobTool.execute({ pattern: '*.ts' }, ctx);
+      expect(glob.bounds, 'Glob').toBeDefined();
+
+      // Read: limit:10 against a 5,000-line file leaves lines 11-5000 unread.
+      const big = path.join(dir, 'big.txt');
+      fs.writeFileSync(big, Array.from({ length: 5_000 }, (_, i) => `l${i}`).join('\n'));
+      const read = await ReadTool.execute({ file_path: big, limit: 10 }, ctx);
+      expect(read.bounds, 'Read').toBeDefined();
+
+      // Bash: 300,000 chars of stdout blows past the 22,000+6,000-char
+      // head/tail retention window bash.ts keeps under its own cap.
+      const bash = await BashTool.execute({ command: `node -e "process.stdout.write('q'.repeat(300000))"` }, ctx);
+      expect(bash.bounds, 'Bash').toBeDefined();
+
+      // Grep: content-mode output past the 24,000+6,000-char retention window.
+      // 480 matching lines (under grep.ts's own `--max-count 500`, so rg
+      // itself does not clip the match count first) at ~300 chars each pushes
+      // total stdout past ~64KB — big enough to span multiple pipe 'data'
+      // events, not just past the 30k-char cap. grep.ts's retention check
+      // (`if (head.length < 24_000) head += s`) runs BEFORE appending, so a
+      // single stdout chunk under ~64KB (Node's default highWaterMark) lands
+      // entirely in `head` regardless of size, and `dropped` never flips —
+      // the same head-cap "dead zone" bash.ts's own comment describes fixing
+      // for itself. Sized to actually cross a chunk boundary, not just the cap.
+      const grepFile = path.join(dir, 'grep-target.txt');
+      fs.writeFileSync(grepFile, Array.from({ length: 480 }, (_, i) => `needle line ${i} ${'x'.repeat(280)}`).join('\n'));
+      const grep = await GrepTool.execute({ pattern: 'needle', path: 'grep-target.txt', output_mode: 'content' }, ctx);
+      expect(grep.bounds, 'Grep').toBeDefined();
+
+      // WebSearch: needs its injected search service; return more than the
+      // 8-result display cap so `unique.length > shown.length`.
+      const manyResults = Array.from({ length: 20 }, (_, i) => ({ title: `r${i}`, url: `https://example.com/${i}`, snippet: 's' }));
+      const searchCtx = { ...ctx, services: { search: { search: async () => ({ results: manyResults, source: 'fake' }) } } };
+      const search = await WebSearchTool.execute({ query: 'q' }, searchCtx);
+      expect(search.bounds, 'WebSearch').toBeDefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it('the Skill tool declares a static moreHint fallback for its unbounded SKILL.md body', () => {
+    // This is the test the corrected exemption comment above points at. Skill's
+    // execute() (skill.ts) still returns an unbounded SKILL.md body with no
+    // per-call `bounds` — a large skill file can still hit defineTool's
+    // pipeline cap. skill.ts:51 now supplies the STATIC fallback (types.ts
+    // NativeTool.moreHint) for exactly that case, naming only the `skill`
+    // param this schema actually has (the "no tool advises a parameter its
+    // own schema does not accept" guard below would fail the build otherwise).
+    // This was a deliberately-red pin before that fix landed; it is now a
+    // green regression guard, not a documented gap.
+    const tool = createSkillTool({ list: () => [{ id: 'x', description: 'd' }], load: () => { throw new Error('unused'); } });
+    expect(tool.moreHint, 'Skill can exceed the pipeline cap (unbounded SKILL.md) and must keep declaring a static moreHint').toBeTruthy();
+  });
+
+  it('no tool advises a parameter its own schema does not accept', () => {
+    // The generalized form of the bug this whole branch exists to fix: the
+    // shared truncation string used to tell EVERY caller to "use
+    // offset/limit", which Bash and WebSearch do not accept, and two
+    // reviewing models followed it into a dead end. Covers `moreHint` too
+    // (Task 19's static fallback) — it is a user-visible advice string just
+    // like description/shortDescription, and can name a parameter on its own.
+    for (const tool of CORE_TOOLS) {
+      // zod v4's ZodObject exposes `.shape` directly (the `_def.shape()`
+      // accessor form was zod v3) — verified against the installed
+      // "zod": "^4.4.3" in package.json, not assumed from the brief's snippet.
+      const shape = (tool.inputSchema as any)?.shape ?? {};
+      const params = new Set(Object.keys(shape));
+      const advice = `${tool.description} ${tool.shortDescription ?? ''} ${tool.moreHint ?? ''}`;
+      for (const word of ['offset', 'limit']) {
+        if (advice.includes(word) && !params.has(word)) {
+          throw new Error(`${tool.name} mentions "${word}" but its schema has no such parameter (has: ${[...params].join(', ')})`);
+        }
+      }
+    }
+  });
+});
+
+// -----------------------------------------------------------------------
+// Guard (Task 19's own request): "Task 14's manifest guard asserts every
+// non-exempt tool declares [a static moreHint]." Separate from the
+// drove-past-cap tests above, which only exercise five tools directly — this
+// sweeps every CORE_TOOL so a future tool that CAN be capped but forgets its
+// static fallback fails here even before anyone constructs a case big enough
+// to trigger it.
+describe('every non-exempt CORE_TOOL declares a static moreHint', () => {
+  it('reuses BOUNDS_EXEMPT: a tool that can never approach the cap needs no fallback for it', () => {
+    for (const tool of CORE_TOOLS) {
+      // AskUserQuestion is `interactive` — the driver never runs its execute()
+      // via defineTool, so the pipeline cap (and thus moreHint) never applies.
+      if (BOUNDS_EXEMPT[tool.name] || tool.interactive) continue;
+      expect(tool.moreHint, `${tool.name} can exceed its cap but declares no static moreHint fallback`).toBeTruthy();
+    }
+  });
+});
+
+// -----------------------------------------------------------------------
+// BLOCKER fix (2026-08-06): every guard above sweeps CORE_TOOLS — the
+// statically-registered set (index.ts). MCP-derived tools (mcp-tools.ts) are
+// NOT in that array; they are built at runtime, one per server, from
+// mcpToolsFor(). A guard that can structurally only see CORE_TOOLS cannot
+// catch a whole tool FAMILY shipping with no static moreHint — which is
+// exactly what happened here: MCP tools inherited the pipeline's default cap
+// with no fallback, so a big response from ANY MCP server hit composeNotice's
+// bare no-advice branch. This block exercises mcpToolsFor() directly so a
+// future regression (a moreHint accidentally dropped from mcp-tools.ts) fails
+// a test instead of shipping silently again.
+describe('MCP-derived tools declare a static moreHint too (structural gap the CORE_TOOLS sweep above cannot see)', () => {
+  function fakeServer(toolNames: string[]) {
+    return {
+      id: 'test-server',
+      label: 'Test Server',
+      tools: toolNames.map((name) => ({ name, description: `desc for ${name}`, inputSchema: { type: 'object' } })),
+      call: async () => ({ text: '', isError: false }),
+    } as any;
+  }
+
+  it('every tool mcpToolsFor() wraps declares a non-empty moreHint', () => {
+    const tools = mcpToolsFor(fakeServer(['search', 'send_email', 'wipe_all']));
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.moreHint, `${tool.name} (MCP-derived) declares no static moreHint fallback`).toBeTruthy();
+    }
+  });
+
+  it('the MCP static hint never guesses a parameter name — the arguments belong to the SERVER schema, not this file', () => {
+    // Same failure mode the CORE_TOOLS guard checks for offset/limit, applied
+    // to MCP tools' own vocabulary risk: mcp-tools.ts never validates
+    // `rawInputSchema` (it is passthrough), so a hint that named a specific
+    // parameter would be a guess this file cannot back up.
+    const tools = mcpToolsFor(fakeServer(['search_threads']));
+    for (const tool of tools) {
+      expect(tool.moreHint).not.toMatch(/\boffset\b|\blimit\b/);
+    }
   });
 });
