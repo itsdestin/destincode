@@ -820,10 +820,39 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // When the hook arrives before the transcript, a synthetic entry is created
       // with awaiting-approval status. Replace it with the real tool, preserving
       // the permission state and group placement.
+      // Fix: a placeholder ANSWERED before the transcript caught up must still
+      // be reclaimed. PERMISSION_RESPONDED returns it to 'running', which used
+      // to make this merge condition false forever — the placeholder was never
+      // replaced, so no TRANSCRIPT_TOOL_RESULT (keyed on the real toolUseId)
+      // could ever close it, and it sat 'running' for the rest of the session
+      // catching every later PERMISSION_REQUEST of the same name via that
+      // matcher's tier-2 fallback and rendering ITS old input.
+      // Prefer an identical-input placeholder so two same-name asks in flight
+      // can't reclaim each other's card.
+      // An ANSWERED placeholder is only reclaimed on an exact input match. Its
+      // requestId is already spent, so name alone cannot tell "the tool_use I
+      // am still waiting for" from "a later same-name call" — and reclaiming
+      // the wrong one would delete the earlier card and drop the later tool
+      // into its timeline slot. A still-awaiting placeholder keeps the original
+      // name-only fallback: its requestId is live, so it IS the pending ask.
+      let syntheticFirst: string | null = null;
+      let syntheticExact: string | null = null;
+      const incomingInput = action.toolInput ? stableStringify(action.toolInput) : null;
+      for (const [synId, synTool] of toolCalls) {
+        if (!synId.startsWith('perm-')) continue;
+        if (synTool.toolName !== action.toolName) continue;
+        const answered = synTool.status === 'running';
+        if (synTool.status !== 'awaiting-approval' && !answered) continue;
+        const exact = incomingInput !== null && synTool.input
+          && stableStringify(synTool.input) === incomingInput;
+        if (exact) { syntheticExact = synId; break; }
+        if (!answered && syntheticFirst === null) syntheticFirst = synId;
+      }
+      const reclaimId = syntheticExact ?? syntheticFirst;
+
       let mergedSynthetic = false;
       for (const [synId, synTool] of toolCalls) {
-        if (synId.startsWith('perm-') && synTool.toolName === action.toolName
-            && synTool.status === 'awaiting-approval') {
+        if (synId === reclaimId) {
           // Replace synthetic with real tool, preserving permission state
           toolCalls.delete(synId);
           toolCalls.set(action.toolUseId, {
@@ -1138,6 +1167,21 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           ...tool,
           status: 'awaiting-approval',
           requestId: action.requestId,
+          // Fix: the card must show the input THIS request is about. Tier 2
+          // binds to a card matched only by NAME, so its input belongs to an
+          // earlier call — that is how the second AskUserQuestion of a session
+          // re-displayed the first one's question and options while the
+          // terminal showed the correct one. For AskUserQuestion this is a
+          // correctness bug, not just a cosmetic one: AskUserQuestionCard
+          // echoes tool.input.questions back in updatedInput.
+          // Deliberately NOT applied to tier 3 (`anyRunningId`), which matches
+          // a DIFFERENT tool name — swapping input there would render tool Y's
+          // name over tool X's input, a worse lie than the stale input.
+          // hook-dispatcher defaults a missing tool_input to `{}`, so require a
+          // non-empty payload or we would blank out a good card.
+          ...(targetId === nameMatchId && inputMatchId === null
+              && action.input && Object.keys(action.input).length > 0
+                ? { input: action.input } : {}),
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
         });
