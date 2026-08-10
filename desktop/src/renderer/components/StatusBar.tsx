@@ -1234,7 +1234,14 @@ export default function StatusBar({
           onClick={() => setUpdatePanelOpen(true)}
           className={`px-1.5 py-0.5 rounded-sm border cursor-pointer transition-colors hidden sm:inline-flex ${
             updateStatus.update_available
-              ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_ease-in-out_infinite]'
+              // steps(16): this glow runs from update-detection until the user
+              // actually updates — days to weeks — in always-visible chrome, and
+              // Reduced Effects does not gate it. Smooth ease-in-out means
+              // presenting at the panel's full refresh rate for that entire
+              // period (~29-33% of a core at 180Hz). 8 shadow changes/sec on a
+              // soft 4->10px blur radius is imperceptible. See the "Perf:
+              // frame-budget" note in globals.css.
+              ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_steps(16)_infinite]'
               : 'bg-panel border-edge-dim hover:bg-inset'
           }`}
           title={
