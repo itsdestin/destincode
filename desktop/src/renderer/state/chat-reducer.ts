@@ -1128,6 +1128,29 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    case 'TRANSCRIPT_REPLAY_COMPLETE': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      // A live re-dock replays the same history while a tool is genuinely
+      // running. Only main can tell the two apart, and only for native
+      // sessions (`entry.inFlight`); it reports false when it cannot affirm
+      // idleness, so an unknown session is left exactly as it was.
+      if (!action.sessionIdle) return state;
+      // Reuse endTurn rather than inventing a second notion of "tool that never
+      // finished" — it fails orphaned running/awaiting cards AND clears the
+      // in-flight turn state (isThinking, currentTurnId), which replay had left
+      // looking like a live turn.
+      // The message is deliberately not "complete": we do not know whether the
+      // tool finished before the process died, and a card claiming success for
+      // work that may never have run is the misleading-success failure
+      // docs/error-message-standards.md exists to prevent.
+      next.set(action.sessionId, {
+        ...session,
+        ...endTurn(session, 'Session was closed while this was running'),
+      });
+      return next;
+    }
+
     case 'PERMISSION_REQUEST': {
       const session = next.get(action.sessionId);
       if (!session) return state;
@@ -1139,17 +1162,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       //      command.
       //   2. first running tool with the same name (hook payload and
       //      transcript input shapes can differ — degrade safely)
-      //   3. first running tool of any name
-      // (An older requestId pass between 2 and 3 was unreachable — a running
-      // tool never carries a requestId; PERMISSION_RESPONDED clears it.)
+      // There is deliberately NO name-agnostic third tier. Until 2026-08-09 an
+      // `anyRunningId` fallback bound the ask to the first running tool of ANY
+      // name, so an ask that arrived before its own tool_use event hijacked an
+      // unrelated card: the card kept saying "Bash" while its buttons approved
+      // Read (Destin, M1–M3 dogfood). That fallback was the ORIGINAL naive
+      // implementation — its own comment called it "the arbitrary
+      // first-running-tool fallback" — and tiers 1 and 2 were added in front of
+      // it without ever removing it, so it was vestigial, not load-bearing.
+      // Showing one tool's identity on a card that authorizes another is a
+      // CONSENT bug: the honest fallback is the synthetic card below, which
+      // describes the ask's own payload and is reclaimed by TRANSCRIPT_TOOL_USE
+      // when the real event lands.
+      // (An older requestId pass was unreachable — a running tool never carries
+      // a requestId; PERMISSION_RESPONDED clears it.)
       const toolCalls = new Map(session.toolCalls);
       let inputMatchId: string | null = null;
       let nameMatchId: string | null = null;
-      let anyRunningId: string | null = null;
       const wantedInput = action.input ? stableStringify(action.input) : null;
       for (const [id, tool] of toolCalls) {
         if (tool.status !== 'running') continue;
-        if (anyRunningId === null) anyRunningId = id;
         if (tool.toolName === action.toolName) {
           if (nameMatchId === null) nameMatchId = id;
           if (wantedInput !== null && tool.input
@@ -1159,7 +1191,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           }
         }
       }
-      const targetId = inputMatchId ?? nameMatchId ?? anyRunningId;
+      const targetId = inputMatchId ?? nameMatchId;
       let found = false;
       if (targetId !== null) {
         const tool = toolCalls.get(targetId)!;
@@ -1174,9 +1206,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           // terminal showed the correct one. For AskUserQuestion this is a
           // correctness bug, not just a cosmetic one: AskUserQuestionCard
           // echoes tool.input.questions back in updatedInput.
-          // Deliberately NOT applied to tier 3 (`anyRunningId`), which matches
-          // a DIFFERENT tool name — swapping input there would render tool Y's
-          // name over tool X's input, a worse lie than the stale input.
+          // Both surviving tiers match on tool NAME, so this only ever refreshes
+          // the input of a card that already names the right tool. (This clause
+          // used to carry a carve-out for a name-agnostic third tier; that tier
+          // was deleted 2026-08-09 — see the match-order comment above.)
           // hook-dispatcher defaults a missing tool_input to `{}`, so require a
           // non-empty payload or we would blank out a good card.
           ...(targetId === nameMatchId && inputMatchId === null

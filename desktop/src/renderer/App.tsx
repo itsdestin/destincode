@@ -1177,6 +1177,18 @@ function AppInner() {
             agentId: event.data.agentId,
           });
           break;
+        case 'replay-complete':
+          // End of a transcript replay — reap cards the history left 'running'.
+          // Synthesized by the replay handler in main, never parsed from a
+          // transcript. sessionIdle false means main could not affirm the
+          // session is idle (live re-dock, or a CC session), so the reducer
+          // leaves everything alone.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_REPLAY_COMPLETE',
+            sessionId: event.sessionId,
+            sessionIdle: event.data?.sessionIdle === true,
+          });
+          break;
         case 'turn-complete':
           // Task 2.2: forward the full metadata payload. transcript-watcher emits these as
           // optional fields on event.data (shared/types.ts); coalesce undefined → null so

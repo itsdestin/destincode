@@ -803,3 +803,142 @@ describe('chatReducer COMPACTION_COMPLETE — native auto-compaction (I2b)', () 
     expect(next).toBe(state);   // untouched — no spurious marker
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// A permission ask must never describe a tool other than the one it approves.
+// Found by Destin in the 2026-08-09 M1–M3 dogfood: Bash 1 → "Allow Bash 1?"
+// → Read 1 → "Allow Bash 1?" → Read 1 runs. The card named Bash while its
+// buttons authorized Read. This is a consent bug, not a cosmetic one.
+describe('chatReducer PERMISSION_REQUEST tool identity', () => {
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  const bashUse = {
+    type: 'TRANSCRIPT_TOOL_USE' as const,
+    sessionId: 'sess-1',
+    uuid: 'u-bash',
+    toolUseId: 'toolu_bash_1',
+    toolName: 'Bash',
+    toolInput: { command: 'ls' },
+  };
+
+  it('does not bind an ask to a running tool with a DIFFERENT name', () => {
+    let state = initState();
+    state = chatReducer(state, bashUse);
+    // Read's ask arrives before Read's tool_use event. The only running tool
+    // is Bash, which this ask has nothing to do with.
+    state = chatReducer(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: 'sess-1',
+      requestId: 'req-read-1',
+      toolName: 'Read',
+      input: { file_path: '/etc/hosts' },
+    } as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect(bash.toolName).toBe('Bash');
+    // The Bash card must be left alone — it is not what is being approved.
+    expect(bash.status).toBe('running');
+    expect(bash.requestId).toBeUndefined();
+
+    // The ask gets its own card, naming the tool it actually authorizes.
+    const synthetic = state.get('sess-1')!.toolCalls.get('perm-req-read-1');
+    expect(synthetic).toBeDefined();
+    expect(synthetic!.toolName).toBe('Read');
+    expect(synthetic!.status).toBe('awaiting-approval');
+  });
+
+  it('still binds to a running tool of the SAME name', () => {
+    let state = initState();
+    state = chatReducer(state, bashUse);
+    state = chatReducer(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: 'sess-1',
+      requestId: 'req-bash-1',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+    } as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect(bash.status).toBe('awaiting-approval');
+    expect(bash.requestId).toBe('req-bash-1');
+    // No duplicate synthetic card when a real one was matched.
+    expect(state.get('sess-1')!.toolCalls.get('perm-req-bash-1')).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// A replayed transcript ends where the process died. A tool_use with no
+// result is history, not live work — the card must not keep spinning after
+// a resume. Found by Destin in the same dogfood pass.
+describe('chatReducer TRANSCRIPT_REPLAY_COMPLETE', () => {
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  it('fails a tool left running by an interrupted transcript', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1',
+      uuid: 'u-1',
+      toolUseId: 'toolu_1',
+      toolName: 'Bash',
+      toolInput: { command: 'sleep 1000' },
+    } as any);
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('running');
+
+    state = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: true } as any);
+
+    const tool = state.get('sess-1')!.toolCalls.get('toolu_1')!;
+    // Not 'complete' — we do not know whether it finished before the process
+    // died, and claiming success for work that may never have run is the
+    // misleading-success failure error-message-standards.md exists to prevent.
+    expect(tool.status).toBe('failed');
+    expect(tool.error).toMatch(/closed/i);
+    // The replayed turn is over; nothing is in flight.
+    expect(state.get('sess-1')!.isThinking).toBe(false);
+  });
+
+  it('leaves a completed replayed tool alone', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1', uuid: 'u-1',
+      toolUseId: 'toolu_1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT',
+      sessionId: 'sess-1', uuid: 'u-2',
+      toolUseId: 'toolu_1', result: 'a.txt', isError: false,
+    } as any);
+    state = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: true } as any);
+
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('complete');
+  });
+
+  it('is a no-op for an unknown session', () => {
+    const state = initState();
+    const next = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'nope', sessionIdle: true } as any);
+    expect(next).toBe(state);
+  });
+});
+
+// The same replay fires when a window re-docks a session that is genuinely
+// mid-turn. Reaping there would fail a tool that really is running, so the
+// reap is gated on main affirming the session is idle.
+describe('chatReducer TRANSCRIPT_REPLAY_COMPLETE on a live session', () => {
+  it('leaves a running tool alone when the session is NOT idle', () => {
+    let state: ChatState = new Map([['sess-1', createSessionChatState()]]);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1', uuid: 'u-1',
+      toolUseId: 'toolu_1', toolName: 'Bash', toolInput: { command: 'sleep 1000' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: false,
+    } as any);
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('running');
+  });
+});

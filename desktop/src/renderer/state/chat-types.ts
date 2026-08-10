@@ -529,6 +529,15 @@ export type ChatAction =
       skillPath?: string;
     }
   | {
+      // End of a transcript replay. Reaps tool cards the replayed history left
+      // 'running' — a transcript stops wherever the process died, so its last
+      // tool_use may have no result. Only acts when `sessionIdle` is true; the
+      // same replay fires on a live re-dock, where the running tool is real.
+      type: 'TRANSCRIPT_REPLAY_COMPLETE';
+      sessionId: string;
+      sessionIdle: boolean;
+    }
+  | {
       type: 'TRANSCRIPT_TURN_COMPLETE';
       sessionId: string;
       uuid: string;

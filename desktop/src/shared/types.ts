@@ -115,6 +115,16 @@ export type TranscriptEventType =
   // presses ESC during a turn. The reducer uses this to end the turn
   // without rendering the marker as a user bubble.
   | 'user-interrupt'
+  // Terminal marker appended by the TRANSCRIPT_REPLAY handler after the last
+  // historical event — NEVER parsed from a transcript, so it is not persisted
+  // and cannot be replayed twice. A transcript ends wherever the process died,
+  // so a tool_use with no result replays as a card that spins forever after a
+  // resume (Destin, 2026-08-09 dogfood). This event is the "history is over"
+  // barrier the reducer needs to reap those orphans.
+  // `data.sessionIdle` says whether main can AFFIRM nothing is in flight: the
+  // same replay also fires when a window re-docks a live, mid-turn session,
+  // where the running tool is real and must not be failed.
+  | 'replay-complete'
   // Native-runtime only: a provider/stream failure ended the turn. Carries the
   // human-readable message in data.text. Never emitted by CC's transcript
   // watcher and never persisted to the native session store (stale on resume).

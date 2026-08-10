@@ -795,6 +795,19 @@ export class NativeSessionHost extends EventEmitter {
     return this.store.readEvents(sessionId, entry.cwd);
   }
 
+  /** True only when we can AFFIRM this native session has no work in flight —
+   *  no turn running and nothing queued behind one. Consumed by the transcript
+   *  replay handler: a replayed transcript ends wherever the process died, so
+   *  its last tool_use may have no result, and the renderer needs to know
+   *  whether that card is stale history or a genuinely running tool (the same
+   *  replay fires when a window re-docks a live, mid-turn session).
+   *  Unknown/non-native ids answer false — never claim idle we can't prove. */
+  isIdle(sessionId: string): boolean {
+    const entry = this.live.get(sessionId);
+    if (!entry) return false;
+    return !entry.inFlight && entry.queue.length === 0;
+  }
+
   /** Await this session's pending appends — a real "flush the queue" affordance
    *  and the test hook that makes disk state deterministic after send(). */
   async drain(sessionId: string): Promise<void> {
