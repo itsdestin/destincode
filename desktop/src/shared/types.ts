@@ -247,6 +247,20 @@ export interface TranscriptEvent {
     args?: string;
     body?: string;
     skillPath?: string;
+    /**
+     * `replay-complete` only. Whether main could AFFIRM the session has no work
+     * in flight, which is what gates the reducer's orphan reap — the same replay
+     * fires when a window re-docks a genuinely mid-turn session, where the
+     * running tool is real and must not be failed. Only NativeSessionHost can
+     * answer (`entry.inFlight`); CC sessions report false.
+     *
+     * DECLARED, not just commented, because producer (ipc-handlers.ts) and
+     * consumer (App.tsx, BubbleFeed.tsx) are otherwise linked by nothing but a
+     * matching string literal through an `any`-typed `evt.sender.send`. A typo
+     * on either side reads undefined → false, silently disabling the reap with
+     * the whole suite still green (found reviewing PR #287, 2026-08-10).
+     */
+    sessionIdle?: boolean;
   };
 }
 

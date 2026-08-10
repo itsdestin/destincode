@@ -2420,13 +2420,19 @@ export function registerIpcHandlers(
     // they report false and keep today's behaviour rather than risk failing a
     // tool that really is running. Synthesized here and never persisted, so it
     // cannot be re-read from a transcript.
-    evt.sender.send(IPC.TRANSCRIPT_EVENT, {
+    // Annotated, NOT passed inline: evt.sender.send takes ...args: any[], which
+    // erases the contextual type — an inline literal is checked against nothing,
+    // so a typo'd `sessionIdle` compiles clean and silently disables the reap
+    // (measured 2026-08-10). The annotation is what makes the field name a
+    // compile error instead of a silent undefined. Same pattern as errEvent above.
+    const replayComplete: TranscriptEvent = {
       type: 'replay-complete',
       sessionId,
       uuid: `replay-complete-${sessionId}`,
       timestamp: Date.now(),
       data: { sessionIdle: nativeEvents !== null && nativeHost.isIdle(sessionId) },
-    });
+    };
+    evt.sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
   });
 
   // --- Native runtime IPC (Phase 1 Plan A) ---
