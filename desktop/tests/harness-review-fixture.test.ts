@@ -53,6 +53,23 @@ describe('seedFixtureWorkspace', () => {
     expect(fs.existsSync(path.join(root, 'a dir with spaces/a file with spaces.txt'))).toBe(true);
   });
 
+  // Pins the seeded AskUserQuestion ambiguity (see WHY comment in
+  // seedFixtureWorkspace): two config files both claim to be the server's real
+  // port and disagree. If a future edit "reconciles" them to matching values —
+  // a natural-looking bug fix — this test catches it and the ambiguity silently
+  // stops being exercisable, same as it has been for two full review rounds.
+  it('seeds a genuine port contradiction between config files, with nothing indicating which wins', () => {
+    const root = seedFixtureWorkspace();
+    made.push(root);
+    const settings = fs.readFileSync(path.join(root, 'config/settings.toml'), 'utf8');
+    const app = fs.readFileSync(path.join(root, 'config/app.toml'), 'utf8');
+    const settingsPort = settings.match(/port\s*=\s*(\d+)/)?.[1];
+    const appPort = app.match(/port\s*=\s*(\d+)/)?.[1];
+    expect(settingsPort).toBeDefined();
+    expect(appPort).toBeDefined();
+    expect(settingsPort).not.toBe(appPort);
+  });
+
   it('produces byte-identical trees across runs, so two models face the same tree', () => {
     const a = seedFixtureWorkspace();
     const b = seedFixtureWorkspace();
@@ -64,8 +81,8 @@ describe('seedFixtureWorkspace', () => {
 });
 
 describe('battery prompt', () => {
-  it('names every one of the six battery sections', () => {
-    for (const section of ['Navigate', 'Read', 'Search', 'Write/Edit', 'Bash', 'Web']) {
+  it('names every one of the seven battery sections', () => {
+    for (const section of ['Navigate', 'Read', 'Search', 'Write/Edit', 'Bash', 'Web', 'Configuration']) {
       expect(BATTERY_PROMPT).toContain(section);
     }
   });

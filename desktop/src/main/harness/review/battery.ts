@@ -4,6 +4,15 @@
 // what a human pastes and this is what the runner sends. Two copies drift, and a
 // review that ran a different battery than the doc advertises is worse than no
 // review. The doc now points here.
+//
+// WHY area 7 (Configuration) exists: AskUserQuestion had never been called across
+// two full review rounds — the fixture never contained a genuine ambiguity, only
+// a standing instruction to use the tool if one arose. Area 7 sends the model at
+// the seeded contradiction in the fixture (config/settings.toml vs config/app.toml,
+// see seedFixtureWorkspace in fixture-workspace.ts) without naming AskUserQuestion
+// directly — naming it would test compliance, not judgment. Phrase it as an
+// ordinary task ("bump the port"), not a puzzle; a model that reads both config
+// files should recognize the port is genuinely unknowable from the tree and ask.
 import * as fs from 'fs';
 
 export const BATTERY_PROMPT = `You are testing the YouCoded native agent harness. You are working inside the harness right now.
@@ -19,6 +28,7 @@ Battery:
 4. Write/Edit: create a test file, edit it, try to edit a file you haven't Read, try to edit a file that was externally modified, try a duplicate-string edit, use replace_all, use multi-line context.
 5. Bash: test env var persistence across calls, a failing command, a timeout, a long-output truncation, filenames with spaces.
 6. Web: use WebSearch on a technical topic, use WebFetch on a simple page and a large/docs page.
+7. Configuration: bump the server's configured listening port by one ahead of tomorrow's deploy.
 
 If you hit a genuine ambiguity at any point, use AskUserQuestion rather than guessing.
 
