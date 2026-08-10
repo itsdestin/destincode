@@ -11,13 +11,21 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import type { PromptVariant } from './capability-profile';
 import { variantOverlay } from './prompts/variants';
+import { fitProjectInstructions } from './injection/injection-budget';
 
 // promptVariant is the capability-profile steering overlay (see prompts/variants.ts).
 // Optional so pre-variant callers assemble byte-identically; only local-small adds text.
 // hasTools defaults true; a tool-less model (profile.supportsTools === false, e.g.
 // Gemma 3n) sets it false so the assembled prompt drops BOTH the tool-guidance line
 // and the variant overlay — every overlay references tools the model doesn't have.
-export interface PromptInputs { presetBody: string; cwd: string; appVersion: string; promptVariant?: PromptVariant; hasTools?: boolean }
+// instructionBudgetTokens bounds the project-instruction file (see below). It is
+// optional so pre-budget callers and tests assemble unchanged; the ONE production
+// caller (native-session-host) always passes the session profile's real value.
+// The default matches CLOUD_DEFAULT.injectionBudgetTokens — a frontier-sized
+// allowance, i.e. "assume roomy" for a caller that never told us the model.
+const DEFAULT_INSTRUCTION_BUDGET_TOKENS = 20_000;
+
+export interface PromptInputs { presetBody: string; cwd: string; appVersion: string; promptVariant?: PromptVariant; hasTools?: boolean; instructionBudgetTokens?: number }
 
 function gitSnapshot(cwd: string): string {
   try {
@@ -29,7 +37,7 @@ function gitSnapshot(cwd: string): string {
   } catch { return 'Git: not a repository'; }
 }
 
-function projectInstructions(cwd: string): string | null {
+function projectInstructions(cwd: string, budgetTokens: number): string | null {
   // Walk up from cwd to the git root (or filesystem root), first hit wins:
   // AGENTS.md is the cross-tool standard; CLAUDE.md read as fallback (§3.4).
   let dir = cwd;
@@ -37,7 +45,11 @@ function projectInstructions(cwd: string): string | null {
     for (const name of ['AGENTS.md', 'CLAUDE.md']) {
       const p = path.join(dir, name);
       if (fs.existsSync(p)) {
-        const body = fs.readFileSync(p, 'utf8').slice(0, 20_000);
+        // The budget bounds the FILE BODY only — the wrapping tag is added after,
+        // so a cut can never leave <project-instructions> unterminated. Until
+        // 2026-08-10 this was `.slice(0, 20_000)`: characters not tokens, the same
+        // for every model, cut at a byte offset, and silent. See fitProjectInstructions.
+        const { text: body } = fitProjectInstructions(fs.readFileSync(p, 'utf8'), budgetTokens, name);
         // NOT sanitizing: repo instruction files are trusted-by-design input. The
         // tag is a labeling convention, not a security boundary — a file with a
         // literal </project-instructions> can escape it, and that's acceptable here.
@@ -73,7 +85,7 @@ export function assembleSystemPrompt(i: PromptInputs): string {
       `YouCoded version: ${i.appVersion}`,
       '</env>',
     ].join('\n'),
-    projectInstructions(i.cwd),
+    projectInstructions(i.cwd, i.instructionBudgetTokens ?? DEFAULT_INSTRUCTION_BUDGET_TOKENS),
     // Tool-guidance line — only when the model actually HAS tools.
     hasTools
       ? 'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep. Keep edits minimal and verify your work by running relevant commands after changing code.'
