@@ -2405,10 +2405,34 @@ export function registerIpcHandlers(
   ipcMain.on(IPC.TRANSCRIPT_REPLAY, (evt, { sessionId }: { sessionId: string }) => {
     // Native sessions replay from the SessionStore; getHistory returns null for
     // non-native ids so CC's watcher stays the source for claude sessions.
-    const events = nativeHost.getHistory(sessionId) ?? transcriptWatcher.getHistory(sessionId);
+    const nativeEvents = nativeHost.getHistory(sessionId);
+    const events = nativeEvents ?? transcriptWatcher.getHistory(sessionId);
     for (const ev of events) {
       evt.sender.send(IPC.TRANSCRIPT_EVENT, ev);
     }
+    // Terminal marker so the reducer can reap tool cards this history left
+    // 'running'. A transcript ends wherever the process died, so its last
+    // tool_use may have no matching result — replaying it verbatim leaves a
+    // card spinning forever after a resume (Destin, 2026-08-09 dogfood).
+    // sessionIdle gates the reap because this SAME replay fires when a window
+    // re-docks a session that is genuinely mid-turn. Only the native host can
+    // answer that (`entry.inFlight`); CC sessions have no equivalent signal, so
+    // they report false and keep today's behaviour rather than risk failing a
+    // tool that really is running. Synthesized here and never persisted, so it
+    // cannot be re-read from a transcript.
+    // Annotated, NOT passed inline: evt.sender.send takes ...args: any[], which
+    // erases the contextual type — an inline literal is checked against nothing,
+    // so a typo'd `sessionIdle` compiles clean and silently disables the reap
+    // (measured 2026-08-10). The annotation is what makes the field name a
+    // compile error instead of a silent undefined. Same pattern as errEvent above.
+    const replayComplete: TranscriptEvent = {
+      type: 'replay-complete',
+      sessionId,
+      uuid: `replay-complete-${sessionId}`,
+      timestamp: Date.now(),
+      data: { sessionIdle: nativeEvents !== null && nativeHost.isIdle(sessionId) },
+    };
+    evt.sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
   });
 
   // --- Native runtime IPC (Phase 1 Plan A) ---

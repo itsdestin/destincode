@@ -230,6 +230,19 @@ export function BubbleFeed({ sessionId }: Props) {
             });
           }
           break;
+        case 'replay-complete':
+          // End of a transcript replay — reap tool cards the history left
+          // 'running'. The buddy feeds its OWN chatReducer instance (separate
+          // BrowserWindow), so App.tsx handling this does nothing for us and the
+          // orphaned card kept spinning here (found reviewing PR #287).
+          // sessionIdle false means main could not affirm the session is idle
+          // (live re-dock, or a CC session) and the reducer leaves it alone.
+          batchDispatch({
+            type: 'TRANSCRIPT_REPLAY_COMPLETE',
+            sessionId: event.sessionId,
+            sessionIdle: event.data?.sessionIdle === true,
+          });
+          break;
       }
     });
 

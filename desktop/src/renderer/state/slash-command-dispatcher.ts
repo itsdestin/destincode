@@ -112,6 +112,24 @@ export function dispatchSlashCommand(input: DispatcherInput): DispatcherResult {
   const cmd = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toLowerCase();
   const args = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1);
 
+  // An absolute filepath is not a command. Pasting `/home/destin/notes.md` to
+  // ask about a file used to parse `/home` as the command word, fall through to
+  // the /skill-name branch below, and get claimed by the native route as
+  // consumed — so the user got a "skill not found" toast AND lost their input
+  // (Destin, 2026-08-10). Claude Code sessions never showed it: they reach
+  // `passthrough` and send the path as ordinary text, which is the behaviour
+  // this restores for native.
+  //
+  // The test is the COMMAND WORD only, so a path passed as an ARGUMENT still
+  // works (`/theme-builder /home/destin/wallpaper.png`). A second '/' is a safe
+  // discriminator: no command or skill id contains one — the app's two
+  // inventories (cc-builtin-commands.ts, youcoded-commands.ts) hold 30 names
+  // with no slash, and skill ids namespace with ':' (plugin:skill).
+  // Guard: tests/slash-command-filepath.test.ts.
+  if (cmd.includes('/', 1)) {
+    return { handled: false };
+  }
+
   switch (cmd) {
     case '/compact': {
       // Claude Code handles the actual API-powered summarization. Our job is

@@ -330,9 +330,9 @@ describe('PERMISSION_REQUEST tool matching', () => {
 // PERMISSION_RESPONDED → synthetic budget gates (max_steps / doom_loop)
 // Regression: a budget gate is a synthetic ask with no real tool execution, so
 // no TRANSCRIPT_TOOL_RESULT ever closes its card. If the card stays 'running'
-// after the response, a same-turn re-trip of the gate reuses it via the tier-3
-// "first running tool of any name" fallback, and endTurn() force-fails it
-// 'Turn ended' on a normal finish. The card must close 'complete' on response.
+// after the response, endTurn() force-fails it 'Turn ended' on a normal finish.
+// The card must close 'complete' on response. (The tier-3 "first running tool of
+// any name" fallback this also used to cite was deleted 2026-08-09.)
 // ---------------------------------------------------------------------------
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
