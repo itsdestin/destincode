@@ -1144,6 +1144,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // tool finished before the process died, and a card claiming success for
       // work that may never have run is the misleading-success failure
       // docs/error-message-standards.md exists to prevent.
+      // NOTE the asymmetry with NATIVE_SESSION_ERROR, which spreads endTurn()
+      // and then RE-ASSERTS attentionState/errorMessage. This spread does not,
+      // so it resets attentionState to 'ok' and clears errorMessage — which
+      // would wipe an error banner and unblock the input gate
+      // (pty-input-gate.ts keys on attentionState !== 'ok').
+      // Safe today only because no replay lands on a session holding an error:
+      // onOwnershipLost dispatches SESSION_REMOVE, which deletes the state, so
+      // every re-dock replays into a fresh slot. If that ever changes, this
+      // needs the same re-assert NATIVE_SESSION_ERROR does.
       next.set(action.sessionId, {
         ...session,
         ...endTurn(session, 'Session was closed while this was running'),
@@ -1290,10 +1299,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
           // Fix: native budget gates (max_steps / doom_loop) are synthetic asks
           // with NO real tool execution behind them — no TRANSCRIPT_TOOL_RESULT
-          // ever arrives to close the card. Leaving it 'running' orphans it: a
-          // same-turn re-trip of the gate matches it via PERMISSION_REQUEST's
-          // tier-3 "first running tool of any name" fallback and reuses the stale
-          // card, and endTurn() force-fails it 'Turn ended' on a normal finish.
+          // ever arrives to close the card. Leaving it 'running' orphans it, and
+          // endTurn() then force-fails it 'Turn ended' on a normal finish.
+          // (This used to also cite PERMISSION_REQUEST's tier-3 "first running
+          // tool of any name" fallback reusing the stale card. That tier was
+          // deleted 2026-08-09 — see the match-order comment in
+          // PERMISSION_REQUEST. The carve-out below is still needed for the
+          // endTurn reason alone.)
           // Close it 'complete' on any response instead (PERMISSION_RESPONDED
           // can't tell Yes from No — it carries only the requestId). Keyed on
           // toolName, not the perm- id prefix, which would wrongly close real
