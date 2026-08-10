@@ -37,9 +37,18 @@ const WALK_CEILING = 50_000;
 // needs) and instead expand `{a,b,c}` into a regex alternation ourselves,
 // non-nested only — the same restriction ripgrep's own globset enforced
 // pre-15.0.0, so a plain extension list (the reported bug shape) is fully
-// supported and a nested construct fails the same loud, honest "No files
-// matched." it always did, rather than silently mismatching. See
+// supported. See
 // docs/active/investigations/2026-08-10-harness-search-tools-prior-art.md item 1.
+//
+// Fix (review-claims-verified.md, "what's actually worth fixing" #8, follow-up
+// pass): the item-1 fix above originally fell back on "a nested construct
+// fails the same loud, honest 'No files matched.'" — that framing was wrong.
+// It is precisely the defect class the original brace finding was about: a
+// syntax failure wearing the costume of an empty result. Kimi K3 called that
+// shape "the only result in the whole battery I'd call misleading."
+// `hasNestedBrace` below runs BEFORE the converter and gives Glob's execute()
+// a chance to refuse with a specific, honest message instead of silently
+// compiling a can't-ever-match regex.
 function fileGlobToRegex(glob: string): RegExp {
   let rx = '';
   for (let i = 0; i < glob.length; i++) {
@@ -84,6 +93,25 @@ function fileGlobToRegex(glob: string): RegExp {
   return new RegExp(`^${rx}$`, 'i');
 }
 
+/** Cheap top-level scan for a nested brace group (e.g. "{a,{b,c}}") — the one
+ *  construct fileGlobToRegex above cannot expand. Deliberately NOT a rewrite
+ *  of the converter (kept cheap, per the review's explicit ask): just tracks
+ *  brace-nesting depth and flags depth > 1. Two SEPARATE, non-nested groups in
+ *  one pattern (e.g. "{a,b}*.{ts,tsx}") never push depth above 1, so they are
+ *  correctly left alone. */
+export function hasNestedBrace(pattern: string): boolean {
+  let depth = 0;
+  for (const c of pattern) {
+    if (c === '{') {
+      depth++;
+      if (depth > 1) return true;
+    } else if (c === '}') {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+  return false;
+}
+
 export const GlobTool = defineTool({
   name: 'Glob',
   description: 'Find files by glob pattern (e.g. "src/**/*.ts"). Returns paths sorted by modification time, newest first.',
@@ -115,6 +143,16 @@ export const GlobTool = defineTool({
   moreHint: 'narrow the glob pattern or pass a more specific path',
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
+    // Refuse a nested brace group with a specific, honest message BEFORE
+    // handing the pattern to the converter — see the WHY block above
+    // fileGlobToRegex for why a silent "No files matched." here is the exact
+    // defect class the item-1 brace fix was supposed to close.
+    if (hasNestedBrace(args.pattern)) {
+      return {
+        text: `Glob rejected: "${args.pattern}" uses a nested brace group (e.g. "{a,{b,c}}"), which this tool does not support. Use a single, non-nested {a,b,c} list instead.`,
+        isError: true,
+      };
+    }
     const root = resolveP(args.path ?? '.', ctx.cwd);
     const rx = fileGlobToRegex(args.pattern);
     const hits: Array<{ rel: string; mtime: number }> = [];

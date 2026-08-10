@@ -119,6 +119,33 @@ describe('Read', () => {
     expect(r.text).toContain('offset 99 is past the end of the file (3 lines)');
   });
 
+  // Regression pin (2026-08-10 review, Claim 10): Read's isError messages used
+  // THREE unreconciled shapes -- "Read failed: ..." (thrown exceptions, via
+  // registry.ts's catch-all), "Cannot read ...: ..." (binary/size refusals), and
+  // a bare "Read <path>: offset N is past the end..." (past-EOF, no "failed"/
+  // "Cannot" prefix at all). Opus flagged the last one specifically: the
+  // prefixes are "otherwise a reliable signal for 'did this succeed'". House
+  // pattern (from Edit: "rejected" for a guard declining to act at all, "failed"
+  // for a bad request against an otherwise-permitted action) maps size/binary to
+  // "Read rejected:" (we refuse to read this file, full stop) and past-EOF to
+  // "Read failed:" (the specific offset requested is invalid) -- unifying with
+  // the SAME two prefixes the thrown-exception path (registry.ts) already uses.
+  it('unifies Read refusals into two dialects: "Read rejected:" for a file we refuse to read at all, "Read failed:" for a bad request', async () => {
+    fs.writeFileSync(path.join(dir, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
+    const binR = await ReadTool.execute({ file_path: 'bin' }, ctx);
+    expect(binR.isError).toBe(true);
+    expect(binR.text.startsWith('Read rejected:')).toBe(true);
+
+    fs.writeFileSync(path.join(dir, 't2.txt'), 'a\nb\nc\n');
+    const eofR = await ReadTool.execute({ file_path: 't2.txt', offset: 99 }, ctx);
+    expect(eofR.isError).toBe(true);
+    expect(eofR.text.startsWith('Read failed:')).toBe(true);
+
+    const sizeMsg = readSizeError(MAX_READ_BYTES + 1, 'huge.log');
+    expect(sizeMsg).toBeTruthy();
+    expect(sizeMsg!.startsWith('Read rejected:')).toBe(true);
+  });
+
   it('Read declares bounds with an offset hint when a page is partial', async () => {
     const f = path.join(dir, 'big.txt');
     fs.writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'));
@@ -232,6 +259,28 @@ describe('Edit', () => {
     expect(r.isError).toBeFalsy();
     expect(fs.readFileSync(p, 'utf8')).toBe('a$&b$1c$$d\n');
   });
+
+  // Regression pin (2026-08-10 review, Claim 6): Grok set old_string ===
+  // new_string with replace_all: true and got the generic 'Edited X.' text --
+  // textually identical to a real edit. structuredPatch already carried zero
+  // hunks (the true empty-diff signal), but the model only reads r.text. Surface
+  // the zero-change fact explicitly instead of a success message indistinguishable
+  // from a real edit.
+  it('reports zero changes explicitly for a no-op edit (old_string === new_string)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'shared token\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    const r = await EditTool.execute(
+      { file_path: 'a.txt', old_string: 'shared token', new_string: 'shared token', replace_all: true },
+      ctx,
+    );
+    expect(r.isError).toBeFalsy();
+    expect(r.text).not.toBe('Edited a.txt.');
+    expect(r.text).toMatch(/0 replacements|no changes|identical/i);
+    expect(r.structuredPatch).toEqual([]);
+    // The file's bytes are untouched -- no pointless rewrite of identical content.
+    expect(fs.readFileSync(p, 'utf8')).toBe('shared token\n');
+  });
 });
 
 describe('Write', () => {
@@ -252,6 +301,51 @@ describe('Write', () => {
     const r = await WriteTool.execute({ file_path: 'x.txt', content: 'line1\nline2\n' }, ctx);
     expect(r.structuredPatch).toBeDefined();
     expect(r.structuredPatch!.length).toBeGreaterThan(0);
+  });
+
+  // Regression pin (2026-08-10 review, Claim 2 -- THE HEADLINE ITEM): Write's
+  // overwrite guard only checked registry PRESENCE ("was this path ever Read
+  // this session"), never freshness -- unlike Edit, which compares the recorded
+  // mtime against the current on-disk mtime. Opus 5's transcript demonstrated
+  // it: a Read at tool-call 11, an unrelated Write at tool-call 38 (27 calls
+  // later, file changed on disk in between) still succeeded with "no
+  // complaint". Mirrors Edit's existing mtime check (see the WHY comment in
+  // write.ts for why mtime over a content hash).
+  it('rejects overwriting a file that changed on disk since it was read (mtime mismatch, mirrors Edit)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'old\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    // Force a distinctly different mtime (+2s) -- coarse fs granularity safe,
+    // same technique as the Edit staleness test above.
+    const future = new Date(Date.now() + 2000);
+    fs.utimesSync(p, future, future);
+    const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/changed since you read it/i);
+    // The file on disk must be untouched by the rejected write.
+    expect(fs.readFileSync(p, 'utf8')).toBe('old\n');
+  });
+
+  it('allows overwriting when the read is still fresh (no intervening on-disk change)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'old\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(p, 'utf8')).toBe('new\n');
+  });
+
+  it('allows writing a brand-new file with no prior read (nothing to be stale about)', async () => {
+    const r = await WriteTool.execute({ file_path: 'brand-new.txt', content: 'hi\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(dir, 'brand-new.txt'), 'utf8')).toBe('hi\n');
+  });
+
+  it('editing a just-Written file still works (Write plants a fresh read-registry entry)', async () => {
+    await WriteTool.execute({ file_path: 'w.txt', content: 'v1\n' }, ctx);
+    const r = await EditTool.execute({ file_path: 'w.txt', old_string: 'v1', new_string: 'v2' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(dir, 'w.txt'), 'utf8')).toBe('v2\n');
   });
 });
 
@@ -810,15 +904,32 @@ describe('Glob', () => {
     expect(r.text).not.toContain('d.json');
   });
 
-  // Nested braces are NOT expanded, matching ripgrep's own pre-15.0.0
-  // restriction (the shape our converter follows). This is a documented
-  // limitation, not silent corruption -- same "fails loud with a
-  // plausible-looking zero-match" shape the tool already had, just narrowed
-  // to a rarer construct.
-  it('treats nested braces as unsupported rather than expanding them incorrectly', async () => {
+  // Regression pin (2026-08-10 review, item 4 -- superseding the prior fix's
+  // fallback): nested braces are NOT expanded, matching ripgrep's own
+  // pre-15.0.0 restriction (the shape our converter follows) -- but a plain
+  // "No files matched." is EXACTLY the defect class the original brace finding
+  // was about: a syntax failure wearing the costume of an empty result. Kimi K3
+  // called that shape "the only result in the whole battery I'd call
+  // misleading." Glob must now detect the nested construct and say so
+  // specifically, rather than silently compiling a can't-ever-match regex and
+  // reporting a plausible-looking empty result.
+  it('rejects a nested brace group with a specific message instead of a misleading "No files matched."', async () => {
     fs.writeFileSync(path.join(dir, 'x.ts'), '');
     const r = await GlobTool.execute({ pattern: '**/*.{a,{b,c}}' }, ctx);
-    expect(r.text).toBe('No files matched.');
+    expect(r.isError).toBe(true);
+    expect(r.text).not.toBe('No files matched.');
+    expect(r.text).toMatch(/nested/i);
+  });
+
+  // Two SEPARATE non-nested groups in one pattern must not false-positive the
+  // nested-brace detector (a naive "does the pattern contain more than one {"
+  // check would wrongly reject this).
+  it('does not flag two separate, non-nested brace groups as nested', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), '');
+    fs.writeFileSync(path.join(dir, 'b.spec.ts'), '');
+    const r = await GlobTool.execute({ pattern: '{a,b}*.{ts,tsx}' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('a.ts');
   });
 });
 

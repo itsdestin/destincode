@@ -91,10 +91,25 @@ export const EditTool = defineTool({
     const edited = args.replace_all
       ? lfBody.split(args.old_string).join(args.new_string)
       : lfBody.replace(args.old_string, () => args.new_string);
+    // Diff the LF pair so hunks show only the real change, not a whole-file \r\n churn.
+    const hunks = toHunks(lfBody, edited, args.file_path);
+    // WHY (2026-08-10 review, Claim 6): old_string === new_string (or any
+    // replacement that happens to produce byte-identical output) used to write
+    // the file anyway and return the same generic "Edited X." text a real edit
+    // gets -- Grok hit this exact shape (old_string: 'shared token', new_string:
+    // 'shared token', replace_all: true) and got no signal anything was wrong.
+    // `hunks` already carries the true empty-diff signal (structuredPatch), but
+    // that's a side-channel the model doesn't read as prose. Surface it in the
+    // text explicitly instead, and skip the pointless identical-bytes rewrite.
+    if (hunks.length === 0) {
+      return {
+        text: `Edited ${args.file_path}: 0 replacements — old_string and new_string are identical, nothing changed.`,
+        structuredPatch: hunks,
+      };
+    }
     const final = preserveFormat(original, edited);
     fs.writeFileSync(abs, final);
     ctx.readRegistry.set(canonical, fs.statSync(abs).mtimeMs); // our own write stays "read"
-    // Diff the LF pair so hunks show only the real change, not a whole-file \r\n churn.
-    return { text: `Edited ${args.file_path}.`, structuredPatch: toHunks(lfBody, edited, args.file_path) };
+    return { text: `Edited ${args.file_path}.`, structuredPatch: hunks };
   },
 });
