@@ -4,8 +4,9 @@ import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery } from '../src/main/harness/review/run-battery';
-import { scriptModel } from './helpers/harness-fakes';
+import { runBattery, STEP_GATE_ALLOWANCE } from '../src/main/harness/review/run-battery';
+import { DEFAULT_STEP_BUDGET } from '../src/main/harness/model-step-budget';
+import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 
 describe('makeOpenRouterFactory', () => {
   it('refuses to build without a key, naming the env var to set', () => {
@@ -370,5 +371,83 @@ describe('runBattery', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  // Root cause (2026-08-09 live run): run-battery's askUser used to deny
+  // EVERY max_steps ask outright. harness-session.ts:1100-1102 turns a
+  // non-'allow' answer to that specific ask into stopReason='max_steps' and
+  // ENDS THE TURN — unlike doom_loop, which only fails the one repeated call.
+  // A real full-roster run needed 37-80 tool calls per model; 'fake/model'
+  // (no frontier-regex match, model-step-budget.ts) gets the 25-step default
+  // budget, so driving the gate for real means scripting more than 25
+  // consecutive tool-call steps — done here with a generated script rather
+  // than typed out by hand. Prefers the real path (per the task brief) over
+  // faking the askUser decision directly, since it also proves toolCalls/
+  // asks/stepGates all still line up correctly across a real gate crossing.
+  // Alternates `offset` so no 3 consecutive calls share an identical signature
+  // (harness-session.ts:1424's doom-loop sig is `toolName:JSON.stringify(args)`,
+  // threshold 3 for the openrouter/cloud profile — capability-profile.ts). A
+  // constant-input Read call WOULD legitimately trip that guard on call 3 and
+  // then again on every call after (denial never resets the window, only
+  // 'allow' does — harness-session.ts:1438), inflating `asks` with doom_loop
+  // hits unrelated to what this test is proving about max_steps.
+  function toolCallSteps(count: number): ScriptStep[] {
+    return Array.from({ length: count }, (_, i) => ({
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: (i % 2) + 1 } }],
+    }));
+  }
+
+  it('survives the max_steps gate up to STEP_GATE_ALLOWANCE and still produces a review', async () => {
+    // One full step-budget window per allowed gate hit, THEN a final text step
+    // that only runs if every one of those gate hits was actually allowed.
+    // Against the pre-fix code (deny everything) this fails at the very first
+    // gate — the run ends with stopReason='max_steps' before the text step is
+    // ever reached, so `review` comes back empty instead of the real string.
+    const steps: ScriptStep[] = [
+      ...toolCallSteps(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET),
+      { text: 'Final review after surviving every step gate.' },
+    ];
+    const run = await runBattery({
+      modelFactory: async () => scriptModel(steps) as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 30_000,
+    });
+
+    expect(run.review).toBe('Final review after surviving every step gate.');
+    // Proves the run actually crossed the 25-step budget boundary STEP_GATE_ALLOWANCE
+    // times, not just once — a run that stalled at the first gate could never
+    // reach this many tool calls.
+    expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET);
+    expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE);
+    // Design choice (see the WHY comment on run-battery.ts's askUser): a
+    // bounded max_steps allowance still counts as an `asks` — it's a real
+    // spend/policy decision made on the model's behalf, same as a denied
+    // doom_loop or external-path ask. All four gate hits here were the ONLY
+    // asks in the run (no AskUserQuestion, no external-path Write), so `asks`
+    // must equal `stepGates` exactly.
+    expect(run.asks).toBe(STEP_GATE_ALLOWANCE);
+  });
+
+  it('denies the max_steps gate once STEP_GATE_ALLOWANCE is exhausted, ending the turn', async () => {
+    // One MORE window than the allowance — the (STEP_GATE_ALLOWANCE + 1)th
+    // gate hit must be denied, which ends the turn (harness-session.ts:1102)
+    // before any further text is ever produced. No trailing text step is
+    // scripted, because the run must never reach one.
+    const steps: ScriptStep[] = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
+    const run = await runBattery({
+      modelFactory: async () => scriptModel(steps) as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 30_000,
+    });
+
+    // The genuine-runaway outcome is preserved: a gate hit past the cap still
+    // ends the turn with no review, exactly like the pre-fix "deny everything"
+    // behavior did for the FIRST hit.
+    expect(run.review).toBe('');
+    expect(run.toolCalls).toBe((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
+    expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE + 1);
+    expect(run.asks).toBe(STEP_GATE_ALLOWANCE + 1);
   });
 });

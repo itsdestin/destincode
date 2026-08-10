@@ -22,8 +22,43 @@ export interface BatteryRun {
   events: TranscriptEvent[];
   toolCalls: number;
   asks: number;
+  // How many times the max_steps budget gate fired (allowed or denied). See
+  // STEP_GATE_ALLOWANCE below for what "allowed" means. A gated run's review
+  // is still worth reading, but a reviewer interpreting it should know the
+  // model needed extra room — this was invisible until the run either
+  // finished quietly or failed outright (the Opus 5 incident this field
+  // exists to surface).
+  stepGates: number;
   fixtureRoot: string;
 }
+
+// Root-cause fix (2026-08-09): the first full-roster live run denied EVERY
+// max_steps gate outright, on the reasoning (stated in a prior version of
+// this file, and in the plan brief that requested that denial) that the
+// ~40-item battery would stay "well under 25 steps." That prediction was
+// empirically wrong. Real full-roster numbers: Kimi K3 56 tool calls,
+// Deepseek v4 flash 0731 47, Grok 4.5 37, GPT 5.6 Luna 47 — all finished
+// fine — and Claude Opus 5 80 tool calls, which hit its 50-step frontier
+// budget (model-step-budget.ts), got denied at the FIRST gate, and lost its
+// entire review after a paid run produced nothing (harness-session.ts:1100-
+// 1102: a non-'allow' answer sets stopReason='max_steps' and breaks the turn
+// loop outright — unlike doom_loop, which only fails the one repeated call
+// and lets the run continue). Opus was simply the most thorough model, not a
+// runaway one.
+//
+// WHY 4, not unbounded or 1: the gate exists to catch a genuinely stuck
+// model, and an unbounded allow would defeat that (the exact failure mode
+// the gate was added to prevent). 4 continuations gives a frontier model
+// (50-step budget) up to 5 * 50 = 250 steps and a default model (25-step
+// budget) up to 5 * 25 = 125 steps before the run is cut off — several times
+// the worst observed real number (80 tool calls; steps can be fewer than
+// tool calls since one step may carry several parallel calls, per the task
+// brief) — while still guaranteeing termination well inside `timeoutMs`
+// (default 900_000ms, still the hard wall-clock ceiling underneath all of
+// this: it races the ENTIRE session.send() call, so no number of granted
+// continuations can defeat it — confirmed by reading run-battery's
+// Promise.race below, unchanged by this fix).
+export const STEP_GATE_ALLOWANCE = 4;
 
 export interface RunBatteryOpts {
   modelFactory: ModelFactory;
@@ -95,6 +130,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   const events: TranscriptEvent[] = [];
   let toolCalls = 0;
   let asks = 0;
+  let stepGates = 0;
 
   const session = new HarnessSession(
     {
@@ -120,35 +156,60 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       // #6), because a human had to be present to answer it. A fixed answer
       // makes it reachable and keeps runs reproducible.
       //
-      // WHY every OTHER ask kind is denied, not allowed: HarnessSession routes
-      // three unrelated ask kinds through this SAME callback, and none of them
-      // carry a `questions` field —
+      // WHY every OTHER ask kind is denied — with ONE bounded exception below —
+      // and not allowed: HarnessSession routes three unrelated ask kinds
+      // through this SAME callback, and none of them carry a `questions`
+      // field —
       //   - harness-session.ts:1478 — the forced 'ask' described above (Write/
       //     Read/Edit pointed outside the fixture root, e.g. Write("/home/x")).
       //     Allowing this unconditionally is a real local-file write/read
       //     against the machine running the CLI, not the fixture — the exact
       //     hole a Critical finding caught (the fixture jail did not hold).
-      //   - harness-session.ts:1432 — the doom_loop guard's ask.
-      //   - harness-session.ts:1100 — the max_steps guard's ask.
+      //     Still ALWAYS denied. Unchanged by this fix. Has its own test.
+      //   - harness-session.ts:1432 — the doom_loop guard's ask. Still ALWAYS
+      //     denied: harness-session.ts:1437 turns a non-allow into a
+      //     model-facing error result for just the one repeated call, and the
+      //     run continues — denying here is harmless and correct.
+      //   - harness-session.ts:1100 — the max_steps guard's ask. See
+      //     STEP_GATE_ALLOWANCE above the function: unlike doom_loop, a
+      //     non-'allow' answer here ends the WHOLE turn (stopReason=
+      //     'max_steps', harness-session.ts:1102), which is what cost a paid
+      //     Opus 5 run its entire review on 2026-08-09. Now bounded-allowed
+      //     instead of always-denied.
       // A prior version of this callback answered ALL of these with `allow`
       // (its `questions` loop ran zero times on the ones above, then fell
       // through to an unconditional allow) — silently disabling both spend
-      // guards and letting Write/Read escape the fixture. Denying instead is
-      // not just safer, it is CORRECT: a properly scoped battery run should
-      // never produce an external-directory ask, a doom loop, or a max-steps
-      // overrun, so a denial turns a regression into a loud error result in
-      // the transcript (harness-session.ts:1481 turns a non-allow into a
-      // model-facing error string — the model still gets a coherent reply,
-      // the run isn't aborted) instead of quietly executing outside the
-      // fixture or burning OpenRouter spend on a stuck model.
-      // NOT `{ behavior: 'canceled' }`: harness-session.ts:1479 treats
-      // 'canceled' as a user interrupt that aborts the whole turn — this is a
-      // policy denial, not an abort.
+      // guards and letting Write/Read escape the fixture. Denying
+      // external-directory and doom_loop is not just safer, it is CORRECT: a
+      // properly scoped battery run should never produce an external-
+      // directory ask or a doom loop, so a denial turns a regression into a
+      // loud error result in the transcript instead of quietly executing
+      // outside the fixture or spinning on a stuck model. max_steps is
+      // different — a long battery legitimately NEEDS more than one budget
+      // window — hence the bounded allowance instead of an outright deny.
+      // NOT `{ behavior: 'canceled' }` for any of these: harness-session.ts:
+      // 1479 treats 'canceled' as a user interrupt that aborts the whole
+      // turn — these are policy decisions, not aborts.
       // `asks` counts every ask that reaches this callback, answered or
       // denied — it is "how many times something needed a human," which is
-      // exactly what a denied doom-loop/max-steps/external-path ask still is.
+      // exactly what a denied doom-loop/external-path ask, OR an
+      // auto-allowed max-steps continuation, still is: a real spend/policy
+      // decision was made on the model's behalf, just not by a human this
+      // time. `stepGates` (below) is the narrower, max_steps-only count the
+      // CLI surfaces per-model — `asks` alone can't tell a reviewer "this
+      // model needed extra room" from "this model asked a real question."
       askUser: async (req: AskRequest): Promise<AskDecision> => {
         asks++;
+        if (req.toolName === 'max_steps') {
+          stepGates++;
+          // Bounded allowance (see STEP_GATE_ALLOWANCE's WHY comment above
+          // the function for the value and its justification). Past the cap,
+          // deny — the turn ends exactly as it does today, which is the
+          // correct outcome for a genuine runaway.
+          return stepGates <= STEP_GATE_ALLOWANCE
+            ? { behavior: 'allow' }
+            : { behavior: 'deny' };
+        }
         const questions = req.toolName === 'AskUserQuestion'
           ? (req.toolInput?.questions as
               | Array<{ question: string; options?: { label: string }[] }>
@@ -230,5 +291,5 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     .join('')
     .trim();
 
-  return { label: opts.label, modelId: opts.modelId, review, events, toolCalls, asks, fixtureRoot };
+  return { label: opts.label, modelId: opts.modelId, review, events, toolCalls, asks, stepGates, fixtureRoot };
 }
