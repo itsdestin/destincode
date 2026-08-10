@@ -1,7 +1,7 @@
 // defineTool(): the ONE pipeline every tool runs through (spec §2.3) —
 // validation and permission gating happen in the DRIVER (it owns pause/resume);
 // this wrapper owns execution + uniform truncation + actionable errors.
-import { truncateOutput, type TruncateOpts } from './truncate';
+import { truncateOutput, composeNotice, type TruncateOpts } from './truncate';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 
 const DEFAULT_CAPS: TruncateOpts = { maxChars: 30_000 };
@@ -15,7 +15,19 @@ export function defineTool<A>(
     async execute(args: A, ctx: ToolContext): Promise<ToolResultPayload> {
       try {
         const raw = await def.execute(args, ctx);
-        return { ...raw, text: truncateOutput(raw.text, caps).text };
+        const t = truncateOutput(raw.text, caps);
+        // The tool's own bound and the pipeline cap are independent; composeNotice
+        // folds both into one line and uses the TOOL's widening advice, never a
+        // default of ours. `def.moreHint` is that tool's STATIC vocabulary — the
+        // fallback for when the pipeline cap fires alone and `raw.bounds` is
+        // undefined (Task 19: three reviews found this is the COMMON case for
+        // content-mode Grep, not an edge one). See the WHY block in truncate.ts.
+        const notice = composeNotice(
+          raw.bounds,
+          t.truncated ? { shown: t.text.length, total: t.totalChars } : null,
+          def.moreHint,
+        );
+        return { ...raw, text: t.text + notice };
       } catch (err: any) {
         // Abort is only surfaced here when the tool THREW — the driver (Task 9)
         // owns interrupt semantics (it aborts the signal and stops the turn);

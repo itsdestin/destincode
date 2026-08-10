@@ -138,12 +138,33 @@ function mapStopReason(finishReason: string | undefined): string {
 }
 const APPROX_CHARS_PER_TOKEN = 4;
 
+/** Widening advice per tool, in that tool's OWN vocabulary.
+ *
+ *  WHY (2026-08-06, Task 18): this path appended "Re-run with offset/limit, or
+ *  use Grep" to EVERY oversized tool result, including Bash and WebSearch,
+ *  which accept neither parameter. It is the same defect the bounds contract
+ *  removed from the defineTool path (tools/registry.ts) — and it fires
+ *  precisely when output is largest, so it was the most likely advice a model
+ *  would ever act on. Two models testing the harness followed it into a dead
+ *  end. Tools absent from this map get a bare statement with no advice, which
+ *  is the honest fallback per docs/error-message-standards.md — never a guess. */
+const FIT_MORE_HINT: Record<string, string> = {
+  Read: 'Re-run with a narrower offset/limit window',
+  Bash: 'Re-run piping through head, tail, or wc -l',
+  Grep: 'Re-run with a narrower pattern or output_mode: "count"',
+  Glob: 'Re-run with a narrower glob pattern',
+  WebSearch: 'Re-run with a narrower query',
+  WebFetch: 'Fetch a more specific URL or section',
+};
+
 // Shrink a role:'tool' message's result text to fit `maxChars`, splitting the
 // allowance evenly when one message carries several results. Used only by
 // fitToContext's oversized-tail salvage — the ordinary path never rewrites
 // content. The trailing notice matters: without it a model reads a hard-cut
-// file as complete and confidently answers from a fragment.
-function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
+// file as complete and confidently answers from a fragment. Exported so Task
+// 18's tests can drive it directly without recreating a whole oversized
+// history through fitToContext.
+export function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
   if (msg.role !== 'tool' || !Array.isArray(msg.content)) return msg;
   const parts = msg.content as any[];
   const results = parts.filter((p) => p?.type === 'tool-result');
@@ -156,12 +177,15 @@ function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage 
       const value = p.output?.value;
       if (typeof value !== 'string' || value.length <= per) return p;
       const dropped = value.length - per;
+      // Derived from the RESULT'S OWN toolName, not a shared default — see
+      // FIT_MORE_HINT above. Nothing is appended when the tool isn't in the map.
+      const hint = FIT_MORE_HINT[p.toolName];
       return {
         ...p,
         output: {
           ...p.output,
           value: value.slice(0, per) +
-            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window. Re-run with offset/limit, or use Grep, to see the rest.]`,
+            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window.${hint ? ` ${hint}.` : ''}]`,
         },
       };
     }),

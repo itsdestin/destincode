@@ -20,6 +20,18 @@ const MAX_TIMEOUT_MS = 600_000;
  *  evaporated, costing ~6 wasted tool calls in one observed session. */
 const CWD_SENTINEL = '__YC_CWD__';
 
+/** Strip CSI (colour, cursor) and OSC (window title, hyperlink) sequences.
+ *
+ *  WHY both an env hint AND a strip: NO_COLOR/FORCE_COLOR cover most tools, but
+ *  not all honour them — a vitest run rendered as
+ *  `[1m[30m[46m RUN [49m[39m[22m` in the 2026-08-01 review. That is noise in every
+ *  test result the model reads, and it looks like corruption to a non-developer
+ *  reading the transcript. */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+}
+
 export interface ShellInfo { cmd: string; args: string[]; label: string }
 
 /** Every place Git Bash might live, best first. Two hardcoded Program Files
@@ -204,6 +216,14 @@ export const BashTool = defineTool({
     description: z.string().optional().describe('One line: what this command does'),
   }),
   caps: { maxChars: 30_000 },
+  // Static fallback for composeNotice's no-bounds branch (Task 19): the
+  // HEAD_CHARS/TAIL_CHARS margin below keeps Bash's own `bounds` the sole
+  // authority in the common case, but the reset notice + metadata trailer
+  // embed ctx.cwd TWICE and are outside that margin — a long workspace root
+  // can still push the pipeline cap past 30k while `dropped` stays false.
+  // Verbatim copy of the `bounds.moreHint` string below: one widening
+  // vocabulary for this tool, not two wordings to keep in sync.
+  moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
   permissionSubject: (a) => a.command,
   async execute(args, ctx) {
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
@@ -229,21 +249,91 @@ export const BashTool = defineTool({
         child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
           cwd: startCwd,
           windowsHide: true,
-          env: process.env,
+          // Ask tools to emit plain output rather than stripping it after the fact
+          // where possible — cleaner, and it keeps byte counts honest.
+          env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
         });
       } catch (e: any) {
         resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
         return;
       }
-      let out = '';
-      // The 200KB cap below would drop the trailing sentinel on a chatty command
-      // ("cd sub && <huge output>"), silently losing the cd. Keep a small rolling
-      // tail that is never capped so the probe survives regardless of volume.
-      let tail = '';
-      const cap = (s: string) => {
-        if (out.length < 200_000) out += s;
-        if (probe) tail = (tail + s).slice(-4096);
+      // Bounded head + rolling tail + an UNCONDITIONAL byte counter.
+      //
+      // WHY this replaced a flat 200KB accumulator (2026-08-06): the old buffer
+      // retained 200KB only for defineTool to cut it to 30k, and — worse — the
+      // truncation notice reported the CAPPED buffer's length as the original
+      // size. A 5MB command was announced as "204800 chars total", a number
+      // nothing had measured. Counting every chunk whether or not we keep it makes
+      // the reported total true.
+      //
+      // WHY HEAD_CHARS/TAIL_CHARS stay <= caps.maxChars (2026-08-06 review, dead
+      // zone fix): the original guard was `if (head.length < HEAD_CHARS) head +=
+      // s` — checked BEFORE appending, so a chunk that CROSSED the boundary was
+      // retained WHOLE. A single 64KB pipe read (Node's default highWaterMark)
+      // pushed `head` to ~71,500 chars before `tailBuf` ever engaged, so this
+      // tool's own `dropped` flag stayed false — and Bash never declared `bounds`
+      // — until output was already past ~71.5k measured, while defineTool's
+      // pipeline cap (caps.maxChars, 30_000) fired at 30k regardless. Everything
+      // in between (measured: 40k, 50k, 70k chars) landed in composeNotice's
+      // no-`bounds` fallback: a bare "[output truncated: showing N of M chars]"
+      // with no `moreHint`, for the single most common oversized-Bash-output size
+      // (npm test, git log, a mid-size search). The fix below caps `head` on
+      // APPEND (slicing the crossing chunk, so retention no longer depends on
+      // pipe chunk size) and keeps peak retention at or under caps.maxChars, so
+      // the pipeline cap can never fire for Bash — this tool's own `bounds` is
+      // the sole authority on what got dropped. Peak body retained: HEAD_CHARS +
+      // TAIL_CHARS + 7 (the "\n[...]\n" separator joined() inserts) =
+      // 22,000 + 6,000 + 7 = 28,007. That leaves ~1,993 chars of headroom under
+      // 30,000 (caps.maxChars above) for the metadata line and drop notice this
+      // function appends AFTER body (cwd path + byte counts) — necessary because
+      // defineTool's cap applies to the FULL text, body plus that trailer, and a
+      // sufficiently deep workspace path could otherwise push the total back over
+      // caps.maxChars even with body itself capped. If you change either
+      // constant, keep HEAD_CHARS + TAIL_CHARS + 7 comfortably under 30,000 — that
+      // margin is what keeps composeNotice's no-bounds branch unreachable for Bash.
+      const HEAD_CHARS = 22_000;
+      const TAIL_CHARS = 6_000;
+      let head = '';
+      let tailBuf = '';
+      let totalChars = 0;
+      // Explicit flag set exactly at the moment content is discarded, rather than
+      // inferred afterward by comparing lengths — the same shape grep.ts uses for
+      // its own `dropped`. A post-hoc length comparison gets two things wrong: a
+      // genuine drop of <= 7 chars reads as "no drop" (the "\n[...]\n" separator
+      // happens to absorb it), and a merely non-empty tailBuf reads as "something
+      // was cut" even when every char it currently holds is still fully present.
+      let discarded = false;
+      // Separate uncapped 4KB tail purely for the cwd sentinel: a chatty command
+      // ("cd sub && <huge output>") would otherwise push the sentinel out of the
+      // retained text and silently lose the cd.
+      let probeTail = '';
+      // Push into the rolling tail window, flagging `discarded` iff characters
+      // actually fall off the FRONT of that window (a genuine loss) — not merely
+      // because the window happens to be non-empty.
+      const pushTail = (s: string) => {
+        const combined = tailBuf + s;
+        if (combined.length > TAIL_CHARS) discarded = true;
+        tailBuf = combined.slice(-TAIL_CHARS);
       };
+      const cap = (s: string) => {
+        totalChars += s.length;
+        if (head.length < HEAD_CHARS) {
+          const room = HEAD_CHARS - head.length;
+          if (s.length <= room) {
+            head += s;
+          } else {
+            // This chunk CROSSES the head boundary: slice it right here instead
+            // of retaining it whole (the old bug) — deterministic regardless of
+            // how large a single pipe chunk happens to be.
+            head += s.slice(0, room);
+            pushTail(s.slice(room));
+          }
+        } else {
+          pushTail(s);
+        }
+        if (probe) probeTail = (probeTail + s).slice(-4096);
+      };
+      const joined = () => (tailBuf ? `${head}\n[...]\n${tailBuf}` : head);
       child.stdout.on('data', (d) => cap(String(d)));
       child.stderr.on('data', (d) => cap(String(d)));
       let done = false;
@@ -252,27 +342,117 @@ export const BashTool = defineTool({
         done = true;
         clearTimeout(timer);
         ctx.signal.removeEventListener('abort', onAbort);
-        let body = out;
+        let body = joined();
+        // WHY captured BEFORE extractCwd: the probe's `__YC_CWD__` sentinel line is
+        // harness plumbing, not command output, and extractCwd strips it out of
+        // `body` on virtually every non-Windows call. Comparing totalChars against
+        // the POST-strip body would call that stripping a "drop" and declare bogus
+        // bounds on every single Bash call, including 'echo hi' — caught by the
+        // "declares no bounds for small output" test. Comparing against the raw
+        // retained length (pre-strip) isolates the ONE thing that should count as
+        // dropped: the head/tail accumulator actually cutting real command output.
+        const rawLen = body.length;
         let notice = '';
+        // Bytes consumed by the probe's OWN generated sentinel line — harness
+        // plumbing, not command output. Subtracted from the reported total so a
+        // command that printed exactly N bytes is announced as N, not
+        // N-plus-however-long-the-cwd-path-happens-to-be.
+        let sentinelOverhead = 0;
+        // Track what the cwd ENDED as, so the metadata line can state it. Two
+        // separate facts: where the shell actually landed, and whether the scope
+        // guard pulled it back.
+        let reportedCwd: string | null = null;
+        let resetTo: string | null = null;
+        // Fix: length of the sentinel-stripped text BEFORE stripAnsi runs, used
+        // below for the reported "shown" count instead of `body.length`. `body`
+        // becomes ANSI-STRIPPED further down (what the model actually reads),
+        // while `totalChars` above accumulated RAW chunks — colour codes
+        // included — as they streamed in. Reporting shown: body.length
+        // (post-strip) against total: totalChars (pre-strip) mixed two
+        // different currencies in one line: a coloured 3,000-line run printed
+        // "showing 21491 of 117000 bytes" where the 117000 counted escape
+        // sequences the 21491 did not. Measuring both sides at the SAME point
+        // (before the ANSI strip) makes the comparison honest again.
+        let preAnsiLen: number;
         if (probe) {
-          const parsed = extractCwd(out);
-          body = parsed.text;
-          // Sentinel past the 200KB cap → recover it from the uncapped tail.
-          const reported = parsed.cwd ?? extractCwd(tail).cwd;
+          const parsed = extractCwd(joined());
+          sentinelOverhead = rawLen - parsed.text.length;
+          preAnsiLen = parsed.text.length;
+          // Strip AFTER extractCwd, not before: the sentinel must be parsed from
+          // raw bytes, so a colour code that happened to straddle the sentinel
+          // line can't mangle the cwd we hand back to the model.
+          body = stripAnsi(parsed.text);
+          // Sentinel past the retention window → recover it from the uncapped tail.
+          const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
           if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
             if (isInside(ctx.cwd, reported)) {
-              ctx.setShellCwd?.(path.resolve(reported));
+              reportedCwd = path.resolve(reported);
+              ctx.setShellCwd?.(reportedCwd);
             } else {
               // Scope guard: don't let the session wander out of the workspace,
               // and TELL the model — a silent revert is the exact failure mode
               // the Claude Code issues (#35058 et al.) complain about.
               ctx.setShellCwd?.(ctx.cwd);
+              resetTo = ctx.cwd;
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
             }
           }
+        } else {
+          preAnsiLen = joined().length;
+          body = stripAnsi(joined());
         }
-        const text = (`${prefix}${body}`.trim() + notice).trim();
-        resolve({ text: text || `(no output, exit ${code ?? '?'})`, isError });
+        // ONE metadata line, always. Four of five reviewing models independently
+        // asked for this (2026-08-01): file tools resolve relative paths from the
+        // workspace root while Bash resolves from its own persistent cwd, and with
+        // no cwd echoed back the only safe habit was prefixing every single call
+        // with `cd <root> &&`. This line costs ~15 tokens and removes that ritual.
+        // It ABSORBS the old `(exit code N)` prefix rather than adding to it.
+        //
+        // Whether anything was actually cut, tracked LIVE by `discarded` (set in
+        // pushTail above) rather than inferred here from a length comparison. The
+        // old `totalChars > rawLen` compare miscounted in both directions: it
+        // undercounted a genuine drop of <= 7 chars (the "\n[...]\n" separator's
+        // own length absorbed it) and overcounted whenever tailBuf was merely
+        // non-empty but every char it held was still fully present in the result.
+        const dropped = discarded;
+        // The reported total also gets the sentinel-overhead correction above.
+        const trueTotal = totalChars - sentinelOverhead;
+        const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
+        const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
+        // Fix: label matches what's actually counted. HEAD_CHARS/TAIL_CHARS,
+        // totalChars, and defineTool's own pipeline cap (caps.maxChars) all
+        // operate on the JS string produced by `String(d)` — UTF-16 code units,
+        // i.e. characters, never real UTF-8 byte counts. Calling that "bytes"
+        // was wrong for any multi-byte output: 60,000 CJK characters (180,000
+        // real UTF-8 bytes) were reported as "60005 bytes". Making the count
+        // byte-accurate would mean re-deriving the whole head/tail accumulator
+        // from Buffers instead of decoded strings — a much larger change than
+        // this fix — and it is not what a model deciding whether to re-run with
+        // `| head -n 100` actually needs (that decision is about lines/chars in
+        // the stream, not its wire byte size). Relabeling as 'chars' makes the
+        // existing count honest without changing what is measured.
+        if (dropped) meta.push(`${trueTotal} chars output, showing ${preAnsiLen}`);
+        // Fix: when a command exits with genuinely no output (e.g. `exit 3`),
+        // `${prefix}${body}` was '' — trimming that and prepending the metadata
+        // line produced a result that STARTED with a blank line and said nothing
+        // happened, silently dropping the original "(no output, exit N)" fallback
+        // text when this block was rewritten around the metadata line. `(no
+        // output)` restores that signal without duplicating `exit N`, which the
+        // metadata line below already states.
+        const combined = `${prefix}${body}`.trim() || '(no output)';
+        const text = (combined + notice).trim() + `\n[${meta.join(' · ')}]`;
+        resolve({
+          text,
+          isError,
+          bounds: dropped
+            ? {
+                shown: preAnsiLen,
+                total: trueTotal,
+                unit: 'chars' as const,
+                moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
+              }
+            : undefined,
+        });
       };
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -293,7 +473,11 @@ export const BashTool = defineTool({
       // shell + cwd actually used, not just Node's bare `spawn <cmd> <CODE>` —
       // same diagnosability contract as the sync catch above.
       child.on('error', (err) => finish(`Failed to start shell: ${err.message} (shell=${shell.cmd}; cwd=${startCwd})\n`, true));
-      child.on('close', (code) => finish(code === 0 ? '' : `(exit code ${code})\n`, code !== 0, code));
+      // WHY no exit-code prefix here anymore: the metadata line above now states
+      // `exit N` for every result, so a leading "(exit code N)" duplicated the
+      // same fact in two places. The timeout/abort handlers keep their prefixes —
+      // those are messages, not exit codes.
+      child.on('close', (code) => finish('', code !== 0, code));
     });
   },
 });

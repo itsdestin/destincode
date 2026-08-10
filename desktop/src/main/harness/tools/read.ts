@@ -40,6 +40,15 @@ export const ReadTool = defineTool({
     limit: z.number().int().min(1).optional().describe('Max lines to return'),
   }),
   caps: { maxChars: 100_000 },
+  // Static fallback for composeNotice's no-bounds branch (Task 19): `bounds`
+  // below is only set when the requested slice stops before EOF (`more`).
+  // A full-length read (offset 1, default limit, file exactly 2000 lines) sets
+  // `more: false` — but MAX_LINE (2000 chars/line) means the numbered text can
+  // still be ~4M chars, well past `caps.maxChars`, with no bound declared.
+  // NOT verbatim from `bounds.moreHint` below: that string interpolates the
+  // NEXT offset (`use offset=${offset + limit}...`), a per-call number this
+  // static property can't carry. Same vocabulary (offset/limit), generalized.
+  moreHint: 'use offset and limit to read a smaller slice of the file',
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);
@@ -73,10 +82,15 @@ export const ReadTool = defineTool({
           }`,
       )
       .join('\n');
-    const trailer =
-      offset - 1 + limit < totalLines
-        ? `\n[showing lines ${offset}-${offset + slice.length - 1} of ${totalLines} — use offset=${offset + limit} to continue]`
-        : '';
-    return { text: numbered + trailer };
+    // WHY a declared bound instead of the hand-written trailer this used to carry:
+    // every tool now reports paging the same way, and the "use offset=N" advice is
+    // Read's own vocabulary rather than a shared string other tools inherited.
+    const more = offset - 1 + limit < totalLines;
+    return {
+      text: numbered,
+      bounds: more
+        ? { shown: slice.length, total: totalLines, unit: 'lines' as const, moreHint: `use offset=${offset + limit} to continue` }
+        : undefined,
+    };
   },
 });

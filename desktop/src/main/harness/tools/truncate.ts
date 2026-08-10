@@ -1,7 +1,31 @@
 // ONE truncation policy for every tool (spec §2.3): head+tail preservation and
-// an explicit trailer telling the model HOW to get more — never silent cuts.
+// an explicit notice telling the model HOW to get more — never silent cuts.
+//
+// WHY the advice string left this file (2026-08-06): it was hardcoded to
+// "Use offset/limit or a narrower query", which is correct for Read and WRONG for
+// Bash and WebSearch — neither accepts offset or limit. Two reviewing models
+// followed that advice into a dead end. Tools now declare a `moreHint` in their
+// own vocabulary and composeNotice renders it; this module only reports facts.
+//
+// WHY a SECOND, static `moreHint` (Task 19, 2026-08-06): `bounds.moreHint` above
+// only exists when the TOOL bounded its own output on THIS call. The pipeline
+// cap (defineTool's `caps`) is a separate event with its own schedule — three
+// independent reviews found cases where it fires alone: content-mode Grep
+// capped by `maxLines` with `bounds` undefined, Glob capped by `maxChars` under
+// its own result limit, Bash's trailer pushing a small body over the cap. Each
+// tool's widening vocabulary doesn't change between calls, so `NativeTool.moreHint`
+// (types.ts) is declared once, statically, and composeNotice falls back to it
+// instead of leaving the model with a bare byte count.
+import type { ResultBounds } from './types';
+
 export interface TruncateOpts { maxChars: number; maxLines?: number }
-export interface TruncateResult { text: string; truncated: boolean }
+export interface TruncateResult {
+  text: string;
+  truncated: boolean;
+  /** Length of the ORIGINAL input, always — the number a caller needs to decide
+   *  whether re-running with a narrower query is worth it. */
+  totalChars: number;
+}
 
 export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult {
   let out = text;
@@ -26,10 +50,48 @@ export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult
     out = `${head}\n[...]\n${tail}`;
     truncated = true;
   }
-  if (truncated) {
-    // Trailer reports the ORIGINAL length and points at the escape hatch — the
-    // model should never be left guessing whether output was silently cut.
-    out += `\n[truncated — ${text.length} chars total. Use offset/limit or a narrower query to see more.]`;
+  return { text: out, truncated, totalChars: text.length };
+}
+
+/** Render at most ONE notice line from the two independent bounds that can apply:
+ *  what the TOOL cut (`bounds`) and what the PIPELINE cap cut (`cap`).
+ *
+ *  WHY one line and not two: a result carrying two competing notices reads as if
+ *  something went wrong twice, and the model has to reconcile them. One line
+ *  states both facts and carries exactly one piece of advice — the tool's.
+ *
+ *  `fallbackHint` is the tool's STATIC widening vocabulary (`NativeTool.moreHint`,
+ *  passed in by defineTool) — used only when `bounds` is absent, since a real
+ *  `bounds.moreHint` is always the more specific, per-call advice. */
+export function composeNotice(
+  bounds: ResultBounds | undefined,
+  cap: { shown: number; total: number } | null,
+  fallbackHint?: string,
+): string {
+  if (!bounds && !cap) return '';
+  if (!bounds) {
+    // A cap fired on a tool that declared no bounds of its own THIS call. This
+    // used to mean "we have no idea what this tool's widening vocabulary is" and
+    // render nothing — but the 2026-08-06 multi-review pass found that for
+    // content-mode Grep (capped by maxLines, which never sets `bounds`) this is
+    // the COMMON path, not a bug. `fallbackHint` carries the tool's static advice
+    // for exactly this branch; when the tool genuinely has none (fallbackHint
+    // undefined), still say nothing — inventing advice is the bug this exists to
+    // prevent, not a fallback for it.
+    const advice = fallbackHint ? ` — ${fallbackHint}` : '';
+    return `\n[output truncated: showing ${cap!.shown} of ${cap!.total} chars${advice}]`;
   }
-  return { text: out, truncated };
+  // WHY total === null gets its OWN phrasing, not "at least N" (2026-08-06,
+  // elevated-minor review): "showing N of at least N" collapses to "that is
+  // ALL of them" — the opposite of what `total: null` means (the tool stopped
+  // counting; more may exist beyond what's shown). Glob rendered "showing 2000
+  // of at least 2000 files" for a walk that may have seen 50,000+ — a
+  // tautology, not a warning. State plainly that more may exist and the count
+  // is unknown, without inventing a floor that reads as a ceiling. A KNOWN
+  // total keeps its exact "N of M" rendering below, unchanged.
+  const toolPart = bounds.total === null
+    ? `${bounds.shown} ${bounds.unit} (more may exist — exact total unknown)`
+    : `${bounds.shown} of ${bounds.total} ${bounds.unit}`;
+  if (!cap) return `\n[showing ${toolPart} — ${bounds.moreHint}]`;
+  return `\n[showing ${cap.shown} of ${cap.total} chars, and ${toolPart} — ${bounds.moreHint}]`;
 }

@@ -40,6 +40,15 @@ export function createSkillTool(catalog: SkillCatalog): NativeTool<SkillArgs> {
     // The skill id is the permission subject, so "always allow the journal skill"
     // is expressible as a rule — same as a Bash command string.
     permissionSubject: (a) => a.skill,
+    // Fix: execute() below returns catalog.load(id).body VERBATIM — no offset/limit
+    // param exists on `schema` (just `skill`), and there is no in-tool way to read
+    // only part of a SKILL.md, so a file over defineTool's 30,000-char pipeline cap
+    // used to reach composeNotice's no-advice branch with zero widening vocabulary.
+    // This is the STATIC fallback (types.ts NativeTool.moreHint) for exactly that
+    // case; it names only the `skill` param this schema actually has, per the
+    // guard in tests/tool-registry-manifest.test.ts that fails the build on a tool
+    // advising a parameter its own zod schema lacks.
+    moreHint: 'load a narrower or different skill instead, or ask the user to split this oversized SKILL.md into smaller skills',
     async execute(args: SkillArgs, _ctx: ToolContext): Promise<ToolResultPayload> {
       try {
         const skill = catalog.load(args.skill);

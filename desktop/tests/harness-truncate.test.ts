@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { truncateOutput } from '../src/main/harness/tools/truncate';
+import { truncateOutput, composeNotice } from '../src/main/harness/tools/truncate';
+import type { ResultBounds } from '../src/main/harness/tools/types';
 
 describe('truncateOutput', () => {
   it('passes short output through untouched', () => {
@@ -12,14 +13,15 @@ describe('truncateOutput', () => {
     const r = truncateOutput(big, { maxChars: 10_000 });
     expect(r.text.length).toBeLessThan(11_000);
     expect(r.truncated).toBe(true);
-    expect(r.text).toContain('[truncated');
-    expect(r.text).toContain('50000 chars total');
+    // The trailer moved to composeNotice (rendered by defineTool). truncateOutput
+    // now only reports the fact; it never writes advice into the text itself.
+    expect(r.totalChars).toBe(50_000);
   });
   it('caps line count too', () => {
     const many = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join('\n');
     const r = truncateOutput(many, { maxChars: 1_000_000, maxLines: 100 });
-    expect(r.text.split('\n').length).toBeLessThanOrEqual(102); // 100 + trailer
-    expect(r.text).toContain('[truncated');
+    expect(r.text.split('\n').length).toBeLessThanOrEqual(102); // 80 (head) + 1 (omitted marker) + 20 (tail)
+    expect(r.truncated).toBe(true);
   });
   it('never grows the output at tiny caps (slice(-0) guard)', () => {
     // maxChars <= 4 => Math.floor(maxChars*0.2) === 0; slice(-0) would return
@@ -27,14 +29,97 @@ describe('truncateOutput', () => {
     const big = 'y'.repeat(100);
     const r = truncateOutput(big, { maxChars: 3 });
     expect(r.truncated).toBe(true);
-    const trailerLen = r.text.length - r.text.indexOf('\n[truncated');
-    expect(r.text.length - trailerLen).toBeLessThan(big.length);
+    expect(r.text.length).toBeLessThan(big.length);
 
     // maxLines <= 4 => same defect on the line path.
     const many = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
     const r2 = truncateOutput(many, { maxChars: 1_000_000, maxLines: 2 });
     expect(r2.truncated).toBe(true);
-    const trailer2 = r2.text.length - r2.text.indexOf('\n[truncated');
-    expect(r2.text.length - trailer2).toBeLessThan(many.length);
+    expect(r2.text.length).toBeLessThan(many.length);
+  });
+});
+
+describe('composeNotice', () => {
+  const bounds: ResultBounds = { shown: 500, total: 1200, unit: 'matches', moreHint: 'narrow the pattern' };
+
+  it('renders nothing when neither a tool bound nor a cap fired', () => {
+    expect(composeNotice(undefined, null)).toBe('');
+  });
+
+  it('renders a declared bound with the tool\'s own hint', () => {
+    expect(composeNotice(bounds, null)).toBe(
+      '\n[showing 500 of 1200 matches — narrow the pattern]',
+    );
+  });
+
+  // Correction, not a weakening: the OLD wording ('at least 2000' when shown
+  // is also 2000) read as a tautology — "showing 2000 of at least 2000 files"
+  // says "that's all of them", the opposite of what total: null means (the
+  // walk stopped counting; more may exist). This asserts the fixed wording,
+  // which states plainly that more may exist and the count is unknown.
+  it('renders an unknown total as "more may exist, count unknown" — never a number that reads as complete', () => {
+    const open: ResultBounds = { shown: 2000, total: null, unit: 'files', moreHint: 'narrow the glob' };
+    const out = composeNotice(open, null);
+    expect(out).toBe(
+      '\n[showing 2000 files (more may exist — exact total unknown) — narrow the glob]',
+    );
+    // The bug this replaces: a rendering where the "total" side is the SAME
+    // number as `shown`, which reads as "that is all of them" rather than "we
+    // don't know how many more there are".
+    expect(out).not.toMatch(/of 2000 files/);
+    expect(out).not.toContain('at least');
+  });
+
+  it('names both facts in ONE line when a tool bound and a cap both fire', () => {
+    const out = composeNotice(bounds, { shown: 30_000, total: 4_200_000 });
+    expect(out.split('\n').filter(Boolean)).toHaveLength(1);
+    expect(out).toContain('30000 of 4200000 chars');
+    expect(out).toContain('500 of 1200 matches');
+    expect(out).toContain('narrow the pattern');
+  });
+
+  it('never invents advice when a cap fires and the tool declared no bounds', () => {
+    const out = composeNotice(undefined, { shown: 30_000, total: 90_000 });
+    expect(out).toBe('\n[output truncated: showing 30000 of 90000 chars]');
+    expect(out).not.toContain('offset');
+    expect(out).not.toContain('limit');
+  });
+
+  // Task 19: the gap three independent reviews found. `bounds` describes what the
+  // TOOL dropped; the pipeline cap in defineTool is a SEPARATE event that fires on
+  // its own schedule. When only the cap fires, the model used to get a bare byte
+  // count and no way to widen — the COMMON case for content-mode Grep, not an edge.
+  it('uses the tool\'s static hint when the pipeline cap fires and the tool declared no bounds', () => {
+    const out = composeNotice(undefined, { shown: 4169, total: 6691 }, 'narrow the pattern');
+    expect(out).toContain('4169 of 6691 chars');
+    expect(out).toContain('narrow the pattern');
+  });
+
+  it('still emits no advice when neither a bound nor a static hint is available', () => {
+    // Honest fallback preserved: we never invent advice we do not have.
+    expect(composeNotice(undefined, { shown: 10, total: 20 }, undefined))
+      .toBe('\n[output truncated: showing 10 of 20 chars]');
+  });
+
+  it('prefers the bound\'s own hint over the static one when both exist', () => {
+    const b = { shown: 5, total: 9, unit: 'files' as const, moreHint: 'specific hint' };
+    expect(composeNotice(b, null, 'static hint')).toContain('specific hint');
+    expect(composeNotice(b, null, 'static hint')).not.toContain('static hint');
+  });
+});
+
+describe('truncateOutput reports the true input size', () => {
+  it('returns totalChars of the ORIGINAL text, not the retained slice', () => {
+    const big = 'x'.repeat(50_000);
+    const r = truncateOutput(big, { maxChars: 10_000 });
+    expect(r.truncated).toBe(true);
+    expect(r.totalChars).toBe(50_000);
+  });
+
+  it('no longer appends its own advice string', () => {
+    const big = 'x'.repeat(50_000);
+    const r = truncateOutput(big, { maxChars: 10_000 });
+    expect(r.text).not.toContain('offset/limit');
+    expect(r.text).not.toContain('[truncated —');
   });
 });

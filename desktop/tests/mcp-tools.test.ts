@@ -42,6 +42,29 @@ describe('mcpToolsFor', () => {
     // readOnlyHint comes from the SERVER. It must not become an allow rule.
     expect(mcpToolsFor(s)[0].permissionSubject({})).toBeUndefined();
   });
+
+  // BLOCKER fix (2026-08-06): mcpToolsFor wraps every tool with defineTool, so
+  // execute() below already runs through the SAME truncation pipeline every
+  // native tool does — this test drives it end-to-end, not just checking the
+  // static property. Before the fix, an MCP tool had no `moreHint` and never
+  // set `bounds` (the server decides result size, not this file), so a big
+  // response hit composeNotice's bare fallback with zero widening advice —
+  // the fourth measured route into that branch. 60,000 chars against the
+  // inherited 30,000-char default cap guarantees the pipeline cap fires.
+  it('a result past the pipeline cap carries real widening advice, never the bare no-advice notice', async () => {
+    const s = readyServer({ call: vi.fn().mockResolvedValue({ text: 'x'.repeat(60_000), isError: false }) });
+    const tool = mcpToolsFor(s)[0];
+    const r = await tool.execute({ q: 'x' }, { signal: new AbortController().signal } as any);
+    expect(r.text).toContain('output truncated: showing');
+    // The bare fallback string composeNotice renders when NEITHER a per-call
+    // bound NOR a static moreHint is available — must never appear now that
+    // mcpToolsFor supplies the static fallback.
+    expect(r.text).not.toMatch(/\[output truncated: showing \d+ of \d+ chars\]$/m);
+    expect(r.text).toContain(' — ');
+    // Honest per the brief: general and non-committal, never a guessed
+    // parameter name from the server's own (untranslated) schema.
+    expect(r.text).not.toMatch(/\boffset\b|\blimit\b/);
+  });
 });
 
 describe('estimateToolSchemaTokens', () => {
