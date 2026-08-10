@@ -8,6 +8,7 @@ import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
+import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -27,6 +28,7 @@ import { ProviderRegistry } from './providers/provider-registry';
 import { generateText } from 'ai';
 import type { ModelBinding } from '../shared/provider-types';
 import { createNativeTitleFeeder } from './native-title-feeder';
+import { reapplyStoredTitle, type ResumeTitleDeps } from './native-resume-title';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
@@ -508,6 +510,11 @@ export function registerIpcHandlers(
   // sendForSession fires before ownership is set and falls back to mainWindow,
   // making a session created in window 2 appear in window 1. Remote-created
   // sessions still fall back to mainWindow since no renderer owns them yet.
+  //
+  // This only holds because assignSession runs SYNCHRONOUSLY in that handler,
+  // before its first await — nextTick outranks the microtask queue, so an
+  // assignSession sitting after any await would drain too late. See the WHY on
+  // the assignSession block itself; pinned by tests/session-create-ownership-order.test.ts.
   sessionManager.on('session-created', (info) => {
     process.nextTick(() => sendForSession(info.id, IPC.SESSION_CREATED, info));
   });
@@ -529,9 +536,56 @@ export function registerIpcHandlers(
     }
   });
 
+  // Deps for the resume-time title re-apply (native-resume-title.ts). These are
+  // exactly the two calls the title feeder's own onTitle makes — the pill only
+  // updates when BOTH fire (sendForSession reaches the owning window's
+  // App.tsx sessionRenamed handler; broadcastRename updates SessionInfo, the
+  // remote clients, and the window directory).
+  const resumeTitleDeps: ResumeTitleDeps = {
+    // NOTE: getConversationStore() is null for the whole launch when the managed
+    // roots are unavailable (conversations/service.ts sets storePhase
+    // 'unavailable'), so on such a machine this reads undefined every time and
+    // the re-apply is a permanent no-op. That is survivable, not silent breakage
+    // — the title feeder still generates a name at the next turn-complete.
+    getStoredTitle: async (sessionId) => (await getConversationStore()?.get('native', sessionId))?.title,
+    onTitle: (sessionId, title) => {
+      sendForSession(sessionId, IPC.SESSION_RENAMED, sessionId, title);
+      broadcastRename(sessionId, title);
+    },
+  };
+
   // Session CRUD
   ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
     const info = sessionManager.createSession(opts);
+    // Assign the new session to the calling window so per-session events (transcript,
+    // pty output, permission prompts) route here once Task 1.4 migrates the emits.
+    //
+    // MUST stay here — synchronously after createSession, BEFORE the native block's
+    // awaits. createSession emits 'session-created' synchronously, and the listener
+    // above defers the SESSION_CREATED forward by one process.nextTick precisely so
+    // ownership is set first. But nextTick outranks the promise microtask queue, so
+    // it drains the moment this handler suspends at its FIRST await — and the native
+    // branch below awaits nativeHost.resume/create long before the end of the
+    // handler. With this block at the bottom (where it lived until 2026-08-06), a
+    // native session created or resumed from a SECOND main window was forwarded with
+    // no owner registered, took sendForSession's ownerless mainWindow fallback, and
+    // appeared in window 1 instead. Claude Code never hit it: that path runs straight
+    // through with no intervening await. Pinned by tests/session-create-ownership-order.test.ts.
+    //
+    // Exception: if the sender is a buddy window (the floater's compact chat),
+    // assign to the leader main window instead. Buddies don't appear in the
+    // switcher directory and shouldn't own sessions — otherwise the session
+    // would be invisible to every main window's session list. The buddy still
+    // sees the session via its subscribe() call in SessionPill.selectSession.
+    if (windowRegistry) {
+      let targetId = event.sender.id;
+      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
+        const leader = windowRegistry.getLeaderId();
+        if (leader != null) targetId = leader;
+      }
+      try { windowRegistry.assignSession(info.id, targetId); }
+      catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
+    }
     // Native sessions have no PTY worker — start (or resume) their HarnessSession
     // in the host now that createSession has minted the SessionInfo. The native
     // branch of createSession uses resumeSessionId AS the id, so info.id already
@@ -550,6 +604,12 @@ export function registerIpcHandlers(
           remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
         });
       };
+      // Did a real resume of stored data actually happen? Distinct from
+      // `opts.resumeSessionId` being set: a resume can REFUSE (transcript not
+      // synced / project folder missing) or fall back to creating a fresh
+      // session under the same id. Only a true resume may wear the stored
+      // conversation's name — see the re-apply below.
+      let didResume = false;
       try {
         if (opts.resumeSessionId) {
           // Task 6: the resume-time model selector's pick (opts.binding, when the
@@ -600,9 +660,10 @@ export function registerIpcHandlers(
             emitNativeSessionError(refusal);
           } else if (resolvedCwd) {
             info.cwd = resolvedCwd; // fix the SessionInfo so downstream (noteSessionStarted, eager model, renderer) reads the validated cwd
-            await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
+            didResume = await nativeHost.resume(opts.resumeSessionId, resolvedCwd, opts.binding);
           } else {
             const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd, opts.binding);
+            didResume = resumed;
             // No stored file (e.g. resuming an id that was never persisted) → start
             // a fresh session under the same id so the renderer isn't left with a
             // SessionInfo backed by no live HarnessSession.
@@ -638,6 +699,24 @@ export function registerIpcHandlers(
         // dead session.
         sessionIdMap.set(info.id, info.id);
         noteSessionStarted(info.id, info.cwd, 'native');
+        // Fix (2026-08-06): fill the header pill in on resume. The renderer
+        // named this session 'Resuming…' as a placeholder, and the title feeder
+        // only ever pushes a rename when it GENERATES a title — which it
+        // correctly refuses to do for an already-titled session. Without this,
+        // the placeholder is the last name ever written to the pill.
+        // Fire-and-forget: never let a title read delay or fail a resume. Note
+        // this deliberately does its OWN store read — the `rec` fetched during
+        // cwd resolution above only exists on the foreign-cwd branch, not on
+        // the common local-resume path.
+        //
+        // Gated on didResume, NOT on opts.resumeSessionId: a REFUSED resume
+        // (transcript not synced / folder missing) and the "saved data missing,
+        // start fresh under the same id" fallback both leave a session that is
+        // empty or dead. Naming either after the stored conversation would put
+        // a real name on a session that isn't it — worse than the placeholder.
+        if (didResume) {
+          void reapplyStoredTitle(resumeTitleDeps, info.id);
+        }
         // Task 4: seed lastUsedModel the moment a native session comes up (fresh
         // create OR resume) — rides AFTER noteSessionStarted (noteModelUsed is a
         // no-op with no ctx) and AFTER create/resume above (resolvePortableModel
@@ -684,23 +763,6 @@ export function registerIpcHandlers(
       // the first message. Fire-and-forget; the model poll drives the UI.
       const eagerModelId = nativeHost.modelForSession(info.id);
       if (eagerModelId) { void engineManager.loadModel(eagerModelId).catch(() => { /* engine not installed / boot failed — the first send surfaces it */ }); }
-    }
-    // Assign the new session to the calling window so per-session events (transcript,
-    // pty output, permission prompts) route here once Task 1.4 migrates the emits.
-    //
-    // Exception: if the sender is a buddy window (the floater's compact chat),
-    // assign to the leader main window instead. Buddies don't appear in the
-    // switcher directory and shouldn't own sessions — otherwise the session
-    // would be invisible to every main window's session list. The buddy still
-    // sees the session via its subscribe() call in SessionPill.selectSession.
-    if (windowRegistry) {
-      let targetId = event.sender.id;
-      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
-        const leader = windowRegistry.getLeaderId();
-        if (leader != null) targetId = leader;
-      }
-      try { windowRegistry.assignSession(info.id, targetId); }
-      catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
     }
     return info;
   });
@@ -2257,11 +2319,15 @@ export function registerIpcHandlers(
     // window before the store's first upsert lands (mirrors the browse/store
     // title-overlay precedence Task 3/5 established — store wins unless
     // placeholder).
+    //
+    // Fix (2026-08-06): both halves now go through the SHARED placeholder
+    // predicate. The old fallback only excluded 'New Session', so a RESUMED
+    // session — whose live name is 'Resuming…' — answered "already titled" and
+    // this feeder skipped generation on every turn-complete, permanently. A
+    // resumed, never-titled native session could never get a title at all.
     hasTitle: async (sessionId: string) => {
       const rec = await getConversationStore()?.get('native', sessionId);
-      if (rec?.title && rec.title !== 'Untitled') return true;
-      const session = sessionManager.getSession(sessionId);
-      return !!session?.name && session.name !== 'New Session';
+      return hasRealTitle(rec?.title, sessionManager.getSession(sessionId)?.name);
     },
     // Both halves, or the Resume Browser (store title) and the live pill
     // (session.name) disagree. Native ids are identity-mapped (see the WHY
