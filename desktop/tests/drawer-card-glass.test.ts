@@ -87,3 +87,23 @@ describe('command-drawer tiles opt out of glassmorphism', () => {
     expect(override![1].trim()).toBe('.command-drawer');
   });
 });
+
+// Same invariant, second surface: theme-engine also blurs `[data-wallpaper]
+// .in-view .bg-inset`, and BOTH a grouped tool card (ToolCard.tsx) and the
+// assistant bubble that contains it (AssistantTurnBubble.tsx) carry .bg-inset.
+// That nests a live blur layer inside an already-blurred one — near-invisible
+// (it samples an already-blurred backdrop) but it re-rasterizes a full blur on
+// every repaint inside the card, including each frame of a hover fade.
+// The carve-out lives in theme-engine's own injected sheet rather than
+// globals.css because it must exist only while the blur it cancels exists (the
+// whole sheet is gated on hasGlassBackground && !reducedEffects && panelsBlur > 0).
+// Specificity: `[data-wallpaper] .in-view .assistant-bubble .bg-inset` is (0,4,0)
+// against the blur rule's (0,3,0), so it wins on specificity alone; it is also
+// emitted later in the same sheet, so source order agrees.
+describe('assistant-bubble cards opt out of nested glassmorphism', () => {
+  const engine = stripTs(readFileSync(THEME_ENGINE, 'utf8'));
+
+  it('does not nest per-card blur inside an already-blurred assistant bubble', () => {
+    expect(engine).toMatch(/\.assistant-bubble \.bg-inset\s*\{[^}]*backdrop-filter:\s*none/);
+  });
+});
