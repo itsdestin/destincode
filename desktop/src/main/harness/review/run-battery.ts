@@ -381,7 +381,19 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
 
   session.on('transcript-event', (e: TranscriptEvent) => {
     events.push(e);
-    if (e.type === 'tool-use') {
+    // Fix pass 1, Finding 2: HarnessSession emits 'tool-use' for a step BEFORE
+    // execution and BEFORE decide() is consulted, so a call denied during
+    // wrap-up would otherwise still land here. That matters because
+    // BatteryMetrics.toolsUsed is documented as "the evidence a review's
+    // claims are checked against" (run-facts.ts consumes it that way — it
+    // flags a review that names a tool absent from toolsUsed) — a denied
+    // wrap-up attempt injecting a tool name into toolsUsed would silently
+    // defeat that check for real. A wrap-up turn is a WHOLE turn of denied
+    // calls, so exclude it entirely rather than leaving the leak incidental;
+    // toolCalls is gated the same way so the two stay paired. (The same leak
+    // exists, unfixed, for calls denied during the TESTING turn — e.g. a
+    // Write pointed outside the fixture — pre-existing and out of scope here.)
+    if (e.type === 'tool-use' && !wrappingUp) {
       toolCalls++;
       // toolName is the field name on TranscriptEvent.data (shared/types.ts:148),
       // not `name` — the tool-use payload mirrors CC's transcript shape.
@@ -395,181 +407,205 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     }
   });
 
-  const timeoutMs = opts.timeoutMs ?? BATTERY_TIMEOUT_MS;
-  // Deviation from the brief's variable name only: `error` (not `err`) is the
-  // outer binding read by the outcome/return logic below; the caught value is
-  // still carried through as-is, never replaced with a guessed cause.
-  let error: string | undefined;
-
-  // The deadline INTERRUPTS rather than rejecting. interrupt()
-  // (harness-session.ts:1598) ends the in-flight turn cleanly and lets send()
-  // resolve with everything gathered — the old Promise.race abandoned a live
-  // promise and discarded the whole run, which is how round 5 lost four
-  // models. `.unref()` keeps the process from hanging on this timer; it fires
-  // at most once (the testing turn either finishes and clears it below, or
-  // this callback runs and there is nothing left to clear it early).
-  const deadline = setTimeout(() => {
-    wrapUpReason ??= 'timeout';
-    session.interrupt();
-  }, timeoutMs);
-  deadline.unref();
-
-  // WHY: captured immediately before send() so the session-error scan below
-  // can be scoped to THIS turn only. The wrap-up turn below is a second
-  // send() on this same session, which appends more events to this same
-  // array — an unscoped scan would find a 'session-error' left over from a
-  // failed first turn and mislabel a wrap-up turn that actually succeeded
-  // (or vice versa).
-  const eventsBeforeSend = events.length;
+  // Fix pass 1, Finding 3: the whole post-setup body is now one try/finally so
+  // teardown (session.destroy() + fixture rmSync, at the bottom) is guaranteed
+  // again — it used to be two bare statements after the wrap-up block, and
+  // every path between the testing turn and those lines happened to be total,
+  // but nothing enforced that. A future throw anywhere in this stretch (e.g.
+  // in the review extraction) would otherwise leak a tmpdir fixture and a
+  // live session holding an abort controller and listeners. Nothing inside
+  // changes: the review extraction and the return value still see exactly
+  // what they saw before — `finally` runs after the return expression is
+  // built but before the function actually returns to the caller.
   try {
-    await session.send(BATTERY_PROMPT);
-  } catch (err) {
-    // Salvage, don't discard. A provider error still leaves a transcript
-    // worth writing — round 5 threw four of them away and left the failures
-    // undiagnosable. The REAL message is carried through, never a guess.
-    error = err instanceof Error ? err.message : String(err);
-  } finally {
-    clearTimeout(deadline);
-  }
+    const timeoutMs = opts.timeoutMs ?? BATTERY_TIMEOUT_MS;
+    // Deviation from the brief's variable name only: `error` (not `err`) is the
+    // outer binding read by the outcome/return logic below; the caught value is
+    // still carried through as-is, never replaced with a guessed cause.
+    let error: string | undefined;
 
-  // Deviation from the brief's snippet, found by running its own test: a
-  // provider error that survives HarnessSession's internal retries does NOT
-  // reject send() at all — beginTurn's own catch (harness-session.ts:1176-1188)
-  // swallows it and emits a 'session-error' transcript event instead, then
-  // returns normally. So the try/catch above only ever fires for a genuinely
-  // thrown error; a mid-run model error would otherwise fall through as a
-  // false 'no-review' with the real failure silently dropped, defeating the
-  // whole point of this task. Checked only when send() itself didn't already
-  // report an error, so a genuine throw keeps its own message.
-  if (!error) {
-    // WHY: scan only the events THIS send() produced (events.slice, not the
-    // full array) — see eventsBeforeSend's WHY comment above.
-    const sessionError = events
-      .slice(eventsBeforeSend)
-      .find((e) => e.type === 'session-error');
-    // Defensive fallback: `data.text` is typed as possibly undefined. If a
-    // 'session-error' event is ever emitted without text, fall back to a
-    // factual placeholder rather than silently losing the error (which would
-    // mislabel the run 'complete' or 'no-review' despite a real failure).
-    // The fallback states only that a message was missing — it does not
-    // guess at why the error occurred.
-    if (sessionError) error = sessionError.data.text ?? 'session error (no message provided)';
-  }
+    // The deadline INTERRUPTS rather than rejecting. interrupt()
+    // (harness-session.ts:1598) ends the in-flight turn cleanly and lets send()
+    // resolve with everything gathered — the old Promise.race abandoned a live
+    // promise and discarded the whole run, which is how round 5 lost four
+    // models. `.unref()` keeps the process from hanging on this timer; it fires
+    // at most once (the testing turn either finishes and clears it below, or
+    // this callback runs and there is nothing left to clear it early).
+    const deadline = setTimeout(() => {
+      wrapUpReason ??= 'timeout';
+      session.interrupt();
+    }, timeoutMs);
+    deadline.unref();
 
-  // A denied budget gate ends the turn with stopReason 'max_steps'
-  // (harness-session.ts:1102). WHY read the stopReason rather than set a flag
-  // in askUser: at the callback a denied gate and a turn that was about to
-  // finish anyway are indistinguishable — the stopReason is the only place
-  // the difference is recorded. `!wrapUpReason` guards against overwriting a
-  // 'timeout' the deadline callback above already set; `!error` skips this
-  // when the turn threw instead of finishing (an error takes priority — see
-  // the outcome expression below).
-  if (!wrapUpReason && !error && stopReasons.at(-1) === 'max_steps') wrapUpReason = 'budget';
-
-  // Everything the testing turn emitted. The wrap-up review is sliced from
-  // here onward so trailing narration from the interrupted turn cannot leak
-  // into it (see lastToolResultIndex's WHY comment below).
-  let sliceFrom = 0;
-
-  if (wrapUpReason) {
-    wrappingUp = true;
-    sliceFrom = events.length;
-    // Own marker + own deadline, same reasoning as the testing turn's above:
-    // this is a SECOND send() on the same session, appending to the same
-    // `events` array, so its error scan must stay scoped to just this turn.
-    const wrapEventsBeforeSend = events.length;
-    const wrapDeadline = setTimeout(() => session.interrupt(), WRAP_UP_TIMEOUT_MS);
-    wrapDeadline.unref();
+    // WHY: captured immediately before send() so the session-error scan below
+    // can be scoped to THIS turn only. The wrap-up turn below is a second
+    // send() on this same session, which appends more events to this same
+    // array — an unscoped scan would find a 'session-error' left over from a
+    // failed first turn and mislabel a wrap-up turn that actually succeeded
+    // (or vice versa).
+    const eventsBeforeSend = events.length;
     try {
-      await session.send(WRAP_UP_PROMPT);
+      await session.send(BATTERY_PROMPT);
     } catch (err) {
-      // A failed wrap-up is not fatal: the testing transcript is still worth
-      // writing, and outcome stays 'wrapped-up' with an empty review.
-      error ??= err instanceof Error ? err.message : String(err);
+      // Salvage, don't discard. A provider error still leaves a transcript
+      // worth writing — round 5 threw four of them away and left the failures
+      // undiagnosable. The REAL message is carried through, never a guess.
+      error = err instanceof Error ? err.message : String(err);
     } finally {
-      clearTimeout(wrapDeadline);
+      clearTimeout(deadline);
     }
-    // Same non-rejecting-send() gap as the testing turn: a wrap-up-turn
-    // model error surfaces as a 'session-error' event, not a thrown
-    // exception. Scoped to wrapEventsBeforeSend, not eventsBeforeSend, so a
-    // testing-turn error that already resolved above is never re-attributed
-    // to a wrap-up turn that actually succeeded.
+
+    // Deviation from the brief's snippet, found by running its own test: a
+    // provider error that survives HarnessSession's internal retries does NOT
+    // reject send() at all — beginTurn's own catch (harness-session.ts:1176-1188)
+    // swallows it and emits a 'session-error' transcript event instead, then
+    // returns normally. So the try/catch above only ever fires for a genuinely
+    // thrown error; a mid-run model error would otherwise fall through as a
+    // false 'no-review' with the real failure silently dropped, defeating the
+    // whole point of this task. Checked only when send() itself didn't already
+    // report an error, so a genuine throw keeps its own message.
     if (!error) {
-      const wrapSessionError = events
-        .slice(wrapEventsBeforeSend)
+      // WHY: scan only the events THIS send() produced (events.slice, not the
+      // full array) — see eventsBeforeSend's WHY comment above.
+      const sessionError = events
+        .slice(eventsBeforeSend)
         .find((e) => e.type === 'session-error');
-      if (wrapSessionError) error = wrapSessionError.data.text ?? 'session error (no message provided)';
+      // Defensive fallback: `data.text` is typed as possibly undefined. If a
+      // 'session-error' event is ever emitted without text, fall back to a
+      // factual placeholder rather than silently losing the error (which would
+      // mislabel the run 'complete' or 'no-review' despite a real failure).
+      // The fallback states only that a message was missing — it does not
+      // guess at why the error occurred.
+      if (sessionError) error = sessionError.data.text ?? 'session error (no message provided)';
     }
+
+    // A denied budget gate ends the turn with stopReason 'max_steps'
+    // (harness-session.ts:1102). WHY read the stopReason rather than set a flag
+    // in askUser: at the callback a denied gate and a turn that was about to
+    // finish anyway are indistinguishable — the stopReason is the only place
+    // the difference is recorded. `!wrapUpReason` guards against overwriting a
+    // 'timeout' the deadline callback above already set; `!error` skips this
+    // when the turn threw instead of finishing (an error takes priority — see
+    // the outcome expression below).
+    if (!wrapUpReason && !error && stopReasons.at(-1) === 'max_steps') wrapUpReason = 'budget';
+
+    // Everything the testing turn emitted. The wrap-up review is sliced from
+    // here onward so trailing narration from the interrupted turn cannot leak
+    // into it (see lastToolResultIndex's WHY comment below).
+    let sliceFrom = 0;
+
+    if (wrapUpReason) {
+      wrappingUp = true;
+      sliceFrom = events.length;
+      // Own marker + own deadline, same reasoning as the testing turn's above:
+      // this is a SECOND send() on the same session, appending to the same
+      // `events` array, so its error scan must stay scoped to just this turn.
+      const wrapEventsBeforeSend = events.length;
+      const wrapDeadline = setTimeout(() => session.interrupt(), WRAP_UP_TIMEOUT_MS);
+      wrapDeadline.unref();
+      try {
+        await session.send(WRAP_UP_PROMPT);
+      } catch (err) {
+        // A failed wrap-up is not fatal: the testing transcript is still worth
+        // writing, and outcome stays 'wrapped-up' with an empty review.
+        error ??= err instanceof Error ? err.message : String(err);
+      } finally {
+        clearTimeout(wrapDeadline);
+      }
+      // Same non-rejecting-send() gap as the testing turn: a wrap-up-turn
+      // model error surfaces as a 'session-error' event, not a thrown
+      // exception. Scoped to wrapEventsBeforeSend, not eventsBeforeSend, so a
+      // testing-turn error that already resolved above is never re-attributed
+      // to a wrap-up turn that actually succeeded.
+      if (!error) {
+        const wrapSessionError = events
+          .slice(wrapEventsBeforeSend)
+          .find((e) => e.type === 'session-error');
+        if (wrapSessionError) error = wrapSessionError.data.text ?? 'session error (no message provided)';
+      }
+    }
+
+    // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
+    // throughout the WHOLE run, not one-per-message — the old comment here
+    // ("the model's final assistant text") was simply false about what the code
+    // below it did. It joined EVERY assistant-text event, so a live run's
+    // turn-by-turn narration ("I'll start by getting oriented...", "Now let me
+    // try...") got glued onto the front of the actual review with no separator
+    // (confirmed on the Kimi K3 run: 2,501 assistant-text events, 36% of the
+    // joined text was pre-review commentary).
+    //
+    // The model's real final message is whatever assistant-text it emits AFTER
+    // its last tool call finishes — verified against that same transcript:
+    // taking only the text after the last tool-result event yields exactly the
+    // review's true start ("I ran the full battery...") through its true end,
+    // nothing more. `data.text` is already typed `string | undefined`
+    // (shared/types.ts) — the brief's `(e.data as any)?.text` cast was
+    // unnecessary.
+    //
+    // Edge case: a model that answers without ever calling a tool has no
+    // tool-result to anchor on. `lastToolResultIndex` is then -1, and `i > -1`
+    // is true for every index, so the filter falls back to "every assistant-text
+    // event" — which in a no-tool-call run IS the whole (and only) message.
+    //
+    // Only the wrap-up turn's events when one ran (sliceFrom > 0); the whole
+    // run otherwise.
+    const reviewWindow = events.slice(sliceFrom);
+    // Fix pass 1, Finding 1: the "after the last tool result" anchor exists to
+    // strip narration BETWEEN REAL tool calls — but inside the wrap-up window
+    // no tool call is ever real (decide() denies every one above), so there is
+    // no such narration to strip, and the anchor becomes a way to LOSE the
+    // deliverable instead: a model that writes its review and then attempts
+    // one more (denied) tool call pushes a tool-result to a later index than
+    // the review text, and the old unconditional anchor discarded it. That is
+    // exactly the tool-happy failure population wrap-up exists to rescue (127
+    // and 157 calls in the round-5 incident). So in the wrap-up window
+    // (sliceFrom > 0) join every assistant-text event regardless of position;
+    // the single-turn window (sliceFrom === 0) keeps the real anchor, which is
+    // still correct there and is pinned by the "takes only the wrap-up turn
+    // text, not narration from the interrupted turn" test above.
+    const lastToolResultIndex = sliceFrom > 0 ? -1 : reviewWindow.reduce(
+      (last, e, i) => (e.type === 'tool-result' ? i : last),
+      -1,
+    );
+    const review = reviewWindow
+      .filter((e, i) => e.type === 'assistant-text' && i > lastToolResultIndex)
+      .map((e) => e.data.text ?? '')
+      .join('')
+      .trim();
+
+    // wrapUpReason takes priority: a wrap-up turn that itself errors still
+    // reports 'wrapped-up' (with an empty review, per the brief's WHY comment
+    // above the wrap-up try/catch) — the run was cut short and asked for its
+    // review, which is the fact a caller most needs to see, over the
+    // secondary fact that the wrap-up attempt also failed. Otherwise an error
+    // takes priority over a review the model may have partially produced
+    // before failing.
+    const outcome: BatteryOutcome =
+      wrapUpReason ? 'wrapped-up'
+      : error ? 'error'
+      : review ? 'complete'
+      : 'no-review';
+
+    return {
+      label: opts.label, modelId: opts.modelId, review, events,
+      toolCalls, asks, stepGates, fixtureRoot,
+      outcome, wrapUpReason, error,
+      metrics: {
+        wallClockMs: Date.now() - startedAt,
+        toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
+        stopReasons,
+        toolsUsed: [...toolsUsed].sort(),
+        // Restart-repeat detection lands in Task 4; until then every run reports
+        // no repeats, never a guessed-at count.
+        repeats: [],
+      },
+    };
+  } finally {
+    // Guaranteed teardown (Finding 3). Runs after the wrap-up turn (if any) has
+    // already completed above — destroying the session or removing the fixture
+    // any earlier would make the wrap-up turn's own send() fail outright (no
+    // session left to send on, no cwd left for its tools).
+    session.destroy();
+    if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
-
-  // Moved out of the testing turn's finally block: destroying the session or
-  // removing the fixture before the wrap-up turn runs would make its send()
-  // fail outright (no session left to send on, no cwd left for its tools).
-  session.destroy();
-  if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
-
-  // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
-  // throughout the WHOLE run, not one-per-message — the old comment here
-  // ("the model's final assistant text") was simply false about what the code
-  // below it did. It joined EVERY assistant-text event, so a live run's
-  // turn-by-turn narration ("I'll start by getting oriented...", "Now let me
-  // try...") got glued onto the front of the actual review with no separator
-  // (confirmed on the Kimi K3 run: 2,501 assistant-text events, 36% of the
-  // joined text was pre-review commentary).
-  //
-  // The model's real final message is whatever assistant-text it emits AFTER
-  // its last tool call finishes — verified against that same transcript:
-  // taking only the text after the last tool-result event yields exactly the
-  // review's true start ("I ran the full battery...") through its true end,
-  // nothing more. `data.text` is already typed `string | undefined`
-  // (shared/types.ts) — the brief's `(e.data as any)?.text` cast was
-  // unnecessary.
-  //
-  // Edge case: a model that answers without ever calling a tool has no
-  // tool-result to anchor on. `lastToolResultIndex` is then -1, and `i > -1`
-  // is true for every index, so the filter falls back to "every assistant-text
-  // event" — which in a no-tool-call run IS the whole (and only) message.
-  //
-  // Only the wrap-up turn's events when one ran (sliceFrom > 0); the whole
-  // run otherwise. `lastToolResultIndex` below is LOCAL to this window, which
-  // is what keeps the interrupted testing turn's trailing narration
-  // ("Now let me try one more thing...") out of the wrapped-up review.
-  const reviewWindow = events.slice(sliceFrom);
-  const lastToolResultIndex = reviewWindow.reduce(
-    (last, e, i) => (e.type === 'tool-result' ? i : last),
-    -1,
-  );
-  const review = reviewWindow
-    .filter((e, i) => e.type === 'assistant-text' && i > lastToolResultIndex)
-    .map((e) => e.data.text ?? '')
-    .join('')
-    .trim();
-
-  // wrapUpReason takes priority: a wrap-up turn that itself errors still
-  // reports 'wrapped-up' (with an empty review, per the brief's WHY comment
-  // above the wrap-up try/catch) — the run was cut short and asked for its
-  // review, which is the fact a caller most needs to see, over the
-  // secondary fact that the wrap-up attempt also failed. Otherwise an error
-  // takes priority over a review the model may have partially produced
-  // before failing.
-  const outcome: BatteryOutcome =
-    wrapUpReason ? 'wrapped-up'
-    : error ? 'error'
-    : review ? 'complete'
-    : 'no-review';
-
-  return {
-    label: opts.label, modelId: opts.modelId, review, events,
-    toolCalls, asks, stepGates, fixtureRoot,
-    outcome, wrapUpReason, error,
-    metrics: {
-      wallClockMs: Date.now() - startedAt,
-      toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
-      stopReasons,
-      toolsUsed: [...toolsUsed].sort(),
-      // Restart-repeat detection lands in Task 4; until then every run reports
-      // no repeats, never a guessed-at count.
-      repeats: [],
-    },
-  };
 }

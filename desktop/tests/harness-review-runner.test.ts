@@ -2,10 +2,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
 import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT } from '../src/main/harness/review/run-battery';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
+import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
 describe('makeOpenRouterFactory', () => {
@@ -622,20 +624,86 @@ describe('wrap-up turn', () => {
     expect(run.review).not.toContain('one more thing');
   });
 
-  it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {
-    // 60 windows of scripted tool calls, so the run never runs out of script
-    // before the deadline can fire (per the task brief: never lower the
-    // scripted step count to fix flakiness here). timeoutMs is deliberately
-    // tight: this fake model has no real per-step latency, so
-    // STEP_GATE_ALLOWANCE's own natural 'max_steps' denial (measured ~1.1s
-    // for 200 steps against this fixture) would otherwise win the race and
-    // report 'budget' instead of the 'timeout' this test exists to prove —
-    // 200ms leaves a wide margin under that. The deadline must interrupt the
-    // testing turn and go to wrap-up, NOT reject.
+  it('keeps the wrap-up review even if the model answers and then tries one more tool call', async () => {
+    // Fix pass 1, Finding 1 regression: inside the wrap-up window every tool
+    // call is denied, so a tool-result there is never a real narration
+    // boundary — but the OLD extractor anchored on "text after the last
+    // tool-result" unconditionally, so a model that writes its review and
+    // THEN attempts one more (denied) tool call had that review discarded:
+    // the denial's tool-result landed at a later index than the review text,
+    // and the filter excluded everything at or before it. This is exactly
+    // the tool-happy failure population wrap-up exists to rescue (127 and 157
+    // tool calls in the round-5 incident).
     const model = scriptModel([
-      ...toolCallSteps(BATTERY_STEP_BUDGET * 60),
-      { text: 'Review after the clock ran out.' },
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: answer AND try one more tool call in the same step.
+      {
+        text: 'My review is done.',
+        toolCalls: [{ name: 'Bash', input: { command: 'echo one more' } }],
+      },
+      // Wrap-up turn, step 2: the step above's tool call was denied (not an
+      // ask), so the turn loops once more — the model gives up here.
+      {},
     ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('My review is done.');
+  });
+
+  it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {
+    // Fix pass 1, Finding 4: the old version of this test scripted a fixed
+    // array (60 windows of tool calls, THEN one text step) and relied on the
+    // interrupted testing turn resuming mid-script for the wrap-up turn. That
+    // trailing text step was dead code — the wrap-up turn resumes wherever the
+    // 200ms deadline caught the testing turn (a handful of tool-call steps
+    // in), then needs up to its OWN ~100-step budget to work through the
+    // REST of the 6,000 scripted tool-call steps before ever reaching the
+    // text step at the end — so it never got there, and the test proved only
+    // that the trigger fired, not that the mechanism delivers a review.
+    //
+    // Fixed by making the model's response depend on what it's actually being
+    // asked, not on a step index: keep emitting (alternating, non-doom-loop)
+    // tool calls until WRAP_UP_PROMPT shows up as the latest user turn in its
+    // own prompt, then answer in prose immediately. That makes delivery
+    // deterministic regardless of exactly how many steps the 200ms deadline
+    // let the testing turn consume, while still keeping the testing turn
+    // permanently tool-happy (never naturally finishing) so the deadline is
+    // what ends it, not the script running out.
+    //
+    // timeoutMs is deliberately tight: this fake model has no real per-step
+    // latency, so STEP_GATE_ALLOWANCE's own natural 'max_steps' denial
+    // (measured ~1.1s for 200 steps against this fixture) would otherwise win
+    // the race and report 'budget' instead of the 'timeout' this test exists
+    // to prove — 200ms leaves a wide margin under that.
+    //
+    // Fix pass 1, Finding 5: the risk direction here is a FASTER machine (or
+    // CI runner), not a slower one — a slower machine only makes the 200-step
+    // budget path take longer, widening this test's margin. If this ever
+    // flakes, the fix is to LOWER timeoutMs (more headroom for the deadline to
+    // win), never to raise it — raising it hands the budget path more time to
+    // finish first, which is the opposite of what's needed. (A prior draft of
+    // this file's own report had this backwards; corrected there too.)
+    const seenPrompts: unknown[] = [];
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (req: any) => {
+        seenPrompts.push(req.prompt);
+        const isWrapUpTurn = JSON.stringify(req.prompt).includes(WRAP_UP_PROMPT);
+        call++;
+        const chunks = isWrapUpTurn
+          ? stream(...textChunks(`t${call}`, 'Review after the clock ran out.'), finishChunk('stop'))
+          : stream(
+              toolCallChunk(`c${call}`, 'Read', { file_path: 'README.md', offset: (call % 2) + 1 }),
+              finishChunk('tool-calls'),
+            );
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+
     const run = await runBattery({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 200,
@@ -644,6 +712,13 @@ describe('wrap-up turn', () => {
     expect(run.wrapUpReason).toBe('timeout');
     expect(run.outcome).toBe('wrapped-up');
     expect(run.error).toBeUndefined();   // a deadline is not an error any more
+    // The mechanism, not just the trigger: the wrap-up turn actually delivered
+    // a review, proving the second-turn machinery works end to end.
+    expect(run.review).toBe('Review after the clock ran out.');
+    // Fix pass 1, Finding 6: prove the wrap-up turn's outgoing message really
+    // carried WRAP_UP_PROMPT — the fake model above only branches on this, so
+    // this assertion is exercising the real content, not just the import.
+    expect(seenPrompts.some((p) => JSON.stringify(p).includes(WRAP_UP_PROMPT))).toBe(true);
   });
 });
 
