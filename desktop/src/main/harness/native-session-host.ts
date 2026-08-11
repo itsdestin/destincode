@@ -164,26 +164,35 @@ export class NativeSessionHost extends EventEmitter {
     // Per-model vision fact read from the provider catalog's declared input
     // modalities (Task 6c). Today only OpenRouter's catalog can actually
     // answer this — everyone else (direct-key providers, openai-compatible,
-    // local-engine) has no such signal, so this closure returns null for
-    // them, same as an OpenRouter cache miss or fetch failure. null degrades
-    // to resolveProfile's existing registry/provider-default behavior
-    // (DiscoveredModel.supportsVision left undefined) — it is never allowed
-    // to throw or block session start. Positioned right after providerTypeFor
-    // for the same reason that one sits after contextLengthFor: all three are
-    // resolved together for every create/resume/swap.
+    // local-engine) has no such signal, so the real (ipc-handlers) wiring
+    // returns null for them WITHOUT ever touching the catalog, same as an
+    // OpenRouter cache miss or fetch failure returning null after touching
+    // it. null degrades to resolveProfile's existing registry/provider-default
+    // behavior (DiscoveredModel.supportsVision left undefined) — it is never
+    // allowed to throw. It is also never allowed to block a NON-OpenRouter
+    // session start; for a live OpenRouter binding it does await the same
+    // bounded (AbortSignal.timeout-guarded) catalog fetch contextLengthFor
+    // already pays for that binding, so it is not fully non-blocking there —
+    // see the ipc-handlers.ts construction site for the short-circuit that
+    // makes this true. Positioned right after providerTypeFor for the same
+    // reason that one sits after contextLengthFor: all three are resolved
+    // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
-    // a no-op so the many existing 3-arg test constructions still compile; the
-    // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
+    // a no-op so the many existing 5-arg test constructions (store, modelFactory,
+    // contextLengthFor, providerTypeFor, visionSupportFor — the first four params
+    // plus Task 6c's new closure have no defaults) still compile; the real
+    // wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
     private permissionStore: RememberedRuleStore = NOOP_REMEMBERED_STORE,
     // Injected because electron's `app` is not importable in tests (mirrors the
     // other injected functions/values above). Feeds the <env> block of the
     // once-per-session assembled system prompt.
     private appVersion: string = '0.0.0-dev',
     // Runtime services threaded into every session's ToolContext (spec §3.2) —
-    // WebSearch reads toolServices.search. Optional + LAST so existing 3/4/5-arg
-    // test constructions still compile; the real wiring (ipc-handlers) injects
-    // { search: searchService }.
+    // WebSearch reads toolServices.search. Optional + LAST (of the pre-Task-6c
+    // params) so existing 5/6/7-arg test constructions (the 5 required params,
+    // optionally followed by permissionStore and/or appVersion) still compile;
+    // the real wiring (ipc-handlers) injects { search: searchService }.
     private toolServices?: ToolServices,
     // Installed-skill source for /skill-name and the Skill tool (M3 item 1).
     // Injected + LAST so existing constructions still compile, and so a test can

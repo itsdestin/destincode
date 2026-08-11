@@ -264,7 +264,12 @@ describe('supportsVision — three-level precedence (registry > discovered > pro
   });
 
   it('a discovered false from the catalog wins over the provider default', () => {
-    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/text-model', contextLength: 128_000, supportsVision: false };
+    // Regression guard for a test that used to assert this same claim with an
+    // openrouter binding — whose VISION_PROVIDERS default is ALREADY false, so
+    // that version passed even with the whole discovered-value feature deleted.
+    // anthropic IS in VISION_PROVIDERS (default true), so only a real "discovered
+    // false overrides it" path can make this one pass.
+    const d: DiscoveredModel = { providerType: 'anthropic', modelId: 'some/model', contextLength: 128_000, supportsVision: false };
     expect(resolveProfile(d).supportsVision).toBe(false);
   });
 

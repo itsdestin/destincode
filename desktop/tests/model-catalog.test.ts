@@ -191,8 +191,12 @@ describe('ModelCatalog', () => {
     it.each([
       ['architecture: null', { architecture: null }],
       ['architecture: a string', { architecture: 'image' }],
-      ['architecture without input_modalities', { architecture: { modality: 'text->text' } }],
+      ['architecture with neither input_modalities nor modality', { architecture: {} }],
       ['input_modalities: not an array', { architecture: { input_modalities: 'image' } }],
+      // Legacy `modality` fallback (below) is only trusted with a string that
+      // contains the '->' delimiter — these two stay "don't know" instead.
+      ['modality: not a string', { architecture: { modality: 123 } }],
+      ['modality: a string with no "->"', { architecture: { modality: 'text' } }],
     ])('leaves supportsVision undefined for malformed shape: %s', async (_label, extra) => {
       fetchMock.mockImplementation(async (url: string) => ({
         ok: true,
@@ -202,6 +206,43 @@ describe('ModelCatalog', () => {
       }));
       const models = await cat.get(providers);
       expect(models.find((m) => m.id === 'malformed')?.supportsVision).toBeUndefined();
+    });
+
+    // Legacy `architecture.modality` string, predating input_modalities
+    // (e.g. still served for some older OpenRouter catalog rows).
+    it('sets supportsVision: true from legacy modality string "text+image->text" when input_modalities is absent', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'legacy-vision', name: 'Legacy Vision', architecture: { modality: 'text+image->text' } }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'legacy-vision')?.supportsVision).toBe(true);
+    });
+
+    it('sets supportsVision: false from legacy modality string "text->text" when input_modalities is absent', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'legacy-text', name: 'Legacy Text', architecture: { modality: 'text->text' } }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'legacy-text')?.supportsVision).toBe(false);
+    });
+
+    it('prefers input_modalities over a conflicting legacy modality string when both are present', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'both-fields', name: 'Both', architecture: { input_modalities: ['text'], modality: 'text+image->text' } }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      // input_modalities says no image -> that wins, even though the legacy
+      // string alone would have said true.
+      expect(models.find((m) => m.id === 'both-fields')?.supportsVision).toBe(false);
     });
   });
 

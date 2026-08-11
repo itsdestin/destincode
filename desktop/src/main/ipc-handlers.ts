@@ -2274,12 +2274,21 @@ export function registerIpcHandlers(
     // per-model modality data (architecture.input_modalities, parsed in
     // model-catalog.ts's openrouterModels()) — every other provider type has no
     // such signal, so this returns null for them and lets resolveProfile fall
-    // back to the registry/provider-type default, same as today. modelCatalog.get()
+    // back to the registry/provider-type default, same as today. Mirrors
+    // contextLengthFor's short-circuit above (same `providers`/`p` lookup,
+    // just gated on a different provider type): every non-openrouter binding
+    // — INCLUDING local-engine — returns before modelCatalog is ever touched,
+    // so this closure adds no fetch/readFileSync/JSON.parse/engine-query cost
+    // to a session start it doesn't apply to. Only a live OpenRouter binding
+    // pays modelCatalog.get()'s cost, same as contextLengthFor already pays
+    // modelCatalog.contextLengthFor()'s for that same binding. modelCatalog.get()
     // never throws (its own contract — a dead network degrades to stale cache or
     // an empty list), so there is nothing to catch here; a cache miss or unknown
     // model just falls through the `?.supportsVision` chain to null.
     async (binding) => {
       const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type !== 'openrouter') return null;
       const models = await modelCatalog.get(providers);
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
@@ -2292,13 +2301,15 @@ export function registerIpcHandlers(
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
     { search: searchService },
-    // skillCatalog (8th param): NOT wired yet — a different task's scope (see
-    // task-7b-brief.md "Explicitly NOT in scope"). Passed explicitly so
-    // mcpManager lands in the 9th positional slot instead of silently taking
-    // skillCatalog's place.
+    // skillCatalog (9th param — shifted from 8th by Task 6c's new
+    // visionSupportFor closure above): NOT wired yet — a different task's
+    // scope (see task-7b-brief.md "Explicitly NOT in scope"). Passed
+    // explicitly so mcpManager lands in the 10th positional slot instead of
+    // silently taking skillCatalog's place.
     undefined,
-    // mcpManager (9th param, Task 7b): makes the whole native-MCP stack
-    // reachable — see the construction comment above.
+    // mcpManager (10th param, Task 7b — shifted from 9th by Task 6c): makes
+    // the whole native-MCP stack reachable — see the construction comment
+    // above.
     mcpManager,
   );
 
