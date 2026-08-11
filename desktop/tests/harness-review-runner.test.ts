@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_LIMIT } from '../src/main/harness/review/run-battery';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
@@ -493,16 +493,21 @@ describe('runBattery', () => {
   // than typed out by hand. Prefers the real path (per the task brief) over
   // faking the askUser decision directly, since it also proves toolCalls/
   // asks/stepGates all still line up correctly across a real gate crossing.
-  // Alternates `offset` so no 3 consecutive calls share an identical signature
-  // (harness-session.ts:1424's doom-loop sig is `toolName:JSON.stringify(args)`,
-  // threshold 3 for the openrouter/cloud profile — capability-profile.ts). A
-  // constant-input Read call WOULD legitimately trip that guard on call 3 and
-  // then again on every call after (denial never resets the window, only
-  // 'allow' does — harness-session.ts:1438), inflating `asks` with doom_loop
-  // hits unrelated to what this test is proving about max_steps.
+  // `offset: i` makes every call's input unique so no 3 consecutive calls
+  // share an identical signature (harness-session.ts:1424's doom-loop sig is
+  // `toolName:JSON.stringify(args)`, threshold 3 for the openrouter/cloud
+  // profile — capability-profile.ts) — a constant-input Read call WOULD
+  // legitimately trip that guard on call 3 and then again on every call after
+  // (denial never resets the window, only 'allow' does — harness-session.ts:
+  // 1438), inflating `asks` with doom_loop hits unrelated to what this test
+  // is proving about max_steps. Unique-per-call (not merely alternating
+  // between two values) ALSO keeps this run under REPEAT_LIMIT (run-battery.ts)
+  // — an alternating two-value script run for 100+ steps would otherwise trip
+  // the restart-detection wrap-up before max_steps ever gets the chance to,
+  // which is what this test exists to prove.
   function toolCallSteps(count: number): ScriptStep[] {
     return Array.from({ length: count }, (_, i) => ({
-      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: (i % 2) + 1 } }],
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: i } }],
     }));
   }
 
@@ -545,11 +550,17 @@ describe('runBattery', () => {
 
 describe('wrap-up turn', () => {
   function toolCallSteps(count: number): ScriptStep[] {
-    // Alternating offsets so consecutive calls are never byte-identical — that
-    // would trip the doom_loop guard (harness-session.ts:1432), which is a
-    // different mechanism and would muddy what this test proves.
+    // Unique `offset` per call so consecutive calls are never byte-identical
+    // (which would trip the doom_loop guard, harness-session.ts:1432 — a
+    // different mechanism that would muddy what these tests prove) AND so no
+    // call recurs at all across the whole run. Recurring between just two
+    // alternating values would, at this function's typical call counts
+    // (100+), cross REPEAT_LIMIT (run-battery.ts) and send the run to a
+    // 'restart' wrap-up before the budget/timeout trigger these tests are
+    // actually exercising ever fires — restart detection has its own
+    // dedicated tests below.
     return Array.from({ length: count }, (_, i) => ({
-      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: (i % 2) + 1 } }],
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: i } }],
     }));
   }
 
@@ -697,7 +708,11 @@ describe('wrap-up turn', () => {
         const chunks = isWrapUpTurn
           ? stream(...textChunks(`t${call}`, 'Review after the clock ran out.'), finishChunk('stop'))
           : stream(
-              toolCallChunk(`c${call}`, 'Read', { file_path: 'README.md', offset: (call % 2) + 1 }),
+              // `offset: call` (not alternating between two values): unique
+              // per call so this never itself crosses REPEAT_LIMIT and reports
+              // 'restart' instead of the 'timeout' this test exists to prove —
+              // same reasoning as the wrap-up describe block's toolCallSteps.
+              toolCallChunk(`c${call}`, 'Read', { file_path: 'README.md', offset: call }),
               finishChunk('tool-calls'),
             );
         return { stream: simulateReadableStream({ chunks }) };
@@ -719,6 +734,53 @@ describe('wrap-up turn', () => {
     // carried WRAP_UP_PROMPT — the fake model above only branches on this, so
     // this assertion is exercising the real content, not just the import.
     expect(seenPrompts.some((p) => JSON.stringify(p).includes(WRAP_UP_PROMPT))).toBe(true);
+  });
+});
+
+describe('restart detection', () => {
+  it('wraps up when the same call repeats past the limit, even non-consecutively', async () => {
+    // Interleave a repeated Glob with distinct Reads so no two IDENTICAL calls
+    // are ever adjacent — doom_loop (harness-session.ts:1432) only catches the
+    // consecutive case and must not be what fires here.
+    const steps: ScriptStep[] = [];
+    for (let i = 0; i <= REPEAT_LIMIT; i++) {
+      steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
+      steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
+    }
+    steps.push({ text: 'Review after the restart was caught.' });
+    // Hoisted out of modelFactory (see the wrap-up describe block above): a
+    // fresh scriptModel per send() would replay the wrap-up turn from step 0.
+    const model = scriptModel(steps);
+
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.wrapUpReason).toBe('restart');
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('Review after the restart was caught.');
+    expect(run.metrics.repeats[0]).toMatchObject({ count: REPEAT_LIMIT + 1 });
+    expect(run.metrics.repeats[0].key).toContain('Glob');
+  });
+
+  it('leaves a run alone when repeats stay at or under the limit', async () => {
+    const steps: ScriptStep[] = [];
+    for (let i = 0; i < REPEAT_LIMIT; i++) {
+      steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
+      steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
+    }
+    steps.push({ text: 'Normal review.' });
+    const model = scriptModel(steps);
+
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.wrapUpReason).toBeUndefined();
+    expect(run.outcome).toBe('complete');
+    expect(run.metrics.repeats).toEqual([]);
   });
 });
 

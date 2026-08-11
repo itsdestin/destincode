@@ -38,8 +38,8 @@ export interface BatteryMetrics {
   /** Distinct tool names actually invoked, sorted. The evidence a review's
    *  claims are checked against (run-facts.ts). */
   toolsUsed: string[];
-  /** (toolName, input) pairs seen more than REPEAT_LIMIT times. Populated in
-   *  Task 4; [] before restart detection exists. */
+  /** (toolName, input) pairs seen more than REPEAT_LIMIT times — the evidence
+   *  behind a 'restart' wrapUpReason. [] when no call recurred past the limit. */
   repeats: { key: string; count: number }[];
 }
 
@@ -65,8 +65,11 @@ export interface BatteryRun {
    *  final text. 'error' — the provider or session threw; see `error`. */
   outcome: BatteryOutcome;
   /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
-   *  testing turn ended on its own. 'budget' and 'timeout' land in this task;
-   *  'restart' is produced by a later task's repeat-loop detector. */
+   *  testing turn ended on its own. 'budget' and 'timeout' fire on the testing
+   *  turn's own outcome (max_steps exhaustion, wall clock); 'restart' fires the
+   *  moment a (toolName, input) pair recurs past REPEAT_LIMIT, non-consecutively
+   *  — see REPEAT_LIMIT's WHY comment below for the 2026-08-10 incident it
+   *  catches that doom_loop cannot. */
   wrapUpReason?: 'budget' | 'restart' | 'timeout';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
@@ -113,6 +116,19 @@ export const WRAP_UP_PROMPT =
 // The wrap-up turn's own ceiling. Much smaller than the testing phase: it is one
 // message, and a model that cannot produce it in two minutes is not going to.
 export const WRAP_UP_TIMEOUT_MS = 120_000;
+
+// How many byte-identical (toolName, input) pairs a run may issue before it is
+// treated as having restarted the battery rather than making progress.
+//
+// WHY this is not doom_loop's job: doom_loop (harness-session.ts:1432) fires on
+// CONSECUTIVE repeats, which catches a stuck tool. This catches the other shape
+// — Qwen 3.8 Max issued `Glob **/*` fourteen times spread across 157 calls on
+// 2026-08-10, restarting the battery each time its context compacted. Nothing
+// was stuck; the run was just never going to finish.
+//
+// WHY 5: re-reading one file twice while testing (say, checking Read's freshness
+// guard) is legitimate. Six byte-identical calls is not a re-check.
+export const REPEAT_LIMIT = 5;
 
 // Default wall-clock ceiling for the TESTING phase. Raised from 900_000 because
 // at the 8.6s/step measured on 2026-08-10, 900s buys ~105 steps — which made the
@@ -269,6 +285,8 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // WHY comment above.
   let wrappingUp = false;
   let wrapUpReason: BatteryRun['wrapUpReason'];
+  // Keyed on tool name + exact input. Non-consecutive by design — see REPEAT_LIMIT.
+  const repeatCounts = new Map<string, number>();
 
   const session = new HarnessSession(
     {
@@ -398,6 +416,21 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       // toolName is the field name on TranscriptEvent.data (shared/types.ts:148),
       // not `name` — the tool-use payload mirrors CC's transcript shape.
       if (e.data.toolName) toolsUsed.add(e.data.toolName);
+      // Restart detection (2026-08-10 incident): keyed on tool name + exact
+      // input so it catches the SAME call recurring anywhere in the run, not
+      // just back-to-back — doom_loop (harness-session.ts:1432) already owns
+      // the consecutive case. Lives inside this same `!wrappingUp` guard so a
+      // denied wrap-up-turn call (which still emits tool-use) never counts
+      // toward the threshold or toward metrics.repeats.
+      const key = `${e.data.toolName ?? '?'} ${JSON.stringify(e.data.toolInput ?? {})}`;
+      const seen = (repeatCounts.get(key) ?? 0) + 1;
+      repeatCounts.set(key, seen);
+      // Trip once, on the crossing. `wrapUpReason` guards against re-interrupting
+      // a run that another trigger (budget/timeout) already sent to wrap-up.
+      if (seen > REPEAT_LIMIT && !wrapUpReason) {
+        wrapUpReason = 'restart';
+        session.interrupt();
+      }
     }
     if (e.type === 'assistant-thinking') thinkingEvents++;
     if (e.type === 'turn-complete') {
@@ -595,9 +628,12 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
         toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
         stopReasons,
         toolsUsed: [...toolsUsed].sort(),
-        // Restart-repeat detection lands in Task 4; until then every run reports
-        // no repeats, never a guessed-at count.
-        repeats: [],
+        // Only calls that actually crossed REPEAT_LIMIT — a run with zero
+        // restart-shaped repeats reports [], not every key ever seen once.
+        repeats: [...repeatCounts.entries()]
+          .filter(([, count]) => count > REPEAT_LIMIT)
+          .map(([key, count]) => ({ key, count }))
+          .sort((a, b) => b.count - a.count),
       },
     };
   } finally {
