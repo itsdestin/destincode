@@ -463,6 +463,14 @@ describe('attachment resume (#290 follow-up fix 2)', () => {
     const out = rebuildHistory([ev('user-message', { text: 'hi', attachments: ['/tmp/ok.png'] })]);
     expect(out).toEqual([{ role: 'user', content: 'hi' }]);
   });
+
+  it('mixed attachments: one resolves, one is gone — the readable image survives, message does NOT collapse to plain-string', () => {
+    // Per-path degrade, same as imagePartsFor's live skip-don't-throw semantics:
+    // one vanished attachment among several must not sink the whole message
+    // back to the bare-string shape and lose the image that IS still there.
+    const out = rebuildHistory([ev('user-message', { text: 'see both', attachments: ['/tmp/ok.png', '/tmp/gone.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: [{ type: 'text', text: 'see both' }, { type: 'file', mediaType: 'image/png', data: Buffer.from('png!') }] }]);
+  });
 });
 
 // Task 7: model-initiated tool-delivered images (e.g. Read on a picture) must
