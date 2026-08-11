@@ -38,7 +38,7 @@ import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
-import { messageTokens, messagesTokens } from './message-size';
+import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
@@ -138,7 +138,6 @@ function mapStopReason(finishReason: string | undefined): string {
     default: return finishReason ?? 'unknown';
   }
 }
-const APPROX_CHARS_PER_TOKEN = 4;
 
 /** Widening advice per tool, in that tool's OWN vocabulary.
  *
@@ -1316,7 +1315,9 @@ export class HarnessSession extends EventEmitter {
     // prompt, which on a local model legitimately takes minutes. Only once tokens
     // have started does a 60s gap mean something is actually wrong. A test that
     // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
-    const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
+    // Binary-aware: JSON.stringify on a Buffer is ~4-5 chars per BYTE, so an image
+    // turn reported a ~700x inflated prompt-token count to the user.
+    const promptTokens = messagesTokens(streamArgs.messages as ModelMessage[])
       + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
     // How much of that is genuinely NEW work. llama.cpp reuses the cached prefix,
     // so a step that appends a 100 KB tool result only prefills the tool result —

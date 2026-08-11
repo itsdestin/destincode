@@ -25,4 +25,12 @@ describe('image-support', () => {
     expect(readImageFromDisk(path.join(path.dirname(p), 'gone.png'))).toBeNull();
     expect(readImageFromDisk(p.replace('.png', '.svg'))).toBeNull();
   });
+
+  // MAX_ATTACHMENT_BYTES cap: four later tasks rely on oversized attachments
+  // being rejected here rather than silently forwarded to the model.
+  it('readImageFromDisk nulls on a deliverable image over MAX_ATTACHMENT_BYTES', () => {
+    const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'imgsup-')), 'big.png');
+    fs.writeFileSync(p, Buffer.alloc(11 * 1024 * 1024));
+    expect(readImageFromDisk(p)).toBeNull();
+  });
 });

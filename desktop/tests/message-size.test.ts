@@ -19,7 +19,12 @@ describe('message-size', () => {
 
   it('charges the flat estimate for a Buffer nested in a content-type tool output', () => {
     const msg = { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', toolName: 'Read', output: { type: 'content', value: [{ type: 'text', text: 'Read image x.png' }, { type: 'file', mediaType: 'image/png', data: { type: 'data', data: Buffer.alloc(500_000) } }] } }] } as any;
-    expect(messageTokens(msg)).toBeLessThan(IMAGE_PART_TOKEN_ESTIMATE + 200);
+    // Lower bound guards against a charSize regression that silently swallows
+    // the nested Buffer subtree (e.g. returns 0/undefined) and would otherwise
+    // still pass an upper-bound-only assertion.
+    const tokens = messageTokens(msg);
+    expect(tokens).toBeGreaterThanOrEqual(IMAGE_PART_TOKEN_ESTIMATE);
+    expect(tokens).toBeLessThan(IMAGE_PART_TOKEN_ESTIMATE + 200);
   });
 
   it('sums across messages', () => {
@@ -36,7 +41,12 @@ describe('sizing regression (#290 image-turn eviction)', () => {
       { role: 'user', content: [{ type: 'text', text: 'see screenshot' }, { type: 'file', mediaType: 'image/png', data: Buffer.alloc(1024 * 1024) }] },
     ] as any;
     // Before the fix this was ~1.1M tokens; a 32k budget kept ONLY the image
-    // message and silently dropped the rest of the conversation.
-    expect(estimateTokens(history)).toBeLessThan(3_000);
+    // message and silently dropped the rest of the conversation. Lower bound
+    // brackets the estimate against a charSize regression that silently
+    // swallows the image subtree and would otherwise pass an upper-bound-only
+    // assertion (a `toBeLessThan` alone is satisfied by 0).
+    const tokens = estimateTokens(history);
+    expect(tokens).toBeGreaterThanOrEqual(IMAGE_PART_TOKEN_ESTIMATE);
+    expect(tokens).toBeLessThan(3_000);
   });
 });

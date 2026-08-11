@@ -13,14 +13,19 @@ export const APPROX_CHARS_PER_TOKEN = 4;
 // base64 length wildly overestimates large images the provider downscales anyway.
 export const IMAGE_PART_TOKEN_ESTIMATE = 1_600;
 
-// Recursive char-equivalent walk. Buffers (and any typed array) count as one
-// image's worth of chars wherever they appear — user-message file parts hold a
-// bare Buffer, tool-result content outputs hold { type:'data', data: Buffer } —
-// so one rule covers both shapes without knowing message schemas.
+// Recursive char-equivalent walk. Buffers, any typed array (Uint8ClampedArray,
+// Float32Array, ...), and bare ArrayBuffers all count as one image's worth of
+// chars wherever they appear — user-message file parts hold a bare Buffer,
+// tool-result content outputs hold { type:'data', data: Buffer } — so one rule
+// covers both shapes without knowing message schemas. ArrayBuffer.isView()
+// catches every typed-array/DataView flavor; a bare ArrayBuffer (no view) needs
+// its own instanceof check since isView() is false for it — without that it fell
+// through to the object branch, where Object.entries() on an ArrayBuffer is
+// [] and it silently sized as 2 chars.
 function charSize(value: unknown): number {
   if (typeof value === 'string') return value.length;
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return 8;
-  if (value instanceof Uint8Array) return IMAGE_PART_TOKEN_ESTIMATE * APPROX_CHARS_PER_TOKEN;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return IMAGE_PART_TOKEN_ESTIMATE * APPROX_CHARS_PER_TOKEN;
   if (Array.isArray(value)) { let n = 2; for (const v of value) n += charSize(v); return n; }
   if (typeof value === 'object') {
     let n = 2;
