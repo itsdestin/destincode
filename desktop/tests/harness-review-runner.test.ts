@@ -4,8 +4,7 @@ import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS } from '../src/main/harness/review/run-battery';
-import { DEFAULT_STEP_BUDGET } from '../src/main/harness/model-step-budget';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET } from '../src/main/harness/review/run-battery';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 
 describe('makeOpenRouterFactory', () => {
@@ -52,6 +51,28 @@ describe('runBattery output ceiling (2026-08-10 incident)', () => {
     // (65,536 was the number that broke Opus) so the upfront reservation is
     // never absurd relative to real usage.
     expect(BATTERY_MAX_OUTPUT_TOKENS).toBeLessThan(65_536);
+  });
+});
+
+import { BATTERY_HARNESS } from '../src/main/harness/review/run-battery';
+import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
+
+describe('battery step budget', () => {
+  it('sets its own maxSteps instead of inheriting the app chat-tier budget', () => {
+    expect(BATTERY_HARNESS.limits?.maxSteps).toBe(BATTERY_STEP_BUDGET);
+  });
+
+  it('is uniform — a frontier model gets the same budget as any other', () => {
+    // WHY assert this rather than just reading the constant: harness-session.ts:1008
+    // is `harness.limits?.maxSteps ?? stepBudgetFor(modelId)`. As long as maxSteps
+    // is set, stepBudgetFor never runs, so the 25/50 tier split cannot leak in.
+    // If someone later deletes the maxSteps line, this is the test that notices.
+    expect(BATTERY_STEP_BUDGET).not.toBe(FRONTIER_STEP_BUDGET);
+    expect(BATTERY_HARNESS.limits?.maxSteps).toBe(BATTERY_STEP_BUDGET);
+  });
+
+  it('allows exactly one budget continuation before the gate means something', () => {
+    expect(STEP_GATE_ALLOWANCE).toBe(1);
   });
 });
 
@@ -492,7 +513,7 @@ describe('runBattery', () => {
     // gate — the run ends with stopReason='max_steps' before the text step is
     // ever reached, so `review` comes back empty instead of the real string.
     const steps: ScriptStep[] = [
-      ...toolCallSteps(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET),
+      ...toolCallSteps(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET),
       { text: 'Final review after surviving every step gate.' },
     ];
     const run = await runBattery({
@@ -503,15 +524,15 @@ describe('runBattery', () => {
     });
 
     expect(run.review).toBe('Final review after surviving every step gate.');
-    // Proves the run actually crossed the 25-step budget boundary STEP_GATE_ALLOWANCE
+    // Proves the run actually crossed the 100-step budget boundary STEP_GATE_ALLOWANCE
     // times, not just once — a run that stalled at the first gate could never
     // reach this many tool calls.
-    expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET);
+    expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET);
     expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE);
     // Design choice (see the WHY comment on run-battery.ts's askUser): a
     // bounded max_steps allowance still counts as an `asks` — it's a real
     // spend/policy decision made on the model's behalf, same as a denied
-    // doom_loop or external-path ask. All four gate hits here were the ONLY
+    // doom_loop or external-path ask. All gate hits here were the ONLY
     // asks in the run (no AskUserQuestion, no external-path Write), so `asks`
     // must equal `stepGates` exactly.
     expect(run.asks).toBe(STEP_GATE_ALLOWANCE);
@@ -522,7 +543,7 @@ describe('runBattery', () => {
     // gate hit must be denied, which ends the turn (harness-session.ts:1102)
     // before any further text is ever produced. No trailing text step is
     // scripted, because the run must never reach one.
-    const steps: ScriptStep[] = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
+    const steps: ScriptStep[] = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
     const run = await runBattery({
       modelFactory: async () => scriptModel(steps) as any,
       modelId: 'fake/model',
@@ -534,7 +555,7 @@ describe('runBattery', () => {
     // ends the turn with no review, exactly like the pre-fix "deny everything"
     // behavior did for the FIRST hit.
     expect(run.review).toBe('');
-    expect(run.toolCalls).toBe((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
+    expect(run.toolCalls).toBe((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
     expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE + 1);
     expect(run.asks).toBe(STEP_GATE_ALLOWANCE + 1);
   });

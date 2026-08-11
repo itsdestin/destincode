@@ -46,19 +46,16 @@ export interface BatteryRun {
 // and lets the run continue). Opus was simply the most thorough model, not a
 // runaway one.
 //
-// WHY 4, not unbounded or 1: the gate exists to catch a genuinely stuck
-// model, and an unbounded allow would defeat that (the exact failure mode
-// the gate was added to prevent). 4 continuations gives a frontier model
-// (50-step budget) up to 5 * 50 = 250 steps and a default model (25-step
-// budget) up to 5 * 25 = 125 steps before the run is cut off — several times
-// the worst observed real number (80 tool calls; steps can be fewer than
-// tool calls since one step may carry several parallel calls, per the task
-// brief) — while still guaranteeing termination well inside `timeoutMs`
-// (default 900_000ms, still the hard wall-clock ceiling underneath all of
-// this: it races the ENTIRE session.send() call, so no number of granted
-// continuations can defeat it — confirmed by reading run-battery's
-// Promise.race below, unchanged by this fix).
-export const STEP_GATE_ALLOWANCE = 4;
+// WHY 1, not 4: the allowance used to compensate for a budget (25/50, chosen by
+// model tier) that was far too small for a battery, so gates fired as a matter
+// of routine and the allowance was really just a multiplier. BATTERY_STEP_BUDGET
+// below sets 100 directly, above every healthy run ever measured (round 4: Kimi
+// K3 56 tool calls, Deepseek 47, Grok 37, GPT 47, Opus 80), so reaching the gate
+// at all is now real signal. One continuation is grace for an unusually thorough
+// run; past that the run wraps up (see WRAP_UP_PROMPT) rather than dying, so the
+// cap no longer costs a paid run its review the way it cost Opus 5 on 2026-08-09.
+// Ceiling: 2 windows * 100 = 200 steps, then a wrap-up turn.
+export const STEP_GATE_ALLOWANCE = 1;
 
 // Fix (2026-08-10 incident): HarnessSession passes `harness.limits?.maxTokens`
 // straight through to streamText's `maxOutputTokens` (harness-session.ts) with
@@ -89,16 +86,34 @@ export const STEP_GATE_ALLOWANCE = 4;
 // they never touch the shared preset object or its live-app consumers.
 export const BATTERY_MAX_OUTPUT_TOKENS = 32_000;
 
+// The battery's own step ceiling, replacing the per-model tier split in
+// model-step-budget.ts (25 default / 50 frontier). WHY uniform: that split is
+// tuned for interactive chat, where a long tool chain usually means the model
+// is lost. The battery is the same size of job — walk ten tools through seven
+// areas — whichever model runs it, so tiering it just means the cheap models
+// get cut off mid-review. 100 is above every healthy run measured to date.
+//
+// WHY it works: harness-session.ts:1008 resolves the budget as
+// `this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId)`,
+// so setting maxSteps on BATTERY_HARNESS below is sufficient — stepBudgetFor
+// is never consulted. Same layering already used for BATTERY_MAX_OUTPUT_TOKENS,
+// and equally confined to the runner's own copy of ASSISTANT_PRESET.
+export const BATTERY_STEP_BUDGET = 100;
+
 // A battery-only harness: same shape as ASSISTANT_PRESET (tools, permission
-// posture, prompt) but with an explicit output ceiling layered on top via a
+// posture, prompt) but with explicit output and step ceilings layered on top via a
 // fresh object — ASSISTANT_PRESET itself is a shared module-level const, so
 // mutating it in place would leak the override into every other consumer
 // (real app sessions included). Spreading `limits` too, not just replacing
 // it, keeps this forward-compatible if ASSISTANT_PRESET ever gains a
 // maxSteps override of its own.
-const BATTERY_HARNESS = {
+export const BATTERY_HARNESS = {
   ...ASSISTANT_PRESET,
-  limits: { ...ASSISTANT_PRESET.limits, maxTokens: BATTERY_MAX_OUTPUT_TOKENS },
+  limits: {
+    ...ASSISTANT_PRESET.limits,
+    maxTokens: BATTERY_MAX_OUTPUT_TOKENS,
+    maxSteps: BATTERY_STEP_BUDGET,
+  },
 };
 
 export interface RunBatteryOpts {
