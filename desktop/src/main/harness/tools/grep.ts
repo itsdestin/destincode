@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
-import { resolveP, shellCwdMissHint } from './guards';
+import { resolveP, toPosix, shellCwdMissHint } from './guards';
 import type { ResultBounds } from './types';
 
 /** Resolve the ripgrep binary the tool will actually spawn.
@@ -42,7 +42,19 @@ export function grepErrorMessage(stderr: string, resolvedPath: string, cwd: stri
     return `Grep failed: ${raw}. Check the regex syntax.`;
   }
   if (/No such file or directory|IO error for operation/i.test(stderr)) {
-    return `Grep failed: ${resolvedPath} does not exist. Paths resolve from the workspace root (${cwd}); pass a path relative to it, or omit \`path\` to search the whole workspace.`;
+    // WHY toPosix on resolvedPath but NOT cwd (2026-08-11): `--path-separator /`
+    // on the rg invocation (below) only rewrites ripgrep's OWN stdout —
+    // resolvedPath never passes through rg at all, it's built locally with
+    // Node's `path` module, which uses '\' on Windows. Without normalizing it,
+    // a Windows "does not exist" message could read "src\a.ts" while every
+    // other harness string (including rg's own matched-file output) speaks
+    // forward slashes — that's a target path the model may act on, so it
+    // joins the shared vocabulary. `cwd` is different: it's the workspace
+    // root, reported for a human/model to recognize their own machine, not to
+    // feed back into another tool call — so it keeps its native spelling
+    // (Windows CI proved this the hard way when an earlier commit normalized
+    // it too and broke a pinned "states the cwd" test).
+    return `Grep failed: ${toPosix(resolvedPath)} does not exist. Paths resolve from the workspace root (${cwd}); pass a path relative to it, or omit \`path\` to search the whole workspace.`;
   }
   return `Grep failed: ${raw}`;
 }
@@ -243,7 +255,15 @@ export const GrepTool = defineTool({
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const mode = args.output_mode ?? 'files_with_matches';
-    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git'];
+    // `--path-separator /` (2026-08-11): rg prints paths with the PLATFORM
+    // separator, so Windows returned `src\a.ts` while Glob returned `src/a.ts`
+    // for the same file — one file, two shapes, unpipeable between the tools.
+    // Set here at construction so it covers every output_mode. Do NOT
+    // hand-normalize rg's stdout instead: in content mode a line is
+    // `path:line:text` and the MATCHED TEXT can itself contain backslashes and
+    // colons, so string surgery would corrupt real matches. Inert on
+    // Linux/macOS, which already print '/'.
+    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git', '--path-separator', '/'];
     // Fix (2026-08-10 review, item 2): `--max-count` used to be passed
     // UNCONDITIONALLY, including for count mode — so ripgrep itself stopped
     // counting a file at 500 matches, and the true total (e.g. 2,400 in the
@@ -301,7 +321,14 @@ export const GrepTool = defineTool({
     // its prior (safe) behavior of not firing, not a crash.
     let singleFileLabel: string | undefined;
     try {
-      if (fs.statSync(resolvedTarget).isFile()) singleFileLabel = searchTarget ?? resolvedTarget;
+      // WHY toPosix here (2026-08-11): same gap as grepErrorMessage above —
+      // `--path-separator /` only reaches rg's stdout, and this label is built
+      // from `searchTarget`/`resolvedTarget` (Node's `path` module, platform
+      // separator on Windows), not parsed out of rg's output. singleFileLabel
+      // flows into the filesAtMaxCount/capContentMatches truncation notes, so
+      // without this a Windows nested-file search could print `src\a.ts` in
+      // the disclosure note while rg's own matched lines print `src/a.ts`.
+      if (fs.statSync(resolvedTarget).isFile()) singleFileLabel = toPosix(searchTarget ?? resolvedTarget);
     } catch {
       /* raced delete or genuinely gone — treat as not-a-single-file */
     }

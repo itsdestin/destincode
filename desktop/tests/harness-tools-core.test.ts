@@ -23,7 +23,7 @@ vi.mock('child_process', async (importActual) => {
 import { ReadTool, readSizeError, MAX_READ_BYTES } from '../src/main/harness/tools/read';
 import { WriteTool } from '../src/main/harness/tools/write';
 import { EditTool } from '../src/main/harness/tools/edit';
-import { BashTool } from '../src/main/harness/tools/bash';
+import { BashTool, rebaseReportedCwd } from '../src/main/harness/tools/bash';
 import { GlobTool } from '../src/main/harness/tools/glob';
 import { GrepTool, resolveRgPath } from '../src/main/harness/tools/grep';
 import { TodoWriteTool } from '../src/main/harness/tools/todo-write';
@@ -1025,6 +1025,96 @@ describe('Bash', () => {
       expect(r.isError).toBe(true);
       expect(r.text).not.toContain('workspace root');
     });
+  });
+});
+
+// Defect 1 (2026-08-11): `pwd` prints the PHYSICAL path, so on a symlinked
+// workspace root (macOS /var → /private/var; any symlinked project dir) or a
+// Windows 8.3 short root (RUNNER~1 → runneradmin) the shell named the same
+// directory a different way than ctx.cwd did. bash.ts compared the two with
+// path.resolve, which follows neither symlinks nor 8.3 names, so one directory
+// read as a change and the canonical spelling leaked into setShellCwd and the
+// [cwd: …] metadata line — handing the model a workspace root it was never
+// given, which is the exact confusion that line exists to remove.
+describe('Bash cwd vocabulary', () => {
+  let real: string;
+  let link: string;
+
+  beforeEach(() => {
+    real = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-real-'));
+    link = path.join(os.tmpdir(), `cwd-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    fs.symlinkSync(real, link);
+    fs.mkdirSync(path.join(real, 'sub'));
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(link); } catch { /* best-effort */ }
+    try { fs.rmSync(real, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('rebaseReportedCwd returns the ROOT spelling when the shell reports the resolved one', () => {
+    expect(rebaseReportedCwd(link, real)).toBe(link);
+  });
+
+  it('rebaseReportedCwd keeps the root spelling for a subdirectory', () => {
+    expect(rebaseReportedCwd(link, path.join(real, 'sub'))).toBe(path.join(link, 'sub'));
+  });
+
+  it('rebaseReportedCwd returns null for a path outside the root, so the scope guard still fires', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-outside-'));
+    try {
+      expect(rebaseReportedCwd(link, outside)).toBeNull();
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rebaseReportedCwd rejects a sibling directory whose name merely starts with the root name', () => {
+    // Fix: the containment check uses `+ path.sep` to prevent a sibling directory
+    // whose name is the root's real path with one character appended (e.g., real=/a/b,
+    // sibling=/a/bc) from passing the startsWith check and being treated as inside
+    // the workspace. Dropping `+ path.sep` would silently widen the scope guard,
+    // allowing the session to escape into that sibling. This test pins that invariant.
+    const sibling = real + 'c';
+    let created = false;
+    try {
+      fs.mkdirSync(sibling);
+      created = true;
+      expect(rebaseReportedCwd(link, sibling)).toBeNull();
+    } finally {
+      if (created) {
+        try {
+          fs.rmSync(sibling, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  });
+
+  it('the metadata line names the workspace root the model was given, not the resolved one', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(link));
+    expect(r.text).toContain(`[cwd: ${link} · exit 0]`);
+    expect(r.text).not.toContain(real);
+  });
+
+  it('a cd inside a symlinked root tracks in the root spelling, and emits no reset notice', async () => {
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(link), shellCwd: undefined, setShellCwd: (n) => { tracked = n; } };
+    const r = await BashTool.execute({ command: 'cd sub' }, c);
+    expect(tracked).toBe(path.join(link, 'sub'));
+    expect(r.text).not.toMatch(/Shell cwd was reset/);
+  });
+
+  it('a cd OUTSIDE a symlinked root is still reverted with a notice', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-outside-'));
+    try {
+      const c: ToolContext = { ...makeCtx(link), shellCwd: undefined, setShellCwd: () => {} };
+      const r = await BashTool.execute({ command: `cd ${JSON.stringify(outside)}` }, c);
+      expect(r.text).toMatch(/Shell cwd was reset to/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
