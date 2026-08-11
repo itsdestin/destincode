@@ -6,6 +6,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
 import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_LIMIT } from '../src/main/harness/review/run-battery';
+import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/review/run-facts';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
@@ -101,11 +102,92 @@ Prompt block here.
 // stay deterministic.
 const RUN_AT = '2026-08-06T09:15:00.000Z';
 
+// Regression fixture for the 2026-08-10 incident: 14 tool calls (13 Read, one
+// Glob, one Bash), a review describing Edit/replace_all tests that never
+// happened, appended as a genuine review with nothing checking it against the
+// transcript. These tests drive run-facts.ts, the module that now does.
+const BASE_METRICS = {
+  wallClockMs: 230_000, toolCalls: 58, asks: 2, stepGates: 0, thinkingEvents: 232,
+  inputTokens: 100_000, outputTokens: 8_379, stopReasons: ['end_turn'],
+  toolsUsed: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'], repeats: [],
+};
+const baseRun = (over: Partial<any> = {}) => ({
+  label: 'Fake', modelId: 'fake/model', review: 'A review.', events: [],
+  toolCalls: 58, asks: 2, stepGates: 0, fixtureRoot: '/tmp/x',
+  outcome: 'complete' as const, metrics: BASE_METRICS, ...over,
+});
+
+describe('claimedTools', () => {
+  it('finds tool names named in the review', () => {
+    expect(claimedTools('I tested Edit and Grep, then Read the file.'))
+      .toEqual(['Edit', 'Grep', 'Read']);
+  });
+
+  it('matches whole words only, so prose is not mistaken for a tool name', () => {
+    // "Reading", "edited", "globbing" must NOT count as Read / Edit / Glob.
+    expect(claimedTools('Reading the file, I edited it while globbing.')).toEqual([]);
+  });
+});
+
+describe('collectRunFacts', () => {
+  it('flags a tool the review claims but the transcript never shows', () => {
+    // The exact Qwen 3.6 35B A3B shape: 14 calls, none of them Edit, review
+    // describing Edit tests in detail.
+    const facts = collectRunFacts(baseRun({
+      review: 'Edit refused a duplicate string, and replace_all worked as documented.',
+      toolCalls: 14,
+      metrics: { ...BASE_METRICS, toolCalls: 14, toolsUsed: ['Bash', 'Glob', 'Read'] },
+    }));
+    expect(facts.unbackedClaims).toEqual(['Edit']);
+  });
+
+  it('does not flag a tool the review claims AND the transcript shows', () => {
+    const facts = collectRunFacts(baseRun({ review: 'Edit and Read both behaved.' }));
+    expect(facts.unbackedClaims).toEqual([]);
+  });
+
+  it('flags a run below the tool-call floor', () => {
+    // Qwen 3.6 27B made two calls. Whatever follows two calls is not a review
+    // of ten tools.
+    const facts = collectRunFacts(baseRun({
+      toolCalls: 2, metrics: { ...BASE_METRICS, toolCalls: 2, toolsUsed: ['Read'] },
+    }));
+    expect(facts.belowFloor).toBe(true);
+    expect(MIN_TOOL_CALLS).toBe(10);
+  });
+});
+
+describe('renderRunFacts', () => {
+  it('states what the run actually did', () => {
+    const out = renderRunFacts(collectRunFacts(baseRun()));
+    expect(out).toContain('58 tool calls');
+    expect(out).toContain('232 thinking');
+    expect(out).toContain('Bash, Edit, Glob, Grep, Read, Write');
+  });
+
+  it('leads with a warning blockquote when a claim is unbacked', () => {
+    const out = renderRunFacts(collectRunFacts(baseRun({
+      review: 'Edit refused a duplicate string.',
+      metrics: { ...BASE_METRICS, toolsUsed: ['Read'] },
+    })));
+    expect(out.startsWith('> ')).toBe(true);
+    expect(out).toContain('Edit');
+    // Flags, does not judge — the wording must not assert the review is false.
+    expect(out.toLowerCase()).not.toContain('fabricat');
+  });
+
+  it('has no warning blockquote for a clean run', () => {
+    expect(renderRunFacts(collectRunFacts(baseRun())).startsWith('> ')).toBe(false);
+  });
+});
+
 describe('appendReview', () => {
   it('inserts the new section above the prompt block, not at the end of the file', () => {
+    // Subject here is insertion position, not the facts block, so runFacts is
+    // left blank per the brief's guidance for these tests.
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     expect(out.indexOf('## Review: New Model')).toBeLessThan(out.indexOf('## Prompt for other agents'));
@@ -114,7 +196,7 @@ describe('appendReview', () => {
   it('leaves every existing review byte-identical', () => {
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     expect(out).toContain('## Review: Existing Model — 2026-08-01\n\nBody of an existing review.');
@@ -135,7 +217,7 @@ describe('appendReview', () => {
   it('signs the section with the model label, id, and heading timestamp', () => {
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     // Minute-precision time is now part of the heading — see the fix comment
@@ -150,12 +232,12 @@ describe('appendReview', () => {
 
   it('refuses to write an empty review rather than adding a hollow section', () => {
     expect(() =>
-      appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ', buildSha: 'abc1234' }, RUN_AT),
+      appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ', buildSha: 'abc1234', runFacts: '' }, RUN_AT),
     ).toThrow(/empty/i);
   });
 
   it('appends at the end when the doc has no prompt block', () => {
-    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r', buildSha: 'abc1234' }, RUN_AT);
+    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r', buildSha: 'abc1234', runFacts: '' }, RUN_AT);
     expect(out).toContain('## Review: X — 2026-08-06 09:15');
   });
 
@@ -170,12 +252,12 @@ describe('appendReview', () => {
     // without opening either body.
     const firstRunDoc = appendReview(
       DOC,
-      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'First run review.', buildSha: 'aaa1111' },
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'First run review.', buildSha: 'aaa1111', runFacts: '' },
       '2026-08-10T09:00:00.000Z',
     );
     const bothRunsDoc = appendReview(
       firstRunDoc,
-      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'Second run review.', buildSha: 'bbb2222' },
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'Second run review.', buildSha: 'bbb2222', runFacts: '' },
       '2026-08-10T15:30:00.000Z',
     );
 
@@ -218,7 +300,7 @@ Prompt block here.
 `;
     const out = appendReview(
       docWithQuotedHeading,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     // The new section must land above the REAL heading (the last one in the
@@ -230,6 +312,19 @@ Prompt block here.
     // Sanity: the quoted heading inside the existing review is untouched and
     // still appears exactly where it did before.
     expect(out).toContain('```\n## Prompt for other agents\n```');
+  });
+
+  it('carries the run-facts block under the heading, above the review body', () => {
+    const out = appendReview(DOC, {
+      label: 'Fake', modelId: 'fake/model', review: 'Body text.',
+      buildSha: 'abc123', runFacts: '**Run facts:** complete · 58 tool calls',
+    }, RUN_AT);
+
+    const headingAt = out.indexOf('## Review: Fake');
+    const factsAt = out.indexOf('**Run facts:**');
+    const bodyAt = out.indexOf('Body text.');
+    expect(headingAt).toBeLessThan(factsAt);
+    expect(factsAt).toBeLessThan(bodyAt);
   });
 });
 
