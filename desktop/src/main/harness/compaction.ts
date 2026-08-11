@@ -3,16 +3,15 @@
 // only if pruning can't get under budget. PURE here: the decision + the prune
 // transform. Trigger is REAL last-step input tokens, not chars/4.
 import type { ModelMessage } from 'ai';
+import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 
 export interface CompactionConfig {
   contextLength: number; triggerRatio: number; protectedTokens: number; minPruneSavings: number; pruneToChars: number;
 }
-const APPROX_CHARS_PER_TOKEN = 4;
 const PRUNE_TRAILER = (n: number) => `\n\n[pruned — ${n} chars of tool output elided to fit context; re-run the tool if you need it again]`;
 
 export function estimateTokens(messages: ModelMessage[]): number {
-  let chars = 0; for (const m of messages) chars += JSON.stringify((m as any).content).length;
-  return Math.ceil(chars / APPROX_CHARS_PER_TOKEN);
+  return messagesTokens(messages);   // binary-aware (#290 follow-up fix 1)
 }
 // Returns the first index of the protected recent window: [cutoff, end] is kept
 // verbatim, [0, cutoff) is eligible for pruning. We walk from the newest message
@@ -24,7 +23,7 @@ export function estimateTokens(messages: ModelMessage[]): number {
 function protectedFrom(messages: ModelMessage[], protectedTokens: number): number {
   let acc = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    acc += Math.ceil(JSON.stringify((messages[i] as any).content).length / APPROX_CHARS_PER_TOKEN);
+    acc += messageTokens(messages[i]);   // binary-aware — see message-size.ts
     if (acc > protectedTokens) return i;
   }
   return 0;

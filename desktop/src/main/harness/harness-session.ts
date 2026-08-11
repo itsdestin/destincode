@@ -39,6 +39,7 @@ import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
+import { messageTokens, messagesTokens } from './message-size';
 import { createSkillTool } from './tools/skill';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
@@ -431,7 +432,7 @@ export class HarnessSession extends EventEmitter {
    *  a measured prompt-token count is always preferred. */
   private estimateContextTokens(): number {
     return Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN)
-      + Math.ceil(JSON.stringify(this.history).length / APPROX_CHARS_PER_TOKEN);
+      + messagesTokens(this.history);   // binary-aware — see message-size.ts
   }
 
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
@@ -644,7 +645,7 @@ export class HarnessSession extends EventEmitter {
     let total = total0;
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
-      const size = Math.ceil(JSON.stringify(messages[i].content).length / APPROX_CHARS_PER_TOKEN);
+      const size = messageTokens(messages[i]);   // binary-aware — see message-size.ts
       if (kept.length > 0 && total + size > budgetTokens) break;
       kept.unshift(messages[i]);
       total += size;
@@ -710,7 +711,7 @@ export class HarnessSession extends EventEmitter {
     // Whatever budget is left after the system prompt and the head goes to the
     // tool output. Floored at a usable amount so a hostile budget still yields a
     // readable fragment rather than an empty string.
-    const usedTokens = systemTokens + head.reduce((n, m) => n + Math.ceil(JSON.stringify(m.content).length / APPROX_CHARS_PER_TOKEN), 0);
+    const usedTokens = systemTokens + head.reduce((n, m) => n + messageTokens(m), 0);   // binary-aware
     const availableChars = Math.max(2_000, (budgetTokens - usedTokens) * APPROX_CHARS_PER_TOKEN);
     return [...head, truncateToolMessage(messages[toolIdx], availableChars)];
   }
