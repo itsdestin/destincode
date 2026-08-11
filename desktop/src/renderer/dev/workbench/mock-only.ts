@@ -6,6 +6,7 @@
 // Adding an entry is the SUPPORTED way to design UI ahead of its backend.
 // Deleting the guard test because a channel is "obviously fine" is not.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Empty today. Add entries as new UI is designed ahead of its backend, e.g.
-  // { channel: 'session.setColor', feature: 'per-session color coding' },
+  { channel: 'permissions.list', feature: 'permissions management UI (M5 2a)' },
+  { channel: 'permissions.remove', feature: 'permissions management UI (M5 2a)' },
+  { channel: 'permissions.removeProject', feature: 'permissions management UI (M5 2a)' },
 ];

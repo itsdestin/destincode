@@ -17,6 +17,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
+  // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
+  // contract test actually covers them; a channel absent from HAND_WRITTEN
+  // escapes the real-or-registered check entirely.
+  'permissions.list', 'permissions.remove', 'permissions.removeProject',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -466,6 +470,36 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     catalog: async () => store.getState().catalog,
   };
 
+  // M5 2a. NO real backend yet — registered in MOCK_ONLY. Removal matches on
+  // (tool, pattern, action) because remember() dedupes exact repeats, so that
+  // triple is unique within a project; no rule id is needed.
+  const permissions: Ns<'permissions'> = {
+    list: async () => store.getState().permissions,
+    remove: async (slug, rule) => {
+      if (store.refuseWrites) return false;
+      let hit = false;
+      store.setState((s) => ({
+        ...s,
+        permissions: s.permissions.map((p) => {
+          if (p.slug !== slug) return p;
+          const rules = p.rules.filter((r) => {
+            const match = r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action;
+            if (match) hit = true;
+            return !match;
+          });
+          return { ...p, rules };
+        }),
+      }));
+      return hit;
+    },
+    removeProject: async (slug) => {
+      if (store.refuseWrites) return false;
+      const hit = store.getState().permissions.some((p) => p.slug === slug);
+      store.setState((s) => ({ ...s, permissions: s.permissions.filter((p) => p.slug !== slug) }));
+      return hit;
+    },
+  };
+
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
     // verdict union is checked by the compiler — useIpc.ts:329.
@@ -717,7 +751,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   return {
-    session, providers, models, defaults, native, detach, tags, on, theme, firstRun,
+    session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, appearance,
   } as unknown as Record<string, Record<string, unknown>>;
 }

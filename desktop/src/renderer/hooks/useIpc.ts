@@ -296,6 +296,13 @@ declare global {
         setKey: (id: string, key: string) => Promise<boolean>;
         catalog: () => Promise<any[]>;
       };
+      // Remembered "Always allow" rules (M5 2a). Keyed by PROJECT SLUG, not
+      // cwd — permissions.json never stored the cwd, and the slug is lossy.
+      permissions: {
+        list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
+        remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;
+        removeProject: (slug: string) => Promise<boolean>;
+      };
       // Local llama.cpp engine (Plan B). install() streams progress via
       // onInstallProgress; onStatusChanged pushes state transitions
       // (not-installed → starting → running / error). EngineCard consumes these.
