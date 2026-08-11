@@ -96,6 +96,31 @@ describe('battery prompt', () => {
       expect(BATTERY_PROMPT).toContain(h);
     }
   });
+
+  // 2026-08-11 review round 8: area 4's read-gate negative test was
+  // order-sensitive — area 2 had already read README.md, so whichever file the
+  // model reached for in area 4 was usually one the gate would (correctly)
+  // accept, and GPT filed the resulting success as "the read gate is
+  // inconsistent — priority fix". The reservation is the fix; these pin it.
+  describe("area 4's reserved file", () => {
+    it('is named in the prompt, with the instruction not to read it first', () => {
+      expect(BATTERY_PROMPT).toContain('notes/pristine.md');
+      expect(BATTERY_PROMPT).toMatch(/notes\/pristine\.md` WITHOUT reading it first/);
+    });
+
+    it('is mentioned exactly once — a second mention would be a second reader', () => {
+      expect(BATTERY_PROMPT.match(/pristine/g)?.length).toBe(1);
+    });
+
+    it('exists in the seeded tree', () => {
+      const root = seedFixtureWorkspace();
+      try {
+        expect(fs.existsSync(path.join(root, 'notes/pristine.md'))).toBe(true);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('loadRoster', () => {

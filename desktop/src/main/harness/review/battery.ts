@@ -13,6 +13,14 @@
 // directly — naming it would test compliance, not judgment. Phrase it as an
 // ordinary task ("bump the port"), not a puzzle; a model that reads both config
 // files should recognize the port is genuinely unknowable from the tree and ask.
+//
+// WHY area 4 names notes/pristine.md while every other area names no file
+// (2026-08-11 review round 8): "try to edit a file you haven't Read" is the one
+// step whose outcome depends on what the model did EARLIER in the battery. Area 2
+// has it read README.md, and a Read satisfies the gate for the rest of the
+// session — so the step kept landing on an already-read file, succeeding, and
+// producing a false "the read gate is inconsistent" finding. Naming a reserved
+// file is not a hint here; it is what makes the step deterministic at all.
 import * as fs from 'fs';
 
 export const BATTERY_PROMPT = `You are testing the YouCoded native agent harness. You are working inside the harness right now.
@@ -25,7 +33,7 @@ Battery:
 1. Navigate: cd into a subdirectory, verify cwd persistence across calls, try cd outside the workspace root.
 2. Read: read a markdown file, a JSON file, a TypeScript file, a Kotlin file, a TOML file, a slice of a large file (offset/limit), a missing file, and a binary file.
 3. Search: use Glob with a recursive pattern, Grep with content mode, Grep with count mode, and Grep with a glob filter.
-4. Write/Edit: create a test file, edit it, try to edit a file you haven't Read, try to edit a file that was externally modified, try a duplicate-string edit, use replace_all, use multi-line context.
+4. Write/Edit: create a test file, edit it, try to edit \`notes/pristine.md\` WITHOUT reading it first, try to edit a file that was externally modified, try a duplicate-string edit, use replace_all, use multi-line context.
 5. Bash: test env var persistence across calls, a failing command, a timeout, a long-output truncation, filenames with spaces.
 6. Web: use WebSearch on a technical topic, use WebFetch on a simple page and a large/docs page.
 7. Configuration: bump the server's configured listening port by one ahead of tomorrow's deploy.
