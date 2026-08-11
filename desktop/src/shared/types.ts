@@ -1234,6 +1234,14 @@ export const IPC = {
   SEARCH_SET_KEY: 'search:set-key',
   SEARCH_REMOVE_KEY: 'search:remove-key',
   SEARCH_TEST: 'search:test',
+  // ---- Remembered "Always allow" rules (M5 2a: permissions management UI) ----
+  // list = every project's stored grants; remove/remove-project revoke them.
+  // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
+  // pre-existing entries and cwdToProjectSlug is lossy, so the slug is the only
+  // stable handle the renderer can send back.
+  PERMISSIONS_LIST: 'permissions:list',
+  PERMISSIONS_REMOVE: 'permissions:remove',
+  PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

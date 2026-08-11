@@ -1561,6 +1561,16 @@ export function installShim(): void {
       removeKey: (backend: string) => invoke('search:remove-key', { backend }),
       test: (backend: string, key: string) => invoke('search:test', { backend, key }),
     },
+    // Remembered "Always allow" rules (Settings → Permissions, M5 2a) — WS
+    // transport. Object payloads match remote-server's WS case reads
+    // (payload.slug / payload.rule); the desktop preload passes the same values
+    // positionally. The section is NOT gated on native.supported, so this route
+    // is the one a phone over remote access actually uses.
+    permissions: {
+      list: () => invoke('permissions:list'),
+      remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),
+      removeProject: (slug: string) => invoke('permissions:remove-project', { slug }),
+    },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an
     // unsubscribe, matching provider/dev patterns above.
