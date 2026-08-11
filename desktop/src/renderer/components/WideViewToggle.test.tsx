@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WideViewToggle, {
@@ -294,5 +296,17 @@ describe('WideViewToggle', () => {
     flushFrame(48);
     expect(nodes.indicator.style.left).toBe('2px');
     expect(nodes.indicator.style.width).toBe('72px');
+  });
+
+  // The original bug was ownership, not math: HeaderBar cached endpoints on a
+  // DOM node it could replace and kept a `measured` flag that outlived it. This
+  // pins the architecture, not just the behavior.
+  it('keeps endpoint ownership out of HeaderBar', () => {
+    const source = readFileSync(join(__dirname, 'HeaderBar.tsx'), 'utf8');
+    expect(source).toContain("import WideViewToggle from './WideViewToggle'");
+    expect(source).toContain('<WideViewToggle');
+    expect(source).not.toContain('measureEndpoints');
+    expect(source).not.toContain('--pill-chat-left');
+    expect(source).not.toContain('document.fonts.ready');
   });
 });
