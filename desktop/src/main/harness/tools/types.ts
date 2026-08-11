@@ -25,6 +25,17 @@ export interface ToolContext {
   /** Bash reports the post-command directory here when it resolved INSIDE `cwd`.
    *  The session owns the state; the tool never mutates ctx directly. */
   setShellCwd?(next: string): void;
+  /** Opt-in env persistence (17/17 four-round harness reviews asked for this,
+   *  2026-08-01 through 2026-08-09): the accumulated vars a `persistent_env: true`
+   *  Bash call captured. Absent/empty → every call is a fresh shell env, which is
+   *  still the default (Opus 5's dissent in the same review round: cwd should stay
+   *  the only sticky thing UNLESS a call opts in). Mirrors shellCwd's pattern
+   *  exactly — the session owns the state, the tool only reads/writes through the
+   *  accessor below. */
+  shellEnv?: Record<string, string>;
+  /** Bash calls this after a persistent_env:true call to merge newly-captured vars
+   *  (or drop ones the command unset) into the session's running set. */
+  setShellEnv?(next: Record<string, string>): void;
   /** per-session todo list (TodoWrite state) */
   todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm: string }>;
   /** Injected runtime services (e.g. WebSearch's SearchService). Absent for tools

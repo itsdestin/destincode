@@ -365,6 +365,11 @@ export class HarnessSession extends EventEmitter {
    *  starts. null → the session root. Session runtime like readRegistry/todos —
    *  never persisted to the transcript, so it resets on resume. */
   private shellCwd: string | null = null;
+  /** Opt-in env persistence (17/17 harness reviews, four rounds 2026-08-01
+   *  through 2026-08-09): vars a `persistent_env: true` Bash call captured.
+   *  Mirrors shellCwd exactly — same "session runtime, resets on resume"
+   *  contract, same reason (never persisted to the transcript). */
+  private shellEnv: Record<string, string> | null = null;
   private retryDelays: number[];
   // Resolved capability profile (Task 5). Drives the doom-loop window + tool
   // attachment; re-assigned by setBinding on a mid-session model swap.
@@ -471,6 +476,7 @@ export class HarnessSession extends EventEmitter {
     this.shownImages.clear();
     this.todos.length = 0;
     this.shellCwd = null; // a resumed session starts back at the workspace root
+    this.shellEnv = null; // same contract — a resumed session starts with a fresh env too
   }
 
   /** Mid-session model swap (next turn uses the new binding). A swap can cross
@@ -1855,6 +1861,10 @@ export class HarnessSession extends EventEmitter {
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {
         this.shellCwd = next;
+      },
+      shellEnv: this.shellEnv ?? {},
+      setShellEnv: (next: Record<string, string>) => {
+        this.shellEnv = next;
       },
       todos: this.todos,
       supportsVision: this.profile.supportsVision,

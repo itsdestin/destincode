@@ -1,6 +1,6 @@
 import { guardDirtyEditor } from './artifact-views/dirty-editor-guard';
-import React, { useRef, useLayoutEffect, useEffect, useCallback, useState } from 'react';
-import { ChatIcon, TerminalIcon, GamepadIcon } from './Icons';
+import React, { useRef, useLayoutEffect, useEffect, useState } from 'react';
+import { GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
 import { isAndroid, isRemoteMode } from '../platform';
@@ -8,6 +8,7 @@ import { isAndroid, isRemoteMode } from '../platform';
 import { useArtifact } from '../state/ArtifactContext';
 import OverflowMenu from './OverflowMenu';
 import NarrowViewToggle from './NarrowViewToggle';
+import WideViewToggle from './WideViewToggle';
 import { useArtifactCount } from '../hooks/useArtifactCount';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
 
@@ -287,22 +288,6 @@ export default function HeaderBar({
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
 }: Props) {
-  // Pill doesn't track live button widths — it pins to the active button's
-  // FINAL rect and CSS-transitions between two cached {left,width} pairs.
-  // Buttons still animate their text roll-out (max-width: 0 ↔ target) in
-  // parallel; both arrive at their end state at t=300ms. Intermediate
-  // misalignment across the gap is invisible because the pill is mid-flight,
-  // not touching a button edge. Previous attempts (ae5776ee, 68462e9b,
-  // a0103014) tried to glue the pill to the active button as it widened
-  // or used a post-commit getBoundingClientRect that returned the button's
-  // interpolated (narrow) starting rect — both produced the teleport.
-  // Stop tracking; pin to endpoints measured once via a transition-disabled
-  // reflow sandwich at mount.
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chatBtnRef = useRef<HTMLButtonElement>(null);
-  const termBtnRef = useRef<HTMLButtonElement>(null);
-  const [measured, setMeasured] = useState(false);
-
   const headerRef = useRef<HTMLDivElement>(null);
   const [showToggleLabels, setShowToggleLabels] = useState(true);
 
@@ -412,155 +397,20 @@ export default function HeaderBar({
     : undefined;
   const clusterFlexClass = reservedWidth == null ? 'flex-1 ' : '';
 
-  const measureEndpoints = useCallback(() => {
-    const container = containerRef.current;
-    const chatBtn = chatBtnRef.current;
-    const termBtn = termBtnRef.current;
-    if (!container || !chatBtn || !termBtn) return;
-    const chatSpan = chatBtn.querySelector<HTMLElement>('[data-btn-text]');
-    const termSpan = termBtn.querySelector<HTMLElement>('[data-btn-text]');
-
-    // If spans don't exist (narrow header — labels hidden via showToggleLabels),
-    // both states collapse to icon-only widths; one measurement covers both.
-    if (!chatSpan || !termSpan) {
-      const cRect = container.getBoundingClientRect();
-      const chatRect = chatBtn.getBoundingClientRect();
-      const termRect = termBtn.getBoundingClientRect();
-      container.style.setProperty('--pill-chat-left',  `${chatRect.left - cRect.left}px`);
-      container.style.setProperty('--pill-chat-width', `${chatRect.width}px`);
-      container.style.setProperty('--pill-term-left', `${termRect.left - cRect.left}px`);
-      container.style.setProperty('--pill-term-width', `${termRect.width}px`);
-      setMeasured(true);
-      return;
-    }
-
-    const savedChatTrans = chatSpan.style.transition;
-    const savedTermTrans = termSpan.style.transition;
-    const savedChatMax = chatSpan.style.maxWidth;
-    const savedTermMax = termSpan.style.maxWidth;
-    chatSpan.style.transition = 'none';
-    termSpan.style.transition = 'none';
-
-    // State A: chat expanded, terminal collapsed
-    chatSpan.style.maxWidth = '3rem';
-    termSpan.style.maxWidth = '0px';
-    void container.offsetWidth;
-    let cRect = container.getBoundingClientRect();
-    const chatExpLeft  = chatBtn.getBoundingClientRect().left - cRect.left;
-    const chatExpWidth = chatBtn.getBoundingClientRect().width;
-
-    // State B: chat collapsed, terminal expanded
-    chatSpan.style.maxWidth = '0px';
-    termSpan.style.maxWidth = '4.5rem';
-    void container.offsetWidth;
-    cRect = container.getBoundingClientRect();
-    const termExpLeft  = termBtn.getBoundingClientRect().left - cRect.left;
-    const termExpWidth = termBtn.getBoundingClientRect().width;
-
-    // Restore; React owns these inline styles via the `style` prop on next render
-    chatSpan.style.maxWidth = savedChatMax;
-    termSpan.style.maxWidth = savedTermMax;
-    void container.offsetWidth;
-    chatSpan.style.transition = savedChatTrans;
-    termSpan.style.transition = savedTermTrans;
-
-    container.style.setProperty('--pill-chat-left',  `${chatExpLeft}px`);
-    container.style.setProperty('--pill-chat-width', `${chatExpWidth}px`);
-    container.style.setProperty('--pill-term-left', `${termExpLeft}px`);
-    container.style.setProperty('--pill-term-width', `${termExpWidth}px`);
-    setMeasured(true);
-  }, []);
-
-  useLayoutEffect(() => { measureEndpoints(); }, [measureEndpoints]);
-
-  // Re-measure when toggle labels appear/disappear — button widths change
-  // drastically between label-visible and icon-only states.
-  useEffect(() => {
-    // Wait one frame for the new class to apply before measuring.
-    requestAnimationFrame(() => measureEndpoints());
-  }, [showToggleLabels, measureEndpoints]);
-
-  // Refresh on font load (text widths shift) and window resize (breakpoint crosses,
-  // viewport zoom). Theme swaps typically trigger a resize-like layout pass.
-  useEffect(() => {
-    if ('fonts' in document) {
-      let cancelled = false;
-      document.fonts.ready.then(() => { if (!cancelled) measureEndpoints(); });
-      return () => { cancelled = true; };
-    }
-  }, [measureEndpoints]);
-
-  useEffect(() => {
-    const handler = () => measureEndpoints();
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, [measureEndpoints]);
-
-  // Extracted so it can be rendered into either cluster depending on platform.
-  // Task 6 will tweak the inner span classNames; don't edit those here.
-  const wideToggleElement = (
-    <div ref={containerRef} className="relative flex bg-inset rounded-md p-0.5 gap-0.5">
-      {/* Sliding background pill — left/width come from CSS variables
-          set once by measureEndpoints(). Plain CSS transition tweens
-          between the two cached endpoints. */}
-      <div
-        className="absolute top-0.5 bottom-0.5 bg-accent rounded-[var(--radius-toggle)] transition-[left,width] duration-300 ease-in-out"
-        style={{
-          left:  viewMode === 'chat' ? 'var(--pill-chat-left)'  : 'var(--pill-term-left)',
-          width: viewMode === 'chat' ? 'var(--pill-chat-width)' : 'var(--pill-term-width)',
-          // Hide until first measurement completes — avoids a 1-frame flash
-          // at left: 0, width: auto before CSS vars are set.
-          opacity: measured ? 1 : 0,
-        }}
-      />
-      <button
-        ref={chatBtnRef}
-        onClick={() => onToggleView('chat')}
-        className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
-          viewMode === 'chat'
-            ? 'text-on-accent'
-            : 'text-fg-dim hover:text-fg-2'
-        }`}
-        title="Chat"
-      >
-        <ChatIcon className="w-3.5 h-3.5 shrink-0" />
-        {/* Text rolls out via max-width + opacity transition */}
-        <span
-          data-btn-text
-          className={`text-xs font-medium overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${showToggleLabels ? 'inline-block' : 'hidden'}`}
-          style={{
-            maxWidth: viewMode === 'chat' ? '3rem' : '0',
-            opacity: viewMode === 'chat' ? 1 : 0,
-          }}
-        >Chat</span>
-      </button>
-      <button
-        ref={termBtnRef}
-        onClick={() => onToggleView('terminal')}
-        className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
-          viewMode === 'terminal'
-            ? 'text-on-accent'
-            : 'text-fg-dim hover:text-fg-2'
-        }`}
-        title="Terminal"
-      >
-        <TerminalIcon className="w-3.5 h-3.5 shrink-0" />
-        <span
-          data-btn-text
-          className={`text-xs font-medium overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out ${showToggleLabels ? 'inline-block' : 'hidden'}`}
-          style={{
-            maxWidth: viewMode === 'terminal' ? '4.5rem' : '0',
-            opacity: viewMode === 'terminal' ? 1 : 0,
-          }}
-        >Terminal</span>
-      </button>
-    </div>
-  );
-
   // Narrow swaps the two-segment pill for a single target-view icon button.
+  //
+  // WHY: the wide toggle owns geometry with the DOM instance that consumes it;
+  // crossing the narrow breakpoint now unmounts all readiness and cached
+  // endpoints together instead of leaving HeaderBar with stale `measured=true`.
   const toggleElement = narrow
     ? <NarrowViewToggle viewMode={viewMode} onToggleView={onToggleView} />
-    : wideToggleElement;
+    : (
+      <WideViewToggle
+        viewMode={viewMode}
+        onToggleView={onToggleView}
+        showLabels={showToggleLabels}
+      />
+    );
 
   return (
     <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>

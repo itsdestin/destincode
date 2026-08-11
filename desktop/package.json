@@ -87,5 +87,11 @@
     "vite": "^8.1.5",
     "vitest": "^4.1.10",
     "wait-on": "^9.1.0"
+  },
+  "allowScripts": {
+    "electron": true,
+    "node-pty": false,
+    "koffi": false,
+    "electron-winstaller": false
   }
 }
