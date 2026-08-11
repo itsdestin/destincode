@@ -159,31 +159,49 @@ function extractCwd(out: string): { text: string; cwd: string | null } {
   return { text: out.slice(0, at) + rest, cwd: reported || null };
 }
 
-/** Containment check for the scope guard. realpath both sides so a symlinked
- *  workspace root doesn't read as "outside itself". */
-function isInside(root: string, candidate: string): boolean {
-  const real = (p: string) => {
-    // .native FIRST: plain realpathSync does NOT expand Windows 8.3 short names.
-    // ctx.cwd arrives short (C:\Users\RUNNER~1\...) while `pwd -W` may report the
-    // SAME directory long (C:\Users\runneradmin\...), so startsWith() judged a
-    // plain `cd sub` "outside the workspace" and the scope guard reverted EVERY
-    // cd on Windows — persistence looked broken and each call emitted a bogus
-    // reset notice. .native canonicalizes both sides via GetFinalPathNameByHandle.
-    // Confirmed on windows-latest 2026-07-19 (short/long forms observed side by side).
-    try {
-      return fs.realpathSync.native(p);
-    } catch {
-      /* not on disk (yet) — fall back */
-    }
-    try {
-      return fs.realpathSync(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  const r = real(root);
-  const c = real(candidate);
-  return c === r || c.startsWith(r + path.sep);
+/** Canonical on-disk form: expands Windows 8.3 short names AND resolves
+ *  symlinks, so two spellings of ONE directory compare equal.
+ *  .native FIRST: plain realpathSync does NOT expand Windows 8.3 short names.
+ *  ctx.cwd arrives short (C:\Users\RUNNER~1\...) while `pwd -W` may report the
+ *  SAME directory long (C:\Users\runneradmin\...), so startsWith() judged a
+ *  plain `cd sub` "outside the workspace" and the scope guard reverted EVERY
+ *  cd on Windows — persistence looked broken and each call emitted a bogus
+ *  reset notice. .native canonicalizes both sides via GetFinalPathNameByHandle.
+ *  Confirmed on windows-latest 2026-07-19 (short/long forms observed side by side). */
+function realPath(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    /* not on disk (yet) — fall back */
+  }
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/** Re-express the cwd the shell reported in the SPELLING the model was given,
+ *  or null when it is not inside `root`.
+ *
+ *  `pwd` prints the PHYSICAL path. On a symlinked root (macOS /var →
+ *  /private/var, or any symlinked project directory) or a Windows 8.3 short
+ *  root, that names the same directory a different way than ctx.cwd does.
+ *  Reporting it raw hands the model a workspace root it was never told about,
+ *  which defeats the whole point of the `[cwd: …]` metadata line below — that
+ *  line exists so the model can relate Bash's cwd to the file tools' root, and
+ *  it only works if both speak one vocabulary.
+ *
+ *  The containment check runs BEFORE the rebase and that order is load-bearing:
+ *  an outside path yields a `..`-prefixed relative, and path.join would quietly
+ *  pull it back inside the root — silently turning the scope guard into a
+ *  no-op. Never reorder these. */
+export function rebaseReportedCwd(root: string, reported: string): string | null {
+  const realRoot = realPath(root);
+  const realReported = realPath(reported);
+  if (realReported !== realRoot && !realReported.startsWith(realRoot + path.sep)) return null;
+  const rel = path.relative(realRoot, realReported);
+  return rel ? path.join(root, rel) : root;
 }
 
 /** Built per-read so it reflects the LAZILY resolved shell (see getShell). A
@@ -496,17 +514,28 @@ export const BashTool = defineTool({
           if (truncated) tailBuf = parsed.text;
           else headBuf = parsed.text;
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
-          if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
-            if (isInside(ctx.cwd, reported)) {
-              reportedCwd = path.resolve(reported);
-              ctx.setShellCwd?.(reportedCwd);
-            } else {
+          if (reported) {
+            // Rebase FIRST, compare after: the old code compared
+            // path.resolve(reported) against path.resolve(startCwd), and
+            // resolve() follows neither symlinks nor Windows 8.3 names — so two
+            // spellings of one directory read as a change and the canonical form
+            // was stored and printed. Comparing the REBASED value means a
+            // spelling difference is correctly a no-op and only a real `cd`
+            // registers.
+            const rebased = rebaseReportedCwd(ctx.cwd, reported);
+            if (rebased === null) {
               // Scope guard: don't let the session wander out of the workspace,
               // and TELL the model — a silent revert is the exact failure mode
               // the Claude Code issues (#35058 et al.) complain about.
+              // The notice names the RAW reported path on purpose: it is outside
+              // the root, so there is no root-relative spelling of it, and the
+              // physical path is the truthful thing to show.
               ctx.setShellCwd?.(ctx.cwd);
               resetTo = ctx.cwd;
               notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
+            } else if (rebased !== startCwd) {
+              reportedCwd = rebased;
+              ctx.setShellCwd?.(reportedCwd);
             }
           }
         }
