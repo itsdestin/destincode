@@ -732,6 +732,22 @@ describe('Bash', () => {
       expect(canon(cmdOutput(after.text))).toBe(canon(dir));
     });
 
+    // 2026-08-11 review round 8: the notice used to trail the output, so a model
+    // reading top-down acted on results from a directory it no longer sat in
+    // before reaching the line saying so. It must LEAD.
+    it('the reset notice comes before the command output, not after it', async () => {
+      const c = trackingCtx(dir);
+      const r = await BashTool.execute(
+        { command: `cd ${JSON.stringify(os.tmpdir())} && echo MARKER_AFTER_THE_CD` },
+        c,
+      );
+      const noticeAt = r.text.indexOf('Shell cwd was reset to');
+      const outputAt = r.text.indexOf('MARKER_AFTER_THE_CD');
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(outputAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(outputAt);
+    });
+
     it('the probe preserves the command exit code', async () => {
       const r = await BashTool.execute({ command: 'exit 3' }, trackingCtx(dir));
       expect(r.isError).toBe(true);
@@ -995,6 +1011,45 @@ describe('Bash', () => {
       expect(r.outputPath).toBeUndefined();
       expect(r.bounds).toBeUndefined();
     });
+
+    // 2026-08-11 review round 8: truncation trips on chars OR lines, but the
+    // metadata only ever quoted chars — a short, line-capped result announced
+    // "900 chars output, showing 900" and read as complete.
+    // The description is the ONLY place a model learns what "truncated" means
+    // before it sees one. It named the char cap and not the line cap, which is
+    // the one that usually fires first.
+    it('the description names BOTH truncation triggers', () => {
+      const d = BashTool.description;
+      expect(d).toContain('4,000 chars');
+      expect(d).toContain('100 lines');
+    });
+
+    it('a line-capped result reports the line dimension, not just chars', async () => {
+      // 120 short lines: ~700 chars total, nowhere near the 4,000-char cap, so
+      // LINES are the only reason this is truncated.
+      const r = await BashTool.execute(
+        { command: `node -e "for(let i=1;i<=120;i++)console.log('L'+i)"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      // Exactly 120 — not 121 (trailing-newline overcount) and not 123 (probe sentinel).
+      expect(r.text).toMatch(/492 chars \/ 120 lines output, showing \d+ chars \/ 100 lines/);
+      // …and the elision hint must agree with it: 120 total - 100 shown.
+      expect(r.bounds?.moreHint).toContain('20 lines elided');
+    }, 30_000);
+
+    it('a single-huge-line result stays in chars and never claims "0 lines shown"', async () => {
+      // One 60,000-char line trips only the char cap; head/tail each take a
+      // partial line, so a line count here would read as "showing 0 lines"
+      // beside 4,000 visible chars.
+      const r = await BashTool.execute(
+        { command: `node -e "process.stdout.write('x'.repeat(60000))"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      expect(r.text).toContain('chars output, showing');
+      expect(r.text).not.toMatch(/showing \d+ chars \/ 0 lines/);
+    }, 30_000);
 
     it('the notice names the elided line count, the total, and a next action', async () => {
       const r = await BashTool.execute({ command: seqCmd }, ctx);
