@@ -127,6 +127,10 @@ describe('claimedTools', () => {
     // "Reading", "edited", "globbing" must NOT count as Read / Edit / Glob.
     expect(claimedTools('Reading the file, I edited it while globbing.')).toEqual([]);
   });
+
+  it('does not mistake TodoWrite for Write, a compound name in the real roster', () => {
+    expect(claimedTools('TodoWrite ran fine')).not.toContain('Write');
+  });
 });
 
 describe('collectRunFacts', () => {
@@ -710,6 +714,56 @@ describe('wrap-up turn', () => {
     expect(bashResults.every((e) => e.data.isError)).toBe(true);
   });
 
+  it('denies a genuine AskUserQuestion during wrap-up, so WRAP_UP_PROMPT\'s "every tool call will be denied" claim is true (Fix pass 2, Finding 2)', async () => {
+    // AskUserQuestion is declared `interactive: true` (ask-user-question.ts)
+    // and harness-session.ts routes interactive tools AROUND decide()
+    // entirely, straight to askUser. Before this fix, run-battery's askUser
+    // allowed any genuine AskUserQuestion unconditionally — including during
+    // wrap-up — so a model could keep calling it, bounded only by
+    // WRAP_UP_TIMEOUT_MS, while WRAP_UP_PROMPT told it every tool call would
+    // be denied.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: try AskUserQuestion instead of answering. Full
+      // valid shape (header, >=2 options, multiSelect) so the zod schema
+      // accepts it and this exercises the wrap-up denial in askUser, not a
+      // validation failure that would be denied for an unrelated reason.
+      {
+        toolCalls: [{
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              question: 'Which color?',
+              header: 'Color',
+              options: [{ label: 'Red' }, { label: 'Blue' }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+      // Wrap-up turn, step 2: the ask was denied, so the model gives up and answers.
+      { text: 'Fine, here is the review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    const askResults = run.events.filter(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'AskUserQuestion' && !e.data.isError,
+    );
+    // The ONLY successful AskUserQuestion allowed anywhere in this run must be
+    // the one the fake model issued during the TESTING phase's normal budget
+    // gate — none during wrap-up. Since this script has no such testing-phase
+    // ask, zero successful AskUserQuestion results must exist at all.
+    expect(askResults.length).toBe(0);
+    const deniedAsk = run.events.find(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'AskUserQuestion' && e.data.isError,
+    );
+    expect(deniedAsk).toBeDefined();
+    expect(run.review).toBe('Fine, here is the review.');
+  });
+
   it('takes only the wrap-up turn text as the review, not narration from the interrupted turn', async () => {
     // The testing turn emits trailing narration after its last tool call. Under
     // the old single-turn extractor that text would BE the review. It must not
@@ -758,6 +812,37 @@ describe('wrap-up turn', () => {
 
     expect(run.outcome).toBe('wrapped-up');
     expect(run.review).toBe('My review is done.');
+  });
+
+  it('strips wrap-up narration that precedes a denied tool attempt, instead of concatenating it onto the review (Fix pass 2, Finding 1)', async () => {
+    // The pass-1 fix (dropping the anchor entirely inside the wrap-up window)
+    // fixed "answer, then try one more tool" but broke the more common
+    // multi-step shape: narrate -> attempt a tool -> get denied (a tool-result
+    // is still emitted) -> THEN write the review. Unconditionally joining
+    // every assistant-text event in the window glues the narration onto the
+    // front of the real review with no separator — "Let me verify one thing
+    // first.The actual review..." — which is exactly what gets appended to
+    // the shared reviews doc. This is the tool-happy population (127/157
+    // calls in the round-5 incident) wrap-up exists to rescue.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: narrate AND attempt a tool in the same step.
+      {
+        text: 'Let me verify one thing first.',
+        toolCalls: [{ name: 'Bash', input: { command: 'echo verify' } }],
+      },
+      // Wrap-up turn, step 2: the tool attempt was denied, so the model gives
+      // up testing and writes the real review.
+      { text: 'The actual review text.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('The actual review text.');
+    expect(run.review).not.toContain('verify');
   });
 
   it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {

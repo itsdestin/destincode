@@ -188,10 +188,17 @@ for (const entry of roster) {
     );
     console.log('  → review appended');
   } catch (err) {
-    // runBattery now only throws when there was nothing to salvage (it could not
-    // seed the fixture or construct the session). Report the real failure; one
-    // model erroring must not abort the roster.
-    console.error(`  FAILED: ${err?.message ?? err}`);
+    // Fix pass 2, Finding 8: this catch wraps the WHOLE try block, not just
+    // runBattery — a throw from the review extraction inside runBattery, or
+    // from session.destroy()/fs.rmSync in its `finally`, or from the
+    // fs.writeFileSync/appendReview calls above also lands here, so "runBattery
+    // only throws when it could not seed the fixture or construct the session"
+    // overclaimed what this catch actually guards. Name the transcript path so
+    // a failed entry still says where its evidence would have been, even when
+    // the failure happened before transcriptPath was ever written to (a run
+    // that never got far enough to write it still names where a retry would
+    // land). One model erroring must not abort the roster.
+    console.error(`  FAILED (${transcriptPath}): ${err?.message ?? err}`);
   }
 }
 

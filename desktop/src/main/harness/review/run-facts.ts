@@ -12,16 +12,6 @@
 import { CORE_TOOLS } from '../tools';
 import type { BatteryRun, BatteryMetrics, BatteryOutcome } from './run-battery';
 
-// WHY the intersection, not BatteryRun as-is: BatteryRun (run-battery.ts) does
-// not declare `wrapUpReason` yet — a parallel task (the wrap-up-turn work,
-// tracked separately) adds it to the shared interface once a wrap-up turn
-// exists to set it. Widening the type locally lets collectRunFacts read a
-// typed, always-undefined field today without editing the shared BatteryRun
-// type out from under that other task. Any real BatteryRun value already
-// satisfies this (the extra field is optional), so this is a pure widening,
-// not a divergent shape.
-type RunWithWrapUp = BatteryRun & { wrapUpReason?: 'budget' | 'restart' | 'timeout' };
-
 // Below this, a run did not exercise ten tools across seven areas, whatever its
 // text claims. Round 5's Qwen 3.6 27B stopped after two calls.
 export const MIN_TOOL_CALLS = 10;
@@ -43,12 +33,21 @@ export interface RunFacts {
 
 /** Tool names mentioned in the review text, as whole words. WHY whole words:
  *  "Reading the file" must not count as the Read tool, or every review would
- *  flag. Sorted and deduplicated so the output is stable. */
+ *  flag. Sorted and deduplicated so the output is stable.
+ *
+ *  WHY escape the name before interpolating into a RegExp: every current
+ *  CORE_TOOLS name is plain PascalCase with no regex metacharacters, so this
+ *  is currently a no-op — but nothing enforces that stays true, and an
+ *  unescaped name (e.g. one containing `.` or `+`) would silently change what
+ *  "whole word" means instead of throwing. Cheap to harden now. */
 export function claimedTools(reviewText: string): string[] {
-  return TOOL_NAMES.filter((name) => new RegExp(`\\b${name}\\b`).test(reviewText)).sort();
+  return TOOL_NAMES.filter((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`).test(reviewText);
+  }).sort();
 }
 
-export function collectRunFacts(run: RunWithWrapUp): RunFacts {
+export function collectRunFacts(run: BatteryRun): RunFacts {
   const used = new Set(run.metrics.toolsUsed);
   return {
     metrics: run.metrics,

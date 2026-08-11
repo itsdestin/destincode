@@ -58,11 +58,18 @@ export interface BatteryRun {
   // exists to surface).
   stepGates: number;
   fixtureRoot: string;
-  /** How the run ended. 'complete' — the testing turn finished on its own with
-   *  a non-empty review. 'wrapped-up' — the step budget or the wall clock cut
-   *  the testing turn short and a second, tools-denied turn produced the
-   *  review instead (see wrapUpReason). 'no-review' — finished with empty
-   *  final text. 'error' — the provider or session threw; see `error`. */
+  /** How the run ended. `wrapUpReason` being set WINS over every other case
+   *  below (Fix pass 2, Finding 5) — 'wrapped-up' means only "a wrap-up turn
+   *  ran," not "it produced a review": a wrap-up turn that itself errored, or
+   *  that ran and still produced nothing, both still report 'wrapped-up',
+   *  because the run being cut short is the fact a caller most needs to see.
+   *  Callers that care whether the wrap-up actually delivered must check
+   *  `review` (or `error`) separately, as the CLI does
+   *  (test-engine/review-harness.mjs). Only when wrapUpReason is undefined do
+   *  the remaining cases apply: 'error' — the provider or session threw; see
+   *  `error`. 'complete' — the (single) testing turn finished on its own with
+   *  a non-empty review. 'no-review' — the testing turn finished with empty
+   *  final text and nothing else went wrong. */
   outcome: BatteryOutcome;
   /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
    *  testing turn ended on its own. 'budget' and 'timeout' fire on the testing
@@ -375,6 +382,19 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
             ? { behavior: 'allow' }
             : { behavior: 'deny' };
         }
+        // Fix pass 2, Finding 2: WRAP_UP_PROMPT tells the model "any tool call
+        // you make now will be denied" — but AskUserQuestion is declared
+        // `interactive: true` (ask-user-question.ts), and harness-session.ts
+        // (runOneTool step 2.5) routes interactive tools AROUND guards AND
+        // decide() entirely, straight to this callback. `decide` returning
+        // 'deny' during wrap-up (above) never touches it, so denying it has
+        // to happen HERE, or the prompt's promise is false for the one tool
+        // most likely to keep a wrap-up turn looping — bounded only by
+        // WRAP_UP_TIMEOUT_MS — instead of answering. The TESTING turn still
+        // allows it below: reaching AskUserQuestion at all is something the
+        // battery specifically wants models to do (Kimi K3 finding #6 — no
+        // model ever got there).
+        if (wrappingUp && req.toolName === 'AskUserQuestion') return { behavior: 'deny' };
         const questions = req.toolName === 'AskUserQuestion'
           ? (req.toolInput?.questions as
               | Array<{ question: string; options?: { label: string }[] }>
@@ -408,9 +428,32 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // wrap-up attempt injecting a tool name into toolsUsed would silently
     // defeat that check for real. A wrap-up turn is a WHOLE turn of denied
     // calls, so exclude it entirely rather than leaving the leak incidental;
-    // toolCalls is gated the same way so the two stay paired. (The same leak
-    // exists, unfixed, for calls denied during the TESTING turn — e.g. a
-    // Write pointed outside the fixture — pre-existing and out of scope here.)
+    // toolCalls is gated the same way so the two stay paired. Fix pass 2,
+    // Finding 7: `asks` and `stepGates` (askUser above) are NOT gated by
+    // wrappingUp — a wrapped-up run's asks/stepGates counts include wrap-up
+    // denials (the AskUserQuestion denial above, a redundant max_steps deny)
+    // while toolCalls/toolsUsed do not, so the two families are not meant to
+    // reconcile 1:1; they answer different questions ("what did the model
+    // attempt" vs. "how many times did something need a human/policy call").
+    //
+    // Fix pass 2, Finding 3: excluding the wrap-up turn narrows the leak, it
+    // does not close it. `toolsUsed` records tools the model ATTEMPTED, never
+    // a proof any of them EXECUTED — the 'tool-use' event (harness-session.ts
+    // ~:1096) still fires before every other gate in runOneTool
+    // (harness-session.ts:1487-1560): zod input validation, the path guard's
+    // hard `deny`, the doom-loop denial, the external-directory ask denial,
+    // and the canceled back-fill after an interrupt. A model that calls Edit
+    // with malformed arguments never runs Edit, but Edit still lands in
+    // toolsUsed — so a review that falsely claims Edit behavior it never
+    // exercised would NOT be flagged by run-facts.ts's unbacked-claims check.
+    // Filtering on `isError` would be wrong, not a fix: the battery
+    // deliberately exercises error paths, and a genuine Edit duplicate-string
+    // refusal IS an error result that SHOULD count as "Edit was used."
+    // Anyone trusting the unbacked-claims check needs to know this is its
+    // floor: it catches a tool with ZERO attempts of any kind, not a tool
+    // that was attempted-but-never-executed. (The same leak exists, unfixed,
+    // for calls denied during the TESTING turn — e.g. a Write pointed outside
+    // the fixture — pre-existing and out of scope here.)
     if (e.type === 'tool-use' && !wrappingUp) {
       toolCalls++;
       // toolName is the field name on TranscriptEvent.data (shared/types.ts:148),
@@ -580,31 +623,49 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // is true for every index, so the filter falls back to "every assistant-text
     // event" — which in a no-tool-call run IS the whole (and only) message.
     //
-    // Only the wrap-up turn's events when one ran (sliceFrom > 0); the whole
-    // run otherwise.
+    // Only the wrap-up turn's events when one ran (wrapUpReason is set); the
+    // whole run otherwise. `wrapUpReason`, not `sliceFrom > 0`, is the actual
+    // signal — the old check only worked because send() happens to emit a
+    // 'user-message' event synchronously, guaranteeing events.length >= 1
+    // before a wrap-up ever starts. That is an unstated invariant of send(),
+    // not something this function should have to lean on to know its own
+    // state (Fix pass 2, Finding 6).
+    const isWrapUpWindow = wrapUpReason !== undefined;
     const reviewWindow = events.slice(sliceFrom);
-    // Fix pass 1, Finding 1: the "after the last tool result" anchor exists to
-    // strip narration BETWEEN REAL tool calls — but inside the wrap-up window
-    // no tool call is ever real (decide() denies every one above), so there is
-    // no such narration to strip, and the anchor becomes a way to LOSE the
-    // deliverable instead: a model that writes its review and then attempts
+    // Fix pass 1, Finding 1 / Fix pass 2, Finding 1: the "after the last tool
+    // result" anchor exists to strip narration BETWEEN REAL tool calls — but
+    // inside the wrap-up window no tool call is ever real (decide() denies
+    // every one above), so a model that writes its review and then attempts
     // one more (denied) tool call pushes a tool-result to a later index than
-    // the review text, and the old unconditional anchor discarded it. That is
+    // the review text, and an unconditional anchor would discard it. That is
     // exactly the tool-happy failure population wrap-up exists to rescue (127
-    // and 157 calls in the round-5 incident). So in the wrap-up window
-    // (sliceFrom > 0) join every assistant-text event regardless of position;
-    // the single-turn window (sliceFrom === 0) keeps the real anchor, which is
-    // still correct there and is pinned by the "takes only the wrap-up turn
-    // text, not narration from the interrupted turn" test above.
-    const lastToolResultIndex = sliceFrom > 0 ? -1 : reviewWindow.reduce(
+    // and 157 calls in the round-5 incident).
+    //
+    // But a wrap-up turn is often multi-step: the model narrates, attempts a
+    // tool, gets denied (a tool-result is still emitted), THEN writes the
+    // review. Dropping the anchor entirely for the whole wrap-up window (the
+    // pass-1 fix) glued that narration onto the front of the review with no
+    // separator — the exact defect the anchor was built to fix in the first
+    // place, for precisely the tool-happy models wrap-up exists to rescue.
+    //
+    // So: try the anchored pick FIRST — correct for a single-turn run (what it
+    // was built for) AND for a wrap-up turn that narrates-then-answers (the
+    // anchor lands right before the real review). Fall back to the whole
+    // window ONLY when the anchored pick comes back empty, which happens ONLY
+    // in the wrap-up window's "answered, then tried one more tool" shape —
+    // never for a single-turn run, where an empty anchored pick means the
+    // model produced no text at all and joining the (also-empty) whole window
+    // changes nothing.
+    const lastToolResultIndex = reviewWindow.reduce(
       (last, e, i) => (e.type === 'tool-result' ? i : last),
       -1,
     );
-    const review = reviewWindow
-      .filter((e, i) => e.type === 'assistant-text' && i > lastToolResultIndex)
+    const pickReview = (anchor: number) => reviewWindow
+      .filter((e, i) => e.type === 'assistant-text' && i > anchor)
       .map((e) => e.data.text ?? '')
       .join('')
       .trim();
+    const review = pickReview(lastToolResultIndex) || (isWrapUpWindow ? pickReview(-1) : '');
 
     // wrapUpReason takes priority: a wrap-up turn that itself errors still
     // reports 'wrapped-up' (with an empty review, per the brief's WHY comment
