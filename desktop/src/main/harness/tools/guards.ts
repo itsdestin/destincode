@@ -32,6 +32,23 @@ export function resolveP(p: string, cwd: string): string {
   return path.resolve(cwd, p);
 }
 
+/** Normalize a path for OUTPUT: backslashes → forward slashes, nothing else.
+ *
+ *  NOT `canonicalize()` above. That one also resolves against a cwd, collapses
+ *  `..`, and LOWERCASES the whole path on win32 — right for the sensitive-path
+ *  comparison sets it feeds, and destructive for anything a user or model reads
+ *  back (every path the model sees would arrive lowercased on Windows).
+ *
+ *  Why this exists (2026-08-11): every harness tool must emit ONE path
+ *  vocabulary on every platform. Glob normalized its separators; Grep printed
+ *  ripgrep's stdout verbatim, so on Windows the same file came back as
+ *  `src/a.ts` from one tool and `src\a.ts` from the other — the two are
+ *  unpipeable between tools, which is the exact contract
+ *  `harness-tool-bounds.test.ts` → "Grep and Glob agree on path format" pins. */
+export function toPosix(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 export type GuardVerdict =
   | { kind: 'ok' }
   | { kind: 'deny'; reason: string }

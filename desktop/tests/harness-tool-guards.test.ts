@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkPathGuard, canonicalize } from '../src/main/harness/tools/guards';
+import { checkPathGuard, canonicalize, toPosix } from '../src/main/harness/tools/guards';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -52,5 +52,30 @@ describe('checkPathGuard — threat model table', () => {
       expect(v.canonicalPath).not.toContain('..');
       expect(v.canonicalPath).toContain('outside.txt');
     }
+  });
+});
+
+describe('toPosix', () => {
+  it('converts Windows separators to forward slashes', () => {
+    expect(toPosix('src\\a.ts')).toBe('src/a.ts');
+  });
+
+  it('leaves an already-posix path untouched', () => {
+    expect(toPosix('src/a.ts')).toBe('src/a.ts');
+  });
+
+  it('normalizes an absolute Windows path', () => {
+    expect(toPosix('C:\\Users\\Dev\\a.ts')).toBe('C:/Users/Dev/a.ts');
+  });
+
+  // Regression pin (2026-08-11): toPosix is NOT canonicalize(). canonicalize()
+  // ALSO resolves against a cwd, collapses `..`, and lowercases the whole path
+  // on win32 — correct for the sensitive-path comparison sets it feeds, and
+  // silently destructive for anything a user or model reads back. Anyone
+  // reaching for "the path normalizer" must land on the right one.
+  it('does not resolve, absolutize, or case-fold — it is not canonicalize()', () => {
+    expect(toPosix('SRC/README.md')).toBe('SRC/README.md');
+    expect(toPosix('a\\..\\b')).toBe('a/../b');
+    expect(toPosix('rel/path.ts')).not.toBe(canonicalize('rel/path.ts', CWD));
   });
 });
