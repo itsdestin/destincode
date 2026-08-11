@@ -2270,6 +2270,20 @@ export function registerIpcHandlers(
       const p = (await providerRegistry.list()).find((x) => x.id === binding.providerId);
       return (p?.type as ProfileProviderType) ?? null;
     },
+    // Vision-support resolver (Task 6c): only OpenRouter's catalog carries real
+    // per-model modality data (architecture.input_modalities, parsed in
+    // model-catalog.ts's openrouterModels()) — every other provider type has no
+    // such signal, so this returns null for them and lets resolveProfile fall
+    // back to the registry/provider-type default, same as today. modelCatalog.get()
+    // never throws (its own contract — a dead network degrades to stale cache or
+    // an empty list), so there is nothing to catch here; a cache miss or unknown
+    // model just falls through the `?.supportsVision` chain to null.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const models = await modelCatalog.get(providers);
+      const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
+      return hit?.supportsVision ?? null;
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).

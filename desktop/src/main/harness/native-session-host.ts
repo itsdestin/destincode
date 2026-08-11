@@ -161,6 +161,17 @@ export class NativeSessionHost extends EventEmitter {
     // to a cloud-safe default. Positioned right after contextLengthFor because the
     // two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
+    // Per-model vision fact read from the provider catalog's declared input
+    // modalities (Task 6c). Today only OpenRouter's catalog can actually
+    // answer this — everyone else (direct-key providers, openai-compatible,
+    // local-engine) has no such signal, so this closure returns null for
+    // them, same as an OpenRouter cache miss or fetch failure. null degrades
+    // to resolveProfile's existing registry/provider-default behavior
+    // (DiscoveredModel.supportsVision left undefined) — it is never allowed
+    // to throw or block session start. Positioned right after providerTypeFor
+    // for the same reason that one sits after contextLengthFor: all three are
+    // resolved together for every create/resume/swap.
+    private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 3-arg test constructions still compile; the
     // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
@@ -300,7 +311,13 @@ export class NativeSessionHost extends EventEmitter {
     // may be far larger. So resolve the provider type FIRST and only clamp locals;
     // cloud/hosted bindings pass their real window through unchanged.
     const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
-    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength });
+    // null (no source could answer — the closure's convention, matching
+    // contextLengthFor/providerTypeFor above) becomes undefined on the
+    // DiscoveredModel, which is visionFor()'s OWN "not discovered" sentinel —
+    // it then falls through to the registry/provider-type default exactly as
+    // it did before this closure existed.
+    const discoveredVision = (await this.visionSupportFor(binding)) ?? undefined;
+    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision });
     return { contextLength, profile };
   }
 

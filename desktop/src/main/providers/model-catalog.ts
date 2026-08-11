@@ -123,6 +123,18 @@ export class ModelCatalog {
       };
       if (typeof row.context_length === 'number') m.contextLength = row.context_length;
       if (Array.isArray(row.supported_parameters)) m.supportsTools = row.supported_parameters.includes('tools');
+      // Vision support: OpenRouter is a TRANSPORT (one endpoint serves vision and
+      // text-only models), so unlike the direct-key providers this is the one
+      // catalog source that can actually answer "does THIS model accept images"
+      // from data rather than a hand-maintained guess. `architecture` and its
+      // `input_modalities` array are both optional per OpenRouter's schema and
+      // rows are untrusted JSON — isObj + Array.isArray gate every access, and a
+      // missing/malformed shape leaves supportsVision unset (undefined = "don't
+      // know"), never a guessed `false` (see CatalogModel's field comment).
+      const architecture = isObj(row.architecture) ? row.architecture : null;
+      if (architecture && Array.isArray(architecture.input_modalities)) {
+        m.supportsVision = architecture.input_modalities.includes('image');
+      }
       // OpenRouter pricing is USD-per-TOKEN strings; CatalogModel.pricing is
       // USD per 1M tokens, hence the *1e6. Require NON-EMPTY STRINGS before
       // Number(): Number(null) and Number('') are both 0, which would map a

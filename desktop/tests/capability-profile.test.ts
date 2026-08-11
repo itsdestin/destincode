@@ -248,3 +248,47 @@ describe('mcpToolBudgetTokens ladder (Task 6 / fix pass 1, Finding 2)', () => {
     expect(p.injectionBudgetTokens).toBeLessThan(10_000);     // the clamp injectionSizing already applied
   });
 });
+
+// ---------------------------------------------------------------------------
+// supportsVision precedence — OpenRouter is a transport, so a discovered
+// per-model fact (from the catalog's architecture.input_modalities) must be
+// able to answer where the registry has none. Precedence, most to least
+// authoritative: (1) KNOWN_MODELS registry opinion, (2) DiscoveredModel's own
+// supportsVision (the catalog value, when defined), (3) VISION_PROVIDERS
+// fallback (today's provider-type-only behavior).
+// ---------------------------------------------------------------------------
+describe('supportsVision — three-level precedence (registry > discovered > provider default)', () => {
+  it('a discovered true from the catalog wins over the provider default (openrouter has no default)', () => {
+    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/vision-model', contextLength: 128_000, supportsVision: true };
+    expect(resolveProfile(d).supportsVision).toBe(true);
+  });
+
+  it('a discovered false from the catalog wins over the provider default', () => {
+    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/text-model', contextLength: 128_000, supportsVision: false };
+    expect(resolveProfile(d).supportsVision).toBe(false);
+  });
+
+  it('an UNDEFINED discovered value leaves today\'s behavior exactly as it was (provider-default fallback)', () => {
+    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/unknown-model', contextLength: 128_000 };
+    // No registry opinion, no discovered opinion -> VISION_PROVIDERS.has('openrouter') -> false.
+    expect(resolveProfile(d).supportsVision).toBe(false);
+    // Same for a provider VISION_PROVIDERS DOES claim, to prove the fallback path is unchanged.
+    const anthropicD: DiscoveredModel = { providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 };
+    expect(resolveProfile(anthropicD).supportsVision).toBe(true);
+  });
+
+  it('the KNOWN_MODELS registry beats a discovered value in either direction', () => {
+    const registryVisionTrue: KnownModelEntry[] = [{ match: 'special-vision-model', label: 'X', supportsVision: true }];
+    const registryVisionFalse: KnownModelEntry[] = [{ match: 'special-novision-model', label: 'X', supportsVision: false }];
+    // Registry says true, discovered says false -> registry wins.
+    expect(resolveProfile(
+      { providerType: 'openrouter', modelId: 'special-vision-model', contextLength: 128_000, supportsVision: false },
+      registryVisionTrue,
+    ).supportsVision).toBe(true);
+    // Registry says false, discovered says true -> registry wins.
+    expect(resolveProfile(
+      { providerType: 'openrouter', modelId: 'special-novision-model', contextLength: 128_000, supportsVision: true },
+      registryVisionFalse,
+    ).supportsVision).toBe(false);
+  });
+});

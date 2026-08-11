@@ -49,7 +49,16 @@ export type ProfileProviderType =
   | 'anthropic' | 'openai' | 'google';
 
 // LAYER 1 — discovered truth (a later task fills contextLength from the real engine).
-export interface DiscoveredModel { providerType: ProfileProviderType; modelId: string; contextLength: number | null }
+export interface DiscoveredModel {
+  providerType: ProfileProviderType; modelId: string; contextLength: number | null;
+  /** Per-model vision fact sourced from a catalog that can actually answer it
+   *  (today: OpenRouter's architecture.input_modalities — see model-catalog.ts).
+   *  Optional because most construction sites cannot answer this yet (no
+   *  catalog lookup wired at the call site) — `undefined` here means "not
+   *  discovered", not "no". visionFor() treats it as the middle precedence
+   *  layer: below the KNOWN_MODELS registry, above the provider-type default. */
+  supportsVision?: boolean;
+}
 
 const SMALL_LOCAL_CONTEXT = 32_768;
 
@@ -216,7 +225,9 @@ export function effectiveContextForModel(loadedContext: number | null, modelId: 
 // Providers we reach through their OWN SDK, whose current flagship models are all
 // multimodal. openrouter / openai-compatible / local-engine are deliberately NOT
 // here: they are transports, not models — the same endpoint serves vision and
-// text-only models — so those resolve from the registry or default false.
+// text-only models — so those resolve from the registry, then a DISCOVERED
+// per-model fact (openrouter's catalog can supply one — see DiscoveredModel's
+// supportsVision comment), and only then this provider-type default.
 const VISION_PROVIDERS = new Set<ProfileProviderType>(['anthropic', 'openai', 'google']);
 
 function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
@@ -224,6 +235,10 @@ function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
   // Registry wins wherever it has an opinion — it is the one place a modelId is
   // allowed to be inspected, and it can see through a transport provider.
   if (known?.supportsVision !== undefined) return known.supportsVision;
+  // Next, a DISCOVERED per-model fact (e.g. OpenRouter's own modality data),
+  // when the call site could supply one. Still beats the provider-type
+  // default because it is model-specific, not a blanket transport guess.
+  if (d.supportsVision !== undefined) return d.supportsVision;
   return VISION_PROVIDERS.has(d.providerType);
 }
 

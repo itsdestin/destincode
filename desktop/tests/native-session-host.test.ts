@@ -90,7 +90,7 @@ describe('NativeSessionHost', () => {
   let root: string; let host: NativeSessionHost;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
-    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -115,7 +115,7 @@ describe('NativeSessionHost', () => {
     await host.drain('s-1');
     await host.destroyAll();
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root);
     expect(resumed).toBe(true);
     expect(host2.getHistory('s-1')!.length).toBe(3);
@@ -138,7 +138,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
     await host.destroy('s-1');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-1')).toBe('model-B');
@@ -150,7 +150,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
     await host.destroy('s-2');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
     const resumed = await host2.resume('s-2', root);
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-2')).toBe('header-model');
@@ -180,7 +180,7 @@ describe('NativeSessionHost', () => {
 
   it('destroy() while a stream is mid-emit: no throw, coherent prefix persisted', async () => {
     const store = new SessionStore(new NativeHome(root));
-    const midHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
+    const midHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       midHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -215,7 +215,7 @@ describe('NativeSessionHost', () => {
     });
     // delayedFactory trickles chunks, so the first turn is genuinely mid-stream
     // when resume lands — the exact window where an orphan does its damage.
-    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
+    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -255,7 +255,7 @@ describe('NativeSessionHost', () => {
       if (!threw && event.type === 'assistant-text') { threw = true; throw new Error('disk hiccup'); }
       return realAppend(cwd, event);
     });
-    const failHost = new NativeSessionHost(store, factory, async () => null, async () => null);
+    const failHost = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
     await failHost.create({ sessionId: 's-f', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     failHost.send('s-f', 'hello');       // M1: dispatch-only — wait for the turn separately
     await waitForTurnComplete(failHost, 1);
@@ -311,7 +311,7 @@ describe('NativeSessionHost', () => {
     it('destroyAll() also tears down the pooled MCP connections', async () => {
       const mcpDestroyAll = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: mcpDestroyAll },
       );
@@ -320,7 +320,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('destroyAll() works fine with no mcpManager wired (pre-Task-6 wiring)', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
       await expect(h.destroyAll()).resolves.toBeUndefined();
     });
   });
@@ -342,7 +342,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv0')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -356,7 +356,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv1')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -368,7 +368,7 @@ describe('NativeSessionHost', () => {
       acquire.mockClear();
 
       const h2 = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -383,7 +383,7 @@ describe('NativeSessionHost', () => {
     it('destroy() releases this session\'s hold on MCP servers', async () => {
       const release = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire: async () => fakeLease([], release) },
       );
@@ -410,7 +410,7 @@ describe('NativeSessionHost', () => {
       let n = 0;
       const acquire = vi.fn(async () => leases[n++]);
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -434,7 +434,7 @@ describe('NativeSessionHost', () => {
     it('a registry-wide acquire failure does not block session creation — the session just opens with no MCP servers', async () => {
       const acquire = vi.fn(async () => { throw new Error('registry file corrupt'); });
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -453,7 +453,7 @@ describe('NativeSessionHost', () => {
     const profileOf = (h: NativeSessionHost, id: string) => ((h as any).live.get(id).session as any).profile;
 
     it('a small local-engine binding yields a simplified profile; a swap to cloud re-resolves to full', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any, async () => null);
       await h.create({ sessionId: 's', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
       expect(profileOf(h, 's').maxToolPresentation).toBe('simplified');
       expect(profileOf(h, 's').promptVariant).toBe('local-small');
@@ -463,6 +463,38 @@ describe('NativeSessionHost', () => {
       await h.setBinding('s', { providerId: 'openrouter', modelId: 'gpt-4o' });
       expect(profileOf(h, 's').maxToolPresentation).toBe('full');
       expect(profileOf(h, 's').doomLoopThreshold).toBe(3);
+      await h.destroyAll();
+    });
+
+    // Task 6c: the visionSupportFor closure's discovered value must actually
+    // reach the resolved profile — this is the step that turns the catalog
+    // plumbing (CatalogModel.supportsVision, DiscoveredModel.supportsVision,
+    // visionFor()'s precedence) from dead fields into the real fix. A cloud
+    // OpenRouter binding has no VISION_PROVIDERS default (openrouter is a
+    // transport), so `true` from the closure is the ONLY way this profile
+    // could come out true — pinning that a bare provider-default read would
+    // fail this exact assertion.
+    it('a discovered supportsVision:true from visionSupportFor reaches the resolved profile', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        async () => true,
+      );
+      await h.create({ sessionId: 'v', cwd: root, binding: { providerId: 'openrouter', modelId: 'vision-model' } });
+      expect(profileOf(h, 'v').supportsVision).toBe(true);
+      await h.destroyAll();
+    });
+
+    // The other half of the same wiring: a closure that can't answer (null —
+    // "no source could answer", e.g. an OpenRouter cache miss or a non-OpenRouter
+    // provider) must leave the profile EXACTLY as it resolved before this task —
+    // openrouter has no VISION_PROVIDERS default, so this pins supportsVision: false.
+    it('visionSupportFor returning null leaves the profile exactly as it was before this task', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        async () => null,
+      );
+      await h.create({ sessionId: 'v2', cwd: root, binding: { providerId: 'openrouter', modelId: 'unknown-model' } });
+      expect(profileOf(h, 'v2').supportsVision).toBe(false);
       await h.destroyAll();
     });
 
@@ -477,7 +509,7 @@ describe('NativeSessionHost', () => {
       // Same model id, same raw 1M window; only the provider TYPE differs.
       const bigWindow = async () => 1_000_000;
       const typeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, bigWindow as any, typeFor as any);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, bigWindow as any, typeFor as any, async () => null);
 
       // Hosted (OpenRouter): real 1M window survives — no local registry clamp.
       await h.create({ sessionId: 'cloud', cwd: root, binding: { providerId: 'openrouter', modelId: 'qwen/qwen3.5-9b' } });
@@ -495,7 +527,7 @@ describe('NativeSessionHost', () => {
     // A host wired with a REAL PermissionStore (over the temp home) + an injected
     // app version, driving the Write-then-stop turn.
     const permHost = () => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
       new PermissionStore(new NativeHome(root)), '9.9.9',
     );
 
@@ -571,7 +603,7 @@ describe('NativeSessionHost', () => {
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, store, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, store, '9.9.9',
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
@@ -602,7 +634,7 @@ describe('NativeSessionHost', () => {
         remember: () => new Promise<void>(() => { /* never resolves */ }),
       };
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, hangingStore, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
       );
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -632,7 +664,7 @@ describe('NativeSessionHost', () => {
 
     it('create stamps the chosen preset in the header and seeds its default mode', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
       await h.create({ sessionId: 's1', cwd: root, binding, presetId: 'coder' });
       expect(store.readHeader('s1', root)?.harnessId).toBe('coder');
       expect(h.getPermissionMode('s1')).toBe('auto-edit');
@@ -641,7 +673,7 @@ describe('NativeSessionHost', () => {
 
     it('create defaults to assistant when no preset is given', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
       await h.create({ sessionId: 's2', cwd: root, binding });
       expect(store.readHeader('s2', root)?.harnessId).toBe('assistant');
       expect(h.getPermissionMode('s2')).toBe('ask');
@@ -653,7 +685,7 @@ describe('NativeSessionHost', () => {
       const store = new SessionStore(new NativeHome(root));
       await store.create({ v: 1, sessionId: 'legacy1', harnessId: 'chat', binding, cwd: root, createdAt: Date.now() });
 
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
       expect(await h.resume('legacy1', root)).toBe(true);
       expect(h.getHarnessId('legacy1')).toBe('assistant');
       expect(store.readHeader('legacy1', root)?.harnessId).toBe('chat'); // header untouched — mapping is read-side
@@ -662,7 +694,7 @@ describe('NativeSessionHost', () => {
 
     it('an explicit user mode flip still beats the preset default', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
       await h.create({ sessionId: 's3', cwd: root, binding, presetId: 'coder' });
       h.setPermissionMode('s3', 'ask');
       expect(h.getPermissionMode('s3')).toBe('ask');
@@ -684,7 +716,7 @@ describe('NativeSessionHost', () => {
     let id: string;
 
     beforeEach(async () => {
-      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null, async () => null);
+      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null, async () => null, async () => null);
       id = 'q-1';
       await host.create({ sessionId: id, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     });
@@ -771,7 +803,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('a failed turn (factory throw) does not strand the queue', async () => {
-      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null, async () => null);
+      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null, async () => null, async () => null);
       await errHost.create({ sessionId: 'e-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const types: string[] = [];
       errHost.on('transcript-event', (e) => types.push(e.type));
@@ -827,7 +859,7 @@ describe('NativeSessionHost', () => {
     it('quiesce clears the queue, aborts mid-stream, and no appends occur after it resolves', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       qHost.send('qz', 'long');              // slow (delayedFactory) turn in flight
       qHost.send('qz', 'queued-survivor');   // FIFO'd behind it — must NEVER run
@@ -848,7 +880,7 @@ describe('NativeSessionHost', () => {
     it('quiesce catches a same-tick send (setImmediate defer) — the turn is aborted, never completed', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       // send() and quiesce() in the SAME synchronous tick. send() defers its
       // runTurns dispatch one macrotask (setImmediate), so an interrupt that ran

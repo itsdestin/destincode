@@ -152,6 +152,59 @@ describe('ModelCatalog', () => {
     expect(second.some((m) => m.providerId === 'anth1')).toBe(true); // gap filled
   });
 
+  describe('OpenRouter vision detection (architecture.input_modalities)', () => {
+    const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
+
+    it('sets supportsVision: true when input_modalities includes "image"', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'vision-model', name: 'Vision', architecture: { input_modalities: ['text', 'image'] } }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'vision-model')?.supportsVision).toBe(true);
+    });
+
+    it('sets supportsVision: false when input_modalities is present without "image"', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'text-model', name: 'Text', architecture: { input_modalities: ['text'] } }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'text-model')?.supportsVision).toBe(false);
+    });
+
+    it('leaves supportsVision undefined when architecture is missing entirely', async () => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'no-architecture', name: 'None' }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'no-architecture')?.supportsVision).toBeUndefined();
+    });
+
+    it.each([
+      ['architecture: null', { architecture: null }],
+      ['architecture: a string', { architecture: 'image' }],
+      ['architecture without input_modalities', { architecture: { modality: 'text->text' } }],
+      ['input_modalities: not an array', { architecture: { input_modalities: 'image' } }],
+    ])('leaves supportsVision undefined for malformed shape: %s', async (_label, extra) => {
+      fetchMock.mockImplementation(async (url: string) => ({
+        ok: true,
+        json: async () => url.includes('openrouter')
+          ? { data: [{ id: 'malformed', name: 'Malformed', ...extra }] }
+          : {},
+      }));
+      const models = await cat.get(providers);
+      expect(models.find((m) => m.id === 'malformed')?.supportsVision).toBeUndefined();
+    });
+  });
+
   describe('local models source (Plan B)', () => {
     it('get(): merges injected local models for an enabled local-engine provider', async () => {
       const localRows = [{ id: 'tiny-Q4_K_M', providerId: 'local', label: 'tiny-Q4_K_M', contextLength: 8192 }];

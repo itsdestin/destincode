@@ -37,9 +37,10 @@ vi.mock('../src/main/harness/mcp/mcp-client', async (importOriginal) => {
 
 // Captures the real args NativeSessionHost's constructor receives, WITHOUT
 // changing its behavior (extends + delegates to the real class via super()).
-// This is the only way to inspect ipc-handlers' positional 9th argument
-// (mcpManager) without exporting it or refactoring the constructor shape —
-// the brief explicitly forbids the latter.
+// This is the only way to inspect ipc-handlers' positional 10th argument
+// (mcpManager, shifted from 9th by Task 6c's new visionSupportFor param)
+// without exporting it or refactoring the constructor shape — the brief
+// explicitly forbids the latter.
 let capturedCtorArgs: unknown[] | undefined;
 vi.mock('../src/main/harness/native-session-host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/main/harness/native-session-host')>();
@@ -136,7 +137,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     createConnectionMock.mockClear();
   });
 
-  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 9th positional arg', async () => {
+  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 10th positional arg', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'mcp.json'),
@@ -156,12 +157,14 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 9 args, skillCatalog (index 7)
-    // explicitly undefined so mcpManager (index 8) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(9);
-    expect(capturedCtorArgs![7]).toBeUndefined();
+    // Positional shape pinned by the brief: 10 args (Task 6c added
+    // visionSupportFor as the 3rd positional param, shifting everything after
+    // providerTypeFor down by one), skillCatalog (index 8) explicitly
+    // undefined so mcpManager (index 9) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(10);
+    expect(capturedCtorArgs![8]).toBeUndefined();
 
-    const mcpManager = capturedCtorArgs![8] as {
+    const mcpManager = capturedCtorArgs![9] as {
       acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
@@ -205,7 +208,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![8] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const mcpManager = capturedCtorArgs![9] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
     const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
