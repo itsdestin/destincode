@@ -2,11 +2,14 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS } from '../src/main/harness/review/run-battery';
-import { DEFAULT_STEP_BUDGET } from '../src/main/harness/model-step-budget';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_LIMIT } from '../src/main/harness/review/run-battery';
+import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/review/run-facts';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
+import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
+import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
 describe('makeOpenRouterFactory', () => {
   it('refuses to build without a key, naming the env var to set', () => {
@@ -55,6 +58,25 @@ describe('runBattery output ceiling (2026-08-10 incident)', () => {
   });
 });
 
+describe('battery step budget', () => {
+  it('sets its own maxSteps instead of inheriting the app chat-tier budget', () => {
+    expect(BATTERY_HARNESS.limits?.maxSteps).toBe(BATTERY_STEP_BUDGET);
+  });
+
+  it('is uniform — a frontier model gets the same budget as any other', () => {
+    // WHY assert this rather than just reading the constant: harness-session.ts:1008
+    // is `harness.limits?.maxSteps ?? stepBudgetFor(modelId)`. As long as maxSteps
+    // is set, stepBudgetFor never runs, so the 25/50 tier split cannot leak in.
+    // If someone later deletes the maxSteps line, this is the test that notices.
+    expect(BATTERY_STEP_BUDGET).not.toBe(FRONTIER_STEP_BUDGET);
+    expect(BATTERY_HARNESS.limits?.maxSteps).toBe(BATTERY_STEP_BUDGET);
+  });
+
+  it('allows exactly one budget continuation before the gate means something', () => {
+    expect(STEP_GATE_ALLOWANCE).toBe(1);
+  });
+});
+
 const DOC = `# Native Agent Harness Reviews
 
 Intro text.
@@ -80,11 +102,96 @@ Prompt block here.
 // stay deterministic.
 const RUN_AT = '2026-08-06T09:15:00.000Z';
 
+// Regression fixture for the 2026-08-10 incident: 14 tool calls (13 Read, one
+// Glob, one Bash), a review describing Edit/replace_all tests that never
+// happened, appended as a genuine review with nothing checking it against the
+// transcript. These tests drive run-facts.ts, the module that now does.
+const BASE_METRICS = {
+  wallClockMs: 230_000, toolCalls: 58, asks: 2, stepGates: 0, thinkingEvents: 232,
+  inputTokens: 100_000, outputTokens: 8_379, stopReasons: ['end_turn'],
+  toolsUsed: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'], repeats: [],
+};
+const baseRun = (over: Partial<any> = {}) => ({
+  label: 'Fake', modelId: 'fake/model', review: 'A review.', events: [],
+  toolCalls: 58, asks: 2, stepGates: 0, fixtureRoot: '/tmp/x',
+  outcome: 'complete' as const, metrics: BASE_METRICS, ...over,
+});
+
+describe('claimedTools', () => {
+  it('finds tool names named in the review', () => {
+    expect(claimedTools('I tested Edit and Grep, then Read the file.'))
+      .toEqual(['Edit', 'Grep', 'Read']);
+  });
+
+  it('matches whole words only, so prose is not mistaken for a tool name', () => {
+    // "Reading", "edited", "globbing" must NOT count as Read / Edit / Glob.
+    expect(claimedTools('Reading the file, I edited it while globbing.')).toEqual([]);
+  });
+
+  it('does not mistake TodoWrite for Write, a compound name in the real roster', () => {
+    expect(claimedTools('TodoWrite ran fine')).not.toContain('Write');
+  });
+});
+
+describe('collectRunFacts', () => {
+  it('flags a tool the review claims but the transcript never shows', () => {
+    // The exact Qwen 3.6 35B A3B shape: 14 calls, none of them Edit, review
+    // describing Edit tests in detail.
+    const facts = collectRunFacts(baseRun({
+      review: 'Edit refused a duplicate string, and replace_all worked as documented.',
+      toolCalls: 14,
+      metrics: { ...BASE_METRICS, toolCalls: 14, toolsUsed: ['Bash', 'Glob', 'Read'] },
+    }));
+    expect(facts.unbackedClaims).toEqual(['Edit']);
+  });
+
+  it('does not flag a tool the review claims AND the transcript shows', () => {
+    const facts = collectRunFacts(baseRun({ review: 'Edit and Read both behaved.' }));
+    expect(facts.unbackedClaims).toEqual([]);
+  });
+
+  it('flags a run below the tool-call floor', () => {
+    // Qwen 3.6 27B made two calls. Whatever follows two calls is not a review
+    // of ten tools.
+    const facts = collectRunFacts(baseRun({
+      toolCalls: 2, metrics: { ...BASE_METRICS, toolCalls: 2, toolsUsed: ['Read'] },
+    }));
+    expect(facts.belowFloor).toBe(true);
+    expect(MIN_TOOL_CALLS).toBe(10);
+  });
+});
+
+describe('renderRunFacts', () => {
+  it('states what the run actually did', () => {
+    const out = renderRunFacts(collectRunFacts(baseRun()));
+    expect(out).toContain('58 tool calls');
+    expect(out).toContain('232 thinking');
+    expect(out).toContain('Bash, Edit, Glob, Grep, Read, Write');
+  });
+
+  it('leads with a warning blockquote when a claim is unbacked', () => {
+    const out = renderRunFacts(collectRunFacts(baseRun({
+      review: 'Edit refused a duplicate string.',
+      metrics: { ...BASE_METRICS, toolsUsed: ['Read'] },
+    })));
+    expect(out.startsWith('> ')).toBe(true);
+    expect(out).toContain('Edit');
+    // Flags, does not judge — the wording must not assert the review is false.
+    expect(out.toLowerCase()).not.toContain('fabricat');
+  });
+
+  it('has no warning blockquote for a clean run', () => {
+    expect(renderRunFacts(collectRunFacts(baseRun())).startsWith('> ')).toBe(false);
+  });
+});
+
 describe('appendReview', () => {
   it('inserts the new section above the prompt block, not at the end of the file', () => {
+    // Subject here is insertion position, not the facts block, so runFacts is
+    // left blank per the brief's guidance for these tests.
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     expect(out.indexOf('## Review: New Model')).toBeLessThan(out.indexOf('## Prompt for other agents'));
@@ -93,7 +200,7 @@ describe('appendReview', () => {
   it('leaves every existing review byte-identical', () => {
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     expect(out).toContain('## Review: Existing Model — 2026-08-01\n\nBody of an existing review.');
@@ -114,7 +221,7 @@ describe('appendReview', () => {
   it('signs the section with the model label, id, and heading timestamp', () => {
     const out = appendReview(
       DOC,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     // Minute-precision time is now part of the heading — see the fix comment
@@ -129,12 +236,12 @@ describe('appendReview', () => {
 
   it('refuses to write an empty review rather than adding a hollow section', () => {
     expect(() =>
-      appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ', buildSha: 'abc1234' }, RUN_AT),
+      appendReview(DOC, { label: 'X', modelId: 'v/x', review: '   ', buildSha: 'abc1234', runFacts: '' }, RUN_AT),
     ).toThrow(/empty/i);
   });
 
   it('appends at the end when the doc has no prompt block', () => {
-    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r', buildSha: 'abc1234' }, RUN_AT);
+    const out = appendReview('# Doc\n', { label: 'X', modelId: 'v/x', review: 'r', buildSha: 'abc1234', runFacts: '' }, RUN_AT);
     expect(out).toContain('## Review: X — 2026-08-06 09:15');
   });
 
@@ -149,12 +256,12 @@ describe('appendReview', () => {
     // without opening either body.
     const firstRunDoc = appendReview(
       DOC,
-      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'First run review.', buildSha: 'aaa1111' },
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'First run review.', buildSha: 'aaa1111', runFacts: '' },
       '2026-08-10T09:00:00.000Z',
     );
     const bothRunsDoc = appendReview(
       firstRunDoc,
-      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'Second run review.', buildSha: 'bbb2222' },
+      { label: 'Grok 4.5', modelId: 'x-ai/grok-4.5', review: 'Second run review.', buildSha: 'bbb2222', runFacts: '' },
       '2026-08-10T15:30:00.000Z',
     );
 
@@ -197,7 +304,7 @@ Prompt block here.
 `;
     const out = appendReview(
       docWithQuotedHeading,
-      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234' },
+      { label: 'New Model', modelId: 'v/new', review: 'My review.', buildSha: 'abc1234', runFacts: '' },
       RUN_AT,
     );
     // The new section must land above the REAL heading (the last one in the
@@ -209,6 +316,19 @@ Prompt block here.
     // Sanity: the quoted heading inside the existing review is untouched and
     // still appears exactly where it did before.
     expect(out).toContain('```\n## Prompt for other agents\n```');
+  });
+
+  it('carries the run-facts block under the heading, above the review body', () => {
+    const out = appendReview(DOC, {
+      label: 'Fake', modelId: 'fake/model', review: 'Body text.',
+      buildSha: 'abc123', runFacts: '**Run facts:** complete · 58 tool calls',
+    }, RUN_AT);
+
+    const headingAt = out.indexOf('## Review: Fake');
+    const factsAt = out.indexOf('**Run facts:**');
+    const bodyAt = out.indexOf('Body text.');
+    expect(headingAt).toBeLessThan(factsAt);
+    expect(factsAt).toBeLessThan(bodyAt);
   });
 });
 
@@ -472,16 +592,21 @@ describe('runBattery', () => {
   // than typed out by hand. Prefers the real path (per the task brief) over
   // faking the askUser decision directly, since it also proves toolCalls/
   // asks/stepGates all still line up correctly across a real gate crossing.
-  // Alternates `offset` so no 3 consecutive calls share an identical signature
-  // (harness-session.ts:1424's doom-loop sig is `toolName:JSON.stringify(args)`,
-  // threshold 3 for the openrouter/cloud profile — capability-profile.ts). A
-  // constant-input Read call WOULD legitimately trip that guard on call 3 and
-  // then again on every call after (denial never resets the window, only
-  // 'allow' does — harness-session.ts:1438), inflating `asks` with doom_loop
-  // hits unrelated to what this test is proving about max_steps.
+  // `offset: i` makes every call's input unique so no 3 consecutive calls
+  // share an identical signature (harness-session.ts:1424's doom-loop sig is
+  // `toolName:JSON.stringify(args)`, threshold 3 for the openrouter/cloud
+  // profile — capability-profile.ts) — a constant-input Read call WOULD
+  // legitimately trip that guard on call 3 and then again on every call after
+  // (denial never resets the window, only 'allow' does — harness-session.ts:
+  // 1438), inflating `asks` with doom_loop hits unrelated to what this test
+  // is proving about max_steps. Unique-per-call (not merely alternating
+  // between two values) ALSO keeps this run under REPEAT_LIMIT (run-battery.ts)
+  // — an alternating two-value script run for 100+ steps would otherwise trip
+  // the restart-detection wrap-up before max_steps ever gets the chance to,
+  // which is what this test exists to prove.
   function toolCallSteps(count: number): ScriptStep[] {
     return Array.from({ length: count }, (_, i) => ({
-      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: (i % 2) + 1 } }],
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: i } }],
     }));
   }
 
@@ -492,7 +617,7 @@ describe('runBattery', () => {
     // gate — the run ends with stopReason='max_steps' before the text step is
     // ever reached, so `review` comes back empty instead of the real string.
     const steps: ScriptStep[] = [
-      ...toolCallSteps(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET),
+      ...toolCallSteps(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET),
       { text: 'Final review after surviving every step gate.' },
     ];
     const run = await runBattery({
@@ -503,39 +628,392 @@ describe('runBattery', () => {
     });
 
     expect(run.review).toBe('Final review after surviving every step gate.');
-    // Proves the run actually crossed the 25-step budget boundary STEP_GATE_ALLOWANCE
+    // Proves the run actually crossed the 100-step budget boundary STEP_GATE_ALLOWANCE
     // times, not just once — a run that stalled at the first gate could never
     // reach this many tool calls.
-    expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * DEFAULT_STEP_BUDGET);
+    expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET);
     expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE);
     // Design choice (see the WHY comment on run-battery.ts's askUser): a
     // bounded max_steps allowance still counts as an `asks` — it's a real
     // spend/policy decision made on the model's behalf, same as a denied
-    // doom_loop or external-path ask. All four gate hits here were the ONLY
+    // doom_loop or external-path ask. All gate hits here were the ONLY
     // asks in the run (no AskUserQuestion, no external-path Write), so `asks`
     // must equal `stepGates` exactly.
     expect(run.asks).toBe(STEP_GATE_ALLOWANCE);
+    // Pins the distinction from the wrap-up-turn tests below: an
+    // allowance-sized run finishes on its own and never wraps up.
+    expect(run.outcome).toBe('complete');
+    expect(run.wrapUpReason).toBeUndefined();
+  });
+});
+
+describe('wrap-up turn', () => {
+  function toolCallSteps(count: number): ScriptStep[] {
+    // Unique `offset` per call so consecutive calls are never byte-identical
+    // (which would trip the doom_loop guard, harness-session.ts:1432 — a
+    // different mechanism that would muddy what these tests prove) AND so no
+    // call recurs at all across the whole run. Recurring between just two
+    // alternating values would, at this function's typical call counts
+    // (100+), cross REPEAT_LIMIT (run-battery.ts) and send the run to a
+    // 'restart' wrap-up before the budget/timeout trigger these tests are
+    // actually exercising ever fires — restart detection has its own
+    // dedicated tests below.
+    return Array.from({ length: count }, (_, i) => ({
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: i } }],
+    }));
+  }
+
+  it('asks for the review when the step budget is exhausted, instead of ending the turn empty', async () => {
+    // One window more than the allowance permits, so the last gate is denied and
+    // the testing turn ends on stopReason 'max_steps'. The trailing text step is
+    // the WRAP-UP turn's response — reached only if a second send() happens.
+    //
+    // The model is hoisted OUT of the factory on purpose: modelFactory is called
+    // once per send() (harness-session.ts:1020), so an inline
+    // `async () => scriptModel(steps)` would hand the wrap-up turn a fresh model
+    // replaying from step 0 — it would call tools again, not answer.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      { text: 'Review written after being asked to wrap up.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.wrapUpReason).toBe('budget');
+    expect(run.review).toBe('Review written after being asked to wrap up.');
+    expect(run.metrics.stopReasons).toContain('max_steps');
   });
 
-  it('denies the max_steps gate once STEP_GATE_ALLOWANCE is exhausted, ending the turn', async () => {
-    // One MORE window than the allowance — the (STEP_GATE_ALLOWANCE + 1)th
-    // gate hit must be denied, which ends the turn (harness-session.ts:1102)
-    // before any further text is ever produced. No trailing text step is
-    // scripted, because the run must never reach one.
-    const steps: ScriptStep[] = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
+  it('denies tool calls during the wrap-up turn so the model cannot resume testing', async () => {
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // The model tries to keep testing on the wrap-up turn...
+      { toolCalls: [{ name: 'Bash', input: { command: 'echo still going' } }] },
+      // ...and only then answers.
+      { text: 'Fine, here is the review.' },
+    ]);
     const run = await runBattery({
-      modelFactory: async () => scriptModel(steps) as any,
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.review).toBe('Fine, here is the review.');
+    // The Bash call was ATTEMPTED (it is in the transcript) but denied, so it
+    // never reached the tool layer and never ran a command. harness-session.ts:1556
+    // returns `{ isError: true }` for a denied decide, and :1131 emits it as a
+    // tool-result carrying toolName.
+    const bashResults = run.events.filter(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'Bash',
+    );
+    // Assert non-empty FIRST — `.every` on an empty array is vacuously true, so
+    // without this the test would also pass if the wrap-up turn never ran.
+    expect(bashResults.length).toBeGreaterThan(0);
+    expect(bashResults.every((e) => e.data.isError)).toBe(true);
+  });
+
+  it('denies a genuine AskUserQuestion during wrap-up, so WRAP_UP_PROMPT\'s "every tool call will be denied" claim is true (Fix pass 2, Finding 2)', async () => {
+    // AskUserQuestion is declared `interactive: true` (ask-user-question.ts)
+    // and harness-session.ts routes interactive tools AROUND decide()
+    // entirely, straight to askUser. Before this fix, run-battery's askUser
+    // allowed any genuine AskUserQuestion unconditionally — including during
+    // wrap-up — so a model could keep calling it, bounded only by
+    // WRAP_UP_TIMEOUT_MS, while WRAP_UP_PROMPT told it every tool call would
+    // be denied.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: try AskUserQuestion instead of answering. Full
+      // valid shape (header, >=2 options, multiSelect) so the zod schema
+      // accepts it and this exercises the wrap-up denial in askUser, not a
+      // validation failure that would be denied for an unrelated reason.
+      {
+        toolCalls: [{
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              question: 'Which color?',
+              header: 'Color',
+              options: [{ label: 'Red' }, { label: 'Blue' }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+      // Wrap-up turn, step 2: the ask was denied, so the model gives up and answers.
+      { text: 'Fine, here is the review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    const askResults = run.events.filter(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'AskUserQuestion' && !e.data.isError,
+    );
+    // The ONLY successful AskUserQuestion allowed anywhere in this run must be
+    // the one the fake model issued during the TESTING phase's normal budget
+    // gate — none during wrap-up. Since this script has no such testing-phase
+    // ask, zero successful AskUserQuestion results must exist at all.
+    expect(askResults.length).toBe(0);
+    const deniedAsk = run.events.find(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'AskUserQuestion' && e.data.isError,
+    );
+    expect(deniedAsk).toBeDefined();
+    expect(run.review).toBe('Fine, here is the review.');
+  });
+
+  it('takes only the wrap-up turn text as the review, not narration from the interrupted turn', async () => {
+    // The testing turn emits trailing narration after its last tool call. Under
+    // the old single-turn extractor that text would BE the review. It must not
+    // leak into the wrapped-up review — this is the exact defect the
+    // "text after the last tool result" rule was written to fix.
+    const steps = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
+    steps[steps.length - 1] = {
+      text: 'Now let me try one more thing...',
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: 9 } }],
+    };
+    const model = scriptModel([...steps, { text: 'The actual review.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.review).toBe('The actual review.');
+    expect(run.review).not.toContain('one more thing');
+  });
+
+  it('keeps the wrap-up review even if the model answers and then tries one more tool call', async () => {
+    // Fix pass 1, Finding 1 regression: inside the wrap-up window every tool
+    // call is denied, so a tool-result there is never a real narration
+    // boundary — but the OLD extractor anchored on "text after the last
+    // tool-result" unconditionally, so a model that writes its review and
+    // THEN attempts one more (denied) tool call had that review discarded:
+    // the denial's tool-result landed at a later index than the review text,
+    // and the filter excluded everything at or before it. This is exactly
+    // the tool-happy failure population wrap-up exists to rescue (127 and 157
+    // tool calls in the round-5 incident).
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: answer AND try one more tool call in the same step.
+      {
+        text: 'My review is done.',
+        toolCalls: [{ name: 'Bash', input: { command: 'echo one more' } }],
+      },
+      // Wrap-up turn, step 2: the step above's tool call was denied (not an
+      // ask), so the turn loops once more — the model gives up here.
+      {},
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('My review is done.');
+  });
+
+  it('strips wrap-up narration that precedes a denied tool attempt, instead of concatenating it onto the review (Fix pass 2, Finding 1)', async () => {
+    // The pass-1 fix (dropping the anchor entirely inside the wrap-up window)
+    // fixed "answer, then try one more tool" but broke the more common
+    // multi-step shape: narrate -> attempt a tool -> get denied (a tool-result
+    // is still emitted) -> THEN write the review. Unconditionally joining
+    // every assistant-text event in the window glues the narration onto the
+    // front of the real review with no separator — "Let me verify one thing
+    // first.The actual review..." — which is exactly what gets appended to
+    // the shared reviews doc. This is the tool-happy population (127/157
+    // calls in the round-5 incident) wrap-up exists to rescue.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // Wrap-up turn, step 1: narrate AND attempt a tool in the same step.
+      {
+        text: 'Let me verify one thing first.',
+        toolCalls: [{ name: 'Bash', input: { command: 'echo verify' } }],
+      },
+      // Wrap-up turn, step 2: the tool attempt was denied, so the model gives
+      // up testing and writes the real review.
+      { text: 'The actual review text.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('The actual review text.');
+    expect(run.review).not.toContain('verify');
+  });
+
+  it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {
+    // Fix pass 1, Finding 4: the old version of this test scripted a fixed
+    // array (60 windows of tool calls, THEN one text step) and relied on the
+    // interrupted testing turn resuming mid-script for the wrap-up turn. That
+    // trailing text step was dead code — the wrap-up turn resumes wherever the
+    // 200ms deadline caught the testing turn (a handful of tool-call steps
+    // in), then needs up to its OWN ~100-step budget to work through the
+    // REST of the 6,000 scripted tool-call steps before ever reaching the
+    // text step at the end — so it never got there, and the test proved only
+    // that the trigger fired, not that the mechanism delivers a review.
+    //
+    // Fixed by making the model's response depend on what it's actually being
+    // asked, not on a step index: keep emitting (alternating, non-doom-loop)
+    // tool calls until WRAP_UP_PROMPT shows up as the latest user turn in its
+    // own prompt, then answer in prose immediately. That makes delivery
+    // deterministic regardless of exactly how many steps the 200ms deadline
+    // let the testing turn consume, while still keeping the testing turn
+    // permanently tool-happy (never naturally finishing) so the deadline is
+    // what ends it, not the script running out.
+    //
+    // timeoutMs is deliberately tight: this fake model has no real per-step
+    // latency, so STEP_GATE_ALLOWANCE's own natural 'max_steps' denial
+    // (measured ~1.1s for 200 steps against this fixture) would otherwise win
+    // the race and report 'budget' instead of the 'timeout' this test exists
+    // to prove — 200ms leaves a wide margin under that.
+    //
+    // Fix pass 1, Finding 5: the risk direction here is a FASTER machine (or
+    // CI runner), not a slower one — a slower machine only makes the 200-step
+    // budget path take longer, widening this test's margin. If this ever
+    // flakes, the fix is to LOWER timeoutMs (more headroom for the deadline to
+    // win), never to raise it — raising it hands the budget path more time to
+    // finish first, which is the opposite of what's needed. (A prior draft of
+    // this file's own report had this backwards; corrected there too.)
+    const seenPrompts: unknown[] = [];
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (req: any) => {
+        seenPrompts.push(req.prompt);
+        const isWrapUpTurn = JSON.stringify(req.prompt).includes(WRAP_UP_PROMPT);
+        call++;
+        const chunks = isWrapUpTurn
+          ? stream(...textChunks(`t${call}`, 'Review after the clock ran out.'), finishChunk('stop'))
+          : stream(
+              // `offset: call` (not alternating between two values): unique
+              // per call so this never itself crosses REPEAT_LIMIT and reports
+              // 'restart' instead of the 'timeout' this test exists to prove —
+              // same reasoning as the wrap-up describe block's toolCallSteps.
+              toolCallChunk(`c${call}`, 'Read', { file_path: 'README.md', offset: call }),
+              finishChunk('tool-calls'),
+            );
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 200,
+    });
+
+    expect(run.wrapUpReason).toBe('timeout');
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.error).toBeUndefined();   // a deadline is not an error any more
+    // The mechanism, not just the trigger: the wrap-up turn actually delivered
+    // a review, proving the second-turn machinery works end to end.
+    expect(run.review).toBe('Review after the clock ran out.');
+    // Fix pass 1, Finding 6: prove the wrap-up turn's outgoing message really
+    // carried WRAP_UP_PROMPT — the fake model above only branches on this, so
+    // this assertion is exercising the real content, not just the import.
+    expect(seenPrompts.some((p) => JSON.stringify(p).includes(WRAP_UP_PROMPT))).toBe(true);
+  });
+});
+
+describe('restart detection', () => {
+  it('wraps up when the same call repeats past the limit, even non-consecutively', async () => {
+    // Interleave a repeated Glob with distinct Reads so no two IDENTICAL calls
+    // are ever adjacent — doom_loop (harness-session.ts:1432) only catches the
+    // consecutive case and must not be what fires here.
+    const steps: ScriptStep[] = [];
+    for (let i = 0; i <= REPEAT_LIMIT; i++) {
+      steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
+      steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
+    }
+    steps.push({ text: 'Review after the restart was caught.' });
+    // Hoisted out of modelFactory (see the wrap-up describe block above): a
+    // fresh scriptModel per send() would replay the wrap-up turn from step 0.
+    const model = scriptModel(steps);
+
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.wrapUpReason).toBe('restart');
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('Review after the restart was caught.');
+    expect(run.metrics.repeats[0]).toMatchObject({ count: REPEAT_LIMIT + 1 });
+    expect(run.metrics.repeats[0].key).toContain('Glob');
+  });
+
+  it('leaves a run alone when repeats stay at or under the limit', async () => {
+    const steps: ScriptStep[] = [];
+    for (let i = 0; i < REPEAT_LIMIT; i++) {
+      steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
+      steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
+    }
+    steps.push({ text: 'Normal review.' });
+    const model = scriptModel(steps);
+
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.wrapUpReason).toBeUndefined();
+    expect(run.outcome).toBe('complete');
+    expect(run.metrics.repeats).toEqual([]);
+  });
+});
+
+describe('runBattery salvage', () => {
+  it('returns the run with the real error instead of throwing, when the model errors mid-run', async () => {
+    // WHY this matters: round 5 lost four models entirely. runBattery threw, the
+    // CLI caught, and no transcript was written - so the failures were not even
+    // diagnosable after the fact.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      { throwError: 'provider exploded' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
       modelId: 'fake/model',
       label: 'Fake',
       timeoutMs: 30_000,
     });
 
-    // The genuine-runaway outcome is preserved: a gate hit past the cap still
-    // ends the turn with no review, exactly like the pre-fix "deny everything"
-    // behavior did for the FIRST hit.
+    expect(run.outcome).toBe('error');
+    expect(run.error).toContain('provider exploded');
+    // The whole point: the events survive the failure.
+    expect(run.events.length).toBeGreaterThan(0);
+    expect(run.metrics.toolCalls).toBe(1);
+  });
+
+  it('reports no-review when the run finishes with empty final text', async () => {
+    const model = scriptModel([{ toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+    expect(run.outcome).toBe('no-review');
     expect(run.review).toBe('');
-    expect(run.toolCalls).toBe((STEP_GATE_ALLOWANCE + 1) * DEFAULT_STEP_BUDGET);
-    expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE + 1);
-    expect(run.asks).toBe(STEP_GATE_ALLOWANCE + 1);
+  });
+
+  it('reports complete and records metrics when the model finishes normally', async () => {
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] },
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      { text: 'The review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    expect(run.outcome).toBe('complete');
+    expect(run.review).toBe('The review.');
+    expect(run.metrics.toolCalls).toBe(2);
+    expect(run.metrics.toolsUsed).toEqual(['Glob', 'Read']);   // distinct, sorted
+    expect(run.metrics.stopReasons).toContain('end_turn');
+    expect(run.metrics.wallClockMs).toBeGreaterThan(0);
+    expect(run.metrics.outputTokens).toBeGreaterThan(0);
   });
 });
