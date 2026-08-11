@@ -29,7 +29,12 @@ import type { ModelMessage, TextPart, ToolCallPart, ToolResultPart } from 'ai';
 // transcript truncated by a crash mid-execution (see backfillUnpairedToolCalls).
 const CRASH_UNPAIRED_TEXT = 'Canceled: this call never completed (the app was closed mid-execution).';
 
-export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
+/** Re-reads a persisted image path at rebuild time. Injected (not imported) so
+ *  the module stays pure and tests need no filesystem. Production passes
+ *  image-support.readImageFromDisk. #290 follow-up fix 2. */
+export type RebuildImageReader = (absPath: string) => { mediaType: string; data: Buffer } | null;
+
+export function rebuildHistory(events: TranscriptEvent[], readImage?: RebuildImageReader): ModelMessage[] {
   const out: ModelMessage[] = [];
   let assistantParts: Array<TextPart | ToolCallPart> = [];
   let toolResults: ToolResultPart[] = [];
@@ -41,10 +46,21 @@ export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
   };
   for (const e of events) {
     switch (e.type) {
-      case 'user-message':
+      case 'user-message': {
         flushAssistant(); flushResults();
-        out.push({ role: 'user', content: String(e.data?.text ?? '') });
+        const text = String(e.data?.text ?? '');
+        // Mirror beginTurn's live push exactly: parts array ONLY when an image was
+        // actually readable — a vanished file degrades to the plain string, the same
+        // skip-with-the-path-still-in-text semantics send() had live (#290 follow-up
+        // fix 2). No reader (pure/legacy call) means today's exact plain-string shape.
+        const paths = Array.isArray(e.data?.attachments) ? (e.data.attachments as string[]) : [];
+        const parts: Array<{ type: 'file'; mediaType: string; data: Buffer }> = [];
+        if (readImage) for (const p of paths) { const img = readImage(p); if (img) parts.push({ type: 'file', mediaType: img.mediaType, data: img.data }); }
+        out.push(parts.length
+          ? ({ role: 'user', content: [{ type: 'text', text }, ...parts] } as any)
+          : { role: 'user', content: text });
         break;
+      }
       case 'assistant-text': {
         // A pending tool-result block closes before new assistant text opens.
         flushResults();

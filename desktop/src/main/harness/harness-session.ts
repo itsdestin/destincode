@@ -982,7 +982,11 @@ export class HarnessSession extends EventEmitter {
    *  remain in the text AND the pixels are attached — the model gets both, and
    *  the bubble still resolves. */
   async send(text: string, attachments: string[] = []): Promise<void> {
-    return this.beginTurn(text, () => this.emitEvent('user-message', { text }), attachments);
+    // Attachments ride the persisted event (paths only — events carry no binary)
+    // so rebuildHistory can restore the pixels on resume. Emitted only when
+    // present to keep the no-attachment event byte-identical to before (#290
+    // follow-up fix 2).
+    return this.beginTurn(text, () => this.emitEvent('user-message', attachments.length ? { text, attachments } : { text }), attachments);
   }
 
   /** Image parts for a user message, or [] when the model cannot see images / none

@@ -19,6 +19,7 @@ import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
+import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
@@ -538,8 +539,9 @@ export class NativeSessionHost extends EventEmitter {
       // tool-call + tool-result pairs too (the old eventsToMessages dropped every
       // tool event, so a resumed tool turn lost its tool context). seedHistory
       // already clears readRegistry + todos (the reset-on-resume ruling) — those
-      // are runtime state, never persisted.
-      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
+      // are runtime state, never persisted. readImageFromDisk re-reads any
+      // persisted attachment paths so images survive resume (#290 follow-up fix 2).
+      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd), readImageFromDisk));
     } catch (err) {
       await mcpLease?.release();
       throw err;

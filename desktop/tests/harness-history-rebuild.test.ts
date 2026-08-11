@@ -439,3 +439,28 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
     expect(rebuilt).toEqual((session as any).history);
   });
 });
+
+// Task 3 (#290 follow-up fix 2): user-attached images vanished on resume
+// because send() only ever persisted { text }. attachments now ride the
+// event as paths (events carry no binary) and rebuildHistory re-reads them
+// via an injected reader — kept out of history-rebuild.ts's imports so the
+// module stays pure and this suite needs no filesystem.
+describe('attachment resume (#290 follow-up fix 2)', () => {
+  const ev = (type: string, data: any) => ({ type, sessionId: 's', uuid: crypto.randomUUID(), timestamp: 1, data }) as any;
+  const fakeReader = (p: string) => p.endsWith('ok.png') ? { mediaType: 'image/png', data: Buffer.from('png!') } : null;
+
+  it('re-reads persisted attachment paths into user-message parts', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'see /tmp/ok.png', attachments: ['/tmp/ok.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: [{ type: 'text', text: 'see /tmp/ok.png' }, { type: 'file', mediaType: 'image/png', data: Buffer.from('png!') }] }]);
+  });
+
+  it('a vanished attachment degrades to the plain-string shape (path still in text)', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'see /tmp/gone.png', attachments: ['/tmp/gone.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: 'see /tmp/gone.png' }]);
+  });
+
+  it('no reader (pure/legacy call) keeps today\'s exact behavior', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'hi', attachments: ['/tmp/ok.png'] })]);
+    expect(out).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+});
