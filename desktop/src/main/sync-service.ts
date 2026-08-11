@@ -33,6 +33,7 @@ import {
   migrateConfigToV2,
   readWarnings,
   syncLegacyKeys,
+  wasDismissedThisRun,
   writeWarnings,
 } from './sync-state';
 import { classifyPushError, extractStderr, truncateStderr } from './sync-error-classifier';
@@ -87,6 +88,34 @@ const RCLONE_TIMEOUT = 10 * 60 * 1000;
 // gates the actual dated copy: net effect is at most ONE dated ~/.claude
 // snapshot per day, produced automatically.
 const SNAPSHOT_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+// Health-check cadence. The health-check-owned warnings (OFFLINE,
+// PERSONAL_NOT_CONFIGURED, PERSONAL_STALE) describe conditions that change
+// while the app is open — the WiFi comes back, the user finishes sync setup —
+// so re-evaluating only at launch pinned a red "No internet" banner over an
+// "All synced · 1m ago" panel for the rest of the session. Re-running is cheap
+// once the rclone probe is excluded (see runHealthCheck's probeBackends), and
+// the warnings file is only rewritten when the set actually changes, so a
+// steady state costs one DNS lookup a minute and no disk writes.
+const HEALTH_POLL_INTERVAL_MS = 60 * 1000; // 1 minute
+
+/**
+ * Do two warning lists say the same thing? Used to skip the write when a
+ * health re-check found nothing new.
+ *
+ * `createdEpoch` is deliberately excluded: it is stamped fresh on every run, so
+ * including it would make every poll look like a change. Excluding it also
+ * gives the field a better meaning — with the write skipped, an unchanged
+ * warning keeps the epoch from when the condition was FIRST seen rather than
+ * from the last poll that re-observed it.
+ */
+function sameWarnings(a: SyncWarning[], b: SyncWarning[]): boolean {
+  if (a.length !== b.length) return false;
+  const key = (w: SyncWarning) => JSON.stringify([
+    w.code, w.level, w.backendId ?? null, w.title, w.body,
+    w.fixAction ?? null, w.dismissible, w.stderr ?? null,
+  ]);
+  return a.every((w, i) => key(w) === key(b[i]));
+}
 
 // --- SyncService ---
 
@@ -107,6 +136,11 @@ export class SyncService extends EventEmitter {
   private pushing = false;
   // Hourly daily-snapshot poll (see SNAPSHOT_POLL_INTERVAL_MS). Cleared in stop().
   private snapshotTimer: NodeJS.Timeout | null = null;
+  // Per-minute health re-check (see HEALTH_POLL_INTERVAL_MS). Cleared in stop().
+  private healthTimer: NodeJS.Timeout | null = null;
+  // Consecutive failed reachability probes — the OFFLINE warning needs two.
+  // See the comment at its use site in runHealthCheck.
+  private failedInternetProbes = 0;
 
   // `home` is a TEST-ONLY override. Production passes nothing and keeps the
   // os.homedir() behavior; tests pass a tmp dir so they never touch the real
@@ -166,12 +200,26 @@ export class SyncService extends EventEmitter {
     // Re-home: runHealthCheck used to run at the end of the now-deleted pull()
     // orchestrator. It still generates the .sync-warnings the UI reads (OFFLINE /
     // no-backend / stale), so we run it once at launch instead. Best-effort —
-    // never crash startup on a health-check failure.
+    // never crash startup on a health-check failure. This is the ONE run that
+    // probes for a legacy backend (the rclone shell-out, ~35s on the Z13); the
+    // timer below re-checks everything else without it.
     try {
       await this.runHealthCheck();
     } catch (e) {
       this.logBackup('ERROR', `Startup health check failed: ${e}`, 'sync.health');
     }
+
+    // Fix: these warnings used to be computed once and then outlive their own
+    // cause for the whole app run — a launch that lost the DNS race with the
+    // WiFi coming up left "No internet" pinned above a panel reading
+    // "All synced · 1m ago". Re-check every minute so a fixed condition clears
+    // itself. Cheap by construction: no backend probe, no write unless the
+    // warning set changed.
+    this.healthTimer = setInterval(() => {
+      this.runHealthCheck({ probeBackends: false }).catch(e => {
+        this.logBackup('ERROR', `Periodic health check failed: ${e}`, 'sync.health');
+      });
+    }, HEALTH_POLL_INTERVAL_MS);
 
     // Daily-snapshot poll. Non-force push() on launch (in case today's snapshot
     // isn't done yet) plus an hourly tick. NON-force so the 15-min debounce +
@@ -194,6 +242,10 @@ export class SyncService extends EventEmitter {
     if (this.snapshotTimer) {
       clearInterval(this.snapshotTimer);
       this.snapshotTimer = null;
+    }
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
     }
 
     // Release lock if held
@@ -1026,16 +1078,12 @@ export class SyncService extends EventEmitter {
   // =========================================================================
 
   /**
-   * Run sync health checks and write .sync-warnings file.
-   * Generates warnings for: OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE.
-   * (The PROJECTS_UNSYNCED discovery warning was removed in sync-legacy-demolition.)
-   * Called once on app startup (re-homed off the deleted pull() path).
+   * Reachability probe behind the OFFLINE warning. Its own method so the
+   * periodic re-check has one thing to stub in tests (matching how
+   * autoDetectBackend is stubbed) — an inline `await import('dns')` is
+   * awkward to control from a suite.
    */
-  async runHealthCheck(): Promise<SyncWarning[]> {
-    const warnings: SyncWarning[] = [];
-    const now = Math.floor(Date.now() / 1000);
-
-    // 0. Internet connectivity
+  private async probeInternet(): Promise<boolean> {
     try {
       const dns = await import('dns');
       await new Promise<void>((resolve, reject) => {
@@ -1045,7 +1093,47 @@ export class SyncService extends EventEmitter {
           if (err) reject(err); else resolve();
         });
       });
+      return true;
     } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Run sync health checks and write .sync-warnings file.
+   * Generates warnings for: OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE.
+   * (The PROJECTS_UNSYNCED discovery warning was removed in sync-legacy-demolition.)
+   *
+   * Runs at app startup AND every HEALTH_POLL_INTERVAL_MS after it, so a
+   * condition that resolves mid-session (network back, sync set up) clears its
+   * own warning instead of sitting there until the next launch.
+   *
+   * `probeBackends` is true only for the startup run: the legacy-backend probe
+   * shells out to rclone and has been measured at 35s, which must not run at
+   * poll cadence. Skipping it can't strand a warning — a user who sets up sync
+   * mid-session turns on the PRIMARY system, which is a cheap file read.
+   */
+  async runHealthCheck(opts: { probeBackends?: boolean } = {}): Promise<SyncWarning[]> {
+    const { probeBackends = true } = opts;
+    const warnings: SyncWarning[] = [];
+    const now = Math.floor(Date.now() / 1000);
+
+    // 0. Internet connectivity.
+    //
+    // Two strikes before we say "No internet". One DNS lookup is a noisy
+    // oracle — it fails during the few seconds between Electron starting and
+    // the WiFi associating, and on any resolver hiccup — and that single
+    // sample is what put a red "No internet" card under an "All synced · 1m
+    // ago" header in the 2026-08-11 report. Now the check has to fail twice a
+    // minute apart, which no launch race survives. Cost: a genuinely offline
+    // machine sees the banner one poll late, which is fine for a notice whose
+    // whole message is "syncing will resume automatically".
+    if (await this.probeInternet()) {
+      this.failedInternetProbes = 0;
+    } else {
+      this.failedInternetProbes++;
+    }
+    if (this.failedInternetProbes >= 2) {
       warnings.push({
         code: 'OFFLINE',
         level: 'danger',
@@ -1077,7 +1165,7 @@ export class SyncService extends EventEmitter {
     const primarySyncOn = this.isPrimarySyncEnabled();
     const syncBackends = this.getSyncEnabledBackends();
     if (syncBackends.length === 0) {
-      const detected = await this.autoDetectBackend();
+      const detected = probeBackends ? await this.autoDetectBackend() : null;
       if (detected) {
         try {
           const config = this.readJson(this.configPath) || {};
@@ -1131,9 +1219,21 @@ export class SyncService extends EventEmitter {
     // out. Safe to drop from this set once all users have upgraded.
     const healthCodes = new Set(['OFFLINE', 'PERSONAL_NOT_CONFIGURED', 'PERSONAL_STALE', 'SKILLS_UNROUTED', 'PROJECTS_UNSYNCED']);
     const preserved = existing.filter((w) => !healthCodes.has(w.code));
-    await writeWarnings([...preserved, ...warnings]);
+    // A code the user dismissed stays dismissed for the rest of the app run —
+    // otherwise the re-check that makes resolved warnings disappear would also
+    // make dismissed ones reappear a minute later. Non-dismissible codes are
+    // unaffected (dismissWarning refuses them, so they never enter the set).
+    const kept = warnings.filter((w) => !wasDismissedThisRun(w.code));
+    const next = [...preserved, ...kept];
 
-    return warnings;
+    // Only touch the file when the set actually changed. At poll cadence the
+    // steady state is "nothing changed", and a rewrite there would churn the
+    // disk and re-broadcast identical data every minute.
+    if (!sameWarnings(existing, next)) {
+      await writeWarnings(next);
+    }
+
+    return kept;
   }
 
   /**
