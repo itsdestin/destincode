@@ -332,7 +332,15 @@ export class NativeSessionHost extends EventEmitter {
       // profile.promptVariant selects the capability-steering overlay (local-small only in v1).
       // hasTools mirrors buildAiTools()'s gate: a tool-less profile (supportsTools === false)
       // gets NO tools attached, so the prompt must also drop the tool-guidance line + overlay.
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools }),
+      // instructionBudgetTokens reuses the profile's injection budget rather than
+      // adding a fifth tunable: the root AGENTS.md/CLAUDE.md is the same KIND of
+      // content as the nested instruction files and rules that budget already
+      // sizes, so a second ladder would only be a second thing to drift.
+      // NOTE this is fixed for the session's life — the system prompt is never
+      // reassembled, not even by setBinding's mid-session model swap (that is what
+      // keeps the KV-cache prefix stable). Sizing therefore follows the model the
+      // session STARTED on. Deliberate; revisit only if prompt reassembly ever is.
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens }),
     };
   }
 
