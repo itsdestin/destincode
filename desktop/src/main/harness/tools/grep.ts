@@ -351,7 +351,10 @@ export const GrepTool = defineTool({
         // the heuristic when no path is given), so this is safe for those too.
         child = spawn(rgBin, rgArgs, { cwd: ctx.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       } catch (e: any) {
-        resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${ctx.cwd}).`, isError: true });
+        // toPosix(cwd): this string reaches the user/model verbatim, so it must
+        // speak the same forward-slash vocabulary as every other harness path
+        // (rgBin is a binary path, not a workspace path — left as-is).
+        resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${toPosix(ctx.cwd)}).`, isError: true });
         return;
       }
       // Same honest-total scheme as Bash: count every byte, retain a bounded
@@ -377,7 +380,8 @@ export const GrepTool = defineTool({
       // `spawn <CODE>` — which hid this bug's cause for a whole session.
       child.on('error', (e) => {
         ctx.signal.removeEventListener('abort', onAbort);
-        resolve({ text: `Grep failed: could not start ripgrep (${e.message}; cwd=${ctx.cwd}).`, isError: true });
+        // toPosix(cwd): same user-visible-path contract as the sync catch above.
+        resolve({ text: `Grep failed: could not start ripgrep (${e.message}; cwd=${toPosix(ctx.cwd)}).`, isError: true });
       });
       child.on('close', (code) => {
         ctx.signal.removeEventListener('abort', onAbort);

@@ -550,6 +550,22 @@ describe('Bash', () => {
     expect(r.text).toContain(fileCwd); // named on BOTH the sync and async paths
   });
 
+  // Regression pin (2026-08-11 path-vocabulary gap): the spawn-failure message
+  // above interpolated ctx.cwd RAW, so on Windows it read `cwd=C:\ws` while
+  // every other harness string speaks forward slashes. Unlike the test above,
+  // this embeds a literal backslash IN the cwd string itself (a plain filename
+  // character on POSIX, so this file-cwd trick still works to force the sync
+  // throw) — so the assertion is falsifiable on Linux too: pre-fix, the raw
+  // backslash survives into r.text; post-fix, toPosix() strips it.
+  it('normalizes a backslash-bearing cwd in the spawn-failure message', async () => {
+    const fileCwd = path.join(dir, 'not\\a-dir.txt');
+    fs.writeFileSync(fileCwd, 'x');
+    const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(fileCwd));
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(fileCwd.replace(/\\/g, '/'));
+    expect(r.text).not.toContain('\\');
+  });
+
   // Scoped persistence (ROADMAP 2026-07-17). Before this, every call spawned
   // fresh at the session root and `cd` silently evaporated — the failure mode
   // that burned ~6 tool calls in the 2026-07-17 session.
@@ -1131,6 +1147,21 @@ describe('Grep', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/could not start ripgrep/);
     expect(r.text).toContain(fileCwd); // the offending path is surfaced, not hidden
+  });
+
+  // Regression pin (2026-08-11 path-vocabulary gap): this spawn-failure message
+  // interpolated ctx.cwd RAW (rgBin is left alone deliberately — it's a binary
+  // path, not a workspace path). A literal backslash in the cwd is a plain
+  // POSIX filename character, so this still forces the sync ENOTDIR throw on
+  // Linux — making the assertion genuinely falsifiable there too: pre-fix the
+  // backslash survives verbatim; post-fix toPosix() strips it.
+  it('normalizes a backslash-bearing cwd in the spawn-failure message', async () => {
+    const fileCwd = path.join(dir, 'not\\a-dir.txt');
+    fs.writeFileSync(fileCwd, 'x');
+    const r = await GrepTool.execute({ pattern: 'findme', output_mode: 'content' }, makeCtx(fileCwd));
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(fileCwd.replace(/\\/g, '/'));
+    expect(r.text).not.toContain('\\');
   });
 
   // Regression pin (2026-08-10 review, Claim 4): grep.ts used to pass
