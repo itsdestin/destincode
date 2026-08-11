@@ -27,6 +27,7 @@ import { BashTool, rebaseReportedCwd } from '../src/main/harness/tools/bash';
 import { GlobTool } from '../src/main/harness/tools/glob';
 import { GrepTool, resolveRgPath } from '../src/main/harness/tools/grep';
 import { TodoWriteTool } from '../src/main/harness/tools/todo-write';
+import { shellCwdMissHint, workspaceRootMissHint } from '../src/main/harness/tools/guards';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
 // Each test gets a fresh tmp sandbox + fresh ToolContext (readRegistry/todos maps),
@@ -158,6 +159,52 @@ describe('Read', () => {
     fs.writeFileSync(f, 'a\nb\nc');
     const r = await ReadTool.execute({ file_path: f }, ctx);
     expect(r.text).not.toContain('[showing');
+  });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): Read always resolves a
+  // relative path from the workspace root; Bash's cwd persists across calls
+  // and `cd` moves it. Grok's half of the finding: a model that just `cd`-ed
+  // Bash elsewhere can wrongly assume Read followed it.
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('names the path when it exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'note.txt');
+      fs.writeFileSync(target, 'hello');
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await ReadTool.execute({ file_path: 'note.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text.startsWith('Read failed: ENOENT')).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the file exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await ReadTool.execute({ file_path: 'ghost.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint for an absolute-path miss', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const absGhost = path.join(dir, 'ghost-abs.txt');
+      const r = await ReadTool.execute({ file_path: absGhost }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await ReadTool.execute({ file_path: 'ghost.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
   });
 });
 
@@ -675,6 +722,84 @@ describe('Bash', () => {
     });
   });
 
+  // 17/17 harness reviews across four rounds (2026-08-01 through 2026-08-09)
+  // flagged the same thing: cwd persists between calls but env does not, and the
+  // failure is SILENT — the second call just runs without the state and nothing
+  // says why. Two fixes: a warning at the moment of the mistake, and an opt-in
+  // `persistent_env` escape hatch. Default behavior (env stays ephemeral) must
+  // not change — Opus 5 was the one dissenting voice defending that tradeoff.
+  describe('env-state warning + opt-in persistence (persistent_env)', () => {
+    function envTrackingCtx(root: string): ToolContext {
+      const c = makeCtx(root);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      c.setShellEnv = (next) => {
+        c.shellEnv = next;
+      };
+      return c;
+    }
+
+    it('warns when an exported var is never used in the same call', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar' }, ctx);
+      expect(r.text).toContain('export FOO');
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when the exported var is consumed in the same call (correct usage, not a mistake)', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar && echo $FOO' }, ctx);
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when persistent_env is on for that call', async () => {
+      const r = await BashTool.execute(
+        { command: 'export FOO=bar', persistent_env: true },
+        envTrackingCtx(dir),
+      );
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('warns on a bare `source` (the venv case) when nothing after it consumes the activation', async () => {
+      // No real venv needed — the warning fires on the shape of the command
+      // (a bare source/. as the last statement), not on venv-specific detection.
+      fs.writeFileSync(path.join(dir, 'act.sh'), 'export ACTIVATED=1\n');
+      const r = await BashTool.execute({ command: 'source act.sh' }, ctx);
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('a persistent_env call carries an exported var to the NEXT call', async () => {
+      const c = envTrackingCtx(dir);
+      const first = await BashTool.execute(
+        { command: 'export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      expect(first.isError).toBeFalsy();
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:abc123');
+    });
+
+    it('a normal call (no persistent_env) does NOT carry an exported var to the next call — default behavior unchanged', async () => {
+      const c = envTrackingCtx(dir);
+      await BashTool.execute({ command: 'export MY_TOKEN=abc123' }, c);
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:');
+      expect(second.text).not.toContain('abc123');
+    });
+
+    it('cwd persistence is unaffected by env persistence running in the same call', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = envTrackingCtx(dir);
+      await BashTool.execute(
+        { command: 'cd sub && export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      const second = await BashTool.execute({ command: 'pwd -W 2>/dev/null || pwd' }, c);
+      const secondOutput = second.text.split('\n[cwd:')[0].trim();
+      expect(secondOutput.replace(/\\/g, '/')).toContain('/sub');
+      expect(second.text).not.toMatch(/Shell cwd was reset/);
+    });
+  });
+
   it('an aborted signal kills the child', async () => {
     const ac = new AbortController();
     const actx = makeCtx(dir, ac.signal);
@@ -854,6 +979,53 @@ describe('Bash', () => {
       expect(r.text).toContain('· exit 3]');
     });
   });
+
+  // Requirement B (2026-08-10, this fix) -- the harder mirror image of
+  // shellCwdMissHint (guards.ts): Bash resolves a relative path from its OWN
+  // persisted cwd, not the workspace root, so a `cd` several calls back can
+  // make a previously-safe relative path miss with no clue why. Qwen 3.8 Max
+  // hit exactly this: `cd config` several calls earlier, then `grep -n port
+  // config/app.toml` failed because the shell was already IN config/. The
+  // failure happens INSIDE the child process, so the harness only ever sees a
+  // non-zero exit and the child's own stderr -- deliberately narrow, per the
+  // review requirement: fires only on a genuine non-zero close whose own
+  // output names a missing path in the one unambiguous coreutils shape
+  // (`tool: path: No such file or directory`), confirmed to exist under the
+  // workspace root.
+  describe('workspace-root miss hint (Qwen 3.8 Max asymmetry)', () => {
+    it("names the workspace-root path when the shell has cd'd elsewhere and a command misses", async () => {
+      fs.mkdirSync(path.join(dir, 'config'));
+      fs.writeFileSync(path.join(dir, 'config', 'app.toml'), 'port = 1\n');
+      const c = makeCtx(dir);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      await BashTool.execute({ command: 'cd config' }, c);
+      expect(c.shellCwd).toBe(path.join(dir, 'config'));
+      const r = await BashTool.execute({ command: 'cat config/app.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(path.join(dir, 'config', 'app.toml'));
+      expect(r.text).toContain('workspace root');
+    });
+
+    it('adds no hint when the missing path does not exist under the workspace root either', async () => {
+      fs.mkdirSync(path.join(dir, 'config'));
+      const c = makeCtx(dir);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      await BashTool.execute({ command: 'cd config' }, c);
+      const r = await BashTool.execute({ command: 'cat config/ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain('workspace root');
+    });
+
+    it('adds no hint when the shell cwd is still the workspace root', async () => {
+      const r = await BashTool.execute({ command: 'cat ghost.toml' }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain('workspace root');
+    });
+  });
 });
 
 // Defect 1 (2026-08-11): `pwd` prints the PHYSICAL path, so on a symlinked
@@ -1021,6 +1193,57 @@ describe('Glob', () => {
     expect(r.isError).toBeFalsy();
     expect(r.text).toContain('a.ts');
   });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): a missing search root
+  // used to fall silently through walk()'s per-directory catch and come back
+  // as "No files matched." -- indistinguishable from a genuinely empty, valid
+  // directory (the exact defect SHAPE the nested-brace fix above closed for
+  // glob syntax).
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('a missing search root is now a named miss, not "No files matched."', async () => {
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toBe('No files matched.');
+      expect(r.text).toContain('does not exist');
+    });
+
+    it('names the path when the search root exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'inner');
+      fs.mkdirSync(target);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'inner' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the directory exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('still reports the friendly "No files matched." for a real, empty directory', async () => {
+      const emptyDir = path.join(dir, 'empty');
+      fs.mkdirSync(emptyDir);
+      const r = await GlobTool.execute({ pattern: '*.nomatch', path: 'empty' }, ctx);
+      expect(r.text).toBe('No files matched.');
+      expect(r.isError).toBeFalsy();
+    });
+  });
 });
 
 describe('Grep', () => {
@@ -1184,6 +1407,41 @@ describe('Grep', () => {
     expect(r.text).toContain('five');
     expect(r.text).not.toContain('two');
   });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): grepErrorMessage
+  // already names the workspace root when a search path is missing; this adds
+  // the OTHER root to the same message, but only when the alternative is
+  // confirmed to exist on disk.
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('names the path when the search target exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'app.toml');
+      fs.writeFileSync(target, 'port = 1\n');
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'app.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the search target exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+  });
 });
 
 // Regression pin (2026-08-10 review): DeepSeek reported "`path` for Grep is a
@@ -1213,6 +1471,64 @@ describe('Grep/Glob schema descriptions', () => {
     for (const key of Object.keys(shape)) {
       expect((shape as any)[key].description, key).toBeTruthy();
     }
+  });
+});
+
+// Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max):
+// direct unit coverage of the two guards.ts primitives that back the
+// per-tool integration tests above/below (Read/Glob/Grep's shell-cwd hint
+// describes, Bash's workspace-root hint describe). These pin the boundary
+// conditions precisely -- equal roots, absolute path, no persisted shell cwd
+// -- independent of any one tool's wiring.
+describe('shellCwdMissHint / workspaceRootMissHint (path-resolution asymmetry hint)', () => {
+  it('shellCwdMissHint names the path when it is confirmed to exist under the shell cwd', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const target = path.join(shellCwd, 'note.txt');
+    fs.writeFileSync(target, '');
+    const hint = shellCwdMissHint('note.txt', { cwd: dir, shellCwd }, (p) => fs.existsSync(p));
+    expect(hint).toContain(target);
+    expect(hint).toContain(shellCwd);
+  });
+
+  it('shellCwdMissHint returns nothing when the alternative does not exist either', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    expect(shellCwdMissHint('ghost.txt', { cwd: dir, shellCwd }, (p) => fs.existsSync(p))).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing for an absolute path, even if exists() would say yes', () => {
+    // exists() is a constant `true` here specifically to prove the guard
+    // fires on path.isAbsolute() BEFORE ever asking the disk -- an absolute
+    // path does not depend on either cwd, so there is nothing to explain.
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const absGhost = path.join(dir, 'ghost-abs.txt');
+    expect(shellCwdMissHint(absGhost, { cwd: dir, shellCwd }, () => true)).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing when the shell cwd IS the workspace root', () => {
+    // exists() always true -- the equal-roots short circuit must fire before
+    // exists() is ever consulted, not because nothing happens to exist.
+    expect(shellCwdMissHint('note.txt', { cwd: dir, shellCwd: dir }, () => true)).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing when there is no persisted shell cwd', () => {
+    expect(shellCwdMissHint('note.txt', { cwd: dir }, () => true)).toBe('');
+  });
+
+  it('workspaceRootMissHint is the mirror image: names the path when confirmed under the workspace root', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const target = path.join(dir, 'app.toml');
+    fs.writeFileSync(target, '');
+    const hint = workspaceRootMissHint('app.toml', shellCwd, { cwd: dir }, (p) => fs.existsSync(p));
+    expect(hint).toContain(target);
+    expect(hint).toContain(dir);
+  });
+
+  it('workspaceRootMissHint returns nothing when the failed cwd already IS the workspace root', () => {
+    expect(workspaceRootMissHint('app.toml', dir, { cwd: dir }, () => true)).toBe('');
   });
 });
 

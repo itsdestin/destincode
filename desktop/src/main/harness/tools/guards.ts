@@ -49,6 +49,71 @@ export function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
+// WHY this pair exists (two independent 2026-08 harness reviews, Grok 4.5 and
+// Qwen 3.8 Max, hit the SAME asymmetry from opposite sides): Read/Glob/Grep
+// always resolve a relative path from the workspace root; Bash resolves from
+// its own persisted cwd, which `cd` moves. Both are documented, but a model
+// mid-session can straddle the two — Grok assumed Read tracked the shell like
+// Bash does; Qwen had `cd`'d into a subdirectory several calls earlier and
+// then reused a root-relative path, watching a plain `grep` fail with no clue
+// why. Neither half may GUESS: per docs/error-message-standards.md a wrong
+// "did you mean" is worse than none, so both directions below confirm the
+// alternative actually exists on disk before naming it — this is a
+// deterministic disk check, not an inference.
+
+/** Resolves `rawPath` under `altCwd` and returns the resolved absolute path
+ *  IF something the caller recognizes actually exists there, else null.
+ *  `exists` is injected so each caller asks its own question (a file for
+ *  Read, a directory for Glob, "anything" for Grep/Bash). Null for an
+ *  absolute `rawPath` too — an absolute path does not depend on either cwd,
+ *  so there is no asymmetry to explain. */
+export function resolveUnderAlternateCwd(
+  rawPath: string,
+  altCwd: string,
+  exists: (absPath: string) => boolean,
+): string | null {
+  if (path.isAbsolute(rawPath)) return null;
+  const candidate = path.resolve(altCwd, rawPath);
+  return exists(candidate) ? candidate : null;
+}
+
+/** Read/Glob/Grep direction: a relative path just missed under the workspace
+ *  root (`ctx.cwd`) — does it exist under the persisted Bash cwd instead?
+ *  Returns a ready-to-append suffix (empty string when there is no such
+ *  alternative: no persisted shell cwd, the shell cwd IS the workspace root,
+ *  or the candidate genuinely doesn't exist either). Callers append this
+ *  directly onto their own "failed"/"rejected" message — never a standalone
+ *  sentence, per the house error-message style. */
+export function shellCwdMissHint(
+  rawPath: string,
+  ctx: { cwd: string; shellCwd?: string },
+  exists: (absPath: string) => boolean,
+): string {
+  if (!ctx.shellCwd) return '';
+  if (canonicalize(ctx.shellCwd, ctx.cwd) === canonicalize(ctx.cwd, ctx.cwd)) return '';
+  const hint = resolveUnderAlternateCwd(rawPath, ctx.shellCwd, exists);
+  return hint ? ` It exists relative to the shell's current directory (${ctx.shellCwd}) instead — pass "${hint}".` : '';
+}
+
+/** Bash direction (Requirement B, the harder mirror image): a command just
+ *  failed with the shell resolving `rawPath` under `failedCwd` (the
+ *  persisted, possibly-`cd`-moved shell cwd) — does it exist under the
+ *  workspace root instead? Same contract as shellCwdMissHint: empty string
+ *  unless the alternative is CONFIRMED on disk. Bash callers additionally
+ *  gate this on the failure text itself recognizably naming `rawPath` (see
+ *  bash.ts) — arbitrary child-process stderr is not a structured error, so
+ *  this function alone is not sufficient to fire the hint, only necessary. */
+export function workspaceRootMissHint(
+  rawPath: string,
+  failedCwd: string,
+  ctx: { cwd: string },
+  exists: (absPath: string) => boolean,
+): string {
+  if (canonicalize(failedCwd, ctx.cwd) === canonicalize(ctx.cwd, ctx.cwd)) return '';
+  const hint = resolveUnderAlternateCwd(rawPath, ctx.cwd, exists);
+  return hint ? ` It exists relative to the workspace root (${ctx.cwd}) instead — pass "${hint}".` : '';
+}
+
 export type GuardVerdict =
   | { kind: 'ok' }
   | { kind: 'deny'; reason: string }

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
-import { resolveP, toPosix } from './guards';
+import { resolveP, toPosix, shellCwdMissHint } from './guards';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next']);
 /** How many matches we RETURN. */
@@ -154,6 +154,35 @@ export const GlobTool = defineTool({
       };
     }
     const root = resolveP(args.path ?? '.', ctx.cwd);
+    // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max —
+    // see guards.ts's WHY block above shellCwdMissHint): a missing search root
+    // used to fall silently through walk()'s per-directory try/catch below and
+    // come back as "No files matched." — indistinguishable from a genuinely
+    // empty, valid directory (the same defect SHAPE the nested-brace fix above
+    // closed for glob syntax). Name the miss explicitly, and check whether the
+    // SAME relative path exists under the persisted Bash cwd instead — only a
+    // CONFIRMED alternative gets named. Only ENOENT is special-cased; any other
+    // stat failure (permission, etc.) falls through to walk()'s own catch,
+    // unchanged from before.
+    try {
+      fs.statSync(root);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        const hint = shellCwdMissHint(args.path ?? '.', ctx, (p) => {
+          try {
+            return fs.statSync(p).isDirectory();
+          } catch {
+            return false;
+          }
+        });
+        return {
+          text:
+            `Glob failed: ${root} does not exist. Paths resolve from the workspace root (${ctx.cwd}); ` +
+            `pass a path relative to it, or omit \`path\` to search the whole workspace.${hint}`,
+          isError: true,
+        };
+      }
+    }
     const rx = fileGlobToRegex(args.pattern);
     const hits: Array<{ rel: string; mtime: number }> = [];
     let ceilingHit = false;
