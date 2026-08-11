@@ -28,8 +28,12 @@ function protectedFrom(messages: ModelMessage[], protectedTokens: number): numbe
   }
   return 0;
 }
-// Only shrinks tool-result TEXT — never drops a message, so no tool-call loses its
-// paired result (pairing invariant).
+// Fix 1 (2026-08-11 review): this comment used to claim prune "only shrinks
+// tool-result TEXT" — that stopped being true when the content-output branch
+// below started collapsing image-bearing outputs (discarding the file part).
+// Shrinks oversized tool-result text, and collapses image-bearing tool-result
+// output down to text-only (dropping the file part) — but never drops a
+// message, so no tool-call loses its paired result (pairing invariant).
 export function pruneToolOutputs(messages: ModelMessage[], cfg: CompactionConfig): ModelMessage[] {
   const cutoff = protectedFrom(messages, cfg.protectedTokens);
   return messages.map((m, i) => {
@@ -45,7 +49,22 @@ export function pruneToolOutputs(messages: ModelMessage[], cfg: CompactionConfig
       // it (the exact silent-loss class this milestone exists to eliminate).
       if (output?.type === 'content' && Array.isArray(output.value)) {
         const text = output.value.filter((v: any) => v?.type === 'text').map((v: any) => v.text).join('\n');
-        return { ...part, output: { type: 'text', value: `${text}\n[image pruned — re-run ${part.toolName ?? 'the tool'} if you need to see it again]` } };
+        // Fix 2 (2026-08-11 review): only claim "[image pruned]" when a file
+        // part is actually present. Both known producers of 'content' output
+        // always attach a file, so this is unreachable today — but a fileless
+        // 'content' output collapsing to an "[image pruned]" note would be
+        // model-facing text about an image that never existed, AND would (via
+        // countImageOutputs, kept in sync with this check below) trip the
+        // shownImages cache-clear for no reason. Must agree with
+        // countImageOutputs on what counts as "an image output" or the two
+        // sites disagree about the same message.
+        const hasFile = output.value.some((v: any) => v?.type === 'file');
+        if (!hasFile) return { ...part, output: { type: 'text', value: text } };
+        // Fix 3 (2026-08-11 review): join with '\n' only when there's text to
+        // join onto, so a text-less image output doesn't collapse to a bare
+        // leading newline.
+        const note = `[image pruned — re-run ${part.toolName ?? 'the tool'} if you need to see it again]`;
+        return { ...part, output: { type: 'text', value: text ? `${text}\n${note}` : note } };
       }
       const value = output?.value;
       if (typeof value !== 'string' || value.length <= cfg.pruneToChars) return part;
@@ -66,7 +85,12 @@ export function countImageOutputs(messages: ModelMessage[]): number {
   for (const m of messages) {
     if ((m as any).role !== 'tool' || !Array.isArray((m as any).content)) continue;
     for (const part of (m as any).content) {
-      if (part?.type === 'tool-result' && part.output?.type === 'content') n++;
+      // Fix 2 (2026-08-11 review): must agree with the hasFile check in
+      // pruneToolOutputs above — a fileless 'content' output isn't an image
+      // output there anymore, so it can't count as one here either, or the
+      // cache-clear gate and the prune branch would disagree about the same
+      // message.
+      if (part?.type === 'tool-result' && part.output?.type === 'content' && Array.isArray(part.output.value) && part.output.value.some((v: any) => v?.type === 'file')) n++;
     }
   }
   return n;

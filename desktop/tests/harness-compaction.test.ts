@@ -119,6 +119,36 @@ describe('driver compaction', () => {
     // non-empty span [userA, assistant, tool, rule1] gets summarized away.
     expect(result).toEqual({ ok: false, reason: 'nothing-to-compact' });
   });
+
+  it('Fix 4 (2026-08-11 review): with THREE real user turns among injected rules, the cut lands on the second real turn', async () => {
+    // { ok: false, reason: 'nothing-to-compact' } is also what an OVER-aggressive
+    // detector produces if it wrongly excludes real user messages too (not just
+    // injected ones) — so the test above alone can't tell "counts injected rules
+    // as turns" (under-counts) apart from "excludes some real turns" (over-counts).
+    // This fixture has 3 real turns, so a correct cut is non-empty and must land
+    // exactly on the SECOND real turn (userIdx[length-2]), pinning both directions.
+    const session = makeSession({ contextLength: 4096, model: scriptModel([{ text: 'SUMMARY' }]) });
+    session.seedHistory([
+      { role: 'user', content: 'USER-A: turn one' } as any,                                              // idx 0 — real
+      { role: 'assistant', content: 'ack A' } as any,                                                     // idx 1
+      { role: 'user', content: '<project-rule source="r1">\nRule body 1\n</project-rule>' } as any,        // idx 2 — injected
+      { role: 'user', content: 'USER-B: turn two' } as any,                                                // idx 3 — real (expected cut)
+      { role: 'assistant', content: 'ack B' } as any,                                                      // idx 4
+      { role: 'user', content: '<project-rule source="r2">\nRule body 2\n</project-rule>' } as any,        // idx 5 — injected
+      { role: 'user', content: 'USER-C: turn three' } as any,                                              // idx 6 — real
+    ]);
+    const result = await session.compactNow();
+    // A correct cut (index 3, USER-B) summarizes away [USER-A, ack A, rule1] and
+    // keeps [USER-B, ack B, rule2, USER-C] verbatim. Under EITHER miscount this
+    // diverges: under-counting (treats rules as turns) would cut at index 5
+    // (the second injected rule) instead of index 3; over-counting (drops real
+    // turns too) would report nothing-to-compact instead of summarizing.
+    expect(result).toEqual({ ok: true });
+    const history = (session as any).history as any[];
+    expect(history[0].content).toContain('[Earlier conversation summary]');
+    expect(history[1].content).toBe('USER-B: turn two');   // kept verbatim — cut landed AT it, not past it
+    expect(JSON.stringify(history)).not.toContain('USER-A');   // summarized away
+  });
 });
 
 // Cross-task interaction (2026-08-11): guard (a) above means pruneToolOutputs
@@ -171,5 +201,12 @@ describe('shown-image cache reset on prune-caused image collapse', () => {
     (session as any).shownImages.set('/fake/shot.png', 111);
     await session.compactNow();
     expect((session as any).shownImages.size).toBe(1);   // untouched — no image was pruned
+    // Fix 5 (2026-08-11 review): without this, the test would still pass if
+    // prune silently stopped running altogether — it only ever checked the
+    // (correctly) untouched cache, never that prune actually did its job.
+    const history = (session as any).history as any[];
+    const prunedValue = history[0].content[0].output.value;
+    expect(prunedValue.length).toBeLessThan(5_000);
+    expect(prunedValue).toContain('[pruned');
   });
 });
