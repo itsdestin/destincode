@@ -138,6 +138,10 @@ for (const entry of roster) {
       modelFactory: makeOpenRouterFactory(key, entry.modelId),
       modelId: entry.modelId,
       label: entry.label,
+      // Load-bearing: without it runBattery falls back to a 32_768 default that,
+      // against the harness's output ceiling, left a NEGATIVE history budget and
+      // gave every model amnesia for three paid rounds (2026-08-11).
+      contextLength: entry.contextLength,
     });
 
     // Save the transcript FIRST, unconditionally, before anything can fail. A

@@ -41,7 +41,19 @@ Be specific. Quote exact error messages, exact behaviors, and exact moments of f
 
 Write the review as your final message. Do not write it to a file.`;
 
-export interface RosterEntry { label: string; modelId: string }
+export interface RosterEntry {
+  label: string;
+  modelId: string;
+  /** The model's real context window in tokens, as reported by OpenRouter's
+   *  /api/v1/models (`context_length`), fetched 2026-08-11. Static rather than
+   *  fetched at run time so a paid run never depends on a live catalog call —
+   *  the cost is that it can drift, so re-check it when adding a model.
+   *
+   *  Omitting it is safe: runBattery falls back to a conservative default and
+   *  caps whatever it gets. Getting it WRONG-HIGH is the dangerous direction —
+   *  the run would overflow the model and 400 mid-battery. */
+  contextLength?: number;
+}
 
 /** Load and validate the model roster. Throws on a malformed entry rather than
  *  silently running a nameless model and producing an unattributable review. */
@@ -52,6 +64,16 @@ export function loadRoster(file: string): RosterEntry[] {
     if (!e || typeof e.modelId !== 'string' || !e.modelId) {
       throw new Error(`Roster ${file} entry ${i} has no modelId.`);
     }
-    return { label: typeof e.label === 'string' && e.label ? e.label : e.modelId, modelId: e.modelId };
+    // Rejected rather than ignored: a typo'd contextLength that silently fell
+    // back to the default is precisely how the amnesia bug stayed invisible.
+    if (e.contextLength !== undefined
+      && (typeof e.contextLength !== 'number' || !Number.isFinite(e.contextLength) || e.contextLength <= 0)) {
+      throw new Error(`Roster ${file} entry ${i} (${e.modelId}) has a non-positive contextLength: ${e.contextLength}`);
+    }
+    return {
+      label: typeof e.label === 'string' && e.label ? e.label : e.modelId,
+      modelId: e.modelId,
+      ...(e.contextLength !== undefined ? { contextLength: e.contextLength } : {}),
+    };
   });
 }

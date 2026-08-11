@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_REPORT_FLOOR } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_REPORT_FLOOR, assertHistoryBudget, DEFAULT_BATTERY_CONTEXT_LENGTH, BATTERY_CONTEXT_CAP } from '../src/main/harness/review/run-battery';
 import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/review/run-facts';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
@@ -914,6 +914,92 @@ describe('wrap-up turn', () => {
     // carried WRAP_UP_PROMPT — the fake model above only branches on this, so
     // this assertion is exercising the real content, not just the import.
     expect(seenPrompts.some((p) => JSON.stringify(p).includes(WRAP_UP_PROMPT))).toBe(true);
+  });
+});
+
+describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
+  // BATTERY_MAX_OUTPUT_TOKENS was 32_000 against fitToContext's 32_768 default
+  // window, leaving 32768 - 32000 - 1024 = -256 tokens for history. Every
+  // request collapsed to a single message; mid-turn the model saw only the
+  // battery prompt plus its most recent exchange, and the WRAP-UP turn saw the
+  // wrap-up prompt alone. Four live models reported "this message is the first
+  // one in our session" after 67-309 tool calls, and it also produced the
+  // phantom "restart" behaviour that cost two rounds of threshold-tuning.
+  //
+  // 48 tests were green throughout, because every one of them asserted on what
+  // runBattery RETURNS and none on what reaches the model. These assert on the
+  // transmitted prompt.
+  function recordingModel(prompts: any[]) {
+    let call = 0;
+    return new MockLanguageModelV4({
+      doStream: async (o: any) => {
+        prompts.push(o.prompt);
+        call++;
+        // Turn 1: one tool call, then a bare stop with no text ('stopped-early').
+        if (call === 1) {
+          return { stream: simulateReadableStream({
+            chunks: [toolCallChunk('c1', 'Read', { file_path: 'README.md' }), finishChunk('tool-calls')],
+          }) };
+        }
+        if (call === 2) return { stream: simulateReadableStream({ chunks: [finishChunk('stop')] }) };
+        return { stream: simulateReadableStream({
+          chunks: [...textChunks('t', 'The review.'), finishChunk('stop')],
+        }) };
+      },
+    });
+  }
+
+  it('the wrap-up turn carries the testing turn — its prompt, its calls, its results', async () => {
+    const prompts: any[] = [];
+    const run = await runBattery({
+      modelFactory: async () => recordingModel(prompts) as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    expect(run.wrapUpReason).toBe('stopped-early');
+    const wrapUp = JSON.stringify(prompts[prompts.length - 1]);
+    // Under the bug this was `system,user` and contained none of the three.
+    expect(wrapUp).toContain('You are testing the YouCoded native agent harness');
+    expect(wrapUp).toContain('README');
+    expect(wrapUp).toContain(WRAP_UP_PROMPT.slice(0, 40));
+  });
+
+  it('keeps history through the testing turn, not just the newest exchange', async () => {
+    const prompts: any[] = [];
+    await runBattery({
+      modelFactory: async () => recordingModel(prompts) as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    // Second step of turn 1: system + user + assistant(tool-call) + tool(result).
+    expect(prompts[1].map((m: any) => m.role)).toEqual(['system', 'user', 'assistant', 'tool']);
+  });
+
+  it('refuses to spend money when the output ceiling has eaten the history budget', async () => {
+    // A window barely above the output ceiling — the shape that shipped.
+    await expect(runBattery({
+      modelFactory: async () => scriptModel([{ text: 'x' }]) as any,
+      modelId: 'fake/model', label: 'Fake', contextLength: BATTERY_MAX_OUTPUT_TOKENS + 2_000,
+    })).rejects.toThrow(/Battery misconfigured/);
+  });
+
+  it('assertHistoryBudget passes the default window and fails a swallowed one', () => {
+    expect(() => assertHistoryBudget(DEFAULT_BATTERY_CONTEXT_LENGTH)).not.toThrow();
+    expect(() => assertHistoryBudget(BATTERY_MAX_OUTPUT_TOKENS + 2_000))
+      .toThrow(/tokens for history/);
+  });
+
+  it('caps a huge roster window so history does not ride unbounded on every request', async () => {
+    const model = scriptModel([{ text: 'Review.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      contextLength: 1_000_000,   // Qwen 3.8 Max's real window
+    });
+
+    // turn-complete carries the session's resolved window on its usage payload.
+    const turn = run.events.find((e) => e.type === 'turn-complete');
+    expect(turn?.data.usage?.contextLength).toBe(BATTERY_CONTEXT_CAP);
   });
 });
 
