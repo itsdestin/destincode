@@ -604,6 +604,35 @@ body[data-mode="buddy-chat"] #theme-bg {
 .queued-messages-strip {
   bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
 }
+
+/* Chat/terminal toggle motion has two meanings. A user selection slides between
+   stable endpoints; a font/theme/zoom correction only repairs geometry and must
+   snap. The component owns the temporary data attribute so CSS remains the sole
+   transition authority instead of JS rewriting inline transition strings. */
+.wide-view-toggle[data-geometry-syncing='true'] .wide-view-toggle-indicator {
+  transition-duration: 0ms;
+}
+
+/* Reduced Effects and the OS preference both disable the toggle's spatial
+   movement. Keep these declaration bodies equivalent: one is YouCoded's own
+   setting, the other is the platform accessibility preference. The buttons'
+   transition-colors is deliberately left alone — the requirement is to stop
+   spatial motion, not to remove state feedback. */
+[data-reduced-effects] .wide-view-toggle-indicator {
+  transition-duration: 0ms;
+}
+[data-reduced-effects] .wide-view-toggle-label {
+  transition-duration: 0ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wide-view-toggle-indicator {
+    transition-duration: 0ms;
+  }
+  .wide-view-toggle-label {
+    transition-duration: 0ms;
+  }
+}
+
 /* Indeterminate progress bar (llama-server gives no load %). A highlight sweeps
    across the track. Reduced-effects users get a static filled track instead. */
 /* translateX, not `left` — `left` is not compositable and forces a layout pass
