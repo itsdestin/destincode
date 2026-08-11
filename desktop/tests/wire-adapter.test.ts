@@ -13,6 +13,10 @@ describe('adaptForWire', () => {
   it('native path (Anthropic): passes everything through untouched', () => {
     const out = adaptForWire([userImgMsg, imageToolMsg, textToolMsg], { nativeImageToolResults: true, supportsVision: true });
     expect(out).toEqual([userImgMsg, imageToolMsg, textToolMsg]);
+    // toEqual only pins structure; a message the loop doesn't rewrite (no
+    // tool-result content, no non-vision stripping) must come back by
+    // REFERENCE, not a structurally-equal rebuild — pin identity too.
+    expect(out[0]).toBe(userImgMsg);
   });
 
   it('native path: a content-type output with only text parts passes through byte-identical (the part itself, not just structurally)', () => {
@@ -60,6 +64,50 @@ describe('adaptForWire', () => {
     expect(parts[2]).toEqual({ type: 'file', mediaType: 'image/png', data: Buffer.from('a') });
     expect(parts[3]).toEqual({ type: 'text', text: 'Image: Bash' });
     expect(parts[4]).toEqual({ type: 'file', mediaType: 'image/png', data: Buffer.from('b') });
+  });
+
+  it('split path: a non-"data" file variant (url) with a filename passes its data through unchanged and labels by filename', () => {
+    // Regression guard for the safe-unwrap fix: the only image fixture above
+    // (`img()`) always sets data:{type:'data',...} and never sets `filename`,
+    // so it can't tell a correct unwrap from `.data.data` reverted — both
+    // pass. This fixture uses the `url` variant (the unwrap's `else` branch)
+    // AND a filename, to exercise both.
+    const urlImg = {
+      type: 'file',
+      mediaType: 'image/png',
+      filename: 'diagram.png',
+      providerOptions: { anthropic: { pinned: true } },
+      data: { type: 'url', url: new URL('https://example.com/diagram.png') },
+    };
+    const urlImgToolMsg = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId: 't5', toolName: 'Fetch', output: { type: 'content', value: [{ type: 'text', text: 'fetched' }, urlImg] } }],
+    } as any;
+    const out = adaptForWire([urlImgToolMsg], { nativeImageToolResults: false, supportsVision: true });
+    const parts = (out[1] as any).content;
+    expect(parts[1]).toEqual({ type: 'text', text: 'Image: diagram.png' }); // label reads filename, not toolName
+    expect(parts[2]).toEqual({
+      type: 'file',
+      mediaType: 'image/png',
+      filename: 'diagram.png',
+      providerOptions: { anthropic: { pinned: true } },
+      data: urlImg.data, // unchanged — NOT undefined, NOT reaching into .data.data on a non-'data' variant
+    });
+  });
+
+  it('flatten (no-files branch): an unrecognized content-part type (e.g. deprecated file-data) gets a named placeholder instead of vanishing', () => {
+    const weirdToolMsg = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId: 't6', toolName: 'Fetch', output: { type: 'content', value: [{ type: 'text', text: 'before' }, { type: 'file-data', someField: 1 }, { type: 'text', text: 'after' }] } }],
+    } as any;
+    // weirdToolMsg alone carries no `type:'file'` part, so pair it with an
+    // image-bearing message to make sure the slow path (and this flatten)
+    // actually runs for it too.
+    const out = adaptForWire([imageToolMsg, weirdToolMsg], { nativeImageToolResults: false, supportsVision: true });
+    const output = (out[2] as any).content[0].output; // [tool, synthetic-user, tool]
+    expect(output.value).toContain('before');
+    expect(output.value).toContain('after');
+    expect(output.value).toContain("unsupported content type 'file-data'");
   });
 
   it('non-vision model: every pixel is replaced by a named placeholder, nothing is sent', () => {

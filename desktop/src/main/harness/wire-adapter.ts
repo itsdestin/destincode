@@ -24,8 +24,11 @@ export interface WireImageCaps { nativeImageToolResults: boolean; supportsVision
 
 const OMITTED_TEXT = '[image omitted: this model cannot view images]';
 // Forward-pointing on purpose: classic Cline found "(see the following user
-// message...)" measurably outperforms unexplained placeholder text. Worded to
-// stay accurate whether one image or several came out of this tool result.
+// message...)" measurably outperforms unexplained placeholder text. Called
+// once per image, AT that image's own position in the flattened text (so a
+// [file, text] result still reads "the image came first") — always with
+// n=1 from that call site. The plural branch stays for correctness in case
+// a future caller batches several images into one note.
 const forwardText = (n: number) =>
   `(${n === 1 ? 'the image' : `${n} images`} could not be embedded here — attached in the next message, sent on your behalf)`;
 // "(s)" is deliberate, not lazy: this frames a synthetic message that may
@@ -63,6 +66,33 @@ interface ToolResultLikePart extends AnyPart {
   output?: { type: string; value?: AnyPart[]; providerOptions?: Record<string, unknown> };
 }
 
+// One element per part of a content-output `value` array, kept in SOURCE
+// ORDER. Lets the renderer below reflect WHERE each part sat instead of
+// collecting file parts and text parts into two separately-ordered lists.
+type FlatPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'file'; file: ToolResultFilePart }
+  | { kind: 'other'; partType: string };
+
+// Renders a flattened content-output back to a single text blob, in source
+// order. `renderFile` supplies the per-branch wording for a `file` part (a
+// named omission notice for a non-vision model, a forward-pointing note on
+// the split branch) — the two must never say the same thing, so it's a
+// parameter rather than baked in here. Anything this module has no
+// image-specific handling for (kind: 'other' — the content-output union's
+// deprecated file-data/file-url/file-id variants, or a future SDK addition)
+// gets a placeholder naming its type, so it can't vanish with zero trace —
+// the same silent-payload-loss shape the earlier `.data.data` bug had.
+function renderFlat(flat: FlatPart[], renderFile: (f: ToolResultFilePart) => string): string {
+  return flat
+    .map((p) => {
+      if (p.kind === 'text') return p.text;
+      if (p.kind === 'file') return renderFile(p.file);
+      return `[part omitted: unsupported content type '${p.partType}']`;
+    })
+    .join('\n');
+}
+
 function hasImageParts(m: ModelMessage): boolean {
   const c = (m as { content: unknown }).content;
   if (!Array.isArray(c)) return false;
@@ -87,16 +117,19 @@ export function adaptForWire(messages: ModelMessage[], caps: WireImageCaps): Mod
       const newContent = (content as ToolResultLikePart[]).map((part) => {
         if (part?.type !== 'tool-result' || part.output?.type !== 'content') return part;
         const output = part.output;
-        const files: ToolResultFilePart[] = [];
-        const textSegments: string[] = [];
-        // Single pass over `value` (instead of two independent .filter()
-        // calls) so text-segment order is derived directly from source
-        // order rather than two lists that only coincidentally agreed.
-        for (const v of output.value ?? []) {
-          if (v?.type === 'file') files.push(v as unknown as ToolResultFilePart);
-          else if (v?.type === 'text') textSegments.push((v as unknown as { text: string }).text);
-        }
-        const text = textSegments.join('\n');
+        const toolName = part.toolName ?? 'tool result';
+        // Single ordered walk over `value`, kept in SOURCE POSITION (not
+        // split into two independently-ordered lists) — this is what makes
+        // a [text, file, text] result render with the image placeholder
+        // where the image actually sat, instead of every image sliding to
+        // the end of the text regardless of where it appeared.
+        const flat: FlatPart[] = (output.value ?? []).map((v): FlatPart => {
+          if (v?.type === 'text') return { kind: 'text', text: (v as unknown as { text: string }).text };
+          if (v?.type === 'file') return { kind: 'file', file: v as unknown as ToolResultFilePart };
+          return { kind: 'other', partType: String(v?.type ?? 'unknown') };
+        });
+        const fileCount = flat.reduce((n, p) => n + (p.kind === 'file' ? 1 : 0), 0);
+        const label = (f: ToolResultFilePart) => f.filename ?? toolName;
         const textOutput = (value: string) => ({
           type: 'text' as const,
           value,
@@ -113,25 +146,41 @@ export function adaptForWire(messages: ModelMessage[], caps: WireImageCaps): Mod
         //    to text even on the wire that could carry it untouched.
         // 3. no-files flatten.
         // 4. otherwise: split image(s) into a synthetic follow-up message.
-        if (!caps.supportsVision) return { ...part, output: textOutput(files.length ? `${text}\n${OMITTED_TEXT}` : text) };
+        if (!caps.supportsVision) {
+          // One NAMED placeholder per image, at its own position — not one
+          // unnamed trailing line no matter how many images the result
+          // carried (a 3-image Read result used to say "an image" once,
+          // naming none of the three).
+          return { ...part, output: textOutput(renderFlat(flat, (f) => `[image omitted: ${label(f)} — this model cannot view images]`)) };
+        }
         if (caps.nativeImageToolResults) return part;
-        if (!files.length) return { ...part, output: textOutput(text) };
+        if (!fileCount) {
+          // No 'file' part exists on this branch, so the file renderer is
+          // never invoked — only present to satisfy renderFlat's signature.
+          return { ...part, output: textOutput(renderFlat(flat, () => '')) };
+        }
 
-        const toolName = part.toolName ?? 'tool result';
-        for (const f of files) {
+        for (const p of flat) {
+          if (p.kind !== 'file') continue;
           // Label each image with what it is so a multi-image turn doesn't
           // hand the model several unlabeled pictures it can't map back to
           // the file/tool that produced them.
-          followUpParts.push({ type: 'text', text: `Image: ${f.filename ?? toolName}` });
+          followUpParts.push({ type: 'text', text: `Image: ${label(p.file)}` });
           // Tool-output file parts wrap bytes as the tagged {type:'data',
-          // data} form; a user-message file part takes the bytes directly,
-          // so unwrap that ONE variant. Every other FileData variant
-          // (url/reference/text) is passed through untouched — reaching
-          // into `.data.data` on those yielded undefined, i.e. a
-          // payload-less file part silently sent to the provider.
-          followUpParts.push({ ...f, data: f.data?.type === 'data' ? f.data.data : f.data });
+          // data} form. A user-message FilePart's `data` field also legally
+          // accepts that same tagged {type:'data', data} form (FilePart's
+          // `data` is FileData | DataContent | URL | ProviderReference) —
+          // this unwrap is a NORMALIZATION for consistency, not something
+          // the SDK requires. Every other FileData variant (url/reference/
+          // text) is passed through untouched — reaching into `.data.data`
+          // on those yielded undefined, i.e. a payload-less file part
+          // silently sent to the provider.
+          followUpParts.push({ ...p.file, data: p.file.data?.type === 'data' ? p.file.data.data : p.file.data });
         }
-        return { ...part, output: textOutput(`${text}\n${forwardText(files.length)}`) };
+        // Each image's forward-pointing note sits where the image itself
+        // sat, so a [file, text] result still reads "the image came first"
+        // instead of silently reordering every image to the end.
+        return { ...part, output: textOutput(renderFlat(flat, () => forwardText(1))) };
       });
       out.push({ ...(m as object), content: newContent } as ModelMessage);
       if (followUpParts.length) {
