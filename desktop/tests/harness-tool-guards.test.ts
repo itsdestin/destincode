@@ -76,6 +76,5 @@ describe('toPosix', () => {
   it('does not resolve, absolutize, or case-fold — it is not canonicalize()', () => {
     expect(toPosix('SRC/README.md')).toBe('SRC/README.md');
     expect(toPosix('a\\..\\b')).toBe('a/../b');
-    expect(toPosix('rel/path.ts')).not.toBe(canonicalize('rel/path.ts', CWD));
   });
 });

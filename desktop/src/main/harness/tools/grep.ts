@@ -42,14 +42,19 @@ export function grepErrorMessage(stderr: string, resolvedPath: string, cwd: stri
     return `Grep failed: ${raw}. Check the regex syntax.`;
   }
   if (/No such file or directory|IO error for operation/i.test(stderr)) {
-    // WHY toPosix here (2026-08-11): `--path-separator /` on the rg invocation
-    // (below) only rewrites ripgrep's OWN stdout — resolvedPath/cwd never pass
-    // through rg at all, they're built locally with Node's `path` module,
-    // which uses '\' on Windows. Without this, a Windows "does not exist"
-    // message could read "src\a.ts ... workspace root (C:\ws)" while every
+    // WHY toPosix on resolvedPath but NOT cwd (2026-08-11): `--path-separator /`
+    // on the rg invocation (below) only rewrites ripgrep's OWN stdout —
+    // resolvedPath never passes through rg at all, it's built locally with
+    // Node's `path` module, which uses '\' on Windows. Without normalizing it,
+    // a Windows "does not exist" message could read "src\a.ts" while every
     // other harness string (including rg's own matched-file output) speaks
-    // forward slashes — one tool, two vocabularies, in a single sentence.
-    return `Grep failed: ${toPosix(resolvedPath)} does not exist. Paths resolve from the workspace root (${toPosix(cwd)}); pass a path relative to it, or omit \`path\` to search the whole workspace.`;
+    // forward slashes — that's a target path the model may act on, so it
+    // joins the shared vocabulary. `cwd` is different: it's the workspace
+    // root, reported for a human/model to recognize their own machine, not to
+    // feed back into another tool call — so it keeps its native spelling
+    // (Windows CI proved this the hard way when an earlier commit normalized
+    // it too and broke a pinned "states the cwd" test).
+    return `Grep failed: ${toPosix(resolvedPath)} does not exist. Paths resolve from the workspace root (${cwd}); pass a path relative to it, or omit \`path\` to search the whole workspace.`;
   }
   return `Grep failed: ${raw}`;
 }
@@ -351,10 +356,7 @@ export const GrepTool = defineTool({
         // the heuristic when no path is given), so this is safe for those too.
         child = spawn(rgBin, rgArgs, { cwd: ctx.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       } catch (e: any) {
-        // toPosix(cwd): this string reaches the user/model verbatim, so it must
-        // speak the same forward-slash vocabulary as every other harness path
-        // (rgBin is a binary path, not a workspace path — left as-is).
-        resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${toPosix(ctx.cwd)}).`, isError: true });
+        resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${ctx.cwd}).`, isError: true });
         return;
       }
       // Same honest-total scheme as Bash: count every byte, retain a bounded
@@ -380,8 +382,7 @@ export const GrepTool = defineTool({
       // `spawn <CODE>` — which hid this bug's cause for a whole session.
       child.on('error', (e) => {
         ctx.signal.removeEventListener('abort', onAbort);
-        // toPosix(cwd): same user-visible-path contract as the sync catch above.
-        resolve({ text: `Grep failed: could not start ripgrep (${e.message}; cwd=${toPosix(ctx.cwd)}).`, isError: true });
+        resolve({ text: `Grep failed: could not start ripgrep (${e.message}; cwd=${ctx.cwd}).`, isError: true });
       });
       child.on('close', (code) => {
         ctx.signal.removeEventListener('abort', onAbort);

@@ -12,7 +12,6 @@ import { randomUUID } from 'crypto';
 import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
-import { toPosix } from './guards';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
 
@@ -376,10 +375,7 @@ export const BashTool = defineTool({
           env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
         });
       } catch (e: any) {
-        // toPosix(cwd): this string reaches the user/model verbatim, so it must
-        // speak the same forward-slash vocabulary as every other harness path
-        // (shell.cmd is a binary path, not a workspace path — left as-is).
-        resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${toPosix(startCwd)})`, isError: true });
+        resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
         return;
       }
       // Bounded head + rolling tail + an UNCONDITIONAL byte counter.
@@ -666,8 +662,7 @@ export const BashTool = defineTool({
       // Async spawn failure (the path Windows takes for a bad cwd): name the
       // shell + cwd actually used, not just Node's bare `spawn <cmd> <CODE>` —
       // same diagnosability contract as the sync catch above.
-      // toPosix(cwd): same user-visible-path contract as the sync catch above.
-      child.on('error', (err) => finish(`Failed to start shell: ${err.message} (shell=${shell.cmd}; cwd=${toPosix(startCwd)})\n`, true));
+      child.on('error', (err) => finish(`Failed to start shell: ${err.message} (shell=${shell.cmd}; cwd=${startCwd})\n`, true));
       // WHY no exit-code prefix here anymore: the metadata line above now states
       // `exit N` for every result, so a leading "(exit code N)" duplicated the
       // same fact in two places. The timeout/abort handlers keep their prefixes —
