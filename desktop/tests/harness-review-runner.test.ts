@@ -558,3 +558,57 @@ describe('runBattery', () => {
     expect(run.asks).toBe(STEP_GATE_ALLOWANCE + 1);
   });
 });
+
+describe('runBattery salvage', () => {
+  it('returns the run with the real error instead of throwing, when the model errors mid-run', async () => {
+    // WHY this matters: round 5 lost four models entirely. runBattery threw, the
+    // CLI caught, and no transcript was written - so the failures were not even
+    // diagnosable after the fact.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      { throwError: 'provider exploded' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 30_000,
+    });
+
+    expect(run.outcome).toBe('error');
+    expect(run.error).toContain('provider exploded');
+    // The whole point: the events survive the failure.
+    expect(run.events.length).toBeGreaterThan(0);
+    expect(run.metrics.toolCalls).toBe(1);
+  });
+
+  it('reports no-review when the run finishes with empty final text', async () => {
+    const model = scriptModel([{ toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+    expect(run.outcome).toBe('no-review');
+    expect(run.review).toBe('');
+  });
+
+  it('reports complete and records metrics when the model finishes normally', async () => {
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] },
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      { text: 'The review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    expect(run.outcome).toBe('complete');
+    expect(run.review).toBe('The review.');
+    expect(run.metrics.toolCalls).toBe(2);
+    expect(run.metrics.toolsUsed).toEqual(['Glob', 'Read']);   // distinct, sorted
+    expect(run.metrics.stopReasons).toContain('end_turn');
+    expect(run.metrics.wallClockMs).toBeGreaterThan(0);
+    expect(run.metrics.outputTokens).toBeGreaterThan(0);
+  });
+});

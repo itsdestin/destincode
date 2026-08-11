@@ -15,6 +15,31 @@ import type { SkillCatalog } from '../skills/skill-catalog';
 import type { ToolServices } from '../tools/types';
 import { ddgBackend } from '../search/backends/ddg';
 
+export type BatteryOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
+
+export interface BatteryMetrics {
+  wallClockMs: number;
+  toolCalls: number;
+  asks: number;
+  stepGates: number;
+  /** COUNT of assistant-thinking events, not a token figure — StepUsage
+   *  (harness-session.ts:109) has no reasoning field. Still the number that
+   *  makes a provider-side reasoning shift visible: the same model on the same
+   *  commit went 232 -> 1,691 between two runs 4.5 hours apart on 2026-08-10,
+   *  and nothing in the old output showed it. */
+  thinkingEvents: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** One per turn-complete, in order. A wrapped-up run has two. */
+  stopReasons: string[];
+  /** Distinct tool names actually invoked, sorted. The evidence a review's
+   *  claims are checked against (run-facts.ts). */
+  toolsUsed: string[];
+  /** (toolName, input) pairs seen more than REPEAT_LIMIT times. Populated in
+   *  Task 4; [] before restart detection exists. */
+  repeats: { key: string; count: number }[];
+}
+
 export interface BatteryRun {
   label: string;
   modelId: string;
@@ -30,6 +55,16 @@ export interface BatteryRun {
   // exists to surface).
   stepGates: number;
   fixtureRoot: string;
+  /** How the run ended. 'complete' — the testing turn finished on its own with
+   *  a non-empty review. 'wrapped-up' — a trigger fired and the wrap-up turn
+   *  produced the review. Not reachable yet — no wrap-up turn exists until a
+   *  later task adds one; kept in the union now so BatteryRun's shape doesn't
+   *  change again when it lands. 'no-review' — finished with empty final text.
+   *  'error' — the provider or session threw; see `error`. */
+  outcome: BatteryOutcome;
+  /** The REAL error message, never a substitute (error-message-standards.md). */
+  error?: string;
+  metrics: BatteryMetrics;
 }
 
 // Root-cause fix (2026-08-09): the first full-roster live run denied EVERY
@@ -188,6 +223,15 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   let toolCalls = 0;
   let asks = 0;
   let stepGates = 0;
+  // Salvage metrics (round 5 fix): collected alongside the existing counters
+  // above so a run that errors or times out still has something to write —
+  // see the try/catch below and the outcome/metrics on the return value.
+  const startedAt = Date.now();
+  let thinkingEvents = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const stopReasons: string[] = [];
+  const toolsUsed = new Set<string>();
 
   const session = new HarnessSession(
     {
@@ -291,7 +335,18 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
 
   session.on('transcript-event', (e: TranscriptEvent) => {
     events.push(e);
-    if (e.type === 'tool-use') toolCalls++;
+    if (e.type === 'tool-use') {
+      toolCalls++;
+      // toolName is the field name on TranscriptEvent.data (shared/types.ts:148),
+      // not `name` — the tool-use payload mirrors CC's transcript shape.
+      if (e.data.toolName) toolsUsed.add(e.data.toolName);
+    }
+    if (e.type === 'assistant-thinking') thinkingEvents++;
+    if (e.type === 'turn-complete') {
+      if (e.data.stopReason) stopReasons.push(e.data.stopReason);
+      inputTokens += e.data.usage?.inputTokens ?? 0;
+      outputTokens += e.data.usage?.outputTokens ?? 0;
+    }
   });
 
   const timeoutMs = opts.timeoutMs ?? 900_000;
@@ -306,15 +361,42 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     timer.unref();
   });
 
+  // Deviation from the brief's variable name only: `error` (not `err`) is the
+  // outer binding read by the outcome/return logic below; the caught value is
+  // still carried through as-is, never replaced with a guessed cause.
+  let error: string | undefined;
   try {
     await Promise.race([session.send(BATTERY_PROMPT), timeout]);
+  } catch (err) {
+    // Salvage, don't discard. A provider error or a blown deadline still leaves
+    // a transcript worth writing — round 5 threw four of them away and left the
+    // failures undiagnosable. The REAL message is carried through, never a guess.
+    // NOTE: this still races against a fixed timeoutMs promise (unchanged from
+    // before this fix) — a genuinely stuck model still burns the full window
+    // before this catch even runs. A later task replaces the race with an
+    // interrupt-based deadline; this task only stops the RESULT from being
+    // thrown away once the wait ends one way or another.
+    error = err instanceof Error ? err.message : String(err);
   } finally {
     clearTimeout(timer);
-    // Cleanup runs on the failure path too — a rejected send() (provider error,
-    // or the timeout above) still tears down the session and fixture; the real
-    // error propagates unchanged once this finally block completes.
+    // Cleanup runs on the failure path too — a caught send() error (provider
+    // error, or the timeout above) still tears down the session and fixture.
     session.destroy();
     if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+
+  // Deviation from the brief's snippet, found by running its own test: a
+  // provider error that survives HarnessSession's internal retries does NOT
+  // reject send() at all — beginTurn's own catch (harness-session.ts:1176-1188)
+  // swallows it and emits a 'session-error' transcript event instead, then
+  // returns normally. So the Promise.race catch above only ever fires for the
+  // timeout; a mid-run model error would otherwise fall through as a false
+  // 'no-review' with the real failure silently dropped, defeating the whole
+  // point of this task. Checked only when the race itself didn't already
+  // report an error, so a genuine timeout keeps its own message.
+  if (!error) {
+    const sessionError = events.find((e) => e.type === 'session-error');
+    if (sessionError) error = sessionError.data.text;
   }
 
   // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
@@ -348,5 +430,24 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     .join('')
     .trim();
 
-  return { label: opts.label, modelId: opts.modelId, review, events, toolCalls, asks, stepGates, fixtureRoot };
+  // 'wrapped-up' is not produced here — no wrap-up turn exists yet (see the
+  // WHY comment on BatteryRun.outcome above); an error takes priority over a
+  // review the model may have partially produced before failing, since the
+  // failure is the fact a caller most needs to see first.
+  const outcome: BatteryOutcome = error ? 'error' : review ? 'complete' : 'no-review';
+
+  return {
+    label: opts.label, modelId: opts.modelId, review, events,
+    toolCalls, asks, stepGates, fixtureRoot,
+    outcome, error,
+    metrics: {
+      wallClockMs: Date.now() - startedAt,
+      toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
+      stopReasons,
+      toolsUsed: [...toolsUsed].sort(),
+      // Restart-repeat detection lands in Task 4; until then every run reports
+      // no repeats, never a guessed-at count.
+      repeats: [],
+    },
+  };
 }
