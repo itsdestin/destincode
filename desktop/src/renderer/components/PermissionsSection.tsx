@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, EmptyState, ErrorState, LoadingState, SettingRow } from './ui';
+import { Button, EmptyState, ErrorState, FOCUS_RING, LoadingState, SettingRow, SETTING_ROW_BASE } from './ui';
 import { BugReportPopup } from './development/BugReportPopup';
 import {
   describeRule,
@@ -205,20 +205,27 @@ export default function PermissionsSection() {
         <div className="space-y-3">
           <p className="text-2xs text-fg-muted">{summary}</p>
 
-          <div className="space-y-2">
-            {withRules.map((project) => (
-              <FolderGroup
-                key={project.slug}
-                project={project}
-                heading={headings.get(project.slug) ?? null}
-                // Default-open heuristic: a short screen should not need a
-                // click to be read, a long one should not dump 60 rows. Open
-                // only when the whole list is small — at most two folders, and
-                // at most eight approvals in this one.
-                defaultOpen={withRules.length <= 2 && project.rules.length <= 8}
-                onChanged={refresh}
-              />
-            ))}
+          {/* The one real section label on this screen: a static string over the
+              whole list. Folder NAMES are user data and are rendered as rows —
+              putting one in a label would uppercase it and destroy its real
+              casing, which is what the first version did. */}
+          <div>
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Approved folders</h3>
+            <div className="space-y-1">
+              {withRules.map((project) => (
+                <FolderGroup
+                  key={project.slug}
+                  project={project}
+                  heading={headings.get(project.slug) ?? null}
+                  // Default-open heuristic: a short screen should not need a
+                  // click to be read, a long one should not dump 60 rows. Open
+                  // only when the whole list is small — at most two folders, and
+                  // at most eight approvals in this one.
+                  defaultOpen={withRules.length <= 2 && project.rules.length <= 8}
+                  onChanged={refresh}
+                />
+              ))}
+            </div>
           </div>
 
           {/* Always visible, never hover-revealed — the list can go stale while
@@ -278,32 +285,45 @@ function FolderGroup({
 
   return (
     <div>
-      {/* OpenTasksPopup's collapsible-label pattern verbatim, plus the sanctioned
-          hover:text-fg. The count stays on the toggle so a COLLAPSED folder
-          still says how much is hidden inside it. */}
+      {/* A ROW, not a label. The folder name is user data — rendering it through
+          a section label's `tracking-wider uppercase` destroyed its real casing
+          and made the legacy no-cwd slug read as shouting. The family renders
+          data in rows (SettingsPanel puts an IP address in a SettingRow title),
+          so this wears SettingRow's own item geometry and type roles.
+          SettingRow itself cannot host it: SettingRowProps has no aria-expanded
+          pass-through, its <button> branch appends a static right-chevron that
+          cannot express open/closed, and supplying a caret via `control`
+          demotes the row to a non-focusable <div>. Taking SETTING_ROW_BASE by
+          reference is the nearest row-shaped alternative that still has exactly
+          one definition of the geometry. */}
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-2 pb-1 flex justify-between items-baseline gap-2 hover:text-fg"
+        className={`${SETTING_ROW_BASE} hover:bg-inset cursor-pointer ${FOCUS_RING}`}
       >
-        <span className="truncate">{label}</span>
-        <span className="shrink-0">{count} {open ? '▾' : '▸'}</span>
-      </button>
-
-      {open && (
-        <div className="space-y-3 pb-1">
-          {/* The folder itself. break-all rather than truncate: the tail of a
-              path is the part that identifies it, and there is no wider layout
-              to fall back to at 420px. */}
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-medium text-fg truncate">{label}</div>
+          {/* The path belongs with the name, so it is the row's description.
+              It truncates because folderHeadings() has already guaranteed the
+              TITLE is unique — the path is supporting detail, and letting it
+              wrap would make a collapsed list of folders tall again. The
+              never-recorded line is a sentence, not data, so it wraps. */}
           {project.cwd ? (
-            <p className="text-3xs text-fg-muted break-all px-3">{project.cwd}</p>
+            <p className="text-3xs -mt-0.5 text-fg-muted truncate">{project.cwd}</p>
           ) : (
-            <p className="text-3xs text-fg-muted px-3">
+            <p className="text-3xs -mt-0.5 text-fg-muted">
               {"This folder wasn't recorded, so only its internal name is shown."}
             </p>
           )}
+        </div>
+        {/* Count + caret in the accessory slot: a collapsed folder still says
+            how much is hidden inside it. */}
+        <span className="text-3xs text-fg-muted shrink-0">{count} {open ? '▾' : '▸'}</span>
+      </button>
 
+      {open && (
+        <div className="space-y-3 pt-2 pb-1 pl-2">
           {RULE_KIND_ORDER.filter((kind) => groups[kind].length > 0).map((kind) => (
             <KindGroup
               key={kind}

@@ -69,6 +69,33 @@ describe('PermissionsSection — the overview', () => {
     expect(screen.getByText('cmd-0')).toBeTruthy();
   });
 
+  // The first redesign put the folder NAME through the section-label recipe, so
+  // it rendered as YOUCODED-DEV/YOUCODED and the legacy no-cwd slug read as
+  // shouting. A folder name is user data: the family renders data in rows and
+  // reserves labels for static strings.
+  it('renders folder names as rows, never as section labels', async () => {
+    list.mockResolvedValue([
+      { slug: '-home-d-MyNotes', cwd: '/home/d/MyNotes', rules: commands(3) },
+      { slug: '-home-destin-notes', rules: commands(3) },
+    ]);
+    render(<PermissionsSection />);
+
+    // The only label over the list is a static one — that is what uppercase is for.
+    expect(await screen.findByRole('heading', { name: 'Approved folders' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /MyNotes/i })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /-home-destin-notes/ })).toBeNull();
+
+    // The name is a row title in its true casing; the path is its description.
+    const title = screen.getByText('MyNotes');
+    expect(title.className).not.toContain('uppercase');
+    expect(title.className).toContain('text-xs');
+    const header = screen.getByRole('button', { name: /MyNotes/ });
+    expect(header.textContent).toContain('/home/d/MyNotes');
+    // Kind headings are genuine labels and keep the canonical recipe.
+    expect(screen.getAllByRole('heading', { name: 'Commands' })[0].className)
+      .toContain('tracking-wider uppercase');
+  });
+
   it('opens a single small folder without a click, and starts a crowded screen collapsed', async () => {
     list.mockResolvedValue([{ slug: '-a', cwd: '/home/d/alpha', rules: commands(3) }]);
     render(<PermissionsSection />);
