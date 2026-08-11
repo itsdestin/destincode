@@ -1,9 +1,14 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { canonicalize, resolveP } from './guards';
 
 const BINARY_SNIFF_BYTES = 8000;
+
+// Checked BEFORE the generic binary sniff so an image gets an image-specific
+// refusal naming the path that actually works, rather than a dead end.
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif']);
 
 // Read runs in the Electron MAIN process, so an unbounded readFileSync is a
 // whole-app blast radius: a model reading a multi-hundred-MB log OOMs the app,
@@ -45,7 +50,9 @@ function looksBinary(buf: Buffer): boolean {
 export const ReadTool = defineTool({
   name: 'Read',
   description:
-    'Read a file from the filesystem. Returns numbered lines. Use offset and limit for large files — output is capped at 2000 lines.',
+    'Read a TEXT file from the filesystem. Returns numbered lines. Use offset and limit for '
+    + 'large files — output is capped at 2000 lines. Images and other binary files are refused: '
+    + 'to see an image, ask the user to attach it to a message.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: "Read a file's contents by path, with optional line offset/limit.",
   inputSchema: z.object({
@@ -70,6 +77,16 @@ export const ReadTool = defineTool({
     const sizeErr = readSizeError(st.size, args.file_path);
     if (sizeErr) return { text: sizeErr, isError: true };
     const buf = fs.readFileSync(abs);
+    // An IMAGE gets its own refusal, because "it is a binary file" is a different
+    // fact and sends the model hunting for a text workaround that doesn't exist.
+    // Images reach the model through the USER MESSAGE (attach them in the
+    // composer), not through this tool — see harness-session.imagePartsFor. That
+    // is the path every provider supports; image-in-tool-result is Anthropic-only
+    // across the ecosystem (AI SDK's openai-compatible provider JSON.stringifies
+    // it, so three of our four provider paths would send a wall of base64).
+    if (IMAGE_EXTENSIONS.has(path.extname(args.file_path).toLowerCase())) {
+      return { text: `Read rejected: ${args.file_path} is an image. This tool returns text only — ask the user to attach the image to a message so you can see it.`, isError: true };
+    }
     if (looksBinary(buf)) return { text: `Read rejected: ${args.file_path}: it is a binary file.`, isError: true };
     const raw = buf.toString('utf8');
     const all = raw.split('\n');

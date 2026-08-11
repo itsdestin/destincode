@@ -57,6 +57,10 @@ const NOOP_REMEMBERED_STORE: RememberedRuleStore = {
 // M1 send queue: bounded per program §2.1 — past this many FIFO'd sends, send()
 // refuses honestly (status 'failed', reason 'queue-full') instead of accepting
 // input the user has no way to know is piling up unseen.
+/** One unit of work for the turn drain: the message text plus any composer
+ *  attachments that must ride with it. */
+type SendUnit = { text: string; attachments: string[] };
+
 const SEND_QUEUE_LIMIT = 10;
 
 interface LiveEntry {
@@ -90,7 +94,10 @@ interface LiveEntry {
   // (send()'s randomUUID()) so removeQueued() can target one entry precisely —
   // the id is opaque to the drain loop, which only ever consumes the FRONT via
   // shift() (see runTurns), so a removed entry can never be shifted out and sent.
-  queue: { id: string; text: string }[];
+  // `attachments` are absolute composer file paths; image ones become image
+  // parts on the user message. Carried through the QUEUE too, or a message sent
+  // while a turn was in flight would silently lose its pictures.
+  queue: { id: string; text: string; attachments: string[] }[];
   // True from dispatch until runTurns finishes the last queued turn. Host-owned
   // (HarnessSession's in-flight state is private); safe because Node is single-threaded.
   inFlight: boolean;
@@ -565,7 +572,7 @@ export class NativeSessionHost extends EventEmitter {
    *  re-entrancy (a second send while a turn is in flight) — the host never
    *  calls it re-entrantly (inFlight gates that), so the only remaining throw
    *  surface is a provider-factory rejection, which runTurns catches. */
-  send(sessionId: string, text: string): NativeSendResult {
+  send(sessionId: string, text: string, attachments: string[] = []): NativeSendResult {
     const entry = this.live.get(sessionId);
     if (!entry) return { status: 'failed', reason: 'not-live' };
     if (entry.inFlight) {
@@ -573,7 +580,7 @@ export class NativeSessionHost extends EventEmitter {
       // Task 11: mint a stable id per queued entry so the renderer can target
       // this exact message later with removeQueued() (Cancel/Edit before send).
       const queueId = randomUUID();
-      entry.queue.push({ id: queueId, text });
+      entry.queue.push({ id: queueId, text, attachments });
       return { status: 'queued', queueId };
     }
     entry.inFlight = true;
@@ -590,7 +597,7 @@ export class NativeSessionHost extends EventEmitter {
     // its send() so this promise never rejects — .then(resolve, resolve) is
     // belt-and-suspenders against a future throw path.
     entry.running = new Promise<void>((resolve) => {
-      setImmediate(() => { void this.runTurns(sessionId, entry, text).then(resolve, resolve); });
+      setImmediate(() => { void this.runTurns(sessionId, entry, { text, attachments }).then(resolve, resolve); });
     });
     return { status: 'sent' };
   }
@@ -622,12 +629,12 @@ export class NativeSessionHost extends EventEmitter {
    *  starts some other way — today only /skill-name, whose opener is
    *  `session.runSkill` (same turn machinery, different transcript event).
    *  Queued follow-ups are always plain sends, so queue semantics are unchanged. */
-  private async runTurns(sessionId: string, entry: LiveEntry, first: string | (() => Promise<void>)): Promise<void> {
-    let next: string | (() => Promise<void>) | undefined = first;
+  private async runTurns(sessionId: string, entry: LiveEntry, first: SendUnit | (() => Promise<void>)): Promise<void> {
+    let next: SendUnit | (() => Promise<void>) | undefined = first;
     while (next !== undefined) {
       try {
         if (typeof next === 'function') await next();
-        else await entry.session.send(next);
+        else await entry.session.send(next.text, next.attachments);
       } catch (err) {
         log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
       }
@@ -635,7 +642,7 @@ export class NativeSessionHost extends EventEmitter {
       if (this.live.get(sessionId) !== entry) return;
       // .text: queue entries are {id, text} (Task 11) — the id only matters to
       // removeQueued(); shift() here is what makes a removed entry unreachable.
-      next = entry.queue.shift()?.text;
+      next = entry.queue.shift();
     }
     entry.inFlight = false;
   }

@@ -1168,7 +1168,7 @@ contextBridge.exposeInMainWorld('claude', {
   native: {
     supported: process.env.YOUCODED_NATIVE !== '0',
     // M1: invoke — matches the handle signature, returns {status,reason}
-    send: (sessionId: string, text: string) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text }),
+    send: (sessionId: string, text: string, attachments?: string[]) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text, attachments }),
     // Task 11: cancel/edit a queued message before it sends. Request-response
     // (unlike interrupt below) — the renderer needs the true/false result to
     // decide between "removed, proceed" and a "too late" toast.

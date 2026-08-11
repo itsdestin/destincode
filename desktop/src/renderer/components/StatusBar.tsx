@@ -160,6 +160,11 @@ export interface NativeStatusChips {
   inputTokens: number;
   outputTokens: number;
   tokensPerSecond: number;
+  /** Cache tokens for the Cached/Hit chips. null (NOT 0) when the provider sent
+   *  none — 0 reads is a real 0% hit rate and must render as such, while absent
+   *  must stay '--'. Collapsing the two would invent a statistic. */
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
 }
 
 /** Derive the native context/in/out/speed chips from a turn's usage + the
@@ -190,6 +195,10 @@ export function selectNativeStatusChips(
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     tokensPerSecond,
+    // ?? null, not ?? 0 — see the field docs. The harness ships these on every
+    // turn-complete; they were simply never read on the way to the chips.
+    cacheReadTokens: usage.cacheReadTokens ?? null,
+    cacheCreationTokens: usage.cacheCreationTokens ?? null,
   };
 }
 
@@ -1079,34 +1088,47 @@ export default function StatusBar({
         </span>
       )}
 
-      {/* Cache efficiency */}
-      {show('cache-stats') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.cacheReadTokens != null ? `Cache read: ${ss.cacheReadTokens.toLocaleString()} | Cache created: ${(ss.cacheCreationTokens ?? 0).toLocaleString()}` : 'Cache efficiency'}
-        >
-          <span className="text-fg-muted">Cached:</span>
-          <span className="text-[#4CAF50]">{ss?.cacheReadTokens != null ? formatTokens(ss.cacheReadTokens) : '--'}</span>
-        </span>
-      )}
+      {/* Cache efficiency. WHY the ?? nativeChips fallback: sessionStats is written
+          by Claude Code's statusline, which native sessions never run — so these two
+          chips sat at '--' forever while the harness shipped the numbers on every
+          turn-complete. Same fix the In/Out and Speed chips got on 2026-07-28.
+          cr/cc are resolved ONCE so the title, the value and the hit-rate math can
+          never disagree about which source they came from. */}
+      {show('cache-stats') && (() => {
+        const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
+        const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={cr != null ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}` : 'Cache efficiency'}
+          >
+            <span className="text-fg-muted">Cached:</span>
+            <span className="text-[#4CAF50]">{cr != null ? formatTokens(cr) : '--'}</span>
+          </span>
+        );
+      })()}
 
       {/* Cache hit rate — derived: cacheRead / (cacheRead + cacheCreation) */}
-      {show('cache-hit-rate') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.cacheReadTokens != null ? `${ss.cacheReadTokens.toLocaleString()} reads / ${((ss.cacheReadTokens ?? 0) + (ss.cacheCreationTokens ?? 0)).toLocaleString()} total cached tokens` : 'Cache hit rate'}
-        >
-          <span className="text-fg-muted">Hit:</span>
-          {(() => {
-            if (ss?.cacheReadTokens == null) return <span className="text-fg-2">--</span>;
-            const total = (ss.cacheReadTokens ?? 0) + (ss.cacheCreationTokens ?? 0);
-            if (total === 0) return <span className="text-fg-muted">N/A</span>;
-            const pct = Math.round((ss.cacheReadTokens / total) * 100);
-            const color = pct >= 80 ? 'text-[#4CAF50]' : pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]';
-            return <span className={color}>{pct}%</span>;
-          })()}
-        </span>
-      )}
+      {show('cache-hit-rate') && (() => {
+        const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
+        const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
+        const total = (cr ?? 0) + (cc ?? 0);
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={cr != null ? `${cr.toLocaleString()} reads / ${total.toLocaleString()} total cached tokens` : 'Cache hit rate'}
+          >
+            <span className="text-fg-muted">Hit:</span>
+            {(() => {
+              if (cr == null) return <span className="text-fg-2">--</span>;
+              if (total === 0) return <span className="text-fg-muted">N/A</span>;
+              const pct = Math.round((cr / total) * 100);
+              const color = pct >= 80 ? 'text-[#4CAF50]' : pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]';
+              return <span className={color}>{pct}%</span>;
+            })()}
+          </span>
+        );
+      })()}
 
       {/* Active ratio — derived: apiDuration / duration */}
       {show('active-ratio') && (

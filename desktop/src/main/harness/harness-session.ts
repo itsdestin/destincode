@@ -12,6 +12,8 @@
 // values; max_steps and doom_loop surface as PERMISSION ASKS (askUser), never as
 // new event types.
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
@@ -258,6 +260,18 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
 // consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
 // so the step can be safely re-run once (re-running after content streamed would
 // duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
+// Attachment → image part. Only formats every mainstream vision model accepts;
+// an unlisted extension is skipped, so the model still sees the PATH in the
+// message text and can Read or Bash it if it wants.
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp',
+};
+// Attachments are base64'd into the request, so a huge one is a request-size
+// failure AND a token bill. 10 MB is far above any screenshot and well under
+// the provider limits we know of.
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -968,14 +982,44 @@ export class HarnessSession extends EventEmitter {
     }));
   }
 
-  async send(text: string): Promise<void> {
-    return this.beginTurn(text, () => this.emitEvent('user-message', { text }));
+  /** `attachments` are absolute paths to files the user attached in the composer.
+   *  Image ones become image parts on the user message when the model can see
+   *  them; everything else is ignored here and reaches the model as the path
+   *  text the composer already put in `text`.
+   *
+   *  WHY images ride ALONGSIDE the text rather than replacing it: `text` is the
+   *  dedup key. The renderer's optimistic bubble is confirmed by an EXACT match
+   *  against the `user-message` event's text (see native-send.ts), so the string
+   *  must stay byte-identical to what the composer built. The paths therefore
+   *  remain in the text AND the pixels are attached — the model gets both, and
+   *  the bubble still resolves. */
+  async send(text: string, attachments: string[] = []): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', { text }), attachments);
+  }
+
+  /** Image parts for a user message, or [] when the model cannot see images / none
+   *  were attached. Unreadable or oversized files are SKIPPED rather than thrown:
+   *  a turn must not die because one attachment went missing between the composer
+   *  and the send, and the path is still in the message text either way. */
+  private imagePartsFor(attachments: string[]): Array<{ type: 'file'; mediaType: string; data: Buffer }> {
+    if (!attachments.length || !this.profile.supportsVision) return [];
+    const parts: Array<{ type: 'file'; mediaType: string; data: Buffer }> = [];
+    for (const p of attachments) {
+      const mediaType = IMAGE_MEDIA_TYPES[path.extname(p).toLowerCase()];
+      if (!mediaType) continue;
+      try {
+        const st = fs.statSync(p);
+        if (st.size > MAX_ATTACHMENT_BYTES) continue;
+        parts.push({ type: 'file', mediaType, data: fs.readFileSync(p) });
+      } catch { /* vanished or unreadable — the path stays in the text */ }
+    }
+    return parts;
   }
 
   /** The turn driver. `emit` names how this turn ENTERED the conversation — a
    *  typed message, or a skill invocation — which is the only thing that differs
    *  between send() and runSkill(). Everything downstream is identical. */
-  private async beginTurn(text: string, emit: () => void): Promise<void> {
+  private async beginTurn(text: string, emit: () => void, attachments: string[] = []): Promise<void> {
     // Re-entrancy guard: a non-null abort means a turn is already streaming.
     // Throw loudly rather than corrupt the single-slot turn state (see the
     // class-level CONCURRENCY PRECONDITION note).
@@ -984,7 +1028,13 @@ export class HarnessSession extends EventEmitter {
     }
     this.interrupted = false;
     emit();
-    this.history.push({ role: 'user', content: text });
+    // A plain string when there are no image parts — that is the byte-identical
+    // shape every existing test and rebuildHistory() already assert on, so the
+    // no-attachment path must not become a one-element parts array.
+    const imageParts = this.imagePartsFor(attachments);
+    this.history.push(imageParts.length
+      ? { role: 'user', content: [{ type: 'text', text }, ...imageParts] } as any
+      : { role: 'user', content: text });
     this.abort = new AbortController();
     this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
