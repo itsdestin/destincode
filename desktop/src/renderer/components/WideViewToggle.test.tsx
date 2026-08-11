@@ -185,8 +185,25 @@ describe('WideViewToggle', () => {
     expect(container.querySelector('[data-testid="terminal-label"]')?.className).toContain('duration-300');
   });
 
+  // The reverse direction is the asymmetric one: the container SHRINKS as the
+  // wider Terminal label rolls up, so it is where a shrinkable sizing box would
+  // first show up as a wrong endpoint width.
+  it('moves back to the chat endpoint on the reverse view change', () => {
+    const { container, rerender, onToggleView } = renderToggle('terminal');
+    const nodes = makeReady(container);
+    flushFrame(32);
+    expect(nodes.indicator.style.left).toBe('38px');
+    expect(nodes.indicator.style.width).toBe('90px');
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+    expect(onToggleView).toHaveBeenCalledWith('chat');
+    rerender(<WideViewToggle viewMode="chat" onToggleView={onToggleView} showLabels />);
+    expect(nodes.indicator.style.left).toBe('2px');
+    expect(nodes.indicator.style.width).toBe('64px');
+    expect(nodes.root.dataset.geometrySyncing).toBeUndefined();
+  });
+
   it('coalesces observer bursts and snaps an environmental correction', () => {
-    const { container } = renderToggle('chat');
+    const { container, rerender, onToggleView } = renderToggle('chat');
     const nodes = makeReady(container);
     flushFrame(32);
     const updated = {
@@ -205,6 +222,32 @@ describe('WideViewToggle', () => {
     flushFrame(48);
     expect(nodes.indicator.style.left).toBe('2px');
     expect(nodes.indicator.style.width).toBe('72px');
+    expect(nodes.root.dataset.geometrySyncing).toBe('true');
+    // A correction must update BOTH endpoints, not just the active one —
+    // otherwise the next selection would slide to the pre-correction geometry.
+    rerender(<WideViewToggle viewMode="terminal" onToggleView={onToggleView} showLabels />);
+    expect(nodes.indicator.style.left).toBe('46px');
+    expect(nodes.indicator.style.width).toBe('104px');
+  });
+
+  it('recalibrates endpoints when the label mode changes', () => {
+    const { container, rerender, onToggleView } = renderToggle('chat', true);
+    const nodes = makeReady(container);
+    flushFrame(32);
+    expect(nodes.indicator.style.width).toBe('64px');
+    // Below the 560px header threshold HeaderBar drops the labels; the sizing
+    // spans go `hidden`, the observed boxes shrink, and the observer is the
+    // ONLY thing that reports it — nothing re-measures on a prop change.
+    rerender(<WideViewToggle viewMode="chat" onToggleView={onToggleView} showLabels={false} />);
+    installRects(nodes.root, nodes.chatEndpoint, nodes.terminalEndpoint, {
+      container: rect(100, 64),
+      chat: rect(102, 28),
+      terminal: rect(132, 28),
+    });
+    act(() => ControlledResizeObserver.instances[0].fire());
+    flushFrame(48);
+    expect(nodes.indicator.style.left).toBe('2px');
+    expect(nodes.indicator.style.width).toBe('28px');
     expect(nodes.root.dataset.geometrySyncing).toBe('true');
   });
 

@@ -11,7 +11,7 @@ function ruleBody(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
   expect(match, `missing CSS selector: ${selector}`).toBeTruthy();
-  return match![1].replace(/\\s+/g, ' ').trim();
+  return match![1].replace(/\s+/g, ' ').trim();
 }
 
 describe('wide toggle motion policy', () => {
@@ -28,9 +28,13 @@ describe('wide toggle motion policy', () => {
   });
 
   it('duplicates the same declarations for the OS reduced-motion preference', () => {
-    const media = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)?.join('\n') ?? '';
-    expect(media).toContain('.wide-view-toggle-indicator');
-    expect(media).toContain('.wide-view-toggle-label');
-    expect(media.match(/transition-duration:\s*0ms/g)).toHaveLength(2);
+    // globals.css has several prefers-reduced-motion blocks. Scope to the one
+    // that owns the toggle, so an unrelated block gaining a transition-duration
+    // can't fail this test with a message that points at the toggle.
+    const blocks = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g) ?? [];
+    const toggleBlock = blocks.find(block => block.includes('.wide-view-toggle-indicator'));
+    expect(toggleBlock, 'no prefers-reduced-motion block covers .wide-view-toggle-indicator').toBeTruthy();
+    expect(toggleBlock).toContain('.wide-view-toggle-label');
+    expect(toggleBlock!.match(/transition-duration:\s*0ms/g)).toHaveLength(2);
   });
 });

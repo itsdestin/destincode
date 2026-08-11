@@ -66,6 +66,20 @@ const ICON_CLASS = 'w-3.5 h-3.5 shrink-0';
 const CHAT_LABEL_MAX = '3rem';
 const TERMINAL_LABEL_MAX = '4.5rem';
 
+// WHY: `shrink-0` is load-bearing, not cosmetic. An endpoint box must always
+// report the width its option WOULD occupy when active. The sizing rows are
+// `inset-0`, so they inherit the container's current width — which is sized by
+// the visible row, where only one label is expanded. The row whose label is
+// expanded therefore wants more width than the container has, and a shrinkable
+// box would be squeezed to fit and measured too narrow. Worse, its width would
+// then track the container, which animates for 300ms during the label rollout —
+// reintroducing exactly the live-follow stutter this component exists to avoid
+// (see the failed attempts named below). It overflows instead; the row is
+// invisible and the app root is `overflow: hidden`, so nothing is visible.
+// Kept off BUTTON_LAYOUT_CLASS deliberately: that constant is shared with the
+// visible buttons, which must keep their normal flex behavior.
+const ENDPOINT_BOX_CLASS = `${BUTTON_LAYOUT_CLASS} shrink-0`;
+
 interface EndpointRowProps {
   mode: ViewMode;
   showLabels: boolean;
@@ -84,7 +98,7 @@ function EndpointRow({ mode, showLabels, activeRef }: EndpointRowProps) {
     <div className={`${ROW_CLASS} absolute inset-0`}>
       <div
         ref={chatActive ? activeRef : undefined}
-        className={BUTTON_LAYOUT_CLASS}
+        className={ENDPOINT_BOX_CLASS}
         data-testid={chatActive ? 'chat-endpoint' : undefined}
       >
         <ChatIcon className={ICON_CLASS} />
@@ -96,7 +110,7 @@ function EndpointRow({ mode, showLabels, activeRef }: EndpointRowProps) {
       </div>
       <div
         ref={!chatActive ? activeRef : undefined}
-        className={BUTTON_LAYOUT_CLASS}
+        className={ENDPOINT_BOX_CLASS}
         data-testid={!chatActive ? 'terminal-endpoint' : undefined}
       >
         <TerminalIcon className={ICON_CLASS} />
@@ -170,14 +184,23 @@ export default function WideViewToggle({
     // WHY: stable endpoint copies change for every relevant cause—font load,
     // theme, zoom, label mode, or container geometry—without observing the
     // visible 300ms label animation that caused the historical stutter.
+    // Never observe the visible buttons or the container: commits ae5776ee,
+    // 68462e9b, and a0103014 each tried gluing the indicator to the animating
+    // active button and produced a stutter or a teleport. That history is the
+    // reason this inert sizing layer exists — don't "simplify" it away.
     measure();
     const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(chat);
     observer.observe(terminal);
     return () => {
       observer.disconnect();
+      // Null after cancelling: a stale non-null id would make scheduleMeasure
+      // think a frame is still pending (and geometry-sync mode never end) if
+      // this effect were ever re-run on the same instance.
       if (measureFrameRef.current !== null) cancelAnimationFrame(measureFrameRef.current);
+      measureFrameRef.current = null;
       if (syncEndFrameRef.current !== null) cancelAnimationFrame(syncEndFrameRef.current);
+      syncEndFrameRef.current = null;
     };
   }, [measure, scheduleMeasure]);
 
@@ -207,6 +230,9 @@ export default function WideViewToggle({
         type="button"
         aria-label="Chat"
         aria-pressed={viewMode === 'chat'}
+        // Tooltip matters most in icon-only mode (<560px header), where the
+        // visible label is hidden. aria-label still supplies the a11y name.
+        title="Chat"
         onClick={() => onToggleView('chat')}
         className={`relative z-10 ${BUTTON_LAYOUT_CLASS} transition-colors duration-300 ${
           viewMode === 'chat' ? 'text-on-accent' : 'text-fg-dim hover:text-fg-2'
@@ -223,6 +249,7 @@ export default function WideViewToggle({
         type="button"
         aria-label="Terminal"
         aria-pressed={viewMode === 'terminal'}
+        title="Terminal"
         onClick={() => onToggleView('terminal')}
         className={`relative z-10 ${BUTTON_LAYOUT_CLASS} transition-colors duration-300 ${
           viewMode === 'terminal' ? 'text-on-accent' : 'text-fg-dim hover:text-fg-2'
