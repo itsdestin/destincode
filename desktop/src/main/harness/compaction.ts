@@ -3,7 +3,7 @@
 // only if pruning can't get under budget. PURE here: the decision + the prune
 // transform. Trigger is REAL last-step input tokens, not chars/4.
 import type { ModelMessage } from 'ai';
-import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
+import { messageTokens, messagesTokens } from './message-size';
 
 export interface CompactionConfig {
   contextLength: number; triggerRatio: number; protectedTokens: number; minPruneSavings: number; pruneToChars: number;
