@@ -672,7 +672,15 @@ export class HarnessSession extends EventEmitter {
       // Simplified presentation still wins for small local models — shortDescription
       // stays the schema-size escape hatch.
       const full = t.descriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.description;
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? full) : full, inputSchema: schema });
+      // Fix (2026-08-11 review): the simplified branch used to drop straight to the
+      // static shortDescription, discarding the vision-aware wording above. That
+      // silently reopened the Roo Code #10440 gap for exactly the tier — small
+      // local models — simplified presentation targets: a vision model never told
+      // Read handles images never tries. shortDescriptionFor mirrors descriptionFor
+      // at short-text length; only falls through to the static text/full when a
+      // tool doesn't define one (or the model has no vision).
+      const shortDesc = t.shortDescriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.shortDescription ?? full;
+      out[t.name] = tool({ description: simplified ? shortDesc : full, inputSchema: schema });
     }
     return out;
   }

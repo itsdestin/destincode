@@ -59,6 +59,15 @@ export const ReadTool = defineTool({
       + 'gif, webp) are delivered to you as the actual picture alongside the result — '
       + 'Read is how you look at a screenshot or image the user mentions by path.'
     : undefined,
+  // Same fix as descriptionFor, scoped to the SHORT text (simplified presentation
+  // for small local models, spec §4.2). Without this a small local vision model
+  // keeps the static shortDescription below and never learns Read handles images —
+  // the exact Roo Code #10440 gap, just on the tier schema-budget trims for.
+  // Kept to one short clause: shortDescription exists to be small.
+  shortDescriptionFor: (caps) => caps.supportsVision
+    ? "Read a file's contents by path, with optional line offset/limit."
+      + ' Images come back as the actual picture.'
+    : undefined,
   inputSchema: z.object({
     file_path: z.string().describe('Absolute or workspace-relative path'),
     offset: z.number().int().min(1).optional().describe('1-based first line to read'),

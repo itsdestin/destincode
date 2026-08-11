@@ -217,6 +217,17 @@ describe('Read: image delivery (2026-08-11 spec)', () => {
     expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/screenshot/);
     expect(ReadTool.descriptionFor!({ supportsVision: false })).toBeUndefined();
   });
+
+  it('advertises image reading in the SHORT description too, for simplified presentation', () => {
+    // Same failure mode as descriptionFor above, but for the small-local-model path
+    // (spec §4.2): a vision model that only ever sees shortDescription must still be
+    // told Read returns images, or the Roo Code #10440 gap reopens for that tier.
+    // Assert the specific clause added (2026-08-11), not the bare word 'images' —
+    // that alone could come from unrelated text and wouldn't catch the wording
+    // being deleted (2026-08-11 review, Fix 3's lesson applied here too).
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: true })).toMatch(/come back as the actual picture/);
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: false })).toBeUndefined();
+  });
 });
 
 describe('Edit', () => {
