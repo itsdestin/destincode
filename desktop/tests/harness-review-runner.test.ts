@@ -987,14 +987,66 @@ describe('runBattery salvage', () => {
     expect(run.metrics.toolCalls).toBe(1);
   });
 
-  it('reports no-review when the run finishes with empty final text', async () => {
-    const model = scriptModel([{ toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] }]);
+  it('asks a model that simply stopped, rather than writing it off with no review', async () => {
+    // The 2026-08-11 Qwen 3.6 27B case: six tool calls, ended on 'end_turn'
+    // with empty final text, nothing repeated, no budget spent. None of the
+    // three cut-short triggers fires for a run that just STOPS, so nothing
+    // ever asked it for a review and a paid run produced none.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      // An EMPTY step is a clean stop with no text — this is what ends the
+      // testing turn. It has to be here: the driver keeps looping inside one
+      // send() until the model stops calling tools, so a text step here would
+      // simply finish the first turn and there would be nothing to rescue.
+      {},
+      // Reached only by the SECOND send() the trigger issues.
+      { text: 'Asked, so here is my review.' },
+    ]);
     const run = await runBattery({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
-    expect(run.outcome).toBe('no-review');
-    expect(run.review).toBe('');
+
+    expect(run.wrapUpReason).toBe('stopped-early');
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.review).toBe('Asked, so here is my review.');
+  });
+
+  it('does not spend a second turn on a run that already produced a review', async () => {
+    // The trigger must not fire for a healthy run — that would double the cost
+    // of every successful model in the roster.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
+      { text: 'A complete review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    expect(run.wrapUpReason).toBeUndefined();
+    expect(run.outcome).toBe('complete');
+    expect(run.review).toBe('A complete review.');
+  });
+
+  it('treats mid-run narration as no review, since narration is not a deliverable', async () => {
+    // A model that narrates between tool calls and then stops HAS emitted
+    // assistant text — but not a review. Testing "did it emit any text" instead
+    // of "is there text after the last tool result" would see the narration and
+    // decline to ask, missing the exact case the trigger exists for.
+    const model = scriptModel([
+      { text: 'Now let me check the config…', toolCalls: [{ name: 'Read', input: { file_path: 'a.toml' } }] },
+      {},   // testing turn stops here, having emitted narration but no review
+      { text: 'Asked anyway.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+    });
+
+    expect(run.wrapUpReason).toBe('stopped-early');
+    expect(run.review).toBe('Asked anyway.');
+    expect(run.review).not.toContain('check the config');
   });
 
   it('reports complete and records metrics when the model finishes normally', async () => {

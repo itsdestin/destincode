@@ -77,7 +77,7 @@ export interface BatteryRun {
    *  moment a (toolName, input) pair recurs past REPEAT_LIMIT, non-consecutively
    *  — see REPEAT_LIMIT's WHY comment below for the 2026-08-10 incident it
    *  catches that doom_loop cannot. */
-  wrapUpReason?: 'budget' | 'restart' | 'timeout';
+  wrapUpReason?: 'budget' | 'restart' | 'timeout' | 'stopped-early';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
   metrics: BatteryMetrics;
@@ -124,6 +124,21 @@ export const WRAP_UP_PROMPT =
 // message, and a model that cannot produce it in two minutes is not going to.
 export const WRAP_UP_TIMEOUT_MS = 120_000;
 
+/** Assistant text in `events` from `sliceFrom` onward, keeping only what sits
+ *  after index `anchor` (window-local). Hoisted to module scope because the
+ *  'stopped-early' trigger has to ask "did the testing turn produce anything?"
+ *  BEFORE the wrap-up decision, while the final extraction asks the same
+ *  question of the wrap-up window afterwards — one definition, two callers, so
+ *  the two can never drift into disagreeing about what counts as a review. */
+function pickReview(events: TranscriptEvent[], sliceFrom: number, anchor: number): string {
+  return events
+    .slice(sliceFrom)
+    .filter((e, i) => e.type === 'assistant-text' && i > anchor)
+    .map((e) => e.data.text ?? '')
+    .join('')
+    .trim();
+}
+
 // How many byte-identical (toolName, input) pairs a run may issue before it is
 // treated as having restarted the battery rather than making progress.
 //
@@ -133,9 +148,27 @@ export const WRAP_UP_TIMEOUT_MS = 120_000;
 // 2026-08-10, restarting the battery each time its context compacted. Nothing
 // was stuck; the run was just never going to finish.
 //
-// WHY 5: re-reading one file twice while testing (say, checking Read's freshness
-// guard) is legitimate. Six byte-identical calls is not a re-check.
-export const REPEAT_LIMIT = 5;
+// WHY 12, measured — the first value (5) was asserted, not measured, and it was
+// wrong. On 2026-08-11 it tripped ALL EIGHT models in the roster, every one at
+// exactly 6, and every trip was legitimate battery behaviour: Claude Opus 5's
+// was `Bash pwd; ls -la` six times, its own description reading "verify cwd
+// persistence" — which is battery area 1 verbatim ("verify cwd persistence
+// across calls"). The battery ASKS for repeated identical calls; the detector
+// classified obedience as a runaway and truncated eight paid runs.
+//
+// The two numbers that set this bound, both read off real transcripts:
+//   noise floor  6  — the most any healthy 2026-08-11 run repeated one call
+//   real signal 14  — Glob **/* in the 2026-08-10 Qwen 3.8 Max restart loop
+// 14 is the only count that has ever indicated a genuine restart, and that same
+// transcript ALSO contains a legitimate 6, so the two shapes overlap and only
+// the tail separates them.
+//
+// WHY err high rather than split the difference: the costs are asymmetric. A
+// false trip truncates a paid run mid-battery (eight of them, 2026-08-11). A
+// miss just means the run continues to its step budget or deadline — both of
+// which trigger a wrap-up turn anyway, so a review still comes out. Missing a
+// loop costs time; catching a non-loop costs the battery.
+export const REPEAT_LIMIT = 12;
 
 // Default wall-clock ceiling for the TESTING phase. Raised from 900_000 because
 // at the 8.6s/step measured on 2026-08-10, 900s buys ~105 steps — which made the
@@ -565,6 +598,36 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // the outcome expression below).
     if (!wrapUpReason && !error && stopReasons.at(-1) === 'max_steps') wrapUpReason = 'budget';
 
+    // Fourth trigger: the turn ENDED ON ITS OWN and left no review.
+    //
+    // The other three all watch for a run being CUT SHORT. None of them fires
+    // for a model that simply stopped — and that is a real, observed outcome,
+    // not a hypothetical: on 2026-08-11 Qwen 3.6 27B made six tool calls, ended
+    // on 'end_turn' with empty final text, repeated nothing, and blew no
+    // budget. No trigger fired, so nothing ever asked it for a review, and a
+    // paid run produced none. It was the only model in the roster that was
+    // perfectly willing to answer and was never asked.
+    //
+    // WHY this needs no interrupt, unlike the other three: the turn is already
+    // over. This runs after send() resolved, so it just decides to send once
+    // more.
+    //
+    // WHY it asks with the SAME anchored test the final extraction uses, rather
+    // than "did the model emit any text at all": mid-run narration is not a
+    // review. A model that says "Now let me check the config…" between two tool
+    // calls and then stops has produced text but no deliverable, and the loose
+    // test would see that text and decline to ask — missing exactly the case
+    // this trigger exists for. Anchoring both to the last tool result keeps one
+    // definition of "has a review" on both sides of the decision.
+    if (!wrapUpReason && !error) {
+      const endedWithoutReview = !pickReview(
+        events,
+        0,
+        events.reduce((last, e, i) => (e.type === 'tool-result' ? i : last), -1),
+      );
+      if (endedWithoutReview) wrapUpReason = 'stopped-early';
+    }
+
     // Everything the testing turn emitted. The wrap-up review is sliced from
     // here onward so trailing narration from the interrupted turn cannot leak
     // into it (see lastToolResultIndex's WHY comment below).
@@ -660,12 +723,8 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       (last, e, i) => (e.type === 'tool-result' ? i : last),
       -1,
     );
-    const pickReview = (anchor: number) => reviewWindow
-      .filter((e, i) => e.type === 'assistant-text' && i > anchor)
-      .map((e) => e.data.text ?? '')
-      .join('')
-      .trim();
-    const review = pickReview(lastToolResultIndex) || (isWrapUpWindow ? pickReview(-1) : '');
+    const review = pickReview(events, sliceFrom, lastToolResultIndex)
+      || (isWrapUpWindow ? pickReview(events, sliceFrom, -1) : '');
 
     // wrapUpReason takes priority: a wrap-up turn that itself errors still
     // reports 'wrapped-up' (with an empty review, per the brief's WHY comment

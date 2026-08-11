@@ -24,7 +24,11 @@ const TOOL_NAMES = CORE_TOOLS.map((t) => t.name);
 export interface RunFacts {
   metrics: BatteryMetrics;
   outcome: BatteryOutcome;
-  wrapUpReason?: 'budget' | 'restart' | 'timeout';
+  // Derived, never re-typed: this WAS a hand-copied literal union and it went
+  // stale the moment a fourth trigger ('stopped-early') was added — tsc caught
+  // it, but only because the assignment happened to be checked. Same reasoning
+  // as TOOL_NAMES above.
+  wrapUpReason?: BatteryRun['wrapUpReason'];
   error?: string;
   /** Tools the review names that never appear in metrics.toolsUsed. */
   unbackedClaims: string[];
