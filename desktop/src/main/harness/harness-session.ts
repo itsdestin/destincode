@@ -14,6 +14,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -22,7 +23,7 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
-import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN } from './image-support';
+import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
 // string; Skill's is a skill id. Both would be canonicalized against cwd and run
@@ -356,9 +357,17 @@ export class HarnessSession extends EventEmitter {
   private readonly injectedTriggerIds = new Set<string>();
   /** Delivered-image dedupe: canonical path → mtimeMs at delivery. A model that
    *  re-Reads the SAME unchanged file gets "already visible" text, not a second
-   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Reset on
-   *  resume alongside readRegistry — after a rebuild the images in history came
-   *  from a fresh disk read anyway. */
+   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared
+   *  anywhere model history is discarded or replaced — on resume (alongside
+   *  readRegistry), on /clear (clearHistory), and on compaction's summarize
+   *  step (maybeCompact/compactNow) — because every one of those DROPS entries
+   *  the cache is vouching for. A stale entry after a drop doesn't just cost a
+   *  redundant re-Read: it makes the dedupe note ITSELF false ("already visible
+   *  earlier in this conversation" when it no longer is), permanently, until an
+   *  unrelated mtime change happens to reset it. The re-Read this forces after
+   *  a clear is not free — a second ~1.6k-token copy of an image that may still
+   *  be sitting in surviving history — but that is the safe failure direction:
+   *  over-delivery costs tokens, the bug it replaces cost correctness. */
   private shownImages = new Map<string, number>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
@@ -630,7 +639,7 @@ export class HarnessSession extends EventEmitter {
    *  text-only shape. When images ARE present, the output becomes ai@7's
    *  'content' shape — @ai-sdk/anthropic maps it to native tool_result image
    *  blocks; every other wire is rewritten by adaptForWire (wire-adapter.ts). */
-  private toolResultPart(call: ToolCall, text: string, images: Array<{ mediaType: string; data: Buffer }> = []): any {
+  private toolResultPart(call: ToolCall, text: string, images: Array<{ mediaType: string; data: Buffer; filename?: string }> = []): any {
     if (!images.length) {
       return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
     }
@@ -640,7 +649,12 @@ export class HarnessSession extends EventEmitter {
         type: 'content',
         value: [
           { type: 'text', text },
-          ...images.map((i) => ({ type: 'file', mediaType: i.mediaType, data: { type: 'data', data: i.data } })),
+          // Fix 3 (2026-08-11 review): filename rides through onto the file
+          // part. wire-adapter.ts labels every image `f.filename ?? toolName`
+          // — precisely so a multi-image result doesn't produce N identical
+          // placeholders naming only the tool. Without this every image was
+          // labelled "Read" regardless of which file it was.
+          ...images.map((i) => ({ type: 'file', mediaType: i.mediaType, data: { type: 'data', data: i.data }, ...(i.filename ? { filename: i.filename } : {}) })),
         ],
       },
     };
@@ -784,6 +798,14 @@ export class HarnessSession extends EventEmitter {
     // CC's own compact-summary events never carry it, so the manual path is
     // untouched.
     this.emitEvent('compact-summary', { summary, autoCompaction: true });
+    // Fix 2 (2026-08-11): the summarized-away span can contain delivered
+    // images — pruneToolOutputs (above) bails on non-string outputs, so a
+    // content-type (image) tool-result is NEVER pruned; summarize is the only
+    // stage that ever removes one. An un-cleared shownImages would then keep
+    // vouching for images no longer in history — the same false "already
+    // visible" bug /clear had (Fix 1), reachable here automatically at 75%
+    // context instead of only on an explicit /clear.
+    this.shownImages.clear();
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
@@ -888,6 +910,11 @@ export class HarnessSession extends EventEmitter {
       // still gets a real (if smaller) reduction, and never a lost conversation.
       if (!summary.trim()) return { ok: false, reason: 'summary-failed' };
       this.emitEvent('compact-summary', { summary });
+      // Fix 2 (2026-08-11): same reasoning as maybeCompact above — the manual
+      // /compact path discards the summarized span exactly the same way, so
+      // the dedupe cache must be cleared here too or it keeps vouching for
+      // images this summary just removed.
+      this.shownImages.clear();
       this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
       return { ok: true };
     } finally {
@@ -911,6 +938,14 @@ export class HarnessSession extends EventEmitter {
   clearHistory(): { ok: true } | { ok: false; reason: 'turn-in-flight' } {
     if (this.abort) return { ok: false, reason: 'turn-in-flight' };
     this.history = [];
+    // Fix 1 (CRITICAL, 2026-08-11): the dedupe cache must not outlive the
+    // history it was vouching for. Left alive, a model that re-Reads an
+    // unchanged file after /clear gets "already visible earlier in this
+    // conversation" — now FALSE, since that earlier delivery is gone — paired
+    // with no image ever being attached again for the rest of the session
+    // (barring an unrelated mtime change). Clearing here makes the next Read
+    // of that file deliver for real, matching what "already visible" claims.
+    this.shownImages.clear();
     // Emitted (not just persisted) so the store appends it through the host's
     // normal chain AND every attached surface — other windows, the remote web
     // client — learns the conversation was cleared. On replay this same event
@@ -1041,21 +1076,31 @@ export class HarnessSession extends EventEmitter {
    *  and the transcript see, so promise and delivery can never disagree.
    *  `budget` is a beginTurn-scoped local shared across every tool call in the
    *  turn (mutated in place), which is what makes the count/byte caps PER-TURN
-   *  rather than per-call. */
+   *  rather than per-call.
+   *
+   *  No `!this.profile.supportsVision` check here, unlike imagePartsFor's
+   *  sibling gate above — deliberately, not an oversight (2026-08-11 review).
+   *  It's already double-covered: the Read tool gates on vision before it ever
+   *  PROMISES a path, and wire-adapter.ts strips/relabels images for
+   *  non-vision caps at request-build time. A third gate here would be
+   *  redundant, not safer. */
   private resolveToolImages(
     payload: ToolResultPayload,
     budget: { count: number; bytes: number },
-  ): { text: string; images: Array<{ path: string; mediaType: string; data: Buffer }> } {
+  ): { text: string; images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> } {
     const paths = payload.images ?? [];
     if (!paths.length) return { text: payload.text, images: [] };
     let text = payload.text;
-    const images: Array<{ path: string; mediaType: string; data: Buffer }> = [];
+    const images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> = [];
     for (const p of paths) {
       // The tool already stat'd this file before promising it (resolve-before-
       // promise, Task 4) — but time passed between that stat and this delivery,
-      // so it can have vanished. Re-stat rather than trust the promise.
+      // so it can have vanished. Re-stat rather than trust the promise. Kept
+      // (not just its mtime) so a later null-from-readImageFromDisk can be
+      // diagnosed against this SAME stat instead of a second, possibly-stale one.
       let mtime: number;
-      try { mtime = fs.statSync(p).mtimeMs; } catch {
+      let st: fs.Stats;
+      try { st = fs.statSync(p); mtime = st.mtimeMs; } catch {
         text += `\n[image not attached: ${p} is no longer readable]`; continue;
       }
       if (this.shownImages.get(p) === mtime) {
@@ -1065,13 +1110,33 @@ export class HarnessSession extends EventEmitter {
         text += `\n[image not attached: over the ${MAX_IMAGES_PER_TURN}-images-per-turn budget — ask again next turn if you still need it]`; continue;
       }
       const img = readImageFromDisk(p);
-      if (!img) { text += `\n[image not attached: ${p} vanished or exceeds the per-image size limit]`; continue; }
+      if (!img) {
+        // readImageFromDisk collapses three distinct causes to null. The old
+        // text guessed "vanished" for all of them — near-impossible here since
+        // the stat four lines up already succeeded — which is exactly the
+        // unverified-cause error message this repo's standard forbids. Name
+        // the real one instead: undeliverable FORMAT, oversized (the stat we
+        // already have is trustworthy for this), or — the one genuine
+        // "vanished/unreadable" case — a read that threw between the stat and
+        // here.
+        if (!deliverableImageMediaType(p)) {
+          text += `\n[image not attached: ${p} is not a deliverable image format]`;
+        } else if (st.size > MAX_ATTACHMENT_BYTES) {
+          text += `\n[image not attached: ${p} exceeds the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB per-image size limit]`;
+        } else {
+          text += `\n[image not attached: ${p} could not be read]`;
+        }
+        continue;
+      }
       if (budget.bytes + img.data.length > MAX_IMAGE_BYTES_PER_TURN) {
         text += `\n[image not attached: over the ${MAX_IMAGE_BYTES_PER_TURN / (1024 * 1024)} MB-per-turn image budget]`; continue;
       }
       budget.count += 1; budget.bytes += img.data.length;
       this.shownImages.set(p, mtime);
-      images.push({ path: p, mediaType: img.mediaType, data: img.data });
+      // Fix 3 (2026-08-11 review): carry the file's own basename through so
+      // toolResultPart can label the part with it instead of the tool's name —
+      // see that method for why an unset filename defeats the point.
+      images.push({ path: p, mediaType: img.mediaType, data: img.data, filename: path.basename(p) });
     }
     return { text, images };
   }

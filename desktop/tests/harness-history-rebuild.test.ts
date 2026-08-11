@@ -491,7 +491,10 @@ describe('image tool-result resume', () => {
     const toolMsg = out.find((m: any) => m.role === 'tool') as any;
     expect(toolMsg.content[0].output).toEqual({
       type: 'content',
-      value: [{ type: 'text', text: 'Read image' }, { type: 'file', mediaType: 'image/png', data: { type: 'data', data: Buffer.from('png!') } }],
+      // filename (Fix 3, 2026-08-11 review): the resumed shape must carry the
+      // same basename-derived filename harness-session.ts's live path does —
+      // otherwise a resumed session labels images differently from a live one.
+      value: [{ type: 'text', text: 'Read image' }, { type: 'file', mediaType: 'image/png', filename: 'ok.png', data: { type: 'data', data: Buffer.from('png!') } }],
     });
   });
 
@@ -524,7 +527,7 @@ describe('image tool-result resume', () => {
       type: 'content',
       value: [
         { type: 'text', text: 'Read images\n[image no longer available: /tmp/gone.png]' },
-        { type: 'file', mediaType: 'image/png', data: { type: 'data', data: Buffer.from('png!') } },
+        { type: 'file', mediaType: 'image/png', filename: 'ok.png', data: { type: 'data', data: Buffer.from('png!') } },
       ],
     });
   });

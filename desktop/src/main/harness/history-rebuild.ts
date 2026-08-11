@@ -22,6 +22,7 @@
 // ruling, spec §2.5). A resumed session's Bash therefore starts at the root again.
 // assistant-thinking / compact-summary / session-error never entered model
 // history live either, so they're skipped here too.
+import * as path from 'path';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelMessage, TextPart, ToolCallPart, ToolResultPart } from 'ai';
 
@@ -100,10 +101,17 @@ export function rebuildHistory(events: TranscriptEvent[], readImage?: RebuildIma
         // pixels beat none. Multiple images degrade independently, so a
         // partially-available result still delivers whatever IS readable.
         let text = base;
-        const files: Array<{ type: 'file'; mediaType: string; data: { type: 'data'; data: Buffer } }> = [];
+        const files: Array<{ type: 'file'; mediaType: string; data: { type: 'data'; data: Buffer }; filename: string }> = [];
         for (const p of imagePaths) {
           const img = readImage(p);
-          if (img) files.push({ type: 'file', mediaType: img.mediaType, data: { type: 'data', data: img.data } });
+          // Fix 3 (2026-08-11 review): identical derivation to resolveToolImages
+          // in harness-session.ts — the file's own basename, not the tool's
+          // name. If these two ever disagree, a resumed session labels images
+          // differently from a live one. Importing `path` here (pure string
+          // manipulation) doesn't compromise this module's purity rule — that
+          // rule is specifically about the IMAGE READER staying injected, not
+          // about avoiding stdlib string utilities.
+          if (img) files.push({ type: 'file', mediaType: img.mediaType, data: { type: 'data', data: img.data }, filename: path.basename(p) });
           else text += `\n[image no longer available: ${p}]`;
         }
         toolResults.push({
