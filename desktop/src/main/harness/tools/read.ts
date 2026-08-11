@@ -56,7 +56,7 @@ export const ReadTool = defineTool({
   descriptionFor: (caps) => caps.supportsVision
     ? 'Read a file from the filesystem. Text files return numbered lines; use offset and '
       + 'limit for large files — output is capped at 2000 lines. Image files (png, jpg, '
-      + 'gif, webp) are delivered to you as images alongside the result — '
+      + 'gif, webp) are delivered to you as the actual picture alongside the result — '
       + 'Read is how you look at a screenshot or image the user mentions by path.'
     : undefined,
   inputSchema: z.object({
@@ -82,22 +82,33 @@ export const ReadTool = defineTool({
     if (sizeErr) return { text: sizeErr, isError: true };
     // IMAGES (2026-08-11 spec): a vision model gets the actual picture — the tool
     // returns the PATH; the driver builds the parts, so promise and delivery are
-    // decided against the same stat. Order: deliverable check → vision gate → size
-    // cap → promise. Every refusal names the real reason (no "binary file" lies).
-    // This branch runs BEFORE readFileSync below — the driver reads the bytes at
-    // delivery time, so Read must never slurp a large image into memory itself.
+    // decided against the same stat. Order: image-shaped check (deliverable OR
+    // undeliverable format) → vision gate → format/size specifics → promise.
+    // Every refusal names the real reason (no "binary file" lies). This branch
+    // runs BEFORE readFileSync below — the driver reads the bytes at delivery
+    // time, so Read must never slurp a large image into memory itself.
     const imageMediaType = deliverableImageMediaType(args.file_path);
+    const undeliverableExt = UNDELIVERABLE_IMAGE_EXTENSIONS.has(path.extname(args.file_path).toLowerCase());
+    // WHY the vision gate is hoisted above the deliverable/undeliverable split
+    // (2026-08-11 review, Fix 1): it used to live only inside the deliverable
+    // branch, so a text-only model reading diagram.svg fell straight into the
+    // undeliverable branch's "convert it to PNG and Read the copy" advice —
+    // real, actionable-sounding advice that dead-ends, because converting
+    // produces a PNG the SAME text-only model still cannot see. That is a Bash
+    // round-trip spent chasing a fix that does not exist. Checking vision first
+    // for ANY image-shaped file means every no-vision model gets the one true
+    // reason (no vision) regardless of format.
+    if ((imageMediaType || undeliverableExt) && !ctx.supportsVision) {
+      return { text: `Read rejected: ${args.file_path} is an image and the current model cannot view images. Continue without it, or ask the user to describe it.`, isError: true };
+    }
     if (imageMediaType) {
-      if (!ctx.supportsVision) {
-        return { text: `Read rejected: ${args.file_path} is an image and the current model cannot view images. Continue without it, or ask the user to describe it.`, isError: true };
-      }
       if (st.size > MAX_ATTACHMENT_BYTES) {
         return { text: `Read rejected: ${args.file_path} is a ${(st.size / (1024 * 1024)).toFixed(1)} MB image (limit ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB).`, isError: true };
       }
       ctx.readRegistry.set(canonicalize(args.file_path, ctx.cwd), st.mtimeMs);
       return { text: `Read image ${args.file_path} (${Math.max(1, Math.round(st.size / 1024))} KB, ${imageMediaType}).`, images: [abs] };
     }
-    if (UNDELIVERABLE_IMAGE_EXTENSIONS.has(path.extname(args.file_path).toLowerCase())) {
+    if (undeliverableExt) {
       return { text: `Read rejected: ${args.file_path} is a ${path.extname(args.file_path).slice(1)} image — a format that cannot be delivered to the model. Convert it to PNG (e.g. Bash: magick in.svg out.png) and Read the copy.`, isError: true };
     }
     const buf = fs.readFileSync(abs);

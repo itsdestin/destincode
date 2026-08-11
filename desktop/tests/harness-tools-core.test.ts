@@ -186,6 +186,12 @@ describe('Read: image delivery (2026-08-11 spec)', () => {
     fs.writeFileSync(p, '<svg/>');
     const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
     expect(r.isError).toBe(true);
+    // Assert the actual refusal WORDING, not just that 'svg' appears somewhere —
+    // the echoed file path (".../vector.svg") alone would satisfy a bare
+    // `toContain('svg')` even with the format-named refusal deleted entirely
+    // (2026-08-11 review, Fix 2: the implementer's own RED evidence showed this
+    // test passing before the refusal branch existed).
+    expect(r.text).toMatch(/cannot be delivered/i);
     expect(r.text).toContain('svg');
     expect(r.images).toBeUndefined();
   });
@@ -196,10 +202,19 @@ describe('Read: image delivery (2026-08-11 spec)', () => {
     const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/11(\.\d)? MB.*10 MB/s);
+    // A refusal must never also promise the image (2026-08-11 review, Fix 5) —
+    // the sibling refusal tests above pin this; this one didn't.
+    expect(r.images).toBeUndefined();
   });
 
   it('advertises image reading only to vision models', () => {
-    expect(ReadTool.descriptionFor!({ supportsVision: true })).toContain('images');
+    // Assert the LOAD-BEARING phrases, not the bare plural 'images' (2026-08-11
+    // review, Fix 3): the vivid "actual picture" framing and the "screenshot"
+    // example are what actually stop a vision model from never trying an image
+    // read — a substring check on 'images' alone would keep passing even if
+    // that framing were deleted.
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/actual picture/);
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/screenshot/);
     expect(ReadTool.descriptionFor!({ supportsVision: false })).toBeUndefined();
   });
 });
