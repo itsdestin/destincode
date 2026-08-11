@@ -12,8 +12,6 @@
 // values; max_steps and doom_loop surface as PERMISSION ASKS (askUser), never as
 // new event types.
 import { EventEmitter } from 'events';
-import * as fs from 'fs';
-import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
@@ -23,6 +21,7 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
+import { readImageFromDisk } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
 // string; Skill's is a skill id. Both would be canonicalized against cwd and run
@@ -261,18 +260,6 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
 // consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
 // so the step can be safely re-run once (re-running after content streamed would
 // duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
-// Attachment → image part. Only formats every mainstream vision model accepts;
-// an unlisted extension is skipped, so the model still sees the PATH in the
-// message text and can Read or Bash it if it wants.
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp',
-};
-// Attachments are base64'd into the request, so a huge one is a request-size
-// failure AND a token bill. 10 MB is far above any screenshot and well under
-// the provider limits we know of.
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -1006,13 +993,8 @@ export class HarnessSession extends EventEmitter {
     if (!attachments.length || !this.profile.supportsVision) return [];
     const parts: Array<{ type: 'file'; mediaType: string; data: Buffer }> = [];
     for (const p of attachments) {
-      const mediaType = IMAGE_MEDIA_TYPES[path.extname(p).toLowerCase()];
-      if (!mediaType) continue;
-      try {
-        const st = fs.statSync(p);
-        if (st.size > MAX_ATTACHMENT_BYTES) continue;
-        parts.push({ type: 'file', mediaType, data: fs.readFileSync(p) });
-      } catch { /* vanished or unreadable — the path stays in the text */ }
+      const img = readImageFromDisk(p);   // shared reader — one table, one cap (fix 3)
+      if (img) parts.push({ type: 'file', mediaType: img.mediaType, data: img.data });
     }
     return parts;
   }
