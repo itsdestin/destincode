@@ -52,9 +52,10 @@ export interface BatteryRun {
 // below sets 100 directly, above every healthy run ever measured (round 4: Kimi
 // K3 56 tool calls, Deepseek 47, Grok 37, GPT 47, Opus 80), so reaching the gate
 // at all is now real signal. One continuation is grace for an unusually thorough
-// run; past that the run wraps up (see WRAP_UP_PROMPT) rather than dying, so the
-// cap no longer costs a paid run its review the way it cost Opus 5 on 2026-08-09.
-// Ceiling: 2 windows * 100 = 200 steps, then a wrap-up turn.
+// run; past that the run ends with no review (today), which is what cost Opus 5
+// its entire review on 2026-08-09. TODO(wrap-up turn): a later task replaces that
+// outcome with a wrap-up turn that asks for the review instead.
+// Ceiling math: 2 windows * 100 = 200 steps, then (when wrap-up lands) a final turn.
 export const STEP_GATE_ALLOWANCE = 1;
 
 // Fix (2026-08-10 incident): HarnessSession passes `harness.limits?.maxTokens`

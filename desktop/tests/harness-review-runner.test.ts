@@ -4,8 +4,9 @@ import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS } from '../src/main/harness/review/run-battery';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
+import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
 describe('makeOpenRouterFactory', () => {
   it('refuses to build without a key, naming the env var to set', () => {
@@ -53,9 +54,6 @@ describe('runBattery output ceiling (2026-08-10 incident)', () => {
     expect(BATTERY_MAX_OUTPUT_TOKENS).toBeLessThan(65_536);
   });
 });
-
-import { BATTERY_HARNESS } from '../src/main/harness/review/run-battery';
-import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
 describe('battery step budget', () => {
   it('sets its own maxSteps instead of inheriting the app chat-tier budget', () => {
