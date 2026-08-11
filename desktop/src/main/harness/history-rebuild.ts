@@ -81,12 +81,37 @@ export function rebuildHistory(events: TranscriptEvent[], readImage?: RebuildIma
         flushResults();
         assistantParts.push({ type: 'tool-call', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''), input: e.data?.toolInput ?? {} });
         break;
-      case 'tool-result':
+      case 'tool-result': {
         // Close the assistant(tool-call) message this result answers — this
         // flush is what prevents the NEXT step's text from merging into it.
         flushAssistant();
-        toolResults.push({ type: 'tool-result', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''), output: { type: 'text', value: String(e.data?.toolResult ?? '') } });
+        const base = String(e.data?.toolResult ?? '');
+        const imagePaths = Array.isArray(e.data?.images) ? (e.data.images as string[]) : [];
+        if (!imagePaths.length || !readImage) {
+          toolResults.push({ type: 'tool-result', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''), output: { type: 'text', value: base } });
+          break;
+        }
+        // Tool-delivered images (e.g. Read on a picture) are re-read from disk
+        // at rebuild time — events carry paths, not binary (Task 5). A vanished
+        // or undeliverable file becomes a NAMED note in the text, never a
+        // silent dangling reference: the model must not go on believing it
+        // holds a picture that isn't there (the failure class this milestone
+        // exists to eliminate). A changed file is re-read as-is: current
+        // pixels beat none. Multiple images degrade independently, so a
+        // partially-available result still delivers whatever IS readable.
+        let text = base;
+        const files: Array<{ type: 'file'; mediaType: string; data: { type: 'data'; data: Buffer } }> = [];
+        for (const p of imagePaths) {
+          const img = readImage(p);
+          if (img) files.push({ type: 'file', mediaType: img.mediaType, data: { type: 'data', data: img.data } });
+          else text += `\n[image no longer available: ${p}]`;
+        }
+        toolResults.push({
+          type: 'tool-result', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''),
+          output: files.length ? ({ type: 'content', value: [{ type: 'text', text }, ...files] } as any) : { type: 'text', value: text },
+        });
         break;
+      }
       case 'turn-complete':
       case 'user-interrupt':
         flushAssistant(); flushResults();
