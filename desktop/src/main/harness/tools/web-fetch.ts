@@ -738,8 +738,31 @@ function htmlToMarkdown(document: Document, rawHtml: string): { title: string | 
   if (article?.content) return { title: article.title ?? null, markdown: turndown.turndown(article.content) };
   // Readability found no article (a dashboard, an index page…) — fall back to the
   // whole body so the model still gets SOMETHING structured, never a silent empty.
-  const body = document.body?.innerHTML ?? rawHtml;
-  return { title: document.title || null, markdown: turndown.turndown(body) };
+  //
+  // The try/catch is load-bearing, and `?.` alone was not enough (measured
+  // 2026-08-11): a SUCCESSFUL Readability parse moves nodes out and leaves
+  // linkedom's `documentElement` null, and linkedom's `body` getter then THROWS
+  // ("Cannot destructure property 'firstElementChild'") rather than returning
+  // undefined — optional chaining does not catch a throwing getter. Today the
+  // early return above means a successful parse never reaches this line, so the
+  // path is unreachable; the day `article.content` comes back empty from a parse
+  // that still emptied the document, the stated fallback would have become a
+  // TypeError instead. Kept lazy rather than snapshotting body.innerHTML before
+  // the parse: that would copy the whole body on every fetch to serve a case
+  // that almost never happens.
+  let body = rawHtml;
+  try {
+    body = document.body?.innerHTML ?? rawHtml;
+  } catch {
+    /* document was emptied by the parse — rawHtml is the honest source left. */
+  }
+  let title: string | null = null;
+  try {
+    title = document.title || null;
+  } catch {
+    /* same reason as above; a missing title is not worth failing the fetch. */
+  }
+  return { title, markdown: turndown.turndown(body) };
 }
 
 export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
