@@ -30,7 +30,10 @@ export interface BatteryMetrics {
   thinkingEvents: number;
   inputTokens: number;
   outputTokens: number;
-  /** One per turn-complete, in order. A wrapped-up run has two. */
+  /** One per turn-complete, in order. A budget-triggered wrap-up has two (the
+   *  testing turn's 'max_steps', then the wrap-up turn's own finish reason);
+   *  a timeout-triggered one usually has one, since interrupt() ends the
+   *  testing turn via 'user-interrupt' (no turn-complete), not a finish. */
   stopReasons: string[];
   /** Distinct tool names actually invoked, sorted. The evidence a review's
    *  claims are checked against (run-facts.ts). */
@@ -56,12 +59,15 @@ export interface BatteryRun {
   stepGates: number;
   fixtureRoot: string;
   /** How the run ended. 'complete' — the testing turn finished on its own with
-   *  a non-empty review. 'wrapped-up' — a trigger fired and the wrap-up turn
-   *  produced the review. Not reachable yet — no wrap-up turn exists until a
-   *  later task adds one; kept in the union now so BatteryRun's shape doesn't
-   *  change again when it lands. 'no-review' — finished with empty final text.
-   *  'error' — the provider or session threw; see `error`. */
+   *  a non-empty review. 'wrapped-up' — the step budget or the wall clock cut
+   *  the testing turn short and a second, tools-denied turn produced the
+   *  review instead (see wrapUpReason). 'no-review' — finished with empty
+   *  final text. 'error' — the provider or session threw; see `error`. */
   outcome: BatteryOutcome;
+  /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
+   *  testing turn ended on its own. 'budget' and 'timeout' land in this task;
+   *  'restart' is produced by a later task's repeat-loop detector. */
+  wrapUpReason?: 'budget' | 'restart' | 'timeout';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
   metrics: BatteryMetrics;
@@ -87,11 +93,33 @@ export interface BatteryRun {
 // below sets 100 directly, above every healthy run ever measured (round 4: Kimi
 // K3 56 tool calls, Deepseek 47, Grok 37, GPT 47, Opus 80), so reaching the gate
 // at all is now real signal. One continuation is grace for an unusually thorough
-// run; past that the run ends with no review (today), which is what cost Opus 5
-// its entire review on 2026-08-09. TODO(wrap-up turn): a later task replaces that
-// outcome with a wrap-up turn that asks for the review instead.
-// Ceiling math: 2 windows * 100 = 200 steps, then (when wrap-up lands) a final turn.
+// run; past that the testing turn ends and a wrap-up turn (below) asks for the
+// review instead of losing it outright, which is what cost Opus 5 its entire
+// review on 2026-08-09.
+// Ceiling math: 2 windows * 100 = 200 steps, then a final wrap-up turn.
 export const STEP_GATE_ALLOWANCE = 1;
+
+// Sent as a SECOND turn on the same session when the testing phase is cut short.
+// WHY a second turn and not a bigger budget: the failure is not "the model needed
+// more room", it is "the model never got asked for the deliverable". Round 5's
+// Qwen 3.5 122B (127 calls) and Qwen 3.8 Max (157 calls) both ended on max_steps
+// with no final text — paid runs that produced nothing readable. Reusing the same
+// session keeps the model's whole history, so it reviews what it actually did.
+export const WRAP_UP_PROMPT =
+  'Your testing budget is spent. Do not run any more tools — any tool call you ' +
+  'make now will be denied. Write your review of the harness now, covering ' +
+  'whatever you managed to test.';
+
+// The wrap-up turn's own ceiling. Much smaller than the testing phase: it is one
+// message, and a model that cannot produce it in two minutes is not going to.
+export const WRAP_UP_TIMEOUT_MS = 120_000;
+
+// Default wall-clock ceiling for the TESTING phase. Raised from 900_000 because
+// at the 8.6s/step measured on 2026-08-10, 900s buys ~105 steps — which made the
+// deadline, not BATTERY_STEP_BUDGET, the binding constraint. Now that a blown
+// deadline triggers a wrap-up turn instead of killing the run, the raise costs
+// little and leaves real testing room before wrap-up.
+export const BATTERY_TIMEOUT_MS = 1_200_000;
 
 // Fix (2026-08-10 incident): HarnessSession passes `harness.limits?.maxTokens`
 // straight through to streamText's `maxOutputTokens` (harness-session.ts) with
@@ -233,6 +261,15 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   const stopReasons: string[] = [];
   const toolsUsed = new Set<string>();
 
+  // Set for the duration of the wrap-up turn (declared above the
+  // HarnessSession so both decide() and askUser below can close over it).
+  // While true, every tool call is denied and every max_steps gate is
+  // denied, so the model cannot resume testing — it answers in prose or not
+  // at all. WHY a second turn instead of a bigger budget: see WRAP_UP_PROMPT's
+  // WHY comment above.
+  let wrappingUp = false;
+  let wrapUpReason: BatteryRun['wrapUpReason'];
+
   const session = new HarnessSession(
     {
       sessionId: `review-${Date.now()}`,
@@ -240,17 +277,23 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       harness: BATTERY_HARNESS,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
       tools: CORE_TOOLS,
-      // Auto-approve everything decide() is consulted about. WHY this does NOT
-      // by itself hold the fixture jail: the tool-layer path guard
+      // Auto-approve everything decide() is consulted about — EXCEPT during the
+      // wrap-up turn, where every tool call is refused so the model must answer.
+      // NOTE: PermissionDecision (shared/permission-types.ts:17) carries only
+      // `action` and `denyListed` — there is no message field, so the model sees
+      // the generic tool-denial result. WRAP_UP_PROMPT is what explains why.
+      // (The fixture jail does NOT rest on this — see askUser below.) WHY this
+      // does NOT by itself hold the fixture jail: the tool-layer path guard
       // (harness-session.ts checkPathGuard, called from runOneTool step 3) sits
       // BELOW decide and, for any path-subject tool (Read/Write/Edit) pointed
       // outside the session cwd, forces `{ action: 'ask' }` BEFORE decide() is
       // even called (harness-session.ts:1469-1471 — `externalAsk ? {action:'ask'} :
-      // decide()`). So decide() being fully permissive is irrelevant to those
-      // calls; askUser below is what actually has to hold the line.
+      // decide()`). So decide() being fully permissive (outside wrap-up) is
+      // irrelevant to those calls; askUser below is what actually has to hold
+      // the line.
       // Plan correction: this field IS spelled `action` (PermissionDecision,
       // shared/permission-types.ts:17-22) — unlike askUser below, which is not.
-      decide: async () => ({ action: 'allow', denyListed: false }),
+      decide: async () => ({ action: wrappingUp ? 'deny' : 'allow', denyListed: false }),
       // Deterministic answerer for the ONE ask kind this fixture is meant to
       // reach: a genuine AskUserQuestion tool call. WHY that matters —
       // AskUserQuestion was the one tool no reviewer reached (Kimi K3 finding
@@ -303,10 +346,13 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
         asks++;
         if (req.toolName === 'max_steps') {
           stepGates++;
+          // During wrap-up there is no more testing to fund: deny outright.
+          if (wrappingUp) return { behavior: 'deny' };
           // Bounded allowance (see STEP_GATE_ALLOWANCE's WHY comment above
           // the function for the value and its justification). Past the cap,
-          // deny — the turn ends exactly as it does today, which is the
-          // correct outcome for a genuine runaway.
+          // deny — the turn ends with stopReason 'max_steps', which is what
+          // sends the run to the wrap-up turn below instead of losing the
+          // review outright (the correct outcome for a genuine runaway).
           return stepGates <= STEP_GATE_ALLOWANCE
             ? { behavior: 'allow' }
             : { behavior: 'deny' };
@@ -349,63 +395,55 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     }
   });
 
-  const timeoutMs = opts.timeoutMs ?? 900_000;
-  // Deviation from the brief: capture the timer handle and clearTimeout it in
-  // the finally block below. The brief only `.unref()`s it, which keeps the
-  // PROCESS from hanging but still leaves the timer armed for up to
-  // `timeoutMs` after a normal (non-timeout) finish — harmless in the real CLI
-  // but a needless dangling timer across every fast test in this file.
-  let timer!: NodeJS.Timeout;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Battery timed out after ${timeoutMs}ms`)), timeoutMs);
-    timer.unref();
-  });
-
+  const timeoutMs = opts.timeoutMs ?? BATTERY_TIMEOUT_MS;
   // Deviation from the brief's variable name only: `error` (not `err`) is the
   // outer binding read by the outcome/return logic below; the caught value is
   // still carried through as-is, never replaced with a guessed cause.
   let error: string | undefined;
+
+  // The deadline INTERRUPTS rather than rejecting. interrupt()
+  // (harness-session.ts:1598) ends the in-flight turn cleanly and lets send()
+  // resolve with everything gathered — the old Promise.race abandoned a live
+  // promise and discarded the whole run, which is how round 5 lost four
+  // models. `.unref()` keeps the process from hanging on this timer; it fires
+  // at most once (the testing turn either finishes and clears it below, or
+  // this callback runs and there is nothing left to clear it early).
+  const deadline = setTimeout(() => {
+    wrapUpReason ??= 'timeout';
+    session.interrupt();
+  }, timeoutMs);
+  deadline.unref();
+
   // WHY: captured immediately before send() so the session-error scan below
-  // can be scoped to THIS turn only. A later task adds a second send() (a
-  // wrap-up turn) on the same session, which appends more events to this same
+  // can be scoped to THIS turn only. The wrap-up turn below is a second
+  // send() on this same session, which appends more events to this same
   // array — an unscoped scan would find a 'session-error' left over from a
-  // failed first turn and mislabel a wrap-up turn that actually succeeded.
+  // failed first turn and mislabel a wrap-up turn that actually succeeded
+  // (or vice versa).
   const eventsBeforeSend = events.length;
   try {
-    await Promise.race([session.send(BATTERY_PROMPT), timeout]);
+    await session.send(BATTERY_PROMPT);
   } catch (err) {
-    // Salvage, don't discard. A provider error or a blown deadline still leaves
-    // a transcript worth writing — round 5 threw four of them away and left the
-    // failures undiagnosable. The REAL message is carried through, never a guess.
-    // NOTE: this still races against a fixed timeoutMs promise (unchanged from
-    // before this fix) — a genuinely stuck model still burns the full window
-    // before this catch even runs. A later task replaces the race with an
-    // interrupt-based deadline; this task only stops the RESULT from being
-    // thrown away once the wait ends one way or another.
+    // Salvage, don't discard. A provider error still leaves a transcript
+    // worth writing — round 5 threw four of them away and left the failures
+    // undiagnosable. The REAL message is carried through, never a guess.
     error = err instanceof Error ? err.message : String(err);
   } finally {
-    clearTimeout(timer);
-    // Cleanup runs on the failure path too — a caught send() error (provider
-    // error, or the timeout above) still tears down the session and fixture.
-    session.destroy();
-    if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    clearTimeout(deadline);
   }
 
   // Deviation from the brief's snippet, found by running its own test: a
   // provider error that survives HarnessSession's internal retries does NOT
   // reject send() at all — beginTurn's own catch (harness-session.ts:1176-1188)
   // swallows it and emits a 'session-error' transcript event instead, then
-  // returns normally. So the Promise.race catch above only ever fires for the
-  // timeout; a mid-run model error would otherwise fall through as a false
-  // 'no-review' with the real failure silently dropped, defeating the whole
-  // point of this task. Checked only when the race itself didn't already
-  // report an error, so a genuine timeout keeps its own message.
+  // returns normally. So the try/catch above only ever fires for a genuinely
+  // thrown error; a mid-run model error would otherwise fall through as a
+  // false 'no-review' with the real failure silently dropped, defeating the
+  // whole point of this task. Checked only when send() itself didn't already
+  // report an error, so a genuine throw keeps its own message.
   if (!error) {
     // WHY: scan only the events THIS send() produced (events.slice, not the
-    // full array). This scan MUST stay turn-scoped — a later turn on the same
-    // session appends to this same `events` array, so an unscoped scan would
-    // attribute an earlier turn's error to a later turn that actually
-    // succeeded, mislabeling a recovered run as 'error'.
+    // full array) — see eventsBeforeSend's WHY comment above.
     const sessionError = events
       .slice(eventsBeforeSend)
       .find((e) => e.type === 'session-error');
@@ -417,6 +455,58 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // guess at why the error occurred.
     if (sessionError) error = sessionError.data.text ?? 'session error (no message provided)';
   }
+
+  // A denied budget gate ends the turn with stopReason 'max_steps'
+  // (harness-session.ts:1102). WHY read the stopReason rather than set a flag
+  // in askUser: at the callback a denied gate and a turn that was about to
+  // finish anyway are indistinguishable — the stopReason is the only place
+  // the difference is recorded. `!wrapUpReason` guards against overwriting a
+  // 'timeout' the deadline callback above already set; `!error` skips this
+  // when the turn threw instead of finishing (an error takes priority — see
+  // the outcome expression below).
+  if (!wrapUpReason && !error && stopReasons.at(-1) === 'max_steps') wrapUpReason = 'budget';
+
+  // Everything the testing turn emitted. The wrap-up review is sliced from
+  // here onward so trailing narration from the interrupted turn cannot leak
+  // into it (see lastToolResultIndex's WHY comment below).
+  let sliceFrom = 0;
+
+  if (wrapUpReason) {
+    wrappingUp = true;
+    sliceFrom = events.length;
+    // Own marker + own deadline, same reasoning as the testing turn's above:
+    // this is a SECOND send() on the same session, appending to the same
+    // `events` array, so its error scan must stay scoped to just this turn.
+    const wrapEventsBeforeSend = events.length;
+    const wrapDeadline = setTimeout(() => session.interrupt(), WRAP_UP_TIMEOUT_MS);
+    wrapDeadline.unref();
+    try {
+      await session.send(WRAP_UP_PROMPT);
+    } catch (err) {
+      // A failed wrap-up is not fatal: the testing transcript is still worth
+      // writing, and outcome stays 'wrapped-up' with an empty review.
+      error ??= err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(wrapDeadline);
+    }
+    // Same non-rejecting-send() gap as the testing turn: a wrap-up-turn
+    // model error surfaces as a 'session-error' event, not a thrown
+    // exception. Scoped to wrapEventsBeforeSend, not eventsBeforeSend, so a
+    // testing-turn error that already resolved above is never re-attributed
+    // to a wrap-up turn that actually succeeded.
+    if (!error) {
+      const wrapSessionError = events
+        .slice(wrapEventsBeforeSend)
+        .find((e) => e.type === 'session-error');
+      if (wrapSessionError) error = wrapSessionError.data.text ?? 'session error (no message provided)';
+    }
+  }
+
+  // Moved out of the testing turn's finally block: destroying the session or
+  // removing the fixture before the wrap-up turn runs would make its send()
+  // fail outright (no session left to send on, no cwd left for its tools).
+  session.destroy();
+  if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
 
   // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
   // throughout the WHOLE run, not one-per-message — the old comment here
@@ -439,26 +529,39 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // tool-result to anchor on. `lastToolResultIndex` is then -1, and `i > -1`
   // is true for every index, so the filter falls back to "every assistant-text
   // event" — which in a no-tool-call run IS the whole (and only) message.
-  const lastToolResultIndex = events.reduce(
+  //
+  // Only the wrap-up turn's events when one ran (sliceFrom > 0); the whole
+  // run otherwise. `lastToolResultIndex` below is LOCAL to this window, which
+  // is what keeps the interrupted testing turn's trailing narration
+  // ("Now let me try one more thing...") out of the wrapped-up review.
+  const reviewWindow = events.slice(sliceFrom);
+  const lastToolResultIndex = reviewWindow.reduce(
     (last, e, i) => (e.type === 'tool-result' ? i : last),
     -1,
   );
-  const review = events
+  const review = reviewWindow
     .filter((e, i) => e.type === 'assistant-text' && i > lastToolResultIndex)
     .map((e) => e.data.text ?? '')
     .join('')
     .trim();
 
-  // 'wrapped-up' is not produced here — no wrap-up turn exists yet (see the
-  // WHY comment on BatteryRun.outcome above); an error takes priority over a
-  // review the model may have partially produced before failing, since the
-  // failure is the fact a caller most needs to see first.
-  const outcome: BatteryOutcome = error ? 'error' : review ? 'complete' : 'no-review';
+  // wrapUpReason takes priority: a wrap-up turn that itself errors still
+  // reports 'wrapped-up' (with an empty review, per the brief's WHY comment
+  // above the wrap-up try/catch) — the run was cut short and asked for its
+  // review, which is the fact a caller most needs to see, over the
+  // secondary fact that the wrap-up attempt also failed. Otherwise an error
+  // takes priority over a review the model may have partially produced
+  // before failing.
+  const outcome: BatteryOutcome =
+    wrapUpReason ? 'wrapped-up'
+    : error ? 'error'
+    : review ? 'complete'
+    : 'no-review';
 
   return {
     label: opts.label, modelId: opts.modelId, review, events,
     toolCalls, asks, stepGates, fixtureRoot,
-    outcome, error,
+    outcome, wrapUpReason, error,
     metrics: {
       wallClockMs: Date.now() - startedAt,
       toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,

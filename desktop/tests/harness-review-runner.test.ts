@@ -4,7 +4,7 @@ import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT } from '../src/main/harness/review/run-battery';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
@@ -534,28 +534,116 @@ describe('runBattery', () => {
     // asks in the run (no AskUserQuestion, no external-path Write), so `asks`
     // must equal `stepGates` exactly.
     expect(run.asks).toBe(STEP_GATE_ALLOWANCE);
+    // Pins the distinction from the wrap-up-turn tests below: an
+    // allowance-sized run finishes on its own and never wraps up.
+    expect(run.outcome).toBe('complete');
+    expect(run.wrapUpReason).toBeUndefined();
   });
+});
 
-  it('denies the max_steps gate once STEP_GATE_ALLOWANCE is exhausted, ending the turn', async () => {
-    // One MORE window than the allowance — the (STEP_GATE_ALLOWANCE + 1)th
-    // gate hit must be denied, which ends the turn (harness-session.ts:1102)
-    // before any further text is ever produced. No trailing text step is
-    // scripted, because the run must never reach one.
-    const steps: ScriptStep[] = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
+describe('wrap-up turn', () => {
+  function toolCallSteps(count: number): ScriptStep[] {
+    // Alternating offsets so consecutive calls are never byte-identical — that
+    // would trip the doom_loop guard (harness-session.ts:1432), which is a
+    // different mechanism and would muddy what this test proves.
+    return Array.from({ length: count }, (_, i) => ({
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: (i % 2) + 1 } }],
+    }));
+  }
+
+  it('asks for the review when the step budget is exhausted, instead of ending the turn empty', async () => {
+    // One window more than the allowance permits, so the last gate is denied and
+    // the testing turn ends on stopReason 'max_steps'. The trailing text step is
+    // the WRAP-UP turn's response — reached only if a second send() happens.
+    //
+    // The model is hoisted OUT of the factory on purpose: modelFactory is called
+    // once per send() (harness-session.ts:1020), so an inline
+    // `async () => scriptModel(steps)` would hand the wrap-up turn a fresh model
+    // replaying from step 0 — it would call tools again, not answer.
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      { text: 'Review written after being asked to wrap up.' },
+    ]);
     const run = await runBattery({
-      modelFactory: async () => scriptModel(steps) as any,
-      modelId: 'fake/model',
-      label: 'Fake',
-      timeoutMs: 30_000,
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
 
-    // The genuine-runaway outcome is preserved: a gate hit past the cap still
-    // ends the turn with no review, exactly like the pre-fix "deny everything"
-    // behavior did for the FIRST hit.
-    expect(run.review).toBe('');
-    expect(run.toolCalls).toBe((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
-    expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE + 1);
-    expect(run.asks).toBe(STEP_GATE_ALLOWANCE + 1);
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.wrapUpReason).toBe('budget');
+    expect(run.review).toBe('Review written after being asked to wrap up.');
+    expect(run.metrics.stopReasons).toContain('max_steps');
+  });
+
+  it('denies tool calls during the wrap-up turn so the model cannot resume testing', async () => {
+    const model = scriptModel([
+      ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
+      // The model tries to keep testing on the wrap-up turn...
+      { toolCalls: [{ name: 'Bash', input: { command: 'echo still going' } }] },
+      // ...and only then answers.
+      { text: 'Fine, here is the review.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.review).toBe('Fine, here is the review.');
+    // The Bash call was ATTEMPTED (it is in the transcript) but denied, so it
+    // never reached the tool layer and never ran a command. harness-session.ts:1556
+    // returns `{ isError: true }` for a denied decide, and :1131 emits it as a
+    // tool-result carrying toolName.
+    const bashResults = run.events.filter(
+      (e) => e.type === 'tool-result' && e.data.toolName === 'Bash',
+    );
+    // Assert non-empty FIRST — `.every` on an empty array is vacuously true, so
+    // without this the test would also pass if the wrap-up turn never ran.
+    expect(bashResults.length).toBeGreaterThan(0);
+    expect(bashResults.every((e) => e.data.isError)).toBe(true);
+  });
+
+  it('takes only the wrap-up turn text as the review, not narration from the interrupted turn', async () => {
+    // The testing turn emits trailing narration after its last tool call. Under
+    // the old single-turn extractor that text would BE the review. It must not
+    // leak into the wrapped-up review — this is the exact defect the
+    // "text after the last tool result" rule was written to fix.
+    const steps = toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET);
+    steps[steps.length - 1] = {
+      text: 'Now let me try one more thing...',
+      toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: 9 } }],
+    };
+    const model = scriptModel([...steps, { text: 'The actual review.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.review).toBe('The actual review.');
+    expect(run.review).not.toContain('one more thing');
+  });
+
+  it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {
+    // 60 windows of scripted tool calls, so the run never runs out of script
+    // before the deadline can fire (per the task brief: never lower the
+    // scripted step count to fix flakiness here). timeoutMs is deliberately
+    // tight: this fake model has no real per-step latency, so
+    // STEP_GATE_ALLOWANCE's own natural 'max_steps' denial (measured ~1.1s
+    // for 200 steps against this fixture) would otherwise win the race and
+    // report 'budget' instead of the 'timeout' this test exists to prove —
+    // 200ms leaves a wide margin under that. The deadline must interrupt the
+    // testing turn and go to wrap-up, NOT reject.
+    const model = scriptModel([
+      ...toolCallSteps(BATTERY_STEP_BUDGET * 60),
+      { text: 'Review after the clock ran out.' },
+    ]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 200,
+    });
+
+    expect(run.wrapUpReason).toBe('timeout');
+    expect(run.outcome).toBe('wrapped-up');
+    expect(run.error).toBeUndefined();   // a deadline is not an error any more
   });
 });
 
