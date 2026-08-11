@@ -612,6 +612,32 @@ body[data-mode="buddy-chat"] #theme-bg {
    and translateX percentages are relative to the element's OWN width, so -100%
    parks it fully off the left edge and 285.7% (100/35) clears the right edge.
    Visually identical to the old `left` sweep. */
+/* Chat/terminal toggle motion has two meanings. A user selection slides between
+   stable endpoints; a font/theme/zoom correction only repairs geometry and must
+   snap. The component owns the temporary data attribute so CSS remains the sole
+   transition authority instead of JS rewriting inline transition strings. */
+.wide-view-toggle[data-geometry-syncing='true'] .wide-view-toggle-indicator {
+  transition-duration: 0ms;
+}
+
+/* Reduced Effects and the OS preference both disable the toggle's spatial
+   movement. Keep these declaration bodies equivalent: one is YouCoded's own
+   setting, the other is the platform accessibility preference. */
+[data-reduced-effects] .wide-view-toggle-indicator {
+  transition-duration: 0ms;
+}
+[data-reduced-effects] .wide-view-toggle-label {
+  transition-duration: 0ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wide-view-toggle-indicator {
+    transition-duration: 0ms;
+  }
+  .wide-view-toggle-label {
+    transition-duration: 0ms;
+  }
+}
+
 @keyframes model-load-sweep {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(285.7%); }
