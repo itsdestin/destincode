@@ -38,6 +38,10 @@ export interface CapabilityProfile {
    *  with a provider error, a wrong `false` only means the model is told it
    *  cannot view the image. Full metadata sourcing is M6 item 2. */
   supportsVision: boolean;
+  /** Provider can carry an image INSIDE a tool result (Anthropic tool_result
+   *  blocks). Everything else gets the wire-adapter split. Provider-type fact,
+   *  not a model fact — the registry never overrides it. */
+  nativeImageToolResults: boolean;
 }
 
 export type ProfileProviderType =
@@ -60,6 +64,11 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   // of CLOUD_DEFAULT (tests, future call sites) cannot accidentally claim a
   // capability the model may not have.
   supportsVision: false,
+  // Placeholder like supportsVision above: resolveProfile ALWAYS spreads the
+  // real `d.providerType === 'anthropic'` check over this. False by default so
+  // a direct use of CLOUD_DEFAULT can't accidentally claim the one capability
+  // that is exclusive to a single provider.
+  nativeImageToolResults: false,
 };
 
 function cloudVariant(t: ProfileProviderType): PromptVariant {
@@ -184,6 +193,10 @@ function localFallback(ctx: number | null): BehavioralProfile {
     supportsParallelToolCalls: false,
     constrainToolArgs: true,
     supportsTools: true,   // assume yes; the registry marks known tool-less models false
+    // Always false for local-engine — this is a PROVIDER-TYPE fact (only direct
+    // Anthropic can carry an image inside a tool result), never a model fact, so
+    // there is no local model, known or unknown, for which this could be true.
+    nativeImageToolResults: false,
   };
 }
 
@@ -223,12 +236,18 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
   // FRONTIER-provider shortcut — see mcpBudgetSizing's header comment.
   const mcpToolBudgetTokens = mcpBudgetSizing(d, registry);
   const supportsVision = visionFor(d, registry);
+  // PROVIDER-TYPE fact, not a model fact: only the direct-Anthropic wire can
+  // carry an image inside a tool_result block. Computed here (not read off
+  // any base/registry object) and spread onto every return site below so the
+  // known-model registry — which has no field for this — can never override
+  // it either way.
+  const nativeImageToolResults = d.providerType === 'anthropic';
   if (d.providerType !== 'local-engine') {
-    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision };
+    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
   }
   const base = localFallback(d.contextLength);
   const known = matchKnownModel(d.modelId, registry);   // LAYER 2 overlay
-  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision };
+  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
   return {
     maxToolPresentation: known.maxToolPresentation ?? base.maxToolPresentation,
     promptVariant: known.promptVariant ?? base.promptVariant,
@@ -239,5 +258,6 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     ...sizing,
     mcpToolBudgetTokens,
     supportsVision,
+    nativeImageToolResults,
   };
 }

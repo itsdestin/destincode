@@ -37,6 +37,7 @@ const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
+import { adaptForWire } from './wire-adapter';
 import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
@@ -943,7 +944,10 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     let bounded = span;
     while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
-    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
+    // Summaries are text about text: images are ALWAYS stripped here, regardless
+    // of the session's actual profile — the summarizer may be a non-vision local
+    // model, and pixels add nothing to a compression prompt.
+    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...adaptForWire(bounded, { nativeImageToolResults: false, supportsVision: false }), { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
 
     // Race iterator.next() against the abort signal AND a 30s wall-clock floor —
     // the same hardening consumeStep uses, since a stalled local stream honors
@@ -1339,7 +1343,15 @@ export class HarnessSession extends EventEmitter {
     const streamArgs: any = {
       model,
       system: this.systemText,
-      messages: this.fitToContext(this.history),
+      // Wire adaptation runs on the FITTED view, per request, not once at push
+      // time — this is what closes the mid-session model-swap leak: an image
+      // pushed to history under a vision model is stripped here at build time
+      // if the NEXT request targets a model that can't carry or can't see it,
+      // rather than riding along stale from whenever it was written.
+      messages: adaptForWire(this.fitToContext(this.history), {
+        nativeImageToolResults: this.profile.nativeImageToolResults,
+        supportsVision: this.profile.supportsVision,
+      }),
       maxOutputTokens: this.opts.harness.limits?.maxTokens,
       abortSignal: this.abort!.signal,
       // Fix (2026-08-10 incident): streamText's DEFAULT onError is

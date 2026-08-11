@@ -73,6 +73,31 @@ describe('effectiveContextForModel', () => {
 // the Skill tool's catalog (which rides the tool schema on EVERY turn) is
 // affordable at all, and how many tokens a single injection may occupy.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Task 6b — nativeImageToolResults is a PROVIDER-TYPE fact (can this wire
+// carry an image inside a tool_result block?), not a model fact. Only the
+// direct-Anthropic provider can; every other provider type — including a
+// KNOWN local model, whose registry entry has no such field to override it
+// with — gets the wire-adapter split instead. Covers every ProfileProviderType
+// so a new provider type added later must be triaged here, not silently
+// default to whatever object spread happens to produce.
+// ---------------------------------------------------------------------------
+describe('nativeImageToolResults (Task 6b)', () => {
+  it('is true only for the direct Anthropic provider', () => {
+    expect(resolveProfile({ providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 }).nativeImageToolResults).toBe(true);
+    for (const providerType of ['openai', 'google', 'openrouter', 'openai-compatible', 'local-engine'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 32_768 }).nativeImageToolResults, providerType).toBe(false);
+    }
+  });
+
+  it('a KNOWN local model cannot override it — the registry has no such field', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).nativeImageToolResults).toBe(false);
+  });
+});
+
 describe('capability profile — injection sizing (M3 item 5)', () => {
   it('a large local window gets the skill catalog and a generous budget', () => {
     const p = resolveProfile(local('qwen3.6-122b', 128_000));
