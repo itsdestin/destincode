@@ -365,6 +365,12 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // outer binding read by the outcome/return logic below; the caught value is
   // still carried through as-is, never replaced with a guessed cause.
   let error: string | undefined;
+  // WHY: captured immediately before send() so the session-error scan below
+  // can be scoped to THIS turn only. A later task adds a second send() (a
+  // wrap-up turn) on the same session, which appends more events to this same
+  // array — an unscoped scan would find a 'session-error' left over from a
+  // failed first turn and mislabel a wrap-up turn that actually succeeded.
+  const eventsBeforeSend = events.length;
   try {
     await Promise.race([session.send(BATTERY_PROMPT), timeout]);
   } catch (err) {
@@ -395,8 +401,21 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // point of this task. Checked only when the race itself didn't already
   // report an error, so a genuine timeout keeps its own message.
   if (!error) {
-    const sessionError = events.find((e) => e.type === 'session-error');
-    if (sessionError) error = sessionError.data.text;
+    // WHY: scan only the events THIS send() produced (events.slice, not the
+    // full array). This scan MUST stay turn-scoped — a later turn on the same
+    // session appends to this same `events` array, so an unscoped scan would
+    // attribute an earlier turn's error to a later turn that actually
+    // succeeded, mislabeling a recovered run as 'error'.
+    const sessionError = events
+      .slice(eventsBeforeSend)
+      .find((e) => e.type === 'session-error');
+    // Defensive fallback: `data.text` is typed as possibly undefined. If a
+    // 'session-error' event is ever emitted without text, fall back to a
+    // factual placeholder rather than silently losing the error (which would
+    // mislabel the run 'complete' or 'no-review' despite a real failure).
+    // The fallback states only that a message was missing — it does not
+    // guess at why the error occurred.
+    if (sessionError) error = sessionError.data.text ?? 'session error (no message provided)';
   }
 
   // Defect 1 fix: `assistant-text` events are streaming DELTAS emitted
