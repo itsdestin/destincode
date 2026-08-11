@@ -65,3 +65,34 @@ describe('native context chip — how FULL the window is', () => {
     expect(chips.inputTokens).toBe(100);         // the other chips still work
   });
 });
+
+// M4 Task 1 (plan: docs/active/plans/2026-08-10-m4-reliability-tranche.md).
+// The In/Out and Speed chips got a `?? nativeChips` fallback on 2026-07-28; the
+// two cache chips beside them did not, so they rendered '--' forever in native
+// sessions while the harness shipped the numbers on every turn-complete.
+describe('selectNativeStatusChips — cache fields', () => {
+  it('passes cache tokens through so the Cached/Hit chips can use them', () => {
+    const chips = selectNativeStatusChips(
+      { inputTokens: 100, outputTokens: 20, cacheReadTokens: 900, cacheCreationTokens: 100 },
+      8_000,
+    );
+    expect(chips?.cacheReadTokens).toBe(900);
+    expect(chips?.cacheCreationTokens).toBe(100);
+  });
+
+  it('reports null rather than 0 when the provider sent no cache data', () => {
+    // 0 and "absent" are different facts: 0 reads is a real 0% hit rate, absent
+    // must stay '--'. Collapsing them would invent a statistic.
+    const chips = selectNativeStatusChips({ inputTokens: 100, outputTokens: 20 }, 8_000);
+    expect(chips?.cacheReadTokens).toBeNull();
+    expect(chips?.cacheCreationTokens).toBeNull();
+  });
+
+  it('keeps a real zero distinguishable from absent', () => {
+    const chips = selectNativeStatusChips(
+      { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 500 },
+      8_000,
+    );
+    expect(chips?.cacheReadTokens).toBe(0);
+  });
+});
