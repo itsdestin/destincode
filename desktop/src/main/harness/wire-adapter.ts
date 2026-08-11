@@ -26,11 +26,12 @@ const OMITTED_TEXT = '[image omitted: this model cannot view images]';
 // Forward-pointing on purpose: classic Cline found "(see the following user
 // message...)" measurably outperforms unexplained placeholder text. Called
 // once per image, AT that image's own position in the flattened text (so a
-// [file, text] result still reads "the image came first") — always with
-// n=1 from that call site. The plural branch stays for correctness in case
-// a future caller batches several images into one note.
-const forwardText = (n: number) =>
-  `(${n === 1 ? 'the image' : `${n} images`} could not be embedded here — attached in the next message, sent on your behalf)`;
+// [file, text] result still reads "the image came first"). Carries the same
+// `label(f)` the follow-up message's "Image: <label>" part uses, so a
+// multi-image result's placeholders map to their attachment by name instead
+// of leaving the model to infer the mapping from message order alone.
+const forwardText = (label: string) =>
+  `(the image "${label}" could not be embedded here — attached in the next message as "Image: ${label}", sent on your behalf)`;
 // "(s)" is deliberate, not lazy: this frames a synthetic message that may
 // follow one tool-result with one image, or several tool-results each
 // contributing images, and the wording must stay true in both cases.
@@ -156,8 +157,15 @@ export function adaptForWire(messages: ModelMessage[], caps: WireImageCaps): Mod
         if (caps.nativeImageToolResults) return part;
         if (!fileCount) {
           // No 'file' part exists on this branch, so the file renderer is
-          // never invoked — only present to satisfy renderFlat's signature.
-          return { ...part, output: textOutput(renderFlat(flat, () => '')) };
+          // never invoked — but if that invariant ever broke, a renderer
+          // that quietly returns '' would produce a blank line with zero
+          // trace. Throw instead so the failure is loud, not silent.
+          return {
+            ...part,
+            output: textOutput(renderFlat(flat, () => {
+              throw new Error('unreachable: no file parts on the flatten branch');
+            })),
+          };
         }
 
         for (const p of flat) {
@@ -179,8 +187,11 @@ export function adaptForWire(messages: ModelMessage[], caps: WireImageCaps): Mod
         }
         // Each image's forward-pointing note sits where the image itself
         // sat, so a [file, text] result still reads "the image came first"
-        // instead of silently reordering every image to the end.
-        return { ...part, output: textOutput(renderFlat(flat, () => forwardText(1))) };
+        // instead of silently reordering every image to the end. Labeled
+        // with the same `label(f)` the follow-up message's "Image: <label>"
+        // part carries, so a multi-image result maps note-to-attachment by
+        // name instead of leaving the model to infer it from order.
+        return { ...part, output: textOutput(renderFlat(flat, (f) => forwardText(label(f)))) };
       });
       out.push({ ...(m as object), content: newContent } as ModelMessage);
       if (followUpParts.length) {

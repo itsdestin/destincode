@@ -39,6 +39,7 @@ describe('adaptForWire', () => {
     expect(output.type).toBe('text');                       // openai-compatible must NEVER see 'content'
     expect(output.value).toContain('Read image a.png');
     expect(output.value).toContain('next message');          // forward-pointing placeholder (classic Cline)
+    expect(output.value).toContain('the image "Read" could not be embedded here'); // split branch note is labeled, matching the follow-up's "Image: Read" part
     expect(out[1].role).toBe('user');
     const parts = (out[1] as any).content;
     expect(parts[0].type).toBe('text');                      // provenance framing, not a bare image
@@ -66,6 +67,24 @@ describe('adaptForWire', () => {
     expect(parts[4]).toEqual({ type: 'file', mediaType: 'image/png', data: Buffer.from('b') });
   });
 
+  it('split path: an image part that is NOT last in output.value still renders in source order (positional flatten, not append-at-the-end)', () => {
+    // Every other image-bearing fixture in this file puts the `file` part
+    // LAST, so a flatten that collects files and texts into two separately
+    // ordered lists and appends the image note at the end would pass every
+    // other test unnoticed. This fixture puts the image FIRST, so an
+    // append-at-the-end flatten and a positional (source-order) flatten
+    // produce different, distinguishable output.
+    const leadingImageMsg = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId: 't7', toolName: 'Fetch', output: { type: 'content', value: [img('x'), { type: 'text', text: 'trailing' }] } }],
+    } as any;
+    const out = adaptForWire([leadingImageMsg], { nativeImageToolResults: false, supportsVision: true });
+    const output = (out[0] as any).content[0].output;
+    // Exact string, not toContain: pins BOTH the note's wording AND that it
+    // renders before 'trailing', matching the image's source position.
+    expect(output.value).toBe('(the image "Fetch" could not be embedded here — attached in the next message as "Image: Fetch", sent on your behalf)\ntrailing');
+  });
+
   it('split path: a non-"data" file variant (url) with a filename passes its data through unchanged and labels by filename', () => {
     // Regression guard for the safe-unwrap fix: the only image fixture above
     // (`img()`) always sets data:{type:'data',...} and never sets `filename`,
@@ -84,6 +103,8 @@ describe('adaptForWire', () => {
       content: [{ type: 'tool-result', toolCallId: 't5', toolName: 'Fetch', output: { type: 'content', value: [{ type: 'text', text: 'fetched' }, urlImg] } }],
     } as any;
     const out = adaptForWire([urlImgToolMsg], { nativeImageToolResults: false, supportsVision: true });
+    const output = (out[0] as any).content[0].output;
+    expect(output.value).toContain('the image "diagram.png" could not be embedded here'); // split branch note reads filename too, not toolName
     const parts = (out[1] as any).content;
     expect(parts[1]).toEqual({ type: 'text', text: 'Image: diagram.png' }); // label reads filename, not toolName
     expect(parts[2]).toEqual({
@@ -108,6 +129,54 @@ describe('adaptForWire', () => {
     expect(output.value).toContain('before');
     expect(output.value).toContain('after');
     expect(output.value).toContain("unsupported content type 'file-data'");
+  });
+
+  it('split path: an unrecognized content-part type also gets the shared named placeholder on the split branch (not just the flatten branch)', () => {
+    // The flatten-branch test above covers 'other' kind parts; this pins
+    // that the split branch shares the SAME renderFlat/renderFile plumbing
+    // rather than the sharing being assumed from code shape alone.
+    const weirdSplitMsg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 't9',
+        toolName: 'Fetch',
+        output: { type: 'content', value: [{ type: 'text', text: 'before' }, img('x'), { type: 'file-data', someField: 1 }] },
+      }],
+    } as any;
+    const out = adaptForWire([weirdSplitMsg], { nativeImageToolResults: false, supportsVision: true });
+    const output = (out[0] as any).content[0].output;
+    expect(output.value).toContain('before');
+    expect(output.value).toContain("unsupported content type 'file-data'");
+  });
+
+  it('non-vision model: two images in one tool result each get their own NAMED placeholder line (not one unnamed trailing line)', () => {
+    // The single-image non-vision fixture above can't distinguish "one line
+    // per image, named by filename ?? toolName" from the old behavior (one
+    // unnamed trailing line, regardless of image count) — both satisfy a
+    // toContain('[image omitted') check on a 1-image fixture. Two images
+    // with distinct filenames pins both properties at once.
+    const twoFileMsg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 't8',
+        toolName: 'Fetch',
+        output: {
+          type: 'content',
+          value: [
+            { type: 'text', text: 'two shots' },
+            { ...img('a'), filename: 'first.png' },
+            { ...img('b'), filename: 'second.png' },
+          ],
+        },
+      }],
+    } as any;
+    const out = adaptForWire([twoFileMsg], { nativeImageToolResults: true, supportsVision: false });
+    const output = (out[0] as any).content[0].output;
+    expect(output.value).toContain('[image omitted: first.png — this model cannot view images]');
+    expect(output.value).toContain('[image omitted: second.png — this model cannot view images]');
+    expect(JSON.stringify(out)).not.toContain('"data"');
   });
 
   it('non-vision model: every pixel is replaced by a named placeholder, nothing is sent', () => {
