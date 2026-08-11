@@ -7,7 +7,11 @@
 // and doom_loop surface as permission ASKS (askUser), never as new events.
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { HarnessSession } from '../src/main/harness/harness-session';
+import { MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN } from '../src/main/harness/image-support';
 import type { HarnessManifest } from '../src/shared/harness-manifest';
 import type { TranscriptEvent } from '../src/shared/types';
 import type { PermissionDecision } from '../src/shared/permission-types';
@@ -617,5 +621,138 @@ describe('turn-complete tokensPerSecond', () => {
     const usage = events.find((e) => e.type === 'turn-complete')!.data.usage as any;
     expect(Number.isFinite(usage.tokensPerSecond)).toBe(true);
     expect(usage.tokensPerSecond).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Image tool-results (2026-08-11 spec, Task 5): the driver turns a tool's
+// promised image PATHS (ToolResultPayload.images, Task 4) into a canonical
+// content-type tool-result output, charging a per-turn budget and deduping
+// repeat fetches of an unchanged file — every skip gets a NAMED note in the
+// same text the model and transcript both see, so promise and delivery can
+// never disagree.
+// ---------------------------------------------------------------------------
+describe('image tool-results (2026-08-11 spec)', () => {
+  // Real files on disk: resolveToolImages calls fs.statSync/readFileSync
+  // directly (no injection seam like history-rebuild's fakeReader), so the
+  // dedupe/vanish contracts need a real mtime and a real disappearance.
+  function tmpImage(dir: string, name: string): string {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3])); // bytes are arbitrary — readImageFromDisk never decodes
+    return p;
+  }
+
+  it('a delivered image lands as a content-type output AND its path on the event', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-img-'));
+    const imgPath = tmpImage(dir, 'x.png');
+    const read = fakeTool('Read', { onExecute: () => ({ text: 'Read image', images: [imgPath] }) });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: imgPath }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    // findLast is ES2023; this file's tsconfig lib target doesn't guarantee it
+    // (brief note) — manual reverse-scan via filter().pop() instead.
+    const history = (session as any).history as any[];
+    const toolMsg = history.filter((m) => m.role === 'tool').pop();
+    const output = toolMsg.content[0].output;
+    expect(output.type).toBe('content');
+    expect(output.value[0]).toEqual({ type: 'text', text: expect.stringContaining('Read image') });
+    expect(output.value[1]).toEqual({ type: 'file', mediaType: 'image/png', data: { type: 'data', data: expect.any(Buffer) } });
+
+    const ev = events.find((e) => e.type === 'tool-result');
+    expect(ev!.data.images).toEqual([imgPath]);
+  });
+
+  it('an unchanged re-fetch is deduped with a named note, no second copy', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-img-'));
+    const imgPath = tmpImage(dir, 'x.png');
+    const read = fakeTool('Read', { onExecute: () => ({ text: 'Read image', images: [imgPath] }) });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: imgPath }), finishChunk('tool-calls')), // turn 1 step 1
+      stream(...textChunks('b', 'done'), finishChunk('stop')),                                                               // turn 1 step 2
+      stream(...textChunks('c', 'reading again'), toolCallChunk('c2', 'Read', { file_path: imgPath }), finishChunk('tool-calls')), // turn 2 step 1
+      stream(...textChunks('d', 'done again'), finishChunk('stop')),                                                         // turn 2 step 2
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    await session.send('go again');   // same unchanged file, requested again in a second turn
+
+    const history = (session as any).history as any[];
+    const toolMsgs = history.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2);
+    const secondToolMsg = toolMsgs[toolMsgs.length - 1];   // last tool message of turn 2
+    expect(secondToolMsg.content[0].output.type).toBe('text');   // deduped → no second image, stays text-only
+    expect(secondToolMsg.content[0].output.value).toContain('already visible earlier');
+  });
+
+  it('the per-turn image count budget skips with a named note', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-img-'));
+    // MAX_IMAGES_PER_TURN distinct, never-before-seen images fill the budget
+    // exactly; one more in the SAME turn must be skipped with a budget note.
+    const paths = Array.from({ length: MAX_IMAGES_PER_TURN + 1 }, (_, i) => tmpImage(dir, `img${i}.png`));
+    const read = fakeTool('Read', { onExecute: (args: any) => ({ text: `Read ${args.file_path}`, images: [args.file_path] }) });
+    const toolCalls = paths.map((p, i) => toolCallChunk(`c${i}`, 'Read', { file_path: p }));
+    const model = scriptedModel([
+      stream(...toolCalls, finishChunk('tool-calls')),   // one step, N+1 parallel calls — same turn, shared budget
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    collect(session);
+    await session.send('go');
+
+    const history = (session as any).history as any[];
+    const toolMsg = history.filter((m) => m.role === 'tool').pop();
+    const lastOutput = toolMsg.content[toolMsg.content.length - 1].output;   // the (N+1)th call's result — the one over budget
+    expect(lastOutput.type).toBe('text');   // budget skip → no image attached, stays text-only
+    expect(lastOutput.value).toContain('images-per-turn budget');
+  });
+
+  it('a file that vanished between promise and delivery gets a named note, not silence', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-img-'));
+    const goneP = path.join(dir, 'gone.png');
+    fs.writeFileSync(goneP, Buffer.from([1, 2, 3]));
+    // Simulate the tool having stat'd the file before promising it, but the
+    // file vanishing before the DRIVER delivers it: delete it inside execute()
+    // itself, right before returning the promise — the driver's own
+    // fs.statSync (resolveToolImages) then finds nothing.
+    const read = fakeTool('Read', {
+      onExecute: () => { fs.unlinkSync(goneP); return { text: 'Read image', images: [goneP] }; },
+    });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: goneP }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    collect(session);
+    await session.send('go');
+
+    const history = (session as any).history as any[];
+    const toolMsg = history.filter((m) => m.role === 'tool').pop();
+    const output = toolMsg.content[0].output;
+    expect(output.type).toBe('text');   // no image attached
+    expect(output.value).toContain('no longer readable');
+  });
+
+  // The count budget (tested above) and the byte budget are two DISTINCT `if`
+  // branches in resolveToolImages — a passing count-budget test gives zero
+  // coverage of the byte one. Driving it through a full turn would mean
+  // writing >20 MB of fixture images to disk per run; instead this calls the
+  // private method directly (same pattern this file already uses for
+  // `(session as any).history`) with the budget pre-loaded to just under the
+  // cap, so one small image is enough to tip it over.
+  it('the per-turn image byte budget skips with a named note, independent of the count budget', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-img-'));
+    const imgPath = tmpImage(dir, 'x.png');
+    const fileSize = fs.statSync(imgPath).size;
+    const session = new HarnessSession(makeOpts({ decide: async () => ALLOW }), async () => ({}) as any);
+    const budget = { count: 0, bytes: MAX_IMAGE_BYTES_PER_TURN - fileSize + 1 };   // one byte short of room for this file
+    const result = (session as any).resolveToolImages({ text: 'Read image', images: [imgPath] }, budget);
+    expect(result.images).toHaveLength(0);
+    expect(result.text).toContain('MB-per-turn image budget');
   });
 });

@@ -13,6 +13,7 @@
 // new event types.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -21,7 +22,7 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
-import { readImageFromDisk } from './image-support';
+import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
 // string; Skill's is a skill id. Both would be canonicalized against cwd and run
@@ -352,6 +353,12 @@ export class HarnessSession extends EventEmitter {
   /** Trigger ids already injected in this session. Survives across turns on
    *  purpose — a rule is a standing instruction, not a per-turn reminder. */
   private readonly injectedTriggerIds = new Set<string>();
+  /** Delivered-image dedupe: canonical path → mtimeMs at delivery. A model that
+   *  re-Reads the SAME unchanged file gets "already visible" text, not a second
+   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Reset on
+   *  resume alongside readRegistry — after a rebuild the images in history came
+   *  from a fresh disk read anyway. */
+  private shownImages = new Map<string, number>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
    *  from what this session actually runs with (setBinding can have changed it). */
@@ -397,6 +404,7 @@ export class HarnessSession extends EventEmitter {
     // a stale mtime (or a leftover todo list) from a prior process from wrongly
     // satisfying the read-before-edit gate on the first edit after resume.
     this.readRegistry.clear();
+    this.shownImages.clear();
     this.todos.length = 0;
     this.shellCwd = null; // a resumed session starts back at the workspace root
   }
@@ -615,9 +623,26 @@ export class HarnessSession extends EventEmitter {
   }
 
   /** Tool-result history part. The `output: { type:'text', value }` shape is
-   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError. */
-  private toolResultPart(call: ToolCall, text: string): any {
-    return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError.
+   *  `images` defaults to `[]` so every existing caller (including the interrupt
+   *  back-fill, which passes only `text`) keeps emitting the byte-identical
+   *  text-only shape. When images ARE present, the output becomes ai@7's
+   *  'content' shape — @ai-sdk/anthropic maps it to native tool_result image
+   *  blocks; every other wire is rewritten by adaptForWire (wire-adapter.ts). */
+  private toolResultPart(call: ToolCall, text: string, images: Array<{ mediaType: string; data: Buffer }> = []): any {
+    if (!images.length) {
+      return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+    }
+    return {
+      type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName,
+      output: {
+        type: 'content',
+        value: [
+          { type: 'text', text },
+          ...images.map((i) => ({ type: 'file', mediaType: i.mediaType, data: { type: 'data', data: i.data } })),
+        ],
+      },
+    };
   }
 
   /** Oldest-first truncation to fit the context window. Always keeps the
@@ -1006,6 +1031,47 @@ export class HarnessSession extends EventEmitter {
     return parts;
   }
 
+  /** Resolve a tool's promised image paths into deliverable parts, charging the
+   *  per-turn budget and the per-session dedupe, and AMENDING the result text
+   *  with a named note for every skip — the note rides the same text the model
+   *  and the transcript see, so promise and delivery can never disagree.
+   *  `budget` is a beginTurn-scoped local shared across every tool call in the
+   *  turn (mutated in place), which is what makes the count/byte caps PER-TURN
+   *  rather than per-call. */
+  private resolveToolImages(
+    payload: ToolResultPayload,
+    budget: { count: number; bytes: number },
+  ): { text: string; images: Array<{ path: string; mediaType: string; data: Buffer }> } {
+    const paths = payload.images ?? [];
+    if (!paths.length) return { text: payload.text, images: [] };
+    let text = payload.text;
+    const images: Array<{ path: string; mediaType: string; data: Buffer }> = [];
+    for (const p of paths) {
+      // The tool already stat'd this file before promising it (resolve-before-
+      // promise, Task 4) — but time passed between that stat and this delivery,
+      // so it can have vanished. Re-stat rather than trust the promise.
+      let mtime: number;
+      try { mtime = fs.statSync(p).mtimeMs; } catch {
+        text += `\n[image not attached: ${p} is no longer readable]`; continue;
+      }
+      if (this.shownImages.get(p) === mtime) {
+        text += `\n[image not re-attached: ${p} is unchanged and already visible earlier in this conversation]`; continue;
+      }
+      if (budget.count >= MAX_IMAGES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGES_PER_TURN}-images-per-turn budget — ask again next turn if you still need it]`; continue;
+      }
+      const img = readImageFromDisk(p);
+      if (!img) { text += `\n[image not attached: ${p} vanished or exceeds the per-image size limit]`; continue; }
+      if (budget.bytes + img.data.length > MAX_IMAGE_BYTES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGE_BYTES_PER_TURN / (1024 * 1024)} MB-per-turn image budget]`; continue;
+      }
+      budget.count += 1; budget.bytes += img.data.length;
+      this.shownImages.set(p, mtime);
+      images.push({ path: p, mediaType: img.mediaType, data: img.data });
+    }
+    return { text, images };
+  }
+
   /** The turn driver. `emit` names how this turn ENTERED the conversation — a
    *  typed message, or a skill invocation — which is the only thing that differs
    *  between send() and runSkill(). Everything downstream is identical. */
@@ -1036,6 +1102,7 @@ export class HarnessSession extends EventEmitter {
     // model's real one (found in the 2026-07-28 audit).
     let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
+    const imageBudget = { count: 0, bytes: 0 };  // per-turn image delivery budget (spec "Budgets")
     // Budget precedence: an explicit harness override wins; otherwise the step
     // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
     // runs than the conservative 25 — see model-step-budget.ts).
@@ -1162,12 +1229,18 @@ export class HarnessSession extends EventEmitter {
             this.emitEvent('user-interrupt', {});
             return;
           }
+          // Turn the tool's promised image paths into deliverable parts, charging
+          // the per-turn budget/dedupe and amending the text with a named note
+          // for every skip (Task 5 — the driver never promises silently).
+          const delivered = this.resolveToolImages(payload, imageBudget);
           this.emitEvent('tool-result', {
             toolUseId: call.toolCallId, toolName: call.toolName,
-            toolResult: payload.text, isError: payload.isError ?? false,
+            toolResult: delivered.text, isError: payload.isError ?? false,
             ...(payload.structuredPatch ? { structuredPatch: payload.structuredPatch } : {}),
+            // Paths only — events carry no binary; resume re-reads (history-rebuild.ts).
+            ...(delivered.images.length ? { images: delivered.images.map((i) => i.path) } : {}),
           });
-          resultParts.push(this.toolResultPart(call, payload.text));
+          resultParts.push(this.toolResultPart(call, delivered.text, delivered.images));
         }
         this.history.push({ role: 'tool', content: resultParts });
         // Path-triggered content (M3 item 3): a project rule or a nested
