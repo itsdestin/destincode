@@ -340,6 +340,61 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
   });
 
+  // Phase 3 of the permissions-management plan (spec 2026-08-11, finding 3).
+  // An external-directory path forces the ask AND skips decide() on every future
+  // call, so a rule remembered here could never be consulted — storing one tells
+  // the user "you won't be asked again" and then asks them every single time.
+  describe('"Always allow" on an external-directory ask', () => {
+    // permissionSubject returns the raw path so checkPathGuard sees it; cwd is
+    // C:/x (makeOpts), so C:/other/... is external and C:/x/... is not.
+    const pathTool = () => fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+    const oneWriteTo = (filePath: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: filePath }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    it('does not emit remember-rule when an external path forced the ask', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      expect(askUser).toHaveBeenCalledTimes(1);            // the ask still happens
+      expect(remembered).toEqual([]);                      // …but nothing is persisted
+    });
+
+    it('marks an external-directory ask so the UI can suppress Always-allow', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      collect(session);
+      await session.send('go');
+      expect(askUser.mock.calls[0][0]).toMatchObject({ external: true });
+    });
+
+    // The control: an in-project ask still records the rule, and is NOT flagged
+    // external — without this, deleting the emit entirely would pass the test above.
+    it('still remembers a rule for an in-project ask, and does not flag it external', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/x/in-project.ts');
+      const session = new HarnessSession(
+        makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }), askUser }),
+        async () => model as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow' }]);
+      expect(askUser.mock.calls[0][0].external).toBe(false);
+    });
+  });
+
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
     // C:/x/.env is a dotenv file → isSensitivePath → checkPathGuard 'deny'.
     const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });

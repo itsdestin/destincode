@@ -1843,13 +1843,20 @@ export class HarnessSession extends EventEmitter {
       // decline RESULT (the model can't proceed) instead of the 'interrupted'
       // sentinel, so a misconfiguration never masquerades as an ESC/interrupt.
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed });
+      // `external` tells the renderer this ask was forced by the path guard, so
+      // ToolCard hides "Always allow" (see the guarded emit below for why).
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk });
       if (d.behavior === 'canceled') return 'interrupted';
       if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
       // surface is untouched.
-      if (d.always) this.emit('remember-rule', { tool: call.toolName, ...(subject !== undefined ? { pattern: subject } : {}), action: 'allow' });
+      //
+      // Only remember when the decision came from decide(). An external-directory
+      // path forced this ask and SKIPS decide() on every future call, so a stored
+      // rule can never fire — recording one promises the user something the
+      // engine will not honor. See spec 2026-08-11, finding 3.
+      if (d.always && !externalAsk) this.emit('remember-rule', { tool: call.toolName, ...(subject !== undefined ? { pattern: subject } : {}), action: 'allow' });
     }
 
     // 5. Execute (defineTool owns truncation + the actionable-error catch).
