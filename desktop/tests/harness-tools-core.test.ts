@@ -161,6 +161,49 @@ describe('Read', () => {
   });
 });
 
+describe('Read: image delivery (2026-08-11 spec)', () => {
+  it('returns the image path in payload.images for a vision model', async () => {
+    const p = path.join(dir, 'shot.png');
+    fs.writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBeFalsy();
+    expect(r.images).toEqual([p]);
+    expect(r.text).toContain('Read image');
+    expect(r.text).toContain('image/png');
+  });
+
+  it('refuses honestly for a non-vision model (no images field)', async () => {
+    const p = path.join(dir, 'shot2.png');
+    fs.writeFileSync(p, Buffer.from([1]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: false });
+    expect(r.isError).toBe(true);
+    expect(r.images).toBeUndefined();
+    expect(r.text).toContain('cannot view images');
+  });
+
+  it('refuses an undeliverable image format by name, never promising it', async () => {
+    const p = path.join(dir, 'vector.svg');
+    fs.writeFileSync(p, '<svg/>');
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('svg');
+    expect(r.images).toBeUndefined();
+  });
+
+  it('refuses an oversized image with the real size and limit', async () => {
+    const p = path.join(dir, 'huge.png');
+    fs.writeFileSync(p, Buffer.alloc(11 * 1024 * 1024));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/11(\.\d)? MB.*10 MB/s);
+  });
+
+  it('advertises image reading only to vision models', () => {
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toContain('images');
+    expect(ReadTool.descriptionFor!({ supportsVision: false })).toBeUndefined();
+  });
+});
+
 describe('Edit', () => {
   it('rejects an edit without a prior Read', async () => {
     fs.writeFileSync(path.join(dir, 'a.txt'), 'hello\n');

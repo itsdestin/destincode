@@ -596,7 +596,11 @@ export class HarnessSession extends EventEmitter {
     for (const t of this.toolByName.values()) {
       // MCP tools carry the server's own JSON Schema; everything else is zod.
       const schema = t.rawInputSchema ? jsonSchema(t.rawInputSchema as any) : zodSchema(t.inputSchema);
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: schema });
+      // descriptionFor lets a tool vary its wording by capability (Read + vision).
+      // Simplified presentation still wins for small local models — shortDescription
+      // stays the schema-size escape hatch.
+      const full = t.descriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.description;
+      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? full) : full, inputSchema: schema });
     }
     return out;
   }
@@ -1611,6 +1615,7 @@ export class HarnessSession extends EventEmitter {
         this.shellCwd = next;
       },
       todos: this.todos,
+      supportsVision: this.profile.supportsVision,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });
   }
