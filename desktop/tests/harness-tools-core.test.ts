@@ -208,6 +208,75 @@ describe('Read', () => {
   });
 });
 
+describe('Read: image delivery (2026-08-11 spec)', () => {
+  it('returns the image path in payload.images for a vision model', async () => {
+    const p = path.join(dir, 'shot.png');
+    fs.writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBeFalsy();
+    expect(r.images).toEqual([p]);
+    expect(r.text).toContain('Read image');
+    expect(r.text).toContain('image/png');
+  });
+
+  it('refuses honestly for a non-vision model (no images field)', async () => {
+    const p = path.join(dir, 'shot2.png');
+    fs.writeFileSync(p, Buffer.from([1]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: false });
+    expect(r.isError).toBe(true);
+    expect(r.images).toBeUndefined();
+    expect(r.text).toContain('cannot view images');
+  });
+
+  it('refuses an undeliverable image format by name, never promising it', async () => {
+    const p = path.join(dir, 'vector.svg');
+    fs.writeFileSync(p, '<svg/>');
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    // Assert the actual refusal WORDING, not just that 'svg' appears somewhere —
+    // the echoed file path (".../vector.svg") alone would satisfy a bare
+    // `toContain('svg')` even with the format-named refusal deleted entirely
+    // (2026-08-11 review, Fix 2: the implementer's own RED evidence showed this
+    // test passing before the refusal branch existed).
+    expect(r.text).toMatch(/cannot be delivered/i);
+    expect(r.text).toContain('svg');
+    expect(r.images).toBeUndefined();
+  });
+
+  it('refuses an oversized image with the real size and limit', async () => {
+    const p = path.join(dir, 'huge.png');
+    fs.writeFileSync(p, Buffer.alloc(11 * 1024 * 1024));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/11(\.\d)? MB.*10 MB/s);
+    // A refusal must never also promise the image (2026-08-11 review, Fix 5) —
+    // the sibling refusal tests above pin this; this one didn't.
+    expect(r.images).toBeUndefined();
+  });
+
+  it('advertises image reading only to vision models', () => {
+    // Assert the LOAD-BEARING phrases, not the bare plural 'images' (2026-08-11
+    // review, Fix 3): the vivid "actual picture" framing and the "screenshot"
+    // example are what actually stop a vision model from never trying an image
+    // read — a substring check on 'images' alone would keep passing even if
+    // that framing were deleted.
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/actual picture/);
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/screenshot/);
+    expect(ReadTool.descriptionFor!({ supportsVision: false })).toBeUndefined();
+  });
+
+  it('advertises image reading in the SHORT description too, for simplified presentation', () => {
+    // Same failure mode as descriptionFor above, but for the small-local-model path
+    // (spec §4.2): a vision model that only ever sees shortDescription must still be
+    // told Read returns images, or the Roo Code #10440 gap reopens for that tier.
+    // Assert the specific clause added (2026-08-11), not the bare word 'images' —
+    // that alone could come from unrelated text and wouldn't catch the wording
+    // being deleted (2026-08-11 review, Fix 3's lesson applied here too).
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: true })).toMatch(/come back as the actual picture/);
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: false })).toBeUndefined();
+  });
+});
+
 describe('Edit', () => {
   it('rejects an edit without a prior Read', async () => {
     fs.writeFileSync(path.join(dir, 'a.txt'), 'hello\n');

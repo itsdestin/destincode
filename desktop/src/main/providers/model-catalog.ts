@@ -123,6 +123,31 @@ export class ModelCatalog {
       };
       if (typeof row.context_length === 'number') m.contextLength = row.context_length;
       if (Array.isArray(row.supported_parameters)) m.supportsTools = row.supported_parameters.includes('tools');
+      // Vision support: OpenRouter is a TRANSPORT (one endpoint serves vision and
+      // text-only models), so unlike the direct-key providers this is the one
+      // catalog source that can actually answer "does THIS model accept images"
+      // from data rather than a hand-maintained guess. `architecture` and its
+      // `input_modalities` array are both optional per OpenRouter's schema and
+      // rows are untrusted JSON — isObj + Array.isArray gate every access, and a
+      // missing/malformed shape leaves supportsVision unset (undefined = "don't
+      // know"), never a guessed `false` (see CatalogModel's field comment).
+      // A row without input_modalities may still carry the older single-string
+      // `architecture.modality` field (e.g. "text+image->text") — the fallback
+      // branch below reads that instead of giving up, with the same
+      // never-guess-false posture.
+      const architecture = isObj(row.architecture) ? row.architecture : null;
+      if (architecture && Array.isArray(architecture.input_modalities)) {
+        m.supportsVision = architecture.input_modalities.includes('image');
+      } else if (architecture && typeof architecture.modality === 'string' && architecture.modality.includes('->')) {
+        // Legacy OpenRouter shape, predating input_modalities: a single string
+        // like "text+image->text" ("<input>-><output>"). Only trust it when
+        // the '->' delimiter is actually present — a modality string without
+        // one gives no reliable way to isolate the input side, so that case
+        // (and a non-string modality) falls through to "don't know" below,
+        // same defensive posture as the input_modalities branch above.
+        const inputSide = architecture.modality.split('->')[0];
+        m.supportsVision = inputSide.includes('image');
+      }
       // OpenRouter pricing is USD-per-TOKEN strings; CatalogModel.pricing is
       // USD per 1M tokens, hence the *1e6. Require NON-EMPTY STRINGS before
       // Number(): Number(null) and Number('') are both 0, which would map a

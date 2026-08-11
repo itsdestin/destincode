@@ -12,9 +12,9 @@
 // values; max_steps and doom_loop surface as PERMISSION ASKS (askUser), never as
 // new event types.
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
@@ -23,6 +23,7 @@ import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
+import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
 // string; Skill's is a skill id. Both would be canonicalized against cwd and run
@@ -37,8 +38,10 @@ const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
-import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
+import { adaptForWire } from './wire-adapter';
+import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, countImageOutputs, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
+import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
@@ -138,7 +141,6 @@ function mapStopReason(finishReason: string | undefined): string {
     default: return finishReason ?? 'unknown';
   }
 }
-const APPROX_CHARS_PER_TOKEN = 4;
 
 /** Widening advice per tool, in that tool's OWN vocabulary.
  *
@@ -176,6 +178,23 @@ export function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelM
     ...msg,
     content: parts.map((p: any) => {
       if (p?.type !== 'tool-result') return p;
+      // Sibling of pruneToolOutputs' content branch (compaction.ts) — this is
+      // the LAST-RESORT salvage path (fitToContext's oversized-tail fallback,
+      // the step immediately before a provider 400), and until this branch
+      // existed it was the one sizing path that could not reclaim anything
+      // from an image: the `typeof value !== 'string'` check below let a
+      // content-output tool result pass through completely untouched. Collapse
+      // it the same way prune does — text kept, file part dropped, a named
+      // note in its place — including the same guard (only claim an image was
+      // dropped when a file part is actually present), so the two paths can't
+      // silently drift on what counts as "an image output".
+      if (p.output?.type === 'content' && Array.isArray(p.output.value)) {
+        const text = p.output.value.filter((v: any) => v?.type === 'text').map((v: any) => v.text).join('\n');
+        const hasFile = p.output.value.some((v: any) => v?.type === 'file');
+        if (!hasFile) return { ...p, output: { type: 'text', value: text } };
+        const note = `[image dropped — this result alone exceeds the model's context window; re-run ${p.toolName ?? 'the tool'} if you need to see it again]`;
+        return { ...p, output: { type: 'text', value: text ? `${text}\n${note}` : note } };
+      }
       const value = p.output?.value;
       if (typeof value !== 'string' || value.length <= per) return p;
       const dropped = value.length - per;
@@ -260,18 +279,6 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
 // consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
 // so the step can be safely re-run once (re-running after content streamed would
 // duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
-// Attachment → image part. Only formats every mainstream vision model accepts;
-// an unlisted extension is skipped, so the model still sees the PATH in the
-// message text and can Read or Bash it if it wants.
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp',
-};
-// Attachments are base64'd into the request, so a huge one is a request-size
-// failure AND a token bill. 10 MB is far above any screenshot and well under
-// the provider limits we know of.
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -370,6 +377,57 @@ export class HarnessSession extends EventEmitter {
   /** Trigger ids already injected in this session. Survives across turns on
    *  purpose — a rule is a standing instruction, not a per-turn reminder. */
   private readonly injectedTriggerIds = new Set<string>();
+  /** Delivered-image dedupe: canonical path → mtimeMs at delivery. A model that
+   *  re-Reads the SAME unchanged file gets "already visible" text, not a second
+   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared on
+   *  every site that DISCARDS entries from `this.history` itself — resume
+   *  (seedHistory, alongside readRegistry), /clear (clearHistory), compaction's
+   *  summarize step (maybeCompact/compactNow), and compaction's PRUNE step when
+   *  it actually collapses an image output (same two call sites, gated on a
+   *  countImageOutputs before/after diff so an ordinary text-only prune doesn't
+   *  pay for it) — because every one of those DROPS entries the cache is
+   *  vouching for. A stale entry after a drop doesn't just cost a redundant
+   *  re-Read: it makes the dedupe note ITSELF false ("already visible earlier
+   *  in this conversation" when it no longer is), permanently, until an
+   *  unrelated mtime change happens to reset it. The re-Read this forces after
+   *  a clear is not free — a second ~1.6k-token copy of an image that may still
+   *  be sitting in surviving history — but that is the safe failure direction:
+   *  over-delivery costs tokens, the bug it replaces cost correctness.
+   *
+   *  KNOWN GAP (2026-08-11 review, deliberately NOT fixed in this pass): the
+   *  list above is every site that discards from `this.history`. It is NOT
+   *  exhaustive over every way the MODEL's effective view of history can
+   *  shrink — fitToContext trims oldest messages for the OUTGOING REQUEST
+   *  only, leaving `this.history` itself untouched, so an image can scroll out
+   *  of what the model actually sees while this cache still vouches for it: a
+   *  permanently false "already visible" note plus silent permanent
+   *  non-delivery of that file.
+   *
+   *  Reachability, worked through so a future session doesn't have to re-derive
+   *  it: compaction's trigger uses REAL last-step input tokens, but that value
+   *  is 0 at the first step of every turn, so planCompaction falls back to
+   *  estimating the UN-TRIMMED history at that moment — meaning at each turn
+   *  boundary compaction sees the true size and fires. That's the load-bearing
+   *  mitigation. For large context windows the two mechanisms then agree:
+   *  anything old enough for fitToContext to trim is old enough that prune
+   *  already collapsed it, tripping the countImageOutputs clear above. They
+   *  disagree only when the prune-protected window is bigger than
+   *  fitToContext's budget, which needs a context window under roughly 8,500
+   *  tokens AND supportsVision: true — which for a local engine only happens
+   *  via an explicit registry entry. So the live exposure is narrow: a
+   *  registry-declared small local vision model with a very small context
+   *  window.
+   *
+   *  Intended eventual fix (deferred, not this pass): re-key this map to
+   *  Map<path, { mtime, toolCallId }> and reconcile against the FITTED window
+   *  after fitToContext runs, so the cache can only vouch for what the model
+   *  actually just saw. Two narrower fixes were considered and rejected
+   *  because fitToContext runs on EVERY request, not just ones near budget: an
+   *  unconditional clear there defeats dedupe entirely, and a count-diff there
+   *  (mirroring the prune sites) latches permanently true the moment history
+   *  outgrows the context window, which is ordinary steady-state for a long
+   *  conversation. */
+  private shownImages = new Map<string, number>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
    *  from what this session actually runs with (setBinding can have changed it). */
@@ -415,6 +473,7 @@ export class HarnessSession extends EventEmitter {
     // a stale mtime (or a leftover todo list) from a prior process from wrongly
     // satisfying the read-before-edit gate on the first edit after resume.
     this.readRegistry.clear();
+    this.shownImages.clear();
     this.todos.length = 0;
     this.shellCwd = null; // a resumed session starts back at the workspace root
     this.shellEnv = null; // same contract — a resumed session starts with a fresh env too
@@ -437,7 +496,7 @@ export class HarnessSession extends EventEmitter {
    *  a measured prompt-token count is always preferred. */
   private estimateContextTokens(): number {
     return Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN)
-      + Math.ceil(JSON.stringify(this.history).length / APPROX_CHARS_PER_TOKEN);
+      + messagesTokens(this.history);   // binary-aware — see message-size.ts
   }
 
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
@@ -615,7 +674,19 @@ export class HarnessSession extends EventEmitter {
     for (const t of this.toolByName.values()) {
       // MCP tools carry the server's own JSON Schema; everything else is zod.
       const schema = t.rawInputSchema ? jsonSchema(t.rawInputSchema as any) : zodSchema(t.inputSchema);
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: schema });
+      // descriptionFor lets a tool vary its wording by capability (Read + vision).
+      // Simplified presentation still wins for small local models — shortDescription
+      // stays the schema-size escape hatch.
+      const full = t.descriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.description;
+      // Fix (2026-08-11 review): the simplified branch used to drop straight to the
+      // static shortDescription, discarding the vision-aware wording above. That
+      // silently reopened the Roo Code #10440 gap for exactly the tier — small
+      // local models — simplified presentation targets: a vision model never told
+      // Read handles images never tries. shortDescriptionFor mirrors descriptionFor
+      // at short-text length; only falls through to the static text/full when a
+      // tool doesn't define one (or the model has no vision).
+      const shortDesc = t.shortDescriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.shortDescription ?? full;
+      out[t.name] = tool({ description: simplified ? shortDesc : full, inputSchema: schema });
     }
     return out;
   }
@@ -630,13 +701,40 @@ export class HarnessSession extends EventEmitter {
   }
 
   /** Tool-result history part. The `output: { type:'text', value }` shape is
-   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError. */
-  private toolResultPart(call: ToolCall, text: string): any {
-    return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError.
+   *  `images` defaults to `[]` so every existing caller (including the interrupt
+   *  back-fill, which passes only `text`) keeps emitting the byte-identical
+   *  text-only shape. When images ARE present, the output becomes ai@7's
+   *  'content' shape — @ai-sdk/anthropic maps it to native tool_result image
+   *  blocks; every other wire is rewritten by adaptForWire (wire-adapter.ts). */
+  private toolResultPart(call: ToolCall, text: string, images: Array<{ mediaType: string; data: Buffer; filename?: string }> = []): any {
+    if (!images.length) {
+      return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+    }
+    return {
+      type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName,
+      output: {
+        type: 'content',
+        value: [
+          { type: 'text', text },
+          // Fix 3 (2026-08-11 review): filename rides through onto the file
+          // part. wire-adapter.ts labels every image `f.filename ?? toolName`
+          // — precisely so a multi-image result doesn't produce N identical
+          // placeholders naming only the tool. Without this every image was
+          // labelled "Read" regardless of which file it was.
+          ...images.map((i) => ({ type: 'file', mediaType: i.mediaType, data: { type: 'data', data: i.data }, ...(i.filename ? { filename: i.filename } : {}) })),
+        ],
+      },
+    };
   }
 
   /** Oldest-first truncation to fit the context window. Always keeps the
-   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer. */
+   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer.
+   *  WHY this matters for shownImages: this trims the OUTGOING REQUEST only —
+   *  `this.history` itself is untouched — so an image can drop out of what the
+   *  model actually sees while the dedupe cache still vouches for it. See the
+   *  shownImages field comment's KNOWN GAP section for the reachability
+   *  analysis and why that isn't fixed here. */
   private fitToContext(messages: ModelMessage[]): ModelMessage[] {
     const ctx = this.opts.contextLength ?? 32_768;
     const budgetTokens = ctx - (this.opts.harness.limits?.maxTokens ?? 4096) - 1024; // output + margin
@@ -650,7 +748,7 @@ export class HarnessSession extends EventEmitter {
     let total = total0;
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
-      const size = Math.ceil(JSON.stringify(messages[i].content).length / APPROX_CHARS_PER_TOKEN);
+      const size = messageTokens(messages[i]);   // binary-aware — see message-size.ts
       if (kept.length > 0 && total + size > budgetTokens) break;
       kept.unshift(messages[i]);
       total += size;
@@ -716,7 +814,7 @@ export class HarnessSession extends EventEmitter {
     // Whatever budget is left after the system prompt and the head goes to the
     // tool output. Floored at a usable amount so a hostile budget still yields a
     // readable fragment rather than an empty string.
-    const usedTokens = systemTokens + head.reduce((n, m) => n + Math.ceil(JSON.stringify(m.content).length / APPROX_CHARS_PER_TOKEN), 0);
+    const usedTokens = systemTokens + head.reduce((n, m) => n + messageTokens(m), 0);   // binary-aware
     const availableChars = Math.max(2_000, (budgetTokens - usedTokens) * APPROX_CHARS_PER_TOKEN);
     return [...head, truncateToolMessage(messages[toolIdx], availableChars)];
   }
@@ -750,7 +848,14 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     const decision = planCompaction(this.history, cfg, lastInputTokens);
     if (decision.action === 'none') return;
+    // Prune can now collapse an image 'content' output to text (compaction.ts)
+    // outside its protected window — a THIRD path (besides /clear and
+    // summarize) that discards a delivered image. Diff the image count across
+    // the call to catch it regardless of what decision.action turns out to be
+    // below, including the plain 'prune' early-return two lines down.
+    const imagesBeforePrune = countImageOutputs(this.history);
     this.history = pruneToolOutputs(this.history, cfg);   // always prune first
+    if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
     if (decision.action === 'prune') return;
     const cut = this.summarizeCutIndex();
     if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
@@ -773,6 +878,17 @@ export class HarnessSession extends EventEmitter {
     // CC's own compact-summary events never carry it, so the manual path is
     // untouched.
     this.emitEvent('compact-summary', { summary, autoCompaction: true });
+    // Fix 2 (2026-08-11): the summarized-away span can still contain a
+    // delivered image. pruneToolOutputs (above) now DOES collapse 'content'
+    // (image) outputs too, but only ones OUTSIDE its own token-budget
+    // protected window — see the imagesBeforePrune diff above, which handles
+    // that case. An image can sit INSIDE that window (survive prune) yet
+    // still fall in THIS summarize span (older than the turn-based last-2
+    // cut) and get flattened into `summary` here. An un-cleared shownImages
+    // would then keep vouching for an image no longer in history — the same
+    // false "already visible" bug /clear had (Fix 1), reachable here
+    // automatically at 75% context instead of only on an explicit /clear.
+    this.shownImages.clear();
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
@@ -854,8 +970,12 @@ export class HarnessSession extends EventEmitter {
     try {
       const cfg = this.compactionConfig();
       // Prune first — same order as the automatic path, and it shrinks the span
-      // the model has to read before we pay for a summary.
+      // the model has to read before we pay for a summary. Same image-collapse
+      // diff as maybeCompact's prune call — see its comment for why this is
+      // keyed on an actual count decrease, not on whether summarize runs next.
+      const imagesBeforePrune = countImageOutputs(this.history);
       this.history = pruneToolOutputs(this.history, cfg);
+      if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
       const cut = this.summarizeCutIndex();
       // <2 user turns means there is no boundary we can cut on without risking
       // splitting a tool-call/result pair, so there is genuinely nothing to do.
@@ -877,6 +997,11 @@ export class HarnessSession extends EventEmitter {
       // still gets a real (if smaller) reduction, and never a lost conversation.
       if (!summary.trim()) return { ok: false, reason: 'summary-failed' };
       this.emitEvent('compact-summary', { summary });
+      // Fix 2 (2026-08-11): same reasoning as maybeCompact above — the manual
+      // /compact path discards the summarized span exactly the same way, so
+      // the dedupe cache must be cleared here too or it keeps vouching for
+      // images this summary just removed.
+      this.shownImages.clear();
       this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
       return { ok: true };
     } finally {
@@ -900,6 +1025,14 @@ export class HarnessSession extends EventEmitter {
   clearHistory(): { ok: true } | { ok: false; reason: 'turn-in-flight' } {
     if (this.abort) return { ok: false, reason: 'turn-in-flight' };
     this.history = [];
+    // Fix 1 (CRITICAL, 2026-08-11): the dedupe cache must not outlive the
+    // history it was vouching for. Left alive, a model that re-Reads an
+    // unchanged file after /clear gets "already visible earlier in this
+    // conversation" — now FALSE, since that earlier delivery is gone — paired
+    // with no image ever being attached again for the rest of the session
+    // (barring an unrelated mtime change). Clearing here makes the next Read
+    // of that file deliver for real, matching what "already visible" claims.
+    this.shownImages.clear();
     // Emitted (not just persisted) so the store appends it through the host's
     // normal chain AND every attached surface — other windows, the remote web
     // client — learns the conversation was cleared. On replay this same event
@@ -909,10 +1042,21 @@ export class HarnessSession extends EventEmitter {
     return { ok: true };
   }
 
-  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
+  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns).
+   *  Injected rule messages are role:'user' but are NOT turns — counting them
+   *  shrank the protected window to "the last 2 injections" when a step
+   *  touched several rule-matched paths (2026-08-11, compaction accounting).
+   *  Detected by content shape rather than a flag: injectPathTriggers (above)
+   *  pushes them as `<project-rule source="...">...`, and that's the only
+   *  thing this method has to go on — synthetic wire messages never enter
+   *  history at all, so they were already immune by construction. */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];
-    this.history.forEach((m, i) => { if ((m as any).role === 'user') userIdx.push(i); });
+    this.history.forEach((m, i) => {
+      const c = (m as any).content;
+      const isInjectedRule = typeof c === 'string' && c.startsWith('<project-rule ');
+      if ((m as any).role === 'user' && !isInjectedRule) userIdx.push(i);
+    });
     return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
   }
 
@@ -933,7 +1077,10 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     let bounded = span;
     while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
-    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
+    // Summaries are text about text: images are ALWAYS stripped here, regardless
+    // of the session's actual profile — the summarizer may be a non-vision local
+    // model, and pixels add nothing to a compression prompt.
+    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...adaptForWire(bounded, { nativeImageToolResults: false, supportsVision: false }), { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
 
     // Race iterator.next() against the abort signal AND a 30s wall-clock floor —
     // the same hardening consumeStep uses, since a stalled local stream honors
@@ -1000,7 +1147,11 @@ export class HarnessSession extends EventEmitter {
    *  remain in the text AND the pixels are attached — the model gets both, and
    *  the bubble still resolves. */
   async send(text: string, attachments: string[] = []): Promise<void> {
-    return this.beginTurn(text, () => this.emitEvent('user-message', { text }), attachments);
+    // Attachments ride the persisted event (paths only — events carry no binary)
+    // so rebuildHistory can restore the pixels on resume. Emitted only when
+    // present to keep the no-attachment event byte-identical to before (#290
+    // follow-up fix 2).
+    return this.beginTurn(text, () => this.emitEvent('user-message', attachments.length ? { text, attachments } : { text }), attachments);
   }
 
   /** Image parts for a user message, or [] when the model cannot see images / none
@@ -1011,15 +1162,81 @@ export class HarnessSession extends EventEmitter {
     if (!attachments.length || !this.profile.supportsVision) return [];
     const parts: Array<{ type: 'file'; mediaType: string; data: Buffer }> = [];
     for (const p of attachments) {
-      const mediaType = IMAGE_MEDIA_TYPES[path.extname(p).toLowerCase()];
-      if (!mediaType) continue;
-      try {
-        const st = fs.statSync(p);
-        if (st.size > MAX_ATTACHMENT_BYTES) continue;
-        parts.push({ type: 'file', mediaType, data: fs.readFileSync(p) });
-      } catch { /* vanished or unreadable — the path stays in the text */ }
+      const img = readImageFromDisk(p);   // shared reader — one table, one cap (fix 3)
+      if (img) parts.push({ type: 'file', mediaType: img.mediaType, data: img.data });
     }
     return parts;
+  }
+
+  /** Resolve a tool's promised image paths into deliverable parts, charging the
+   *  per-turn budget and the per-session dedupe, and AMENDING the result text
+   *  with a named note for every skip — the note rides the same text the model
+   *  and the transcript see, so promise and delivery can never disagree.
+   *  `budget` is a beginTurn-scoped local shared across every tool call in the
+   *  turn (mutated in place), which is what makes the count/byte caps PER-TURN
+   *  rather than per-call.
+   *
+   *  No `!this.profile.supportsVision` check here, unlike imagePartsFor's
+   *  sibling gate above — deliberately, not an oversight (2026-08-11 review).
+   *  It's already double-covered: the Read tool gates on vision before it ever
+   *  PROMISES a path, and wire-adapter.ts strips/relabels images for
+   *  non-vision caps at request-build time. A third gate here would be
+   *  redundant, not safer. */
+  private resolveToolImages(
+    payload: ToolResultPayload,
+    budget: { count: number; bytes: number },
+  ): { text: string; images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> } {
+    const paths = payload.images ?? [];
+    if (!paths.length) return { text: payload.text, images: [] };
+    let text = payload.text;
+    const images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> = [];
+    for (const p of paths) {
+      // The tool already stat'd this file before promising it (resolve-before-
+      // promise, Task 4) — but time passed between that stat and this delivery,
+      // so it can have vanished. Re-stat rather than trust the promise. Kept
+      // (not just its mtime) so a later null-from-readImageFromDisk can be
+      // diagnosed against this SAME stat instead of a second, possibly-stale one.
+      let mtime: number;
+      let st: fs.Stats;
+      try { st = fs.statSync(p); mtime = st.mtimeMs; } catch {
+        text += `\n[image not attached: ${p} is no longer readable]`; continue;
+      }
+      if (this.shownImages.get(p) === mtime) {
+        text += `\n[image not re-attached: ${p} is unchanged and already visible earlier in this conversation]`; continue;
+      }
+      if (budget.count >= MAX_IMAGES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGES_PER_TURN}-images-per-turn budget — ask again next turn if you still need it]`; continue;
+      }
+      const img = readImageFromDisk(p);
+      if (!img) {
+        // readImageFromDisk collapses three distinct causes to null. The old
+        // text guessed "vanished" for all of them — near-impossible here since
+        // the stat four lines up already succeeded — which is exactly the
+        // unverified-cause error message this repo's standard forbids. Name
+        // the real one instead: undeliverable FORMAT, oversized (the stat we
+        // already have is trustworthy for this), or — the one genuine
+        // "vanished/unreadable" case — a read that threw between the stat and
+        // here.
+        if (!deliverableImageMediaType(p)) {
+          text += `\n[image not attached: ${p} is not a deliverable image format]`;
+        } else if (st.size > MAX_ATTACHMENT_BYTES) {
+          text += `\n[image not attached: ${p} exceeds the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB per-image size limit]`;
+        } else {
+          text += `\n[image not attached: ${p} could not be read]`;
+        }
+        continue;
+      }
+      if (budget.bytes + img.data.length > MAX_IMAGE_BYTES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGE_BYTES_PER_TURN / (1024 * 1024)} MB-per-turn image budget]`; continue;
+      }
+      budget.count += 1; budget.bytes += img.data.length;
+      this.shownImages.set(p, mtime);
+      // Fix 3 (2026-08-11 review): carry the file's own basename through so
+      // toolResultPart can label the part with it instead of the tool's name —
+      // see that method for why an unset filename defeats the point.
+      images.push({ path: p, mediaType: img.mediaType, data: img.data, filename: path.basename(p) });
+    }
+    return { text, images };
   }
 
   /** The turn driver. `emit` names how this turn ENTERED the conversation — a
@@ -1052,6 +1269,7 @@ export class HarnessSession extends EventEmitter {
     // model's real one (found in the 2026-07-28 audit).
     let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
+    const imageBudget = { count: 0, bytes: 0 };  // per-turn image delivery budget (spec "Budgets")
     // Budget precedence: an explicit harness override wins; otherwise the step
     // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
     // runs than the conservative 25 — see model-step-budget.ts).
@@ -1178,12 +1396,18 @@ export class HarnessSession extends EventEmitter {
             this.emitEvent('user-interrupt', {});
             return;
           }
+          // Turn the tool's promised image paths into deliverable parts, charging
+          // the per-turn budget/dedupe and amending the text with a named note
+          // for every skip (Task 5 — the driver never promises silently).
+          const delivered = this.resolveToolImages(payload, imageBudget);
           this.emitEvent('tool-result', {
             toolUseId: call.toolCallId, toolName: call.toolName,
-            toolResult: payload.text, isError: payload.isError ?? false,
+            toolResult: delivered.text, isError: payload.isError ?? false,
             ...(payload.structuredPatch ? { structuredPatch: payload.structuredPatch } : {}),
+            // Paths only — events carry no binary; resume re-reads (history-rebuild.ts).
+            ...(delivered.images.length ? { images: delivered.images.map((i) => i.path) } : {}),
           });
-          resultParts.push(this.toolResultPart(call, payload.text));
+          resultParts.push(this.toolResultPart(call, delivered.text, delivered.images));
         }
         this.history.push({ role: 'tool', content: resultParts });
         // Path-triggered content (M3 item 3): a project rule or a nested
@@ -1282,7 +1506,15 @@ export class HarnessSession extends EventEmitter {
     const streamArgs: any = {
       model,
       system: this.systemText,
-      messages: this.fitToContext(this.history),
+      // Wire adaptation runs on the FITTED view, per request, not once at push
+      // time — this is what closes the mid-session model-swap leak: an image
+      // pushed to history under a vision model is stripped here at build time
+      // if the NEXT request targets a model that can't carry or can't see it,
+      // rather than riding along stale from whenever it was written.
+      messages: adaptForWire(this.fitToContext(this.history), {
+        nativeImageToolResults: this.profile.nativeImageToolResults,
+        supportsVision: this.profile.supportsVision,
+      }),
       maxOutputTokens: this.opts.harness.limits?.maxTokens,
       abortSignal: this.abort!.signal,
       // Fix (2026-08-10 incident): streamText's DEFAULT onError is
@@ -1335,7 +1567,9 @@ export class HarnessSession extends EventEmitter {
     // prompt, which on a local model legitimately takes minutes. Only once tokens
     // have started does a 60s gap mean something is actually wrong. A test that
     // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
-    const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
+    // Binary-aware: JSON.stringify on a Buffer is ~4-5 chars per BYTE, so an image
+    // turn reported a ~700x inflated prompt-token count to the user.
+    const promptTokens = messagesTokens(streamArgs.messages as ModelMessage[])
       + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
     // How much of that is genuinely NEW work. llama.cpp reuses the cached prefix,
     // so a step that appends a 100 KB tool result only prefills the tool result —
@@ -1633,6 +1867,7 @@ export class HarnessSession extends EventEmitter {
         this.shellEnv = next;
       },
       todos: this.todos,
+      supportsVision: this.profile.supportsVision,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });
   }

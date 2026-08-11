@@ -3,12 +3,9 @@ import * as path from 'path';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { canonicalize, resolveP, shellCwdMissHint } from './guards';
+import { deliverableImageMediaType, UNDELIVERABLE_IMAGE_EXTENSIONS, MAX_ATTACHMENT_BYTES } from '../image-support';
 
 const BINARY_SNIFF_BYTES = 8000;
-
-// Checked BEFORE the generic binary sniff so an image gets an image-specific
-// refusal naming the path that actually works, rather than a dead end.
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif']);
 
 // Read runs in the Electron MAIN process, so an unbounded readFileSync is a
 // whole-app blast radius: a model reading a multi-hundred-MB log OOMs the app,
@@ -51,10 +48,26 @@ export const ReadTool = defineTool({
   name: 'Read',
   description:
     'Read a TEXT file from the filesystem. Returns numbered lines. Use offset and limit for '
-    + 'large files — output is capped at 2000 lines. Images and other binary files are refused: '
-    + 'to see an image, ask the user to attach it to a message.',
+    + 'large files — output is capped at 2000 lines. Images and other binary files are refused.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: "Read a file's contents by path, with optional line offset/limit.",
+  // Vision models are TOLD Read handles images; text-only models keep the
+  // refusal-only wording. See NativeTool.descriptionFor.
+  descriptionFor: (caps) => caps.supportsVision
+    ? 'Read a file from the filesystem. Text files return numbered lines; use offset and '
+      + 'limit for large files — output is capped at 2000 lines. Image files (png, jpg, '
+      + 'gif, webp) are delivered to you as the actual picture alongside the result — '
+      + 'Read is how you look at a screenshot or image the user mentions by path.'
+    : undefined,
+  // Same fix as descriptionFor, scoped to the SHORT text (simplified presentation
+  // for small local models, spec §4.2). Without this a small local vision model
+  // keeps the static shortDescription below and never learns Read handles images —
+  // the exact Roo Code #10440 gap, just on the tier schema-budget trims for.
+  // Kept to one short clause: shortDescription exists to be small.
+  shortDescriptionFor: (caps) => caps.supportsVision
+    ? "Read a file's contents by path, with optional line offset/limit."
+      + ' Images come back as the actual picture.'
+    : undefined,
   inputSchema: z.object({
     file_path: z.string().describe('Absolute or workspace-relative path'),
     offset: z.number().int().min(1).optional().describe('1-based first line to read'),
@@ -99,17 +112,38 @@ export const ReadTool = defineTool({
     }
     const sizeErr = readSizeError(st.size, args.file_path);
     if (sizeErr) return { text: sizeErr, isError: true };
-    const buf = fs.readFileSync(abs);
-    // An IMAGE gets its own refusal, because "it is a binary file" is a different
-    // fact and sends the model hunting for a text workaround that doesn't exist.
-    // Images reach the model through the USER MESSAGE (attach them in the
-    // composer), not through this tool — see harness-session.imagePartsFor. That
-    // is the path every provider supports; image-in-tool-result is Anthropic-only
-    // across the ecosystem (AI SDK's openai-compatible provider JSON.stringifies
-    // it, so three of our four provider paths would send a wall of base64).
-    if (IMAGE_EXTENSIONS.has(path.extname(args.file_path).toLowerCase())) {
-      return { text: `Read rejected: ${args.file_path} is an image. This tool returns text only — ask the user to attach the image to a message so you can see it.`, isError: true };
+    // IMAGES (2026-08-11 spec): a vision model gets the actual picture — the tool
+    // returns the PATH; the driver builds the parts, so promise and delivery are
+    // decided against the same stat. Order: image-shaped check (deliverable OR
+    // undeliverable format) → vision gate → format/size specifics → promise.
+    // Every refusal names the real reason (no "binary file" lies). This branch
+    // runs BEFORE readFileSync below — the driver reads the bytes at delivery
+    // time, so Read must never slurp a large image into memory itself.
+    const imageMediaType = deliverableImageMediaType(args.file_path);
+    const undeliverableExt = UNDELIVERABLE_IMAGE_EXTENSIONS.has(path.extname(args.file_path).toLowerCase());
+    // WHY the vision gate is hoisted above the deliverable/undeliverable split
+    // (2026-08-11 review, Fix 1): it used to live only inside the deliverable
+    // branch, so a text-only model reading diagram.svg fell straight into the
+    // undeliverable branch's "convert it to PNG and Read the copy" advice —
+    // real, actionable-sounding advice that dead-ends, because converting
+    // produces a PNG the SAME text-only model still cannot see. That is a Bash
+    // round-trip spent chasing a fix that does not exist. Checking vision first
+    // for ANY image-shaped file means every no-vision model gets the one true
+    // reason (no vision) regardless of format.
+    if ((imageMediaType || undeliverableExt) && !ctx.supportsVision) {
+      return { text: `Read rejected: ${args.file_path} is an image and the current model cannot view images. Continue without it, or ask the user to describe it.`, isError: true };
     }
+    if (imageMediaType) {
+      if (st.size > MAX_ATTACHMENT_BYTES) {
+        return { text: `Read rejected: ${args.file_path} is a ${(st.size / (1024 * 1024)).toFixed(1)} MB image (limit ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB).`, isError: true };
+      }
+      ctx.readRegistry.set(canonicalize(args.file_path, ctx.cwd), st.mtimeMs);
+      return { text: `Read image ${args.file_path} (${Math.max(1, Math.round(st.size / 1024))} KB, ${imageMediaType}).`, images: [abs] };
+    }
+    if (undeliverableExt) {
+      return { text: `Read rejected: ${args.file_path} is a ${path.extname(args.file_path).slice(1)} image — a format that cannot be delivered to the model. Convert it to PNG (e.g. Bash: magick in.svg out.png) and Read the copy.`, isError: true };
+    }
+    const buf = fs.readFileSync(abs);
     if (looksBinary(buf)) return { text: `Read rejected: ${args.file_path}: it is a binary file.`, isError: true };
     const raw = buf.toString('utf8');
     const all = raw.split('\n');

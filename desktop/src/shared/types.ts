@@ -162,6 +162,12 @@ export interface TranscriptEvent {
     stopReason?: string;
     /** Edit/MultiEdit tool-result payloads carry structuredPatch hunks. */
     structuredPatch?: StructuredPatchHunk[];
+    /** Native user-message events: absolute composer attachment paths, persisted so
+     *  resume can re-read the pixels (events carry no binary). #290 follow-up fix 2. */
+    attachments?: string[];
+    /** Native tool-result events: absolute paths of images the tool delivered
+     *  (Read on an image). Resume re-reads them; the UI may render a chip. */
+    images?: string[];
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is

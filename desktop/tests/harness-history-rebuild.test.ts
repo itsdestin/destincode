@@ -439,3 +439,96 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
     expect(rebuilt).toEqual((session as any).history);
   });
 });
+
+// Task 3 (#290 follow-up fix 2): user-attached images vanished on resume
+// because send() only ever persisted { text }. attachments now ride the
+// event as paths (events carry no binary) and rebuildHistory re-reads them
+// via an injected reader — kept out of history-rebuild.ts's imports so the
+// module stays pure and this suite needs no filesystem.
+describe('attachment resume (#290 follow-up fix 2)', () => {
+  const ev = (type: string, data: any) => ({ type, sessionId: 's', uuid: crypto.randomUUID(), timestamp: 1, data }) as any;
+  const fakeReader = (p: string) => p.endsWith('ok.png') ? { mediaType: 'image/png', data: Buffer.from('png!') } : null;
+
+  it('re-reads persisted attachment paths into user-message parts', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'see /tmp/ok.png', attachments: ['/tmp/ok.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: [{ type: 'text', text: 'see /tmp/ok.png' }, { type: 'file', mediaType: 'image/png', data: Buffer.from('png!') }] }]);
+  });
+
+  it('a vanished attachment degrades to the plain-string shape (path still in text)', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'see /tmp/gone.png', attachments: ['/tmp/gone.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: 'see /tmp/gone.png' }]);
+  });
+
+  it('no reader (pure/legacy call) keeps today\'s exact behavior', () => {
+    const out = rebuildHistory([ev('user-message', { text: 'hi', attachments: ['/tmp/ok.png'] })]);
+    expect(out).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('mixed attachments: one resolves, one is gone — the readable image survives, message does NOT collapse to plain-string', () => {
+    // Per-path degrade, same as imagePartsFor's live skip-don't-throw semantics:
+    // one vanished attachment among several must not sink the whole message
+    // back to the bare-string shape and lose the image that IS still there.
+    const out = rebuildHistory([ev('user-message', { text: 'see both', attachments: ['/tmp/ok.png', '/tmp/gone.png'] })], fakeReader);
+    expect(out).toEqual([{ role: 'user', content: [{ type: 'text', text: 'see both' }, { type: 'file', mediaType: 'image/png', data: Buffer.from('png!') }] }]);
+  });
+});
+
+// Task 7: model-initiated tool-delivered images (e.g. Read on a picture) must
+// survive resume the same way user attachments do (Task 3 above) — the event
+// carries the path, never the binary, and rebuildHistory re-reads it through
+// the injected reader into the exact live content-output shape (Task 5).
+describe('image tool-result resume', () => {
+  const fakeReader = (p: string) => p.endsWith('ok.png') ? { mediaType: 'image/png', data: Buffer.from('png!') } : null;
+  const ev = (type: string, data: any) => ({ type, sessionId: 's', uuid: crypto.randomUUID(), timestamp: 1, data }) as any;
+  const pair = (images: string[]) => [
+    ev('tool-use', { toolUseId: 't1', toolName: 'Read', toolInput: { file_path: images[0] } }),
+    ev('tool-result', { toolUseId: 't1', toolName: 'Read', toolResult: 'Read image', images }),
+    ev('turn-complete', {}),
+  ];
+
+  it('re-reads a persisted image into the exact live content-output shape', () => {
+    const out = rebuildHistory(pair(['/tmp/ok.png']), fakeReader);
+    const toolMsg = out.find((m: any) => m.role === 'tool') as any;
+    expect(toolMsg.content[0].output).toEqual({
+      type: 'content',
+      // filename (Fix 3, 2026-08-11 review): the resumed shape must carry the
+      // same basename-derived filename harness-session.ts's live path does —
+      // otherwise a resumed session labels images differently from a live one.
+      value: [{ type: 'text', text: 'Read image' }, { type: 'file', mediaType: 'image/png', filename: 'ok.png', data: { type: 'data', data: Buffer.from('png!') } }],
+    });
+  });
+
+  it('a vanished image degrades to text WITH a named note — never a silent dangling reference', () => {
+    const out = rebuildHistory(pair(['/tmp/gone.png']), fakeReader);
+    const toolMsg = out.find((m: any) => m.role === 'tool') as any;
+    expect(toolMsg.content[0].output.type).toBe('text');
+    expect(toolMsg.content[0].output.value).toContain('[image no longer available: /tmp/gone.png]');
+  });
+
+  // Brief's title had an unescaped apostrophe inside single quotes (a syntax
+  // error) — reworded rather than escaped so it stays readable.
+  it('no reader means plain text output, today’s shape', () => {
+    const out = rebuildHistory(pair(['/tmp/ok.png']));
+    const toolMsg = out.find((m: any) => m.role === 'tool') as any;
+    expect(toolMsg.content[0].output).toEqual({ type: 'text', value: 'Read image' });
+  });
+
+  it('partial availability: some images present, some gone — both handled in one result', () => {
+    const out = rebuildHistory(
+      [
+        ev('tool-use', { toolUseId: 't1', toolName: 'Read', toolInput: {} }),
+        ev('tool-result', { toolUseId: 't1', toolName: 'Read', toolResult: 'Read images', images: ['/tmp/ok.png', '/tmp/gone.png'] }),
+        ev('turn-complete', {}),
+      ],
+      fakeReader,
+    );
+    const toolMsg = out.find((m: any) => m.role === 'tool') as any;
+    expect(toolMsg.content[0].output).toEqual({
+      type: 'content',
+      value: [
+        { type: 'text', text: 'Read images\n[image no longer available: /tmp/gone.png]' },
+        { type: 'file', mediaType: 'image/png', filename: 'ok.png', data: { type: 'data', data: Buffer.from('png!') } },
+      ],
+    });
+  });
+});

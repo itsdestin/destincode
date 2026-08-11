@@ -35,11 +35,29 @@ vi.mock('../src/main/harness/mcp/mcp-client', async (importOriginal) => {
   return { ...actual, createConnection: createConnectionMock };
 });
 
+// Fix 2 regression seam: spies on ModelCatalog.get() (extends + delegates to
+// the real implementation, same pattern as the NativeSessionHost spy below)
+// so a test can prove the ipc-handlers-wired visionSupportFor closure never
+// calls it for a non-OpenRouter binding — without needing a real network
+// fetch, since super.get() is never reached in that path either.
+const modelCatalogGetSpy = vi.fn();
+vi.mock('../src/main/providers/model-catalog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/main/providers/model-catalog')>();
+  class SpyModelCatalog extends actual.ModelCatalog {
+    get(...args: Parameters<InstanceType<typeof actual.ModelCatalog>['get']>) {
+      modelCatalogGetSpy(...args);
+      return super.get(...args);
+    }
+  }
+  return { ...actual, ModelCatalog: SpyModelCatalog };
+});
+
 // Captures the real args NativeSessionHost's constructor receives, WITHOUT
 // changing its behavior (extends + delegates to the real class via super()).
-// This is the only way to inspect ipc-handlers' positional 9th argument
-// (mcpManager) without exporting it or refactoring the constructor shape —
-// the brief explicitly forbids the latter.
+// This is the only way to inspect ipc-handlers' positional 10th argument
+// (mcpManager, shifted from 9th by Task 6c's new visionSupportFor param)
+// without exporting it or refactoring the constructor shape — the brief
+// explicitly forbids the latter.
 let capturedCtorArgs: unknown[] | undefined;
 vi.mock('../src/main/harness/native-session-host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/main/harness/native-session-host')>();
@@ -136,7 +154,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     createConnectionMock.mockClear();
   });
 
-  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 9th positional arg', async () => {
+  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 10th positional arg', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'mcp.json'),
@@ -156,12 +174,15 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 9 args, skillCatalog (index 7)
-    // explicitly undefined so mcpManager (index 8) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(9);
-    expect(capturedCtorArgs![7]).toBeUndefined();
+    // Positional shape pinned by the brief: 10 args (Task 6c added
+    // visionSupportFor as the 5th positional parameter — the 3rd injected
+    // closure, after contextLengthFor and providerTypeFor — shifting
+    // everything after providerTypeFor down by one), skillCatalog (index 8)
+    // explicitly undefined so mcpManager (index 9) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(10);
+    expect(capturedCtorArgs![8]).toBeUndefined();
 
-    const mcpManager = capturedCtorArgs![8] as {
+    const mcpManager = capturedCtorArgs![9] as {
       acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
@@ -205,9 +226,76 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![8] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const mcpManager = capturedCtorArgs![9] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
     const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
+  });
+});
+
+// Fix 2 regression: visionSupportFor (the 5th positional constructor arg —
+// see the "3rd closure" test above) used to call modelCatalog.get()
+// UNCONDITIONALLY, for every provider type — adding a second full catalog
+// fetch/parse to every cloud session start and a first one to every local
+// session start, neither of which can ever produce a non-null answer (only
+// OpenRouter's catalog carries modality data). This proves the fix: a
+// non-OpenRouter binding's session start never reaches the catalog at all.
+describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', () => {
+  beforeEach(() => {
+    // Same "leave it, don't race ProviderRegistry.init()'s write" reasoning
+    // as the describe block above.
+    testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-vision-shortcircuit-'));
+    capturedCtorArgs = undefined;
+    modelCatalogGetSpy.mockClear();
+  });
+
+  it('never calls modelCatalog.get() for an anthropic binding', async () => {
+    // Write providers.json directly (rather than relying on
+    // ProviderRegistry.init()'s fire-and-forget built-in seeding) so the
+    // 'anthropic-test' provider is present the instant registerIpcHandlers
+    // constructs the closures below — no race with this test's assertion.
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'anthropic-test', type: 'anthropic', label: 'Anthropic', enabled: true }] }),
+    );
+
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    expect(capturedCtorArgs).toBeDefined();
+    const visionSupportFor = capturedCtorArgs![4] as (binding: { providerId: string; modelId: string }) => Promise<boolean | null>;
+
+    const result = await visionSupportFor({ providerId: 'anthropic-test', modelId: 'claude-opus-5' });
+    expect(result).toBeNull();
+    expect(modelCatalogGetSpy).not.toHaveBeenCalled();
+  });
+
+  it('never calls modelCatalog.get() for a local-engine binding', async () => {
+    // 'local' is a BUILT_IN id (provider-registry.ts) — same race-avoidance
+    // reasoning as above, write it directly rather than waiting on init().
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true }] }),
+    );
+
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    const visionSupportFor = capturedCtorArgs![4] as (binding: { providerId: string; modelId: string }) => Promise<boolean | null>;
+    const result = await visionSupportFor({ providerId: 'local', modelId: 'some-gguf' });
+    expect(result).toBeNull();
+    expect(modelCatalogGetSpy).not.toHaveBeenCalled();
   });
 });

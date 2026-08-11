@@ -19,6 +19,7 @@ import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
+import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
@@ -160,18 +161,38 @@ export class NativeSessionHost extends EventEmitter {
     // to a cloud-safe default. Positioned right after contextLengthFor because the
     // two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
+    // Per-model vision fact read from the provider catalog's declared input
+    // modalities (Task 6c). Today only OpenRouter's catalog can actually
+    // answer this — everyone else (direct-key providers, openai-compatible,
+    // local-engine) has no such signal, so the real (ipc-handlers) wiring
+    // returns null for them WITHOUT ever touching the catalog, same as an
+    // OpenRouter cache miss or fetch failure returning null after touching
+    // it. null degrades to resolveProfile's existing registry/provider-default
+    // behavior (DiscoveredModel.supportsVision left undefined) — it is never
+    // allowed to throw. It is also never allowed to block a NON-OpenRouter
+    // session start; for a live OpenRouter binding it does await the same
+    // bounded (AbortSignal.timeout-guarded) catalog fetch contextLengthFor
+    // already pays for that binding, so it is not fully non-blocking there —
+    // see the ipc-handlers.ts construction site for the short-circuit that
+    // makes this true. Positioned right after providerTypeFor for the same
+    // reason that one sits after contextLengthFor: all three are resolved
+    // together for every create/resume/swap.
+    private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
-    // a no-op so the many existing 3-arg test constructions still compile; the
-    // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
+    // a no-op so the many existing 5-arg test constructions (store, modelFactory,
+    // contextLengthFor, providerTypeFor, visionSupportFor — the first four params
+    // plus Task 6c's new closure have no defaults) still compile; the real
+    // wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
     private permissionStore: RememberedRuleStore = NOOP_REMEMBERED_STORE,
     // Injected because electron's `app` is not importable in tests (mirrors the
     // other injected functions/values above). Feeds the <env> block of the
     // once-per-session assembled system prompt.
     private appVersion: string = '0.0.0-dev',
     // Runtime services threaded into every session's ToolContext (spec §3.2) —
-    // WebSearch reads toolServices.search. Optional + LAST so existing 3/4/5-arg
-    // test constructions still compile; the real wiring (ipc-handlers) injects
-    // { search: searchService }.
+    // WebSearch reads toolServices.search. Optional + LAST (of the pre-Task-6c
+    // params) so existing 5/6/7-arg test constructions (the 5 required params,
+    // optionally followed by permissionStore and/or appVersion) still compile;
+    // the real wiring (ipc-handlers) injects { search: searchService }.
     private toolServices?: ToolServices,
     // Installed-skill source for /skill-name and the Skill tool (M3 item 1).
     // Injected + LAST so existing constructions still compile, and so a test can
@@ -299,7 +320,13 @@ export class NativeSessionHost extends EventEmitter {
     // may be far larger. So resolve the provider type FIRST and only clamp locals;
     // cloud/hosted bindings pass their real window through unchanged.
     const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
-    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength });
+    // null (no source could answer — the closure's convention, matching
+    // contextLengthFor/providerTypeFor above) becomes undefined on the
+    // DiscoveredModel, which is visionFor()'s OWN "not discovered" sentinel —
+    // it then falls through to the registry/provider-type default exactly as
+    // it did before this closure existed.
+    const discoveredVision = (await this.visionSupportFor(binding)) ?? undefined;
+    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision });
     return { contextLength, profile };
   }
 
@@ -538,8 +565,9 @@ export class NativeSessionHost extends EventEmitter {
       // tool-call + tool-result pairs too (the old eventsToMessages dropped every
       // tool event, so a resumed tool turn lost its tool context). seedHistory
       // already clears readRegistry + todos (the reset-on-resume ruling) — those
-      // are runtime state, never persisted.
-      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
+      // are runtime state, never persisted. readImageFromDisk re-reads any
+      // persisted attachment paths so images survive resume (#290 follow-up fix 2).
+      session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd), readImageFromDisk));
     } catch (err) {
       await mcpLease?.release();
       throw err;

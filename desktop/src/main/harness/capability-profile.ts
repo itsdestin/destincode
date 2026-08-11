@@ -38,6 +38,10 @@ export interface CapabilityProfile {
    *  with a provider error, a wrong `false` only means the model is told it
    *  cannot view the image. Full metadata sourcing is M6 item 2. */
   supportsVision: boolean;
+  /** Provider can carry an image INSIDE a tool result (Anthropic tool_result
+   *  blocks). Everything else gets the wire-adapter split. Provider-type fact,
+   *  not a model fact — the registry never overrides it. */
+  nativeImageToolResults: boolean;
 }
 
 export type ProfileProviderType =
@@ -45,7 +49,16 @@ export type ProfileProviderType =
   | 'anthropic' | 'openai' | 'google';
 
 // LAYER 1 — discovered truth (a later task fills contextLength from the real engine).
-export interface DiscoveredModel { providerType: ProfileProviderType; modelId: string; contextLength: number | null }
+export interface DiscoveredModel {
+  providerType: ProfileProviderType; modelId: string; contextLength: number | null;
+  /** Per-model vision fact sourced from a catalog that can actually answer it
+   *  (today: OpenRouter's architecture.input_modalities — see model-catalog.ts).
+   *  Optional because most construction sites cannot answer this yet (no
+   *  catalog lookup wired at the call site) — `undefined` here means "not
+   *  discovered", not "no". visionFor() treats it as the middle precedence
+   *  layer: below the KNOWN_MODELS registry, above the provider-type default. */
+  supportsVision?: boolean;
+}
 
 const SMALL_LOCAL_CONTEXT = 32_768;
 
@@ -60,6 +73,11 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   // of CLOUD_DEFAULT (tests, future call sites) cannot accidentally claim a
   // capability the model may not have.
   supportsVision: false,
+  // Placeholder like supportsVision above: resolveProfile ALWAYS spreads the
+  // real `d.providerType === 'anthropic'` check over this. False by default so
+  // a direct use of CLOUD_DEFAULT can't accidentally claim the one capability
+  // that is exclusive to a single provider.
+  nativeImageToolResults: false,
 };
 
 function cloudVariant(t: ProfileProviderType): PromptVariant {
@@ -184,6 +202,10 @@ function localFallback(ctx: number | null): BehavioralProfile {
     supportsParallelToolCalls: false,
     constrainToolArgs: true,
     supportsTools: true,   // assume yes; the registry marks known tool-less models false
+    // Always false for local-engine — this is a PROVIDER-TYPE fact (only direct
+    // Anthropic can carry an image inside a tool result), never a model fact, so
+    // there is no local model, known or unknown, for which this could be true.
+    nativeImageToolResults: false,
   };
 }
 
@@ -203,7 +225,9 @@ export function effectiveContextForModel(loadedContext: number | null, modelId: 
 // Providers we reach through their OWN SDK, whose current flagship models are all
 // multimodal. openrouter / openai-compatible / local-engine are deliberately NOT
 // here: they are transports, not models — the same endpoint serves vision and
-// text-only models — so those resolve from the registry or default false.
+// text-only models — so those resolve from the registry, then a DISCOVERED
+// per-model fact (openrouter's catalog can supply one — see DiscoveredModel's
+// supportsVision comment), and only then this provider-type default.
 const VISION_PROVIDERS = new Set<ProfileProviderType>(['anthropic', 'openai', 'google']);
 
 function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
@@ -211,6 +235,10 @@ function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
   // Registry wins wherever it has an opinion — it is the one place a modelId is
   // allowed to be inspected, and it can see through a transport provider.
   if (known?.supportsVision !== undefined) return known.supportsVision;
+  // Next, a DISCOVERED per-model fact (e.g. OpenRouter's own modality data),
+  // when the call site could supply one. Still beats the provider-type
+  // default because it is model-specific, not a blanket transport guess.
+  if (d.supportsVision !== undefined) return d.supportsVision;
   return VISION_PROVIDERS.has(d.providerType);
 }
 
@@ -223,12 +251,18 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
   // FRONTIER-provider shortcut — see mcpBudgetSizing's header comment.
   const mcpToolBudgetTokens = mcpBudgetSizing(d, registry);
   const supportsVision = visionFor(d, registry);
+  // PROVIDER-TYPE fact, not a model fact: only the direct-Anthropic wire can
+  // carry an image inside a tool_result block. Computed here (not read off
+  // any base/registry object) and spread onto every return site below so the
+  // known-model registry — which has no field for this — can never override
+  // it either way.
+  const nativeImageToolResults = d.providerType === 'anthropic';
   if (d.providerType !== 'local-engine') {
-    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision };
+    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
   }
   const base = localFallback(d.contextLength);
   const known = matchKnownModel(d.modelId, registry);   // LAYER 2 overlay
-  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision };
+  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
   return {
     maxToolPresentation: known.maxToolPresentation ?? base.maxToolPresentation,
     promptVariant: known.promptVariant ?? base.promptVariant,
@@ -239,5 +273,6 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     ...sizing,
     mcpToolBudgetTokens,
     supportsVision,
+    nativeImageToolResults,
   };
 }

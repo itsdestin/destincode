@@ -12,6 +12,21 @@
 // Image-in-TOOL-RESULT is deliberately NOT implemented: it is Anthropic-only
 // across the ecosystem, and openai-compatible JSON.stringifies it — three of our
 // four provider paths would hand the model a wall of base64.
+//
+// UPDATE (2026-08-11 spec, Task 4): the paragraph above is no longer the whole
+// story. Read now ALSO delivers images for MODEL-INITIATED reads (a vision
+// model asking to see a path it was told about) via ToolResultPayload.images —
+// see tools/read.ts and the "Read: image delivery" suite in
+// harness-tools-core.test.ts. Images live canonically in the tool-result
+// message as the AI SDK v7 'content' output shape; the wire-level
+// "Anthropic-only" problem this comment used to describe is solved per-provider
+// by adaptForWire (src/main/harness/wire-adapter.ts, see wire-adapter.test.ts),
+// which rewrites that shape at request-build time — native on Anthropic, split
+// into a synthetic user message elsewhere, stripped (with a text note) for a
+// non-vision model. That driver has landed. This file's suite is about the
+// USER-attachment path (imagePartsFor) specifically, which it does not touch —
+// except for the three ReadTool refusal-wording assertions below, updated to
+// match the new honest refusal text.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -65,26 +80,52 @@ describe('supportsVision resolution', () => {
 });
 
 describe('Read tool — images are refused with the RIGHT reason', () => {
-  it('names the image, and the path that actually works', async () => {
+  // ctx here carries no `supportsVision` (undefined = false, the conservative
+  // default — see ToolContext), so a deliverable image still hits the vision
+  // gate. Updated 2026-08-11 (Task 4): the refusal now names the REAL reason
+  // (model has no vision) instead of steering back to the attach-a-message
+  // flow, which is a fact about a DIFFERENT model, not this file.
+  it('names the image, and the real reason it is refused', async () => {
     const p = path.join(dir, 'shot.png');
     fs.writeFileSync(p, PNG);
     const r = await ReadTool.execute({ file_path: p }, { cwd: dir } as any);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('is an image');
-    expect(r.text).toMatch(/attach/i);
+    expect(r.text).toMatch(/cannot view images/i);
     // The old text blamed the file's encoding, which is a different fact and
     // sends the model looking for a text workaround that does not exist.
     expect(r.text).not.toContain('it is a binary file');
   });
 
-  it('refuses by EXTENSION, before the NUL sniff', async () => {
+  it('gives a no-vision model the VISION reason for an undeliverable format too, not convert-and-retry advice', async () => {
     // An all-ASCII .svg has no NUL bytes, so the binary sniff would have let it
-    // through as text. It is still an image and still not viewable this way.
+    // through as text. It is still an image, and unlike png/jpg/gif/webp it is
+    // never deliverable regardless of vision support (see
+    // UNDELIVERABLE_IMAGE_EXTENSIONS) — but ctx here ALSO has no vision, so the
+    // real blocker is "this model cannot see images at all", not "this format
+    // needs converting". Fix 1 (2026-08-11 review): telling a no-vision model
+    // to convert to PNG and Read the copy is a dead end — the copy comes back
+    // to the SAME vision gate — and costs it a wasted Bash round-trip first.
     const p = path.join(dir, 'icon.svg');
     fs.writeFileSync(p, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
     const r = await ReadTool.execute({ file_path: p }, { cwd: dir } as any);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('is an image');
+    expect(r.text).toMatch(/cannot view images/i);
+    expect(r.text).not.toMatch(/convert it to png/i);
+  });
+
+  it('still gives a VISION-capable model the convert-to-PNG advice for an undeliverable format', async () => {
+    // For a model that CAN see images, "cannot be delivered, convert it" is the
+    // correct and only useful advice — svg itself is never deliverable, vision
+    // support or not. This is the case Fix 1 must not break while fixing the
+    // no-vision dead end above.
+    const p = path.join(dir, 'icon.svg');
+    fs.writeFileSync(p, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    const r = await ReadTool.execute({ file_path: p }, { cwd: dir, supportsVision: true } as any);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('svg');
+    expect(r.text).toMatch(/cannot be delivered/i);
+    expect(r.text).toMatch(/convert it to png/i);
   });
 
   it('still refuses a non-image binary with the binary message', async () => {
@@ -107,11 +148,14 @@ describe('Read tool — images are refused with the RIGHT reason', () => {
     expect(r.text).toContain('hello');
   });
 
-  it('advertises text-only in its schema description', async () => {
-    // The old description said only "Read a file from the filesystem", so models
-    // tried images and ate a refusal they had no way to anticipate.
+  it('advertises text-only in its base description; vision models get a different one', async () => {
+    // The base `description` (what a text-only model sees) still says only
+    // "TEXT file" and refuses images — it no longer tells the model to go
+    // attach the image elsewhere, because for a VISION model that advice is
+    // now false (see descriptionFor, exercised in harness-tools-core.test.ts's
+    // "Read: image delivery" suite).
     expect(ReadTool.description).toMatch(/TEXT file/);
-    expect(ReadTool.description).toMatch(/attach/i);
+    expect(ReadTool.description).toMatch(/refused/i);
   });
 });
 

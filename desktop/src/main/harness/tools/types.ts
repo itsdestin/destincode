@@ -41,6 +41,9 @@ export interface ToolContext {
   /** Injected runtime services (e.g. WebSearch's SearchService). Absent for tools
    *  that need none; a tool depending on one must handle its absence as a config error. */
   services?: ToolServices;
+  /** Whether the SESSION's current model can see images (profile.supportsVision).
+   *  Optional so test/one-off contexts default to the conservative false. */
+  supportsVision?: boolean;
 }
 
 /** What a tool omitted from its own result, and how to see more.
@@ -72,6 +75,11 @@ export interface ToolResultPayload {
   /** Declared by any tool that bounded its own output. Rendered by defineTool —
    *  never hand-written into `text`, or advice drifts from capability again. */
   bounds?: ResultBounds;
+  /** Absolute paths of images this result delivers (Read on an image file). The
+   *  DRIVER turns paths into content parts, applies per-turn budgets + dedupe,
+   *  and amends `text` with a named note for anything it skips — the tool only
+   *  ever promises what it has already stat'd (resolve-before-promise). */
+  images?: string[];
 }
 
 export interface NativeTool<A = any> {
@@ -107,5 +115,17 @@ export interface NativeTool<A = any> {
    *  own schedule — for content-mode Grep it is the common one — and without a hint to
    *  fall back on the model was told content vanished and given no way to get it back. */
   moreHint?: string;
+  /** Capability-dependent description override. Returning undefined falls back to
+   *  `description`. WHY: a model is never told about image reading it doesn't
+   *  have — and a vision model that isn't told never tries (Roo Code #10440). */
+  descriptionFor?(caps: { supportsVision: boolean }): string | undefined;
+  /** Capability-dependent SHORT description override, for simplified presentation
+   *  (spec §4.2 — small local models get shortDescription instead of description
+   *  to keep schema budget down). Returning undefined falls back to the static
+   *  `shortDescription`. WHY: without this a small local vision model never learns
+   *  Read handles images at all — descriptionFor's fix only reaches models on the
+   *  non-simplified path, leaving the exact Roo Code #10440 gap open for the tier
+   *  simplification exists to serve. */
+  shortDescriptionFor?(caps: { supportsVision: boolean }): string | undefined;
   execute(args: A, ctx: ToolContext): Promise<ToolResultPayload>;
 }
