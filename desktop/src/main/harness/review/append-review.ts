@@ -23,7 +23,10 @@ const PROMPT_HEADING_RE = /^## Prompt for other agents$/gm;
 
 export function appendReview(
   docText: string,
-  run: { label: string; modelId: string; review: string; buildSha: string },
+  // WHY runFacts is a plain string, not a BatteryRun: this function must stay
+  // pure (see the file's top WHY comment) — the caller renders the facts block
+  // with run-facts.ts's renderRunFacts() and passes the finished text in.
+  run: { label: string; modelId: string; review: string; buildSha: string; runFacts: string },
   runAtISO: string,
 ): string {
   if (!run.review.trim()) {
@@ -54,6 +57,12 @@ export function appendReview(
     // so it lives on the metadata line instead. The CLI (review-harness.mjs)
     // resolves it via `git rev-parse`/`git status` and passes it in as data.
     `**Model:** \`${run.modelId}\` · **Battery:** \`src/main/harness/review/battery.ts\` · **Build:** \`${run.buildSha}\` · run in a disposable fixture workspace.`,
+    '',
+    // What the transcript shows this run actually did, plus any warning that
+    // the review's claims outrun it (run-facts.ts). Every review carries this,
+    // not only suspect ones — a reader should not have to open a 400KB
+    // transcript JSON to learn how many tools a review is based on.
+    run.runFacts,
     '',
     run.review.trim(),
     '',
