@@ -117,6 +117,9 @@ delete process.env.OPENROUTER_API_KEY;
 const { runBattery } = await import(path.join(DESKTOP, 'dist/main/harness/review/run-battery.js'));
 const { appendReview } = await import(path.join(DESKTOP, 'dist/main/harness/review/append-review.js'));
 const { makeOpenRouterFactory } = await import(path.join(DESKTOP, 'dist/main/harness/review/openrouter-factory.js'));
+// Task 5 widened appendReview to require a rendered run-facts block; this is
+// the CLI's own call site for that, so it has to build one per run.
+const { collectRunFacts, renderRunFacts } = await import(path.join(DESKTOP, 'dist/main/harness/review/run-facts.js'));
 
 const stamp = new Date().toISOString().slice(0, 10);
 const runDir = path.join(WORKSPACE, 'docs/active/investigations/harness-review-runs', stamp);
@@ -128,36 +131,66 @@ const buildSha = resolveBuildSha(DESKTOP);
 
 for (const entry of roster) {
   console.log(`\n=== ${entry.label} (${entry.modelId}) ===`);
+  const slug = entry.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const transcriptPath = path.join(runDir, `${slug}.json`);
   try {
     const run = await runBattery({
       modelFactory: makeOpenRouterFactory(key, entry.modelId),
       modelId: entry.modelId,
       label: entry.label,
     });
-    // Save the transcript BEFORE touching the doc: a claim in a review is only
-    // checkable if the events behind it survive. Opus 5's context-cost claim in
-    // the 2026-08-01 round was falsifiable only by reading the source by hand.
-    const slug = entry.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+    // Save the transcript FIRST, unconditionally, before anything can fail. A
+    // claim in a review is only checkable if the events behind it survive — and
+    // round 5 lost four models entirely because the write sat behind a throw.
     fs.writeFileSync(
-      path.join(runDir, `${slug}.json`),
+      transcriptPath,
       JSON.stringify(
-        { label: entry.label, modelId: entry.modelId, toolCalls: run.toolCalls, asks: run.asks, stepGates: run.stepGates, events: run.events },
-        null,
-        2,
+        {
+          label: entry.label, modelId: entry.modelId,
+          outcome: run.outcome, wrapUpReason: run.wrapUpReason, error: run.error,
+          metrics: run.metrics, events: run.events,
+        },
+        null, 2,
       ),
     );
+
+    const m = run.metrics;
+    const ending = run.wrapUpReason ? `wrapped-up (${run.wrapUpReason})` : run.outcome;
+    const secs = Math.round(m.wallClockMs / 1000);
+    console.log(
+      `  ${ending} · ${m.toolCalls} calls · ${m.asks} asks · ${m.stepGates} gates · ` +
+      `${m.thinkingEvents} thinking · ${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s`,
+    );
+    console.log(`  tools: ${m.toolsUsed.join(' ') || 'none'}`);
+    // Independent of outcome: a wrap-up turn that itself failed still reports
+    // outcome 'wrapped-up' (see run-battery.ts's outcome comment), so a reader
+    // branching only on outcome would miss a real provider failure here.
+    if (run.error) console.log(`  error: ${run.error}`);
+
+    if (!run.review.trim()) {
+      // Not a failure worth aborting on — the transcript is written and the
+      // metrics line above says what happened. appendReview would throw here.
+      console.log('  → no review text; transcript only');
+      continue;
+    }
+
     // Fix (2026-08-10 incident): a bare date-only `stamp` let three same-day
     // runs produce indistinguishable headings (see append-review.ts). Pass
     // the actual completion instant (full ISO timestamp, not just the date)
-    // plus the resolved build identity so appendReview can render both.
-    fs.writeFileSync(DOC, appendReview(fs.readFileSync(DOC, 'utf8'), { ...run, buildSha }, new Date().toISOString()));
-    // stepGates surfaced alongside tool calls/asks (fix for the 2026-08-09 Opus 5
-    // incident, run-battery.ts's STEP_GATE_ALLOWANCE): a nonzero count means the
-    // model needed extra step-budget continuations, which is real signal when
-    // reading its review — previously invisible until a gated run failed outright.
-    console.log(`  ${run.toolCalls} tool calls, ${run.asks} asks, ${run.stepGates} step-gate hits → review appended`);
+    // plus the resolved build identity so appendReview can render both, and
+    // the rendered run-facts block (Task 5) so a reader never has to open the
+    // transcript JSON to see what the run measurably did.
+    const runFacts = renderRunFacts(collectRunFacts(run));
+    fs.writeFileSync(
+      DOC,
+      appendReview(fs.readFileSync(DOC, 'utf8'), { ...run, buildSha, runFacts }, new Date().toISOString()),
+    );
+    console.log('  → review appended');
   } catch (err) {
-    // Report the real failure. One model erroring must not abort the roster.
+    // runBattery now only throws when there was nothing to salvage (it could not
+    // seed the fixture or construct the session). Report the real failure; one
+    // model erroring must not abort the roster.
     console.error(`  FAILED: ${err?.message ?? err}`);
   }
 }
