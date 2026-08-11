@@ -1,13 +1,35 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, EmptyState, ErrorState, LoadingState } from './ui';
+import { Button, EmptyState, ErrorState, LoadingState, SettingRow } from './ui';
 import { BugReportPopup } from './development/BugReportPopup';
-import { describeRule } from './permissions/describe-rule';
+import {
+  describeRule,
+  broadNote,
+  ruleKind,
+  RULE_KIND_ORDER,
+  RULE_KIND_LABEL,
+  type RuleKind,
+} from './permissions/describe-rule';
 import type { PermissionRule, StoredProject, StoredRule } from '../../shared/permission-types';
 
-// Settings → Permissions (M5 item 2a). Lists every "Always allow" a NATIVE
-// session remembered and lets the user take it back. Modelled on
-// ProvidersSection.tsx: same useState/useCallback load shape, same
-// danger-outline → in-place inline confirm (never a modal).
+// Settings → Permissions (M5 item 2a). Everything a NATIVE session remembered
+// because the user chose "Always allow", with a way to take it back.
+//
+// THIS IS AN OVERVIEW, NOT A LOG. The first version listed every approval ever
+// granted as one flat line each and was rejected for exactly that: "i don't
+// want a separate line for every single permission i've ever approved". So the
+// default view is three lines of orientation (what this is · how many · which
+// folders) and the rows themselves are two levels down, behind a folder you
+// opened and a kind you were looking for.
+//
+// The shapes here are the settings family's, NOT ProvidersSection's. That file
+// hand-rolls its rows and is grandfathered as legacy in
+// setting-row-authority.test.tsx; the first version was modelled on it and
+// inherited the drift. The exemplars actually followed:
+//   · rows            SettingsPanel.tsx Connected Devices — <SettingRow variant="item">
+//   · collapsible     OpenTasksPopup.tsx — label-styled <button> with count + caret
+//   · destructive     SyncPanel.tsx DevicesTab — outline opens, filled commits,
+//                     in place, with autoFocus + Escape-to-cancel
+//   · truncating tail LocalModelsSection.tsx — "Show all N"
 //
 // DELIBERATELY NOT gated on window.claude.native.supported, unlike
 // ProvidersSection. remote-shim.ts hardcodes that flag false, so copying the
@@ -15,10 +37,9 @@ import type { PermissionRule, StoredProject, StoredRule } from '../../shared/per
 // where revoking a grant from a phone matters. Spec 2026-08-11, "Open item for
 // Phase 1 review".
 //
-// Narrow viewport (640px) is handled with Tailwind's sm: prefix rather than
-// useNarrowViewport(), per .claude/rules/narrow-viewport.md: the hook is for
-// DOM-structure branches, classes for class-only changes. Nothing is hidden
-// when narrow — the row stacks and Remove goes full-width.
+// No `sm:` breakpoints anywhere: the dialog is size="panel" (420px) and never
+// gets wider, so a breakpoint that only fires above 640px is dead code that
+// merely looks responsive. Long text truncates or wraps instead.
 
 // ── Plain-language helpers ───────────────────────────────────────────────────
 
@@ -77,16 +98,6 @@ function folderHeadings(projects: StoredProject[]): Map<string, string> {
   return headings;
 }
 
-/** What a pattern-less grant actually covers, in the user's words. describeRule
- *  only reports THAT a rule is broad; the noun depends on the tool. */
-function broadNote(tool: string): string {
-  if (tool === 'Bash') return 'Covers every command, not just the one it first asked about.';
-  if (tool === 'Edit' || tool === 'Write' || tool === 'Read') {
-    return 'Covers every file, not just the one it first asked about.';
-  }
-  return 'Covers every use of this tool, not just the one it first asked about.';
-}
-
 /** "Approved Jul 27, 2026", or nothing at all. Rules stored before this screen
  *  existed carry no date, and a missing date is shown as a missing date rather
  *  than as today. */
@@ -113,6 +124,26 @@ function toPermissionRule(rule: StoredRule): PermissionRule {
     action: rule.action,
   };
 }
+
+/** One short sentence naming an approval, for the accessible names on its
+ *  buttons. A list of twenty buttons all announcing "Remove" is unusable with a
+ *  screen reader, which is why DevicesTab labels its own the same way. */
+function plainName(rule: StoredRule): string {
+  const d = describeRule(rule);
+  return d.subject !== undefined ? `${d.verb} ${d.subject}` : d.verb;
+}
+
+/** Split a folder's approvals into the four kind buckets, preserving order. */
+function groupByKind(rules: StoredRule[]): Record<RuleKind, StoredRule[]> {
+  const out: Record<RuleKind, StoredRule[]> = { commands: [], files: [], connections: [], other: [] };
+  for (const rule of rules) out[ruleKind(rule)].push(rule);
+  return out;
+}
+
+/** Rows shown per kind before "Show all N". 5 visible with a 7th hidden is
+ *  worth a click; hiding a single row behind one is not, which is why the cut
+ *  only applies above 6. */
+const ROWS_PER_KIND = 5;
 
 // ── The section ──────────────────────────────────────────────────────────────
 
@@ -142,6 +173,13 @@ export default function PermissionsSection() {
 
   const headings = projects ? folderHeadings(projects) : new Map<string, string>();
   const withRules = (projects ?? []).filter((p) => p.rules.length > 0);
+  const total = withRules.reduce((n, p) => n + p.rules.length, 0);
+
+  // The whole point of the overview: one plain sentence that answers "how much
+  // have I approved?" before any folder is opened.
+  const summary = withRules.length === 1
+    ? `${total} ${total === 1 ? 'approval' : 'approvals'} in one folder.`
+    : `${total} approvals across ${withRules.length} folders.`;
 
   return (
     <section className="space-y-3">
@@ -164,17 +202,28 @@ export default function PermissionsSection() {
           message={"You haven't approved anything yet. When you choose “Always allow” during a conversation, it shows up here."}
         />
       ) : (
-        <div className="space-y-4">
-          {withRules.map((project) => (
-            <ProjectGroup
-              key={project.slug}
-              project={project}
-              heading={headings.get(project.slug) ?? null}
-              onChanged={refresh}
-            />
-          ))}
+        <div className="space-y-3">
+          <p className="text-2xs text-fg-muted">{summary}</p>
+
+          <div className="space-y-2">
+            {withRules.map((project) => (
+              <FolderGroup
+                key={project.slug}
+                project={project}
+                heading={headings.get(project.slug) ?? null}
+                // Default-open heuristic: a short screen should not need a
+                // click to be read, a long one should not dump 60 rows. Open
+                // only when the whole list is small — at most two folders, and
+                // at most eight approvals in this one.
+                defaultOpen={withRules.length <= 2 && project.rules.length <= 8}
+                onChanged={refresh}
+              />
+            ))}
+          </div>
+
           {/* Always visible, never hover-revealed — the list can go stale while
-              this screen is open (a session can add a grant behind it). */}
+              this screen is open (a session can add a grant behind it), and
+              every "couldn't be found" message below points the user here. */}
           <Button variant="secondary" size="sm" onClick={() => void refresh()}>
             Refresh
           </Button>
@@ -186,14 +235,24 @@ export default function PermissionsSection() {
   );
 }
 
-// ── One project's group ──────────────────────────────────────────────────────
+// ── One folder ───────────────────────────────────────────────────────────────
 
-function ProjectGroup({
-  project, heading, onChanged,
-}: { project: StoredProject; heading: string | null; onChanged: () => Promise<void> }) {
+function FolderGroup({
+  project, heading, defaultOpen, onChanged,
+}: {
+  project: StoredProject;
+  heading: string | null;
+  defaultOpen: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+
+  const count = project.rules.length;
+  const label = heading ?? project.slug;
+  const groups = groupByKind(project.rules);
 
   const confirmClear = async () => {
     setBusy(true);
@@ -218,54 +277,140 @@ function ProjectGroup({
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-end gap-3 px-1">
-        <div className="flex-1 min-w-0">
-          <h4 className="text-xs font-medium text-fg truncate">{heading ?? project.slug}</h4>
+    <div>
+      {/* OpenTasksPopup's collapsible-label pattern verbatim, plus the sanctioned
+          hover:text-fg. The count stays on the toggle so a COLLAPSED folder
+          still says how much is hidden inside it. */}
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-2 pb-1 flex justify-between items-baseline gap-2 hover:text-fg"
+      >
+        <span className="truncate">{label}</span>
+        <span className="shrink-0">{count} {open ? '▾' : '▸'}</span>
+      </button>
+
+      {open && (
+        <div className="space-y-3 pb-1">
+          {/* The folder itself. break-all rather than truncate: the tail of a
+              path is the part that identifies it, and there is no wider layout
+              to fall back to at 420px. */}
           {project.cwd ? (
-            <p className="text-3xs text-fg-muted font-mono truncate">{project.cwd}</p>
+            <p className="text-3xs text-fg-muted break-all px-3">{project.cwd}</p>
           ) : (
-            <p className="text-3xs text-fg-muted">
+            <p className="text-3xs text-fg-muted px-3">
               {"This folder wasn't recorded, so only its internal name is shown."}
             </p>
           )}
-        </div>
-        {!confirming && (
-          <Button variant="danger-outline" size="sm" className="shrink-0" onClick={() => { setConfirming(true); setNote(null); }}>
-            Remove all
-          </Button>
-        )}
-      </div>
 
-      {/* Inline confirm — in place, never a modal (ProvidersSection:346-364). */}
-      {confirming && (
-        <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
-          <p className="text-2xs text-fg-dim leading-relaxed">
-            {"Remove all "}{project.rules.length}{" approvals for this folder? You'll be asked the next time any of them comes up."}
-          </p>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1 py-2">
-              Cancel
-            </Button>
-            <Button variant="danger" onClick={() => void confirmClear()} disabled={busy} className="flex-1 py-2">
-              {busy ? 'Removing…' : 'Remove all'}
-            </Button>
+          {RULE_KIND_ORDER.filter((kind) => groups[kind].length > 0).map((kind) => (
+            <KindGroup
+              key={kind}
+              kind={kind}
+              rules={groups[kind]}
+              slug={project.slug}
+              onChanged={onChanged}
+            />
+          ))}
+
+          {/* Per-folder bulk removal. It lives at the BOTTOM of the open folder,
+              not in the heading row, so it cannot be hit while aiming at the
+              disclosure toggle — and it is a `ghost` button, the lightest
+              variant in the family, because it is the widest-reaching action on
+              this screen and has no precedent in settings to inherit weight
+              from. The confirm gate below is the same one every row uses. */}
+          {/* Only when there is more than one to remove: "Remove all 1" is just
+              the row's own Remove button wearing a second, scarier label.
+              px-0.5 + the ghost button's own px-2.5 puts this label on the same
+              12px left edge as every row title above it. */}
+          {count > 1 && (
+          <div className="px-0.5">
+            {!confirming ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setConfirming(true); setNote(null); }}
+              >
+                Remove all {count} for this folder
+              </Button>
+            ) : (
+              <div
+                className="space-y-2 rounded-lg bg-inset border border-edge-dim p-2.5"
+                // Escape cancels, matching DevicesTab — the trigger has just
+                // unmounted, so there is nothing else to escape back to.
+                onKeyDown={(e) => { if (e.key === 'Escape') setConfirming(false); }}
+              >
+                <p className="text-2xs text-fg-dim leading-relaxed">
+                  {`Remove all ${count} approvals for ${label}? You'll be asked again the next time any of them comes up.`}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setConfirming(false)}
+                    aria-label={`Keep the approvals for ${label}`}
+                    className="flex-1 py-2"
+                  >
+                    Cancel
+                  </Button>
+                  {/* autoFocus: the trigger just unmounted, so without this a
+                      keyboard user drops to <body> and re-tabs from the top. */}
+                  <Button
+                    variant="danger"
+                    autoFocus
+                    disabled={busy}
+                    onClick={() => void confirmClear()}
+                    aria-label={`Confirm removing all approvals for ${label}`}
+                    className="flex-1 py-2"
+                  >
+                    {busy ? 'Removing…' : 'Remove all'}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {note && <p className="text-3xs text-destructive-fg mt-1">{note}</p>}
           </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
 
-      {note && <p className="text-3xs text-destructive-fg px-1">{note}</p>}
+// ── One kind of approval, inside a folder ────────────────────────────────────
 
-      <div className="divide-y divide-edge-dim/60">
-        {project.rules.map((rule) => (
-          <RuleRow key={ruleKey(rule)} slug={project.slug} rule={rule} onChanged={onChanged} />
+function KindGroup({
+  kind, rules, slug, onChanged,
+}: { kind: RuleKind; rules: StoredRule[]; slug: string; onChanged: () => Promise<void> }) {
+  const [showAll, setShowAll] = useState(false);
+  // Never hide a single row behind a click — the cut only pays for itself once
+  // there is more than one row on the other side of it.
+  const visible = showAll || rules.length <= ROWS_PER_KIND + 1 ? rules : rules.slice(0, ROWS_PER_KIND);
+
+  return (
+    <div>
+      {/* Section labels have exactly one spelling — the classes below are the
+          canonical string, in the canonical order (section-label-authority). */}
+      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2 px-3">{RULE_KIND_LABEL[kind]}</h3>
+      <div className="space-y-1">
+        {visible.map((rule) => (
+          <RuleRow key={ruleKey(rule)} slug={slug} rule={rule} onChanged={onChanged} />
         ))}
+        {visible.length < rules.length && (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="text-3xs text-fg-2 hover:underline px-3"
+          >
+            Show all {rules.length}
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-// ── One remembered rule ──────────────────────────────────────────────────────
+// ── One remembered approval ──────────────────────────────────────────────────
 
 function RuleRow({
   slug, rule, onChanged,
@@ -275,12 +420,21 @@ function RuleRow({
   const [note, setNote] = useState<string | null>(null);
 
   const described = describeRule(rule);
-  const granted = grantedLabel(rule.grantedAt);
+  const name = plainName(rule);
+  // Plain words under the title, never a status glyph. describeRule already
+  // reports MCP grants as not-broad, so the breadth note never fires on one.
+  const detail = [
+    described.broad ? broadNote(rule.tool) : null,
+    grantedLabel(rule.grantedAt),
+  ].filter(Boolean).join(' · ');
 
   const confirmRemove = async () => {
     setBusy(true);
     setNote(null);
     try {
+      // The SLUG, never the cwd: cwdToProjectSlug collapses ':', '\', '/' and
+      // spaces all to '-', so a path cannot be reconstructed from a slug and the
+      // store is keyed by the slug alone.
       const hit = await window.claude.permissions.remove(slug, toPermissionRule(rule));
       setConfirming(false);
       if (hit) {
@@ -300,52 +454,66 @@ function RuleRow({
   };
 
   return (
-    <div className="py-2 px-1">
-      {/* Stacks below 640px so the Remove button keeps its full tap target
-          instead of being squeezed beside a long command. Nothing is hidden. */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs text-fg">
+    <div>
+      <SettingRow
+        variant="item"
+        title={
+          <>
             {described.verb}
             {described.subject !== undefined && (
               <> <span className="font-mono text-fg-2 break-all">{described.subject}</span></>
             )}
-          </p>
-          {/* Plain words, no status glyph. describeRule already reports MCP
-              grants as not-broad, so this never fires on an MCP row. */}
-          {described.broad && <p className="text-3xs text-fg-muted mt-0.5">{broadNote(rule.tool)}</p>}
-          {granted && <p className="text-3xs text-fg-muted mt-0.5">{granted}</p>}
-        </div>
-        {!confirming && (
+          </>
+        }
+        description={detail || undefined}
+        // The trigger unmounts while the confirm is open, exactly as DevicesTab
+        // does — two "Remove" buttons for one row would be ambiguous.
+        control={confirming ? undefined : (
           <Button
             variant="danger-outline"
             size="sm"
-            className="w-full sm:w-auto sm:shrink-0"
+            className="shrink-0"
+            aria-label={`Remove approval: ${name}`}
             onClick={() => { setConfirming(true); setNote(null); }}
           >
             Remove
           </Button>
         )}
-      </div>
+      />
 
       {confirming && (
-        <div className="mt-2 space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
+        <div
+          className="mt-1.5 space-y-2 rounded-lg bg-inset border border-edge-dim p-2.5"
+          onKeyDown={(e) => { if (e.key === 'Escape') setConfirming(false); }}
+        >
           <p className="text-2xs text-fg-dim leading-relaxed">
             {"You'll be asked the next time this comes up."}
           </p>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1 py-2">
+            <Button
+              variant="secondary"
+              onClick={() => setConfirming(false)}
+              aria-label={`Keep approval: ${name}`}
+              className="flex-1 py-2"
+            >
               Cancel
             </Button>
-            {/* Filled danger commits, outline opens it — the ProvidersSection pair. */}
-            <Button variant="danger" onClick={() => void confirmRemove()} disabled={busy} className="flex-1 py-2">
+            {/* Filled danger commits, outline opened it. */}
+            <Button
+              variant="danger"
+              autoFocus
+              disabled={busy}
+              onClick={() => void confirmRemove()}
+              aria-label={`Confirm removing approval: ${name}`}
+              className="flex-1 py-2"
+            >
               {busy ? 'Removing…' : 'Remove'}
             </Button>
           </div>
         </div>
       )}
 
-      {note && <p className="text-3xs text-destructive-fg mt-2">{note}</p>}
+      {note && <p className="text-3xs text-destructive-fg mt-1 px-3">{note}</p>}
     </div>
   );
 }
