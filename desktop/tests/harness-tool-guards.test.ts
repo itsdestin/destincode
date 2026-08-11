@@ -58,10 +58,12 @@ describe('checkPathGuard — threat model table', () => {
     });
 
     it('cannot be used to reach a credential file by climbing out of the spill root', () => {
-      // The credential denies run BEFORE the exemption, so a path that
-      // normalizes into ~/.ssh is denied even though it is spelled as a spill
-      // path. This is the ordering the exemption's placement depends on.
-      const escape = path.join(spillRoot(), '..', '..', path.relative(path.parse(HOME).root, HOME), '.ssh', 'id_rsa');
+      // The credential denies run BEFORE the exemption, so a path carrying a
+      // `.ssh` segment is denied even though it is spelled as a spill path.
+      // This is the ordering the exemption's placement depends on. Built from
+      // segments rather than from HOME so the drive layout can't change the
+      // result on Windows.
+      const escape = path.join(spillRoot(), '..', 'somewhere', '.ssh', 'id_rsa');
       expect(checkPathGuard(escape, CWD).kind).toBe('deny');
     });
   });
