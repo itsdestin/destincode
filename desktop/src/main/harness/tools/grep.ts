@@ -243,7 +243,15 @@ export const GrepTool = defineTool({
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {
     const mode = args.output_mode ?? 'files_with_matches';
-    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git'];
+    // `--path-separator /` (2026-08-11): rg prints paths with the PLATFORM
+    // separator, so Windows returned `src\a.ts` while Glob returned `src/a.ts`
+    // for the same file — one file, two shapes, unpipeable between the tools.
+    // Set here at construction so it covers every output_mode. Do NOT
+    // hand-normalize rg's stdout instead: in content mode a line is
+    // `path:line:text` and the MATCHED TEXT can itself contain backslashes and
+    // colons, so string surgery would corrupt real matches. Inert on
+    // Linux/macOS, which already print '/'.
+    const rgArgs = ['--no-config', '--hidden', '--glob', '!.git', '--path-separator', '/'];
     // Fix (2026-08-10 review, item 2): `--max-count` used to be passed
     // UNCONDITIONALLY, including for count mode — so ripgrep itself stopped
     // counting a file at 500 matches, and the true total (e.g. 2,400 in the

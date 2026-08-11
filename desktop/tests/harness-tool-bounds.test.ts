@@ -73,10 +73,32 @@ describe('Grep and Glob agree on path format', () => {
     // workspace passed as ctx.cwd. The buggy rebase() returned the
     // search-root-relative string unchanged ("src/a.ts"), which reads as a
     // workspace file when it is not one.
+    // Widened 2026-08-11: the absolute form is now forward-slashed too, so the
+    // whole harness speaks one path vocabulary instead of two.
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-workspace-'));
     try {
       const r = await GlobTool.execute({ pattern: '**/*.ts', path: dir }, makeCtx(workspace));
-      expect(r.text).toBe(path.join(dir, 'src', 'a.ts'));
+      expect(r.text).not.toContain('\\');
+      expect(r.text.endsWith('/src/a.ts')).toBe(true);
+      expect(r.text.startsWith(dir.replace(/\\/g, '/'))).toBe(true);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // Added 2026-08-11: the external-directory agreement was asserted for Glob
+  // only, so `--path-separator` could have silently split the two tools apart
+  // on Windows with every test still green. Pins BOTH directions.
+  it('Grep returns absolute paths when the search root is outside the workspace, matching Glob', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-workspace-'));
+    try {
+      const r = await GrepTool.execute(
+        { pattern: 'marker', output_mode: 'files_with_matches', path: dir },
+        makeCtx(workspace),
+      );
+      expect(r.text).not.toContain('\\');
+      expect(r.text.endsWith('/src/a.ts')).toBe(true);
+      expect(r.text.startsWith(dir.replace(/\\/g, '/'))).toBe(true);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
