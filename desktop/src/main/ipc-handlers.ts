@@ -2438,8 +2438,11 @@ export function registerIpcHandlers(
   // --- Native runtime IPC (Phase 1 Plan A) ---
   // M1: invoke — returns {status:'sent'|'queued'|'failed', reason?} so the renderer
   // can render truthful bubbles. send() is sync and never throws (host contract).
-  ipcMain.handle(IPC.NATIVE_SEND, (_e, { sessionId, text }: { sessionId: string; text: string }) =>
-    nativeHost.send(sessionId, text));
+  // `attachments` are absolute composer file paths (optional — older renderers
+  // and the remote shim may omit it). Image ones become image parts on the user
+  // message; the paths also stay in `text`, which is the bubble's dedup key.
+  ipcMain.handle(IPC.NATIVE_SEND, (_e, { sessionId, text, attachments }: { sessionId: string; text: string; attachments?: string[] }) =>
+    nativeHost.send(sessionId, text, attachments ?? []));
   // Task 11: cancel/edit a queued-but-not-yet-sent message. removeQueued is
   // sync and never throws — the boolean IS the answer (true = removed, false =
   // too late / unknown), so this is a thin pass-through like NATIVE_SEND above.

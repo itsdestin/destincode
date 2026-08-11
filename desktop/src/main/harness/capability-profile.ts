@@ -31,6 +31,13 @@ export interface CapabilityProfile {
    *  model) must be gated exactly like a local one. Only a truly UNMEASURED
    *  window falls back to the conservative default. */
   mcpToolBudgetTokens: number;
+  /** May a user message carry image parts to this model? Gates attachment
+   *  delivery on the native send path. Sourced like the sizing fields — from
+   *  the provider and the registry, never from a model-name guess at the call
+   *  site. Conservative by construction: a wrong `true` fails the whole turn
+   *  with a provider error, a wrong `false` only means the model is told it
+   *  cannot view the image. Full metadata sourcing is M6 item 2. */
+  supportsVision: boolean;
 }
 
 export type ProfileProviderType =
@@ -48,6 +55,11 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   constrainToolArgs: false, supportsTools: true,
   exposeSkillCatalog: true, injectionBudgetTokens: 20_000,
   mcpToolBudgetTokens: 20_000,
+  // Conservative placeholder only: resolveProfile ALWAYS spreads the real
+  // visionFor() result over this. It is false rather than true so a direct use
+  // of CLOUD_DEFAULT (tests, future call sites) cannot accidentally claim a
+  // capability the model may not have.
+  supportsVision: false,
 };
 
 function cloudVariant(t: ProfileProviderType): PromptVariant {
@@ -161,7 +173,7 @@ function mcpBudgetSizing(d: DiscoveredModel, registry: KnownModelEntry[]): numbe
 // it depends on the window rather than on which layer won. Typing that
 // honestly keeps tsc able to catch a missing field at every construction site
 // instead of letting a spread paper over it.
-type BehavioralProfile = Omit<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens' | 'mcpToolBudgetTokens'>;
+type BehavioralProfile = Omit<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens' | 'mcpToolBudgetTokens' | 'supportsVision'>;
 
 function localFallback(ctx: number | null): BehavioralProfile {
   const small = ctx == null || ctx <= SMALL_LOCAL_CONTEXT;
@@ -188,6 +200,20 @@ export function effectiveContextForModel(loadedContext: number | null, modelId: 
   return ceiling ? Math.min(loadedContext, ceiling) : loadedContext;
 }
 
+// Providers we reach through their OWN SDK, whose current flagship models are all
+// multimodal. openrouter / openai-compatible / local-engine are deliberately NOT
+// here: they are transports, not models — the same endpoint serves vision and
+// text-only models — so those resolve from the registry or default false.
+const VISION_PROVIDERS = new Set<ProfileProviderType>(['anthropic', 'openai', 'google']);
+
+function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
+  const known = matchKnownModel(d.modelId, registry);
+  // Registry wins wherever it has an opinion — it is the one place a modelId is
+  // allowed to be inspected, and it can see through a transport provider.
+  if (known?.supportsVision !== undefined) return known.supportsVision;
+  return VISION_PROVIDERS.has(d.providerType);
+}
+
 export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] = KNOWN_MODELS): CapabilityProfile {
   // Sizing is orthogonal to the behavioral layers below — it depends only on the
   // window — so it is computed once and spread onto whichever base is returned.
@@ -196,12 +222,13 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
   // injectionSizing itself) because it deliberately skips that function's
   // FRONTIER-provider shortcut — see mcpBudgetSizing's header comment.
   const mcpToolBudgetTokens = mcpBudgetSizing(d, registry);
+  const supportsVision = visionFor(d, registry);
   if (d.providerType !== 'local-engine') {
-    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens };
+    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision };
   }
   const base = localFallback(d.contextLength);
   const known = matchKnownModel(d.modelId, registry);   // LAYER 2 overlay
-  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens };
+  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision };
   return {
     maxToolPresentation: known.maxToolPresentation ?? base.maxToolPresentation,
     promptVariant: known.promptVariant ?? base.promptVariant,
@@ -211,5 +238,6 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     supportsTools: known.supportsTools ?? base.supportsTools,
     ...sizing,
     mcpToolBudgetTokens,
+    supportsVision,
   };
 }
