@@ -897,6 +897,29 @@ describe('Bash cwd vocabulary', () => {
     }
   });
 
+  it('rebaseReportedCwd rejects a sibling directory whose name merely starts with the root name', () => {
+    // Fix: the containment check uses `+ path.sep` to prevent a sibling directory
+    // whose name is the root's real path with one character appended (e.g., real=/a/b,
+    // sibling=/a/bc) from passing the startsWith check and being treated as inside
+    // the workspace. Dropping `+ path.sep` would silently widen the scope guard,
+    // allowing the session to escape into that sibling. This test pins that invariant.
+    const sibling = real + 'c';
+    let created = false;
+    try {
+      fs.mkdirSync(sibling);
+      created = true;
+      expect(rebaseReportedCwd(link, sibling)).toBeNull();
+    } finally {
+      if (created) {
+        try {
+          fs.rmSync(sibling, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  });
+
   it('the metadata line names the workspace root the model was given, not the resolved one', async () => {
     const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(link));
     expect(r.text).toContain(`[cwd: ${link} · exit 0]`);
