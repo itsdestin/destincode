@@ -159,11 +159,18 @@ export function adaptForWire(messages: ModelMessage[], caps: WireImageCaps): Mod
           // No 'file' part exists on this branch, so the file renderer is
           // never invoked — but if that invariant ever broke, a renderer
           // that quietly returns '' would produce a blank line with zero
-          // trace. Throw instead so the failure is loud, not silent.
+          // trace. Throw instead so the failure is loud, not silent. Traced
+          // (2026-08-11 review): this IS wrapped — it surfaces as a
+          // session-error via describeProviderError, caught at the summary
+          // call site, so the session survives — but the app's owner is a
+          // non-developer who can see this text, so it must not read like an
+          // internal assertion (docs/error-message-standards.md: general +
+          // non-committal, since there is no real cause to report here — it
+          // truly should never happen).
           return {
             ...part,
             output: textOutput(renderFlat(flat, () => {
-              throw new Error('unreachable: no file parts on the flatten branch');
+              throw new Error('Internal error while preparing an image for this model. Please report this bug.');
             })),
           };
         }

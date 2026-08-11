@@ -181,3 +181,54 @@ describe('truncateToolMessage — advice matches the tool that produced the resu
     expect(value).not.toMatch(/re-run/i);
   });
 });
+
+// Fix 2 (2026-08-11 review): truncateToolMessage never learned about the AI SDK
+// v7 'content' output shape (text + file parts) that image-bearing tool results
+// use — it fell through completely untouched, neither shrunk nor stripped, on
+// the LAST-RESORT salvage path right before a provider 400. pruneToolOutputs
+// (compaction.ts) already collapses this shape; these pin that
+// truncateToolMessage now mirrors it, including its "only claim an image was
+// dropped when a file part is actually present" guard.
+describe('truncateToolMessage — collapses image (content) outputs instead of passing them through', () => {
+  it('collapses a content output with a file part to text plus a named note', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: {
+          type: 'content',
+          value: [
+            { type: 'text', text: 'here is the screenshot' },
+            { type: 'file', mediaType: 'image/png', data: 'BASE64DATA'.repeat(10_000) },
+          ],
+        },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000) as any;
+    const output = out.content[0].output;
+    expect(output.type).toBe('text');
+    expect(output.value).toContain('here is the screenshot');
+    expect(output.value).toContain('[image dropped');
+    expect(output.value).toContain('Read');
+    // The point of the fix: the base64 payload is actually gone, not just
+    // sitting there untouched behind a note.
+    expect(output.value).not.toContain('BASE64DATA');
+  });
+
+  it('does not invent a dropped-image note when no file part is present', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: { type: 'content', value: [{ type: 'text', text: 'just some tool text' }] },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000) as any;
+    const output = out.content[0].output;
+    expect(output.type).toBe('text');
+    expect(output.value).toBe('just some tool text');
+    expect(output.value).not.toContain('[image dropped');
+  });
+});

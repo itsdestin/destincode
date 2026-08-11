@@ -178,6 +178,23 @@ export function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelM
     ...msg,
     content: parts.map((p: any) => {
       if (p?.type !== 'tool-result') return p;
+      // Sibling of pruneToolOutputs' content branch (compaction.ts) — this is
+      // the LAST-RESORT salvage path (fitToContext's oversized-tail fallback,
+      // the step immediately before a provider 400), and until this branch
+      // existed it was the one sizing path that could not reclaim anything
+      // from an image: the `typeof value !== 'string'` check below let a
+      // content-output tool result pass through completely untouched. Collapse
+      // it the same way prune does — text kept, file part dropped, a named
+      // note in its place — including the same guard (only claim an image was
+      // dropped when a file part is actually present), so the two paths can't
+      // silently drift on what counts as "an image output".
+      if (p.output?.type === 'content' && Array.isArray(p.output.value)) {
+        const text = p.output.value.filter((v: any) => v?.type === 'text').map((v: any) => v.text).join('\n');
+        const hasFile = p.output.value.some((v: any) => v?.type === 'file');
+        if (!hasFile) return { ...p, output: { type: 'text', value: text } };
+        const note = `[image dropped — this result alone exceeds the model's context window; re-run ${p.toolName ?? 'the tool'} if you need to see it again]`;
+        return { ...p, output: { type: 'text', value: text ? `${text}\n${note}` : note } };
+      }
       const value = p.output?.value;
       if (typeof value !== 'string' || value.length <= per) return p;
       const dropped = value.length - per;
@@ -357,20 +374,54 @@ export class HarnessSession extends EventEmitter {
   private readonly injectedTriggerIds = new Set<string>();
   /** Delivered-image dedupe: canonical path → mtimeMs at delivery. A model that
    *  re-Reads the SAME unchanged file gets "already visible" text, not a second
-   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared
-   *  anywhere model history is discarded or replaced — on resume (alongside
-   *  readRegistry), on /clear (clearHistory), on compaction's summarize step
-   *  (maybeCompact/compactNow), and on compaction's PRUNE step when it
-   *  actually collapses an image output (same two call sites, gated on a
-   *  countImageOutputs before/after diff so an ordinary text-only prune
-   *  doesn't pay for it) — because every one of those DROPS entries the
-   *  cache is vouching for. A stale entry after a drop doesn't just cost a
-   *  redundant re-Read: it makes the dedupe note ITSELF false ("already visible
-   *  earlier in this conversation" when it no longer is), permanently, until an
+   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared on
+   *  every site that DISCARDS entries from `this.history` itself — resume
+   *  (seedHistory, alongside readRegistry), /clear (clearHistory), compaction's
+   *  summarize step (maybeCompact/compactNow), and compaction's PRUNE step when
+   *  it actually collapses an image output (same two call sites, gated on a
+   *  countImageOutputs before/after diff so an ordinary text-only prune doesn't
+   *  pay for it) — because every one of those DROPS entries the cache is
+   *  vouching for. A stale entry after a drop doesn't just cost a redundant
+   *  re-Read: it makes the dedupe note ITSELF false ("already visible earlier
+   *  in this conversation" when it no longer is), permanently, until an
    *  unrelated mtime change happens to reset it. The re-Read this forces after
    *  a clear is not free — a second ~1.6k-token copy of an image that may still
    *  be sitting in surviving history — but that is the safe failure direction:
-   *  over-delivery costs tokens, the bug it replaces cost correctness. */
+   *  over-delivery costs tokens, the bug it replaces cost correctness.
+   *
+   *  KNOWN GAP (2026-08-11 review, deliberately NOT fixed in this pass): the
+   *  list above is every site that discards from `this.history`. It is NOT
+   *  exhaustive over every way the MODEL's effective view of history can
+   *  shrink — fitToContext trims oldest messages for the OUTGOING REQUEST
+   *  only, leaving `this.history` itself untouched, so an image can scroll out
+   *  of what the model actually sees while this cache still vouches for it: a
+   *  permanently false "already visible" note plus silent permanent
+   *  non-delivery of that file.
+   *
+   *  Reachability, worked through so a future session doesn't have to re-derive
+   *  it: compaction's trigger uses REAL last-step input tokens, but that value
+   *  is 0 at the first step of every turn, so planCompaction falls back to
+   *  estimating the UN-TRIMMED history at that moment — meaning at each turn
+   *  boundary compaction sees the true size and fires. That's the load-bearing
+   *  mitigation. For large context windows the two mechanisms then agree:
+   *  anything old enough for fitToContext to trim is old enough that prune
+   *  already collapsed it, tripping the countImageOutputs clear above. They
+   *  disagree only when the prune-protected window is bigger than
+   *  fitToContext's budget, which needs a context window under roughly 8,500
+   *  tokens AND supportsVision: true — which for a local engine only happens
+   *  via an explicit registry entry. So the live exposure is narrow: a
+   *  registry-declared small local vision model with a very small context
+   *  window.
+   *
+   *  Intended eventual fix (deferred, not this pass): re-key this map to
+   *  Map<path, { mtime, toolCallId }> and reconcile against the FITTED window
+   *  after fitToContext runs, so the cache can only vouch for what the model
+   *  actually just saw. Two narrower fixes were considered and rejected
+   *  because fitToContext runs on EVERY request, not just ones near budget: an
+   *  unconditional clear there defeats dedupe entirely, and a count-diff there
+   *  (mirroring the prune sites) latches permanently true the moment history
+   *  outgrows the context window, which is ordinary steady-state for a long
+   *  conversation. */
   private shownImages = new Map<string, number>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
@@ -664,7 +715,12 @@ export class HarnessSession extends EventEmitter {
   }
 
   /** Oldest-first truncation to fit the context window. Always keeps the
-   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer. */
+   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer.
+   *  WHY this matters for shownImages: this trims the OUTGOING REQUEST only —
+   *  `this.history` itself is untouched — so an image can drop out of what the
+   *  model actually sees while the dedupe cache still vouches for it. See the
+   *  shownImages field comment's KNOWN GAP section for the reachability
+   *  analysis and why that isn't fixed here. */
   private fitToContext(messages: ModelMessage[]): ModelMessage[] {
     const ctx = this.opts.contextLength ?? 32_768;
     const budgetTokens = ctx - (this.opts.harness.limits?.maxTokens ?? 4096) - 1024; // output + margin

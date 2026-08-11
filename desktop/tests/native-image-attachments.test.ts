@@ -17,13 +17,16 @@
 // story. Read now ALSO delivers images for MODEL-INITIATED reads (a vision
 // model asking to see a path it was told about) via ToolResultPayload.images —
 // see tools/read.ts and the "Read: image delivery" suite in
-// harness-tools-core.test.ts. The wire-level "Anthropic-only" problem this
-// comment describes is INTENDED to be solved per-provider by a later task's
-// driver, not avoided by refusing — that driver has not landed as of this
-// commit, so treat it as a plan, not an accomplished fact. This file's suite
-// is about the USER-attachment path (imagePartsFor) specifically, which that
-// change does not touch — except for the three ReadTool refusal-wording
-// assertions below, updated to match the new honest refusal text.
+// harness-tools-core.test.ts. Images live canonically in the tool-result
+// message as the AI SDK v7 'content' output shape; the wire-level
+// "Anthropic-only" problem this comment used to describe is solved per-provider
+// by adaptForWire (src/main/harness/wire-adapter.ts, see wire-adapter.test.ts),
+// which rewrites that shape at request-build time — native on Anthropic, split
+// into a synthetic user message elsewhere, stripped (with a text note) for a
+// non-vision model. That driver has landed. This file's suite is about the
+// USER-attachment path (imagePartsFor) specifically, which it does not touch —
+// except for the three ReadTool refusal-wording assertions below, updated to
+// match the new honest refusal text.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
