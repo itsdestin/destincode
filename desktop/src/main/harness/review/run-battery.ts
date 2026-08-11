@@ -38,8 +38,8 @@ export interface BatteryMetrics {
   /** Distinct tool names actually invoked, sorted. The evidence a review's
    *  claims are checked against (run-facts.ts). */
   toolsUsed: string[];
-  /** (toolName, input) pairs seen more than REPEAT_LIMIT times — the evidence
-   *  behind a 'restart' wrapUpReason. [] when no call recurred past the limit. */
+  /** (toolName, input) pairs seen at least REPEAT_REPORT_FLOOR times.
+   *  DIAGNOSTIC ONLY — nothing acts on this; see REPEAT_REPORT_FLOOR. */
   repeats: { key: string; count: number }[];
 }
 
@@ -73,11 +73,11 @@ export interface BatteryRun {
   outcome: BatteryOutcome;
   /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
    *  testing turn ended on its own. 'budget' and 'timeout' fire on the testing
-   *  turn's own outcome (max_steps exhaustion, wall clock); 'restart' fires the
-   *  moment a (toolName, input) pair recurs past REPEAT_LIMIT, non-consecutively
-   *  — see REPEAT_LIMIT's WHY comment below for the 2026-08-10 incident it
-   *  catches that doom_loop cannot. */
-  wrapUpReason?: 'budget' | 'restart' | 'timeout' | 'stopped-early';
+   *  turn's own outcome (max_steps exhaustion, wall clock); 'stopped-early'
+   *  fires when the turn ended on its own having produced no review at all.
+   *  A fourth value, 'restart', existed until 2026-08-11 — REPEAT_REPORT_FLOOR
+   *  records why it was deleted rather than retuned. */
+  wrapUpReason?: 'budget' | 'timeout' | 'stopped-early';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
   metrics: BatteryMetrics;
@@ -139,36 +139,36 @@ function pickReview(events: TranscriptEvent[], sliceFrom: number, anchor: number
     .trim();
 }
 
-// How many byte-identical (toolName, input) pairs a run may issue before it is
-// treated as having restarted the battery rather than making progress.
+// DIAGNOSTIC ONLY. Repeated calls at or above this count are reported in
+// `metrics.repeats`; nothing acts on them.
 //
-// WHY this is not doom_loop's job: doom_loop (harness-session.ts:1432) fires on
-// CONSECUTIVE repeats, which catches a stuck tool. This catches the other shape
-// — Qwen 3.8 Max issued `Glob **/*` fourteen times spread across 157 calls on
-// 2026-08-10, restarting the battery each time its context compacted. Nothing
-// was stuck; the run was just never going to finish.
+// There WAS a 'restart' wrap-up trigger here, and deleting it — rather than
+// retuning it a third time — is the point of this constant's existence.
 //
-// WHY 12, measured — the first value (5) was asserted, not measured, and it was
-// wrong. On 2026-08-11 it tripped ALL EIGHT models in the roster, every one at
-// exactly 6, and every trip was legitimate battery behaviour: Claude Opus 5's
-// was `Bash pwd; ls -la` six times, its own description reading "verify cwd
-// persistence" — which is battery area 1 verbatim ("verify cwd persistence
-// across calls"). The battery ASKS for repeated identical calls; the detector
-// classified obedience as a runaway and truncated eight paid runs.
+// The history, because it is the whole argument: the trigger was built from a
+// single observation (Qwen 3.8 Max, `Glob **/*` 14 times across 157 calls,
+// 2026-08-10) and never validated against a healthy run. At 5 it tripped ALL
+// EIGHT models in the roster, every one at exactly 6, truncating them mid-
+// battery — Opus 5's trip was `Bash pwd; ls -la` six times, its own description
+// reading "verify cwd persistence", which is battery area 1 verbatim. Raised to
+// 12, it tripped five of eight, every one at exactly 13.
 //
-// The two numbers that set this bound, both read off real transcripts:
-//   noise floor  6  — the most any healthy 2026-08-11 run repeated one call
-//   real signal 14  — Glob **/* in the 2026-08-10 Qwen 3.8 Max restart loop
-// 14 is the only count that has ever indicated a genuine restart, and that same
-// transcript ALSO contains a legitimate 6, so the two shapes overlap and only
-// the tail separates them.
+// That "always exactly one over the line" signature is the tell: repeats
+// accumulate steadily with run length, so ANY threshold sits in the middle of
+// legitimate behaviour rather than above it. And the behaviour is not merely
+// legitimate, it is MANDATED — the battery asks the model to "verify cwd
+// persistence across calls" (identical `pwd` calls) and the harness enforces
+// read-before-edit (an identical `Read` before each `Edit`). Grok 4.5's 13x
+// Read of each of four files, across 270 calls in which it reached all ten
+// tools, is that contract being honoured, not a restart.
 //
-// WHY err high rather than split the difference: the costs are asymmetric. A
-// false trip truncates a paid run mid-battery (eight of them, 2026-08-11). A
-// miss just means the run continues to its step budget or deadline — both of
-// which trigger a wrap-up turn anyway, so a review still comes out. Missing a
-// loop costs time; catching a non-loop costs the battery.
-export const REPEAT_LIMIT = 12;
+// Counting identical calls cannot separate a restarting model from a thorough
+// one. The remaining three triggers do not guess: the step counter, the wall
+// clock, and an empty final message are each a fact. All three end in the same
+// wrap-up turn, so a genuine loop still yields a review — it just costs a
+// longer run instead of a truncated one. That trade is the right way round.
+//
+export const REPEAT_REPORT_FLOOR = 5;
 
 // Default wall-clock ceiling for the TESTING phase. Raised from 900_000 because
 // at the 8.6s/step measured on 2026-08-10, 900s buys ~105 steps — which made the
@@ -325,7 +325,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // WHY comment above.
   let wrappingUp = false;
   let wrapUpReason: BatteryRun['wrapUpReason'];
-  // Keyed on tool name + exact input. Non-consecutive by design — see REPEAT_LIMIT.
+  // Keyed on tool name + exact input. Reporting only — see REPEAT_REPORT_FLOOR.
   const repeatCounts = new Map<string, number>();
 
   const session = new HarnessSession(
@@ -492,21 +492,12 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       // toolName is the field name on TranscriptEvent.data (shared/types.ts:148),
       // not `name` — the tool-use payload mirrors CC's transcript shape.
       if (e.data.toolName) toolsUsed.add(e.data.toolName);
-      // Restart detection (2026-08-10 incident): keyed on tool name + exact
-      // input so it catches the SAME call recurring anywhere in the run, not
-      // just back-to-back — doom_loop (harness-session.ts:1432) already owns
-      // the consecutive case. Lives inside this same `!wrappingUp` guard so a
-      // denied wrap-up-turn call (which still emits tool-use) never counts
-      // toward the threshold or toward metrics.repeats.
+      // Repeat counting is now DIAGNOSTIC ONLY — it reports, it never acts.
+      // See REPEAT_REPORT_FLOOR for why the trigger that used to live here was
+      // deleted rather than retuned. Keyed on tool name + exact input, inside
+      // the same `!wrappingUp` guard so denied wrap-up calls never inflate it.
       const key = `${e.data.toolName ?? '?'} ${JSON.stringify(e.data.toolInput ?? {})}`;
-      const seen = (repeatCounts.get(key) ?? 0) + 1;
-      repeatCounts.set(key, seen);
-      // Trip once, on the crossing. `wrapUpReason` guards against re-interrupting
-      // a run that another trigger (budget/timeout) already sent to wrap-up.
-      if (seen > REPEAT_LIMIT && !wrapUpReason) {
-        wrapUpReason = 'restart';
-        session.interrupt();
-      }
+      repeatCounts.set(key, (repeatCounts.get(key) ?? 0) + 1);
     }
     if (e.type === 'assistant-thinking') thinkingEvents++;
     if (e.type === 'turn-complete') {
@@ -748,10 +739,10 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
         toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
         stopReasons,
         toolsUsed: [...toolsUsed].sort(),
-        // Only calls that actually crossed REPEAT_LIMIT — a run with zero
+        // Only calls at or above REPEAT_REPORT_FLOOR — a run with zero
         // restart-shaped repeats reports [], not every key ever seen once.
         repeats: [...repeatCounts.entries()]
-          .filter(([, count]) => count > REPEAT_LIMIT)
+          .filter(([, count]) => count >= REPEAT_REPORT_FLOOR)
           .map(([key, count]) => ({ key, count }))
           .sort((a, b) => b.count - a.count),
       },

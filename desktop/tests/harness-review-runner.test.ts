@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
 import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_LIMIT } from '../src/main/harness/review/run-battery';
+import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_REPORT_FLOOR } from '../src/main/harness/review/run-battery';
 import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/review/run-facts';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
@@ -917,42 +917,33 @@ describe('wrap-up turn', () => {
   });
 });
 
-describe('restart detection', () => {
-  it('wraps up when the same call repeats past the limit, even non-consecutively', async () => {
-    // Interleave a repeated Glob with distinct Reads so no two IDENTICAL calls
-    // are ever adjacent — doom_loop (harness-session.ts:1432) only catches the
-    // consecutive case and must not be what fires here.
+describe('repeat reporting (diagnostic only)', () => {
+  // A 'restart' trigger used to live here and interrupt a run once a
+  // (toolName, input) pair recurred past a threshold. It was deleted on
+  // 2026-08-11 after truncating eight paid runs at a threshold of 5 and five
+  // more at 12 — every trip landing exactly one over whatever line was drawn,
+  // because the battery ("verify cwd persistence across calls") and the
+  // harness (read-before-edit) both REQUIRE repeated identical calls. These
+  // tests pin the replacement contract: observe, never act.
+  function repeatingSteps(times: number): ScriptStep[] {
+    // Interleaved with distinct Reads so no two IDENTICAL calls are adjacent —
+    // otherwise doom_loop (a different, consecutive-only mechanism) is what
+    // would fire, and these tests would prove nothing about repeat handling.
     const steps: ScriptStep[] = [];
-    for (let i = 0; i <= REPEAT_LIMIT; i++) {
+    for (let i = 0; i < times; i++) {
       steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
       steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
     }
-    steps.push({ text: 'Review after the restart was caught.' });
-    // Hoisted out of modelFactory (see the wrap-up describe block above): a
-    // fresh scriptModel per send() would replay the wrap-up turn from step 0.
-    const model = scriptModel(steps);
+    return steps;
+  }
 
-    const run = await runBattery({
-      modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
-    });
-
-    expect(run.wrapUpReason).toBe('restart');
-    expect(run.outcome).toBe('wrapped-up');
-    expect(run.review).toBe('Review after the restart was caught.');
-    expect(run.metrics.repeats[0]).toMatchObject({ count: REPEAT_LIMIT + 1 });
-    expect(run.metrics.repeats[0].key).toContain('Glob');
-  });
-
-  it('leaves a run alone when repeats stay at or under the limit', async () => {
-    const steps: ScriptStep[] = [];
-    for (let i = 0; i < REPEAT_LIMIT; i++) {
-      steps.push({ toolCalls: [{ name: 'Glob', input: { pattern: '**/*' } }] });
-      steps.push({ toolCalls: [{ name: 'Read', input: { file_path: `f${i}.ts` } }] });
-    }
-    steps.push({ text: 'Normal review.' });
-    const model = scriptModel(steps);
-
+  it('never cuts a run short for repeating a call, however many times', async () => {
+    // Four times the old threshold. Under either previous value this run was
+    // interrupted mid-battery; it must now run to its own natural end.
+    const model = scriptModel([
+      ...repeatingSteps(48),
+      { text: 'Finished on my own terms.' },
+    ]);
     const run = await runBattery({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
@@ -960,6 +951,30 @@ describe('restart detection', () => {
 
     expect(run.wrapUpReason).toBeUndefined();
     expect(run.outcome).toBe('complete');
+    expect(run.review).toBe('Finished on my own terms.');
+  });
+
+  it('still REPORTS the repeats, so a real loop stays visible in the transcript', async () => {
+    // Deleting the trigger must not delete the evidence: reading metrics.repeats
+    // off saved transcripts is how the false-positive bug was diagnosed in the
+    // first place.
+    const model = scriptModel([...repeatingSteps(8), { text: 'Done.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
+    expect(run.metrics.repeats[0]).toMatchObject({ count: 8 });
+    expect(run.metrics.repeats[0].key).toContain('Glob');
+  });
+
+  it('reports nothing for a run whose repeats stay under the reporting floor', async () => {
+    const model = scriptModel([...repeatingSteps(REPEAT_REPORT_FLOOR - 1), { text: 'Done.' }]);
+    const run = await runBattery({
+      modelFactory: async () => model as any,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+    });
+
     expect(run.metrics.repeats).toEqual([]);
   });
 });
