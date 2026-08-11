@@ -294,7 +294,10 @@ describe('Edit', () => {
     fs.utimesSync(p, future, future);
     const r = await EditTool.execute({ file_path: 'a.txt', old_string: 'hello', new_string: 'bye' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/changed since you read it/i);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
   });
 
   it('non-unique old_string message includes the count', async () => {
@@ -437,7 +440,10 @@ describe('Write', () => {
     fs.utimesSync(p, future, future);
     const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/changed since you read it/i);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
     // The file on disk must be untouched by the rejected write.
     expect(fs.readFileSync(p, 'utf8')).toBe('old\n');
   });
@@ -462,6 +468,37 @@ describe('Write', () => {
     const r = await EditTool.execute({ file_path: 'w.txt', old_string: 'v1', new_string: 'v2' }, ctx);
     expect(r.isError).toBeFalsy();
     expect(fs.readFileSync(path.join(dir, 'w.txt'), 'utf8')).toBe('v2\n');
+  });
+});
+
+// 2026-08-11 review round 8: the read-before-edit gate was correct in every
+// transcript, and four of six models still misdiagnosed it — as broken, as
+// Grep-transparent, as "inconsistent, priority fix". The gate's STATE is
+// invisible: nothing tells a model which paths are registered or with what
+// stamp. These pin the in-band signals that make it predictable. They assert on
+// message CONTENT deliberately — the content IS the fix here, not incidental.
+describe('the read gate explains itself (2026-08-11 review round 8)', () => {
+  it('the refusal names both tools that satisfy the gate, and says a shell view does not', async () => {
+    fs.writeFileSync(path.join(dir, 'ungated.txt'), 'hello\n');
+    const r = await EditTool.execute({ file_path: 'ungated.txt', old_string: 'hello', new_string: 'bye' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Read or Written/);
+    expect(r.text).toMatch(/cat.*grep|grep.*cat/);
+    // The mechanism, not just the rule — this is what Opus 5 alone worked out.
+    expect(r.text).toMatch(/modification time/);
+  });
+
+  it('a successful Write says out loud that it counts as a Read', async () => {
+    const r = await WriteTool.execute({ file_path: 'fresh.txt', content: 'v1\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/counts as having Read it/);
+  });
+
+  it('both tools describe the same gate in the same terms', () => {
+    for (const d of [EditTool.description, WriteTool.description]) {
+      expect(d).toMatch(/Read or Written/);
+      expect(d).toMatch(/modification time/);
+    }
   });
 });
 
