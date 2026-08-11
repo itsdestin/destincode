@@ -39,6 +39,25 @@ describe('grepErrorMessage', () => {
     expect(out).not.toContain('Check the regex syntax.');
     expect(out).not.toContain('does not exist');
   });
+
+  // Regression pin (2026-08-11 review): `--path-separator /` on the rg
+  // invocation only rewrites ripgrep's OWN stdout. `resolvedPath`/`cwd` here
+  // are built locally with Node's `path` module (backslash on Windows) and
+  // never pass through rg, so they bypassed that flag entirely. This is a
+  // pure-function unit test fed literal backslash strings, so — unlike the
+  // integration tests below — it exercises the SAME code on every platform,
+  // including Linux: it fails against the pre-fix code regardless of host OS.
+  it('normalizes backslash-separated paths to forward slashes in the "does not exist" message', () => {
+    const winP = 'C:\\ws\\youcoded\\desktop\\src\\main';
+    const winCwd = 'C:\\ws';
+    const err = `rg: ${winP}: IO error for operation on ${winP}: No such file or directory (os error 2)`;
+    const out = grepErrorMessage(err, winP, winCwd);
+    expect(out).toContain('C:/ws/youcoded/desktop/src/main');
+    expect(out).toContain('C:/ws');
+    // The whole sentence speaks one vocabulary — no stray backslash survives
+    // in either interpolated segment.
+    expect(out).not.toContain('\\');
+  });
 });
 
 describe('Grep and Glob agree on path format', () => {
