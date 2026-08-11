@@ -39,7 +39,7 @@ import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { adaptForWire } from './wire-adapter';
-import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
+import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, countImageOutputs, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
@@ -359,9 +359,12 @@ export class HarnessSession extends EventEmitter {
    *  re-Reads the SAME unchanged file gets "already visible" text, not a second
    *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared
    *  anywhere model history is discarded or replaced — on resume (alongside
-   *  readRegistry), on /clear (clearHistory), and on compaction's summarize
-   *  step (maybeCompact/compactNow) — because every one of those DROPS entries
-   *  the cache is vouching for. A stale entry after a drop doesn't just cost a
+   *  readRegistry), on /clear (clearHistory), on compaction's summarize step
+   *  (maybeCompact/compactNow), and on compaction's PRUNE step when it
+   *  actually collapses an image output (same two call sites, gated on a
+   *  countImageOutputs before/after diff so an ordinary text-only prune
+   *  doesn't pay for it) — because every one of those DROPS entries the
+   *  cache is vouching for. A stale entry after a drop doesn't just cost a
    *  redundant re-Read: it makes the dedupe note ITSELF false ("already visible
    *  earlier in this conversation" when it no longer is), permanently, until an
    *  unrelated mtime change happens to reset it. The re-Read this forces after
@@ -775,7 +778,14 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     const decision = planCompaction(this.history, cfg, lastInputTokens);
     if (decision.action === 'none') return;
+    // Prune can now collapse an image 'content' output to text (compaction.ts)
+    // outside its protected window — a THIRD path (besides /clear and
+    // summarize) that discards a delivered image. Diff the image count across
+    // the call to catch it regardless of what decision.action turns out to be
+    // below, including the plain 'prune' early-return two lines down.
+    const imagesBeforePrune = countImageOutputs(this.history);
     this.history = pruneToolOutputs(this.history, cfg);   // always prune first
+    if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
     if (decision.action === 'prune') return;
     const cut = this.summarizeCutIndex();
     if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
@@ -798,13 +808,16 @@ export class HarnessSession extends EventEmitter {
     // CC's own compact-summary events never carry it, so the manual path is
     // untouched.
     this.emitEvent('compact-summary', { summary, autoCompaction: true });
-    // Fix 2 (2026-08-11): the summarized-away span can contain delivered
-    // images — pruneToolOutputs (above) bails on non-string outputs, so a
-    // content-type (image) tool-result is NEVER pruned; summarize is the only
-    // stage that ever removes one. An un-cleared shownImages would then keep
-    // vouching for images no longer in history — the same false "already
-    // visible" bug /clear had (Fix 1), reachable here automatically at 75%
-    // context instead of only on an explicit /clear.
+    // Fix 2 (2026-08-11): the summarized-away span can still contain a
+    // delivered image. pruneToolOutputs (above) now DOES collapse 'content'
+    // (image) outputs too, but only ones OUTSIDE its own token-budget
+    // protected window — see the imagesBeforePrune diff above, which handles
+    // that case. An image can sit INSIDE that window (survive prune) yet
+    // still fall in THIS summarize span (older than the turn-based last-2
+    // cut) and get flattened into `summary` here. An un-cleared shownImages
+    // would then keep vouching for an image no longer in history — the same
+    // false "already visible" bug /clear had (Fix 1), reachable here
+    // automatically at 75% context instead of only on an explicit /clear.
     this.shownImages.clear();
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
@@ -887,8 +900,12 @@ export class HarnessSession extends EventEmitter {
     try {
       const cfg = this.compactionConfig();
       // Prune first — same order as the automatic path, and it shrinks the span
-      // the model has to read before we pay for a summary.
+      // the model has to read before we pay for a summary. Same image-collapse
+      // diff as maybeCompact's prune call — see its comment for why this is
+      // keyed on an actual count decrease, not on whether summarize runs next.
+      const imagesBeforePrune = countImageOutputs(this.history);
       this.history = pruneToolOutputs(this.history, cfg);
+      if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
       const cut = this.summarizeCutIndex();
       // <2 user turns means there is no boundary we can cut on without risking
       // splitting a tool-call/result pair, so there is genuinely nothing to do.
@@ -955,10 +972,21 @@ export class HarnessSession extends EventEmitter {
     return { ok: true };
   }
 
-  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
+  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns).
+   *  Injected rule messages are role:'user' but are NOT turns — counting them
+   *  shrank the protected window to "the last 2 injections" when a step
+   *  touched several rule-matched paths (2026-08-11, compaction accounting).
+   *  Detected by content shape rather than a flag: injectPathTriggers (above)
+   *  pushes them as `<project-rule source="...">...`, and that's the only
+   *  thing this method has to go on — synthetic wire messages never enter
+   *  history at all, so they were already immune by construction. */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];
-    this.history.forEach((m, i) => { if ((m as any).role === 'user') userIdx.push(i); });
+    this.history.forEach((m, i) => {
+      const c = (m as any).content;
+      const isInjectedRule = typeof c === 'string' && c.startsWith('<project-rule ');
+      if ((m as any).role === 'user' && !isInjectedRule) userIdx.push(i);
+    });
     return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
   }
 

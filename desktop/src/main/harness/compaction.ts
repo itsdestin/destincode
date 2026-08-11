@@ -36,12 +36,40 @@ export function pruneToolOutputs(messages: ModelMessage[], cfg: CompactionConfig
     if (i >= cutoff || (m as any).role !== 'tool' || !Array.isArray((m as any).content)) return m;
     const content = (m as any).content.map((part: any) => {
       if (part?.type !== 'tool-result') return part;
-      const value = part.output?.value;
+      const output = part.output;
+      // AI SDK v7 'content' output (tool-delivered images: text + file parts).
+      // Outside the protected window this collapses to its text plus a named
+      // note — same rule as the string branch below. Without this branch,
+      // stage-1 prune could only ever shrink STRING outputs, so an image sat
+      // in the window unreclaimed until a full summarize silently destroyed
+      // it (the exact silent-loss class this milestone exists to eliminate).
+      if (output?.type === 'content' && Array.isArray(output.value)) {
+        const text = output.value.filter((v: any) => v?.type === 'text').map((v: any) => v.text).join('\n');
+        return { ...part, output: { type: 'text', value: `${text}\n[image pruned — re-run ${part.toolName ?? 'the tool'} if you need to see it again]` } };
+      }
+      const value = output?.value;
       if (typeof value !== 'string' || value.length <= cfg.pruneToChars) return part;
-      return { ...part, output: { ...part.output, value: value.slice(0, cfg.pruneToChars) + PRUNE_TRAILER(value.length - cfg.pruneToChars) } };
+      return { ...part, output: { ...output, value: value.slice(0, cfg.pruneToChars) + PRUNE_TRAILER(value.length - cfg.pruneToChars) } };
     });
     return { ...(m as any), content };
   });
+}
+// Counts tool-result parts still carrying an unpruned 'content' (image)
+// output. harness-session.ts diffs this before/after pruneToolOutputs to
+// learn whether prune just collapsed an image — the ONLY signal it uses to
+// decide whether the shownImages dedupe cache (which vouches for delivered
+// images still being in history) needs clearing. Kept here rather than
+// re-derived in harness-session.ts so the two files can't drift on what
+// counts as an "image output".
+export function countImageOutputs(messages: ModelMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if ((m as any).role !== 'tool' || !Array.isArray((m as any).content)) continue;
+    for (const part of (m as any).content) {
+      if (part?.type === 'tool-result' && part.output?.type === 'content') n++;
+    }
+  }
+  return n;
 }
 export type CompactionAction = 'none' | 'prune' | 'summarize';
 export function planCompaction(messages: ModelMessage[], cfg: CompactionConfig, lastInputTokens: number): { action: CompactionAction } {
