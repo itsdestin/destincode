@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import { dirname } from 'path';
+import { basename, dirname, join } from 'path';
 
 export interface CasResult {
   committed: boolean;
@@ -70,16 +70,58 @@ async function acquireLock(lock: string): Promise<boolean> {
   }
 }
 
+// A crashed writer can orphan a '<target>.<pid>.<ts>.tmp' file — and unlike the
+// old fixed '<target>.tmp' name, a pid+time name is never overwritten by the
+// next write, so it would linger FOREVER. Worse, '.tmp' is NOT in the sync
+// engine's DEFAULT_IGNORES (sync-spaces/guards.ts), so an orphan inside a sync
+// space (Conversations/, Tags/) would transport to every device as junk.
+// atomicWrite sweeps orphans for the SAME target older than this before each
+// write — the same mitigation transcript-mirror.ts uses. An hour is comfortably
+// longer than any real write, so a live tmp in flight is never swept.
+const STALE_TMP_MS = 60 * 60 * 1000;
+
+/**
+ * Best-effort sweep of crash-orphaned tmp files for one target. Isolated in its
+ * own try/catch so a cleanup hiccup (permissions, dir race) can never abort the
+ * write it precedes — cleanup is opportunistic housekeeping, not correctness.
+ * Exported for the other user-visible tree writers (ipc-handlers artifact save,
+ * project-manager .gitignore) that share the same tmp-name shape.
+ */
+export async function sweepStaleTmp(dir: string, targetBase: string): Promise<void> {
+  try {
+    // Match only OUR tmp shape for THIS target: '<targetBase>.<something>.tmp'.
+    // A foreign target's tmp (different basename) — and the '<file>.lock' dirs
+    // the mkdir lock creates — are left alone.
+    const prefix = `${targetBase}.`;
+    const now = Date.now();
+    for (const name of await fs.readdir(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+      const full = join(dir, name);
+      try {
+        if (now - (await fs.stat(full)).mtimeMs > STALE_TMP_MS) await fs.unlink(full);
+      } catch { /* vanished or unreadable — nothing to sweep */ }
+    }
+  } catch { /* dir unreadable — skip the sweep entirely */ }
+}
+
 /** Atomic tmp-write + fsync + rename onto `target`. */
 async function atomicWrite(target: string, content: string): Promise<void> {
+  await sweepStaleTmp(dirname(target), basename(target));
   // pid+time-suffixed temp name: two processes (dev + built app) writing the
   // same file must not race the same .tmp — the loser's rename would ENOENT.
   const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, content, 'utf8');
-  const fh = await fs.open(tmp, 'r+');
-  await fh.sync();
-  await fh.close();
-  await fs.rename(tmp, target);
+  try {
+    await fs.writeFile(tmp, content, 'utf8');
+    const fh = await fs.open(tmp, 'r+');
+    await fh.sync();
+    await fh.close();
+    await fs.rename(tmp, target);
+  } catch (e) {
+    // Non-crash strand (e.g. Windows AV holding the file → EPERM on rename):
+    // remove our own tmp so it can't linger — and sync — as junk.
+    try { await fs.unlink(tmp); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 /**

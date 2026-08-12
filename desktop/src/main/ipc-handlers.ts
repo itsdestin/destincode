@@ -101,6 +101,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
@@ -3715,10 +3716,20 @@ export function registerIpcHandlers(
     // write: .tmp + rename so the original is never half-written.
     // pid+time-suffixed temp name: two processes (dev + built app) writing the
     // same file must not race the same .tmp — the loser's rename would ENOENT.
+    // These tmp files land in the USER'S project tree, so sweep crash orphans
+    // for this file first and unlink our own tmp on failure — a pid+time name
+    // is never overwritten by the next write, so a strand would linger forever
+    // (git status noise, visible in the Files UI).
     noteOwnWrite(realPath);
+    await sweepStaleTmp(path.dirname(realPath), path.basename(realPath));
     const tmpPath = `${realPath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tmpPath, newContent, 'utf8');
-    await fs.promises.rename(tmpPath, realPath);
+    try {
+      await fs.promises.writeFile(tmpPath, newContent, 'utf8');
+      await fs.promises.rename(tmpPath, realPath);
+    } catch (e) {
+      try { await fs.promises.unlink(tmpPath); } catch { /* already gone */ }
+      throw e;
+    }
     const st = await fs.promises.stat(realPath).catch(() => null);
 
     if (artifact) {

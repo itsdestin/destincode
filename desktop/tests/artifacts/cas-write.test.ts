@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, promises as fsp } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, utimesSync, promises as fsp } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { casWrite } from '../../src/main/artifacts/cas-write';
@@ -48,10 +48,49 @@ describe('casWrite', () => {
     expect(result.actualUpdatedAt).toBe('2026-01-05T00:00:00Z');
   });
 
-  it('leaves no .tmp file behind on success or failure', async () => {
+  it('leaves no .tmp file behind on success', async () => {
+    // WHY readdir instead of existsSync(target + '.tmp'): the temp name is
+    // pid+time-suffixed now, so probing one fixed name would pass even on a
+    // leak. Assert NO entry in the dir ends with .tmp, whatever its name.
     const target = join(dir, 'foo.json');
     await casWrite(target, null, '{}');
-    expect(existsSync(target + '.tmp')).toBe(false);
+    expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('unlinks its temp file when the rename fails (no permanent orphan)', async () => {
+    // A pid+time temp name is never overwritten by the next write, so a strand
+    // from a failed rename (e.g. Windows AV EPERM) would linger forever unless
+    // the error path unlinks it.
+    const renameSpy = vi
+      .spyOn(fsp, 'rename')
+      .mockRejectedValueOnce(Object.assign(new Error('EPERM: simulated AV hold'), { code: 'EPERM' }));
+    try {
+      const target = join(dir, 'foo.json');
+      await expect(casWrite(target, null, '{}')).rejects.toThrow('EPERM');
+      expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('sweeps a stale crash-orphaned tmp for the same target before writing', async () => {
+    const target = join(dir, 'foo.json');
+    // Plant an orphan matching OUR tmp shape, aged past the 1h staleness bar,
+    // plus a fresh one and a foreign target's orphan — only the stale own-target
+    // orphan may be swept.
+    const staleOrphan = `${target}.99999.123.tmp`;
+    const freshOrphan = `${target}.99998.456.tmp`;
+    const foreignOrphan = join(dir, 'bar.json.99999.123.tmp');
+    writeFileSync(staleOrphan, 'junk');
+    writeFileSync(freshOrphan, 'junk');
+    writeFileSync(foreignOrphan, 'junk');
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(staleOrphan, old, old);
+    utimesSync(foreignOrphan, old, old);
+    await casWrite(target, null, '{}');
+    expect(existsSync(staleOrphan)).toBe(false);
+    expect(existsSync(freshOrphan)).toBe(true); // could be a live write in flight
+    expect(existsSync(foreignOrphan)).toBe(true); // not our target — left alone
   });
 
   it('uses a per-process temp name (pid-suffixed), never a fixed <file>.tmp', async () => {
