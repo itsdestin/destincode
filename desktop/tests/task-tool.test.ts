@@ -91,6 +91,31 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     expect(r.text).toMatch(/child-9/);
   });
 
+  // ---- Task 6 review fix 4: the consent key is CHARTER-SCOPED, not a bare
+  // work_dir. Before this fix `permissionSubject` returned only `a.work_dir`,
+  // so a remembered "Always allow" for a read-only explorer at a path silently
+  // pre-approved a future read-write worker at the SAME path — the charter is
+  // the unit of envelope consent (spec §5). ----
+  describe('permissionSubject — charter-scoped consent key (Fix 4)', () => {
+    it('prefixes the subject with the resolved specialist\'s charter', () => {
+      const tool = createTaskTool();
+      // explorer is read-only (specialists/builtins.ts); worker is read-write.
+      expect(tool.permissionSubject({ agent: 'explorer', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
+        .toBe('read-only:/proj');
+      expect(tool.permissionSubject({ agent: 'worker', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
+        .toBe('read-write:/proj');
+    });
+
+    it('falls back to the bare work_dir for an unresolvable agent name', () => {
+      // execute() above already refuses an unknown specialist before ever
+      // spawning, so this text is only ever shown on an ask that's about to be
+      // declined anyway — never a real standing grant.
+      const tool = createTaskTool();
+      expect(tool.permissionSubject({ agent: 'wizard', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
+        .toBe('/proj');
+    });
+  });
+
   it('releases the reserved slot even when spawn throws', async () => {
     const release = vi.fn();
     const tool = createTaskTool();

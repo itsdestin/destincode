@@ -221,7 +221,20 @@ export class NativeSessionHost extends EventEmitter {
     try {
       throw new Error(`specialist ${childId} was created but its run loop (Task 7) is not implemented yet`);
     } finally {
-      if (opts.specialist.charter === 'read-write') this.activeWriterChild.delete(parentId);
+      // Fix 5 (review round 1): OWNER-CHECKED release. An unconditional delete
+      // would clear whichever child currently holds parentId's writer lock,
+      // including one minted by a LATER/concurrent Task call under the same
+      // parent once 1b adds parallel delegation — this finally block must only
+      // ever release the lock IT set, never someone else's.
+      if (this.activeWriterChild.get(parentId) === childId) this.activeWriterChild.delete(parentId);
+      // Fix 1 (review round 1): LEAK GUARD. The stub above always throws (Task 7,
+      // the real run loop, doesn't exist yet), so without this every Task call
+      // would permanently strand the child createChild() just minted — a live
+      // `this.live` entry, its on-disk header, a retainModel() ref (so its model
+      // could never fully unload), and its `childrenOf` registration. destroy()
+      // is what tears all of that back down; the throw itself is unchanged and
+      // still the honest signal that Task 7's run loop is the missing piece.
+      await this.destroy(childId);
     }
   }
 

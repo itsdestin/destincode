@@ -7,6 +7,7 @@ import { PermissionStore } from '../src/main/harness/permission-store';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -442,6 +443,61 @@ describe('NativeSessionHost', () => {
       await expect(h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } })).resolves.toBeUndefined();
       const session = (h as any).live.get('s-1').session;
       expect(session.opts.mcpServers).toBeUndefined();
+    });
+  });
+
+  // ---- Task 6 review fix 2: the per-parent slot/writer bookkeeping had zero
+  // host-level tests before this — everything exercising it went through
+  // tools/task.ts's fakes (task-tool.test.ts), which never touch the REAL host
+  // methods. Drives tryReserveSpecialistSlot/releaseSpecialistSlot/
+  // isSpecialistWriterBusy directly, keyed by an arbitrary parent id (no live
+  // session needed — these three are pure bookkeeping over host-owned Maps,
+  // enforced independently of whether a parent session actually exists). ----
+  describe('specialist slot + writer-lock bookkeeping (Task 6)', () => {
+    it('ceiling: HOSTED_MAX_CONCURRENT_SPECIALISTS reserves succeed for one parent, the next is refused', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        expect(host.tryReserveSpecialistSlot('A')).toBe(true);
+      }
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+    });
+
+    it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);   // A is full
+      expect(host.tryReserveSpecialistSlot('B')).toBe(true);    // B's own ceiling is untouched
+    });
+
+    it('release: freeing one slot lets A reserve again; releasing to zero drops the map entry', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+      host.releaseSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(true);    // one freed → one more fits
+      // Release every reservation currently held (back at the ceiling after the
+      // line above) down to zero — the map entry must not linger at 0 forever
+      // (releaseSpecialistSlot's own header: "so a parent that never delegates
+      // again doesn't linger in the map").
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.releaseSpecialistSlot('A');
+      expect((host as any).specialistSlots.has('A')).toBe(false);
+    });
+
+    it('releasing a parent with no reservation is a harmless no-op', () => {
+      expect(() => host.releaseSpecialistSlot('never-reserved')).not.toThrow();
+      expect((host as any).specialistSlots.has('never-reserved')).toBe(false);
+    });
+
+    it('writer lock: busy only for the parent that holds it, never an unrelated parent; clearing it frees the parent up', () => {
+      expect(host.isSpecialistWriterBusy('A')).toBe(false);
+      // No public setter exists — spawnSpecialist is the only production writer
+      // (native-session-host.ts ~:220), and it always tears the lock back down
+      // in the SAME call (Fix 5 below) before ever returning. Reaching the Map
+      // directly is how tools/task.ts's own isWriterBusy() gate — read while a
+      // sibling Task call is still IN FLIGHT — actually gets pinned at the host
+      // level rather than only through task-tool.test.ts's fakes.
+      (host as any).activeWriterChild.set('A', 'child-x');
+      expect(host.isSpecialistWriterBusy('A')).toBe(true);
+      expect(host.isSpecialistWriterBusy('B')).toBe(false);     // per-parent isolation
+      (host as any).activeWriterChild.delete('A');
+      expect(host.isSpecialistWriterBusy('A')).toBe(false);
     });
   });
 
@@ -1228,6 +1284,50 @@ describe('NativeSessionHost', () => {
       await h.destroy('root-1');
       expect(h.isNative(childId)).toBe(false);          // the child went with its parent
       expect(h.sessionsForModel('m')).toEqual([]);      // ...and gave back its model ref
+      expect(released).toEqual(['m']);
+      await h.destroyAll();
+    });
+
+    // ---- Task 6 review fix 1: spawnSpecialist's stub ALWAYS throws (Task 7,
+    // the real run loop, doesn't exist yet) — before this fix its finally block
+    // released only the writer lock, leaving the child createChild() minted
+    // (live entry, disk header, retainModel ref, childrenOf registration) alive
+    // forever on EVERY Task call. Mirrors "destroying the parent destroys its
+    // children and releases their model ref" above, but drives the leak through
+    // spawnSpecialist directly (the stub itself) rather than through destroy(). --
+    it('a thrown spawnSpecialist stub run does not leak the minted child (leak guard)', async () => {
+      const { store, h } = await withParent();
+      const released: string[] = [];
+      h.setModelReleasedHandler((id) => released.push(id));
+
+      await expect(h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      })).rejects.toThrow(/Task 7/);
+
+      // Find the child the stub minted (store.list is the only route back to
+      // its id from out here — spawnSpecialist's rejection only names it inside
+      // the error text).
+      const childRow = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1');
+      expect(childRow).toBeDefined();
+      const childId = childRow!.sessionId;
+
+      // No live child entry survives the throw — the leak guard's whole point.
+      expect((h as any).live.has(childId)).toBe(false);
+      expect(h.isNative(childId)).toBe(false);
+      // De-registered from the parent's live children set too (destroy() does
+      // this; a leaked child would still show up here).
+      expect((h as any).childrenOf.get('root-1')?.has(childId)).toBeFalsy();
+      // store.list() still carries the REAL persisted record (the child did
+      // genuinely exist for a moment) but exactly once — no duplicate, no
+      // dangling live-only phantom with no matching header.
+      expect(store.list({ includeChildren: true }).filter((r) => r.sessionId === childId)).toHaveLength(1);
+
+      // The child's model ref did NOT leak: destroying the parent (its only
+      // remaining user of 'm') now fully releases the model. Before this fix,
+      // the leaked child's retainModel() ref would keep 'm' referenced
+      // forever even after the parent was gone — exactly "a local model could
+      // never unload" from the review finding.
+      await h.destroy('root-1');
       expect(released).toEqual(['m']);
       await h.destroyAll();
     });

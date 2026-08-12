@@ -66,9 +66,19 @@ export function createTaskTool(): NativeTool<TaskArgs> {
       'Delegate a focused task to a specialist subagent. Specialists: '
       + listSpecialists().map((s) => `${s.id} (${s.charter === 'read-write' ? 'can edit files' : 'read-only'})`).join(', '),
     inputSchema: schema,
-    // The work directory is the envelope ask's subject (spec §1a) — it is
-    // what the user is actually being asked to trust the specialist with.
-    permissionSubject: (a) => a.work_dir,
+    // The envelope ask's subject (spec §1a/§5) — CHARTER-SCOPED (Fix 4, review
+    // round 1): `${charter}:${work_dir}`, e.g. "read-only:/home/x/proj". Before
+    // this the subject was the bare work_dir, so a remembered "Always allow" for
+    // a read-only explorer at a path silently pre-approved a future read-write
+    // worker at the SAME path too — the charter is the unit of envelope consent
+    // (spec §5), so a standing grant must never cross charters. Unknown agent
+    // name falls back to the bare work_dir: execute() above already refuses an
+    // unknown specialist before ever spawning, so this text is only ever shown
+    // on an ask that is about to be declined anyway, never a real standing grant.
+    permissionSubject: (a) => {
+      const specialist = resolveSpecialist(a.agent);
+      return specialist ? `${specialist.charter}:${a.work_dir}` : a.work_dir;
+    },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {
       const specialist = resolveSpecialist(args.agent);

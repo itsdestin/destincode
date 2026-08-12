@@ -111,6 +111,34 @@ const layers = (mode: 'ask' | 'auto-edit' | 'full-auto', remembered = [] as any[
   denyList: DESTRUCTIVE_DENY_LIST, rememberedRules: remembered,
 });
 
+// ---------------------------------------------------------------------------
+// Task 6 review fix 3: syncTaskTool (harness-session.ts) has TWO independent
+// gates — profile.canDelegate AND !isSpecialistChild (the depth-1 guard) —
+// but only the ON direction (harness-tool-presentation.test.ts, CLOUD_DEFAULT
+// attaches Task) was pinned before this. Neither OFF direction had a test, so
+// an accidental deletion of EITHER guard would have shipped silently — the
+// depth-1 one especially, since that's the ONLY thing stopping a specialist
+// from spawning its own specialists once allowedTools filtering alone has a
+// bug. Mirrors the Skill ON/OFF pattern above.
+// ---------------------------------------------------------------------------
+describe('Task attachment is profile + depth gated (OFF direction)', () => {
+  it('canDelegate: false withholds Task even for an ordinary (non-child) session', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: false } }),
+      async () => ({} as any),
+    );
+    expect((s as any).buildAiTools()).not.toHaveProperty('Task');
+  });
+
+  it('canDelegate: true but isSpecialistChild: true STILL withholds Task (depth-1 guard)', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true }, isSpecialistChild: true }),
+      async () => ({} as any),
+    );
+    expect((s as any).buildAiTools()).not.toHaveProperty('Task');
+  });
+});
+
 describe('Skill permission posture', () => {
   it('does not prompt in ask mode — it is a read, and a narrow one', () => {
     expect(decidePermission('Skill', 'journal', layers('ask')).action).toBe('allow');

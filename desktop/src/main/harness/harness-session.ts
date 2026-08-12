@@ -34,7 +34,17 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // Skill the wrong treatment the moment it was added (found in the 2026-07-28
 // branch review). Naming the set means the next non-path-subject tool has one
 // place to declare itself instead of inheriting file-tool behavior by default.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
+//
+// Fix 4 (review round 1): Task's subject is a CHARTER-SCOPED CONSENT KEY
+// (`${charter}:${work_dir}`, tools/task.ts's permissionSubject), not a bare
+// path — the charter prefix exists precisely so a remembered "Always allow"
+// for a read-only specialist can't silently cover a future read-write one at
+// the same path (spec §5: the charter is the unit of envelope consent).
+// Running that string through checkPathGuard/injectPathTriggers would try to
+// canonicalize "read-only:/home/x/proj" AS a path, which is a category error
+// exactly like Bash's command string or Skill's id above — workDir containment
+// itself is already enforced inside NativeSessionHost.createChild.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';

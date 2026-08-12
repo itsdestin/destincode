@@ -365,6 +365,33 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
   });
 
+  // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
+  // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
+  // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
+  // alongside that change, or checkPathGuard would try to canonicalize the
+  // charter prefix AS a path. Pinned indirectly (the set itself isn't
+  // exported): a subject shaped like a charter-scoped key that ALSO happens to
+  // look like a path outside cwd would force the 'external directory' ask
+  // above if Task were still running through the path guard — this proves it
+  // isn't, mirroring the sibling test one case up.
+  it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => 'read-write:/etc/x', schema: z.object({ agent: z.string() }) });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { agent: 'worker' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [task], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
+    // never ran checkPathGuard against "read-write:/etc/x" as though it were
+    // an absolute path outside C:/x.
+    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(askUser).not.toHaveBeenCalled();
+  });
+
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
     // C:/x/.env is a dotenv file → isSensitivePath → checkPathGuard 'deny'.
     const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
