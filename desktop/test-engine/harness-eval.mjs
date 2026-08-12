@@ -122,10 +122,49 @@ function loadPlan(filePath) {
   if (!Array.isArray(plan.cases) || plan.cases.length === 0) problems.push('"cases" must be a non-empty array');
   if (!Array.isArray(plan.instructions) || plan.instructions.length === 0) problems.push('"instructions" must be a non-empty array');
   if (!Array.isArray(plan.models) || plan.models.length === 0) problems.push('"models" must be a non-empty array');
-  if (plan.instructions && Array.isArray(plan.instructions)) {
+  // Fix (review round 3, MINOR 5): the ENTRIES of `cases` and `models` were
+  // never type-checked — only "is this a non-empty array". `cases: [null]`
+  // sailed through and produced a cell with `caseId: null` and the id
+  // "null|baseline|vendor/model-1|current|1", which reads like a real case in a
+  // report. Same class of hole as the instructions one below, lower stakes.
+  for (const [field, values] of [['cases', plan.cases], ['models', plan.models]]) {
+    if (!Array.isArray(values)) continue;
+    values.forEach((value, i) => {
+      if (typeof value !== 'string' || !value) {
+        problems.push(`"${field}[${i}]" must be a non-empty string (got ${JSON.stringify(value)})`);
+      }
+    });
+  }
+  if (Array.isArray(plan.instructions)) {
     const ids = plan.instructions.map((arm) => arm && arm.id);
     if (ids.some((id) => typeof id !== 'string' || !id)) problems.push('every instruction arm needs a non-empty "id"');
     if (new Set(ids).size !== ids.length) problems.push('instruction arm ids must be unique (duplicate found)');
+    // Fix (review round 3, IMPORTANT 2): `file` was never validated at all,
+    // while expandPlan did `instructionsFile: arm.file ?? null`. So an arm that
+    // simply FORGOT its file key — `instructions: [{id:'baseline'},{id:'terse'}]`
+    // — became two arms that are byte-identical to a legitimate no-instructions
+    // baseline. Every guard downstream stays silent, because there is no file
+    // left unresolved to complain about, and you pay for N runs of ONE task
+    // reported as an instructions comparison. The build axis has rejected a
+    // missing `dist` by name since round 1; this is the same rule for the axis
+    // next to it. So `file` must be WRITTEN OUT on every arm: a path, or an
+    // explicit null meaning "this arm is the baseline, on purpose".
+    for (const arm of plan.instructions) {
+      if (!arm || typeof arm !== 'object') continue; // already reported by the id check above
+      const name = typeof arm.id === 'string' && arm.id ? arm.id : '(unnamed)';
+      if (!('file' in arm)) {
+        problems.push(`instruction arm "${name}" must state "file" explicitly — a path, or null for the no-instructions baseline. An omitted "file" is indistinguishable from a deliberate baseline, so one forgotten key silently collapses the instructions axis into N runs of the same task.`);
+      } else if (arm.file !== null && (typeof arm.file !== 'string' || !arm.file)) {
+        problems.push(`instruction arm "${name}" has an invalid "file" (got ${JSON.stringify(arm.file)}) — it must be a non-empty path string, or null for the baseline arm`);
+      }
+    }
+    // ...and only ONE arm may be that baseline. Two arms with no instructions
+    // file run the identical task, so a plan containing two is not a comparison
+    // no matter how carefully each was written out.
+    const baselines = plan.instructions.filter((arm) => arm && typeof arm === 'object' && arm.file === null);
+    if (baselines.length > 1) {
+      problems.push(`instruction arms ${baselines.map((a) => `"${(typeof a.id === 'string' && a.id) || '(unnamed)'}"`).join(', ')} all set "file": null — only one arm can be the no-instructions baseline, because two of them send the identical config and would be billed and reported as an instructions comparison`);
+    }
   }
   if (plan.repeats !== undefined && !isPositiveInteger(plan.repeats)) {
     problems.push(`"repeats" must be a positive integer (got ${JSON.stringify(plan.repeats)})`);
@@ -187,13 +226,24 @@ function expandPlan(plan) {
   return cells;
 }
 
+/** Print the plan header and the table of cells.
+ *
+ *  Fix (review round 3, MINOR 6): every axis line is derived from `cells` — the
+ *  rows that are actually going to run — and NOT from `plan`. They used to read
+ *  straight off the plan, but main() applies `--only` BEFORE calling this, so a
+ *  one-cell run printed "Cases: a, b / Models: m1, m2" above a single row:
+ *  a summary advertising work that was not going to happen, right above the
+ *  gate that will one day spend money. On an unfiltered run the output is
+ *  byte-identical (expandPlan visits every axis value at least once), so the
+ *  only behaviour that changed is the filtered one. */
 function printGrid(plan, cells) {
+  const uniq = (values) => [...new Set(values)];
   console.log(`Plan: ${plan.name}`);
-  console.log(`Cases: ${plan.cases.join(', ')}`);
-  console.log(`Instructions: ${plan.instructions.map((a) => a.id).join(', ')}`);
-  console.log(`Models: ${plan.models.join(', ')}`);
-  console.log(`Builds: ${(plan.builds ?? [CURRENT_BUILD]).map((b) => b.id).join(', ')}`);
-  console.log(`Repeats: ${plan.repeats ?? 1}`);
+  console.log(`Cases: ${uniq(cells.map((c) => c.caseId)).join(', ')}`);
+  console.log(`Instructions: ${uniq(cells.map((c) => c.instructionsId)).join(', ')}`);
+  console.log(`Models: ${uniq(cells.map((c) => c.model)).join(', ')}`);
+  console.log(`Builds: ${uniq(cells.map((c) => c.buildId)).join(', ')}`);
+  console.log(`Repeats: ${Math.max(...cells.map((c) => c.repeat))}`);
   console.log(`\n${cells.length} cell${cells.length === 1 ? '' : 's'}:`);
   const header = ['case', 'instructions', 'model', 'build', 'repeat'];
   const widths = header.map((h, i) => Math.max(
@@ -303,8 +353,11 @@ function workerEnv() {
  * refuses to paper over costs real money once Task 8's gate calls it.
  *
  * WHY the config goes over STDIN: it carries the OpenRouter key, and both of
- * the other channels are readable by a descendant process — which the model's
- * own Bash tool is. See harness-eval-worker.mjs's header for the measurements.
+ * the WORKER's other channels (its argv and its environment) are readable by a
+ * descendant of the worker — which the model's own Bash tool is. That is the
+ * scope of what was measured; see harness-eval-worker.mjs's header, including
+ * its "SCOPE OF THAT GUARANTEE" paragraph, which records what this does NOT
+ * cover (the orchestrator's own environment, closed by a Task 8 constraint).
  *
  * @param {Cell} cell
  * @param {{ apiKey: string, caseBody: { prompt: string, wrapUpPrompt?: string, contextLength?: number, instructions?: string } }} opts
@@ -389,9 +442,16 @@ async function runCell(cell, { apiKey, caseBody }) {
       // The model's Bash tool is exactly such a descendant, and everything it
       // prints lands in run.events and then in a saved transcript.
       // stdin has no /proc mirror at all: it is a pipe, consumed once, never
-      // re-readable by anyone. stdout stays the parsed data channel; stderr is
-      // inherited so a human watching sees worker diagnostics live.
-      stdio: ['pipe', 'pipe', 'inherit'],
+      // re-readable by anyone.
+      //
+      // Fix (review round 3, IMPORTANT 1): stderr is PIPED (and mirrored to
+      // ours below) instead of 'inherit'. Inheriting kept it visible to a human
+      // but threw it away for this process, so EVERY worker failure came back
+      // as the same opaque "worker exited 1" — empty stdin, malformed JSON, a
+      // missing apiKey and a dist that would not load were indistinguishable to
+      // the caller, and no test could tell whether the stdin config had been
+      // delivered at all.
+      stdio: ['pipe', 'pipe', 'pipe'],
       // Fix (review round 2, MINOR 1): an ALLOWLISTED environment, not the
       // operator's whole shell. See WORKER_ENV_ALLOWLIST above. Note there is
       // no OPENROUTER_API_KEY here at all any more — the key's only channel is
@@ -413,12 +473,29 @@ async function runCell(cell, { apiKey, caseBody }) {
     child.stdout.setEncoding('utf8');
     let stdout = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
+    // Capture AND mirror: the human watching still sees worker diagnostics live
+    // (that was the only thing 'inherit' bought us), and the text is also kept
+    // so a failure can be reported in the worker's own words instead of a guess.
+    // setEncoding for the same multi-byte reason as stdout above.
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { stderr += chunk; process.stderr.write(chunk); });
     child.on('error', (err) => {
       resolve({ cellId: cell.id, run: null, error: `could not spawn worker: ${err.message}` });
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       if (code !== 0) {
-        resolve({ cellId: cell.id, run: null, error: `worker exited ${code} (see its stderr above)` });
+        // The worker's OWN words, never a hardcoded guess at what went wrong.
+        // Tail-capped rather than truncated from the front, because the reason a
+        // process died is at the END of its stderr; the untruncated text was
+        // already mirrored above for anyone watching.
+        const tail = stderr.trim().slice(-2000);
+        const how = code === null ? `was killed by ${signal}` : `exited ${code}`;
+        resolve({
+          cellId: cell.id,
+          run: null,
+          error: tail ? `worker ${how}: ${tail}` : `worker ${how} without writing anything to stderr`,
+        });
         return;
       }
       try {
@@ -462,12 +539,16 @@ function main(argv) {
     // Fix (review round 1, MINOR 2): the flag now goes through the same check
     // the plan file's own `repeats` gets. It used to be a bare Number(), so
     // `--repeats abc` printed "Repeats: NaN" / "0 cells" and exited 0.
-    const parsed = Number(repeatsFlag);
-    if (!isPositiveInteger(parsed)) {
+    // Named `repeatsValue`, not `parsed` (review round 3, MINOR 7): `parsed` is
+    // already the parseArgs result in this same function, and shadowing it on a
+    // line that decides how many paid runs happen is exactly where a confusing
+    // name costs money.
+    const repeatsValue = Number(repeatsFlag);
+    if (!isPositiveInteger(repeatsValue)) {
       console.error(`harness-eval: --repeats must be a positive integer (got "${repeatsFlag}").`);
       process.exit(2);
     }
-    plan.repeats = parsed;
+    plan.repeats = repeatsValue;
   }
 
   let cells = expandPlan(plan);

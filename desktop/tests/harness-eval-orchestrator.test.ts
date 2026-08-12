@@ -11,48 +11,73 @@ const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
 const SOURCE_PATHS = path.join(DESKTOP, 'src/main/harness/eval/paths.ts');
 const requireCjs = createRequire(import.meta.url);
 
+/**
+ * Compile src/main/harness/eval/paths.ts to its production path when the tree
+ * has not been built.
+ *
+ * BUILD DEPENDENCY — and why this COMPILES instead of skipping.
+ * Fix (review round 2, IMPORTANT 1): the grader-isolation assertions need the
+ * COMPILED module (see that describe), and .github/workflows/desktop-ci.yml
+ * runs `npm ci` (line 48) -> `npm test` (51) -> knip -> lint -> `npm run build`
+ * (92, Linux only). `npm test` is bare `vitest` with no pretest hook and dist/
+ * is gitignored, so dist/ NEVER exists when CI runs this file, and Windows
+ * never builds at all. Skipping would mean the invariant that stops a
+ * branch-vs-master eval from silently comparing two GRADERS as well as two
+ * harnesses is checked on no platform, ever. Compiling one file costs ~2s,
+ * needs no project build, and lands it at exactly the production path so the
+ * exact-value assertions stay real. An already-built tree pays nothing.
+ *
+ * Fix (review round 3, MINOR 3): this is a module-scope function rather than
+ * one describe's beforeAll, because runCell() also imports
+ * dist/main/harness/eval/paths.js and therefore has the same dependency. It
+ * only ever passed on an unbuilt tree by accident — the grader-isolation
+ * beforeAll happened to run first and left the file behind. Filter that
+ * describe away (`npx vitest run -t 'baseline arm'`) and the runCell test blew
+ * up with a raw ERR_MODULE_NOT_FOUND instead. Both suites now declare it.
+ */
+function ensureCompiledPaths(): void {
+  if (fs.existsSync(COMPILED_PATHS)) return;
+  // target/module are read from tsconfig.json rather than hardcoded, so an
+  // on-demand compile can never drift from what `npm run build:main` produces.
+  // paths.ts imports nothing but `path`, which is what makes a single-file
+  // compile faithful here.
+  const tsconfig = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'tsconfig.json'), 'utf8'));
+  try {
+    execFileSync(process.execPath, [
+      requireCjs.resolve('typescript/bin/tsc'),
+      SOURCE_PATHS,
+      '--outDir', path.dirname(COMPILED_PATHS),
+      '--target', tsconfig.compilerOptions.target,
+      '--module', tsconfig.compilerOptions.module,
+    ], { cwd: DESKTOP, stdio: 'pipe' });
+  } catch (err) {
+    // Fix (review round 3, MINOR 4): stdio 'pipe' means tsc's diagnostics land
+    // on err.stdout and execFileSync's own message is only
+    // "Command failed: .../tsc ...". Re-thrown WITH the real output attached —
+    // the workspace rule against replacing a real error with a summary of it
+    // applies to test harnesses too, and this is a hook a non-developer will
+    // hit on a fresh checkout.
+    const e = err as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
+    throw new Error([
+      `Could not compile ${SOURCE_PATHS} for the harness-eval tests (they need the compiled paths.js at ${COMPILED_PATHS}).`,
+      e.message,
+      String(e.stdout ?? '').trim(),
+      String(e.stderr ?? '').trim(),
+    ].filter(Boolean).join('\n'));
+  }
+}
+
 describe('grader isolation', () => {
   // WHY the COMPILED module and not just the TypeScript source: paths.ts
   // resolves its answer from `__dirname`, so the source answers
   // `<desktop>/src/...` under vitest and the compiled copy answers
   // `<desktop>/dist` — only the latter is what production actually produces. A
   // test that only imports the source cannot observe the value the orchestrator
-  // will use.
-  //
-  // BUILD DEPENDENCY — and why this hook COMPILES instead of skipping.
-  // Fix (review round 2, IMPORTANT 1): this was a file-scope `beforeAll` that
-  // THREW when dist/ was missing, which took down all 11 tests in this file
-  // including the 8 that have no build dependency. It also justified itself
-  // with "desktop CI already uses build, then test" — the opposite of what
-  // .github/workflows/desktop-ci.yml does. Its real order is `npm ci` (line 48)
-  // -> `npm test` (51) -> knip -> lint -> `npm run build` (92, Linux only), and
-  // `npm test` is bare `vitest` with no pretest hook, so dist/ NEVER exists when
-  // CI runs this file, and Windows never builds at all.
-  //
-  // So the choice was: skip when dist/ is absent, or compile on demand. Skipping
-  // would mean this invariant — the one that stops a branch-vs-master eval from
-  // silently comparing two GRADERS as well as two harnesses — is never checked
-  // in CI on any platform, which is most of the value of having it. Compiling
-  // just this one file costs ~2s, needs no project build, and lands it at
-  // exactly the production path so the assertions below stay real. A tree that
-  // has already been built is used as-is and pays nothing.
+  // will use. The compile-on-demand rationale lives on ensureCompiledPaths().
   let compiled: { graderRoot: (c: { dist: string }) => string; harnessRoot: (c: { dist: string }) => string };
 
   beforeAll(() => {
-    if (!fs.existsSync(COMPILED_PATHS)) {
-      // target/module are read from tsconfig.json rather than hardcoded, so an
-      // on-demand compile can never drift from what `npm run build:main`
-      // produces. paths.ts imports nothing but `path`, which is what makes a
-      // single-file compile faithful here.
-      const tsconfig = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'tsconfig.json'), 'utf8'));
-      execFileSync(process.execPath, [
-        requireCjs.resolve('typescript/bin/tsc'),
-        SOURCE_PATHS,
-        '--outDir', path.dirname(COMPILED_PATHS),
-        '--target', tsconfig.compilerOptions.target,
-        '--module', tsconfig.compilerOptions.module,
-      ], { cwd: DESKTOP, stdio: 'pipe' });
-    }
+    ensureCompiledPaths();
     // createRequire, not import(): dist/ is CommonJS (package.json is
     // "type": "commonjs") and this loads it exactly the way Node does for the
     // .mjs entry points, with no vite transform in between.
@@ -124,6 +149,50 @@ describe('loadPlan validation', () => {
     const { loadPlan } = await import('../test-engine/harness-eval.mjs');
     expect(() => loadPlan(writePlan({ ...BASE_PLAN, repeats: 0 }))).toThrowError(/"repeats" must be a positive integer/);
   });
+
+  it('rejects an instruction arm that omits "file", naming the arm', async () => {
+    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    // Regression pin (review round 3, IMPORTANT 2): `[{id:'baseline'},{id:'terse'}]`
+    // — one forgotten key — used to expand into two arms that were byte-identical
+    // to a legitimate baseline. Both downstream guards stay silent for it (there
+    // is no unresolved file to complain about), so N paid runs of ONE task got
+    // reported as an instructions comparison.
+    const file = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline' }, { id: 'terse' }],
+    });
+    expect(() => loadPlan(file)).toThrowError(/instruction arm "terse" must state "file" explicitly/);
+  });
+
+  it('rejects an instruction arm whose "file" is neither a path nor null', async () => {
+    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    // '' would be carried as a falsy instructionsFile, i.e. treated downstream
+    // as "baseline, nothing to resolve" — the same silent collapse by another route.
+    const file = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'terse', file: '' }],
+    });
+    expect(() => loadPlan(file)).toThrowError(/instruction arm "terse" has an invalid "file"/);
+  });
+
+  it('rejects two baseline arms, which are not a comparison', async () => {
+    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    const file = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'control', file: null }],
+    });
+    expect(() => loadPlan(file)).toThrowError(/all set "file": null — only one arm can be the no-instructions baseline/);
+  });
+
+  it('rejects a non-string entry in cases or models, naming the index', async () => {
+    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    // Regression pin (review round 3, MINOR 5): only array-non-emptiness was
+    // checked, so `cases: [null]` produced a cell id reading "null|baseline|...".
+    expect(() => loadPlan(writePlan({ ...BASE_PLAN, cases: [null] })))
+      .toThrowError(/"cases\[0\]" must be a non-empty string \(got null\)/);
+    expect(() => loadPlan(writePlan({ ...BASE_PLAN, models: ['ok', 7] })))
+      .toThrowError(/"models\[1\]" must be a non-empty string \(got 7\)/);
+  });
 });
 
 describe('CLI flag parsing', () => {
@@ -167,6 +236,24 @@ describe('CLI flag parsing', () => {
     expect(stderr).toContain('--plan needs a value, but nothing followed it');
   });
 
+  it('does not advertise cases a --only run will not touch', () => {
+    // Regression pin (review round 3, MINOR 6): printGrid read its axis lines
+    // off the PLAN while main() filtered the CELLS, so a one-cell run printed
+    // "Cases: case-a, case-b" above a single row.
+    const file = writePlan({ ...BASE_PLAN, cases: ['case-a', 'case-b'] });
+    const out = execFileSync(
+      process.execPath,
+      [CLI, '--plan', file, '--only', 'case-a|baseline|vendor/model-1|current|1', '--dry-run'],
+      { encoding: 'utf8' },
+    );
+    expect(out).toContain('Cases: case-a\n');
+    expect(out).toContain('1 cell:');
+    expect(out).not.toContain('case-b');
+    // ...and an UNFILTERED run of the same plan still lists both.
+    const all = execFileSync(process.execPath, [CLI, '--plan', file, '--dry-run'], { encoding: 'utf8' });
+    expect(all).toContain('Cases: case-a, case-b\n');
+  });
+
   it('accepts a positive integer and expands that many repeats', () => {
     const file = writePlan(BASE_PLAN);
     const out = execFileSync(process.execPath, [CLI, '--plan', file, '--repeats', '3', '--dry-run'], {
@@ -179,6 +266,12 @@ describe('CLI flag parsing', () => {
 });
 
 describe('runCell refuses to run a cell it cannot run honestly', () => {
+  // runCell() imports dist/main/harness/eval/paths.js before it spawns, so this
+  // suite has the same build dependency the grader-isolation one declares. It
+  // used to have it silently: on an unbuilt tree it only passed because the
+  // FIRST describe's hook had already compiled the file. See ensureCompiledPaths().
+  beforeAll(ensureCompiledPaths);
+
   const cell = {
     id: 'case-a|baseline|vendor/model-1|current|1',
     caseId: 'case-a',
@@ -215,20 +308,43 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     )).rejects.toThrow(/instruction arm "terse" declares a file \("instructions\/terse\.md"\)/);
   });
 
-  it('does not throw for the baseline arm, which declares no file', async () => {
+  it('does not throw for the baseline arm, and delivers the config over stdin', async () => {
     const { runCell } = await import('../test-engine/harness-eval.mjs');
-    // `file: null` has nothing to resolve, so it must NOT be blocked — the
-    // guard has to be about an unread file, not about instructions being absent.
-    // (It still fails, but on the spawn, which is what proves it got past the
-    // pre-flight checks rather than being refused by them.)
-    // It also doubles as the end-to-end proof that the stdin config channel
-    // works: the worker only reaches "could not load the dist" AFTER it has read
-    // stdin, parsed the JSON, and passed every required-field check.
+    // Two things at once, and the SECOND one is why this assertion is worded
+    // the way it is.
+    //
+    // 1. `file: null` has nothing to resolve, so it must NOT be blocked — the
+    //    guard has to be about an unread file, not about instructions being
+    //    absent. It still fails, but on the worker side, which proves it got
+    //    past the pre-flight checks rather than being refused by them.
+    //
+    // 2. Fix (review round 3, IMPORTANT 1): this is the ONLY regression pin on
+    //    the stdin config channel (the detector that verified that fix was a
+    //    throwaway script, deliberately kept out of the repo). It used to assert
+    //    `result.error === 'worker exited 1 (see its stderr above)'` — and exit
+    //    1 is what the worker returns for EVERY guard path, including "stdin
+    //    closed without a config". So deleting `child.stdin.end(config)` would
+    //    have left this test green while the channel was dead. Measured: with
+    //    the payload dropped the worker said "stdin closed without a config"
+    //    and the old assertion still passed.
+    //
+    //    "could not load the harness under test from /a/dist" is a message ONLY
+    //    a DELIVERED config can produce: the worker reaches the dist import only
+    //    after reading stdin to EOF, parsing the JSON, and passing every
+    //    required-field check — and the path it names is one that exists
+    //    nowhere but inside the config this call wrote. (runCell pipes and
+    //    captures the worker's stderr now; with stdio[2]: 'inherit' the caller
+    //    could not see WHICH error occurred, which is what made the weak
+    //    assertion the only one available.)
     const result = await runCell(
       { ...cell, instructionsFile: null },
       { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } },
     );
-    expect(result.error).toBe('worker exited 1 (see its stderr above)');
+    expect(result.error).toContain('could not load the harness under test from "/a/dist"');
+    // The non-delivery messages, named explicitly so this test fails loudly
+    // rather than confusingly if the config ever stops arriving.
+    expect(result.error).not.toContain('stdin closed without a config');
+    expect(result.error).not.toContain('is not valid JSON');
   });
 });
 

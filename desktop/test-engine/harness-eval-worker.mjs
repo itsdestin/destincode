@@ -35,14 +35,14 @@ import * as path from 'path';
 // `{ ...process.env, ... }`, so those children are DESCENDANTS of this process.
 // Every byte they print comes back as a tool result, lands in `run.events`, and
 // is written to stdout below — where the runner saves it as a transcript on
-// disk. Any channel a descendant can read the key from is therefore a channel
-// that writes the key into a file.
+// disk. So a channel of THIS process that such a descendant can read the key
+// from is a channel that writes the key into a file.
 //
-// Two channels were tried and both failed, each measured from inside such a
-// descendant with a canary key:
-//   round 1, argv:        /proc/<ppid>/cmdline  -> LEAKED
-//   round 2, environment: /proc/<ppid>/environ  -> LEAKED
-//                         `ps eww -p <ppid>`    -> LEAKED
+// Two of this process's channels were tried and both failed, each measured from
+// inside such a descendant with a canary key:
+//   round 1, this worker's argv:  /proc/<ppid>/cmdline  -> LEAKED
+//   round 2, this worker's env:   /proc/<ppid>/environ  -> LEAKED
+//                                 `ps eww -p <ppid>`    -> LEAKED
 // Round 2 captured the key into a local and called
 // `delete process.env.OPENROUTER_API_KEY`. That is NOT a scrub of the process's
 // environment: delete calls unsetenv, which edits the in-heap environ array
@@ -55,12 +55,27 @@ import * as path from 'path';
 //
 // So: the config — key included — arrives on STDIN. A pipe has no /proc mirror,
 // is consumed exactly once by the read below, and is never re-readable by
-// anything, descendant or otherwise. Nothing is in argv (this file refuses an
-// argv config outright, see below) and nothing is in the environment (the
-// orchestrator spawns this worker with an ALLOWLISTED env that has no
+// anything, descendant or otherwise. Nothing is in this worker's argv (it
+// refuses an argv config outright, see below) and nothing is in this worker's
+// environment (the orchestrator spawns it with an ALLOWLISTED env that has no
 // OPENROUTER_API_KEY in it at all — see WORKER_ENV_ALLOWLIST in
 // harness-eval.mjs). makeOpenRouterFactory takes the key as a plain function
 // argument, so nothing downstream ever needs it in the environment either.
+//
+// SCOPE OF THAT GUARANTEE — read this before quoting the paragraph above.
+// What was measured is exactly the list of channels named above, and they are
+// all channels of THIS WORKER. It is NOT a statement about every process in the
+// tree. In particular it says nothing about the ORCHESTRATOR
+// (harness-eval.mjs): if the orchestrator is itself started as
+// `OPENROUTER_API_KEY=... node test-engine/harness-eval.mjs`, the key sits in
+// the orchestrator's own /proc/<pid>/environ for its whole lifetime, and a
+// Bash-tool grandchild can walk up ppid links and read it there. This worker's
+// stdin channel cannot fix that and does not claim to. Closing it is a binding
+// constraint on Task 8 of the harness-evaluator plan (the credential must reach
+// the orchestrator by file or interactive prompt, never as an inherited env
+// var, with a detector that probes GRANDPARENT processes and not just this
+// one). No process on this branch holds a key, which is why it is Task 8's to
+// close rather than something measurable here.
 //
 // The delete below is kept as belt-and-braces for the hand-run case (a human
 // invoking this worker from a shell that happens to export the key). It is NOT
