@@ -864,7 +864,17 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
   }
 }
 
-/** WHY an alias rather than a rename-everywhere: Task 1 proved the move was
- *  behavior-preserving by keeping the pinning tests untouched. Renaming their
- *  entry point in the same change would forfeit that evidence. */
-export const runBattery = runCase;
+/** WHY a delegating function rather than a rename-everywhere: Task 1 proved
+ *  the move was behavior-preserving by keeping the ~35 `runBattery` call
+ *  sites in tests/harness-review-runner.test.ts untouched — that
+ *  untouchedness IS the evidence the refactor preserved behavior, so
+ *  renaming their entry point in the same change would forfeit it.
+ *  WHY a function and not `export const runBattery = runCase` (the original,
+ *  simpler shape): the const-alias form binds two exported names to the same
+ *  value, which `npm run knip`'s "duplicates" check (gated in CI,
+ *  desktop/knip.jsonc) flags as `Duplicate exports: runCase|runBattery` and
+ *  fails the build — confirmed empirically (Fix pass 1, Finding 2): the
+ *  const alias makes knip exit 1, this delegating function makes it exit 0,
+ *  and `tsc --noEmit` stays clean either way. Temporary: Task 13 removes this
+ *  once callers migrate to `runCase` directly. */
+export async function runBattery(opts: RunCaseOpts): Promise<BatteryRun> { return runCase(opts); }

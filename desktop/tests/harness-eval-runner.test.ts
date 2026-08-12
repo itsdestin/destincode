@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { runCase } from '../src/main/harness/eval/run-case';
 import { BATTERY_PROMPT } from '../src/main/harness/eval/battery';
-import { scriptModel } from './helpers/harness-fakes';
+import { scriptModel, fakeTool } from './helpers/harness-fakes';
 
 describe('runCase inputs', () => {
   it('sends the prompt it was given, not the battery prompt', async () => {
@@ -27,14 +27,39 @@ describe('runCase inputs', () => {
     expect(run.events.find((e) => e.type === 'user-message')?.data.text).toBe(BATTERY_PROMPT);
   });
 
-  it('attaches only the tools it was given', async () => {
-    const model = scriptModel([{ text: 'done' }]);
+  // WHY this shape and not `tools: []` + `toolsUsed`: the old version scripted
+  // no tool call at all, so `toolsUsed` was `[]` regardless of whether
+  // `opts.tools` was wired up, ignored, or never added — it discriminated
+  // nothing (Fix pass 1, Finding 1). `toolsUsed` also can't discriminate even
+  // with a real call: harness-session.ts emits the 'tool-use' event (which
+  // feeds toolsUsed) for the toolName the MODEL asked for, before checking
+  // whether that name is registered at all (harness-session.ts ~1370 vs
+  // ~1778's `toolByName.get`) — so the event fires identically whether the
+  // session's actual tool set came from `opts.tools` or a hardcoded
+  // CORE_TOOLS. What DOES differ is which tool actually executed and what it
+  // returned: this test hands runCase a single fake 'Read' tool (same name as
+  // the real one in CORE_TOOLS, built with the existing fakeTool helper) that
+  // returns a fixed marker instead of touching the filesystem, and scripts a
+  // call to 'Read' with a path that doesn't exist. If `opts.tools` reaches the
+  // session, the fake runs and the marker comes back. If the wiring regresses
+  // to a hardcoded CORE_TOOLS, the model's call instead reaches the REAL Read
+  // tool, which stats the missing path and returns an ENOENT failure message
+  // — a different, verifiably-absent string. See the Task 2 report's Fix pass
+  // 1 for the mutation run that confirms this actually fails under that
+  // regression.
+  it('attaches the tools it was given, not the CORE_TOOLS default', async () => {
+    const fakeRead = fakeTool('Read', { onExecute: () => ({ text: 'FAKE_READ_MARKER' }) });
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Read', input: { file_path: 'does-not-exist.txt' } }] },
+      { text: 'done' },
+    ]);
     const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'test/model', label: 'test',
-      tools: [],
+      tools: [fakeRead],
       contextLength: 64_000,
     });
-    expect(run.metrics.toolsUsed).toEqual([]);
+    const toolResult = run.events.find((e) => e.type === 'tool-result');
+    expect(toolResult?.data.toolResult).toBe('FAKE_READ_MARKER');
   });
 });
