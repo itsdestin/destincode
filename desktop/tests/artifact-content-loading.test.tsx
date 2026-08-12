@@ -174,6 +174,47 @@ describe('artifact pane read lifecycle', () => {
     expect(utils.getByText(LOADING_MSG)).toBeTruthy();
   });
 
+  it('routes a text-extension file that sniffed BINARY to BinaryFallback, not a blank text viewer', async () => {
+    // PR #303 follow-up bug: a .md (or .ts, …) containing NUL bytes resolves
+    // with content:null + binary:true. The pane routed by EXTENSION to
+    // MarkdownView/CodeEditorView, which rendered an empty pane from the null
+    // content — a quiet blank instead of an honest "can't preview".
+    const utils = render(<Host artifact={mdArtifact} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
+    }));
+    expect(utils.getByText(/Cannot preview this file type/i)).toBeTruthy();
+    // Not the pre-#303 false claim, and not the loading placeholder either.
+    expect(utils.queryByText(MISSING_MSG)).toBeNull();
+    expect(utils.queryByText(LOADING_MSG)).toBeNull();
+  });
+
+  it('routes a sniffed-binary .html to BinaryFallback, not a perpetual "Loading…"', async () => {
+    // Review gap on the same bug class: HtmlView also renders from the text
+    // content prop (srcDoc) and with content:null shows "Loading…" FOREVER —
+    // an unresolvable claim, worse than blank. Fallback + "Open in default
+    // app" (→ browser) is the honest treatment.
+    const utils = render(<Host artifact={{ id: 'a4', kind: 'internal', path: 'page.html' } as any} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
+    }));
+    expect(utils.getByText(/Cannot preview this file type/i)).toBeTruthy();
+    expect(utils.queryByText(/^Loading…$/)).toBeNull();
+  });
+
+  it('a real binary-viewer extension (.png) keeps its extension routing on binary:true', async () => {
+    // Control for the test above: binary:true must NOT shove files whose
+    // registered viewer already handles bytes (Image/Pdf/…) into the fallback.
+    const utils = render(<Host artifact={{ id: 'a3', kind: 'internal', path: 'shot.png' } as any} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
+    }));
+    expect(utils.queryByText(/Cannot preview this file type/i)).toBeNull();
+    // Proof ImageView mounted: its byte-read path reports 'unavailable'
+    // because this test's mock exposes no artifacts.readBinary.
+    expect(utils.getByText(/Preview isn.t available/i)).toBeTruthy();
+  });
+
   it('recovers from missing when the file reappears on disk (watcher refetch → onContentChange)', async () => {
     // PR #303 review regression: ActiveArtifactView's onChanged effect hands
     // refetched bytes back via onContentChange WITHOUT re-running the hook's
