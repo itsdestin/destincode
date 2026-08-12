@@ -6,6 +6,7 @@ import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
+import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -897,6 +898,289 @@ describe('NativeSessionHost', () => {
       const types = store.readEvents('qz2', root).map((e) => e.type);
       expect(types).not.toContain('turn-complete');
       await qHost.destroyAll();
+    });
+  });
+
+  // ---- Specialists (plan 1a, Task 5): createChild mints a CHILD session —
+  // an ordinary HarnessSession marked by parentage, cold-started, with a
+  // charter-capped tool + permission surface and no route to a user ask.
+  describe('specialist children (Task 5)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+    // Boot a host we hold the store handle for (the suite's shared `host`
+    // builds its store inline) so a test can read the child's header back.
+    function bootHost(modelFactory: any = factory, skillCatalog?: any) {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, modelFactory, async () => null, async () => null, async () => null,
+        undefined, undefined, undefined, skillCatalog,
+      );
+      return { store, h };
+    }
+    async function withParent(modelFactory: any = factory, skillCatalog?: any) {
+      const { store, h } = bootHost(modelFactory, skillCatalog);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      return { store, h };
+    }
+    // The child's live HarnessSession — Task 7 reaches it the same way (through
+    // the host's live map); here it is the only route to the child's tool surface.
+    const childSession = (h: NativeSessionHost, id: string) => (h as any).live.get(id).session;
+    const toolNames = (h: NativeSessionHost, id: string) => Object.keys(childSession(h, id).buildAiTools());
+
+    it('createChild mints a child session with parent header fields and restricted tools', async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.parentSessionId).toBe('root-1');
+      expect(header?.sessionKind).toBe('specialist');
+      expect(header?.agentType).toBe('explorer');
+      expect(header?.cwd).toBe(root);
+      expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });   // inherits the parent's model
+      // Exactly the definition's allowlist — no Write/Edit/Bash/TodoWrite/AskUserQuestion.
+      expect(toolNames(h, childId).sort()).toEqual([...EXPLORER.allowedTools].sort());
+      await h.destroyAll();
+    });
+
+    it('createChild rejects a workDir outside the parent cwd', async () => {
+      const { h } = await withParent();
+      await expect(h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: '/etc', parentToolCallId: 'tc-1',
+      })).rejects.toThrow(/inside the parent/i);
+      await h.destroyAll();
+    });
+
+    it('createChild accepts a subdirectory of the parent cwd (a narrower jail is fine)', async () => {
+      const { store, h } = await withParent();
+      const sub = path.join(root, 'sub');
+      fs.mkdirSync(sub, { recursive: true });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: sub, parentToolCallId: 'tc-1',
+      });
+      expect(store.readHeader(childId, sub)?.cwd).toBe(sub);
+      await h.destroyAll();
+    });
+
+    it('createChild refuses a parent that is not live — never a child with no owner', async () => {
+      const { h } = await withParent();
+      await expect(h.createChild('ghost', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      })).rejects.toThrow(/ghost/);
+      await h.destroyAll();
+    });
+
+    it('a child session has no Skill tool and no Task tool (cold-start contract, depth 1)', async () => {
+      // The host IS given a populated catalog, so the parent gets the Skill tool
+      // — that is what makes the child's absence meaningful rather than an
+      // artifact of the sandboxed HOME (tests/global-setup.ts) finding no skills.
+      const catalog = { list: () => [{ id: 'journal', description: 'Write a journal entry' }], load: (id: string) => ({ id, displayName: id, description: 'd', body: 'b' }) };
+      const { h } = await withParent(factory, catalog);
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      expect(toolNames(h, 'root-1')).toContain('Skill');   // the parent can reach skills…
+      const names = toolNames(h, childId);
+      expect(names).not.toContain('Skill');                // …the child cannot
+      expect(names).not.toContain('Task');                 // depth 1 by toolset omission
+      // Explicit-suppression pin: the child was HANDED an empty catalog rather
+      // than left to fall back to createSkillCatalog(). Both look identical in
+      // this suite (the sandboxed HOME has no skills either), so only reading
+      // back what was injected can tell them apart — and in production that is
+      // the difference between "no skills" and "the user's whole library".
+      const injected = (childSession(h, childId) as any).opts.skillCatalog;
+      expect(injected.list()).toEqual([]);
+      expect(() => injected.load('journal')).toThrow(/No skill named/);
+      // Same for MCP: no lease is acquired for a child, so no servers ride along.
+      expect((childSession(h, childId) as any).opts.mcpServers).toBeUndefined();
+      await h.destroyAll();
+    });
+
+    it('children are hidden from the Resume Browser list', async () => {
+      const { h } = await withParent();
+      await h.createChild('root-1', { specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1' });
+      expect(h.list().map((r) => r.sessionId)).toEqual(['root-1']);
+      await h.destroyAll();
+    });
+
+    it("a child's events persist under its OWN id and never reach the host emitter (display copies are Task 7)", async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const onHost: any[] = [];
+      h.on('transcript-event', (e) => onHost.push(e));
+      await childSession(h, childId).send('go');
+      await h.drain(childId);
+      // Persisted to the child's own JSONL...
+      expect(store.readEvents(childId, root).map((e) => e.type)).toEqual(['user-message', 'assistant-text', 'turn-complete']);
+      // ...and NOT forwarded raw to the renderer: an un-stamped child event
+      // would mint a conversation record for a session no window owns.
+      expect(onHost.filter((e) => e.sessionId === childId)).toEqual([]);
+      await h.destroyAll();
+    });
+
+    it("the child runs inside the launch envelope: a parent 'ask' for an in-charter tool never prompts", async () => {
+      // Worker charter is read-write and lists Write; the parent sits in the
+      // default 'ask' mode, where Write would normally raise a permission ask.
+      // The envelope (the user's approval at spawn) converts that to an allow —
+      // and no ask may reach the broker, because a child has no user.
+      const WORKER = resolveSpecialist('worker')!;
+      const writeOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Write', { file_path: 'child-note.txt', content: 'hi' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => writeOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      await childSession(h, childId).send('go');
+      expect(asks).toEqual([]);                                           // no ask was raised
+      expect(fs.existsSync(path.join(root, 'child-note.txt'))).toBe(true); // the tool actually ran
+      await h.destroyAll();
+    });
+
+    const writesOnce = (file: string) => async () => scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: file, content: 'x' }), finishChunk('tool-calls')),
+      stream(...textChunks('t', 'done'), finishChunk('stop')),
+    ]) as any;
+
+    it('a tool the specialist does not have is refused by omission, naming what it DOES have', async () => {
+      // Explorer is read-only and has no Write, so Write is never attached — the
+      // driver's unknown-tool result answers first and the charter cap in
+      // buildChildDecide is never consulted. That IS the contract: the outer
+      // layer already names the available tools, so the model gets a next step
+      // rather than retrying the same call.
+      const { h } = await withParent(writesOnce('nope.txt'));
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/Unknown tool Write/);
+      expect(res.data.toolResult).toMatch(/Read, Glob, Grep/);
+      expect(fs.existsSync(path.join(root, 'nope.txt'))).toBe(false);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);   // refusal, not a crash
+      await h.destroyAll();
+    });
+
+    it('the read-only charter still refuses a write tool a definition wrongly listed', async () => {
+      // The second cap earns its keep here: a definition that lists Write under a
+      // read-only charter DOES get the tool attached, so the tool filter can no
+      // longer help — decide() is what stops it, with a reason that says why.
+      // (The same layer is what would catch a dynamically-attached tool, since
+      // Skill and MCP tools are attached inside HarnessSession, not from `tools`.)
+      const MISDECLARED = { ...EXPLORER, allowedTools: [...EXPLORER.allowedTools, 'Write'] };
+      const { h } = await withParent(writesOnce('charter.txt'));
+      const { childId } = await h.createChild('root-1', {
+        specialist: MISDECLARED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/read-only charter/i);
+      expect(fs.existsSync(path.join(root, 'charter.txt'))).toBe(false);
+      await h.destroyAll();
+    });
+
+    // Task 5.5 step 4 — the behavioral pin the ask-policy exists for. Four paths
+    // in harness-session call askUser directly, bypassing decide(); the step-cap
+    // gate is one of them. Wired to a broker, the child's ask would go to a
+    // sessionId no window owns, the reducer would drop it, and the promise would
+    // never resolve — the child would hang until teardown. With the policy it
+    // ends the turn cleanly.
+    it("stepCap is enforced: the turn ends with stopReason 'max_steps' instead of hanging, and no ask is raised", async () => {
+      const CAPPED = { ...EXPLORER, stepCap: 2 };   // definition-driven, not a global
+      // A model that never stops calling tools (scriptedModel replays its last
+      // script forever), so only the step cap can end this turn.
+      const loops = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
+      ]) as any;
+      const { h } = await withParent(async () => loops());
+      const { childId } = await h.createChild('root-1', {
+        specialist: CAPPED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+
+      await childSession(h, childId).send('go');   // must SETTLE — a hang fails by timeout
+
+      const done = events.find((e) => e.type === 'turn-complete');
+      expect(done).toBeDefined();
+      expect(done.data.stopReason).toBe('max_steps');
+      // The DEFINITION's cap is what stopped it, not the model-tier default:
+      // exactly two steps ran. Without the harness.limits.maxSteps wiring this
+      // model would loop to stepBudgetFor(modelId) — same stopReason, ~25 steps.
+      expect(events.filter((e) => e.type === 'tool-use')).toHaveLength(2);
+      expect(asks.filter((e) => e.payload?.sessionId === childId || e.payload?._sessionId === childId)).toEqual([]);
+      expect(asks).toEqual([]);   // nothing reached the host emitter at all
+      await h.destroyAll();
+    });
+
+    it("the child's permissions are keyed to the PARENT's project, not its work subdirectory", async () => {
+      // buildDecide looks remembered "Always allow" rules up by cwd. A child
+      // narrowed to a subdirectory must still read the rules the user granted
+      // for the PROJECT — grants follow the project, not the subtree — so the
+      // lookup has to use the parent's cwd even though the child runs in `sub`.
+      const rulesFor = vi.fn(async () => []);
+      const store = new SessionStore(new NativeHome(root));
+      const globOnce = async () => scriptedModel([
+        stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const h = new NativeSessionHost(store, globOnce, async () => null, async () => null, async () => null,
+        { rulesFor, remember: async () => { /* no-op */ } });
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const sub = path.join(root, 'sub-perms');
+      fs.mkdirSync(sub, { recursive: true });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: sub, parentToolCallId: 'tc-1',
+      });
+      rulesFor.mockClear();
+      await childSession(h, childId).send('go');
+      expect(rulesFor).toHaveBeenCalled();                                  // the child DID consult them
+      expect(rulesFor.mock.calls.map((c) => c[0])).toEqual([root]);         // ...under the parent's cwd
+      await h.destroyAll();
+    });
+
+    it('destroying the parent destroys its children and releases their model ref', async () => {
+      const { h } = await withParent();
+      const released: string[] = [];
+      h.setModelReleasedHandler((id) => released.push(id));
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      expect(h.sessionsForModel('m').sort()).toEqual([childId, 'root-1'].sort());
+
+      await h.destroy('root-1');
+      expect(h.isNative(childId)).toBe(false);          // the child went with its parent
+      expect(h.sessionsForModel('m')).toEqual([]);      // ...and gave back its model ref
+      expect(released).toEqual(['m']);
+      await h.destroyAll();
+    });
+
+    it('interrupting the parent interrupts its running children', async () => {
+      const { h } = await withParent(delayedFactory);
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const turn = childSession(h, childId).send('go');   // slow (delayedFactory) turn
+      await new Promise((r) => setTimeout(r, 20));
+      h.interrupt('root-1');
+      await turn;                                         // settles — no hang
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
+      await h.destroyAll();
     });
   });
 });

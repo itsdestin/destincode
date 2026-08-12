@@ -29,7 +29,12 @@ import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
-import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { createSkillCatalog, SkillNotFound, type SkillCatalog } from './skills/skill-catalog';
+import { canonicalize, resolveP } from './tools/guards';
+import { isUnderRoot } from '../artifacts/read-binary-access';
+import type { SpecialistDefinition } from './specialists/registry';
+import { buildChildDecide } from './specialists/child-permissions';
+import { childAskPolicy } from './specialists/child-ask-policy';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
@@ -109,6 +114,10 @@ interface LiveEntry {
   // quiesce()/teardown await this to know the in-flight turn has actually settled
   // — the host has no other awaitable handle on the fire-and-forget runTurns.
   running?: Promise<void>;
+  // Specialists (plan 1a): set ONLY on a child minted by createChild. It is the
+  // back-pointer that lets destroy() de-register this child from its parent's
+  // childrenOf set without re-reading the header off disk (see childrenOf).
+  parentSessionId?: string;
 }
 
 export class NativeSessionHost extends EventEmitter {
@@ -140,6 +149,15 @@ export class NativeSessionHost extends EventEmitter {
   // decide(), so an Always-allow always sticks for the rest of this session.
   // Disk remains the cross-session record; this is per-run and dropped on destroy.
   private rememberedFor = new Map<string, PermissionRule[]>();
+
+  // Specialists (plan 1a): parent session id → its live specialist children.
+  // Maintained by createChild() and by destroy() (which de-registers a child as
+  // it tears it down). WHY a map rather than re-reading headers at teardown:
+  // destroy()/interrupt()/quiesce() must find a session's children WITHOUT disk
+  // I/O — interrupt() is synchronous and cannot read files at all, and a
+  // teardown that depended on a readable header would silently leak a running
+  // child if the read failed.
+  private childrenOf = new Map<string, Set<string>>();
 
   // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
   // header resolves to 'assistant' here). Drives the renderer's preset chip and
@@ -493,6 +511,154 @@ export class NativeSessionHost extends EventEmitter {
     this.wire(opts.sessionId, opts.cwd, session, mcpLease);
   }
 
+  /** Mint a SPECIALIST CHILD of a live session (plan 1a, spec §1/§5).
+   *
+   *  A specialist is an ordinary HarnessSession, not a new kind of object: same
+   *  driver, same transcript events, its own JSONL. What makes it a child is
+   *  (a) the header's parentage fields, (b) a COLD start — its system prompt is
+   *  the specialist definition plus the <env> block for its work directory, and
+   *  nothing at all from the parent conversation, and (c) a capability surface
+   *  that can only ever be narrower than the parent's.
+   *
+   *  `prompt` and `parentToolCallId` are accepted here but deliberately not
+   *  consumed yet: this call mints the child IDLE. Task 7's runSpecialist()
+   *  delivers the prompt as the child's first user turn and stamps display
+   *  copies of its events with parentToolCallId. They sit in the signature now
+   *  so the Task tool (Task 6), which is written against this contract, has one
+   *  call site rather than two.
+   *
+   *  Returns the child's id; throws (never returns a half-built child) when the
+   *  parent isn't live or the work directory escapes the parent's. */
+  async createChild(parentId: string, opts: {
+    specialist: SpecialistDefinition;
+    prompt: string;
+    workDir: string;
+    parentToolCallId: string;
+  }): Promise<{ childId: string }> {
+    const parent = this.live.get(parentId);
+    // A child with no live parent has nobody to report to and nobody to tear it
+    // down — refuse loudly rather than orphan a session.
+    if (!parent) throw new Error(`Cannot start a specialist: parent session ${parentId} is not live.`);
+
+    // Containment: the child may work in the parent's directory or a
+    // subdirectory of it, never outside. Canonicalized through the SAME helper
+    // the tool-layer guards use (forward slashes, `..` resolved, case-folded on
+    // win32) so this check and checkPathGuard agree on what a path is; a raw
+    // path.sep/startsWith comparison would disagree with the guards on Windows
+    // and on any input containing `..`.
+    const workDir = resolveP(opts.workDir, parent.cwd);
+    if (!isUnderRoot(canonicalize(workDir, parent.cwd), canonicalize(parent.cwd, parent.cwd))) {
+      throw new Error(`A specialist's work directory must be inside the parent session's directory (${parent.cwd}); got ${opts.workDir}.`);
+    }
+
+    const childId = randomUUID();
+    // The child inherits the parent's preset (permission posture + manifest) and
+    // its model — 1a always runs the child on the parent's binding.
+    const preset = resolvePreset(this.presetIdFor.get(parentId));
+    const binding = parent.session.binding;
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+
+    // Build the session BEFORE writing the header: everything below is fallible
+    // synchronous work (assembleSystemPrompt shells out to git, buildTriggerIndex
+    // walks the tree), and a throw after the header write would leave a session
+    // file on disk for a child that never existed.
+    const allowed = new Set(opts.specialist.allowedTools);
+    const session = new HarnessSession(
+      {
+        sessionId: childId, cwd: workDir, binding, contextLength, profile,
+        // STEP CAP: the definition's own budget, not the model-tier default.
+        // harness-session reads opts.harness.limits?.maxSteps and falls back to
+        // stepBudgetFor(modelId) — without this line stepCap would be decorative.
+        harness: { ...preset.manifest, limits: { ...preset.manifest.limits, maxSteps: opts.specialist.stepCap } },
+        // TOOLS: the definition's allowlist, filtered out of the same CORE_TOOLS
+        // set every session is built from. The Task tool is structurally absent
+        // because no definition lists it — that omission IS the depth-1 rule.
+        tools: CORE_TOOLS.filter((t) => allowed.has(t.name)),
+        // COLD START (spec §1): the specialist body replaces the preset body, and
+        // the <env> block describes the CHILD's work directory. Nothing from the
+        // parent's conversation crosses over — the brief in the first user turn
+        // is the entire context the child gets.
+        systemPrompt: assembleSystemPrompt({
+          presetBody: opts.specialist.systemPrompt, cwd: workDir, appVersion: this.appVersion,
+          promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
+          instructionBudgetTokens: profile.injectionBudgetTokens,
+        }),
+        // Project rules / nested instructions for the CHILD's directory. Project
+        // state, not conversation state, so it does not violate the cold start —
+        // and a Worker that edits files under rules the parent would have obeyed
+        // must obey them too.
+        triggers: buildTriggerIndex(workDir),
+        // SKILL SUPPRESSION (cold-start contract): an explicit EMPTY catalog, not
+        // an omission. syncSkillTool falls back to createSkillCatalog() — the full
+        // installed catalog — whenever opts.skillCatalog is undefined, and it
+        // re-syncs on every turn, so leaving this out would silently hand every
+        // child the user's whole skill library.
+        skillCatalog: { list: () => [], load: (id: string) => { throw new SkillNotFound(id, []); } },
+        // MCP SUPPRESSION: create()/resume() call acquireMcp() at this point;
+        // createChild deliberately never does, and passes no mcpServers — so no
+        // MCP tools attach, and there is no lease for destroy() to release.
+        // PERMISSIONS: the parent's full configured stack, capped by the
+        // definition. Built against the PARENT's id AND the PARENT's cwd, never
+        // workDir — buildDecide keys the session's live permission mode by id and
+        // remembered "Always allow" rules by cwd, and those grants follow the
+        // project, not a subtree of it.
+        decide: buildChildDecide({
+          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules),
+          charter: opts.specialist.charter,
+          allowedTools: opts.specialist.allowedTools,
+          envelopeGranted: true,   // 1a foreground flow: the Task-tool ask was the consent
+        }),
+        // ASKS: a policy, NEVER the parent's broker. The broker would emit under
+        // the CHILD's sessionId, which no window owns; the reducer drops asks for
+        // unknown sessions and broker.ask()'s promise would never resolve, so the
+        // child would hang silently until teardown (see child-ask-policy.ts).
+        askUser: childAskPolicy(),
+        ...(this.toolServices ? { toolServices: this.toolServices } : {}),
+      },
+      this.modelFactory,
+    );
+
+    await this.store.create({
+      v: 1,
+      sessionId: childId,
+      harnessId: preset.manifest.id,
+      binding,
+      cwd: workDir,
+      createdAt: Date.now(),
+      parentSessionId: parentId,
+      sessionKind: 'specialist',
+      agentType: opts.specialist.id,
+    });
+
+    // NOT wire(). wire() re-emits the session's own events on the host emitter,
+    // where ipc-handlers mints a conversation record and feeds the title feeder —
+    // a child would surface as a conversation the user never started. The child
+    // gets the persistence half only; the display half (stamped COPIES of the
+    // three subagent event types, emitted under the PARENT's id) is Task 7.
+    const entry: LiveEntry = {
+      session, cwd: workDir, appendChain: Promise.resolve(), queue: [], inFlight: false,
+      parentSessionId: parentId,
+    };
+    this.live.set(childId, entry);
+    this.retainModel(childId, binding.modelId);
+    let siblings = this.childrenOf.get(parentId);
+    if (!siblings) { siblings = new Set(); this.childrenOf.set(parentId, siblings); }
+    siblings.add(childId);
+    session.on('transcript-event', (event: TranscriptEvent) => {
+      // Persist on the child's OWN chain, to the child's own JSONL. Same
+      // serialization contract as wire()'s append, same swallow-and-log so one
+      // failed append cannot wedge the chain.
+      entry.appendChain = entry.appendChain
+        .then(() => this.store.append(workDir, event))
+        .catch((err) => {
+          log('ERROR', 'NativeSessionHost', 'child append failed', {
+            sessionId: childId, type: event.type, error: String(err),
+          });
+        });
+    });
+    return { childId };
+  }
+
   /** Rebuild a live session from its stored header + events. Returns false when
    *  no native session file exists for this id (caller should fall through).
    *  `bindingOverride` (Task 6 — resume-time model selector) wins over the
@@ -759,6 +925,15 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   interrupt(sessionId: string): boolean {
+    // Cascade to this session's specialist children FIRST: a child's turn is
+    // work the parent is BLOCKED on (the Task tool awaits it), so Stop has to
+    // reach it or the parent keeps waiting on a run the user just cancelled.
+    // Interrupt only — NOT destroy: this method is synchronous (destroy() is
+    // async, and a floating destroy promise in the main process is exactly the
+    // bug class `npm run lint` gates on), and Stop means "abort the work", not
+    // "delete the session". The child is torn down with its parent (destroy /
+    // quiesce below, both async) or by the Task tool's own finalizer.
+    for (const childId of this.childrenOf.get(sessionId) ?? []) this.interrupt(childId);
     const entry = this.live.get(sessionId);
     // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a
     // permission await unwinds cleanly before the stream is aborted underneath
@@ -800,6 +975,12 @@ export class NativeSessionHost extends EventEmitter {
     const entry = this.live.get(sessionId);
     if (!entry) return;
     entry.queue.length = 0;                        // (1) no post-flush turn can start
+    // (1b) Tear down specialist children before quiescing this session: a
+    // running child keeps appending to ITS file and keeps the parent's Task call
+    // pending, both of which contradict what quiesce promises the caller (no
+    // further work for this session once it resolves). Safe to await here —
+    // the queue is already cleared, so nothing can start a new parent turn.
+    await this.destroyChildrenOf(sessionId);
     await new Promise((r) => setImmediate(r));      // (2) let a same-tick send dispatch
     this.broker.cancelSession(sessionId);           // (3) unwind a paused permission ask
     entry.session.interrupt();                      //     abort the in-flight turn
@@ -862,6 +1043,22 @@ export class NativeSessionHost extends EventEmitter {
     return this.store.list().map((r) => ({ ...r, provider: 'native' as const }));
   }
 
+  /** Cascade-cancel: interrupt then destroy every live specialist child of this
+   *  session. Called from destroy() and quiesce(). Reads the in-memory
+   *  childrenOf map only — teardown never does disk I/O to find its children.
+   *  Interrupt-then-destroy (rather than destroy alone) so a child paused
+   *  mid-turn unwinds its loop before its stream is torn out from under it —
+   *  the same order interrupt() and destroy() already use for one session. */
+  private async destroyChildrenOf(sessionId: string): Promise<void> {
+    const children = this.childrenOf.get(sessionId);
+    if (!children) return;
+    this.childrenOf.delete(sessionId);
+    for (const childId of [...children]) {
+      this.interrupt(childId);
+      await this.destroy(childId);
+    }
+  }
+
   /** Graceful teardown of one session. No-op for unknown ids (so the
    *  SESSION_DESTROY handler can call it for every session id blindly).
    *
@@ -874,8 +1071,20 @@ export class NativeSessionHost extends EventEmitter {
    *   3. store.dispose() — flush the buffered open streaming part.
    *   4. drop the map entry. */
   async destroy(sessionId: string): Promise<void> {
+    // Capture the entry SYNCHRONOUSLY, before the child cascade below awaits —
+    // the MCP release at the bottom of this method depends on tearing down the
+    // generation this call captured (see the comment there), and that property
+    // must survive the new await, not just the ones that were already here.
     const entry = this.live.get(sessionId);
+    // Specialist children go next, and unconditionally — before the not-live
+    // early return, because a child must never outlive its parent even if the
+    // parent's own entry is already gone (a double destroy, or a teardown
+    // racing one).
+    await this.destroyChildrenOf(sessionId);
     if (!entry) return;
+    // De-register from the parent's child set (this session IS a child when
+    // parentSessionId is set) so a destroyed child isn't chased again later.
+    if (entry.parentSessionId) this.childrenOf.get(entry.parentSessionId)?.delete(sessionId);
     // Resolve any pending asks for this session ('canceled') + expire their
     // cards BEFORE tearing down the stream — same rationale as interrupt(); a
     // loop paused on a permission await must unwind, and the promise must not

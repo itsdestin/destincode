@@ -138,6 +138,31 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);       // loop continued to completion
   });
 
+  // Specialists (plan 1a, Task 5): a deny MAY carry its own model-facing reason.
+  // When it does, that reason replaces the generic copy in the tool result —
+  // otherwise a child refused a tool ("not available to this specialist") would
+  // read a generic "blocked by a permission rule" and simply retry the same call.
+  it('decide() deny WITH a message surfaces that message verbatim instead of the generic copy', async () => {
+    const write = fakeTool('Write');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [write], decide: async () => ({ action: 'deny', denyListed: false, message: 'The Write tool is not available to this specialist.' }) }),
+      async () => model as any,
+    );
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toBe('The Write tool is not available to this specialist.');
+    expect(res.data.toolResult).not.toMatch(/blocked by a permission rule/);
+    expect(JSON.stringify(seen[1])).toMatch(/not available to this specialist/); // model receives the REASON
+    expect((write as any).calls).toHaveLength(0);
+  });
+
   it('decide() ask → askUser; allow executes, deny returns "user declined" and does NOT execute', async () => {
     // Scenario A: ask → allow → executes.
     {

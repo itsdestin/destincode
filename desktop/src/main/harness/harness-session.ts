@@ -1837,7 +1837,13 @@ export class HarnessSession extends EventEmitter {
     const decision: PermissionDecision = externalAsk
       ? { action: 'ask', denyListed: false }
       : await (this.opts.decide?.(call.toolName, subject) ?? Promise.resolve<PermissionDecision>({ action: 'ask', denyListed: false }));
-    if (decision.action === 'deny') return { text: `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
+    // A deny may carry its own model-facing reason (PermissionDecision.message):
+    // the specialist caps (child-permissions.ts) refuse with "not available to
+    // this specialist" / "read-only charter", which tells the model what to do
+    // instead. Without the reason a refused child reads the generic copy and
+    // retries the identical call until its step budget is gone. The generic
+    // sentence stays the default for every decide() that supplies no message.
+    if (decision.action === 'deny') return { text: decision.message ?? `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
     if (decision.action === 'ask') {
       // An ABSENT handler is a WIRING gap, not a user cancel — surface it as a
       // decline RESULT (the model can't proceed) instead of the 'interrupted'

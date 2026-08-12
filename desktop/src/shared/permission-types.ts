@@ -19,6 +19,13 @@ export interface PermissionDecision {
   /** True when the winning rule came from the destructive deny-list — drives
    *  the consequence-gated "Always allow" warning (spec §2.4 precedence ruling). */
   denyListed: boolean;
+  /** Optional model-facing refusal detail. When absent, harness-session renders
+   *  its generic "blocked by a permission rule" copy — which is what every
+   *  existing caller (decidePermission) still gets. Added for specialists
+   *  (plan 1a): a child refused a tool needs to know WHY ("not available to this
+   *  specialist") or a weak model will just retry the same call until its step
+   *  budget runs out. Model-facing text, not user-facing error copy. */
+  message?: string;
 }
 
 // The destructive deny-list: CONFIGURATION, not a tool-layer guard. Ships in
