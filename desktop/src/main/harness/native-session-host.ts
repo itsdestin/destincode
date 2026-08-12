@@ -35,6 +35,7 @@ import { isUnderRoot } from '../artifacts/read-binary-access';
 import type { SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
@@ -158,6 +159,71 @@ export class NativeSessionHost extends EventEmitter {
   // teardown that depended on a readable header would silently leak a running
   // child if the read failed.
   private childrenOf = new Map<string, Set<string>>();
+
+  // Task 6 — the Task tool's per-parent state (spec §5 Global Constraints
+  // scope decision: PER-PARENT, never host-global — one session's specialist
+  // fan-out must not be capped, or blocked, by an UNRELATED session's
+  // children). Both are keyed by PARENT session id, never by child id.
+  //   specialistSlots: how many children this parent currently has running,
+  //     against HOSTED_MAX_CONCURRENT_SPECIALISTS (specialists/limits.ts).
+  //   activeWriterChild: the single write-capable (charter: 'read-write')
+  //     child currently running under this parent, if any — the single-writer
+  //     invariant (two concurrent write-capable children could race edits to
+  //     the same files). Absent = no writer active.
+  private specialistSlots = new Map<string, number>();
+  private activeWriterChild = new Map<string, string>();
+
+  /** Reserve one of this parent's concurrent-specialist slots. false = at
+   *  capacity; the caller (tools/task.ts) must not spawn. A successful
+   *  reservation MUST be paired with exactly one releaseSpecialistSlot() call. */
+  tryReserveSpecialistSlot(parentId: string): boolean {
+    const current = this.specialistSlots.get(parentId) ?? 0;
+    if (current >= HOSTED_MAX_CONCURRENT_SPECIALISTS) return false;
+    this.specialistSlots.set(parentId, current + 1);
+    return true;
+  }
+
+  /** Release a slot reserved by tryReserveSpecialistSlot. Deletes the map
+   *  entry at zero rather than leaving a 0 around forever, so a parent that
+   *  never delegates again doesn't linger in the map. */
+  releaseSpecialistSlot(parentId: string): void {
+    const current = this.specialistSlots.get(parentId) ?? 0;
+    if (current <= 1) this.specialistSlots.delete(parentId);
+    else this.specialistSlots.set(parentId, current - 1);
+  }
+
+  /** True when a write-capable specialist is already running under this
+   *  parent (the single-writer invariant). Read-only; tools/task.ts calls
+   *  this BEFORE spawning a read-write-charter specialist, never after. */
+  isSpecialistWriterBusy(parentId: string): boolean {
+    return this.activeWriterChild.has(parentId);
+  }
+
+  /** Mint + (Task 7: actually run) a specialist child. THIN STUB for now —
+   *  Task 6's scope is the gate, the per-parent slot/writer bookkeeping, and
+   *  the wiring; Task 7's runSpecialist() delivers `opts.prompt` as the
+   *  child's first turn, awaits its natural completion, and returns its last
+   *  message (headroom-truncated to specialist.reportBudgetTokens). Task 6's
+   *  own tests never reach this method — the four typed refusals it covers
+   *  (unknown specialist / trivial prompt / at-capacity / writer-busy) all
+   *  return from tools/task.ts BEFORE this is ever called — so throwing here
+   *  is honest about what's real today rather than silently fabricating a
+   *  report. The writer-lock IS real from Task 6 on: it wraps the mint +
+   *  (future) run in try/finally so a throw during either still clears it. */
+  async spawnSpecialist(parentId: string, opts: {
+    specialist: SpecialistDefinition;
+    prompt: string;
+    workDir: string;
+    parentToolCallId: string;
+  }): Promise<{ childId: string; report: string }> {
+    const { childId } = await this.createChild(parentId, opts);
+    if (opts.specialist.charter === 'read-write') this.activeWriterChild.set(parentId, childId);
+    try {
+      throw new Error(`specialist ${childId} was created but its run loop (Task 7) is not implemented yet`);
+    } finally {
+      if (opts.specialist.charter === 'read-write') this.activeWriterChild.delete(parentId);
+    }
+  }
 
   // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
   // header resolves to 'assistant' here). Drives the renderer's preset chip and
@@ -371,10 +437,24 @@ export class NativeSessionHost extends EventEmitter {
       ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
-      // Thread injected runtime services (WebSearch's SearchService) into the
-      // HarnessSession opts — only when present, so a host built without them
-      // leaves toolServices undefined (tools handle the absence as a config error).
-      ...(this.toolServices ? { toolServices: this.toolServices } : {}),
+      // Thread injected runtime services (WebSearch's SearchService, Task 6's
+      // specialists collaborators) into the HarnessSession opts. `specialists`
+      // is ALWAYS present (unlike `search`, which depends on an optional
+      // constructor arg) — syncTaskTool's own profile.canDelegate /
+      // isSpecialistChild gate is what actually decides whether the Task tool
+      // is ever attached to see it, so there is no "host built without
+      // specialist support" case to leave unset the way `toolServices` itself
+      // conditionally omits `search`.
+      toolServices: {
+        ...(this.toolServices ?? {}),
+        specialists: {
+          tryReserveSlot: (parentId: string) => this.tryReserveSpecialistSlot(parentId),
+          releaseSlot: (parentId: string) => this.releaseSpecialistSlot(parentId),
+          isWriterBusy: (parentId: string) => this.isSpecialistWriterBusy(parentId),
+          spawn: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialist']>[1]) =>
+            this.spawnSpecialist(parentId, spawnOpts),
+        },
+      },
       // WHY assembleSystemPrompt is called synchronously here: it shells out to
       // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
       // per session create/resume — NEVER on the per-turn send() path — so the
@@ -614,6 +694,13 @@ export class NativeSessionHost extends EventEmitter {
         // child would hang silently until teardown (see child-ask-policy.ts).
         askUser: childAskPolicy(),
         ...(this.toolServices ? { toolServices: this.toolServices } : {}),
+        // BELT-AND-SUSPENDERS (Task 6): syncTaskTool's SECOND, independent
+        // gate against depth-2 delegation. allowedTools filtering above
+        // already keeps 'Task' out of a child's tool set structurally (no
+        // SpecialistDefinition lists it) — this flag means a bug in that
+        // filtering alone still cannot let a specialist spawn its own
+        // specialists.
+        isSpecialistChild: true,
       },
       this.modelFactory,
     );
@@ -1102,6 +1189,12 @@ export class NativeSessionHost extends EventEmitter {
     this.modeFor.delete(sessionId);
     this.rememberedFor.delete(sessionId);
     this.presetIdFor.delete(sessionId);
+    // Task 6 — drop this parent's specialist bookkeeping too, so a slot/writer
+    // reservation can never outlive the session that made it (destroyChildrenOf
+    // above already tore down any children BEFORE we get here, but a slot could
+    // still be reserved from an in-flight Task call this destroy() interrupted).
+    this.specialistSlots.delete(sessionId);
+    this.activeWriterChild.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
     // Release THIS generation's MCP lease (Task 6), LAST — orthogonal to the
     // transcript/live-map teardown above (releasing never touches either), so

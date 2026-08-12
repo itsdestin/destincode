@@ -76,4 +76,18 @@ describe('decidePermission', () => {
     expect(d.action).toBe('allow');
     expect(d.denyListed).toBe(false);
   });
+
+  // Task 6 — the Task tool's mode-baseline decision, PINNED (not an accident,
+  // per rulesForMode's own comment): under 'ask', the Task call itself is the
+  // one moment the user consents to the whole delegated envelope, so it must
+  // NOT be in the always-allow baseline. Under auto-edit/full-auto, delegating
+  // grants a specialist nothing beyond what those modes already grant the
+  // parent directly, so Task is allowed with no extra ask.
+  it('Task asks under ask mode (the ask IS the envelope-consent moment)', () => {
+    expect(decidePermission('Task', 'src', layers('ask')).action).toBe('ask');
+  });
+  it('Task is auto-allowed under auto-edit and full-auto (spec §5 walk-away autonomy)', () => {
+    expect(decidePermission('Task', 'src', layers('auto-edit')).action).toBe('allow');
+    expect(decidePermission('Task', 'src', layers('full-auto')).action).toBe('allow');
+  });
 });

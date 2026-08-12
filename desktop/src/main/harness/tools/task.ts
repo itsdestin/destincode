@@ -1,0 +1,134 @@
+// Task — delegate one focused piece of work to a specialist subagent, which
+// works independently and reports back once (spec §1/§5, plan 1a). This is
+// the MODEL-FACING half of NativeSessionHost.createChild (Task 5): it
+// resolves the requested specialist, enforces the weak-model prompt floor,
+// checks the per-parent slot + single-writer invariants, and only THEN hands
+// the spawn to the host via ToolServices.specialists (native-session-host.ts's
+// toolWiring — the same injection pattern WebSearch's SearchService uses).
+// The host-side run loop that actually drives the child turn (runSpecialist)
+// is Task 7 — this file only ever gets as far as calling services.spawn().
+//
+// Only ever attached when profile.canDelegate is true AND the session is not
+// itself a specialist child (harness-session.ts's syncTaskTool) — delegation
+// depth is capped at 1 by construction (two independent gates), never by
+// convention.
+import { z } from 'zod';
+import { defineTool } from './registry';
+import type { NativeTool, ToolContext, ToolResultPayload } from './types';
+import { resolveSpecialist, listSpecialists } from '../specialists/registry';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../specialists/limits';
+
+// Minimal weak-model hardening (plan 1a): a specialist has NO access to the
+// parent conversation, so a one-line prompt like "do the thing" leaves it to
+// guess the entire brief. This is a floor, not a quality bar — the full pass
+// (rubric-checked briefs) is plan 1b.
+const MIN_PROMPT_LENGTH = 40;
+
+const schema = z.object({
+  description: z.string().describe('A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug").'),
+  prompt: z.string().describe(
+    'The complete, self-contained brief for the specialist. It has NO access to this conversation — '
+    + 'include everything it needs: what to do, relevant file paths, and what "done" looks like.',
+  ),
+  agent: z.string().describe(`Which specialist to run. One of: ${listSpecialists().map((s) => s.id).join(', ')}.`),
+  work_dir: z.string().describe(
+    'The directory the specialist works in — usually the project root you are working in. '
+    + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit).',
+  ),
+});
+
+type TaskArgs = z.infer<typeof schema>;
+
+// This enumeration doubles as the 1a consent copy: it is the text a user sees
+// when the envelope ask fires (permissionSubject below), since the pretty
+// launch card is plan 1c. Snapshotted once — the built-in roster is static.
+function describeSpecialists(): string {
+  return listSpecialists()
+    .map((s) => `- ${s.id} (${s.charter === 'read-write' ? 'can edit files' : 'read-only'}): ${s.description}`)
+    .join('\n');
+}
+
+// Codex's orchestration-doctrine line: a specialist cannot ask a follow-up
+// question (child-ask-policy.ts answers every ask as a decline), so the
+// caller must front-load everything into one brief.
+const DOCTRINE = 'Specialists work independently and report back once; give each specialist a complete, self-contained brief — they cannot ask you a follow-up question.';
+
+export function createTaskTool(): NativeTool<TaskArgs> {
+  return defineTool<TaskArgs>({
+    name: 'Task',
+    description:
+      'Delegate one focused piece of work to a specialist subagent. The specialist works independently '
+      + "and reports back when it's done. Available specialists:\n"
+      + describeSpecialists() + '\n\n' + DOCTRINE,
+    // Simplified presentation (small local models): ids + charter only, no
+    // per-role descriptions — mirrors skill.ts's shortDescription trim.
+    shortDescription:
+      'Delegate a focused task to a specialist subagent. Specialists: '
+      + listSpecialists().map((s) => `${s.id} (${s.charter === 'read-write' ? 'can edit files' : 'read-only'})`).join(', '),
+    inputSchema: schema,
+    // The work directory is the envelope ask's subject (spec §1a) — it is
+    // what the user is actually being asked to trust the specialist with.
+    permissionSubject: (a) => a.work_dir,
+    moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
+    async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {
+      const specialist = resolveSpecialist(args.agent);
+      if (!specialist) {
+        const available = listSpecialists().map((s) => s.id).join(', ');
+        return { text: `Unknown specialist "${args.agent}". Available specialists: ${available}.`, isError: true };
+      }
+
+      if (args.prompt.trim().length < MIN_PROMPT_LENGTH) {
+        return {
+          text: `That prompt is too short to be a self-contained brief (needs at least ${MIN_PROMPT_LENGTH} characters). `
+            + 'The specialist has no access to this conversation — include what to do, relevant file paths, and what "done" looks like.',
+          isError: true,
+        };
+      }
+
+      const services = ctx.services?.specialists;
+      if (!services) {
+        // A configuration gap (Task attached but its host callbacks were not
+        // wired), never a model mistake — say so plainly rather than guessing.
+        return { text: 'Task failed: no specialist services are wired for this session (configuration error).', isError: true };
+      }
+
+      const parentId = ctx.sessionId;
+
+      // Single-writer check FIRST (no side effects) — only a read-write
+      // charter can conflict, so read-only specialists skip it entirely.
+      if (specialist.charter === 'read-write' && services.isWriterBusy(parentId)) {
+        return {
+          text: 'Refused: another specialist with write access is running under this session. '
+            + 'Wait for it to finish, or delegate to a read-only specialist (e.g. explorer, researcher, reviewer) instead.',
+          isError: true,
+        };
+      }
+
+      if (!services.tryReserveSlot(parentId)) {
+        return {
+          text: `Refused: this session is at capacity (max ${HOSTED_MAX_CONCURRENT_SPECIALISTS}) concurrent specialists. `
+            + 'Wait for one of the running specialists to finish before starting another.',
+          isError: true,
+        };
+      }
+
+      try {
+        const { report } = await services.spawn(parentId, {
+          specialist,
+          prompt: args.prompt,
+          workDir: args.work_dir,
+          parentToolCallId: ctx.toolCallId ?? '',
+        });
+        return { text: report };
+      } catch (err: any) {
+        // Every failure path must resolve a tool result — never a dangling
+        // call. err.message is expected to already name the child id when one
+        // was minted (native-session-host.ts's spawnSpecialist crafts it that
+        // way), so this stays a plain relay rather than a second guess at cause.
+        return { text: `The ${specialist.displayName} specialist failed: ${err?.message ?? String(err)}`, isError: true };
+      } finally {
+        services.releaseSlot(parentId);
+      }
+    },
+  });
+}

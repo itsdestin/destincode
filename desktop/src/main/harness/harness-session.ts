@@ -43,6 +43,7 @@ import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, coun
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
+import { createTaskTool } from './tools/task';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -97,6 +98,14 @@ export interface HarnessSessionOpts {
    *  NativeSessionHost from the process-level McpManager at create/resume.
    *  Absent/[] → no MCP tools attached, exactly the pre-Task-6 behavior. */
   mcpServers?: ReadyServer[];
+  /** Set ONLY by NativeSessionHost.createChild (Task 6) — true for a
+   *  specialist child session. Belt-and-suspenders against depth-2
+   *  delegation: createChild already never puts 'Task' in a child's filtered
+   *  tool set (no SpecialistDefinition.allowedTools lists it), so this is a
+   *  SECOND, independent gate on syncTaskTool, not the only one — a bug in
+   *  either check alone still cannot let a specialist spawn its own
+   *  specialists. Absent/false for every ordinary (non-child) session. */
+  isSpecialistChild?: boolean;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -577,6 +586,29 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
+  /** Add or remove the Task tool to match the CURRENT profile + session kind
+   *  (Task 6, spec decision 4).
+   *
+   *  Two independent gates, BOTH required:
+   *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
+   *     delegated work instead of actually parallelizing it — see
+   *     capability-profile.ts's own WHY comment on the field.
+   *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
+   *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  Run per buildAiTools (not once in the constructor), same reason
+   *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
+   *  so Task must come back OFF when a session swaps down to a weak local
+   *  model and back ON when it swaps back up. The has()/delete() pair keeps
+   *  both directions idempotent.
+   */
+  private syncTaskTool(): void {
+    const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
+    if (!wanted) { this.toolByName.delete('Task'); return; }
+    if (this.toolByName.has('Task')) return;
+    this.toolByName.set('Task', createTaskTool());
+  }
+
   /** Add or remove MCP server tools to match the CURRENT profile's budget
    *  (Task 6, spec §6).
    *
@@ -664,6 +696,7 @@ export class HarnessSession extends EventEmitter {
     // old list around would misreport why MCP servers are unavailable.
     if (!this.profile.supportsTools) { this._droppedMcpServers = []; return {}; }
     this.syncSkillTool();
+    this.syncTaskTool();
     this.syncMcpTools();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
@@ -1863,6 +1896,10 @@ export class HarnessSession extends EventEmitter {
       sessionId: this.opts.sessionId,
       cwd: this.opts.cwd,
       signal: this.abort!.signal,
+      // Task 6/7: the Task tool's own call id, threaded through as
+      // createChild's future parentToolCallId so the host can stamp the
+      // child's display events with the launch card they belong under.
+      toolCallId: call.toolCallId,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {
