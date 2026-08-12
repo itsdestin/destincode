@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActiveArtifactHandle } from './ActiveArtifactView';
 import { registerDirtyEditorGuard, unregisterDirtyEditorGuard } from './dirty-editor-guard';
 import { useEscClose } from '../../hooks/use-esc-close';
+import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';
 
 function UnsavedChangesDialog({
@@ -32,10 +33,22 @@ function UnsavedChangesDialog({
   // while a navigation is pending.
   useEscClose(true, onCancel);
 
+  // L3 via the shared overlay primitives (react-renderer rule: never a
+  // hand-rolled bg-black/40 — <Scrim> gives the theme-tinted var(--scrim)
+  // backdrop and Overlay.tsx owns the z-index). Same layer as its sibling
+  // DiscardConfirmDialog: a blocking confirm that can lose work must sit
+  // above L1 drawers and L2 popups, because the guarded navigation can be
+  // triggered FROM them (drawer toggle, session switch). No `destructive`
+  // ring though — unlike the git revert dialog, the headline action here is
+  // Save, not destroy.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
-      <div
-        className="bg-panel border border-edge rounded-md shadow-lg p-4 max-w-sm w-full mx-4"
+    <Scrim layer={3} onClick={onCancel} className="flex items-center justify-center">
+      <OverlayPanel
+        layer={3}
+        role="alertdialog"
+        aria-modal
+        aria-label="Unsaved changes"
+        className="p-4 max-w-sm w-full mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-sm font-medium text-fg mb-1">Unsaved changes</div>
@@ -47,8 +60,8 @@ function UnsavedChangesDialog({
           <Button onClick={onDiscard}>Discard</Button>
           <Button onClick={onSave}>Save</Button>
         </div>
-      </div>
-    </div>
+      </OverlayPanel>
+    </Scrim>
   );
 }
 
