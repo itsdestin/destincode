@@ -276,7 +276,8 @@ describe('GitReviewView', () => {
     mountWith({ uncommitted: { ...review.uncommitted!, conflicted: true } });
     await waitFor(() => screen.getByText('Uncommitted changes'));
     expect(screen.getByText('Conflict')).toBeInTheDocument();
-    // The rest of the card is unchanged: diff visible, checkbox + revert intact.
+    // The rest of the card is unchanged: diff visible, revert intact, and the
+    // checkbox present (but disabled — pinned separately below).
     expect(screen.getByText('old line')).toBeInTheDocument();
     expect(screen.getByText('Include in commit')).toBeInTheDocument();
 
@@ -284,6 +285,32 @@ describe('GitReviewView', () => {
     mountWith();
     await waitFor(() => screen.getByText('Uncommitted changes'));
     expect(screen.queryByText('Conflict')).not.toBeInTheDocument();
+  });
+
+  // PR #304 review advisory: `git add` on an unmerged file marks the conflict
+  // resolved with the <<<<<<< markers STAGED as content — a non-technical user
+  // could then commit the markers, and unstaging cannot restore the unmerged
+  // state. So the include-in-commit checkbox must be disabled (with a plain-
+  // language hint) while the file is conflicted, and clicking it must not
+  // reach git.stage.
+  it('disables Include in commit for a conflicted file and never calls stage', async () => {
+    const git = mountWith({ uncommitted: { ...review.uncommitted!, conflicted: true } });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    const checkbox = screen.getByText('Include in commit').closest('button')!;
+    expect(checkbox).toBeDisabled();
+    expect(checkbox).toHaveAttribute('title', 'Resolve the conflict before committing this file');
+    fireEvent.click(checkbox);
+    expect(git.stage).not.toHaveBeenCalled();
+    expect(git.unstage).not.toHaveBeenCalled();
+    // Non-conflicted control: same click path stays enabled and stages.
+    cleanup();
+    const git2 = mountWith();
+    await waitFor(() => screen.getByText('Include in commit'));
+    const enabled = screen.getByText('Include in commit').closest('button')!;
+    expect(enabled).toBeEnabled();
+    expect(enabled).not.toHaveAttribute('title');
+    fireEvent.click(enabled);
+    await waitFor(() => expect(git2.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
   });
 
   // 2026-07-22 bug: refresh() (rides every git:changed) refetches only page

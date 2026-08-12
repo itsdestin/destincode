@@ -239,7 +239,15 @@ export function GitReviewView({
                   staged like any other file. */}
               <button
                 type="button"
-                disabled={busy}
+                // WHY conflicted disables this (PR #304 review advisory):
+                // `git add` on an unmerged file marks the conflict RESOLVED
+                // with the <<<<<<< markers staged as content — a non-technical
+                // user could then commit the markers, and unstaging cannot
+                // restore the unmerged state. Viewing stays; staging waits
+                // until the conflict is edited away (the mirror refresh flips
+                // this back automatically once the file is no longer unmerged).
+                disabled={busy || uncommitted.conflicted}
+                title={uncommitted.conflicted ? 'Resolve the conflict before committing this file' : undefined}
                 onClick={() => run(() => (uncommitted.staged
                   ? gitApi().unstage(projectRoot, relPath)
                   : gitApi().stage(projectRoot, relPath)))}
