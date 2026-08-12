@@ -90,10 +90,16 @@ describe('workbench mock contract', () => {
     expect(existsInRemoteShim('on.chatHydrate')).toBe(true);
     expect(existsInRemoteShim('providers.list')).toBe(true);
     expect(existsInRemoteShim('on.thisDoesNotExist')).toBe(false);
-    // The false positive that scoping exists to kill: `list:` and `remove:` are
-    // real leaves elsewhere in the file, but there is no `permissions` namespace.
-    expect(existsInRemoteShim('permissions.list')).toBe(false);
-    expect(existsInRemoteShim('permissions.remove')).toBe(false);
+    // The false positive that scoping exists to kill. This probe used to be
+    // `permissions.list` / `permissions.remove`, which stopped proving anything
+    // the moment permissions gained a real remote-shim namespace (M5 2a) — a
+    // probe has to name something that genuinely does NOT exist. `notifications`
+    // has no namespace in the shim, while `list:` and `remove:` are real leaves
+    // elsewhere in the file, so an unscoped leaf match would resolve these.
+    expect(existsInRemoteShim('notifications.list')).toBe(false);
+    expect(existsInRemoteShim('notifications.remove')).toBe(false);
+    // ...and permissions, which DID gain one, must now resolve.
+    expect(existsInRemoteShim('permissions.list')).toBe(true);
   });
 
   // The rule that keeps UI-first development honest: a hand-written channel
