@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActiveArtifactHandle } from './ActiveArtifactView';
 import { registerDirtyEditorGuard, unregisterDirtyEditorGuard } from './dirty-editor-guard';
+import { useEscClose } from '../../hooks/use-esc-close';
 import { Button } from '../ui';
 
 function UnsavedChangesDialog({
@@ -18,19 +19,18 @@ function UnsavedChangesDialog({
   onDiscard: () => void;
   onCancel: () => void;
 }) {
-  // Esc = Cancel (stay in the editor). Capture-phase so the app's global Esc
-  // handling (PTY interrupt / drawer close) never fires underneath the dialog.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [onCancel]);
+  // Esc = Cancel (stay in the editor), via the app's shared LIFO Esc stack.
+  // WHY: this used to be a raw capture-phase window listener with
+  // stopPropagation(), but stopPropagation cannot stop OTHER capture listeners
+  // on the same target — and the useEscClose provider's Esc handler is exactly
+  // that. Depending on mount order, one Esc press could cancel this dialog AND
+  // pop the top of the app's Esc stack underneath (closing a drawer/popup the
+  // user didn't ask to close). Joining the stack makes this dialog the topmost
+  // entry while mounted, so one Esc = cancel this dialog only; the provider
+  // preventDefaults the event, which also keeps the chat PTY-interrupt
+  // passthrough from firing. Always open: the host only mounts this component
+  // while a navigation is pending.
+  useEscClose(true, onCancel);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
