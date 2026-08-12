@@ -12,7 +12,7 @@ import { BATTERY_PROMPT } from './battery';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { AskRequest, AskDecision } from '../permission-broker';
 import type { SkillCatalog } from '../skills/skill-catalog';
-import type { ToolServices } from '../tools/types';
+import type { ToolServices, NativeTool } from '../tools/types';
 import { ddgBackend } from '../search/backends/ddg';
 
 export type BatteryOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
@@ -306,10 +306,23 @@ export const BATTERY_HARNESS = {
   },
 };
 
-export interface RunBatteryOpts {
+export interface RunCaseOpts {
   modelFactory: ModelFactory;
   modelId: string;
   label: string;
+  /** The task prompt. WHY optional: every existing caller (test-engine/
+   *  review-harness.mjs, the 69 pinning tests) predates the evaluator and
+   *  must keep running the battery unchanged. Defaults to BATTERY_PROMPT. */
+  prompt?: string;
+  /** Sent as the forced-final-answer turn when the run is cut short. WHY
+   *  per-task: WRAP_UP_PROMPT literally says "write your review of the
+   *  harness", which is wrong for every task that is not the harness review.
+   *  Defaults to WRAP_UP_PROMPT. */
+  wrapUpPrompt?: string;
+  /** Tool set attached to the session. WHY a tool-set input: a task can ask
+   *  "is Grep earning its context slot?" by running with it detached.
+   *  Defaults to CORE_TOOLS. */
+  tools?: NativeTool[];
   /** Wall-clock ceiling for one model's whole battery. */
   timeoutMs?: number;
   /** Keep the fixture on disk for debugging. Default false. */
@@ -376,7 +389,7 @@ export function makeReviewSearchServices(fetchImpl?: typeof fetch): ToolServices
   };
 }
 
-export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
+export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
   // Resolved and CHECKED before the fixture is seeded or a single token is
   // spent — a misconfigured window is a config error, not a run to salvage.
   const contextLength = Math.min(
@@ -384,6 +397,11 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     BATTERY_CONTEXT_CAP,
   );
   assertHistoryBudget(contextLength);
+  // Defaults preserve battery behavior exactly (see the WHY comments on
+  // RunCaseOpts.prompt/wrapUpPrompt above) — every pre-evaluator caller omits
+  // these and gets the same prompt/wrap-up text runBattery always sent.
+  const prompt = opts.prompt ?? BATTERY_PROMPT;
+  const wrapUpPrompt = opts.wrapUpPrompt ?? WRAP_UP_PROMPT;
 
   const fixtureRoot = seedFixtureWorkspace();
   const events: TranscriptEvent[] = [];
@@ -423,7 +441,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       // money if that relationship is ever broken again.
       contextLength,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
-      tools: CORE_TOOLS,
+      tools: opts.tools ?? CORE_TOOLS,
       // Auto-approve everything decide() is consulted about — EXCEPT during the
       // wrap-up turn, where every tool call is refused so the model must answer.
       // NOTE: PermissionDecision (shared/permission-types.ts:17) carries only
@@ -634,7 +652,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // (or vice versa).
     const eventsBeforeSend = events.length;
     try {
-      await session.send(BATTERY_PROMPT);
+      await session.send(prompt);
     } catch (err) {
       // Salvage, don't discard. A provider error still leaves a transcript
       // worth writing — round 5 threw four of them away and left the failures
@@ -723,7 +741,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       const wrapDeadline = setTimeout(() => session.interrupt(), WRAP_UP_TIMEOUT_MS);
       wrapDeadline.unref();
       try {
-        await session.send(WRAP_UP_PROMPT);
+        await session.send(wrapUpPrompt);
       } catch (err) {
         // A failed wrap-up is not fatal: the testing transcript is still worth
         // writing, and outcome stays 'wrapped-up' with an empty review.
@@ -845,3 +863,8 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 }
+
+/** WHY an alias rather than a rename-everywhere: Task 1 proved the move was
+ *  behavior-preserving by keeping the pinning tests untouched. Renaming their
+ *  entry point in the same change would forfeit that evidence. */
+export const runBattery = runCase;
