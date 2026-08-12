@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Mock ws module — use require() inside vi.mock to avoid hoisting issues
 vi.mock('ws', async () => {
@@ -793,5 +796,72 @@ describe('RemoteServer account bridge', () => {
 
       expect(frames.some((m) => m.type === 'status:data')).toBe(false);
     });
+  });
+});
+
+// Security regression: the transcript:read-meta WS handler validated the
+// caller-supplied path with startsWith(claudeProjects) and NO trailing path
+// separator, so a SIBLING directory like ~/.claude/projects-evil/x.jsonl
+// passed the containment check and its contents leaked to remote clients.
+// The model:read-last case a few lines below already used the correct
+// `claudeProjects + path.sep` prefix — these tests pin transcript:read-meta
+// to the same rule.
+describe('RemoteServer transcript:read-meta path containment', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-rs-transcript-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // containment root lives inside the fixture, not the real home.
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('rejects a transcript in a sibling dir like ~/.claude/projects-evil', async () => {
+    const evilDir = path.join(tmpHome, '.claude', 'projects-evil');
+    fs.mkdirSync(evilDir, { recursive: true });
+    const evilFile = path.join(evilDir, 'x.jsonl');
+    fs.writeFileSync(evilFile, JSON.stringify({ model: 'leaked-model' }) + '\n');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-evil', payload: { path: evilFile } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('still reads a transcript inside ~/.claude/projects', async () => {
+    const okDir = path.join(tmpHome, '.claude', 'projects', 'some-project');
+    fs.mkdirSync(okDir, { recursive: true });
+    const okFile = path.join(okDir, 'x.jsonl');
+    fs.writeFileSync(okFile, JSON.stringify({ model: 'test-model' }) + '\n');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-ok', payload: { path: okFile } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload?.model).toBe('test-model');
   });
 });
