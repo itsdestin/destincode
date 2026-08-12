@@ -8,6 +8,7 @@ import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
+import { LoadingState, ErrorState } from '../ui/states';
 import { openEditorSearch, revealLineIn } from './cm/editor-registry';
 import { draftKey, stashDraft, takeDraft, clearDraft } from './draft-store';
 
@@ -70,10 +71,33 @@ export interface ArtifactContentInfo {
   sizeBytes?: number;
 }
 
+/** Read-lifecycle state for the active artifact's content. Fix for the
+ * "no longer on disk" flash: `content === null` used to be ONE signal meaning
+ * both "the read hasn't resolved yet" and "the file is gone", so every open
+ * flashed the alarming missing-file message for the read's duration. The
+ * phases keep those apart — and keep read ERRORS (protected path, permission
+ * failure) from masquerading as a deleted file, which would be a guessed
+ * cause in a user-facing string (error-message-standards).
+ *  - loading: artifacts:get is in flight — render a quiet placeholder
+ *  - ready:   the read resolved (content may still be null for binary files)
+ *  - missing: the read genuinely returned orphan:true — the file is gone
+ *  - error:   the read failed — surface the REAL error, never "gone" */
+export type ArtifactContentState =
+  | { phase: 'loading' }
+  | { phase: 'ready' }
+  | { phase: 'missing' }
+  | { phase: 'error'; message: string };
+
 export interface ActiveArtifactViewProps {
   artifact: ArtifactRecord;
   content: string | null;
   contentInfo?: ArtifactContentInfo | null;
+  /** Where the content read stands (see ArtifactContentState). Omitted =
+   * legacy behavior: null content is treated as missing. Both real hosts
+   * (SessionDrawer, FilesTab) pass it via useArtifactContent. */
+  contentState?: ArtifactContentState;
+  /** Re-runs the failed read — wired to the error state's Retry button. */
+  onRetryRead?: () => void;
   projectRoot: string;
   projectId: string;
   projectName: string;
@@ -87,9 +111,14 @@ export interface ActiveArtifactViewProps {
 }
 
 export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
-  artifact, content, contentInfo, projectRoot, projectId, projectName, sessionId, onContentChange,
+  artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange,
   controlsInHeader = false, onEditStateChange,
 }, ref) {
+  // Legacy default: a caller that doesn't thread contentState keeps the OLD
+  // semantics (null content = missing) rather than silently losing the
+  // missing-file notice. Both shipped hosts pass the real state.
+  const readState: ArtifactContentState = contentState
+    ?? (content === null ? { phase: 'missing' } : { phase: 'ready' });
   // Resolve the absolute path depending on artifact kind. Forward slashes
   // throughout — a backslash projectRoot + '/' + relative path yields a mixed-
   // separator string that looks broken in copy-path/reveal on Windows.
@@ -356,6 +385,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         // Only assert text when a get response actually sniffed the bytes —
         // absent info keeps the registry's conservative extension routing.
         textHint: contentInfo ? contentInfo.binary === false : undefined,
+        // Fix: a text extension whose bytes sniffed binary (.md with NUL
+        // bytes) has content:null — its text viewer would render a blank
+        // pane, so the registry reroutes it to BinaryFallback.
+        binaryHint: contentInfo?.binary === true,
       });
 
   // Over the artifacts:get size cap: the content was deliberately not served
@@ -377,6 +410,38 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
       </div>
     );
   }
+
+  // ── Read-lifecycle gate (the "no longer on disk" flash fix) ──
+  // Rendered HERE, once, instead of per-viewer null-content branches, so every
+  // viewer (code, markdown, html, csv, …) gets the same honest treatment.
+  // `!editing` keeps a live editor (and its draft) on screen no matter what —
+  // in practice editing is exited on every artifact switch, so these states
+  // only ever show read-mode. Mounting the viewer only after the read resolves
+  // is safe: ViewerErrorBoundary is keyed by artifact.id, so a switch remounts
+  // the viewer tree anyway.
+  if (!editing && readState.phase === 'loading') {
+    // Quiet placeholder, house LoadingState primitive (braille spinner) —
+    // local reads resolve in milliseconds, so this is usually a single frame.
+    return (
+      <div className="h-full flex items-center justify-center">
+        <LoadingState what="file" />
+      </div>
+    );
+  }
+  if (!editing && readState.phase === 'missing') {
+    // ONLY shown when artifacts:get genuinely returned orphan:true.
+    return <div className="text-fg-muted text-sm p-4">This file is no longer on disk.</div>;
+  }
+  if (!editing && readState.phase === 'error') {
+    // The REAL failure with a Retry — never mapped to "no longer on disk"
+    // (a permissions error is not a deleted file).
+    return (
+      <div className="p-4">
+        <ErrorState message={readState.message} onRetry={onRetryRead ?? (() => {})} />
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="h-full flex flex-col">
       {/* Conflict banner — shown when the file changes on disk while the user

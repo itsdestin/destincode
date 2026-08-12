@@ -17,7 +17,8 @@ import { useProjectWatch } from '../../../hooks/useProjectWatch';
 import { dedupeContentHits, groupContentHits, capGroups, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
-import type { ActiveArtifactHandle, ArtifactContentInfo } from '../../artifact-views/ActiveArtifactView';
+import type { ActiveArtifactHandle } from '../../artifact-views/ActiveArtifactView';
+import { useArtifactContent } from '../../artifact-views/useArtifactContent';
 import { useUnsavedGuard } from '../../artifact-views/UnsavedChangesDialog';
 import { ArtifactThumbnail } from '../../ArtifactThumbnail';
 import { fileTypeGroup, fileTypeLabel } from '../../../../shared/artifacts/categorization';
@@ -710,15 +711,17 @@ interface DetailProps {
 
 function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed }: DetailProps) {
   const { dispatch } = useArtifact();
-  const [content, setContent] = useState<string | null>(null);
+  // Read lifecycle (fetch + loading/missing/error phases) — shared hook, same
+  // as SessionDrawer, so a slow read shows a placeholder instead of flashing
+  // "This file is no longer on disk."
+  const { content, setContent, contentInfo, contentState, retryRead } =
+    useArtifactContent(project.path, artifact.id);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
   // ActiveArtifactView still owns the edit/save/conflict logic; we only call into
   // it and mirror its edit state so the header can swap Edit ↔ Save/Cancel.
   const viewRef = useRef<ActiveArtifactHandle>(null);
   const [editState, setEditState] = useState({ isEditable: false, editing: false });
   const [copied, setCopied] = useState(false);
-  // get() metadata: binary sniff (code-view routing) + tooLarge notice.
-  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
 
   const filename = artifact.path.split('/').pop() ?? artifact.path;
   const absPath = artifactAbsPath(project.path, artifact);
@@ -728,21 +731,6 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
   const { guard: guardUnsaved, dialog: unsavedDialog } = useUnsavedGuard(viewRef, filename);
   const handleClose = () => guardUnsaved(() =>
     dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION }));
-
-  // Load file content whenever the selected artifact changes.
-  useEffect(() => {
-    let cancelled = false;
-    setContent(null);
-    setContentInfo(null);
-    (window.claude as any).artifacts.get(project.path, artifact.id).then((res: any) => {
-      if (cancelled) return;
-      if (res && res.ok) {
-        setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
-      }
-    });
-    return () => { cancelled = true; };
-  }, [artifact.id, project.path]);
 
   // Search jump-to-hit: fire once, only after content resolved (the editor
   // mounts then; revealLine itself retries across the lazy-chunk window).
@@ -835,6 +823,8 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
           artifact={artifact}
           content={content}
           contentInfo={contentInfo}
+          contentState={contentState}
+          onRetryRead={retryRead}
           projectRoot={project.path}
           projectId={project.id}
           projectName={project.name}

@@ -13,6 +13,7 @@ import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { workspaceRootMissHint } from './guards';
+import { spillDirFor, spillRoot } from './spill-paths';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
 
@@ -51,6 +52,15 @@ const ENV_PERSIST_DENYLIST = new Set([
 export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+}
+
+/** Newline count — the line currency's equivalent of `.length`. Used to measure
+ *  how many lines the cwd/env probe's own sentinel added, so the reported line
+ *  total describes the command's output and not the harness's plumbing. */
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
+  return n;
 }
 
 export interface ShellInfo { cmd: string; args: string[]; label: string }
@@ -364,10 +374,17 @@ function bashDescription(): string {
     // measured a `seq 1 20000` costing ~7k tokens of pure noise, "more expensive than
     // everything else combined." The visible slice shrank; nothing is lost — the full
     // output is always saved to disk when it overflows, path included in the result.
-    'Output over ~4,000 chars shows only the first and last ~50 lines; the FULL output is ' +
-    'then always saved to a file, with its path in the result — read that file (e.g. with ' +
-    'the Read tool) or re-run the ORIGINAL command piped through head/tail/grep rather than ' +
-    'guessing from the truncated preview; do not just re-run the same command hoping for more. ' +
+    // Fix (2026-08-11 review round 8): this sentence named only the char cap, but
+    // truncation trips on EITHER cap (see the `truncated` arithmetic in finish()) —
+    // and the line cap is the one that usually fires first, since 100 lines of
+    // ordinary command output is well under 4,000 chars. A model that had been told
+    // only about chars read a truncated 900-char result as complete.
+    'Output over ~4,000 chars OR ~100 lines shows only the first and last ~50 lines — ' +
+    'whichever cap trips first, so a 120-line result is truncated even when it is short. ' +
+    'The FULL output is then always saved to a file, with its path in the result — read ' +
+    'that file (e.g. with the Read tool) or re-run the ORIGINAL command piped through ' +
+    'head/tail/grep rather than guessing from the truncated preview; do not just re-run ' +
+    'the same command hoping for more. ' +
     // Fix (2026-08-10 review): 3 of 5 models found the old `exit ?` timeout marker
     // opaque. A timeout now reports exit 124 (matching `timeout(1)` and Codex CLI) —
     // stated here so the model recognizes it without guessing.
@@ -376,22 +393,9 @@ function bashDescription(): string {
   );
 }
 
-// Where Bash spills full output that doesn't fit inline (2026-08-10 review —
-// see the recommendation in
+// Spill paths live in ./spill-paths so guards.ts can recognize one without
+// importing this file (2026-08-10 review — see the recommendation in
 // docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md).
-// Session-scoped (each session gets its own subfolder) so one conversation's
-// spill files are easy to reason about in isolation, but all rooted under one
-// parent so the retention sweep below can walk every session's leftovers —
-// including ones from sessions that ended long ago — in a single pass.
-function spillRoot(): string {
-  return path.join(os.tmpdir(), 'youcoded-harness-bash-output');
-}
-function spillDirFor(sessionId: string): string {
-  // Never trust sessionId as a path segment verbatim — strip anything that
-  // isn't alnum/dash/underscore so a pathological id can't escape spillRoot().
-  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'unknown';
-  return path.join(spillRoot(), safe);
-}
 
 // WHY a module-level once-flag, not a timer (2026-08-10 review — OpenCode's
 // precedent is a 7-day TTL swept hourly): a spill-to-file design that never
@@ -652,6 +656,8 @@ export const BashTool = defineTool({
         // command that printed exactly N bytes is announced as N, not
         // N-plus-however-long-the-cwd-path-happens-to-be.
         let sentinelOverhead = 0;
+        /** The same overhead counted in lines — see where it is assigned. */
+        let sentinelLineOverhead = 0;
         let reportedCwd: string | null = null;
         let resetTo: string | null = null;
 
@@ -675,6 +681,10 @@ export const BashTool = defineTool({
           }
           const parsed = extractCwd(working);
           sentinelOverhead = sentinelSource.length - parsed.text.length;
+          // Same subtraction in the line currency, for the same reason the char
+          // one exists: the probe's own sentinel lines are harness plumbing, not
+          // command output. Without this, `seq 1 120` reported "123 lines".
+          sentinelLineOverhead = countNewlines(sentinelSource) - countNewlines(parsed.text);
           if (truncated) tailBuf = parsed.text;
           else headBuf = parsed.text;
           const reported = parsed.cwd ?? extractCwd(probeTail).cwd;
@@ -728,12 +738,27 @@ export const BashTool = defineTool({
         }
 
         const trueTotal = totalChars - sentinelOverhead;
+        // The line-currency twin of trueTotal, and the ONLY line total anything
+        // below may report. Two corrections on top of the raw `totalLines`:
+        //   1. the probe's own sentinel lines (harness plumbing, as for chars);
+        //   2. the `totalNewlines + 1` trailing-blank overcount — output that
+        //      ends in a newline has no partial final line, so `seq 1 120`
+        //      counted 121.
+        // Reporting only: `truncated` above still decides on the raw counts, so
+        // this changes no behaviour, only the numbers the model is told.
+        const trailingBlank = (truncated ? tailBuf : headBuf).endsWith('\n') ? 1 : 0;
+        const trueLines = Math.max(1, totalLines - sentinelLineOverhead - trailingBlank);
         let body: string;
         // `shown` measured pre-ANSI-strip (same currency as `totalChars`, which
         // accumulated raw chunks including colour codes) — mixing currencies here
         // was a real bug: a coloured run printed "showing 21491 of 117000 bytes"
         // where 117000 counted escape sequences 21491 did not.
         let preAnsiShown: number;
+        // Tracked alongside preAnsiShown so the metadata line can report BOTH
+        // dimensions (2026-08-11 review round 8): truncation trips on chars OR
+        // lines, but the result only ever quoted chars — a line-capped result
+        // announced "900 chars output, showing 900" and read as complete.
+        let shownLines: number;
         let outputPath: string | undefined;
         let moreHintText: string | undefined;
 
@@ -741,7 +766,8 @@ export const BashTool = defineTool({
           const headResult = takeHeadLines(headBuf, HEAD_CHARS_TARGET, HEAD_LINES_TARGET);
           const tailResult = takeTailLines(tailBuf, TAIL_CHARS_TARGET, TAIL_LINES_TARGET);
           preAnsiShown = headResult.chars + tailResult.chars;
-          const elidedLines = Math.max(0, totalLines - headResult.lines - tailResult.lines);
+          shownLines = headResult.lines + tailResult.lines;
+          const elidedLines = Math.max(0, trueLines - headResult.lines - tailResult.lines);
           body = `${stripAnsi(headResult.text)}\n[...]\n${stripAnsi(tailResult.text)}`;
 
           if (spillStream && spillPath) {
@@ -774,6 +800,7 @@ export const BashTool = defineTool({
             : `${linesPart} — full output could NOT be saved to disk (${spillError ?? 'unknown error'}); pipe the ORIGINAL command through head/tail/grep to narrow it instead.`;
         } else {
           preAnsiShown = headBuf.length;
+          shownLines = totalLines;
           body = stripAnsi(headBuf);
           // Nothing to keep — this call's spill (if the streaming trigger ever
           // somehow started one, which the truncated=false arithmetic above
@@ -792,7 +819,17 @@ export const BashTool = defineTool({
         // string .length), never real UTF-8 byte counts. Calling that "bytes"
         // was wrong for any multi-byte output: 60,000 CJK characters (180,000
         // real UTF-8 bytes) were reported as "60005 bytes".
-        if (truncated) meta.push(`${trueTotal} chars output, showing ${preAnsiShown}`);
+        // The line dimension appears exactly when LINES are why the output was
+        // trimmed — see the WHY on `shownLines`. Not unconditionally: one
+        // 60,000-char line trips only the char cap, head/tail then take a partial
+        // line each, and "showing 0 lines" beside 4,000 visible chars is worse
+        // than saying nothing about lines at all.
+        if (truncated) {
+          const lineCapped = totalLines > HEAD_LINES_TARGET + TAIL_LINES_TARGET;
+          meta.push(lineCapped
+            ? `${trueTotal} chars / ${trueLines} lines output, showing ${preAnsiShown} chars / ${shownLines} lines`
+            : `${trueTotal} chars output, showing ${preAnsiShown}`);
+        }
         // Fix: when a command exits with genuinely no output (e.g. `exit 3`),
         // `${prefix}${body}` was '' — trimming that and prepending the metadata
         // line produced a result that STARTED with a blank line and said nothing
@@ -822,7 +859,15 @@ export const BashTool = defineTool({
             shellCwdMiss = workspaceRootMissHint(missingPathLine[1], startCwd, ctx, (p) => fs.existsSync(p));
           }
         }
-        const text = (combined + shellCwdMiss + notice + envNotice).trim() + `\n[${meta.join(' · ')}]`;
+        // The cwd-reset notice LEADS (2026-08-11 review round 8). It used to trail
+        // the output, which meant a model reading top-down consumed up to 4,000
+        // chars of results from a directory it no longer sits in before reaching
+        // the line saying so — and on a truncated result the notice landed after
+        // an elision marker, which reads like a footnote. It changes how
+        // everything below it should be interpreted, so it goes above it.
+        // `notice` carries a leading \n for the trailing position; strip it here.
+        const leadNotice = notice ? notice.replace(/^\n/, '') + '\n\n' : '';
+        const text = (leadNotice + combined + shellCwdMiss + envNotice).trim() + `\n[${meta.join(' · ')}]`;
         const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean } = {
           text,
           isError,

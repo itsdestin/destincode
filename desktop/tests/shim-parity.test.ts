@@ -65,6 +65,27 @@ describe('Remote shim parity', () => {
     expect(missing).toEqual([]);
   });
 
+  test('loadHistory parameter ORDER matches preload (sessionId, projectSlug, count, all)', () => {
+    // Name-presence parity (the tests above) did not catch the 2026-08-12 bug:
+    // the shim declared (sessionId, count, all, projectSlug) while preload and
+    // every caller use (sessionId, projectSlug, count, all), so the slug landed
+    // in `count` and 10 landed in `all` — the server then returned the ENTIRE
+    // transcript on every remote history load. Pin the parameter order itself.
+    const preloadSource = fs.readFileSync(
+      path.join(__dirname, '../src/main/preload.ts'), 'utf8'
+    );
+    const shimSource = fs.readFileSync(
+      path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8'
+    );
+    const paramOrder = (src: string): string[] | null => {
+      const m = src.match(/loadHistory:\s*\(([^)]*)\)/);
+      // Strip optional markers and type annotations: "count?: number" -> "count"
+      return m ? m[1].split(',').map(p => p.trim().split(/[?:]/)[0].trim()) : null;
+    };
+    expect(paramOrder(preloadSource)).toEqual(['sessionId', 'projectSlug', 'count', 'all']);
+    expect(paramOrder(shimSource)).toEqual(paramOrder(preloadSource));
+  });
+
   test('remote-shim exposes favorites methods', () => {
     const shimSource = fs.readFileSync(
       path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8'

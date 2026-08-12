@@ -294,3 +294,117 @@ describe('tags:update / tags:delete signal chatsearch (Task 5 gap)', () => {
     spy.mockRestore();
   });
 });
+
+// Security regression: transcript:read-meta validated the caller-supplied path
+// with startsWith(claudeProjects) and NO trailing path separator, so a SIBLING
+// directory like ~/.claude/projects-evil/x.jsonl passed the containment check
+// and its contents leaked. The model:read-last handler next door already used
+// the correct `claudeProjects + path.sep` prefix — these tests pin the
+// transcript:read-meta handler to the same rule.
+describe('transcript:read-meta path containment', () => {
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+  let mockIpcMain: { handle: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-transcript-meta-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // containment root lives inside the fixture, not the real home.
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  function handlerFor(channel: string) {
+    const mockSessionManager: any = {
+      createSession: vi.fn(), destroySession: vi.fn(), listSessions: vi.fn(() => []),
+      sendInput: vi.fn(), resizeSession: vi.fn(), on: vi.fn(),
+    };
+    const mockWindow: any = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    const mockSkillProvider: any = {
+      configStore: { getPackages: vi.fn(() => ({})) },
+      install: vi.fn(), installMany: vi.fn(),
+      ensureBundledPluginsInstalled: vi.fn(), ensureMigrated: vi.fn(),
+    };
+    registerIpcHandlers(mockIpcMain as any, mockSessionManager, mockWindow, mockSkillProvider);
+    return (mockIpcMain.handle as any).mock.calls.find((c: any) => c[0] === channel)[1];
+  }
+
+  it('rejects a transcript in a sibling dir like ~/.claude/projects-evil', async () => {
+    const evilDir = path.join(tmpHome, '.claude', 'projects-evil');
+    fs.mkdirSync(evilDir, { recursive: true });
+    const evilFile = path.join(evilDir, 'x.jsonl');
+    fs.writeFileSync(evilFile, JSON.stringify({ model: 'leaked-model' }) + '\n');
+
+    const handler = handlerFor('transcript:read-meta');
+    expect(await handler({}, evilFile)).toBeNull();
+  });
+
+  it('still reads a transcript inside ~/.claude/projects', async () => {
+    const okDir = path.join(tmpHome, '.claude', 'projects', 'some-project');
+    fs.mkdirSync(okDir, { recursive: true });
+    const okFile = path.join(okDir, 'x.jsonl');
+    fs.writeFileSync(okFile, JSON.stringify({ model: 'test-model' }) + '\n');
+
+    const handler = handlerFor('transcript:read-meta');
+    const meta = await handler({}, okFile);
+    expect(meta?.model).toBe('test-model');
+  });
+});
+
+describe('dialog:open-file attachment picker filters', () => {
+  // Pins Destin's 2026-08-12 request: the paperclip picker must OPEN showing
+  // ALL files (the first filter entry is the native dialog's default), with
+  // named category filters available in the dropdown for narrowing. A filter
+  // reorder that puts Images first would silently regress the default.
+  async function getFilters() {
+    const mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+    const mockSessionManager = {
+      createSession: vi.fn(), destroySession: vi.fn(), listSessions: vi.fn(() => []),
+      sendInput: vi.fn(), resizeSession: vi.fn(), on: vi.fn(),
+    };
+    const mockWindow = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    const mockSkillProvider = { configStore: { getPackages: vi.fn(() => ({})) } };
+    registerIpcHandlers(
+      mockIpcMain as any, mockSessionManager as any, mockWindow as any, mockSkillProvider as any,
+    );
+    const { dialog } = await import('electron');
+    (dialog.showOpenDialog as any).mockResolvedValue({ canceled: true, filePaths: [] });
+    const handler = (mockIpcMain.handle as any).mock.calls.find(
+      (c: any) => c[0] === 'dialog:open-file',
+    )[1];
+    await handler({});
+    const options = (dialog.showOpenDialog as any).mock.calls.at(-1)[1];
+    return options.filters as { name: string; extensions: string[] }[];
+  }
+
+  it('defaults to All Files (first filter entry)', async () => {
+    const filters = await getFilters();
+    expect(filters[0]).toEqual({ name: 'All Files', extensions: ['*'] });
+  });
+
+  it('offers the named category filters as dropdown options', async () => {
+    const filters = await getFilters();
+    const names = filters.map((f) => f.name);
+    expect(names).toEqual([
+      'All Files',
+      'Images',
+      'Markdown & Text',
+      'PDFs',
+      'Spreadsheets',
+      'Documents',
+      'Code',
+    ]);
+    // Every category must carry at least one extension, and none may carry
+    // the wildcard — a '*' inside a named category would make it a second
+    // "all files" entry and defeat the dropdown's purpose.
+    for (const f of filters.slice(1)) {
+      expect(f.extensions.length).toBeGreaterThan(0);
+      expect(f.extensions).not.toContain('*');
+    }
+  });
+});

@@ -36,9 +36,10 @@ export function setConfig(id: string, values: Record<string, unknown>): void {
   if (!fs.existsSync(CONFIG_DIR)) {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
   }
-  // Atomic write: write to temp then rename
+  // Atomic write: write to temp then rename.
+  // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
   const filePath = path.join(CONFIG_DIR, `${id}.json`);
-  const tmpPath = filePath + '.tmp';
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(values, null, 2), 'utf8');
   fs.renameSync(tmpPath, filePath);
 }

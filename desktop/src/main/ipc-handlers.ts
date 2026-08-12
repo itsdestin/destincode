@@ -101,6 +101,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
@@ -823,9 +824,18 @@ export function registerIpcHandlers(
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
       filters: [
-        // All Files first so the picker opens in unrestricted mode by default
+        // All Files FIRST — the native dialog opens with the first entry
+        // selected, so the paperclip defaults to every file type (Destin's
+        // 2026-08-12 request). The rest are optional categories the user can
+        // switch to in the dialog's own filter dropdown. Pinned by
+        // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
         { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'] },
+        { name: 'Markdown & Text', extensions: ['md', 'markdown', 'txt'] },
+        { name: 'PDFs', extensions: ['pdf'] },
+        { name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] },
+        { name: 'Documents', extensions: ['docx', 'doc'] },
+        { name: 'Code', extensions: ['ts', 'tsx', 'js', 'jsx', 'py', 'json', 'html', 'css', 'sh'] },
       ],
     });
     return result.canceled ? [] : result.filePaths;
@@ -926,7 +936,8 @@ export function registerIpcHandlers(
     try {
       const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
       const resolved = path.resolve(transcriptPath);
-      if (!resolved.startsWith(claudeProjects)) return null;
+      // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+      if (!resolved.startsWith(claudeProjects + path.sep)) return null;
       return await readTranscriptMeta(transcriptPath);
     } catch {
       return null;
@@ -3713,9 +3724,22 @@ export function registerIpcHandlers(
 
     // Suppress the watcher echo of our own write (spec §8.4), then atomic
     // write: .tmp + rename so the original is never half-written.
+    // pid+time-suffixed temp name: two processes (dev + built app) writing the
+    // same file must not race the same .tmp — the loser's rename would ENOENT.
+    // These tmp files land in the USER'S project tree, so sweep crash orphans
+    // for this file first and unlink our own tmp on failure — a pid+time name
+    // is never overwritten by the next write, so a strand would linger forever
+    // (git status noise, visible in the Files UI).
     noteOwnWrite(realPath);
-    await fs.promises.writeFile(realPath + '.tmp', newContent, 'utf8');
-    await fs.promises.rename(realPath + '.tmp', realPath);
+    await sweepStaleTmp(path.dirname(realPath), path.basename(realPath));
+    const tmpPath = `${realPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, newContent, 'utf8');
+      await fs.promises.rename(tmpPath, realPath);
+    } catch (e) {
+      try { await fs.promises.unlink(tmpPath); } catch { /* already gone */ }
+      throw e;
+    }
     const st = await fs.promises.stat(realPath).catch(() => null);
 
     if (artifact) {
@@ -3798,7 +3822,7 @@ export function registerIpcHandlers(
   initGitWatchers((evt) => broadcastGitChanged(evt.repoRoot));
 
   ipcMain.handle(GIT_IPC.FILE_STATUS, (_e, projectRoot: string, relPath: string) =>
-    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false },
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false, conflicted: false },
       () => gitFileStatus(projectRoot, relPath)));
 
   ipcMain.handle(GIT_IPC.FILE_REVIEW, (_e, projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>

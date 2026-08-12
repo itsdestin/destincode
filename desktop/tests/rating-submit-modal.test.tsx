@@ -238,6 +238,43 @@ describe('RatingSubmitModal', () => {
     expect(onSubmitted).toHaveBeenCalled();
   });
 
+  // Pins the fix for the fabricated-cause bug: handleInstallAndRate used to
+  // discard the caught error and always report 'Network error — try again.'.
+  // It must distinguish offline (TypeError) exactly like handleSubmit does.
+  it('shows the offline message (not a fabricated cause) when install rejects with TypeError', async () => {
+    const rateMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 403, message: 'must install first' });
+    // TypeError simulates a fetch-level network failure (offline / DNS failure)
+    const installMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    mockAuth(true);
+    mockStats();
+    setupApiMock({ rate: rateMock, install: installMock });
+
+    renderModal();
+
+    // First: trigger 403 to reveal the install-gate
+    await act(async () => { clickStar(4); });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /submit rating/i }));
+      await Promise.resolve();
+    });
+
+    // Install and rate — install fails offline
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /install and rate/i }));
+      await Promise.resolve();
+    });
+
+    const alert = screen.getByRole('alert');
+    // The offline-specific message, NOT the old hardcoded 'Network error'
+    expect(alert.textContent).toMatch(/offline/i);
+    expect(alert.textContent).not.toMatch(/network error/i);
+    // Offline errors get the Retry affordance
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
+  });
+
   // ── 429 rate-limit ───────────────────────────────────────────────────────────
 
   it('shows rate-limit message on 429 response', async () => {

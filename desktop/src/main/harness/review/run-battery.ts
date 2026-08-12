@@ -193,18 +193,88 @@ export const BATTERY_TIMEOUT_MS = 1_200_000;
 // run), Qwen 3.8 Max 11,766, Deepseek v4 Flash 0731 9,530, GPT 5.6 Luna
 // 4,098, Grok 4.5 3,662 — and even each run's own final free-form review
 // message (the longest single step) never exceeded ~2,200 estimated tokens.
-// 32,000 is chosen as a ceiling with real headroom above every measured
-// number (≈2.7x the highest observed whole-run total) while staying under
-// half of the 65,536 that broke Opus, so the upfront reservation is no
-// longer wildly disproportionate to real spend.
+// WHY 8,000 and not the 32,000 this was until 2026-08-11: 32,000 silently gave
+// every model AMNESIA, and every strange result from rounds 5-7 traces to it.
+//
+// fitToContext (harness-session.ts) sizes history as
+//     ctx (opts.contextLength ?? 32_768) - limits.maxTokens - 1024
+// and runBattery passed no contextLength, so the sum was
+//     32_768 - 32_000 - 1_024 = -256
+// — a NEGATIVE history budget, measured, on every request. With a non-positive
+// budget the size loop keeps exactly one message (its own comment: "history
+// collapses to that single message rather than erroring"), and the pair-aware
+// front trim then splits two ways: mid-turn the survivor is a tool result, so
+// salvageOversizedTail rebuilt [battery prompt, last tool-call, last result] —
+// the instructions plus ONE exchange, no record of anything else the model had
+// done; on the wrap-up turn the survivor is the new user message, so the model
+// got the wrap-up prompt ALONE. Four models said so in their reviews ("this
+// message is the first one in our session") after 67-309 tool calls.
+//
+// That is the real source of the "restart" behaviour that cost two rounds of
+// threshold-tuning: a model re-reading the full battery every step with no
+// memory of its progress re-runs `pwd`, re-Globs, and never finishes.
+//
+// A smaller ceiling also serves this constant's ORIGINAL purpose better, not
+// worse. It exists because OpenRouter reserves the requested max_tokens against
+// the account balance up front, and an unset value let it reserve a model's full
+// hosted max — 65,536 for Opus 5, which failed twice with "You requested up to
+// 65536 tokens, but can only afford 63293". Measured real spend: the longest
+// SINGLE step in any run (its own final review message) never exceeded ~2,200
+// tokens, and whole-run output totals ran 3,662-11,766. 8,000 is ~3.6x the
+// largest single step, and reserves a quarter of what 32,000 did.
 //
 // WHY here, not on ASSISTANT_PRESET: ASSISTANT_PRESET is shared configuration
 // used by every real app session (see harness-manifest.ts), so raising or
 // lowering it globally would change Destin's live app behavior — out of
-// scope for a battery-runner defect. This constant, and the harness object
-// below that layers it onto a COPY of ASSISTANT_PRESET, are runBattery-only;
-// they never touch the shared preset object or its live-app consumers.
-export const BATTERY_MAX_OUTPUT_TOKENS = 32_000;
+// scope for a battery-runner defect. Verified tree-wide that NOTHING else sets
+// `limits` at all, so a real session leaves maxTokens undefined and takes
+// fitToContext's own `?? 4096` fallback (budget 27,648 — healthy). This bug was
+// runner-only by construction.
+export const BATTERY_MAX_OUTPUT_TOKENS = 8_000;
+
+// Used when a roster entry declares no contextLength. Deliberately the same
+// 32_768 fitToContext already defaults to: a conservative wrong answer costs
+// earlier compaction, while an optimistic one overflows the model and 400s
+// mid-run.
+export const DEFAULT_BATTERY_CONTEXT_LENGTH = 32_768;
+
+// Ceiling on how much of a model's real window the battery will actually use.
+//
+// WHY cap at all, when the roster now carries real windows (262k-1M)? Cost.
+// History rides on EVERY request, so an uncapped 1M window turns a 300-call run
+// into hundreds of enormous prompts. 64,000 comfortably holds a whole battery's
+// worth of exchanges (~60 calls) while bounding per-request spend, and anything
+// past it is compaction's job — which is exactly what compaction is for.
+//
+// This is the one number to raise if a round shows models losing context to
+// compaction before finishing.
+export const BATTERY_CONTEXT_CAP = 64_000;
+
+/** Reserve fitToContext subtracts on top of maxTokens (harness-session.ts). */
+const FIT_TO_CONTEXT_RESERVE = 1_024;
+
+/** The share of the window that must survive as history for a run to be worth
+ *  paying for. */
+const MIN_HISTORY_SHARE = 0.5;
+
+/** Throw BEFORE spending money if the output ceiling has eaten the history
+ *  budget. This is the guard that did not exist when a -256 budget shipped and
+ *  silently ran three paid rounds against models that could not remember their
+ *  own work. It names both numbers so the fix is obvious from the message. */
+export function assertHistoryBudget(contextLength: number): void {
+  const budget = contextLength - BATTERY_MAX_OUTPUT_TOKENS - FIT_TO_CONTEXT_RESERVE;
+  const share = budget / contextLength;
+  if (share < MIN_HISTORY_SHARE) {
+    throw new Error(
+      `Battery misconfigured: a ${contextLength}-token window minus a `
+      + `${BATTERY_MAX_OUTPUT_TOKENS}-token output ceiling minus a `
+      + `${FIT_TO_CONTEXT_RESERVE}-token reserve leaves ${budget} tokens for history `
+      + `(${Math.round(share * 100)}% of the window; at least `
+      + `${Math.round(MIN_HISTORY_SHARE * 100)}% required). Lower `
+      + `BATTERY_MAX_OUTPUT_TOKENS or raise the roster entry's contextLength.`,
+    );
+  }
+}
 
 // The battery's own step ceiling, replacing the per-model tier split in
 // model-step-budget.ts (25 default / 50 frontier). WHY uniform: that split is
@@ -244,6 +314,11 @@ export interface RunBatteryOpts {
   timeoutMs?: number;
   /** Keep the fixture on disk for debugging. Default false. */
   keepFixture?: boolean;
+  /** The model's real context window, from the roster. Omitted falls back to
+   *  DEFAULT_BATTERY_CONTEXT_LENGTH; the value used is capped at
+   *  BATTERY_CONTEXT_CAP. Without this the session takes fitToContext's own
+   *  32_768 default, which is what produced the 2026-08-11 amnesia bug. */
+  contextLength?: number;
 }
 
 // No skills, no path-triggered rule injection: the fixture has neither, and
@@ -302,6 +377,14 @@ export function makeReviewSearchServices(fetchImpl?: typeof fetch): ToolServices
 }
 
 export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
+  // Resolved and CHECKED before the fixture is seeded or a single token is
+  // spent — a misconfigured window is a config error, not a run to salvage.
+  const contextLength = Math.min(
+    opts.contextLength ?? DEFAULT_BATTERY_CONTEXT_LENGTH,
+    BATTERY_CONTEXT_CAP,
+  );
+  assertHistoryBudget(contextLength);
+
   const fixtureRoot = seedFixtureWorkspace();
   const events: TranscriptEvent[] = [];
   let toolCalls = 0;
@@ -333,6 +416,12 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       sessionId: `review-${Date.now()}`,
       cwd: fixtureRoot,
       harness: BATTERY_HARNESS,
+      // Load-bearing (2026-08-11): omitted, HarnessSession takes fitToContext's
+      // own 32_768 default, which against this harness's output ceiling left a
+      // NEGATIVE history budget and gave every model amnesia. See
+      // BATTERY_MAX_OUTPUT_TOKENS. assertHistoryBudget below refuses to spend
+      // money if that relationship is ever broken again.
+      contextLength,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
       tools: CORE_TOOLS,
       // Auto-approve everything decide() is consulted about — EXCEPT during the

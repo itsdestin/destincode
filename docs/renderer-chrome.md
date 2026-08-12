@@ -32,6 +32,16 @@ Thresholds enforced by `wecoded-themes/scripts/audit-contrast.mjs` (CI `validate
 - **`showCaptionButtons` must include Linux.** The `BrowserWindow` is frameless (`frame:false`, `titleBarStyle:'hidden'`) on BOTH Windows and Linux; only macOS gets traffic lights. Gating on `navigator.platform === 'Win32'` left Linux with zero window controls. Gate window-chrome on "not macOS" (`!isMac && !isAndroid() && !isRemoteMode()`). General trap: `navigator.platform === 'Win32'` / `process.platform === 'win32'` exclude Linux — audit any `if(win)…else if(mac)…` fallthrough for Linux correctness.
 - **Announcement lives in StatusBar** (an `announcement` widget in "Updates"). Don't re-thread it into HeaderBar.
 
+## Render-path chat-state access (migrated 2026-08-12 from the path-scoped rule)
+
+- **Reading chat state on the render path: use a cached selector, not the whole map.** `state/chat-context.ts` is a custom `useSyncExternalStore` store, not a plain Context. `useChatState(id)` re-renders only on that session's change. `useChatStore()` gives effect-only readers (`getState`/`subscribeAll`) and backs cached-selector hooks (`useSessionAttention`, `useActiveSessionModel`) that re-render their host only when a *derived* value changes. **Do NOT put `useChatStateMap()` on the render path** — it re-renders on every dispatch; the one sanctioned caller is `RemoteSnapshotExporter` (serializes the full map for remote hydration). **Never call `store.getState()` during render** for render-path data — it bypasses the subscription and can tear; add a selector instead. (2026-07-17 AppInner tranche removed AppInner's whole-map subscription this way — ~20× fewer AppInner re-renders.)
+- The chat reducer preserves `toolCalls`/`toolGroups` Map refs when unchanged so `React.memo` works — don't clone them needlessly. Prefer `content-visibility: auto` over virtualization (keeps find-in-page + a11y); memoize every Context value (`useMemo`), split contexts by change frequency.
+
+## Control primitives (`components/ui/`) — migrated 2026-08-12 from the path-scoped rule
+
+- **Every control goes through its primitive** — never hand-roll `bg-accent text-on-accent`. A caller's `className` REPLACES base tokens by conflict group via `mergeClasses` (a hand-rolled tailwind-merge stand-in); it does not pile on. Guard `primitive-adoption.test.ts` also fails on a primitive with NO call site — an unused one becomes a shadow copy.
+- **Padding groups are per-axis:** `px-`/`py-`/`p{trbl}-` are independent; `p-N` belongs to ALL padding groups. An `px-`-only override must NOT drop the size's `py-` (2026-07-20: the old single `/^p[xytrbl]?-/` group collapsed welcome CTAs + SyncPanel Save to text height). Guard: `Button.test.tsx` — keep per-axis independence if you touch `CONFLICT_GROUPS`.
+
 ## Overlays
 
 Full layer system: workspace `docs/shared-ui-architecture.md → Overlay Layer System`. Rules:
@@ -39,6 +49,7 @@ Full layer system: workspace `docs/shared-ui-architecture.md → Overlay Layer S
 - **Pick a layer, not a z-index:** L1 drawers (z 40/50), L2 popups (z 60/61), L3 destructive (z 70/71), L4 system (z 100).
 - **SessionStrip dropdown at `z-[9000]` is load-bearing** — `.header-bar`'s `backdrop-filter` creates a stacking context that traps lower values. Don't "fix" it.
 - **Glassmorphism is automatic + var-driven** — `.layer-surface` reads `--panels-blur` / `--panels-opacity` (defaults `0px`/`1`); no `[data-panels-blur]` gate. Reduced-effects forces `--panels-blur:0` but preserves opacity intent.
+- **`.layer-surface` on a REPEATED element (grid tile, list row) is a paint bug, not a style choice** (migrated 2026-08-12 from the path-scoped rule) — theme-engine gives each one a `backdrop-filter` under `[data-wallpaper]`, so N tiles = N blur layers, and inside an `overflow-hidden` + `transform`-animating parent Windows Electron drops their paint *per card* (shipped twice: `516411a5`, `1f68a7f0`). Over an opaque parent cancel it; over a real wallpaper pre-blur ONE backdrop instead. Guard + full rationale: `youcoded/desktop/tests/drawer-card-glass.test.ts`.
 
 ## Remote access state sync
 

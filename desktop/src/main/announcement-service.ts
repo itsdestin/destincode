@@ -30,7 +30,8 @@ import { isExpired, type Announcement } from '../shared/announcement';
 const ANNOUNCEMENTS_URL =
   'https://raw.githubusercontent.com/itsdestin/youcoded/master/announcements.txt';
 const CACHE_PATH = path.join(os.homedir(), '.claude', '.announcement-cache.json');
-const TMP_PATH = `${CACHE_PATH}.tmp`;
+// pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+const TMP_PATH = `${CACHE_PATH}.${process.pid}.tmp`;
 const REFRESH_MS = 60 * 60 * 1000; // 1 hour
 
 function writeAtomic(data: Announcement): void {

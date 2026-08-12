@@ -76,7 +76,7 @@ async function locate(projectRoot: string, relPath: string): Promise<Located | '
 }
 
 const NOT_REPO: Omit<GitFileStatusResult, 'ok' | 'error'> = {
-  isRepo: false, branch: null, counts: null, hasHistory: false, staged: false,
+  isRepo: false, branch: null, counts: null, hasHistory: false, staged: false, conflicted: false,
 };
 
 // Counts for a file HEAD has no copy of (untracked / staged-new / unborn
@@ -128,6 +128,10 @@ export async function gitFileStatus(projectRoot: string, relPath: string): Promi
   return {
     ok: true, isRepo: true, branch: parsed.branch, counts,
     hasHistory, staged: entry?.staged ?? false,
+    // Honest mirror for a mid-merge file (2026-07-22 bug: `u` lines were
+    // dropped at parse, so this read as clean) — counts above already work
+    // for unmerged paths (`git diff HEAD` diffs the conflict-marked worktree).
+    conflicted: entry?.kind === 'conflicted',
   };
 }
 
@@ -170,12 +174,14 @@ export async function gitFileReview(
         else if (stat.size <= MAX_UNTRACKED_BYTES) hunks = [synthesizeAddHunk(await fs.promises.readFile(abs, 'utf8'))];
         else binary = true;
       } catch { binary = true; }
-      uncommitted = { hunks, counts: countsFromHunks(hunks), staged: entry.staged, untracked: entry.untracked, inHead: false, binary };
+      // conflicted (both branches): threads the parser's unmerged kind to the
+      // review card's Conflict badge — the diff itself renders like any other.
+      uncommitted = { hunks, counts: countsFromHunks(hunks), staged: entry.staged, untracked: entry.untracked, inHead: false, binary, conflicted: entry.kind === 'conflicted' };
     } else {
       const diff = await execGit(repoRoot, ['diff', 'HEAD', '--', rel]);
       if (diff.code !== 0) return fail<GitFileReviewResult>(base, errText(diff));
       const { hunks, binary } = parseUnifiedDiff(diff.stdout);
-      uncommitted = { hunks, counts: countsFromHunks(hunks), staged: entry.staged, untracked: false, inHead: true, binary };
+      uncommitted = { hunks, counts: countsFromHunks(hunks), staged: entry.staged, untracked: false, inHead: true, binary, conflicted: entry.kind === 'conflicted' };
     }
   }
 

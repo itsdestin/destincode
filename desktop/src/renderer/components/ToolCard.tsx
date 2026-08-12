@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
@@ -9,6 +9,7 @@ import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { asString } from '../utils/tool-input';
 
 // --- Helpers for friendly display ---
 
@@ -30,13 +31,18 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+// asString (the unknown-input validator this file introduced in PR #295) moved
+// to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
+
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
   const { toolName, input } = tool;
 
   switch (toolName) {
     case 'Bash': {
-      const cmd = (input.command as string) || '';
-      const desc = input.description as string | undefined;
+      // Fix: an object survives `(x as string) || ''` (objects are truthy), then
+      // .trimStart() throws — crashing the whole Chat pane via its ErrorBoundary.
+      const cmd = asString(input.command);
+      const desc = asString(input.description);
       const bg = input.run_in_background ? ' ⟳' : '';
       let label: string;
       if (desc) {
@@ -51,12 +57,14 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Read': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename(); non-number offset/limit
+      // and non-string pages rendered "[object Object]" in the detail line.
+      const fp = asString(input.file_path);
       const label = fp ? `Reading ${basename(fp)}` : 'Reading File';
       let detail = fp ? `↳ ${parentDir(fp)}` : '';
-      const offset = input.offset as number | undefined;
-      const limit = input.limit as number | undefined;
-      const pages = input.pages as string | undefined;
+      const offset = typeof input.offset === 'number' ? input.offset : undefined;
+      const limit = typeof input.limit === 'number' ? input.limit : undefined;
+      const pages = asString(input.pages);
       if (offset != null && limit != null) {
         detail += ` lines ${offset}-${offset + limit}`;
       } else if (offset != null) {
@@ -71,7 +79,8 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Write': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename().
+      const fp = asString(input.file_path);
       return {
         label: fp ? `Writing ${basename(fp)}` : 'Writing File',
         detail: fp ? `↳ ${parentDir(fp)}` : '',
@@ -79,9 +88,11 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Edit': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename(); a non-string old_string
+      // crashed .replace().
+      const fp = asString(input.file_path);
       let detail = fp ? `↳ ${parentDir(fp)}` : '';
-      const oldStr = input.old_string as string | undefined;
+      const oldStr = asString(input.old_string);
       if (oldStr) {
         detail += ` ${truncate(oldStr.replace(/\n/g, '⏎'), 40)}`;
       }
@@ -92,37 +103,50 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Grep': {
-      const pattern = (input.pattern as string) || '';
+      // Fix: a non-string pattern rendered `Searching for "[object Object]"`.
+      const pattern = asString(input.pattern);
       const label = pattern ? `Searching for "${truncate(pattern, 30)}"` : 'Searching Code';
+      // Fix: validate each field before interpolating — a malformed (non-string)
+      // glob/path/type used to render "[object Object]" or crash basename().
+      const glob = asString(input.glob);
+      const grepPath = asString(input.path);
+      const grepType = asString(input.type);
       let detail = '';
-      if (input.glob) {
-        detail = `↳ in ${input.glob} files`;
-      } else if (input.path) {
-        detail = `↳ in ${basename(input.path as string)}/`;
-      } else if (input.type) {
-        detail = `↳ in .${input.type} files`;
+      if (glob) {
+        detail = `↳ in ${glob} files`;
+      } else if (grepPath) {
+        detail = `↳ in ${basename(grepPath)}/`;
+      } else if (grepType) {
+        detail = `↳ in .${grepType} files`;
       }
       return { label, detail };
     }
 
     case 'Glob': {
-      const pattern = (input.pattern as string) || '';
+      // Fix: a non-string pattern crashed .replace() (objects survive `|| ''`).
+      const pattern = asString(input.pattern);
       const simplified = pattern.replace(/^\*\*\//, '');
       const label = pattern ? `Finding ${simplified} files` : 'Finding Files';
-      const detail = input.path ? `↳ in ${basename(input.path as string)}/` : '';
+      // Fix: same hardening as Grep — a non-string path must not reach basename().
+      const globPath = asString(input.path);
+      const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
       return { label, detail };
     }
 
     case 'Agent': {
-      const desc = input.description as string | undefined;
+      // Fix: a non-string description rendered "Agent: [object Object]".
+      const desc = asString(input.description);
       const bg = input.run_in_background ? ' ⟳' : '';
       const label = desc ? `Agent: ${desc}` : 'Running Sub-Agent';
-      const detail = input.subagent_type ? `↳ ${input.subagent_type}` : '';
+      // Fix: a malformed (non-string) subagent_type used to render "[object Object]".
+      const subagentType = asString(input.subagent_type);
+      const detail = subagentType ? `↳ ${subagentType}` : '';
       return { label: label + bg, detail };
     }
 
     case 'WebSearch': {
-      const query = input.query as string | undefined;
+      // Fix: a non-string query rendered "[object Object]" in the detail line.
+      const query = asString(input.query);
       return {
         label: 'Searching the Web',
         detail: query ? `↳ ${query}` : '',
@@ -130,7 +154,9 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'WebFetch': {
-      const url = input.url as string | undefined;
+      // Fix: a non-string url threw inside new URL(), and the catch fallback then
+      // rendered it as "[object Object]".
+      const url = asString(input.url);
       let domain = '';
       if (url) {
         try {
@@ -146,13 +172,16 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Skill': {
-      const skill = input.skill as string | undefined;
-      const args = input.args as string | undefined;
+      // Fix: a non-string skill crashed .includes() — optional chaining doesn't
+      // guard objects (they're not nullish). Non-string args rendered as
+      // "[object Object]".
+      const skill = asString(input.skill);
+      const args = asString(input.args);
       // Strip the plugin namespace ("superpowers:brainstorming" -> "brainstorming")
       // so the label reads as English, not as a technical id. Past tense matches
       // the post-launch state — by the time the card renders, the skill has
       // already been invoked.
-      const bareName = skill?.includes(':') ? skill.split(':').slice(-1)[0] : skill;
+      const bareName = skill.includes(':') ? skill.split(':').slice(-1)[0] : skill;
       return {
         label: bareName ? `Invoked skill: ${bareName}` : 'Invoked skill',
         detail: args ? `↳ ${args}` : '',
@@ -160,7 +189,8 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'TaskCreate': {
-      const subject = (input.subject as string) || '';
+      // Fix: a non-string subject rendered "New Task: [object Object]".
+      const subject = asString(input.subject);
       return {
         label: subject ? `New Task: ${truncate(subject, 50)}` : 'New Task',
         detail: '',
@@ -183,15 +213,19 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
         default:
           label = 'Updating Task';
       }
-      const taskId = input.taskId as string | undefined;
+      // Fix: a non-string taskId rendered "#[object Object]" (task ids are
+      // strings throughout — see task-state.ts).
+      const taskId = asString(input.taskId);
       return { label, detail: taskId ? `↳ #${taskId}` : '' };
     }
 
     case 'AskUserQuestion': {
-      // Show the first question's header/text as the tool label
+      // Show the first question's header/text as the tool label.
+      // Fix: only accept string values — String(header) on a malformed object
+      // input produced an "[object Object]" label.
       const questions = input.questions as any[];
-      const header = questions?.[0]?.header || questions?.[0]?.question || 'Question';
-      return { label: truncate(String(header), 40), detail: '' };
+      const header = asString(questions?.[0]?.header) || asString(questions?.[0]?.question) || 'Question';
+      return { label: truncate(header, 40), detail: '' };
     }
 
     case 'ExitPlanMode': {
@@ -507,9 +541,36 @@ interface AskQuestion {
   multiSelect: boolean;
 }
 
-function isValidQuestions(input: Record<string, unknown>): input is { questions: AskQuestion[] } {
-  const q = input.questions;
-  return Array.isArray(q) && q.length > 0 && typeof q[0]?.question === 'string';
+// Fix: isValidQuestions only checked questions[0].question, so an object-valued
+// header/label/description DEEPER in the array still reached React children in
+// the expanded card ("Objects are not valid as a React child" crashes the whole
+// Chat pane via its ErrorBoundary). Normalize the whole array up front with the
+// same asString idiom as friendlyToolDisplay: coerce every rendered field, and
+// drop members that can't render or be answered (no question text, no labeled
+// options) so one malformed member degrades gracefully instead of crashing or
+// invalidating the rest of the card.
+function normalizeQuestions(input: Record<string, unknown>): AskQuestion[] {
+  const raw = input.questions;
+  if (!Array.isArray(raw)) return [];
+  const out: AskQuestion[] = [];
+  for (const q of raw as Array<Record<string, unknown> | null | undefined>) {
+    const question = asString(q?.question);
+    if (!question) continue; // no question text — nothing to render or key answers by
+    const rawOptions = Array.isArray(q?.options) ? (q.options as Array<Record<string, unknown> | null | undefined>) : [];
+    const options: AskQuestion['options'] = [];
+    for (const o of rawOptions) {
+      const label = asString(o?.label);
+      if (!label) continue; // an unlabeled option can't be selected or echoed back
+      options.push({ label, description: asString(o?.description) || undefined });
+    }
+    if (options.length === 0) continue; // nothing selectable
+    out.push({ question, header: asString(q?.header), multiSelect: q?.multiSelect === true, options });
+  }
+  return out;
+}
+
+function isValidQuestions(input: Record<string, unknown>): boolean {
+  return normalizeQuestions(input).length > 0;
 }
 
 function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
@@ -518,7 +579,10 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
-  const questions = (tool.input as any).questions as AskQuestion[];
+  // Fix: render (and echo back) the NORMALIZED questions, never the raw input —
+  // see normalizeQuestions above. Memoized so the array identity is stable for
+  // the hook deps below.
+  const questions = useMemo(() => normalizeQuestions(tool.input), [tool.input]);
   // answers: map from question text → selected label(s)
   const [answers, setAnswers] = useState<Record<string, Set<string>>>({});
   const [responding, setResponding] = useState(false);
@@ -561,7 +625,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
         decision: {
           behavior: 'allow',
           updatedInput: {
-            questions,       // Echo back original questions array
+            questions,       // Echo back the (normalized) questions array
             answers: answersObj,
           },
         },

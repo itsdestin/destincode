@@ -14,11 +14,13 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useProjectWatch } from '../hooks/useProjectWatch';
 import { useGitFileStatus } from '../hooks/useGitFileStatus';
 import { gitFooterState } from '../utils/git-footer';
-import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
+import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
+import { useArtifactContent } from './artifact-views/useArtifactContent';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
+import { runGuardedDiscard } from './git/discard-guard';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
@@ -164,32 +166,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // "Show deleted" while viewing a now-filtered-out file must not blank the
   // content pane (the file is still open; only the LIST hides it).
   const active = allArtifacts.find((a) => a.id === activeArtifactId);
-  const [content, setContent] = useState<string | null>(null);
-  // get() metadata the content string cannot carry: binary sniff (routes
-  // unknown extensions to the code view), tooLarge (renders the size notice).
-  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
-
-  useEffect(() => {
-    if (!active) { setContent(null); return; }
-    let cancelled = false;
-    // Fix: clear the PREVIOUS file's content before the read resolves. Without
-    // this, switching artifacts remounts the viewer (ViewerErrorBoundary is
-    // keyed by artifact.id) with stale content, so HtmlView's sandboxed iframe
-    // gets a srcDoc write for the old file and a second one milliseconds later
-    // for the new one — the aborted-then-restarted navigation leaves the frame
-    // permanently blank. ProjectView's FilesTab and ArtifactThumbnail already
-    // null-gate the same way; this drawer was the only one that didn't.
-    setContent(null);
-    setContentInfo(null);
-    (window.claude as any).artifacts.get(projectRoot, active.id).then((res: any) => {
-      if (cancelled) return;
-      if (res && res.ok) {
-        setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
-      }
-    });
-    return () => { cancelled = true; };
-  }, [active?.id, projectRoot]);
+  // Read lifecycle (fetch + null-gate on switch + loading/missing/error
+  // phases) lives in the shared useArtifactContent hook — this drawer and
+  // FilesTab used to carry duplicate effects that conflated "loading" with
+  // "no longer on disk" (the flash bug).
+  const { content, setContent, contentInfo, contentState, retryRead } =
+    useArtifactContent(projectRoot, active?.id ?? null);
 
   // ── B2 panel UI state ──
   // The list stays open once toggled; it closes on the ☰ toggle, on selecting an
@@ -250,7 +232,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // so a stale discard failure can never linger into a reopened review.
   const [discardAsk, setDiscardAsk] = useState<{ willTrash: boolean } | null>(null);
   const [discardError, setDiscardError] = useState<string | null>(null);
+  // Monotonic token for in-flight discards (see runGuardedDiscard): bumped on
+  // close so a discard still in flight when the review closes is SUPERSEDED —
+  // its late error must not surface in a reopened review (2026-07-22 bug).
+  const discardRunRef = useRef(0);
   const closeGitReview = useCallback(() => {
+    discardRunRef.current += 1;
     setDiscardError(null);
     dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
   }, [dispatch, sessionId]);
@@ -620,12 +607,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <DiscardConfirmDialog
           fileName={fileName}
           willTrash={discardAsk.willTrash}
-          onConfirm={async () => {
+          onConfirm={() => {
             setDiscardAsk(null);
-            const r = await (window as any).claude?.git?.discard?.(projectRoot, active.path).catch(
-              (e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-            // Real stderr or nothing — the review view refreshes itself via git:changed.
-            setDiscardError(r?.ok ? null : (r?.error ?? 'git discard failed'));
+            // Real stderr or nothing — the review view refreshes itself via
+            // git:changed. Guarded by discardRunRef so a close mid-flight
+            // drops this attempt's late result (see discard-guard.ts).
+            void runGuardedDiscard(
+              () => (window as any).claude?.git?.discard?.(projectRoot, active.path),
+              discardRunRef,
+              setDiscardError,
+            );
           }}
           onCancel={() => setDiscardAsk(null)}
         />
@@ -724,6 +715,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                   artifact={active}
                   content={content}
                   contentInfo={contentInfo}
+                  contentState={contentState}
+                  onRetryRead={retryRead}
                   projectRoot={projectRoot}
                   projectId={projectId}
                   projectName={projectName}
@@ -790,6 +783,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 <GitFooterEntry
                   counts={gitFooter.counts}
                   show={gitFooter.show}
+                  conflicted={gitFooter.conflicted}
                   onOpenReview={() => dispatch({ type: 'GIT_REVIEW_OPENED', sessionId })}
                 />
               </div>
@@ -805,15 +799,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 // metadata strip; absent entirely when show=false so the strip reads exactly
 // as it did before the git surface existed.
 export function GitFooterEntry({
-  counts, show, onOpenReview,
+  counts, show, conflicted, onOpenReview,
 }: {
   counts: { added: number; removed: number } | null;
   show: boolean;
+  /** mid-merge unmerged file — renders an amber "Conflict" word before the
+   *  counts (2026-07-22 bug: these files used to vanish from the footer).
+   *  Plain word, not a chip: the metadata strip speaks in words (statusWord). */
+  conflicted?: boolean;
   onOpenReview: () => void;
 }) {
   if (!show) return null;
   return (
     <>
+      {conflicted && (
+        <span className="font-medium text-amber-400" title="This file has merge conflicts">
+          Conflict
+        </span>
+      )}
       {counts && (
         <>
           <span className="font-mono text-green-400">+{counts.added}</span>

@@ -12,6 +12,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import { isSensitivePath, isUnderRoot } from '../../artifacts/read-binary-access';
+import { spillRoot } from './spill-paths';
 
 /** Canonicalize to the form isSensitivePath / isUnderRoot expect: forward
  * slashes, lowercased drive letter, no trailing slash on the root, `..` resolved.
@@ -135,6 +136,24 @@ export function checkPathGuard(rawPath: string, cwd: string): GuardVerdict {
       return { kind: 'deny', reason: `Access to ${rawPath} is blocked: it is under a credential directory. This cannot be overridden.` };
     }
   }
+  // Bash's own spill files are readable without an external_directory ask.
+  //
+  // WHY (2026-08-11 review round 8): when Bash truncates, it saves the full
+  // output under tmpdir and the result tells the model to "Read that file" —
+  // but tmpdir is outside the workspace, so following that advice forced an
+  // approval prompt, and in the review battery (where every ask is denied) it
+  // was a closed loop: two models were told to read a file the harness would
+  // never let them read. The advice and the guard have to agree, and the
+  // advice is the correct half — the model is reading back output of a command
+  // it already ran and already partly saw.
+  //
+  // Deliberately placed AFTER the credential denies above, so this can never
+  // become a bypass: a path only reaches here once it has cleared them. Scoped
+  // to spillRoot() and nothing else — that tree is written by this harness
+  // alone, contains only Bash output, and is swept on a retention policy. It
+  // widens nothing the threat model didn't already accept: per the KNOWN
+  // LIMITATIONS at the top of this file, Bash can read any of it directly.
+  if (isUnderRoot(canonical, canonicalize(spillRoot(), cwd))) return { kind: 'ok' };
   if (!isUnderRoot(canonical, canonicalize(cwd, cwd))) {
     return { kind: 'external', canonicalPath: canonical }; // → external_directory ask
   }

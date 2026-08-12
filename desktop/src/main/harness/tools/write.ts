@@ -7,7 +7,13 @@ import { toHunks } from './edit';
 
 export const WriteTool = defineTool({
   name: 'Write',
-  description: 'Create a new file or fully overwrite an existing one. To overwrite, you must Read the file first.',
+  // Mirrors Edit's description — same gate, so it must be described the same
+  // way (2026-08-11 review round 8; see the WHY above EditTool.description).
+  description:
+    'Create a new file or fully overwrite an existing one. Overwriting requires that the file '
+    + 'have been Read or Written by you in this session, and not have changed on disk since — '
+    + 'those tools record the file\'s modification time, which is what detects a stale overwrite. '
+    + 'Creating a file that does not exist yet needs no prior Read.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Create a new file or completely overwrite an existing one with new content.',
   inputSchema: z.object({ file_path: z.string(), content: z.string() }),
@@ -19,7 +25,10 @@ export const WriteTool = defineTool({
     const readMtime = ctx.readRegistry.get(canonical);
     if (exists && readMtime === undefined) {
       return {
-        text: `Write rejected: ${args.file_path} already exists. Read it first so you know what you are replacing.`,
+        text: `Write rejected: ${args.file_path} already exists and you have not Read it in this session, `
+          + 'so you would be replacing content you have not seen. Read it first (a cat/grep does not count '
+          + '— the Read tool records the file\'s modification time, which is what detects a later change), '
+          + 'then retry.',
         isError: true,
       };
     }
@@ -45,7 +54,9 @@ export const WriteTool = defineTool({
     // trade one guard inconsistency for a subtler one.
     if (exists && fs.statSync(abs).mtimeMs !== readMtime) {
       return {
-        text: `Write rejected: ${args.file_path} changed since you read it. Read it again, then retry.`,
+        text: `Write rejected: ${args.file_path} changed on disk since you last Read or Wrote it `
+          + '(its modification time no longer matches), so you would be overwriting changes you have '
+          + 'not seen. Read it again, then retry.',
         isError: true,
       };
     }
@@ -54,7 +65,13 @@ export const WriteTool = defineTool({
     fs.writeFileSync(abs, args.content);
     ctx.readRegistry.set(canonical, fs.statSync(abs).mtimeMs);
     return {
-      text: `${exists ? 'Overwrote' : 'Created'} ${args.file_path} (${args.content.length} chars).`,
+      // Says out loud that this Write satisfied the read gate (2026-08-11 review
+      // round 8). It always has — the registry line above is what does it — but
+      // silently, so Qwen 3.6 35B Wrote a file, Edited it successfully, and
+      // reported that "Edit doesn't enforce read-first." The registration is the
+      // only part of the gate's state a model can be told about in-band.
+      text: `${exists ? 'Overwrote' : 'Created'} ${args.file_path} (${args.content.length} chars). `
+        + 'This counts as having Read it — you can Edit it now without reading it first.',
       structuredPatch: toHunks(old, args.content, args.file_path),
     };
   },

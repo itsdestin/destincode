@@ -39,6 +39,29 @@ describe('parsePorcelainV2', () => {
     expect(r.files[1]).toMatchObject({ path: 'gone.ts', kind: 'deleted', unstaged: true });
     expect(r.files[2]).toMatchObject({ path: 'renamed.ts', kind: 'renamed', staged: true });
   });
+
+  // Fix (2026-07-22 bug): `u` lines used to be skipped entirely, so a repo
+  // mid-merge reported its conflicted files as absent — i.e. clean.
+  it('parses unmerged (u) lines as conflicted entries instead of skipping them', () => {
+    // Verbatim `git status --porcelain=v2 --branch` output captured from a
+    // real mid-merge repo (both sides modified each file); the second path
+    // contains a space to pin the 10-fixed-field split.
+    const text = [
+      '# branch.oid 2c1e8e2914d5d6438f50410e6eb38af68a336c57',
+      '# branch.head main',
+      'u UU N... 100644 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 ba2906d0666cf726c7eaadd2cd3db615dedfdf3a 2299c37978265a95cbe835a4b0f0bbf15aad5549 f.txt',
+      'u UU N... 100644 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 ba2906d0666cf726c7eaadd2cd3db615dedfdf3a 2299c37978265a95cbe835a4b0f0bbf15aad5549 sp ace.txt',
+      '',
+    ].join('\n');
+    const r = parsePorcelainV2(text);
+    expect(r.branch).toBe('main');
+    expect(r.files).toEqual([
+      // staged:false is load-bearing: an unmerged index entry cannot be
+      // committed, so it must not count toward the repo-wide staged count.
+      { path: 'f.txt', staged: false, unstaged: true, untracked: false, kind: 'conflicted' },
+      { path: 'sp ace.txt', staged: false, unstaged: true, untracked: false, kind: 'conflicted' },
+    ]);
+  });
 });
 
 describe('parseNumstat', () => {

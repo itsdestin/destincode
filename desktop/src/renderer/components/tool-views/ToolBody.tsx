@@ -10,6 +10,12 @@ import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../.
 import { useArtifactOptional } from '../../state/ArtifactContext';
 import { ArtifactThumbnail } from '../ArtifactThumbnail';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
+// Fix: tool inputs are unknown-typed JSON from the model/provider. Every
+// `input.x as string` below was a lie-cast guarded only by truthiness — an
+// object survives `|| ''` (objects are truthy) and then crashes basename() /
+// string methods / React child rendering, or renders "[object Object]".
+// asString (from the PR #295 ToolCard fix) treats non-strings as absent.
+import { asString } from '../../utils/tool-input';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -239,9 +245,11 @@ function ErrorBlock({ error }: { error: string }) {
 // SAME diff (spec 2026-07-20 §6); the old hand-rolled LCS fallback is now jsdiff.
 
 function EditView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
-  const fp = (tool.input.file_path as string) || '';
-  const oldStr = (tool.input.old_string as string) || '';
-  const newStr = (tool.input.new_string as string) || '';
+  // Fix: an object file_path crashed basename() in PathHeader; object old/new
+  // strings crashed the diff (jsdiff expects strings).
+  const fp = asString(tool.input.file_path);
+  const oldStr = asString(tool.input.old_string);
+  const newStr = asString(tool.input.new_string);
   const replaceAll = tool.input.replace_all as boolean | undefined;
 
   return (
@@ -262,8 +270,9 @@ function EditView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string
 }
 
 function WriteView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
-  const fp = (tool.input.file_path as string) || '';
-  const content = (tool.input.content as string) || '';
+  // Fix: an object file_path crashed basename(); an object content crashed .split().
+  const fp = asString(tool.input.file_path);
+  const content = asString(tool.input.content);
   const lineCount = content ? content.split('\n').length : 0;
 
   return (
@@ -299,7 +308,8 @@ function ShellView({ tool, commandField }: {
   tool: ToolCallState;
   commandField: string;
 }) {
-  const cmd = (tool.input[commandField] as string) || '';
+  // Fix: an object command rendered as a React child crashed the card.
+  const cmd = asString(tool.input[commandField]);
   const bg = tool.input.run_in_background as boolean | undefined;
   const response = tool.response ? stripCarriageReturns(tool.response) : '';
   const failed = tool.status === 'failed';
@@ -353,7 +363,8 @@ function TodoIcon({ status }: { status: TodoItem['status'] }) {
 }
 
 function TodoWriteView({ tool }: { tool: ToolCallState }) {
-  const todos = (tool.input.todos as TodoItem[] | undefined) || [];
+  // Fix: a non-array todos crashed .map() (an object survives `|| []` — it's truthy).
+  const todos = Array.isArray(tool.input.todos) ? (tool.input.todos as TodoItem[]) : [];
   if (todos.length === 0) {
     return <div className="text-xs text-fg-muted italic">No todos.</div>;
   }
@@ -362,7 +373,10 @@ function TodoWriteView({ tool }: { tool: ToolCallState }) {
       {todos.map((t, i) => {
         const inProg = t.status === 'in_progress';
         const done = t.status === 'completed';
-        const label = inProg && t.activeForm ? t.activeForm : (t.content || '');
+        // Fix: an object content/activeForm rendered as a React child crashed
+        // the card — coerce both; an object activeForm falls back to content.
+        const activeForm = asString(t.activeForm);
+        const label = inProg && activeForm ? activeForm : asString(t.content);
         return (
           <li key={i} className="flex items-start gap-2 text-xs">
             <TodoIcon status={t.status} />
@@ -381,9 +395,10 @@ function TodoWriteView({ tool }: { tool: ToolCallState }) {
 }
 
 function TaskCreateView({ tool }: { tool: ToolCallState }) {
-  const subject = (tool.input.subject as string) || '';
-  const body = (tool.input.body as string) || '';
-  const priority = tool.input.priority as string | undefined;
+  // Fix: object subject/body/priority rendered as React children crashed the card.
+  const subject = asString(tool.input.subject);
+  const body = asString(tool.input.body);
+  const priority = asString(tool.input.priority);
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
@@ -433,11 +448,15 @@ function LifecyclePill({ status }: { status?: TaskStatus }) {
 }
 
 function TaskUpdateView({ tool, task }: { tool: ToolCallState; task?: TaskState }) {
-  const taskId = (tool.input.taskId as string) || '';
-  const newStatus = tool.input.status as TaskStatus | undefined;
-  const subject = (tool.input.subject as string | undefined) ?? task?.subject;
-  const description = (tool.input.description as string | undefined) ?? task?.description;
-  const priority = (tool.input.priority as string | undefined) ?? task?.priority;
+  // Fix: an object taskId rendered "#[object Object]"; an object status crashed
+  // .replace() / the lifecycle pill; and the `?? task?.x` fallbacks only catch
+  // nullish, so object subject/description/priority sailed through to React
+  // children. asString + `||` treats non-strings (and '') as absent instead.
+  const taskId = asString(tool.input.taskId);
+  const newStatus = typeof tool.input.status === 'string' ? (tool.input.status as TaskStatus) : undefined;
+  const subject = asString(tool.input.subject) || task?.subject;
+  const description = asString(tool.input.description) || task?.description;
+  const priority = asString(tool.input.priority) || task?.priority;
 
   // Previous status = whatever the task was at the event just before this one.
   // task.events is insertion-ordered; find our toolUseId and look one back.
@@ -507,9 +526,12 @@ const READ_ROW_PX = 20;
 const READ_PREVIEW_LINES = 15;
 
 function ReadView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
-  const fp = (tool.input.file_path as string) || '';
-  const offset = tool.input.offset as number | undefined;
-  const limit = tool.input.limit as number | undefined;
+  // Fix: an object file_path crashed basename(); non-number offset/limit
+  // interpolated as "lines [object Object]–NaN". typeof (never truthiness) so a
+  // legitimate offset of 0 survives.
+  const fp = asString(tool.input.file_path);
+  const offset = typeof tool.input.offset === 'number' ? tool.input.offset : undefined;
+  const limit = typeof tool.input.limit === 'number' ? tool.input.limit : undefined;
   const rows = tool.response ? parseCatN(tool.response) : [];
   const [open, setOpen] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
@@ -578,9 +600,11 @@ const SUBAGENT_TONE: Record<string, 'neutral' | 'add' | 'info' | 'warn'> = {
 };
 
 function AgentView({ tool }: { tool: ToolCallState }) {
-  const desc = (tool.input.description as string) || '';
-  const subagent = (tool.input.subagent_type as string) || 'general-purpose';
-  const prompt = (tool.input.prompt as string) || '';
+  // Fix: object description/subagent_type rendered as React children crashed
+  // the card; MarkdownContent requires a string prompt.
+  const desc = asString(tool.input.description);
+  const subagent = asString(tool.input.subagent_type) || 'general-purpose';
+  const prompt = asString(tool.input.prompt);
   const segments = tool.subagentSegments || [];
 
   // Auto-expand the activity section while running; auto-collapse once the
@@ -689,10 +713,12 @@ function AgentSection({
 // --- Grep / Glob ---
 
 function GrepView({ tool }: { tool: ToolCallState }) {
-  const pattern = (tool.input.pattern as string) || '';
-  const mode = (tool.input.output_mode as string) || 'files_with_matches';
-  const glob = tool.input.glob as string | undefined;
-  const path = tool.input.path as string | undefined;
+  // Fix: an object pattern/glob/mode rendered as a React child crashed the
+  // card; an object path crashed basename().
+  const pattern = asString(tool.input.pattern);
+  const mode = asString(tool.input.output_mode) || 'files_with_matches';
+  const glob = asString(tool.input.glob);
+  const path = asString(tool.input.path);
   const resp = tool.response || '';
   const lines = resp ? resp.split('\n').filter(l => l.trim()) : [];
 
@@ -761,8 +787,10 @@ function GrepView({ tool }: { tool: ToolCallState }) {
 }
 
 function GlobView({ tool }: { tool: ToolCallState }) {
-  const pattern = (tool.input.pattern as string) || '';
-  const path = tool.input.path as string | undefined;
+  // Fix: same hardening as GrepView — object pattern crashed React child
+  // rendering; object path crashed basename().
+  const pattern = asString(tool.input.pattern);
+  const path = asString(tool.input.path);
   const resp = tool.response || '';
   const paths = resp ? resp.split('\n').filter(l => l.trim()) : [];
 
@@ -793,8 +821,10 @@ function GlobView({ tool }: { tool: ToolCallState }) {
 // --- WebFetch / WebSearch ---
 
 function WebFetchView({ tool }: { tool: ToolCallState }) {
-  const url = (tool.input.url as string) || '';
-  const prompt = tool.input.prompt as string | undefined;
+  // Fix: an object url threw in new URL(), and the catch branch then set
+  // domain = url — an object React child, which crashed the card anyway.
+  const url = asString(tool.input.url);
+  const prompt = asString(tool.input.prompt);
   let domain = '';
   try { domain = url ? new URL(url).hostname : ''; } catch { domain = url; }
 
@@ -822,7 +852,8 @@ function WebFetchView({ tool }: { tool: ToolCallState }) {
 // WebSearch results are a markdown string (native + CC both) — render like
 // WebFetchView rather than the raw JSON fallback so the card stays readable.
 function WebSearchView({ tool }: { tool: ToolCallState }) {
-  const query = (tool.input.query as string) || '';
+  // Fix: an object query rendered as a React child crashed the card.
+  const query = asString(tool.input.query);
   return (
     <div className="space-y-2">
       {query && <div className="text-xs text-fg-dim italic">“{query}”</div>}
@@ -897,7 +928,8 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
       case 'TaskCreate':
         return <TaskCreateView tool={tool} />;
       case 'TaskUpdate': {
-        const tid = tool.input.taskId as string | undefined;
+        // Fix: asString so a non-string taskId can't reach the task map lookup.
+        const tid = asString(tool.input.taskId);
         return <TaskUpdateView tool={tool} task={tid ? tasksById.get(tid) : undefined} />;
       }
       case 'Read':
