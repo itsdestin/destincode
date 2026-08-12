@@ -385,6 +385,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         // Only assert text when a get response actually sniffed the bytes —
         // absent info keeps the registry's conservative extension routing.
         textHint: contentInfo ? contentInfo.binary === false : undefined,
+        // Fix: a text extension whose bytes sniffed binary (.md with NUL
+        // bytes) has content:null — its text viewer would render a blank
+        // pane, so the registry reroutes it to BinaryFallback.
+        binaryHint: contentInfo?.binary === true,
       });
 
   // Over the artifacts:get size cap: the content was deliberately not served

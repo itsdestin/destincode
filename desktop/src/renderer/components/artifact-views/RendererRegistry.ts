@@ -70,10 +70,22 @@ export function getEditViewer(path: string): ViewSpec {
   return CodeEditorView;
 }
 
-export function getViewer(path: string, opts?: { textHint?: boolean }): ViewSpec {
+// Fix: a text-extension file whose BYTES sniffed binary (a .md or .ts holding
+// NUL bytes) resolves from artifacts:get as content:null + binary:true. These
+// viewers render from the text `content` prop, so routing them by extension
+// showed a silent blank pane — they must fall back to BinaryFallback instead.
+// Real binary viewers (Image/Pdf/Docx/Xlsx) read their own bytes from disk and
+// keep extension routing; HtmlView is deliberately not listed (unchanged).
+const TEXT_CONTENT_VIEWERS: ReadonlySet<ViewSpec> = new Set([MarkdownView, CodeEditorView, CsvView]);
+
+export function getViewer(path: string, opts?: { textHint?: boolean; binaryHint?: boolean }): ViewSpec {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   const hit = REGISTRY[ext];
-  if (hit) return hit;
+  if (hit) {
+    // Sniffed-binary override for text viewers only — see TEXT_CONTENT_VIEWERS.
+    if (opts?.binaryHint && TEXT_CONTENT_VIEWERS.has(hit)) return BinaryFallback;
+    return hit;
+  }
   // D4: an unknown extension is no longer an automatic BinaryFallback. When the
   // artifacts:get response sniffed the bytes as TEXT (binary:false), route to
   // CodeView so rs/go/kt/sh/sql/toml/… and extensionless files render — and
