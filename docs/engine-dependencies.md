@@ -214,3 +214,98 @@ PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine b
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +
 real `/props` `n_ctx`) runs against an already-running engine — re-run on every engine
 bump; verified live during acceptance on the Linux dev box.
+
+## Parallel slots (specialists, plan 1a probe)
+
+**Measured 2026-08-12** on the Linux dev box against a system-installed
+`llama-server` (`version: 9957 (c4ae9a88f8)`, i.e. build `b9957` — NOT the app's
+pinned `b9992`; this was the only binary available on this machine, so results
+are directionally useful but should be re-checked against `b9992` before being
+treated as final). Server launched manually on an isolated port (8199, separate
+from the live app's engine on 9920) with the supervisor's exact router-mode arg
+list (`engine-supervisor.ts:285-306`), `-c 8192` (shrunk from the real default
+32768 only to keep iteration fast on this box), against `Qwen3.5-2B-Q8_0`
+(the smallest model in `~/.cache/llama.cpp`). `desktop/test-engine/probe-parallel.mjs`
+fires N simultaneous short chat completions (`max_tokens: 24`) for N in {1, 2, 4}
+and reports total wall time, average per-request time, and a total-vs-N×single
+classification.
+
+**Run 1 — default args (no `--parallel`, i.e. `-np -1` = auto):**
+
+| N | total_ms | avg_req_ms | min_ms | max_ms | classification |
+|---|----------|------------|--------|--------|----------------|
+| 1 | 642 | 641 | 641 | 641 | batched (baseline) |
+| 2 | 599 | 598 | 597 | 599 | batched |
+| 4 | 1200 | 1188 | 1178 | 1199 | partial |
+
+Server startup log showed `n_slots = 4` even with no `--parallel` flag —
+this build's `-np -1` "auto" already resolves to 4 slots on this hardware.
+
+**Run 2 — explicit `--parallel 4` added to the same spawn args:**
+
+| N | total_ms | avg_req_ms | min_ms | max_ms | classification |
+|---|----------|------------|--------|--------|----------------|
+| 1 | 558 | 558 | 558 | 558 | batched (baseline) |
+| 2 | 495 | 486 | 477 | 495 | batched |
+| 4 | 952 | 939 | 935 | 950 | partial |
+
+`--parallel 4` added to the supervisor's arg set did **not** error — the
+process started and served normally. Numbers are consistent with Run 1 within
+noise, confirming the "auto" default and an explicit `--parallel 4` behave the
+same on this build/hardware (4 slots either way).
+
+**Decision:** `LOCAL_MAX_CONCURRENT_SPECIALISTS = 4` — at N=4, avg per-request
+latency (~939–1188 ms) is ≤ 2× the single-request baseline (~558–642 ms) in
+both runs (ratio ≈ 1.7–1.85×), the largest of the tested N values that clears
+that bar. N=2 batches cleanly (avg per-request latency actually *dropped*
+below the single-request baseline in both runs — within measurement noise, not
+a real speedup). N=4 shows partial batching, not full serialization.
+
+**Supervisor arg change:** because this build's default already resolves to 4
+slots, adding `--parallel 4` explicitly to `engine-supervisor.ts`'s spawn args
+is optional on this hardware/build but is still recommended for plan 1b — it
+pins the slot count instead of relying on an "auto" heuristic that could
+resolve differently on a smaller consumer machine (fewer cores/less RAM). That
+supervisor code change belongs to plan 1b, not this probe.
+
+**Caveat:** measured against a non-pinned build (`b9957` vs the app's pinned
+`b9992`) and a reasoning model (`Qwen3.5-2B` emits `reasoning_content`,
+truncated by the low `max_tokens`) rather than a plain chat model — re-run
+`probe-parallel.mjs` against `b9992` with the app's actual small-model tier
+before this decision is treated as load-bearing.
+
+### KV prefix reuse (specialists, plan 1a probe)
+
+**Measured 2026-08-12**, same server/model/build as above (default args, no
+`--parallel`; single manually-launched instance on port 8199).
+`desktop/test-engine/probe-prefix-cache.mjs` builds a ~2,000-token filler
+system prefix, sends two sequential requests sharing it (different user
+turns) for run (a), then two sequential requests with fully distinct
+~2,000-token prefixes for run (b), reading `timings.prompt_ms` from each
+completion payload (present on this build — no wall-clock fallback needed).
+
+| run | request | prompt_n | prompt_ms |
+|-----|---------|----------|-----------|
+| (a) identical prefix | a1 (cold) | 2209 | 1407.8 |
+| (a) identical prefix | a2 (same prefix, new user turn) | 17 | 177.6 |
+| (b) distinct prefixes | b1 (prefix A again) | 19 | 180.8 |
+| (b) distinct prefixes | b2 (prefix B, never seen) | 2207 | 1804.0 |
+
+a2/b2 prefill ratio = 177.6 / 1804.0 = **9.8%** (well under the 50% reuse
+threshold).
+
+**Verdict: prefix reuse survives sequential child-style fan-out on build
+b9957.** `prompt_n` on a repeated-prefix request drops from ~2,200 to ~17–19
+tokens (only the new user turn is reprocessed), and prefill time drops
+correspondingly from ~1.4–1.8s to ~0.18s. The server log for the parallel
+probe (above) independently corroborates this: repeat requests were
+`selected slot by LCP similarity` rather than by LRU, i.e. the router matched
+the incoming prompt against a cached slot's longest common prefix.
+
+Note run (b)'s b1 also hit the cache (reused prefix A's slot from run (a)'s
+a2, since b1 resends prefix A) — this is expected given all four requests ran
+sequentially against the same server instance and slot LRU/LCP selection
+persists across the two "runs" as scripted (they are not isolated fresh
+server starts). This does not weaken the verdict — b2 (the first-ever
+occurrence of prefix B) is the true cold-prefix comparison point, and it cost
+2207 prompt tokens vs a2's 17.
