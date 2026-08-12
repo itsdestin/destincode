@@ -123,3 +123,95 @@ export class Quarantine {
     }
   }
 }
+
+export interface RepairOpts {
+  projectsDir: string;          // ~/.claude/projects
+  homeDir: string;              // os.homedir()
+  knownFolders: string[];       // saved folders + managed roots, absolute paths
+  quarantine: Quarantine;
+  liveMs?: number;              // default LIVE_MTIME_MS
+  now?: () => number;           // test seam
+  // Test seam for isForeignCwd/firstCwd's platform-relative foreign-cwd check
+  // (review fix: firstCwd gained an optional trailing platform param so POSIX
+  // fixtures don't silently only pass on POSIX CI runners) — default
+  // process.platform, threaded through to firstCwd below.
+  platform?: NodeJS.Platform;
+}
+export interface RepairFinding {
+  sessionId: string;
+  homeFolder: string;           // the R2 answer (the real project)
+  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live';
+  paths: string[];
+}
+
+export const LIVE_MTIME_MS = 10 * 60 * 1000; // "live" = appended within 10 min (spec §6.5: mechanical, written down)
+
+function topLevelJsonl(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      // DIRECT CHILDREN ONLY — subagent transcripts live at
+      // <sessionId>/subagents/ below and travel with their parent (§6.1).
+      .filter(e => e.isFile() && e.name.endsWith('.jsonl'))
+      .map(e => path.join(dir, e.name));
+  } catch { return []; }
+}
+
+function isLive(file: string, liveMs: number, now: () => number): boolean {
+  try { return now() - fs.statSync(file).mtimeMs < liveMs; } catch { return true; } // unstat-able → treat as live (safe)
+}
+
+const sameDir = (a: string, b: string) => path.resolve(a) === path.resolve(b);
+
+export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
+  const { projectsDir, homeDir, knownFolders, quarantine: q } = opts;
+  const liveMs = opts.liveMs ?? LIVE_MTIME_MS;
+  const now = opts.now ?? Date.now;
+  const platform = opts.platform ?? process.platform;
+  const findings: RepairFinding[] = [];
+  const homeSlugDir = path.join(projectsDir, ccProjectSlug(homeDir));
+
+  for (const file of topLevelJsonl(homeSlugDir)) {
+    const sessionId = path.basename(file, '.jsonl');
+    if (isLive(file, liveMs, now)) {
+      findings.push({ sessionId, homeFolder: '', kind: 'deferred-live', paths: [file] });
+      continue;
+    }
+    const cwd = firstCwd(file, platform);              // R2 — NOT R1 (§6.1: R1 would
+    if (!cwd || isForeignCwd(cwd, platform)) continue; // call the fork a resident and no-op)
+    const P = knownFolders.find(p => sameDir(p, cwd));
+    if (!P || sameDir(P, homeDir)) continue;
+
+    const correctDir = path.join(projectsDir, ccProjectSlug(P));
+    const correct = path.join(correctDir, path.basename(file));
+    if (!fs.existsSync(correct)) {
+      fs.mkdirSync(correctDir, { recursive: true });
+      fs.renameSync(file, correct);
+      q.log(`MOVE-TO-CORRECT ${file} -> ${correct}`);
+      findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [correct] });
+      continue;
+    }
+    switch (classifyPair(file, correct)) {
+      case 'identical':
+      case 'wrong-is-subset':
+        if (q.move(file, `6.1 ${sessionId}: $HOME copy ⊆ correct copy`)) {
+          findings.push({ sessionId, homeFolder: P, kind: 'quarantined', paths: [file] });
+        }
+        break;
+      case 'wrong-is-superset':
+        if (q.move(correct, `6.1 ${sessionId}: correct copy superseded`)) {
+          fs.renameSync(file, correct);
+          q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (superset)`);
+          findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+        }
+        break;
+      case 'fork':
+        // Case C — NEVER automated (spec §6.0). Snapshot both, change nothing.
+        q.snapshot(file, `6.1 FORK ${sessionId} ($HOME copy)`);
+        q.snapshot(correct, `6.1 FORK ${sessionId} (project copy)`);
+        q.log(`ATTENTION fork ${sessionId}: ${file} vs ${correct} — both left on disk; user decision required`);
+        findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: [file, correct] });
+        break;
+    }
+  }
+  return findings;
+}
