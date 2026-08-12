@@ -778,8 +778,17 @@ export function installShim(): void {
       destroy: (sessionId: string) => invoke('session:destroy', { sessionId }),
       list: () => invoke('session:list'),
       browse: () => invoke('session:browse'),
-      loadHistory: (sessionId: string, count?: number, all?: boolean, projectSlug?: string) =>
-        invoke('session:history', { sessionId, count, all, projectSlug }),
+      // Fix: parameter order MUST match preload.ts — (sessionId, projectSlug, count, all).
+      // The shim previously declared (sessionId, count, all, projectSlug), so every
+      // caller's project slug landed in `count` and 10 landed in `all` (truthy),
+      // making the host return the ENTIRE transcript on every remote/Android
+      // initial history load (tens of MB over the WS for large conversations).
+      // `count || 10` / `all || false` mirror preload so the wire always carries
+      // real number/boolean types (Android's optInt/optBoolean and the server's
+      // slice(-count) both need them). Guard: shim-parity.test.ts +
+      // remote-shim-loadhistory-args.test.ts.
+      loadHistory: (sessionId: string, projectSlug: string, count?: number, all?: boolean) =>
+        invoke('session:history', { sessionId, projectSlug, count: count || 10, all: all || false }),
       switch: (sessionId: string) => invoke('session:switch', { sessionId }),
       // Set a named flag on a past session (complete, priority; helpful retired).
       setFlag: (sessionId: string, flag: string, value: boolean) =>
