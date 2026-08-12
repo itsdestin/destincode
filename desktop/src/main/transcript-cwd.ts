@@ -44,20 +44,26 @@ function headText(filePath: string): string | null {
   } catch { return null; }
 }
 
-/** R2 — session origin. */
-export function firstCwd(filePath: string): string | null {
+/** R2 — session origin.
+ *  `platform` is a test seam: the foreign-cwd filter is platform-relative
+ *  (see `isForeignCwd`), so callers that need to pin a specific platform
+ *  (tests running fixtures on any CI OS) can override the default of
+ *  `process.platform` here instead of only inside `isForeignCwd` itself —
+ *  otherwise a POSIX fixture silently only tests correctly on POSIX runners
+ *  (this exact gap turned 4 tests wrong on the Windows CI leg). */
+export function firstCwd(filePath: string, platform: NodeJS.Platform = process.platform): string | null {
   const head = headText(filePath);
   if (head === null) return null;
   const lines = head.split('\n').slice(0, R2_SCAN_CAP);
   for (const l of lines) {
     const cwd = extractCwd(l);
-    if (cwd && !isForeignCwd(cwd)) return cwd;
+    if (cwd && !isForeignCwd(cwd, platform)) return cwd;
   }
   return null;
 }
 
 /** Every cwd in the file — full read; used by R1's exhaustive tier. */
-export function allCwds(filePath: string): string[] {
+export function allCwds(filePath: string, platform: NodeJS.Platform = process.platform): string[] {
   let raw: string;
   try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return []; }
   const out: string[] = [];
@@ -71,17 +77,17 @@ export function allCwds(filePath: string): string[] {
 /** R1 — directory identity. Tier 1 (cheap): each file's first cwd. Tier 2
  *  (exhaustive): every cwd in every file. Lowercased compare matches
  *  buildSlugToName's Windows case-drift convention (reconciler.ts). */
-export function r1CwdForDir(dirPath: string): string | null {
+export function r1CwdForDir(dirPath: string, platform: NodeJS.Platform = process.platform): string | null {
   const dirName = path.basename(dirPath).toLowerCase();
   let files: string[] = [];
   try { files = fs.readdirSync(dirPath).filter(f => f.endsWith('.jsonl')); } catch { return null; }
   for (const f of files) {
-    const cwd = firstCwd(path.join(dirPath, f));
+    const cwd = firstCwd(path.join(dirPath, f), platform);
     if (cwd && ccProjectSlug(cwd).toLowerCase() === dirName) return cwd;
   }
   for (const f of files) {
-    for (const cwd of allCwds(path.join(dirPath, f))) {
-      if (!isForeignCwd(cwd) && ccProjectSlug(cwd).toLowerCase() === dirName) return cwd;
+    for (const cwd of allCwds(path.join(dirPath, f), platform)) {
+      if (!isForeignCwd(cwd, platform) && ccProjectSlug(cwd).toLowerCase() === dirName) return cwd;
     }
   }
   return null;

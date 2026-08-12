@@ -27,26 +27,33 @@ describe('R1 vs R2 — the shape that broke the earlier draft (spec §5.4/§7)',
 
   it('R2 returns the FIRST cwd (session origin), not the later switch', () => {
     const dir = path.join(tmp, ccProjectSlug(HOME)); fs.mkdirSync(dir);
-    expect(firstCwd(writeForkFile(dir))).toBe(PROJ);
+    // Pin platform to 'linux' explicitly — these fixtures use POSIX paths as
+    // the LOCAL cwd, so leaving this on the default process.platform would
+    // silently only pass on POSIX CI runners (it fails on windows-latest).
+    expect(firstCwd(writeForkFile(dir), 'linux')).toBe(PROJ);
   });
 
   it('R1 asked of the $HOME directory finds the LATE matching cwd (line 279 — no cap)', () => {
     const dir = path.join(tmp, ccProjectSlug(HOME)); fs.mkdirSync(dir);
     writeForkFile(dir);
-    expect(r1CwdForDir(dir)).toBe(HOME);
+    expect(r1CwdForDir(dir, 'linux')).toBe(HOME);
   });
 
   it('R1 skips foreign cwds and picks the one that re-slugs to the dirname', () => {
     const dir = path.join(tmp, ccProjectSlug(PROJ)); fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'win.jsonl'), line({ type: 'user', uuid: 'w', cwd: 'C:\\Users\\desti\\x' }));
     fs.writeFileSync(path.join(dir, 'ours.jsonl'), line({ type: 'user', uuid: 'o', cwd: PROJ }));
-    expect(r1CwdForDir(dir)).toBe(PROJ);
+    expect(r1CwdForDir(dir, 'linux')).toBe(PROJ);
   });
 
   it('R2 skips metadata head lines and foreign values', () => {
     const f = path.join(tmp, 'a.jsonl');
     fs.writeFileSync(f, line({ type: 'last-prompt' }) + line({ type: 'user', cwd: 'C:\\Users\\x' }) + line({ type: 'user', cwd: PROJ }));
-    expect(firstCwd(f)).toBe(PROJ);
+    expect(firstCwd(f, 'linux')).toBe(PROJ);
+    // Platform inversion, same fixture: under win32 the POSIX cwd becomes
+    // foreign and the Windows cwd becomes local, so the winner flips. This
+    // pins the seam itself, not just that it exists.
+    expect(firstCwd(f, 'win32')).toBe('C:\\Users\\x');
   });
 
   it('isForeignCwd: drive-letter on linux, POSIX-absolute on win32', () => {
