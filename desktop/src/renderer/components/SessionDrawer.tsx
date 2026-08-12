@@ -19,6 +19,7 @@ import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
+import { runGuardedDiscard } from './git/discard-guard';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
@@ -250,7 +251,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // so a stale discard failure can never linger into a reopened review.
   const [discardAsk, setDiscardAsk] = useState<{ willTrash: boolean } | null>(null);
   const [discardError, setDiscardError] = useState<string | null>(null);
+  // Monotonic token for in-flight discards (see runGuardedDiscard): bumped on
+  // close so a discard still in flight when the review closes is SUPERSEDED —
+  // its late error must not surface in a reopened review (2026-07-22 bug).
+  const discardRunRef = useRef(0);
   const closeGitReview = useCallback(() => {
+    discardRunRef.current += 1;
     setDiscardError(null);
     dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
   }, [dispatch, sessionId]);
@@ -620,12 +626,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <DiscardConfirmDialog
           fileName={fileName}
           willTrash={discardAsk.willTrash}
-          onConfirm={async () => {
+          onConfirm={() => {
             setDiscardAsk(null);
-            const r = await (window as any).claude?.git?.discard?.(projectRoot, active.path).catch(
-              (e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-            // Real stderr or nothing — the review view refreshes itself via git:changed.
-            setDiscardError(r?.ok ? null : (r?.error ?? 'git discard failed'));
+            // Real stderr or nothing — the review view refreshes itself via
+            // git:changed. Guarded by discardRunRef so a close mid-flight
+            // drops this attempt's late result (see discard-guard.ts).
+            void runGuardedDiscard(
+              () => (window as any).claude?.git?.discard?.(projectRoot, active.path),
+              discardRunRef,
+              setDiscardError,
+            );
           }}
           onCancel={() => setDiscardAsk(null)}
         />
@@ -790,6 +800,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 <GitFooterEntry
                   counts={gitFooter.counts}
                   show={gitFooter.show}
+                  conflicted={gitFooter.conflicted}
                   onOpenReview={() => dispatch({ type: 'GIT_REVIEW_OPENED', sessionId })}
                 />
               </div>
@@ -805,15 +816,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 // metadata strip; absent entirely when show=false so the strip reads exactly
 // as it did before the git surface existed.
 export function GitFooterEntry({
-  counts, show, onOpenReview,
+  counts, show, conflicted, onOpenReview,
 }: {
   counts: { added: number; removed: number } | null;
   show: boolean;
+  /** mid-merge unmerged file — renders an amber "Conflict" word before the
+   *  counts (2026-07-22 bug: these files used to vanish from the footer).
+   *  Plain word, not a chip: the metadata strip speaks in words (statusWord). */
+  conflicted?: boolean;
   onOpenReview: () => void;
 }) {
   if (!show) return null;
   return (
     <>
+      {conflicted && (
+        <span className="font-medium text-amber-400" title="This file has merge conflicts">
+          Conflict
+        </span>
+      )}
       {counts && (
         <>
           <span className="font-mono text-green-400">+{counts.added}</span>

@@ -97,12 +97,31 @@ export function GitReviewView({
     }
   };
 
+  // WHY dedupe-by-sha instead of clearing extraLog on refresh: refresh() rides
+  // EVERY git:changed event — including this view's own stage/unstage/commit
+  // ops, where the older pages the user opened via "Show more" are still
+  // valid. Clearing there would collapse their scrolled-open history on every
+  // checkbox tick. Deduping keeps shown commits stable AND stops the same sha
+  // rendering twice (duplicate React key) when a refreshed page one overlaps
+  // commits already sitting in extraLog.
+  const reviewLog = review?.log ?? [];
+  const pageOneShas = new Set(reviewLog.map((e) => e.sha));
+  const log = [...reviewLog, ...extraLog.filter((e) => !pageOneShas.has(e.sha))];
+
   const showMore = () => {
-    const skip = (review?.log.length ?? 0) + extraLog.length;
+    // WHY log.length (the DEDUPED visible count), not the raw array-length
+    // sum: after a refresh overlap the raw sum double-counts shas, and an
+    // overcounted --skip silently drops the commits in the gap.
+    const skip = log.length;
     gitApi()?.fileReview?.(projectRoot, relPath, { logSkip: skip })
       .then((r: GitFileReviewResult) => {
         if (aliveRef.current && r?.ok) {
-          setExtraLog((prev) => [...prev, ...r.log]);
+          // Same dedupe on append: a page fetched twice (double-click, or the
+          // log shifting under us) must not stack the same commit again.
+          setExtraLog((prev) => {
+            const have = new Set(prev.map((e) => e.sha));
+            return [...prev, ...r.log.filter((e) => !have.has(e.sha))];
+          });
           setReview((prev) => (prev ? { ...prev, hasMore: r.hasMore } : prev));
         }
       })
@@ -131,7 +150,6 @@ export function GitReviewView({
   const stagedCount = review?.stagedCount ?? 0;
   const canCommit = !busy && stagedCount > 0 && message.trim().length > 0;
   const uncommitted = review?.uncommitted ?? null;
-  const log = [...(review?.log ?? []), ...extraLog];
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -167,7 +185,25 @@ export function GitReviewView({
             accent
             expanded={expanded.has('uncommitted')}
             onToggle={() => toggle('uncommitted')}
-            headerLeft={<span className="text-xs font-semibold text-fg flex-1">Uncommitted changes</span>}
+            headerLeft={
+              <>
+                <span className="text-xs font-semibold text-fg">Uncommitted changes</span>
+                {/* Honest mid-merge marker (2026-07-22 bug: conflicted files
+                    read as clean). Viewing only — resolution happens in the
+                    editor/terminal, so this is a badge, not a workflow. Amber
+                    = the app-wide warn tone (Callout/ToolBody convention);
+                    copy says "Conflict", not git's "unmerged path". */}
+                {uncommitted.conflicted && (
+                  <span
+                    className="text-3xs font-medium text-amber-400 bg-amber-500/10 border border-amber-500/25 rounded px-1 py-px shrink-0"
+                    title="This file has merge conflicts. Edit the file to fix the marked sections, then commit."
+                  >
+                    Conflict
+                  </span>
+                )}
+                <span className="flex-1" />
+              </>
+            }
             headerRight={
               <>
                 <span className="text-3xs font-mono text-green-400">+{uncommitted.counts.added}</span>

@@ -9,13 +9,14 @@ export interface PorcelainEntry {
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
-  kind: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+  kind: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted';
 }
 
 // git status --porcelain=v2 --branch. Line shapes we consume:
 //   # branch.head <name>          (name is "(detached)" when detached)
 //   1 XY ... <path>               (ordinary change; X=index, Y=worktree, "." = unchanged)
 //   2 XY ... <path>\t<origPath>   (rename/copy)
+//   u XY ... <path>               (unmerged/conflicted — mid-merge)
 //   ? <path>                      (untracked)
 export function parsePorcelainV2(text: string): { branch: string | null; files: PorcelainEntry[] } {
   let branch: string | null = null;
@@ -40,6 +41,16 @@ export function parsePorcelainV2(text: string): { branch: string | null; files: 
         : xy.includes('D') ? 'deleted'
         : 'modified';
       files.push({ path: p, staged, unstaged, untracked: false, kind });
+    } else if (line.startsWith('u ')) {
+      // Fix (2026-07-22 bug): unmerged lines used to be SKIPPED entirely, so a
+      // repo mid-merge showed its conflicted files as clean in the git panel.
+      // Porcelain v2: `u XY <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>` —
+      // 10 fixed space-separated fields before the path (vs 8 for `1` lines).
+      // Any XY (UU, AA, DU, …) renders the same honest "Conflict" state.
+      // staged:false is deliberate — git refuses to commit an unmerged index
+      // entry, so it must not inflate the repo-wide staged count either.
+      const p = line.split(' ').slice(10).join(' ');
+      files.push({ path: p, staged: false, unstaged: true, untracked: false, kind: 'conflicted' });
     } else if (line.startsWith('? ')) {
       files.push({ path: line.slice(2), staged: false, unstaged: true, untracked: true, kind: 'untracked' });
     }
