@@ -85,12 +85,22 @@ describe('TerminalRightSlot session keying', () => {
   });
 
   it('keeps the drawer mounted (state intact) when the session does NOT change', () => {
-    renderSlot('session-a');
+    const { rerender } = renderSlot('session-a');
     fireEvent.click(screen.getByText('trigger banner'));
 
-    // Unrelated re-renders of the same session must not blow the state away —
-    // the key is the SESSION id, not something that churns every render.
-    fireEvent.click(screen.getByText('trigger banner'));
+    // Re-render the SLOT ITSELF with an identical sessionId — this is what a
+    // parent state change does in production. The key is the SESSION id, not
+    // something that churns every render (a key={Math.random()} would fail
+    // here): the drawer instance must survive, state intact.
+    rerender(
+      <TerminalRightSlot
+        sessionId="session-a"
+        cwd="/home/u/proj"
+        gamePane={null}
+        drawerOpen={true}
+        expanded={false}
+      />,
+    );
     expect(screen.getByTestId('banner').textContent).toBe('discard failed in session-a');
   });
 });
