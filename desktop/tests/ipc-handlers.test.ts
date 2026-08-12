@@ -294,3 +294,64 @@ describe('tags:update / tags:delete signal chatsearch (Task 5 gap)', () => {
     spy.mockRestore();
   });
 });
+
+// Security regression: transcript:read-meta validated the caller-supplied path
+// with startsWith(claudeProjects) and NO trailing path separator, so a SIBLING
+// directory like ~/.claude/projects-evil/x.jsonl passed the containment check
+// and its contents leaked. The model:read-last handler next door already used
+// the correct `claudeProjects + path.sep` prefix — these tests pin the
+// transcript:read-meta handler to the same rule.
+describe('transcript:read-meta path containment', () => {
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+  let mockIpcMain: { handle: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-transcript-meta-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // containment root lives inside the fixture, not the real home.
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  function handlerFor(channel: string) {
+    const mockSessionManager: any = {
+      createSession: vi.fn(), destroySession: vi.fn(), listSessions: vi.fn(() => []),
+      sendInput: vi.fn(), resizeSession: vi.fn(), on: vi.fn(),
+    };
+    const mockWindow: any = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    const mockSkillProvider: any = {
+      configStore: { getPackages: vi.fn(() => ({})) },
+      install: vi.fn(), installMany: vi.fn(),
+      ensureBundledPluginsInstalled: vi.fn(), ensureMigrated: vi.fn(),
+    };
+    registerIpcHandlers(mockIpcMain as any, mockSessionManager, mockWindow, mockSkillProvider);
+    return (mockIpcMain.handle as any).mock.calls.find((c: any) => c[0] === channel)[1];
+  }
+
+  it('rejects a transcript in a sibling dir like ~/.claude/projects-evil', async () => {
+    const evilDir = path.join(tmpHome, '.claude', 'projects-evil');
+    fs.mkdirSync(evilDir, { recursive: true });
+    const evilFile = path.join(evilDir, 'x.jsonl');
+    fs.writeFileSync(evilFile, JSON.stringify({ model: 'leaked-model' }) + '\n');
+
+    const handler = handlerFor('transcript:read-meta');
+    expect(await handler({}, evilFile)).toBeNull();
+  });
+
+  it('still reads a transcript inside ~/.claude/projects', async () => {
+    const okDir = path.join(tmpHome, '.claude', 'projects', 'some-project');
+    fs.mkdirSync(okDir, { recursive: true });
+    const okFile = path.join(okDir, 'x.jsonl');
+    fs.writeFileSync(okFile, JSON.stringify({ model: 'test-model' }) + '\n');
+
+    const handler = handlerFor('transcript:read-meta');
+    const meta = await handler({}, okFile);
+    expect(meta?.model).toBe('test-model');
+  });
+});
