@@ -68,7 +68,13 @@ const mockSessionBrowser = {
   listPastSessions: vi.fn(async () => [] as any[]),
   loadHistory: vi.fn(async () => ({ events: [] })),
 };
-vi.mock('../src/main/session-browser', () => mockSessionBrowser);
+// Spread the REAL module first so remote-server's SAFE_ID_RE import is the
+// actual guard regex (not a test copy that could drift), then override just
+// the two functions these tests stub.
+vi.mock('../src/main/session-browser', async (importOriginal) => ({
+  ...(await importOriginal<any>()),
+  ...mockSessionBrowser,
+}));
 
 describe('RemoteServer', () => {
   let mockSessionManager: any;
@@ -863,5 +869,152 @@ describe('RemoteServer transcript:read-meta path containment', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0].payload?.model).toBe('test-model');
+  });
+});
+
+// Hardening regression (PR #294 adversarial review, nit A): transcript:read-meta
+// computed path.resolve(payload.path || payload) OUTSIDE its try block with no
+// type check, so a single malformed frame (non-string path) threw out of
+// handleMessage as an unhandled rejection and the request never got a response.
+// These tests pin the hardened shape: malformed payloads answer null, exactly
+// like the neighboring model:read-last case. If the handler regresses, the
+// sendAndCollect promise rejects and the await below fails the test.
+describe('RemoteServer transcript:read-meta malformed payloads', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('responds null to a non-string path instead of throwing', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-bad-path', payload: { path: { evil: 1 } } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('responds null to a bare object payload with no path key', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-bare-obj', payload: {} });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('responds null to a null payload', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-null', payload: null });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+});
+
+// Hardening regression (PR #294 adversarial review, nit B): session:history
+// probed ~/.claude/projects/<slug>/<id>.jsonl with fs.access using the
+// client-supplied sessionId BEFORE any validation — loadHistory's SAFE_ID_RE
+// guard only ran after the probe, so a traversal-shaped id ('../../x') turned
+// the probe loop into a file-existence oracle for arbitrary *.jsonl paths.
+// These tests pin that invalid ids are rejected with the same guard, and the
+// same empty-array shape, loadHistory uses — without touching the filesystem.
+describe('RemoteServer session:history id validation', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+  let accessSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-rs-history-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // probe root lives inside the fixture, not the real home. A slug dir must
+    // exist, otherwise the handler's readdir returns [] and the probe loop
+    // never runs — which would make the invalid-id tests pass vacuously.
+    fs.mkdirSync(path.join(tmpHome, '.claude', 'projects', 'my-project'), { recursive: true });
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    // Call-through spy: the valid-id test still needs real fs.access for the
+    // slug probe; the invalid-id tests assert it was never reached.
+    accessSpy = vi.spyOn(fs.promises, 'access');
+    mockSessionBrowser.loadHistory.mockClear();
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    accessSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('rejects a traversal-shaped sessionId without probing the filesystem', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h1', payload: { sessionId: '../../../etc/passwd', count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(mockSessionBrowser.loadHistory).not.toHaveBeenCalled();
+  });
+
+  it('rejects a slash-containing sessionId without probing the filesystem', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h2', payload: { sessionId: 'foo/bar', count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing sessionId (SAFE_ID_RE alone would pass the string "undefined")', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h3', payload: { count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+  });
+
+  it('still loads history for a well-formed id', async () => {
+    const slugDir = path.join(tmpHome, '.claude', 'projects', 'my-project');
+    fs.writeFileSync(path.join(slugDir, 'abc-123.jsonl'), '');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h4', payload: { sessionId: 'abc-123', count: 5 } });
+
+    expect(mockSessionBrowser.loadHistory).toHaveBeenCalledWith('abc-123', 'my-project', 5, undefined);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual({ events: [] });
   });
 });

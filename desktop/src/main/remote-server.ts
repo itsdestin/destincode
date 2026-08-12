@@ -24,7 +24,7 @@ import type { ModelManager } from './models/model-manager';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
-import { listPastSessions, loadHistory } from './session-browser';
+import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
@@ -1224,6 +1224,16 @@ export class RemoteServer {
       }
       case 'session:history': {
         const { sessionId: histSessionId, count, all } = payload;
+        // Fix: validate the client-supplied id BEFORE the fs.access probe loop
+        // below — loadHistory's SAFE_ID_RE guard only runs after the probe, so
+        // a traversal-shaped id ('../../x') made the loop a file-existence
+        // oracle for arbitrary *.jsonl paths. The typeof check matters too:
+        // SAFE_ID_RE.test(undefined) coerces to the string "undefined", which
+        // the regex would accept. Invalid ids get the same [] loadHistory returns.
+        if (typeof histSessionId !== 'string' || !SAFE_ID_RE.test(histSessionId)) {
+          this.respond(client.ws, type, id, []);
+          break;
+        }
         // Find the JSONL file across all project slugs
         const projectsDir = path.join(os.homedir(), '.claude', 'projects');
         const slugs = await fs.promises.readdir(projectsDir).catch(() => [] as string[]);
@@ -1652,15 +1662,27 @@ export class RemoteServer {
         break;
       }
       case 'transcript:read-meta': {
-        const transcriptPath = payload.path || payload;
-        const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
-        const resolvedPath = path.resolve(transcriptPath);
-        // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
-        if (!resolvedPath.startsWith(claudeProjects + path.sep)) {
+        // Fix: mirror model:read-last below — accept { path } or a raw string,
+        // and reject non-string values BEFORE touching path.resolve. The old
+        // `payload.path || payload` + resolve-outside-the-try shape meant one
+        // malformed frame ({ path: {...} }, a bare object, or a null payload)
+        // threw out of handleMessage as an unhandled rejection instead of
+        // answering null.
+        const transcriptPath = (payload && typeof payload === 'object' && 'path' in payload)
+          ? payload.path
+          : payload;
+        if (typeof transcriptPath !== 'string') {
           this.respond(client.ws, type, id, null);
           break;
         }
         try {
+          const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
+          const resolvedPath = path.resolve(transcriptPath);
+          // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+          if (!resolvedPath.startsWith(claudeProjects + path.sep)) {
+            this.respond(client.ws, type, id, null);
+            break;
+          }
           const meta = await readTranscriptMeta(transcriptPath);
           this.respond(client.ws, type, id, meta);
         } catch {
