@@ -74,9 +74,11 @@ export function getEditViewer(path: string): ViewSpec {
 // NUL bytes) resolves from artifacts:get as content:null + binary:true. These
 // viewers render from the text `content` prop, so routing them by extension
 // showed a silent blank pane — they must fall back to BinaryFallback instead.
-// Real binary viewers (Image/Pdf/Docx/Xlsx) read their own bytes from disk and
-// keep extension routing; HtmlView is deliberately not listed (unchanged).
-const TEXT_CONTENT_VIEWERS: ReadonlySet<ViewSpec> = new Set([MarkdownView, CodeEditorView, CsvView]);
+// HtmlView belongs here too: it also renders from `content` (srcDoc), and with
+// null content it shows a PERPETUAL "Loading…" — an unresolvable claim, worse
+// than blank (error-message-standards). Real binary viewers (Image/Pdf/Docx/
+// Xlsx) read their own bytes from disk and keep extension routing.
+const TEXT_CONTENT_VIEWERS: ReadonlySet<ViewSpec> = new Set([MarkdownView, CodeEditorView, CsvView, HtmlView]);
 
 export function getViewer(path: string, opts?: { textHint?: boolean; binaryHint?: boolean }): ViewSpec {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';

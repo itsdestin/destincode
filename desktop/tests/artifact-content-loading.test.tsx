@@ -189,6 +189,19 @@ describe('artifact pane read lifecycle', () => {
     expect(utils.queryByText(LOADING_MSG)).toBeNull();
   });
 
+  it('routes a sniffed-binary .html to BinaryFallback, not a perpetual "Loading…"', async () => {
+    // Review gap on the same bug class: HtmlView also renders from the text
+    // content prop (srcDoc) and with content:null shows "Loading…" FOREVER —
+    // an unresolvable claim, worse than blank. Fallback + "Open in default
+    // app" (→ browser) is the honest treatment.
+    const utils = render(<Host artifact={{ id: 'a4', kind: 'internal', path: 'page.html' } as any} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
+    }));
+    expect(utils.getByText(/Cannot preview this file type/i)).toBeTruthy();
+    expect(utils.queryByText(/^Loading…$/)).toBeNull();
+  });
+
   it('a real binary-viewer extension (.png) keeps its extension routing on binary:true', async () => {
     // Control for the test above: binary:true must NOT shove files whose
     // registered viewer already handles bytes (Image/Pdf/…) into the fallback.
