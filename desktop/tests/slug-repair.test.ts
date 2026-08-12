@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs'; import os from 'os'; import path from 'path';
-import { classifyPair, uuidSet, Quarantine, repairHomeForks } from '../src/main/conversations/slug-repair';
+import { classifyPair, uuidSet, Quarantine, repairHomeForks, repairRecordsAndSpace } from '../src/main/conversations/slug-repair';
 import { ccProjectSlug } from '../src/main/slug-encoding';
+import { createConversationStore } from '../src/main/conversations/conversation-store';
 
 const L = (uuid: string) => JSON.stringify({ type: 'user', uuid, message: {} }) + '\n';
 let tmp: string;
@@ -202,5 +203,97 @@ describe('repairHomeForks (spec §6.1)', () => {
     fs.writeFileSync(f, F('u1', h.home)); age(f);
     expect(repairHomeForks(h.opts)).toEqual([]);
     expect(fs.existsSync(f)).toBe(true);
+  });
+});
+
+describe('repairRecordsAndSpace (spec §6.2)', () => {
+  const F = (uuid: string, cwd: string) => JSON.stringify({ type: 'user', uuid, cwd }) + '\n';
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  const age = (p: string) => fs.utimesSync(p, old, old);
+
+  function makeWorld() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'r62-'));
+    const P = path.join(home, 'PAF Proj, & Co');
+    fs.mkdirSync(P, { recursive: true });
+    const projectsDir = path.join(home, '.claude', 'projects');
+    const correctDir = path.join(projectsDir, ccProjectSlug(P));
+    fs.mkdirSync(correctDir, { recursive: true });
+    const spaceRoot = path.join(home, 'Conversations');
+    const lane = path.join(spaceRoot, 'claude', 'transcripts');
+    fs.mkdirSync(lane, { recursive: true });
+    const store = createConversationStore(spaceRoot);
+    const quarantine = new Quarantine(home);
+    const opts = { projectsDir, homeDir: home, knownFolders: [P], quarantine, store, spaceRoot };
+    return { home, P, correctDir, lane, store, quarantine, opts, bucket: path.basename(P) };
+  }
+
+  it('repairs a record that enshrines $HOME for an R2-owned project session', async () => {
+    const w = makeWorld();
+    const t = path.join(w.correctDir, 's1.jsonl');
+    fs.writeFileSync(t, F('u1', w.P)); age(t);
+    await w.store.upsert({ id: 's1', provider: 'claude', projectName: 'destin',
+      originalPath: w.home, transcriptRef: 'claude/transcripts/destin/s1.jsonl' });
+    await repairRecordsAndSpace(w.opts);
+    const rec = await w.store.get('claude', 's1');
+    expect(rec?.projectName).toBe(w.bucket);
+    expect(rec?.originalPath).toBe(w.P);
+    expect(rec?.transcriptRef).toBe(`claude/transcripts/${w.bucket}/s1.jsonl`);
+  });
+
+  it('creates a record for a recordless session in a correct project dir', async () => {
+    const w = makeWorld();
+    const t = path.join(w.correctDir, 's2.jsonl');
+    fs.writeFileSync(t, F('u1', w.P)); age(t);
+    await repairRecordsAndSpace(w.opts);
+    expect((await w.store.get('claude', 's2'))?.projectName).toBe(w.bucket);
+  });
+
+  it('keeps the superset space copy, quarantines the truncation-bucket subset — never merges', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'Change'), { recursive: true });
+    fs.mkdirSync(path.join(w.lane, 'destin'), { recursive: true });
+    const small = path.join(w.lane, 'Change', 's3.jsonl');
+    const big = path.join(w.lane, 'destin', 's3.jsonl');
+    fs.writeFileSync(small, F('u1', w.P));
+    fs.writeFileSync(big, F('u1', w.P) + F('u2', w.P));
+    age(small); age(big);
+    await repairRecordsAndSpace(w.opts);
+    const target = path.join(w.lane, w.bucket, 's3.jsonl');
+    expect(fs.existsSync(target)).toBe(true);
+    expect(uuidSet(target).size).toBe(2);             // the superset MOVED — nothing merged
+    expect(fs.existsSync(small)).toBe(false);         // subset quarantined
+    expect(fs.existsSync(big)).toBe(false);           // keeper relocated to the project bucket
+  });
+
+  it('a space-only transcript is carried over byte-identical (spec: "CC wins" is undefined for it)', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'Change'), { recursive: true });
+    const only = path.join(w.lane, 'Change', 's4.jsonl');
+    const content = F('u1', w.P);
+    fs.writeFileSync(only, content); age(only);
+    await repairRecordsAndSpace(w.opts);
+    expect(fs.readFileSync(path.join(w.lane, w.bucket, 's4.jsonl'), 'utf8')).toBe(content);
+  });
+
+  it('does NOT re-key untouched sessions in a legitimate bucket', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'destin'), { recursive: true });
+    const homeSession = path.join(w.lane, 'destin', 'sH.jsonl');
+    fs.writeFileSync(homeSession, F('u1', w.home)); age(homeSession);   // a REAL $HOME session
+    await w.store.upsert({ id: 'sH', provider: 'claude', projectName: 'destin',
+      originalPath: w.home, transcriptRef: 'claude/transcripts/destin/sH.jsonl' });
+    await repairRecordsAndSpace(w.opts);
+    expect(fs.existsSync(homeSession)).toBe(true);
+    expect((await w.store.get('claude', 'sH'))?.projectName).toBe('destin');
+  });
+
+  it('retires an emptied bucket only when it is NOT a known-folder basename', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'Change'), { recursive: true });
+    const f = path.join(w.lane, 'Change', 's5.jsonl');
+    fs.writeFileSync(f, F('u1', w.P)); age(f);
+    await repairRecordsAndSpace(w.opts);
+    expect(fs.existsSync(path.join(w.lane, 'Change'))).toBe(false);     // emptied fragment retired
+    expect(fs.existsSync(path.join(w.lane, w.bucket))).toBe(true);      // project bucket stays
   });
 });

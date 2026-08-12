@@ -262,3 +262,123 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
   }
   return findings;
 }
+
+/** §6.2 — per-session repair of conversation RECORDS and the sync-space
+ *  transcript copies the old bug filed under wrong buckets. Built BY SESSION
+ *  (never bucket-scoped): spec §4 #6 notes 'destin' is a legitimate bucket
+ *  that can ALSO hold a couple of mis-filed sessions, and bucket-scoped
+ *  repair would either miss those or destroy every correct record sharing
+ *  the bucket. Record repair is metadata-only (projectName/originalPath/
+ *  transcriptRef, no lastActive) — Task 12's pinning test proved the
+ *  reconcile sweep is record-keyed, so a metadata-only upsert is sufficient
+ *  to stop the sweep re-filing the session under the wrong bucket again. */
+export async function repairRecordsAndSpace(
+  opts: RepairOpts & { store: import('./conversation-store').ConversationStore; spaceRoot: string },
+): Promise<RepairFinding[]> {
+  const { projectsDir, knownFolders, quarantine: q, store, spaceRoot } = opts;
+  const liveMs = opts.liveMs ?? LIVE_MTIME_MS;
+  const now = opts.now ?? Date.now;
+  // Adaptation (disclosed): thread the platform test seam through firstCwd/
+  // isForeignCwd here too, same as repairHomeForks (§6.1) — otherwise a
+  // POSIX fixture's cwd only reads correctly on a POSIX CI runner.
+  const platform = opts.platform ?? process.platform;
+  const findings: RepairFinding[] = [];
+  const lane = path.join(spaceRoot, 'claude', 'transcripts');
+  const knownBasenames = new Set(knownFolders.map(p => path.basename(p)));
+
+  // Build the repair set BY SESSION (spec §4 #6: 'destin' is a legitimate
+  // bucket with two mis-filed sessions — bucket-scoped repair would either
+  // miss them or destroy ~58 correct records).
+  const repairSet = new Map<string, string>(); // sessionId -> project folder P
+  // (a) every top-level transcript in a known folder's correct CC dir
+  for (const P of knownFolders) {
+    for (const f of topLevelJsonl(path.join(projectsDir, ccProjectSlug(P)))) {
+      repairSet.set(path.basename(f, '.jsonl'), P);
+    }
+  }
+  // (b) every space transcript whose R2 home is a known folder filed under the
+  //     wrong bucket (covers space-only sessions like a943d85d)
+  let buckets: string[] = [];
+  try { buckets = fs.readdirSync(lane); } catch { /* no space yet */ }
+  for (const bucket of buckets) {
+    for (const f of topLevelJsonl(path.join(lane, bucket))) {
+      const cwd = firstCwd(f, platform);
+      if (!cwd || isForeignCwd(cwd, platform)) continue;
+      const P = knownFolders.find(p => sameDir(p, cwd));
+      if (P && path.basename(P) !== bucket) repairSet.set(path.basename(f, '.jsonl'), P);
+    }
+  }
+
+  const emptiedBuckets = new Set<string>();
+  for (const [sessionId, P] of repairSet) {
+    const bucketName = path.basename(P);
+    const target = path.join(lane, bucketName, `${sessionId}.jsonl`);
+    const rec = await store.get('claude', sessionId);
+    const recordOk = rec && rec.projectName === bucketName && rec.originalPath === P;
+    // Space copies across ALL buckets for this session:
+    const copies = buckets
+      .map(b => path.join(lane, b, `${sessionId}.jsonl`))
+      .filter(p => fs.existsSync(p));
+    if (copies.length === 0 && recordOk) continue; // nothing to do — idempotent re-run
+
+    if (copies.length > 0) {
+      if (copies.some(c => isLive(c, liveMs, now))) {
+        findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: copies });
+        continue;
+      }
+      // Keeper = the copy every other copy is a subset of; tie → most uuids.
+      // NEVER merge (spec §6.0) — a fork among copies keeps the largest and
+      // quarantines the rest (reversible), loudly.
+      const sized = copies.map(c => ({ c, u: uuidSet(c) }))
+        .sort((a, b) => b.u.size - a.u.size);
+      const keeper = sized[0];
+      for (const other of sized.slice(1)) {
+        let onlyInOther = 0; for (const u of other.u) if (!keeper.u.has(u)) onlyInOther++;
+        if (onlyInOther > 0) q.log(`ATTENTION space fork ${sessionId}: ${other.c} has ${onlyInOther} uuids the keeper lacks`);
+        if (q.move(other.c, `6.2 ${sessionId}: non-keeper space copy`)) {
+          const b = path.basename(path.dirname(other.c));
+          if (topLevelJsonl(path.join(lane, b)).length === 0) emptiedBuckets.add(b);
+        }
+      }
+      if (!sameDir(keeper.c, target)) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        // Adaptation (disclosed): §6.1's promotion renames are fail-closed
+        // (review fix, commit a10bccb4) — this rename can move a session
+        // that belongs to a live one just as easily, so it gets the same
+        // discipline: log + finding + continue, never throw mid-run. On
+        // failure the keeper stays exactly where it was (no record repair
+        // below, so nothing points at a target that doesn't exist yet).
+        try {
+          fs.renameSync(keeper.c, target);
+        } catch (e) {
+          q.log(`ERROR ${sessionId}: move-bucket rename failed — space copy still at ${keeper.c}: ${String(e)}`);
+          findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: [keeper.c] });
+          continue;
+        }
+        q.log(`MOVE-BUCKET ${keeper.c} -> ${target}`);
+        const b = path.basename(path.dirname(keeper.c));
+        if (topLevelJsonl(path.join(lane, b)).length === 0) emptiedBuckets.add(b);
+      }
+    }
+    // Record repair — THE step that stops the $HOME fork recurring (spec §4):
+    // metadata-only upsert (no lastActive); projectName/originalPath/
+    // transcriptRef are local truth and always land (conversation-store.ts).
+    await store.upsert({
+      id: sessionId, provider: 'claude',
+      projectName: bucketName, originalPath: P,
+      transcriptRef: `claude/transcripts/${bucketName}/${sessionId}.jsonl`,
+    });
+    findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [target] });
+  }
+
+  // Retire ONLY emptied truncation-fragment buckets — never a legitimate one
+  // ('destin' is real $HOME data; a known folder's basename is real too).
+  for (const b of emptiedBuckets) {
+    if (knownBasenames.has(b)) continue;
+    const dir = path.join(lane, b);
+    try {
+      if (fs.readdirSync(dir).length === 0) q.move(dir, `6.2 emptied truncation bucket`);
+    } catch { /* already gone */ }
+  }
+  return findings;
+}
