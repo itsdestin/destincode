@@ -1223,7 +1223,7 @@ export class RemoteServer {
         break;
       }
       case 'session:history': {
-        const { sessionId: histSessionId, count, all } = payload;
+        const { sessionId: histSessionId, projectSlug: histSlug, count, all } = payload;
         // Fix: validate the client-supplied id BEFORE the fs.access probe loop
         // below — loadHistory's SAFE_ID_RE guard only runs after the probe, so
         // a traversal-shaped id ('../../x') made the loop a file-existence
@@ -1234,11 +1234,19 @@ export class RemoteServer {
           this.respond(client.ws, type, id, []);
           break;
         }
-        // Find the JSONL file across all project slugs
+        // Find the JSONL file across all project slugs. The shim sends the
+        // caller's projectSlug (argument-order fix, same day as the SAFE_ID_RE
+        // hardening above) — probe it FIRST, parity with Android's handler,
+        // so the common case skips the O(projects) directory scan. A stale or
+        // invalid slug just falls through to the scan; SAFE_ID_RE gates it
+        // before it can shape a path.
         const projectsDir = path.join(os.homedir(), '.claude', 'projects');
         const slugs = await fs.promises.readdir(projectsDir).catch(() => [] as string[]);
+        const candidates = (typeof histSlug === 'string' && SAFE_ID_RE.test(histSlug))
+          ? [histSlug, ...slugs.filter((s) => s !== histSlug)]
+          : slugs;
         let foundSlug = '';
-        for (const slug of slugs) {
+        for (const slug of candidates) {
           const candidate = path.join(projectsDir, slug, histSessionId + '.jsonl');
           try {
             await fs.promises.access(candidate);
