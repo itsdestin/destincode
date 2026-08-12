@@ -10,13 +10,16 @@
 // checkout, never from the dist this worker is handed — lives in
 // src/main/harness/eval/paths.ts.
 //
-//   node test-engine/harness-eval-worker.mjs '<json config>'
+//   OPENROUTER_API_KEY=<key> node test-engine/harness-eval-worker.mjs '<json config>'
 //
-// Config (argv[2], one JSON object): { cellId, dist, modelId, label, apiKey,
-// prompt?, wrapUpPrompt?, contextLength?, instructions? }. `dist` is the
-// harness-under-test root that cell names (paths.ts's harnessRoot) — this
-// worker imports run-case.js and openrouter-factory.js from underneath it,
-// never from its own checkout.
+// Config (argv[2], one JSON object): { cellId, caseId, instructionsId, dist,
+// modelId, label, prompt, wrapUpPrompt?, contextLength?, instructions? }.
+// `dist` is the harness-under-test root that cell names (paths.ts's
+// harnessRoot) — this worker imports run-case.js and openrouter-factory.js
+// from underneath it, never from its own checkout.
+//
+// THE API KEY IS NEVER IN THE CONFIG, and never in argv. See the scrub block
+// below for why.
 //
 // STDOUT CONTRACT: exactly one line, one JSON object, and nothing else:
 //   { cellId, run: <the CaseRun runCase() returned>, error?: string }
@@ -26,17 +29,25 @@
 // error explaining why there isn't one.
 import * as path from 'path';
 
-// Fix, copied from test-engine/review-harness.mjs:113 with the identical
-// reasoning: scrub the key from OUR OWN env before anything runs, regardless
-// of how it got there (explicit config field below, or inherited from the
-// parent orchestrator's environment at spawn time — child_process.spawn
-// inherits the parent's env by default unless overridden). The Bash tool
-// (src/main/harness/tools/bash.ts) spawns subprocesses with `env:
-// process.env`, and the task prompt a case supplies could just as easily
-// invite `env`/`printenv` as the harness review battery's own prompt does —
-// any such tool result lands in the transcript this process writes to
-// stdout. makeOpenRouterFactory takes the key as a plain argument, so nothing
-// downstream needs it to still be in the environment.
+// Fix (review round 1, CRITICAL): the key arrives through the ENVIRONMENT and
+// is scrubbed here before anything can spawn a subprocess. Same shape as
+// test-engine/review-harness.mjs:100-113, and for the same reason: the Bash
+// tool (src/main/harness/tools/bash.ts) spawns subprocesses with `env:
+// process.env`, and a case's task prompt could invite `env`/`printenv` — any
+// such tool result lands in `run.events`, which this process writes to stdout
+// and the runner saves as a transcript on disk.
+//
+// WHY NOT argv (which is what this file used to do): /proc/<pid>/cmdline is
+// world-readable on Linux and inherited-by-descendants in spirit — the model's
+// own Bash tool runs as a descendant of THIS process, so one `ps -eo args`
+// would have printed the key straight back into the transcript. Deleting the
+// env var while the key sat in argv scrubbed the visible half and left the
+// readable half. Verified empirically: a `ps -eo args` run from inside this
+// worker no longer contains the key.
+//
+// makeOpenRouterFactory takes the key as a plain argument (see
+// openrouter-factory.ts), so nothing downstream needs it in the environment.
+const apiKey = process.env.OPENROUTER_API_KEY;
 delete process.env.OPENROUTER_API_KEY;
 
 function fail(message) {
@@ -55,15 +66,27 @@ try {
 }
 
 const {
-  cellId, dist, modelId, label, apiKey,
+  cellId, dist, modelId, label,
   prompt, wrapUpPrompt, contextLength, instructions,
 } = config;
 
 // Missing-field checks happen BEFORE any import or spend — a malformed
 // config is "the run could not start" (task brief, Step 4's third bullet),
 // not a run result worth recording.
-for (const [field, value] of [['cellId', cellId], ['dist', dist], ['modelId', modelId], ['apiKey', apiKey]]) {
+for (const [field, value] of [['cellId', cellId], ['dist', dist], ['modelId', modelId]]) {
   if (!value) fail(`config is missing required field "${field}".`);
+}
+// The key is checked separately because it is NOT a config field — see the
+// scrub block at the top of this file. Naming the env var (not "apiKey") is
+// what makes this error actionable.
+if (!apiKey) fail('OPENROUTER_API_KEY was not set in this worker\'s environment (the orchestrator passes it there, never on argv).');
+// Fix (review round 1, IMPORTANT 1): runCase() defaults `prompt` to the
+// harness-review BATTERY_PROMPT when it is absent. Without this check, a
+// config that lost its case body would run the default battery and be
+// reported as whatever case the cell id names — N identical paid runs
+// masquerading as a matrix. Name the case so the gap is obvious.
+if (typeof prompt !== 'string' || !prompt) {
+  fail(`config for case "${config.caseId ?? '(unnamed)'}" has no "prompt" — refusing to run, because runCase() would silently fall back to the default battery prompt and bill it as this case.`);
 }
 
 let runCase;
