@@ -30,6 +30,15 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+// Fix: tool inputs are unknown-typed JSON from the model/provider. Interpolating
+// a value that turned out to be an object rendered "[object Object]" in chat
+// (same failure class as the provider-402 bug the harness review battery caught),
+// and passing one to basename() crashed the renderer. Validate like the
+// doom_loop branch does (typeof check) and treat non-strings as absent.
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
   const { toolName, input } = tool;
 
@@ -94,13 +103,18 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     case 'Grep': {
       const pattern = (input.pattern as string) || '';
       const label = pattern ? `Searching for "${truncate(pattern, 30)}"` : 'Searching Code';
+      // Fix: validate each field before interpolating — a malformed (non-string)
+      // glob/path/type used to render "[object Object]" or crash basename().
+      const glob = asString(input.glob);
+      const grepPath = asString(input.path);
+      const grepType = asString(input.type);
       let detail = '';
-      if (input.glob) {
-        detail = `↳ in ${input.glob} files`;
-      } else if (input.path) {
-        detail = `↳ in ${basename(input.path as string)}/`;
-      } else if (input.type) {
-        detail = `↳ in .${input.type} files`;
+      if (glob) {
+        detail = `↳ in ${glob} files`;
+      } else if (grepPath) {
+        detail = `↳ in ${basename(grepPath)}/`;
+      } else if (grepType) {
+        detail = `↳ in .${grepType} files`;
       }
       return { label, detail };
     }
@@ -109,7 +123,9 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       const pattern = (input.pattern as string) || '';
       const simplified = pattern.replace(/^\*\*\//, '');
       const label = pattern ? `Finding ${simplified} files` : 'Finding Files';
-      const detail = input.path ? `↳ in ${basename(input.path as string)}/` : '';
+      // Fix: same hardening as Grep — a non-string path must not reach basename().
+      const globPath = asString(input.path);
+      const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
       return { label, detail };
     }
 
@@ -117,7 +133,9 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       const desc = input.description as string | undefined;
       const bg = input.run_in_background ? ' ⟳' : '';
       const label = desc ? `Agent: ${desc}` : 'Running Sub-Agent';
-      const detail = input.subagent_type ? `↳ ${input.subagent_type}` : '';
+      // Fix: a malformed (non-string) subagent_type used to render "[object Object]".
+      const subagentType = asString(input.subagent_type);
+      const detail = subagentType ? `↳ ${subagentType}` : '';
       return { label: label + bg, detail };
     }
 
@@ -188,10 +206,12 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'AskUserQuestion': {
-      // Show the first question's header/text as the tool label
+      // Show the first question's header/text as the tool label.
+      // Fix: only accept string values — String(header) on a malformed object
+      // input produced an "[object Object]" label.
       const questions = input.questions as any[];
-      const header = questions?.[0]?.header || questions?.[0]?.question || 'Question';
-      return { label: truncate(String(header), 40), detail: '' };
+      const header = asString(questions?.[0]?.header) || asString(questions?.[0]?.question) || 'Question';
+      return { label: truncate(header, 40), detail: '' };
     }
 
     case 'ExitPlanMode': {
