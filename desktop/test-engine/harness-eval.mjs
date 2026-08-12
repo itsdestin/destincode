@@ -10,7 +10,9 @@
 // Exit codes: 0 every cell ran · 2 usage/config error · 3 stopped early (cap).
 //
 // THIS TOOL SPENDS REAL MONEY, so the order of operations below is the point:
-// load and validate the plan, expand it into cells, print the grid, price it
+// load and validate the plan, read every instruction arm's file off disk (a
+// missing one stops the run here, not halfway through a paid matrix), expand
+// it into cells, print the grid, price it
 // from OpenRouter's public catalog, print the dollar figure WITH everything
 // that could make it wrong, and only then ask for confirmation and read the
 // credential. --dry-run stops after the estimate and needs no key anywhere on
@@ -408,6 +410,101 @@ async function readPlanFile(filePath) {
   };
 }
 
+/** Read every instruction arm's file off disk, keyed by arm id (Task 8c).
+ *
+ *  THIS IS THE INSTRUCTIONS AXIS. The plan format has always defined
+ *  `instructions: [{ id, file }]`, `expandPlan` has always copied `file` onto
+ *  every cell, and `runCell` has always refused a cell whose arm declared a
+ *  file nobody read — but nothing ever read one, so every guidance arm either
+ *  refused to run or would have run byte-identically to the baseline. This
+ *  function is the missing half: plan file → text → `runCell`'s
+ *  `instructionsText` → the worker's config → `runCase`'s `instructions`
+ *  option → a real CLAUDE.md in the disposable fixture → the
+ *  `<project-instructions source="CLAUDE.md">` block of the system prompt the
+ *  model is actually given.
+ *
+ *  RESOLVED AGAINST THE PLAN FILE'S OWN DIRECTORY, never the cwd — the same
+ *  base `readPlanFile` resolves `build.dist` against, and for the same reason:
+ *  a plan referenced from somewhere else (`node ... --plan ../other/plan.json`)
+ *  must still find its own siblings, and "which instructions did that arm
+ *  actually get" must not depend on where the operator was standing.
+ *
+ *  EVERY FAILURE HERE HAPPENS BEFORE ANY SPEND. main() calls this immediately
+ *  after the plan is validated — before the grid, before the estimate, before
+ *  the --dry-run return, and long before a key is read — because discovering a
+ *  typo'd path after half a matrix has been billed is the exact failure this
+ *  tool exists to prevent. The I/O error is passed through verbatim (ENOENT vs
+ *  EACCES vs EISDIR are three different mistakes with three different fixes);
+ *  nothing here guesses a cause.
+ *
+ *  @param {{ instructions: { id: string, file: string | null }[] }} plan
+ *  @param {string} planPath  the plan file, as given on the command line
+ *  @returns {Map<string, string | null>} arm id → its text (null = baseline arm)
+ */
+function loadInstructionTexts(plan, planPath) {
+  const planDir = path.dirname(path.resolve(planPath));
+  const byArmId = new Map();
+  // normalized text → the FIRST arm id that produced it, so a collision can
+  // name both halves of the pair rather than just the second one.
+  const firstArmWithText = new Map();
+
+  for (const arm of plan.instructions) {
+    // `null` is the deliberate no-instructions baseline: nothing to read, and
+    // runCase writes no CLAUDE.md at all for it.
+    if (arm.file === null || arm.file === undefined) {
+      byArmId.set(arm.id, null);
+      continue;
+    }
+    const abs = path.resolve(planDir, arm.file);
+    let text;
+    try {
+      text = fs.readFileSync(abs, 'utf8');
+    } catch (err) {
+      throw new Error(
+        `harness-eval: instruction arm "${arm.id}" declares "${arm.file}", which could not be read at ${abs}: `
+        + `${err.message}\n`
+        + '  Instruction paths are resolved against the plan file\'s own directory, not the working directory.\n'
+        + '  Refusing to start: nothing has been spawned and nothing has been spent.',
+      );
+    }
+    // A declared file that holds nothing is the SAME condition as `file: null`
+    // — runCase writes no usable CLAUDE.md either way — so the arm is a second
+    // copy of the baseline wearing a different name. Two consequences if this
+    // is let through: `runCell`'s guard reads `''` as falsy and refuses the
+    // cell mid-matrix with a message about text "not being supplied" (which is
+    // not what went wrong), and if it ever stopped refusing, the operator pays
+    // for a comparison between two identical arms. Caught here, with the real
+    // reason, before either can happen.
+    if (!text.trim()) {
+      throw new Error(
+        `harness-eval: instruction arm "${arm.id}" declares "${arm.file}" (${abs}), but that file is empty `
+        + `(${text.length} character(s), all whitespace). An arm with no instructions in it is the same condition as `
+        + '"file": null — the no-instructions baseline — so running it would bill a comparison between two arms that '
+        + 'are in fact identical. Either point the arm at the real file, or delete the arm and let the baseline be the baseline.',
+      );
+    }
+    // The axis has to actually DIFFER. `validatePlan` already rejects two
+    // `"file": null` arms for exactly this reason, but it only sees the plan's
+    // paths — two different paths whose CONTENTS are the same (a copy-paste, a
+    // file that was never edited after being duplicated) look fine to it and
+    // are indistinguishable from a real comparison in the report. Compared on
+    // the trimmed text so a stray trailing newline is not mistaken for a
+    // difference: it changes no instruction the model reads.
+    const key = text.trim();
+    const twin = firstArmWithText.get(key);
+    if (twin !== undefined) {
+      throw new Error(
+        `harness-eval: instruction arms "${twin}" and "${arm.id}" resolve to the SAME instructions text, so they are `
+        + 'not a comparison — they are one arm run twice, billed and reported as two. '
+        + `("${arm.id}" reads ${abs}.) Either point one of them at different instructions, or delete it.`,
+      );
+    }
+    firstArmWithText.set(key, arm.id);
+    byArmId.set(arm.id, text);
+  }
+  return byArmId;
+}
+
 /** Expand a validated plan into cells — matrix.js's `expandPlan`, unmodified.
  *  It also verifies every cell's `cellFilename` is distinct across the whole
  *  matrix before anything runs, which is why expansion is not something this
@@ -694,17 +791,21 @@ async function runCell(cell, { apiKey, instructionsText, timeoutMs = DEFAULT_CEL
   }
   // Fix (review round 2, IMPORTANT 2): the same hole the check above closes for
   // the CASE axis was still wide open on the INSTRUCTIONS axis. `instructionsId`
-  // reaches the worker, but nothing resolves the arm's `file` to text, so two
+  // reaches the worker, but nothing resolved the arm's `file` to text, so two
   // instruction arms produced byte-identical worker configs differing only in
-  // the cell id — N paid runs of ONE task, reported as a matrix. Resolving the
-  // file belongs to a later task; refusing to run silently does not.
+  // the cell id — N paid runs of ONE task, reported as a matrix.
+  //
+  // The reading is wired up now (Task 8c: main() calls loadInstructionTexts and
+  // passes each cell its own arm's text), so this guard is no longer the
+  // everyday path — it is the backstop for a CALLER that skipped that step, and
+  // it stays because runCell is exported and callable without main().
   // `file: null` (the baseline arm) is fine: there is nothing to resolve.
   if (cell.instructionsFile && (typeof instructionsText !== 'string' || !instructionsText)) {
     throw new Error(
       `harness-eval: cell "${cell.id}" cannot run — instruction arm "${cell.instructionsId}" declares a file `
-      + `("${cell.instructionsFile}") but no instruction text was supplied for it. Reading instruction files is not wired up `
-      + `on this branch yet; running without it would send a config identical to every other arm's, so the arms would be one `
-      + `repeated task billed and reported as an instructions comparison.`,
+      + `("${cell.instructionsFile}") but no instruction text was supplied for it. The caller must resolve the arm's file `
+      + `first (loadInstructionTexts does this for every arm in the plan); running without it would send a config identical `
+      + `to every other arm's, so the arms would be one repeated task billed and reported as an instructions comparison.`,
     );
   }
   // Fix (Task 8 Step 0): `cell.model` is a roster LABEL, not an OpenRouter
@@ -1110,10 +1211,10 @@ async function runMatrix(cells, { runOne, readUsage, maxSpendUsd, onResult }) {
     // conditions — a non-absolute `dist`, a case registered with an empty
     // prompt, an instruction arm whose file nobody resolved, and a model that is
     // not a roster label — and every one of those is reachable on cell N after
-    // cells 1..N-1 have run and been billed. The instructions one is not
-    // hypothetical: the instructions axis is still unwired, and expandPlan emits
-    // a baseline cell alongside each guidance cell, so "baseline runs, guidance
-    // throws" is the ordinary shape of the very comparison this tool exists for.
+    // cells 1..N-1 have run and been billed. (Task 8c closed the instructions
+    // one for runs driven by main(), which now resolves every arm's file before
+    // the first cell; runCell is exported and callable directly, so the wrapper
+    // still has to assume any of the four can fire.)
     //
     // Letting that rejection escape threw away `results` and `skipped`, so the
     // caller could write no summary and name no cells — the exact "print exactly
@@ -1234,6 +1335,22 @@ async function main(argv) {
     process.exit(2);
   }
 
+  // -- the instructions axis (Task 8c). Read HERE: after the plan validates and
+  // before the grid, the estimate, the --dry-run return, and the credential. A
+  // path typo, an unreadable file, an empty arm, or two arms that resolve to the
+  // same text all stop the run at this point, which is the last one at which
+  // "nothing was spawned and nothing was spent" is true without qualification.
+  // --dry-run gets the same checks, deliberately: a dry run whose whole job is
+  // "tell me what this would do" must not say "it would work" about a plan whose
+  // instruction files are missing.
+  let instructionsByArmId;
+  try {
+    instructionsByArmId = loadInstructionTexts(plan, planPath);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+
   if (repeatsFlag !== undefined) {
     // Fix (review round 1, MINOR 2): the flag now goes through the same check
     // the plan file's own `repeats` gets. It used to be a bare Number(), so
@@ -1336,9 +1453,7 @@ async function main(argv) {
     }
   }
 
-  // -- the run. What remains unwired is the INSTRUCTIONS axis: nothing reads an
-  // arm's `file` into text yet, so runCell refuses a non-baseline arm rather
-  // than sending a config identical to every other arm's.
+  // -- the run.
   const runs = resolveRunsDir();
   fs.mkdirSync(runs.dir, { recursive: true });
   console.log(`\nRunning ${cells.length} cell${cells.length === 1 ? '' : 's'} → ${runs.dir}`);
@@ -1371,7 +1486,15 @@ async function main(argv) {
 
   const matrix = await runMatrix(cells, {
     maxSpendUsd,
-    runOne: (cell) => runCell(cell, { apiKey, timeoutMs }),
+    // Task 8c: each cell gets ITS OWN arm's text. `?? undefined` because a
+    // baseline arm maps to `null` here and runCell's option is optional — the
+    // two spellings must not be confused, since `null` would be a value the
+    // worker then carries into runCase as an explicit "no instructions".
+    runOne: (cell) => runCell(cell, {
+      apiKey,
+      timeoutMs,
+      instructionsText: instructionsByArmId.get(cell.instructionsId) ?? undefined,
+    }),
     readUsage: () => fetchKeyUsage(apiKey),
     // Written as each cell finishes, not at the end: a run that is stopped —
     // by the cap, by Ctrl-C, or by a crash — must not also lose the results of
@@ -1449,6 +1572,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 }
 
 export {
-  readPlanFile, expandPlanFile, cellResultPath, resolveRunsDir, runCell, workerEnv, redactKey, loadGraders,
+  readPlanFile, loadInstructionTexts, expandPlanFile, cellResultPath, resolveRunsDir, runCell, workerEnv, redactKey, loadGraders,
   loadApiKey, scrubProcessTitle, runMatrix, fetchKeyUsage, DEFAULT_CELL_TIMEOUT_MS,
 };

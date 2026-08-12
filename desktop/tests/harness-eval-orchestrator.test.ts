@@ -6,6 +6,11 @@ import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
 import { graderRoot as srcGraderRoot, harnessRoot as srcHarnessRoot } from '../src/main/harness/eval/paths';
+// Task 8c: the instructions axis is only real if the text reaches the SESSION,
+// so this suite drives the same runCase + capturing model factory the runner
+// suite uses to read back the system prompt a model was actually handed.
+import { runCase } from '../src/main/harness/eval/run-case';
+import { capturingFactory } from './helpers/harness-fakes';
 
 const DESKTOP = path.resolve(__dirname, '..');
 const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
@@ -230,6 +235,23 @@ describe('grader isolation', () => {
 
 function writePlan(plan: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-plan-'));
+  const file = path.join(dir, 'plan.json');
+  fs.writeFileSync(file, JSON.stringify(plan));
+  return file;
+}
+
+/** Same as writePlan, but also seeds sibling files NEXT TO the plan (Task 8c).
+ *  Instruction arm paths are resolved against the plan file's own directory, so
+ *  a fixture that needs a real `instructions/*.md` has to put it there and
+ *  nowhere else — which is also what makes the resolution testable: a loader
+ *  that resolved against the cwd would find nothing at all. */
+function writePlanWithFiles(plan: unknown, files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-plan-'));
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
   const file = path.join(dir, 'plan.json');
   fs.writeFileSync(file, JSON.stringify(plan));
   return file;
@@ -637,6 +659,171 @@ describe('expandPlan carries the instruction arm file onto every cell', () => {
     expect(cells.map((c: { instructionsFile: string | null }) => c.instructionsFile))
       .toEqual([null, 'instructions/terse.md']);
   });
+});
+
+describe('loadInstructionTexts — the instructions axis actually reads its files', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  const twoArms = (file: string) => ({
+    ...BASE_PLAN,
+    instructions: [{ id: 'baseline', file: null }, { id: 'draft', file }],
+  });
+
+  it('reads each arm\'s file relative to the PLAN FILE, not the cwd', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    // The file exists ONLY beside the plan, in a temp dir that has nothing to do
+    // with the working directory vitest runs in. If resolution were cwd-relative
+    // this call would fail with ENOENT instead of returning the text — which is
+    // the whole discrimination: same base as readPlanFile uses for build.dist.
+    const planFile = writePlanWithFiles(
+      twoArms('instructions/draft.md'),
+      { 'instructions/draft.md': '# Draft rules\n\nAlways say banana.\n' },
+    );
+    const texts = loadInstructionTexts(await readPlanFile(planFile), planFile);
+    expect(texts.get('draft')).toBe('# Draft rules\n\nAlways say banana.\n');
+    // The baseline arm has nothing to read and must stay distinguishable from
+    // "an arm whose file has not been read yet".
+    expect(texts.get('baseline')).toBeNull();
+  });
+
+  it('fails before any spend when a declared file cannot be read, naming the path and the real errno', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    const planFile = writePlanWithFiles(twoArms('instructions/missing.md'), {});
+    const abs = path.join(path.dirname(planFile), 'instructions/missing.md');
+    const plan = await readPlanFile(planFile);
+    let err: Error | undefined;
+    try {
+      loadInstructionTexts(plan, planFile);
+    } catch (e) { err = e as Error; }
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('instruction arm "draft"');
+    // The RESOLVED path, because "instructions/missing.md" alone does not tell
+    // the reader which directory it was looked for in.
+    expect(err!.message).toContain(abs);
+    // The REAL I/O error, verbatim. Never a guessed cause.
+    expect(err!.message).toContain('ENOENT');
+  });
+
+  it('passes through a DIFFERENT io error verbatim, so the message is not a hardcoded "file not found"', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    // A directory where a file was expected: EISDIR, a different mistake with a
+    // different fix. A loader that hardcoded "no such file" would be wrong here
+    // and this assertion is what stops that from being written.
+    const planFile = writePlanWithFiles(twoArms('instructions'), { 'instructions/keep.md': 'x' });
+    const plan = await readPlanFile(planFile);
+    expect(() => loadInstructionTexts(plan, planFile)).toThrow(/EISDIR|illegal operation on a directory/);
+    expect(() => loadInstructionTexts(plan, planFile)).not.toThrow(/ENOENT/);
+  });
+
+  it('rejects two arms whose files hold the SAME text — that is one arm run twice', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    // validatePlan cannot catch this: it sees two different PATHS and has no
+    // filesystem. Duplicating a file and forgetting to edit the copy is the
+    // ordinary way this happens, and it bills a full matrix for a comparison
+    // between identical arms.
+    const body = '# Rules\n\nBe terse.\n';
+    const planFile = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'draft', file: 'draft.md' }, { id: 'tightened', file: 'tightened.md' }],
+    }, { 'draft.md': body, 'tightened.md': body });
+    const plan = await readPlanFile(planFile);
+    expect(() => loadInstructionTexts(plan, planFile))
+      .toThrow(/arms "draft" and "tightened" resolve to the SAME instructions text/);
+  });
+
+  it('counts two files that differ only in trailing whitespace as the same text', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    // A trailing newline changes no instruction the model reads, so treating it
+    // as a difference would let the identical-arms check be defeated by one
+    // keystroke.
+    const planFile = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'draft', file: 'draft.md' }, { id: 'tightened', file: 'tightened.md' }],
+    }, { 'draft.md': '# Rules\n\nBe terse.', 'tightened.md': '# Rules\n\nBe terse.\n\n  ' });
+    const plan = await readPlanFile(planFile);
+    expect(() => loadInstructionTexts(plan, planFile)).toThrow(/resolve to the SAME instructions text/);
+  });
+
+  it('rejects an arm whose file is empty or whitespace-only — the same condition as the null baseline', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    // THE null-VS-EMPTY CASE. `baseline` has no instructions; `draft` names a
+    // file that contains none. Those are the same condition wearing two names,
+    // and paying to compare them is the exact failure this tool exists to
+    // prevent — but neither validatePlan (which sees a path, not its contents)
+    // nor runCell (whose message would blame "no text supplied", which is not
+    // what went wrong) can say so.
+    const planFile = writePlanWithFiles(twoArms('draft.md'), { 'draft.md': '\n \t\n' });
+    const plan = await readPlanFile(planFile);
+    expect(() => loadInstructionTexts(plan, planFile))
+      .toThrow(/instruction arm "draft" declares "draft\.md".*that file is empty/s);
+    expect(() => loadInstructionTexts(plan, planFile)).toThrow(/same condition as "file": null/);
+  });
+
+  it('accepts two arms whose files genuinely differ', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    const planFile = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [
+        { id: 'baseline', file: null },
+        { id: 'draft', file: 'draft.md' },
+        { id: 'tightened', file: 'tightened.md' },
+      ],
+    }, { 'draft.md': '# Draft\n\nSay banana.\n', 'tightened.md': '# Tightened\n\nSay kumquat.\n' });
+    const texts = loadInstructionTexts(await readPlanFile(planFile), planFile);
+    expect([...texts.keys()]).toEqual(['baseline', 'draft', 'tightened']);
+    expect(texts.get('draft')).toContain('banana');
+    expect(texts.get('tightened')).toContain('kumquat');
+  });
+});
+
+describe('two instruction arms produce two different CLAUDE.md bodies reaching the session', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  // WHY this test and not the shape guard that already exists: the Task 7 guard
+  // proves an arm DECLARED a file. This one follows the whole chain the tool is
+  // built on — plan file on disk → loadInstructionTexts → runCase's
+  // `instructions` option → a real CLAUDE.md in the disposable fixture →
+  // assembleSystemPrompt's <project-instructions> block → the system prompt the
+  // model is actually handed (captured by capturingFactory, which keeps its
+  // doStream argument because the system prompt never reaches the model
+  // FACTORY). If the loader returned one text for both arms, or null for both,
+  // the two captured prompts would be identical and this fails.
+  //
+  // The one hop it does not cover is runCell's subprocess. That is covered
+  // end-to-end through the real CLI further down ("both arms reach the worker
+  // with their OWN text"), which reads the two per-cell result files off disk.
+  it('carries each arm\'s own file into its own project-instructions block', async () => {
+    const { readPlanFile, loadInstructionTexts } = await import('../test-engine/harness-eval.mjs');
+    const planFile = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'draft', file: 'draft.md' }, { id: 'tightened', file: 'tightened.md' }],
+    }, {
+      'draft.md': '# Draft guidance\n\nALWAYS_SAY_BANANA before answering.\n',
+      'tightened.md': '# Tightened guidance\n\nALWAYS_SAY_KUMQUAT before answering.\n',
+    });
+    const texts = loadInstructionTexts(await readPlanFile(planFile), planFile);
+
+    const captured: string[] = [];
+    for (const armId of ['draft', 'tightened']) {
+      await runCase({
+        modelFactory: capturingFactory(captured),
+        modelId: 'test/model', label: 'test', prompt: 'hi', contextLength: 64_000,
+        instructions: texts.get(armId),
+      });
+    }
+
+    const [draftPrompt, tightenedPrompt] = captured;
+    // Both went through the REAL project-instructions path, not a pretend one.
+    expect(draftPrompt).toContain('<project-instructions source="CLAUDE.md">');
+    expect(tightenedPrompt).toContain('<project-instructions source="CLAUDE.md">');
+    // ...and each carries ITS OWN arm's text and not the other's. Two arms
+    // resolving to one text would fail both negative assertions at once.
+    expect(draftPrompt).toContain('ALWAYS_SAY_BANANA');
+    expect(draftPrompt).not.toContain('ALWAYS_SAY_KUMQUAT');
+    expect(tightenedPrompt).toContain('ALWAYS_SAY_KUMQUAT');
+    expect(tightenedPrompt).not.toContain('ALWAYS_SAY_BANANA');
+    expect(draftPrompt).not.toBe(tightenedPrompt);
+  }, 30_000);
 });
 
 describe('worker stderr is redacted before it can reach a transcript', () => {
@@ -1097,10 +1284,34 @@ describe('the real CLI, end to end (fetch faked, no key, no spend)', () => {
     return root;
   }
 
+  /** Like fastDist(), but the fake runCase ECHOES the `instructions` it was
+   *  handed back out through the result. That is the only observable end of the
+   *  orchestrator→worker hop that does not cost money: the real runCase would
+   *  write this exact string into the fixture as CLAUDE.md (see the
+   *  project-instructions suite above, which pins the rest of the chain). */
+  function echoingDist(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-echo-'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}');
+    const dir = path.join(root, 'main/harness/eval');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'run-case.js'),
+      'export const runCase = async (c) => ({ label: c.label, outcome: "completed", events: [],'
+      + ' instructionsSeen: c.instructions ?? null });\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'openrouter-factory.js'),
+      'export const makeOpenRouterFactory = () => async () => ({});\n',
+    );
+    return root;
+  }
+
   /** A preload module that replaces `fetch`. `usage` is the sequence
-   *  GET /api/v1/key hands back, one per call; the catalog is empty, so every
-   *  model comes back `unpriced` (which also pins the null-estimate branch). */
-  function fetchStub(usage: number[]): string {
+   *  GET /api/v1/key hands back, one per call; a `null` entry answers with a
+   *  non-numeric `data.usage` (a changed API shape), which fetchKeyUsage
+   *  refuses to read as "$0 spent". The catalog is empty, so every model comes
+   *  back `unpriced` (which also pins the null-estimate branch). */
+  function fetchStub(usage: (number | null)[]): string {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-stub-')), 'stub.mjs');
     fs.writeFileSync(file, `
 const usage = ${JSON.stringify(usage)};
@@ -1184,30 +1395,48 @@ globalThis.fetch = async (url) => {
     return line.trim().slice('Results: '.length);
   }
 
-  it('a MID-MATRIX rejection still writes the summary, names the cells that never ran, and never claims nothing was spent', () => {
-    // THE REPRODUCTION, exactly as the review described it: a guidance-vs-baseline
-    // plan. expandPlan emits the baseline cell first; it runs and (in a real run)
-    // is BILLED. The guidance cell then throws, because the instructions axis is
-    // still unwired. The operator used to be told "NOTHING WAS SPENT", handed exit
-    // 2 (usage error), and given no run-summary.json at all.
-    const stub = fetchStub([0]);
-    const plan = writePlan({
+  it('a MID-MATRIX stop still writes the summary, names the cells that never ran, and never claims nothing was spent', () => {
+    // THE REPRODUCTION, as the review described it: a guidance-vs-baseline plan.
+    // expandPlan emits the baseline cell first; it runs and (in a real run) is
+    // BILLED. Something then stops the matrix on the guidance cell. The operator
+    // used to be told "NOTHING WAS SPENT", handed exit 2 (usage error), and
+    // given no run-summary.json at all.
+    //
+    // WHAT CHANGED IN TASK 8c, and why the trigger is not the original one: the
+    // original stopper was the guidance arm's UNRESOLVED file — runCell threw on
+    // cell 2 because nothing had read `guide.md`. That can no longer happen
+    // through the CLI: main() resolves every arm's file before the first cell
+    // (and a missing one now exits 2 having spawned nothing — pinned by the
+    // "refuses a plan whose instruction file cannot be read" test below), so
+    // NONE of runCell's four throws is reachable from a validated plan any more.
+    // The mid-matrix stop is therefore driven by the other CLI-reachable
+    // after-the-first-cell failure: the between-cells usage read coming back in
+    // a shape fetchKeyUsage refuses to read as "$0 spent". Everything this test
+    // asserts about the SUMMARY is unchanged; only the cause is. The
+    // runOne-throws-mid-matrix path itself is still pinned directly, one level
+    // down, by 'turns a runOne THROW into a stopReason instead of losing the
+    // whole matrix'.
+    const stub = fetchStub([0, null]);
+    const plan = writePlanWithFiles({
       ...BASE_PLAN,
       instructions: [{ id: 'baseline', file: null }, { id: 'guided', file: 'guide.md' }],
       builds: [{ id: 'fake', dist: fastDist() }],
-    });
+    }, { 'guide.md': '# Guidance\n\nBe brief.\n' });
     const runsDir = runsDirOf(stub, plan);
     const restore = runsDirGuard(runsDir);
     try {
-      const { status, stdout, stderr } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+      const { status, stdout, stderr } = runCliStubbed(
+        stub,
+        ['--plan', plan, '--yes', '--key-file', canaryKeyFile(), '--max-spend', '5'],
+      );
       const all = `${stdout}${stderr}`;
 
       // 1. The lie is gone.
       expect(all).not.toContain('NOTHING WAS SPENT');
       expect(all).not.toContain('nothing was spent');
-      // 2. The REAL error, in the words runCell used — no guessed cause.
-      expect(stderr).toContain('instruction arm "guided"');
-      expect(stderr).toContain('no instruction text was supplied');
+      // 2. The REAL error, in the words the failing code used — no guessed cause.
+      expect(stderr).toContain('could not read OpenRouter usage');
+      expect(stderr).toContain('did not report a numeric data.usage');
       // 3. Stopped early (3), not usage error (2).
       expect(status).toBe(3);
       // 4. The cells that never ran are named.
@@ -1219,7 +1448,7 @@ globalThis.fetch = async (url) => {
       expect(fs.existsSync(summaryFile)).toBe(true);
       const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
       expect(summary.stoppedEarly).toBe(true);
-      expect(summary.stopReason).toContain('no instruction text was supplied');
+      expect(summary.stopReason).toContain('could not read OpenRouter usage');
       expect(summary.completed).toEqual(['harness-battery|baseline|Claude Opus 5|fake|0']);
       expect(summary.neverRan).toEqual(['harness-battery|guided|Claude Opus 5|fake|0']);
       // The stubbed catalog is empty, so nothing could be priced: NULL, never 0.
@@ -1265,6 +1494,97 @@ globalThis.fetch = async (url) => {
     } finally {
       restore();
     }
+  }, 60_000);
+
+  it('both arms reach the worker with their OWN instructions text', () => {
+    // Task 8c, end to end through the real CLI: plan file → loadInstructionTexts
+    // → runCell → the config on the worker's stdin → runCase's `instructions`
+    // option. The fake dist echoes what runCase was handed, and the two per-cell
+    // result files on disk are read back and compared. Delete `instructionsText`
+    // from main()'s runOne and this fails two ways at once: the guided cell
+    // throws (runCell's backstop), and the file that would have carried the text
+    // is never written.
+    const stub = fetchStub([0]);
+    const plan = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'draft', file: 'draft.md' }, { id: 'tightened', file: 'tightened.md' }],
+      builds: [{ id: 'fake', dist: echoingDist() }],
+    }, {
+      'draft.md': '# Draft\n\nALWAYS_SAY_BANANA.\n',
+      'tightened.md': '# Tightened\n\nALWAYS_SAY_KUMQUAT.\n',
+    });
+    const runsDir = runsDirOf(stub, plan);
+    const restore = runsDirGuard(runsDir);
+    try {
+      const { status, stderr } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+      expect(stderr).toBe('');
+      expect(status).toBe(0);
+
+      const seen = new Map<string, string | null>();
+      for (const name of fs.readdirSync(runsDir)) {
+        if (name === 'run-summary.json' || !name.endsWith('.json')) continue;
+        const result = JSON.parse(fs.readFileSync(path.join(runsDir, name), 'utf8'));
+        seen.set(result.cellId, result.run.instructionsSeen);
+      }
+      const draft = seen.get('harness-battery|draft|Claude Opus 5|fake|0');
+      const tightened = seen.get('harness-battery|tightened|Claude Opus 5|fake|0');
+      expect(draft).toContain('ALWAYS_SAY_BANANA');
+      expect(tightened).toContain('ALWAYS_SAY_KUMQUAT');
+      // The comparison is only a comparison if the two differ — the assertion
+      // that fails if both arms are handed one text, or both handed none.
+      expect(draft).not.toBe(tightened);
+    } finally {
+      restore();
+    }
+  }, 60_000);
+
+  it('refuses a plan whose instruction file cannot be read, before spawning or spending anything', () => {
+    // The failure this task exists to prevent is discovering a typo'd path after
+    // half a matrix has been billed. Two cells here; neither may start.
+    const stub = fetchStub([0]);
+    const plan = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'guided', file: 'instructions/guide.md' }],
+      builds: [{ id: 'fake', dist: fastDist() }],
+    }, {});
+    const { status, stdout, stderr } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+    // Usage/config error (2), not "stopped early" (3): nothing ran.
+    expect(status).toBe(2);
+    expect(stderr).toContain('instruction arm "guided"');
+    expect(stderr).toContain(path.join(path.dirname(plan), 'instructions/guide.md'));
+    expect(stderr).toContain('ENOENT');
+    // It stopped BEFORE the grid, the estimate and the run — no cell header, no
+    // runs directory line, so no result file and no summary can exist either.
+    expect(stdout).not.toContain('[1/2]');
+    expect(stdout).not.toContain('Running 2 cells');
+  }, 60_000);
+
+  it('--dry-run validates the instruction files too, with no key anywhere', () => {
+    // A dry run's whole job is "tell me what this would do". Reporting a clean
+    // grid and a dollar figure for a plan whose instruction files do not exist
+    // would be the tool answering the one question it was asked, wrongly.
+    const stub = fetchStub([0]);
+    const plan = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'guided', file: 'guide.md' }],
+    }, {});
+    const { status, stdout, stderr } = runCliStubbed(stub, ['--plan', plan, '--dry-run']);
+    expect(status).toBe(2);
+    expect(stderr).toContain('could not be read');
+    expect(stderr).toContain('ENOENT');
+    // And it did NOT reach the "this would have worked" ending.
+    expect(stdout).not.toContain('nothing was spawned and nothing was spent');
+  }, 60_000);
+
+  it('--dry-run still succeeds, with no key anywhere, when the instruction files are real', () => {
+    const stub = fetchStub([0]);
+    const plan = writePlanWithFiles({
+      ...BASE_PLAN,
+      instructions: [{ id: 'draft', file: 'draft.md' }, { id: 'tightened', file: 'tightened.md' }],
+    }, { 'draft.md': '# Draft\n\nSay banana.\n', 'tightened.md': '# Tightened\n\nSay kumquat.\n' });
+    const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--dry-run']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('(dry run: nothing was spawned and nothing was spent)');
   }, 60_000);
 });
 
