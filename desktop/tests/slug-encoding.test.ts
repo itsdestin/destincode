@@ -17,9 +17,11 @@ describe('ccProjectSlug — anchored to directories CC itself created', () => {
   it('caps at 200 and hashes the ORIGINAL argument, not the slug', () => {
     const long = '/x/' + 'b'.repeat(300);
     const out = ccProjectSlug(long);
-    expect(out.length).toBe(CC_SLUG_MAX + 1 + ccHash(long).length);
-    expect(out.slice(0, CC_SLUG_MAX)).toBe(long.replace(/[^a-zA-Z0-9]/g, '-').slice(0, CC_SLUG_MAX));
-    expect(out.slice(CC_SLUG_MAX + 1)).toBe(ccHash(long));
+    // '98hajq' was computed with an INDEPENDENT hash reimplementation at
+    // review-fix time (2026-08-12) — never with this module's own ccHash
+    // (spec §2: expected values must not come from the code under test).
+    expect(out).toBe('-x-' + 'b'.repeat(197) + '-98hajq');
+    expect(out.length).toBe(207);
   });
 
   it('drive-normalizes a lowercase drive (OUR input normalization, not CC rule)', () => {
