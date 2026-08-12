@@ -63,32 +63,59 @@ let gradersPromise = null;
  *  something cell-derived here would only invite a future edit to start
  *  honouring it.
  *
- *  THROWS with the real module-resolution error if `dist/` has not been built.
- *  Building is `npm run build:main` (~11s measured); the tests build on demand. */
+ *  THROWS with the real module-resolution error if `dist/` has not been built,
+ *  plus the one-line remedy (`npm run build:main`) appended to it — see the
+ *  catch below. The tests build on demand instead. */
 function loadGraders() {
   if (!gradersPromise) {
     gradersPromise = (async () => {
-      const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
-      const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
-      const load = (rel) => import(path.join(root, rel));
-      const [matrix, cases, battery] = await Promise.all([
-        load('main/harness/eval/matrix.js'),
-        load('main/harness/eval/cases/index.js'),
-        load('main/harness/eval/battery.js'),
-      ]);
-      return {
-        graderRoot,
-        harnessRoot,
-        validatePlan: matrix.validatePlan,
-        expandPlan: matrix.expandPlan,
-        cellFilename: matrix.cellFilename,
-        allCaseIds: cases.allCaseIds,
-        getCase: cases.getCase,
-        roster: battery.loadRoster(ROSTER_FILE),
-      };
+      try {
+        return await importGraders();
+      } catch (err) {
+        // Fix pass 1 (2026-08-12 review, MINOR 2): the graders moved into
+        // dist/ in Task 8 Step 0, so an unbuilt checkout now fails EVERY
+        // invocation including --dry-run — a prerequisite that did not exist
+        // before. Node's own message ("Cannot find module .../dist/...") is
+        // accurate but names no remedy. The real error is kept verbatim and
+        // the remedy is APPENDED; the branch is narrowed to the one error code
+        // that actually means "not built", so no other failure gets a guessed
+        // cause attached to it.
+        if (err && err.code === 'ERR_MODULE_NOT_FOUND') {
+          throw new Error(
+            `${err.message}\n\n`
+            + 'harness-eval: the graders (matrix, the case registry, the roster loader) are loaded from this '
+            + `checkout's own compiled output, which does not look built. Run \`npm run build:main\` in `
+            + `${DESKTOP} first, then re-run this command.`,
+          );
+        }
+        throw err;
+      }
     })();
   }
   return gradersPromise;
+}
+
+/** The actual grader loads — split out only so loadGraders() can wrap them in
+ *  one try/catch without indenting the whole body. */
+async function importGraders() {
+  const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
+  const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
+  const load = (rel) => import(path.join(root, rel));
+  const [matrix, cases, battery] = await Promise.all([
+    load('main/harness/eval/matrix.js'),
+    load('main/harness/eval/cases/index.js'),
+    load('main/harness/eval/battery.js'),
+  ]);
+  return {
+    graderRoot,
+    harnessRoot,
+    validatePlan: matrix.validatePlan,
+    expandPlan: matrix.expandPlan,
+    cellFilename: matrix.cellFilename,
+    allCaseIds: cases.allCaseIds,
+    getCase: cases.getCase,
+    roster: battery.loadRoster(ROSTER_FILE),
+  };
 }
 
 // -- flag parsing -----------------------------------------------------------
@@ -133,12 +160,16 @@ function parseArgs(argv) {
  *  resolved once here and then threaded through exactly like any other
  *  --dist. It is never treated as "the grader root" anywhere downstream.
  *
- *  WHY this is injected here instead of relying on matrix.ts's own default:
- *  matrix.ts is a pure module with no filesystem access, so its DEFAULT_BUILDS
- *  is the RELATIVE `dist: '.'`. Handed to a worker, `'.'` resolves against
- *  whatever cwd that worker happens to have — i.e. "the harness under test" is
- *  decided by where you were standing when you typed the command. Resolving it
- *  to an absolute path here, once, is the fix. */
+ *  WHY this is injected here and not defaulted inside matrix.ts: matrix.ts is a
+ *  pure module with no filesystem access, so the only default it could offer
+ *  was the RELATIVE `dist: '.'` — which a worker resolves against whatever cwd
+ *  it happens to inherit, i.e. "the harness under test" would be decided by
+ *  where you were standing when you typed the command. Fix pass 1 (2026-08-12
+ *  review, IMPORTANT 2) DELETED that default rather than patching around it:
+ *  `expandPlan` now throws if a plan reaches it with no builds, and this
+ *  constant — resolved to an absolute path once, here, by the one layer that
+ *  knows where the plan file lives — is what a plan file that names no builds
+ *  gets instead. */
 const CURRENT_BUILD = { id: 'current', dist: path.join(DESKTOP, 'dist') };
 
 /** True only for a whole number >= 1. Used for the `--repeats` FLAG only —
@@ -428,6 +459,23 @@ async function runCell(cell, { apiKey, instructionsText }) {
   // cells that reach here without having gone through a plan file.
   if (typeof cell.dist !== 'string' || !cell.dist) {
     throw new Error(`harness-eval: cell "${cell.id}" (build arm "${cell.buildId}") has no "dist" — refusing to run, because defaulting it would run this checkout's own build while the report claims build "${cell.buildId}".`);
+  }
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 2): the check above only rejected
+  // a FALSY dist, and the value that actually reached here was `'.'` — truthy,
+  // and the old matrix.ts default. A relative dist is resolved by the worker
+  // against whatever working directory it inherits, so the run would silently
+  // test whichever build the cwd happened to point at while the report named
+  // build "<buildId>". That is the same class of bug as a missing dist, so it
+  // is refused in the same place, before anything is spawned or spent. The
+  // source-side half of this fix removed matrix.ts's relative default outright.
+  if (!path.isAbsolute(cell.dist)) {
+    throw new Error(
+      `harness-eval: cell "${cell.id}" (build arm "${cell.buildId}") has a RELATIVE "dist" ("${cell.dist}") — `
+      + 'refusing to run. The worker resolves the harness under test against the working directory it inherits, so '
+      + 'a relative dist means the same plan tests a different build depending on where the command was typed. '
+      + 'Build dists must be absolute; a plan file\'s relative dist is made absolute against the plan file itself '
+      + 'by readPlanFile().',
+    );
   }
   const { harnessRoot, getCase, roster } = await loadGraders();
   // Fix (review round 1, IMPORTANT 1), rewired in Task 8 Step 0: the worker's

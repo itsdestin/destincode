@@ -8,6 +8,7 @@ import { graderRoot as srcGraderRoot, harnessRoot as srcHarnessRoot } from '../s
 
 const DESKTOP = path.resolve(__dirname, '..');
 const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
+const CLI = path.join(DESKTOP, 'test-engine/harness-eval.mjs');
 const requireCjs = createRequire(import.meta.url);
 
 /**
@@ -76,6 +77,77 @@ function ensureBuiltGraders(): void {
 // hook timeout would fail on a cold tree for no reason but the clock.
 const BUILD_TIMEOUT_MS = 300_000;
 
+/** Run a one-off ES-module script under plain node (no vitest transform). */
+function runNode(source: string): { status: number | null; stdout: string; stderr: string } {
+  try {
+    const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: DESKTOP,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    return { status: 0, stdout, stderr: '' };
+  } catch (err) {
+    const e = err as { status: number | null; stdout: string; stderr: string };
+    return { status: e.status, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
+
+const q = (p: string) => JSON.stringify(p);
+
+/**
+ * Asserts MODULE IDENTITY for every grader the orchestrator loads: the exact
+ * function object `loadGraders()` hands back must be the one `require()`
+ * produces from `<desktop>/dist`. Prints "grader identity OK" and exits 0, or
+ * names every mismatched module and exits 1.
+ *
+ * WHY identity and not content (fix pass 1, 2026-08-12 review, IMPORTANT 1):
+ * a cell's `dist` is ANOTHER CHECKOUT OF THIS SAME REPO. It has the same case
+ * ids, the same matrix, the same roster file — so "the registry contains
+ * harness-battery" and "the roster contains Claude Opus 5", which is what this
+ * test used to assert, pass identically whichever root the graders came from.
+ * The one thing that differs between two roots is the module OBJECT.
+ */
+const GRADER_IDENTITY_PROBE = `
+import { createRequire } from 'module';
+import * as path from 'path';
+const require_ = createRequire(${q(path.join(DESKTOP, 'package.json'))});
+const matrixJs  = ${q(path.join(DESKTOP, 'dist/main/harness/eval/matrix.js'))};
+const casesJs   = ${q(path.join(DESKTOP, 'dist/main/harness/eval/cases/index.js'))};
+const batteryJs = ${q(path.join(DESKTOP, 'dist/main/harness/eval/battery.js'))};
+const pathsJs   = ${q(COMPILED_PATHS)};
+
+const { loadGraders } = await import(${q(CLI)});
+const g = await loadGraders();
+
+const problems = [];
+const same = (name, actual, expected) => { if (actual !== expected) problems.push(name); };
+same('matrix.validatePlan', g.validatePlan, require_(matrixJs).validatePlan);
+same('matrix.expandPlan',   g.expandPlan,   require_(matrixJs).expandPlan);
+same('matrix.cellFilename', g.cellFilename, require_(matrixJs).cellFilename);
+same('cases.allCaseIds',    g.allCaseIds,   require_(casesJs).allCaseIds);
+same('cases.getCase',       g.getCase,      require_(casesJs).getCase);
+same('paths.graderRoot',    g.graderRoot,   require_(pathsJs).graderRoot);
+same('paths.harnessRoot',   g.harnessRoot,  require_(pathsJs).harnessRoot);
+
+// battery.js is the one grader whose export is CALLED rather than handed back
+// ("roster: battery.loadRoster(ROSTER_FILE)"), so there is no function
+// reference to compare. Its equivalent evidence is the module cache: after
+// loadGraders() exactly ONE battery.js may be loaded, and it must be this
+// checkout's. A second root shows up here as a second cache entry.
+const batteries = Object.keys(require_.cache)
+  .filter((k) => k.endsWith(path.join('harness', 'eval', 'battery.js')));
+if (batteries.length !== 1 || batteries[0] !== batteryJs) {
+  problems.push('battery.js loaded from [' + batteries.join(', ') + '] instead of ' + batteryJs);
+}
+
+if (problems.length) {
+  console.error('GRADER IDENTITY MISMATCH — these did not come from ' + ${q(path.join(DESKTOP, 'dist'))} + ':');
+  for (const p of problems) console.error('  - ' + p);
+  process.exit(1);
+}
+console.log('grader identity OK');
+`;
+
 describe('grader isolation', () => {
   // WHY the COMPILED module and not just the TypeScript source: paths.ts
   // resolves its answer from `__dirname`, so the source answers
@@ -114,24 +186,46 @@ describe('grader isolation', () => {
   });
 
   it('loads the case registry and the matrix from its own dist, not a cell dist', async () => {
-    // Regression pin (Task 8 Step 0): the orchestrator now imports matrix.js,
+    // Regression pin (Task 8 Step 0): the orchestrator imports matrix.js,
     // cases/index.js and battery.js at run time. Every one of them must come
     // from graderRoot() — a grader loaded from the cell's dist would make a
     // branch-vs-master run compare two graders as well as two harnesses, which
     // is a silently uninterpretable diff rather than a crash.
+    //
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 1): this test used to assert
+    // CONTENT — that the registry answers "harness-battery" and the roster
+    // answers "Claude Opus 5". Those assertions could not fail for the reason
+    // they claimed: a cell's `dist` is ANOTHER CHECKOUT OF THIS SAME REPO, so
+    // it holds the same case ids, the same matrix and the same roster file, and
+    // every content-shaped assertion passes identically whichever root was
+    // used. What differs between the two roots is the module OBJECT, so that is
+    // what is asserted now. Node keys its module cache by resolved path and
+    // shares it between `require()` and `import()` of a CommonJS file, so a
+    // function loaded from any other root can never be `===` to this one.
+    // WHY the identity check runs in a SPAWNED plain-node process instead of
+    // here: vitest serves `harness-eval.mjs` through vite's module runner, so
+    // the dynamic `import()` inside it is intercepted and returns a DIFFERENT
+    // module instance than `createRequire()` does — measured, the in-process
+    // version of this assertion failed with "expected [Function validatePlan]
+    // to be [Function validatePlan] // Object.is equality" on a correct tree.
+    // The CLI runs under plain node, where Node's module cache is keyed by
+    // resolved path and shared between require() and import() of a CommonJS
+    // file, so identity is exactly the right instrument — it just has to be
+    // measured in the environment the invariant lives in.
+    const { status, stdout, stderr } = runNode(GRADER_IDENTITY_PROBE);
+    expect(`${stdout}${stderr}`.trim()).toContain('grader identity OK');
+    expect(status).toBe(0);
+
+    // ...and, in-process, that the graders genuinely answer. (These two do NOT
+    // discriminate the root — see above — they only prove the modules loaded.)
     const { loadGraders } = await import('../test-engine/harness-eval.mjs');
     const graders = await loadGraders();
-    // The registry answers with THIS checkout's cases, and the roster with this
-    // checkout's roster file — observable proof the imports resolved locally.
     expect(graders.allCaseIds()).toContain('harness-battery');
     expect(graders.roster.map((r: { label: string }) => r.label)).toContain('Claude Opus 5');
-    expect(graders.graderRoot({ dist: '/some/cell/dist' })).toBe(path.join(DESKTOP, 'dist'));
   }, BUILD_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
-
-const CLI = path.join(DESKTOP, 'test-engine/harness-eval.mjs');
 
 function writePlan(plan: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-plan-'));
@@ -234,7 +328,25 @@ describe('plan validation goes through matrix.ts validatePlan', () => {
       ...BASE_PLAN,
       instructions: [{ id: 'baseline', file: null }, { id: 'terse' }],
     });
-    await expect(readPlanFile(file)).rejects.toThrow(/Instruction arm "terse" has an invalid "file": undefined/);
+    await expect(readPlanFile(file)).rejects.toThrow(/Instruction arm "terse" has no "file" key/);
+    // Fix pass 1 (2026-08-12 review, MINOR 1): the REASON is the part a
+    // non-developer needs, and it was lost when this rule moved into matrix.ts.
+    // Pinned so a future message rewrite cannot quietly drop it again.
+    await expect(readPlanFile(file)).rejects.toThrow(/cannot be told apart from a deliberate null baseline/);
+  });
+
+  it('rejects a plan where EVERY arm forgot "file", not just one of them', async () => {
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    // Fix pass 1 (2026-08-12 review, MINOR 1): the original scenario. When the
+    // test above was repointed at matrix.ts's validator its fixture gained an
+    // explicit `file: null` on the first arm, so "the author never learned the
+    // key exists" — the case where NO arm has it, and the whole instructions
+    // axis is therefore one task repeated — stopped being exercised at all.
+    const file = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline' }, { id: 'terse' }],
+    });
+    await expect(readPlanFile(file)).rejects.toThrow(/Instruction arm "baseline" has no "file" key/);
   });
 
   it('rejects an instruction arm whose "file" is neither a path nor null', async () => {
@@ -428,6 +540,24 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     const { runCell } = await import('../test-engine/harness-eval.mjs');
     await expect(runCell({ ...cell, dist: '' }, { apiKey: 'sk-fake' }))
       .rejects.toThrow(/build arm "current"\) has no "dist"/);
+  });
+
+  it.each(['.', 'dist', './dist', '../other/dist'])('refuses a RELATIVE dist (%s) before spawning anything', async (dist) => {
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 2): the money-boundary guard
+    // rejected only a FALSY dist, and the value that actually reached here was
+    // `'.'` — matrix.ts's old default build arm, which is truthy. So a relative
+    // dist sailed through to a paid spawn and the worker resolved the harness
+    // under test against whatever cwd it inherited: the run would silently test
+    // whichever build the cwd pointed at while the report named build
+    // "current".
+    //
+    // WHY `rejects` is itself the proof that nothing was spawned: every path
+    // that reaches the child process RESOLVES with a result object (see the
+    // worker-stderr suite below, where a bad dist comes back as
+    // `result.error`). Only the pre-flight guards reject.
+    await expect(runCell({ ...cell, dist }, { apiKey: 'sk-fake' }))
+      .rejects.toThrow(/has a RELATIVE "dist"/);
   });
 
   it('throws when the cell names a model that is not a roster label', async () => {

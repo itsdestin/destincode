@@ -41,7 +41,18 @@ export interface EvalPlan {
   cases: string[];
   instructions: InstructionArm[];
   models: string[]; // roster labels
-  builds?: BuildArm[]; // default [{ id: 'current', dist: '.' }]
+  /** Optional IN THE PLAN FILE, required by the time it reaches `expandPlan`.
+   *
+   *  Fix pass 1 (2026-08-12 review, IMPORTANT 2): there used to be a
+   *  `DEFAULT_BUILDS = [{ id: 'current', dist: '.' }]` here, and `expandPlan`
+   *  fell back to it. `'.'` is a RELATIVE path, and the worker resolves the
+   *  harness under test against whatever working directory it inherits — so
+   *  "which build am I actually testing" was decided by where you were standing
+   *  when you typed the command, which is the exact bug `paths.ts` exists to
+   *  prevent. The default is gone: whoever knows an absolute path (the
+   *  orchestrator, which resolves relative dists against the plan file) must
+   *  say so, and `expandPlan` refuses a plan that does not. */
+  builds?: BuildArm[];
   judge?: string | null; // OpenRouter model id; null/absent = no judging
   repeats?: number; // default 1
 }
@@ -67,15 +78,32 @@ export interface Cell {
   repeat: number;
 }
 
-const DEFAULT_BUILDS: BuildArm[] = [{ id: 'current', dist: '.' }];
-
 /** Expand a validated plan into the ordered list of runs.
  *
  *  Order is cases → instructions → models → builds → repeats, outermost
  *  first, so a report generated in this order reads case-by-case. Pure and
- *  deterministic: no filesystem, no network, no clock, no randomness. */
-export function expandPlan(plan: EvalPlan): Cell[] {
-  const builds = plan.builds && plan.builds.length > 0 ? plan.builds : DEFAULT_BUILDS;
+ *  deterministic: no filesystem, no network, no clock, no randomness.
+ *
+ *  `builds` is REQUIRED here (note the parameter type), even though it is
+ *  optional in the plan FILE. Fix pass 1 (2026-08-12 review, IMPORTANT 2):
+ *  this function used to fall back to `[{ id: 'current', dist: '.' }]`. That
+ *  default is unfixable from inside a pure module — an absolute path can only
+ *  come from the filesystem or from the caller, and this module is deliberately
+ *  allowed neither — so the fallback is gone rather than made absolute. The
+ *  caller that knows where the plan file lives (the orchestrator's
+ *  `readPlanFile`) resolves the current build to an absolute path and injects
+ *  it; anything else gets a loud throw instead of a silently wrong build. */
+export function expandPlan(plan: EvalPlan & { builds: BuildArm[] }): Cell[] {
+  const builds = plan.builds;
+  if (!Array.isArray(builds) || builds.length === 0) {
+    throw new Error(
+      'Plan "builds" is required by expandPlan: it must be a non-empty array of build arms, each with an '
+      + 'ABSOLUTE "dist". There is no default. A default would have to be a relative path (this module has no '
+      + 'filesystem access), and a relative dist is resolved by the worker against whatever working directory it '
+      + 'inherits — so the same plan would test a different build depending on where the command was run. The '
+      + 'orchestrator (test-engine/harness-eval.mjs) injects the current build for plan files that name none.',
+    );
+  }
   const repeats = plan.repeats ?? 1;
 
   const cells: Cell[] = [];
@@ -260,6 +288,25 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
     }
     seenInstructionIds.add(id);
     const file = (instruction as Record<string, unknown>).file;
+    // Fix pass 1 (2026-08-12 review, MINOR 1): a MISSING "file" key gets its
+    // own message, because it is the highest-stakes mistake in the whole plan
+    // format and the generic "invalid file: undefined" does not say why. An
+    // omitted key is indistinguishable from `null` — the deliberate baseline —
+    // to everything downstream, so one forgotten key does not fail: it quietly
+    // turns the instructions axis into N paid runs of the SAME task, reported
+    // as a comparison. (This explanation existed in the orchestrator's own
+    // local validator, deleted in Task 8 Step 0; it is restored here because
+    // this is now the only validator, and the person reading it is not a
+    // developer.)
+    if (!Object.prototype.hasOwnProperty.call(instruction, 'file') || file === undefined) {
+      throw new Error(
+        `Instruction arm ${describe(id)} has no "file" key. Every arm must state what it loads: a path to an `
+        + 'instructions file, or null to mark it as the no-instructions baseline arm. A missing key cannot be '
+        + 'told apart from a deliberate null baseline anywhere downstream, so one forgotten key would silently '
+        + 'collapse the instructions axis into the same task run once per arm — billed and reported as a '
+        + 'comparison between arms that were in fact identical.',
+      );
+    }
     // Fix (Task 8 Step 0, 2026-08-12 integration): `''` used to pass here,
     // because `typeof '' === 'string'`. An empty-string file is carried onto
     // the cell as a FALSY instructionsFile, which every downstream guard reads

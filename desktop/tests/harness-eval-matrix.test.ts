@@ -1,11 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { expandPlan, validatePlan, cellFilename, type Cell } from '../src/main/harness/eval/matrix';
 
+// Fix pass 1 (2026-08-12 review, IMPORTANT 2): `builds` is now spelled out
+// here. expandPlan used to fall back to `[{ id: 'current', dist: '.' }]` — a
+// RELATIVE path the worker would resolve against whatever cwd it inherited, so
+// "which build am I testing" depended on where the command was typed. There is
+// no default any more; the caller that knows an absolute path must supply one.
 const PLAN = {
   name: 'x',
   cases: ['a', 'b'],
   instructions: [{ id: 'none', file: null }, { id: 'draft', file: 'd.md' }],
   models: ['M1', 'M2'],
+  builds: [{ id: 'current', dist: '/abs/dist' }],
 };
 
 describe('expandPlan', () => {
@@ -20,8 +26,29 @@ describe('expandPlan', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(expandPlan(PLAN as any).map((c) => c.id)).toEqual(ids); // deterministic order
   });
-  it('defaults to a single current build', () => {
-    expect(expandPlan(PLAN as any).every((c) => c.buildId === 'current')).toBe(true);
+  it('carries the named build arm onto every cell', () => {
+    expect(expandPlan(PLAN as any).every((c) => c.buildId === 'current' && c.dist === '/abs/dist')).toBe(true);
+  });
+
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 2). This replaces a test called
+  // "defaults to a single current build" — the default it pinned was
+  // `dist: '.'`, and a relative dist reaching a worker means the run silently
+  // tests whichever build the working directory happened to point at, while the
+  // report names the arm. A pure module cannot produce an absolute default, so
+  // the default is gone and its absence is what is pinned now.
+  it.each([
+    ['absent', {}],
+    ['undefined', { builds: undefined }],
+    ['an empty array', { builds: [] }],
+  ])('refuses to expand a plan whose builds are %s, rather than defaulting to a relative dist', (_label, override) => {
+    const { builds: _drop, ...withoutBuilds } = PLAN;
+    expect(() => expandPlan({ ...withoutBuilds, ...override } as any))
+      .toThrow(/"builds" is required by expandPlan/);
+    // The message has to say WHY, not just refuse: the reader is the person who
+    // hand-wrote the plan, and "add builds" without the cwd explanation invites
+    // them to write `"dist": "."` and reproduce the exact bug.
+    expect(() => expandPlan({ ...withoutBuilds, ...override } as any))
+      .toThrow(/working directory it inherits/);
   });
   // Fix (Task 8 Step 0, 2026-08-12 integration): a runner holds a Cell, not a
   // plan, and has to tell the deliberate baseline arm (null) apart from an arm
@@ -91,6 +118,33 @@ describe('validatePlan', () => {
       { ...PLAN, instructions: [{ id: 'none', file: null }, { id: 'draft', file: '' }] },
       ['a', 'b'], ['M1', 'M2'],
     )).toThrow(/Instruction arm "draft" has an invalid "file": ""/);
+  });
+
+  // Fix pass 1 (2026-08-12 review, MINOR 1): a MISSING "file" key gets its own
+  // message rather than the generic invalid-file one, because it is the
+  // format's highest-stakes mistake and the only one whose consequence is
+  // silence: an omitted key is indistinguishable from `null` (the deliberate
+  // baseline) downstream, so it does not fail — it turns the instructions axis
+  // into the same task run once per arm and bills it as a comparison.
+  it('rejects an instruction arm with no "file" key, and says why that is dangerous', () => {
+    expect(() => validatePlan(
+      { ...PLAN, instructions: [{ id: 'none', file: null }, { id: 'draft' }] },
+      ['a', 'b'], ['M1', 'M2'],
+    )).toThrow(/Instruction arm "draft" has no "file" key/);
+    expect(() => validatePlan(
+      { ...PLAN, instructions: [{ id: 'none', file: null }, { id: 'draft' }] },
+      ['a', 'b'], ['M1', 'M2'],
+    )).toThrow(/cannot be told apart from a deliberate null baseline/);
+  });
+
+  it('rejects a plan where every arm forgot "file", naming the first', () => {
+    // The scenario the plan format is most likely to meet in the wild: an
+    // author who never learned the key exists, so the whole instructions axis
+    // is one task repeated.
+    expect(() => validatePlan(
+      { ...PLAN, instructions: [{ id: 'none' }, { id: 'draft' }] },
+      ['a', 'b'], ['M1', 'M2'],
+    )).toThrow(/Instruction arm "none" has no "file" key/);
   });
 
   it('rejects two arms that both set file: null, which is not a comparison', () => {
@@ -237,6 +291,7 @@ describe('cellFilename', () => {
       cases: ['a-b', 'a_b'],
       instructions: [{ id: 'none', file: null }],
       models: ['M1'],
+      builds: [{ id: 'current', dist: '/abs/dist' }],
     };
     const names = expandPlan(plan as any).map(cellFilename);
     expect(new Set(names).size).toBe(names.length);
@@ -307,6 +362,7 @@ describe('expandPlan filename collision detection', () => {
         cases: ['a-b', 'a_b'],
         instructions: [{ id: 'none', file: null }],
         models: ['M1'],
+        builds: [{ id: 'current', dist: '/abs/dist' }],
       };
       expect(() => mocked.expandPlan(plan as any)).toThrow(
         /a-b\|none\|M1\|current\|0.*a_b\|none\|M1\|current\|0|a_b\|none\|M1\|current\|0.*a-b\|none\|M1\|current\|0/s,
