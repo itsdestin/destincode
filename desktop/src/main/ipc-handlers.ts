@@ -819,24 +819,28 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // File picker dialog
+  // File picker dialog (attachment paperclip)
   ipcMain.handle(IPC.DIALOG_OPEN_FILE, async () => {
+    // NO `filters` on purpose — do NOT re-add a filter list here. Destin's ask
+    // is "default to all files, on all platforms", and Electron's dialog API
+    // cannot deliver an All-Files DEFAULT alongside a category dropdown:
+    //   - Linux: a live D-Bus capture of org.freedesktop.portal.FileChooser.OpenFile
+    //     (KDE Plasma, 2026-08-12) showed Electron strips the wildcard filter
+    //     (file_dialog_linux.cc GetFilterInfo() keeps only include_all_files,
+    //     hardcodes file_type_index=0), Chromium re-appends "*.*" LAST and emits
+    //     no current_filter key — so the portal selects the first listed filter
+    //     (Images), and app-side ordering can never win. electron#43491, closed
+    //     not-planned. A lone All-Files filter is no fix either: '*' serializes
+    //     as the glob '*.*', which excludes extensionless files like Makefile.
+    //   - Windows: same rule by design — the dialog "picks the first filter as
+    //     default, except the All Files one". electron#19492, closed not-planned.
+    //   - macOS: filters are a selection allowlist, not a dropdown default, so
+    //     a list adds nothing once All Files is present.
+    // If a category dropdown is ever wanted, that means an upstream Electron
+    // patch or an in-app picker — not a filters array. Pinned by
+    // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        // All Files FIRST — the native dialog opens with the first entry
-        // selected, so the paperclip defaults to every file type (Destin's
-        // 2026-08-12 request). The rest are optional categories the user can
-        // switch to in the dialog's own filter dropdown. Pinned by
-        // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
-        { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'] },
-        { name: 'Markdown & Text', extensions: ['md', 'markdown', 'txt'] },
-        { name: 'PDFs', extensions: ['pdf'] },
-        { name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] },
-        { name: 'Documents', extensions: ['docx', 'doc'] },
-        { name: 'Code', extensions: ['ts', 'tsx', 'js', 'jsx', 'py', 'json', 'html', 'css', 'sh'] },
-      ],
     });
     return result.canceled ? [] : result.filePaths;
   });
