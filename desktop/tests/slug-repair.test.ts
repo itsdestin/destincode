@@ -135,6 +135,47 @@ describe('repairHomeForks (spec §6.1)', () => {
     expect(fs.readFileSync(wrong, 'utf8')).toBe(before[0]);
     expect(fs.readFileSync(correct, 'utf8')).toBe(before[1]);
     expect(fs.readFileSync(path.join(h.quarantine.dir, 'decisions.log'), 'utf8')).toContain('ATTENTION fork s3');
+    // (review fix, MINOR) both snapshots physically landed in quarantine.
+    expect(fs.readFileSync(path.join(h.quarantine.dir, path.relative(h.home, wrong)), 'utf8')).toBe(before[0]);
+    expect(fs.readFileSync(path.join(h.quarantine.dir, path.relative(h.home, correct)), 'utf8')).toBe(before[1]);
+  });
+
+  it('correct-dir copy is a strict subset of the $HOME copy: quarantine it, promote the superset (review fix, IMPORTANT 2a)', () => {
+    const h = makeHome();
+    const correctDir = path.join(h.projectsDir, ccProjectSlug(h.P));
+    fs.mkdirSync(correctDir, { recursive: true });
+    const wrong = path.join(h.homeSlugDir, 's6.jsonl');
+    const correct = path.join(correctDir, 's6.jsonl');
+    const supersetBytes = F('u1', h.P) + F('u2', h.P);
+    const subsetBytes = F('u1', h.P);
+    fs.writeFileSync(wrong, supersetBytes);
+    fs.writeFileSync(correct, subsetBytes);
+    age(wrong); age(correct);
+    const out = repairHomeForks(h.opts);
+    expect(out).toEqual([{ sessionId: 's6', homeFolder: h.P, kind: 'replaced-with-superset', paths: [correct] }]);
+    expect(fs.existsSync(wrong)).toBe(false);
+    expect(fs.readFileSync(correct, 'utf8')).toBe(supersetBytes);
+    const quarantinedCorrect = path.join(h.quarantine.dir, path.relative(h.home, correct));
+    expect(fs.readFileSync(quarantinedCorrect, 'utf8')).toBe(subsetBytes);
+  });
+
+  it('correct-dir copy is superset-eligible but currently live: pair is deferred, nothing moves (review fix, IMPORTANT 2b)', () => {
+    const h = makeHome();
+    const correctDir = path.join(h.projectsDir, ccProjectSlug(h.P));
+    fs.mkdirSync(correctDir, { recursive: true });
+    const wrong = path.join(h.homeSlugDir, 's7.jsonl');
+    const correct = path.join(correctDir, 's7.jsonl');
+    const supersetBytes = F('u1', h.P) + F('u2', h.P);
+    const subsetBytes = F('u1', h.P);
+    fs.writeFileSync(wrong, supersetBytes); age(wrong);
+    fs.writeFileSync(correct, subsetBytes);                    // fresh mtime = live; NOT aged
+    const out = repairHomeForks(h.opts);
+    expect(out).toEqual([{ sessionId: 's7', homeFolder: h.P, kind: 'deferred-live', paths: [wrong, correct] }]);
+    expect(fs.existsSync(wrong)).toBe(true);
+    expect(fs.readFileSync(wrong, 'utf8')).toBe(supersetBytes);
+    expect(fs.existsSync(correct)).toBe(true);
+    expect(fs.readFileSync(correct, 'utf8')).toBe(subsetBytes);
+    expect(fs.existsSync(h.quarantine.dir)).toBe(false);
   });
 
   it('top-level only: a subagent jsonl below the dir is never touched (§6.1 scoping)', () => {

@@ -140,7 +140,11 @@ export interface RepairOpts {
 export interface RepairFinding {
   sessionId: string;
   homeFolder: string;           // the R2 answer (the real project)
-  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live';
+  // 'rename-failed' (review fix): the promotion rename itself threw. Both
+  // physical copies survive (one at the $HOME path, or one in quarantine +
+  // one at $HOME) — this kind exists so a run failure never silently drops
+  // a finding, it just can't say where the session finally landed.
+  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live' | 'rename-failed';
   paths: string[];
 }
 
@@ -185,7 +189,17 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
     const correct = path.join(correctDir, path.basename(file));
     if (!fs.existsSync(correct)) {
       fs.mkdirSync(correctDir, { recursive: true });
-      fs.renameSync(file, correct);
+      // Review fix (Important 1): every other mutation in this module is
+      // guarded; this promotion rename wasn't. Fail closed — `file` never
+      // left, so a failure here loses nothing, but an unguarded throw would
+      // still abort the whole run and drop every finding already collected.
+      try {
+        fs.renameSync(file, correct);
+      } catch (e) {
+        q.log(`ERROR ${sessionId}: move-to-correct rename failed — $HOME copy still at ${file}: ${String(e)}`);
+        findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: [file] });
+        continue;
+      }
       q.log(`MOVE-TO-CORRECT ${file} -> ${correct}`);
       findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [correct] });
       continue;
@@ -197,14 +211,47 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
           findings.push({ sessionId, homeFolder: P, kind: 'quarantined', paths: [file] });
         }
         break;
-      case 'wrong-is-superset':
+      case 'wrong-is-superset': {
+        // Review fix (CRITICAL): this branch is the one place that touches
+        // the CORRECT-dir copy's inode (quarantine it, then rename `file`
+        // over its old path). If CC is actively appending to `correct`,
+        // doing that steals the inode out from under the open fd and loses
+        // turns — spec §6.5's exact forbidden hazard. Defer the whole pair
+        // instead of racing it; a live session will go quiet and get
+        // reclassified on a later run.
+        if (isLive(correct, liveMs, now)) {
+          findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file, correct] });
+          break;
+        }
         if (q.move(correct, `6.1 ${sessionId}: correct copy superseded`)) {
-          fs.renameSync(file, correct);
-          q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (superset)`);
-          findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+          // Review fix (Important 1): guard the promotion rename. If it
+          // throws AFTER the quarantine move already succeeded, `correct`
+          // is briefly empty on disk — but nothing is LOST: the superseded
+          // copy is safe in quarantine and `file` is still at its original
+          // $HOME path. Log exactly where both are and surface a finding
+          // instead of throwing and losing the whole run.
+          try {
+            fs.renameSync(file, correct);
+            q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (superset)`);
+            findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+          } catch (e) {
+            const quarantinedAt = path.join(q.dir, path.relative(q.homeRoot, correct));
+            q.log(`ERROR ${sessionId}: promotion rename failed after quarantine — superseded copy at ${quarantinedAt}, $HOME copy still at ${file}: ${String(e)}`);
+            findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: [file, quarantinedAt] });
+          }
         }
         break;
+      }
       case 'fork':
+        // Review fix (CRITICAL): snapshotting `correct` while CC is live
+        // risks capturing a torn mid-append write. Defer the whole pair
+        // rather than partially snapshot — a fork already needs a human
+        // decision, so waiting for the session to go quiet costs nothing
+        // and this pair gets re-evaluated (still un-classified) next run.
+        if (isLive(correct, liveMs, now)) {
+          findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file, correct] });
+          break;
+        }
         // Case C — NEVER automated (spec §6.0). Snapshot both, change nothing.
         q.snapshot(file, `6.1 FORK ${sessionId} ($HOME copy)`);
         q.snapshot(correct, `6.1 FORK ${sessionId} (project copy)`);
