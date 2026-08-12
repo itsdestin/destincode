@@ -359,14 +359,18 @@ export class TranscriptWatcher extends EventEmitter {
   /**
    * Start watching the transcript for a session.
    */
-  startWatching(desktopSessionId: string, claudeSessionId: string, cwd: string): void {
+  startWatching(desktopSessionId: string, claudeSessionId: string, cwd: string, transcriptPath?: string): void {
     if (this.sessions.has(desktopSessionId)) {
       this.stopWatching(desktopSessionId);
     }
 
-    const slug = ccProjectSlug(cwd);
-    const jsonlPath = path.join(this.claudeConfigDir, slug, `${claudeSessionId}.jsonl`);
-    const subagentsDir = path.join(this.claudeConfigDir, slug, claudeSessionId, 'subagents');
+    // Prefer CC's own transcript_path from the hook payload (spec §5.0): no
+    // character class to get wrong, no cap branch, no drift when CC changes its
+    // encoding. The slug mirror below is the FALLBACK only (hook payload absent),
+    // and the subagents dir always rides the transcript's parent.
+    const jsonlPath = transcriptPath
+      || path.join(this.claudeConfigDir, ccProjectSlug(cwd), `${claudeSessionId}.jsonl`);
+    const subagentsDir = path.join(path.dirname(jsonlPath), claudeSessionId, 'subagents');
 
     const subagentIndex = new SubagentIndex();
     const subagentWatcher = new SubagentWatcher({

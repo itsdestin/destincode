@@ -309,8 +309,7 @@ describe('TranscriptWatcher', () => {
     const cwd = 'C:\\Users\\alice';
 
     // Create the project directory and JSONL file
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
     fs.writeFileSync(jsonlPath, '');
@@ -318,7 +317,7 @@ describe('TranscriptWatcher', () => {
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
 
     // Append a line
     const line = JSON.stringify({
@@ -352,8 +351,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-dedup';
     const cwd = '/home/user/project';
 
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
@@ -374,7 +372,7 @@ describe('TranscriptWatcher', () => {
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
     // readNewLines is async — poll for the initial read rather than betting on a
     // fixed 100ms, which lost under vitest's parallel pool.
     await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1), { timeout: SETTLE_MS });
@@ -394,12 +392,12 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-stop';
     const cwd = 'C:\\Users\\alice';
 
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
-    fs.writeFileSync(path.join(projectDir, `${claudeSessionId}.jsonl`), '');
+    const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
+    fs.writeFileSync(jsonlPath, '');
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
     watcher.stopWatching(desktopSessionId);
 
     // Should not throw when stopping a non-existent session
@@ -411,8 +409,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-partial';
     const cwd = '/home/user/project';
 
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
@@ -432,7 +429,7 @@ describe('TranscriptWatcher', () => {
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
     await wait(200); // negative assertion below — a fixed settle is correct here
     expect(events).toHaveLength(0); // Incomplete line, no events
 
@@ -448,8 +445,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-multi';
     const cwd = '/home/user/project';
 
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
@@ -468,7 +464,7 @@ describe('TranscriptWatcher', () => {
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
     // readNewLines is async — poll for the initial read, don't bet on 100ms.
     await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: SETTLE_MS });
 
@@ -484,14 +480,16 @@ describe('TranscriptWatcher', () => {
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
+    // Path is known up front (this is what the hook would hand us) even
+    // though the file itself doesn't exist yet.
+    const projectDir = path.join(tmpDir, 'proj');
+    const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
+
     // Start watching before the file exists — should not throw
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
 
     // Now create the file
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
-    const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
     const line = JSON.stringify({
       type: 'assistant',
       uuid: 'uuid-poll',
@@ -519,8 +517,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-throw';
     const cwd = '/home/user/project';
 
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
@@ -552,7 +549,7 @@ describe('TranscriptWatcher', () => {
       received.push(ev.data.text);
     });
 
-    watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
     await vi.waitFor(() => {
       expect(received).toContain('msg A');
       expect(received).toContain('msg C');
@@ -624,12 +621,11 @@ describe('TranscriptWatcher read integrity', () => {
 
   function setupSession(desktopId: string, claudeId: string) {
     const cwd = '/home/user/integrity';
-    const slug = ccProjectSlug(cwd);
-    const projectDir = path.join(tmpDir, slug);
+    const projectDir = path.join(tmpDir, 'proj');
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeId}.jsonl`);
     fs.writeFileSync(jsonlPath, '');
-    watcher.startWatching(desktopId, claudeId, cwd);
+    watcher.startWatching(desktopId, claudeId, cwd, jsonlPath);
     return jsonlPath;
   }
 
@@ -730,5 +726,51 @@ describe('TranscriptWatcher read integrity', () => {
     const texts = history.filter((e) => e.type === 'assistant-text');
     expect(texts.length).toBe(1);
     expect(texts[0].data.text).toBe('grow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startWatching path source (spec §5.0): hook-supplied transcript_path wins,
+// slug derivation is fallback-only.
+// ---------------------------------------------------------------------------
+describe('startWatching path source (spec §5.0)', () => {
+  let watcher: TranscriptWatcher;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tw-pathsource-'));
+    watcher = new TranscriptWatcher(tmpDir);
+  });
+
+  afterEach(() => {
+    watcher.stopAll();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('uses the hook-supplied transcript_path verbatim when present', async () => {
+    const dir = path.join(tmpDir, 'anything CC chose — no slug involved');
+    fs.mkdirSync(dir, { recursive: true });
+    const jsonlPath = path.join(dir, 'claude-x.jsonl');
+    fs.writeFileSync(jsonlPath, '');
+    const events: TranscriptEvent[] = [];
+    watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
+    watcher.startWatching('desktop-x', 'claude-x', '/some/cwd/that/would/derive/elsewhere', jsonlPath);
+    fs.appendFileSync(jsonlPath, JSON.stringify({ type: 'user', uuid: 'u1', promptId: 'prompt-u1', message: { role: 'user', content: 'hi' } }) + '\n');
+    await new Promise(r => setTimeout(r, 1200));
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to ccProjectSlug derivation when transcript_path is absent', async () => {
+    const cwd = '/home/user/My Project, With & Punct';
+    const projectDir = path.join(tmpDir, ccProjectSlug(cwd));
+    fs.mkdirSync(projectDir, { recursive: true });
+    const jsonlPath = path.join(projectDir, 'claude-y.jsonl');
+    fs.writeFileSync(jsonlPath, '');
+    const events: TranscriptEvent[] = [];
+    watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
+    watcher.startWatching('desktop-y', 'claude-y', cwd);
+    fs.appendFileSync(jsonlPath, JSON.stringify({ type: 'user', uuid: 'u2', promptId: 'prompt-u2', message: { role: 'user', content: 'hi' } }) + '\n');
+    await new Promise(r => setTimeout(r, 1200));
+    expect(events.length).toBeGreaterThan(0);
   });
 });
