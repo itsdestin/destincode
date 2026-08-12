@@ -10,7 +10,7 @@
 // WHY pure: it takes a finished BatteryRun and returns strings, so the check is
 // unit-testable without a session or a paid run.
 import { CORE_TOOLS } from '../tools';
-import type { BatteryRun, BatteryMetrics, BatteryOutcome } from './run-battery';
+import type { BatteryRun, BatteryMetrics, BatteryOutcome } from './run-case';
 
 // Below this, a run did not exercise ten tools across seven areas, whatever its
 // text claims. Round 5's Qwen 3.6 27B stopped after two calls.

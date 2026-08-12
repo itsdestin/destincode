@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { seedFixtureWorkspace, FIXTURE_MANIFEST } from '../src/main/harness/review/fixture-workspace';
-import { BATTERY_PROMPT, loadRoster } from '../src/main/harness/review/battery';
+import { seedFixtureWorkspace, FIXTURE_MANIFEST } from '../src/main/harness/eval/fixture-workspace';
+import { BATTERY_PROMPT, loadRoster } from '../src/main/harness/eval/battery';
 
 let made: string[] = [];
 afterEach(() => {
