@@ -29,4 +29,18 @@ describe('GitFooterEntry', () => {
     const { container } = render(<GitFooterEntry counts={null} show={false} onOpenReview={() => {}} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  // 2026-07-22 bug: unmerged files vanished from the footer (parser dropped
+  // `u` lines) — mid-merge the entry must show an honest Conflict word.
+  it('renders a Conflict label (plus counts and the button) for a conflicted file', () => {
+    render(<GitFooterEntry counts={{ added: 4, removed: 0 }} show conflicted onOpenReview={() => {}} />);
+    expect(screen.getByText('Conflict')).toBeInTheDocument();
+    expect(screen.getByText('+4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review Changes' })).toBeInTheDocument();
+  });
+
+  it('no Conflict label when the file is not conflicted', () => {
+    render(<GitFooterEntry counts={{ added: 1, removed: 1 }} show onOpenReview={() => {}} />);
+    expect(screen.queryByText('Conflict')).not.toBeInTheDocument();
+  });
 });
