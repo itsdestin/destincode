@@ -8,6 +8,8 @@ import { HarnessSession, type ModelFactory } from '../harness-session';
 import { ASSISTANT_PRESET } from '../../../shared/harness-manifest';
 import { CORE_TOOLS } from '../tools';
 import { seedFixtureWorkspace } from './fixture-workspace';
+import { assembleSystemPrompt } from '../prompt-assembly';
+import { resolvePreset } from '../preset-registry';
 import { BATTERY_PROMPT } from './battery';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { AskRequest, AskDecision } from '../permission-broker';
@@ -332,6 +334,13 @@ export interface RunCaseOpts {
    *  BATTERY_CONTEXT_CAP. Without this the session takes fitToContext's own
    *  32_768 default, which is what produced the 2026-08-11 amnesia bug. */
   contextLength?: number;
+  /** Markdown written into the fixture as CLAUDE.md before the session starts,
+   *  so assembleSystemPrompt's real disk-read path picks it up as project
+   *  instructions. `null`/absent means no file — the no-instructions arm of an
+   *  instruction A/B. See fixture-workspace.ts's seedFixtureWorkspace for why
+   *  this has to be a real file rather than text handed to the session
+   *  directly. */
+  instructions?: string | null;
 }
 
 // No skills, no path-triggered rule injection: the fixture has neither, and
@@ -403,7 +412,7 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
   const prompt = opts.prompt ?? BATTERY_PROMPT;
   const wrapUpPrompt = opts.wrapUpPrompt ?? WRAP_UP_PROMPT;
 
-  const fixtureRoot = seedFixtureWorkspace();
+  const fixtureRoot = seedFixtureWorkspace(opts.instructions);
   const events: TranscriptEvent[] = [];
   let toolCalls = 0;
   let asks = 0;
@@ -434,6 +443,18 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
       sessionId: `review-${Date.now()}`,
       cwd: fixtureRoot,
       harness: BATTERY_HARNESS,
+      // Fix (2026-08-12): without this, HarnessSession falls through to
+      // opts.harness.systemPrompt — which harness-manifest.ts:12 documents as a
+      // "fallback one-liner" and which is literally one sentence. Every harness
+      // review to date ran on that sentence rather than the app's real prompt, so
+      // the battery has never tested the shipped prompt at all. Calling the real
+      // assembleSystemPrompt also gives us the <project-instructions> block, which
+      // is what makes a CLAUDE.md A/B possible.
+      systemPrompt: assembleSystemPrompt({
+        presetBody: resolvePreset('assistant').body,
+        cwd: fixtureRoot,
+        appVersion: 'eval',
+      }),
       // Load-bearing (2026-08-11): omitted, HarnessSession takes fitToContext's
       // own 32_768 default, which against this harness's output ceiling left a
       // NEGATIVE history budget and gave every model amnesia. See

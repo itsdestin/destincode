@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { runCase } from '../src/main/harness/eval/run-case';
 import { BATTERY_PROMPT } from '../src/main/harness/eval/battery';
-import { scriptModel, fakeTool } from './helpers/harness-fakes';
+import { scriptModel, fakeTool, capturingFactory } from './helpers/harness-fakes';
+import { ASSISTANT_DEFAULT_BODY } from '../src/main/harness/prompts/assistant-default';
 
 describe('runCase inputs', () => {
   it('sends the prompt it was given, not the battery prompt', async () => {
@@ -61,5 +62,38 @@ describe('runCase inputs', () => {
     });
     const toolResult = run.events.find((e) => e.type === 'tool-result');
     expect(toolResult?.data.toolResult).toBe('FAKE_READ_MARKER');
+  });
+});
+
+describe('system prompt assembly', () => {
+  it('runs on the real assistant prompt body, not the one-line fallback', async () => {
+    const captured: string[] = [];
+    const run = await runCase({
+      modelFactory: capturingFactory(captured), // records the system prompt it was handed
+      modelId: 'test/model', label: 'test', prompt: 'hi', contextLength: 64_000,
+    });
+    expect(captured[0]).toContain(ASSISTANT_DEFAULT_BODY.slice(0, 60));
+    expect(captured[0]).not.toBe('You are a helpful, careful assistant inside YouCoded.');
+    expect(run.outcome).toBeDefined();
+  });
+
+  it('injects instructions through the real project-instructions path', async () => {
+    const captured: string[] = [];
+    await runCase({
+      modelFactory: capturingFactory(captured),
+      modelId: 'test/model', label: 'test', prompt: 'hi', contextLength: 64_000,
+      instructions: '# Test rules\n\nAlways say banana.',
+    });
+    expect(captured[0]).toContain('<project-instructions source="CLAUDE.md">');
+    expect(captured[0]).toContain('Always say banana.');
+  });
+
+  it('omits the project-instructions block when given none', async () => {
+    const captured: string[] = [];
+    await runCase({
+      modelFactory: capturingFactory(captured),
+      modelId: 'test/model', label: 'test', prompt: 'hi', contextLength: 64_000,
+    });
+    expect(captured[0]).not.toContain('<project-instructions');
   });
 });

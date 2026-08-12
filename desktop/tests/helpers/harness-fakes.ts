@@ -127,6 +127,33 @@ export function hangingFirstCallModel(onFirstCall: () => void) {
   });
 }
 
+// A ModelFactory (not a doStream fake) that RECORDS the system prompt it was
+// actually handed by the AI SDK, then behaves exactly like scriptModel(steps).
+//
+// WHY this can't be a wrapped modelFactory that reads HarnessSessionOpts:
+// systemPrompt is consumed inside HarnessSession (systemText getter) and only
+// surfaces again when streamText hands it to the model as `system`, which the
+// SDK folds into the FIRST message of doStream's `options.prompt` array
+// (`{ role: 'system', content: string }` — LanguageModelV4Prompt, verified
+// against tests/harness-session.test.ts's own `req.prompt` capture). Reading
+// it there is a genuine integration assertion: it proves the text reached the
+// model, not merely that some function was called with some options object.
+// scriptModel's own doStream (above) discards its `options` argument entirely,
+// so it can't be reused directly — this wraps a real scriptModel instance and
+// intercepts the SAME options object on the way to it, forwarding the call
+// unchanged so behavior (text/tool-calls/finish reason) is identical.
+export function capturingFactory(sink: string[], steps: ScriptStep[] = [{ text: 'done' }]) {
+  const inner = scriptModel(steps);
+  return async () => new MockLanguageModelV4({
+    doStream: async (options: any) => {
+      const systemMessage = (options.prompt as any[] | undefined)
+        ?.find((m) => m.role === 'system');
+      sink.push(typeof systemMessage?.content === 'string' ? systemMessage.content : '');
+      return inner.doStream(options);
+    },
+  }) as any;
+}
+
 export interface MakeSessionOver {
   profile?: CapabilityProfile;
   askUser?: (req: AskRequest) => Promise<AskDecision>;

@@ -70,6 +70,21 @@ describe('seedFixtureWorkspace', () => {
     expect(settingsPort).not.toBe(appPort);
   });
 
+  it('plants a .git marker so the instruction walk-up cannot escape the fixture', () => {
+    const root = seedFixtureWorkspace();
+    expect(fs.existsSync(path.join(root, '.git'))).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('writes instructions as CLAUDE.md only when given', () => {
+    const withNone = seedFixtureWorkspace();
+    expect(fs.existsSync(path.join(withNone, 'CLAUDE.md'))).toBe(false);
+    const withSome = seedFixtureWorkspace('# hi');
+    expect(fs.readFileSync(path.join(withSome, 'CLAUDE.md'), 'utf8')).toBe('# hi');
+    fs.rmSync(withNone, { recursive: true, force: true });
+    fs.rmSync(withSome, { recursive: true, force: true });
+  });
+
   it('produces byte-identical trees across runs, so two models face the same tree', () => {
     const a = seedFixtureWorkspace();
     const b = seedFixtureWorkspace();
