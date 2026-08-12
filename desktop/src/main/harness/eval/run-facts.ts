@@ -51,7 +51,10 @@ export function claimedTools(reviewText: string): string[] {
   }).sort();
 }
 
-export function collectRunFacts(run: BatteryRun): RunFacts {
+/** WHY a parameter: MIN_TOOL_CALLS is "what it takes to walk the battery" and
+ *  is nonsense for a task like "explain this file", where two calls is a
+ *  complete answer. The default keeps every existing caller identical. */
+export function collectRunFacts(run: BatteryRun, minToolCalls: number = MIN_TOOL_CALLS): RunFacts {
   const used = new Set(run.metrics.toolsUsed);
   return {
     metrics: run.metrics,
@@ -59,7 +62,7 @@ export function collectRunFacts(run: BatteryRun): RunFacts {
     wrapUpReason: run.wrapUpReason,
     error: run.error,
     unbackedClaims: claimedTools(run.review).filter((name) => !used.has(name)),
-    belowFloor: run.metrics.toolCalls < MIN_TOOL_CALLS,
+    belowFloor: run.metrics.toolCalls < minToolCalls,
   };
 }
 
@@ -73,7 +76,13 @@ function duration(ms: number): string {
  *  honestly says "I never reached Edit" trips the unbacked-claims check too, and
  *  a reader settles that in two seconds. Refusing to append would spend real
  *  money and then discard the result on a heuristic. */
-export function renderRunFacts(facts: RunFacts): string {
+/** WHY a parameter: the warning text below quotes the floor the run was
+ *  judged against. If a caller threads a custom floor into collectRunFacts
+ *  but not here, the rendered warning would claim a run failed the
+ *  battery's 10 when it was actually judged against a per-task floor — a
+ *  false statement in a report a human is meant to trust. Default keeps
+ *  every existing caller identical. */
+export function renderRunFacts(facts: RunFacts, minToolCalls: number = MIN_TOOL_CALLS): string {
   const lines: string[] = [];
 
   if (facts.unbackedClaims.length) {
@@ -86,7 +95,7 @@ export function renderRunFacts(facts: RunFacts): string {
   }
   if (facts.belowFloor) {
     lines.push(
-      `> ⚠️ Only ${facts.metrics.toolCalls} tool calls — below the ${MIN_TOOL_CALLS} ` +
+      `> ⚠️ Only ${facts.metrics.toolCalls} tool calls — below the ${minToolCalls} ` +
       `it takes to walk the battery. This run did not cover the tools.`,
       '',
     );

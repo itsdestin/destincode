@@ -3,6 +3,7 @@ import { runCase } from '../src/main/harness/eval/run-case';
 import { BATTERY_PROMPT } from '../src/main/harness/eval/battery';
 import { scriptModel, fakeTool, capturingFactory } from './helpers/harness-fakes';
 import { ASSISTANT_DEFAULT_BODY } from '../src/main/harness/prompts/assistant-default';
+import { collectRunFacts, renderRunFacts } from '../src/main/harness/eval/run-facts';
 
 describe('runCase inputs', () => {
   it('sends the prompt it was given, not the battery prompt', async () => {
@@ -95,5 +96,42 @@ describe('system prompt assembly', () => {
       modelId: 'test/model', label: 'test', prompt: 'hi', contextLength: 64_000,
     });
     expect(captured[0]).not.toContain('<project-instructions');
+  });
+});
+
+// WHY both assertions in one test: a version that only checked the custom
+// floor would pass even if the default silently broke (e.g. a required
+// second argument, or a default of 0). The default-still-applies line is the
+// one that actually distinguishes "per-task floor" from "floor ignored".
+describe('collectRunFacts per-task floor', () => {
+  it('uses the per-task floor when one is given', () => {
+    const run = { review: '', metrics: { toolCalls: 3, toolsUsed: [] }, outcome: 'complete' } as any;
+    expect(collectRunFacts(run, 2).belowFloor).toBe(false);
+    expect(collectRunFacts(run).belowFloor).toBe(true); // default 10 still applies
+  });
+});
+
+// WHY this test exists separately from run-facts's own describe blocks: the
+// warning text quotes the floor number, and a caller who threads a custom
+// floor into collectRunFacts but forgets to thread it into renderRunFacts
+// would print a warning that quotes 10 against a run that was actually
+// judged against 2 — a false statement in a report a human is meant to
+// trust. Assert both the custom-floor wording and that the default wording
+// (still "10") is untouched, for the same reason as the floor test above.
+describe('renderRunFacts per-task floor', () => {
+  const belowCustomFloor = {
+    review: '', metrics: { toolCalls: 3, toolsUsed: [], asks: 0, stepGates: 0, thinkingEvents: 0, outputTokens: 0, wallClockMs: 0 },
+    outcome: 'complete', unbackedClaims: [], belowFloor: true,
+  } as any;
+
+  it('quotes the custom floor it was measured against, not the default', () => {
+    const out = renderRunFacts(belowCustomFloor, 2);
+    expect(out).toContain('below the 2 ');
+    expect(out).not.toContain('below the 10 ');
+  });
+
+  it('quotes the default floor when none is passed', () => {
+    const out = renderRunFacts(belowCustomFloor);
+    expect(out).toContain('below the 10 ');
   });
 });
