@@ -926,7 +926,8 @@ export function registerIpcHandlers(
     try {
       const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
       const resolved = path.resolve(transcriptPath);
-      if (!resolved.startsWith(claudeProjects)) return null;
+      // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+      if (!resolved.startsWith(claudeProjects + path.sep)) return null;
       return await readTranscriptMeta(transcriptPath);
     } catch {
       return null;

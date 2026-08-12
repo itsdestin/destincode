@@ -1655,7 +1655,8 @@ export class RemoteServer {
         const transcriptPath = payload.path || payload;
         const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
         const resolvedPath = path.resolve(transcriptPath);
-        if (!resolvedPath.startsWith(claudeProjects)) {
+        // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+        if (!resolvedPath.startsWith(claudeProjects + path.sep)) {
           this.respond(client.ws, type, id, null);
           break;
         }
