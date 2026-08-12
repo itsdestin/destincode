@@ -2800,10 +2800,16 @@ export function registerIpcHandlers(
       // Start watching the transcript file for this session
       const sessionInfo = sessionManager.getSession(desktopId);
       if (sessionInfo) {
-        transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
+        // Spec §5.0: CC's payload carries transcript_path AND cwd (both required
+        // fields of its hook schema). payload.cwd is post-realpath/post-chdir —
+        // the exact string CC slugged — so prefer it over our sessionInfo.cwd,
+        // which can differ through a symlink. sessionInfo.cwd is the fallback only.
+        const ccCwd = (event.payload?.cwd as string | undefined) || sessionInfo.cwd;
+        const ccTranscriptPath = event.payload?.transcript_path as string | undefined;
+        transcriptWatcher.startWatching(desktopId, claudeId, ccCwd, ccTranscriptPath);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
-        noteSessionStarted(claudeId, sessionInfo.cwd, 'claude');
+        noteSessionStarted(claudeId, ccCwd, 'claude');
         // 2b Task 8: this device now owns the session — take the lease.
         // Fire-and-forget: a denied (ok:false) result would only mean another
         // device holds it, but the sanctioned resume path already ran takeover
