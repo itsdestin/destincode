@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
@@ -9,6 +9,7 @@ import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { asString } from '../utils/tool-input';
 
 // --- Helpers for friendly display ---
 
@@ -30,14 +31,8 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
-// Fix: tool inputs are unknown-typed JSON from the model/provider. Interpolating
-// a value that turned out to be an object rendered "[object Object]" in chat
-// (same failure class as the provider-402 bug the harness review battery caught),
-// and passing one to basename() crashed the renderer. Validate like the
-// doom_loop branch does (typeof check) and treat non-strings as absent.
-function asString(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
+// asString (the unknown-input validator this file introduced in PR #295) moved
+// to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
 
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
   const { toolName, input } = tool;
@@ -546,9 +541,36 @@ interface AskQuestion {
   multiSelect: boolean;
 }
 
-function isValidQuestions(input: Record<string, unknown>): input is { questions: AskQuestion[] } {
-  const q = input.questions;
-  return Array.isArray(q) && q.length > 0 && typeof q[0]?.question === 'string';
+// Fix: isValidQuestions only checked questions[0].question, so an object-valued
+// header/label/description DEEPER in the array still reached React children in
+// the expanded card ("Objects are not valid as a React child" crashes the whole
+// Chat pane via its ErrorBoundary). Normalize the whole array up front with the
+// same asString idiom as friendlyToolDisplay: coerce every rendered field, and
+// drop members that can't render or be answered (no question text, no labeled
+// options) so one malformed member degrades gracefully instead of crashing or
+// invalidating the rest of the card.
+function normalizeQuestions(input: Record<string, unknown>): AskQuestion[] {
+  const raw = input.questions;
+  if (!Array.isArray(raw)) return [];
+  const out: AskQuestion[] = [];
+  for (const q of raw as Array<Record<string, unknown> | null | undefined>) {
+    const question = asString(q?.question);
+    if (!question) continue; // no question text — nothing to render or key answers by
+    const rawOptions = Array.isArray(q?.options) ? (q.options as Array<Record<string, unknown> | null | undefined>) : [];
+    const options: AskQuestion['options'] = [];
+    for (const o of rawOptions) {
+      const label = asString(o?.label);
+      if (!label) continue; // an unlabeled option can't be selected or echoed back
+      options.push({ label, description: asString(o?.description) || undefined });
+    }
+    if (options.length === 0) continue; // nothing selectable
+    out.push({ question, header: asString(q?.header), multiSelect: q?.multiSelect === true, options });
+  }
+  return out;
+}
+
+function isValidQuestions(input: Record<string, unknown>): boolean {
+  return normalizeQuestions(input).length > 0;
 }
 
 function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
@@ -557,7 +579,10 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
-  const questions = (tool.input as any).questions as AskQuestion[];
+  // Fix: render (and echo back) the NORMALIZED questions, never the raw input —
+  // see normalizeQuestions above. Memoized so the array identity is stable for
+  // the hook deps below.
+  const questions = useMemo(() => normalizeQuestions(tool.input), [tool.input]);
   // answers: map from question text → selected label(s)
   const [answers, setAnswers] = useState<Record<string, Set<string>>>({});
   const [responding, setResponding] = useState(false);
@@ -600,7 +625,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
         decision: {
           behavior: 'allow',
           updatedInput: {
-            questions,       // Echo back original questions array
+            questions,       // Echo back the (normalized) questions array
             answers: answersObj,
           },
         },
