@@ -79,3 +79,47 @@ export function classifyPair(wrongCopy: string, correctCopy: string):
   if (cOnly === 0) return 'wrong-is-superset';
   return 'fork';
 }
+
+/** Quarantine, not deletion. Lives under ~/.youcoded/ — NEVER inside
+ *  ~/.claude/projects/: four subsystems readdir that tree and would adopt a
+ *  quarantine folder as a project (spec §6.0). */
+export class Quarantine {
+  readonly homeRoot: string;
+  readonly dir: string;
+  constructor(homeRoot: string = os.homedir()) {
+    this.homeRoot = homeRoot;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    this.dir = path.join(homeRoot, '.youcoded', 'repair-quarantine', stamp);
+  }
+  log(line: string): void {
+    fs.mkdirSync(this.dir, { recursive: true });
+    fs.appendFileSync(path.join(this.dir, 'decisions.log'), `${new Date().toISOString()} ${line}\n`);
+  }
+  private destFor(absPath: string): string {
+    const rel = path.relative(this.homeRoot, absPath);
+    const dest = path.join(this.dir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    return dest;
+  }
+  /** MOVE out of the live tree (reversible). Returns false (and only logs) if
+   *  the rename fails (e.g. EXDEV) — never falls back to copy+delete. */
+  move(absPath: string, why: string): boolean {
+    try {
+      fs.renameSync(absPath, this.destFor(absPath));
+      this.log(`MOVE ${absPath} (${why})`);
+      return true;
+    } catch (e) {
+      this.log(`SKIP-MOVE ${absPath} (${why}) — rename failed: ${String(e)}`);
+      return false;
+    }
+  }
+  /** COPY a snapshot — for case C, where the live tree stays untouched. */
+  snapshot(absPath: string, why: string): void {
+    try {
+      fs.copyFileSync(absPath, this.destFor(absPath));
+      this.log(`SNAPSHOT ${absPath} (${why})`);
+    } catch (e) {
+      this.log(`SKIP-SNAPSHOT ${absPath} — copy failed: ${String(e)}`);
+    }
+  }
+}

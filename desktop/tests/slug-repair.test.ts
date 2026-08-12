@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs'; import os from 'os'; import path from 'path';
-import { classifyPair, uuidSet } from '../src/main/conversations/slug-repair';
+import { classifyPair, uuidSet, Quarantine } from '../src/main/conversations/slug-repair';
 
 const L = (uuid: string) => JSON.stringify({ type: 'user', uuid, message: {} }) + '\n';
 let tmp: string;
@@ -55,5 +55,24 @@ describe('classifyPair — the merge-safety contract (spec §6.0)', () => {
     const a = write('a.jsonl', L('u1') + L('u2'));
     const b = write('b.jsonl', '');
     expect(classifyPair(a, b)).toBe('wrong-is-superset');
+  });
+});
+
+describe('Quarantine (spec §6.0)', () => {
+  it('moves preserving home-relative path and writes the decision log', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qhome-'));
+    const victim = path.join(home, '.claude', 'projects', 'slug', 's.jsonl');
+    fs.mkdirSync(path.dirname(victim), { recursive: true });
+    fs.writeFileSync(victim, 'x');
+    const q = new Quarantine(home);
+    expect(q.move(victim, 'test')).toBe(true);
+    expect(fs.existsSync(victim)).toBe(false);
+    expect(fs.readFileSync(path.join(q.dir, '.claude', 'projects', 'slug', 's.jsonl'), 'utf8')).toBe('x');
+    expect(fs.readFileSync(path.join(q.dir, 'decisions.log'), 'utf8')).toContain('MOVE');
+  });
+  it('quarantine root is under .youcoded, NEVER under .claude/projects', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qhome-'));
+    const q = new Quarantine(home);
+    expect(q.dir.startsWith(path.join(home, '.youcoded', 'repair-quarantine'))).toBe(true);
   });
 });
