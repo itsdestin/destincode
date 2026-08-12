@@ -3,16 +3,11 @@ import path from 'path';
 import os from 'os';
 import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
 // ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
-// a lowercase Windows drive still maps to CC's uppercase-drive project dir. Used
-// lazily inside listPastSessions, so the session-browser ↔ project-conversations
-// import cycle is harmless (neither uses the other at module-eval time).
-import { ccProjectSlug } from './project-conversations';
-// Task 5: native rows need the SAME frozen slug encoding NativeSessionHost
-// writes under (deliberately NOT ccProjectSlug — see harness/session-store.ts's
-// slug-divergence comment). nativeStoreSlug lives on slug-encoding.ts and
-// ipc-handlers.ts imports it from there too, so this isn't a new dependency
-// direction.
-import { nativeStoreSlug } from './slug-encoding';
+// a lowercase Windows drive still maps to CC's uppercase-drive project dir.
+// nativeStoreSlug is the FROZEN app-private rule for native rows (deliberately
+// NOT ccProjectSlug — see harness/session-store.ts's slug-divergence comment).
+// Both live on slug-encoding.ts; ipc-handlers.ts imports from there too.
+import { ccProjectSlug, nativeStoreSlug } from './slug-encoding';
 import type { NativeSessionListEntry } from './harness/session-store';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');

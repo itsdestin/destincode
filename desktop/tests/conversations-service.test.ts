@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 // Real (pure) — used to compute the exact on-disk transcript path the service
 // derives, so the quiescence tests can grow the same file the loop stats.
-import { ccProjectSlug } from '../src/main/project-conversations';
+import { ccProjectSlug } from '../src/main/slug-encoding';
 // Real (pure) — mirrors localJsonlPath's native branch so Task 8 tests can
 // compute the exact ~/.youcoded/sessions/<slug>/<id>.jsonl path the service derives.
 import { nativeStoreSlug } from '../src/main/slug-encoding';

@@ -4,9 +4,9 @@ import os from 'os';
 import path from 'path';
 import {
   parseTranscriptLine,
-  cwdToProjectSlug,
   TranscriptWatcher,
 } from '../src/main/transcript-watcher';
+import { ccProjectSlug } from '../src/main/slug-encoding';
 import type { TranscriptEvent } from '../src/shared/types';
 
 // Fixed sleep. ONLY valid before a NEGATIVE assertion ("nothing emitted yet") or
@@ -285,25 +285,6 @@ describe('parseTranscriptLine', () => {
 });
 
 // ---------------------------------------------------------------------------
-// cwdToProjectSlug
-// ---------------------------------------------------------------------------
-describe('cwdToProjectSlug', () => {
-  it('converts Windows path: C:\\Users\\alice → C--Users-alice', () => {
-    expect(cwdToProjectSlug('C:\\Users\\alice')).toBe('C--Users-alice');
-  });
-
-  it('converts Unix path: /home/user/project → -home-user-project', () => {
-    expect(cwdToProjectSlug('/home/user/project')).toBe('-home-user-project');
-  });
-
-  it('converts nested Windows path: C:\\Users\\alice\\youcoded-core\\desktop → C--Users-alice-youcoded-core-desktop', () => {
-    expect(cwdToProjectSlug('C:\\Users\\alice\\youcoded-core\\desktop')).toBe(
-      'C--Users-alice-youcoded-core-desktop'
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // TranscriptWatcher
 // ---------------------------------------------------------------------------
 describe('TranscriptWatcher', () => {
@@ -328,7 +309,7 @@ describe('TranscriptWatcher', () => {
     const cwd = 'C:\\Users\\alice';
 
     // Create the project directory and JSONL file
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -371,7 +352,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-dedup';
     const cwd = '/home/user/project';
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -413,7 +394,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-stop';
     const cwd = 'C:\\Users\\alice';
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(path.join(projectDir, `${claudeSessionId}.jsonl`), '');
@@ -430,7 +411,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-partial';
     const cwd = '/home/user/project';
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -467,7 +448,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-multi';
     const cwd = '/home/user/project';
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -507,7 +488,7 @@ describe('TranscriptWatcher', () => {
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
 
     // Now create the file
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -538,7 +519,7 @@ describe('TranscriptWatcher', () => {
     const claudeSessionId = 'claude-session-throw';
     const cwd = '/home/user/project';
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
@@ -643,7 +624,7 @@ describe('TranscriptWatcher read integrity', () => {
 
   function setupSession(desktopId: string, claudeId: string) {
     const cwd = '/home/user/integrity';
-    const slug = cwdToProjectSlug(cwd);
+    const slug = ccProjectSlug(cwd);
     const projectDir = path.join(tmpDir, slug);
     fs.mkdirSync(projectDir, { recursive: true });
     const jsonlPath = path.join(projectDir, `${claudeId}.jsonl`);

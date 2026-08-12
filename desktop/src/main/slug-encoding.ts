@@ -10,8 +10,8 @@
 //                   Nothing external depends on it; changing it ORPHANS user
 //                   data (native transcripts + remembered Always-allow rules).
 //
-// History: one shared function (cwdToProjectSlug) served both jobs and
-// mirrored CC wrongly, twice (2026-04-23, 2026-08-11). Spec:
+// History: one shared function (the old transcript-watcher.ts slug helper)
+// served both jobs and mirrored CC wrongly, twice (2026-04-23, 2026-08-11). Spec:
 // docs/active/specs/2026-08-11-project-slug-encoding-repair.md.
 // Guard: tests/slug-encoding.test.ts — anchored to directories a real CC
 // created (tests/fixtures/cc-slug-pairs.json), never to this file's output.
@@ -42,7 +42,7 @@ export function ccProjectSlug(cwd: string): string {
   return slug.length <= CC_SLUG_MAX ? slug : `${slug.slice(0, CC_SLUG_MAX)}-${ccHash(p)}`;
 }
 
-// FROZEN — the historical cwdToProjectSlug, renamed so its job is
+// FROZEN — the historical shared slug helper, renamed so its job is
 // unmistakable. It names app-private dirs; changing it orphans
 // ~/.youcoded/sessions transcripts and every remembered "Always allow" rule.
 // It is NOT CC's rule and must never be "fixed" to match one.

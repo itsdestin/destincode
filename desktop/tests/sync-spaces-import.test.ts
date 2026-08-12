@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { MAX_IMPORT_FILE_COUNT } from '../src/main/sync-spaces/guards';
-import { ccProjectSlug } from '../src/main/project-conversations';
+import { ccProjectSlug } from '../src/main/slug-encoding';
 import { upsertProject, remapProjectPath, listProjects } from '../src/main/artifacts/central-index';
 import { canonicalize } from '../src/shared/artifacts/canonicalize';
 import { checkImport, countFilesBounded, importProjectFolder } from '../src/main/sync-spaces/import-project';

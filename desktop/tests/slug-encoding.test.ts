@@ -40,7 +40,7 @@ describe('ccHash — pinned so nobody "fixes" a nonexistent int32-min edge', () 
   });
 });
 
-describe('nativeStoreSlug — FROZEN (renaming of the old cwdToProjectSlug)', () => {
+describe('nativeStoreSlug — FROZEN (renaming of the old shared slug function)', () => {
   // Byte-identical to the historical rule, or the native store and
   // permissions.json silently orphan (spec §3).
   it('punctuated path keeps , & . _ exactly as before', () => {

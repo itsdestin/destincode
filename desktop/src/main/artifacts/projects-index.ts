@@ -22,7 +22,7 @@ import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { readFolders, type SavedFolder } from '../saved-folders';
 import { getManagedRoots } from '../sync-spaces/service';
 import { listPastSessions } from '../session-browser';
-import { cwdToProjectSlug } from '../transcript-watcher';
+import { ccProjectSlug } from '../slug-encoding';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
@@ -119,8 +119,7 @@ export async function listProjectsIndex(opts?: { withCounts?: boolean }): Promis
   // Conversation counts: a single global session scan, bucketed by CC slug.
   // Only when requested — listPastSessions is heavier (global), and ChatView's
   // frequent cwd-resolution calls don't need it.
-  const ccSlug = (projectPath: string) =>
-    cwdToProjectSlug(projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`));
+  const ccSlug = ccProjectSlug;
   let convBySlug: Map<string, number> | null = null;
   if (opts?.withCounts) {
     const sessions = await listPastSessions();

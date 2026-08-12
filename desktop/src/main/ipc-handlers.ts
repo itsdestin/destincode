@@ -16,7 +16,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher } from './transcript-watcher';
-import { nativeStoreSlug } from './slug-encoding';
+import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
 // registry that owns HarnessSessions and their persistence.
@@ -119,7 +119,7 @@ import {
 import { initGitWatchers, watchGit, unwatchGit, dropGitSubscriber } from './git/git-watcher';
 import { resolveRepoRoot, invalidateRepoRootCache } from './git/git-exec';
 import { PROJECT_IPC } from './project/ipc-channels';
-import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
+import { listProjectConversations, projectConversationHistory } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.

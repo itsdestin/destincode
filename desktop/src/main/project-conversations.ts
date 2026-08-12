@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { listPastSessions, loadHistory } from './session-browser';
-import { cwdToProjectSlug } from './transcript-watcher';
+import { ccProjectSlug } from './slug-encoding';
 import type { PastSession, HistoryMessage } from '../shared/types';
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -16,17 +16,6 @@ const PREVIEW_HEAD_BYTES = 64 * 1024;
 // Mirrors session-browser's guard — only slug/sessionId that match this may be
 // turned into a filesystem path (defense against path traversal).
 const SAFE_ID_RE = /^[A-Za-z0-9._-]+$/;
-
-// CC encodes its project dirs with an UPPERCASE drive letter (C--Users-…), but
-// YouCoded's canonical project paths can carry a LOWERCASE drive (c:/Users/…)
-// from the artifact index canonicalizer. Uppercase the drive before slugifying
-// so the slug matches CC's directory name. Windows paths are case-insensitive,
-// so this only normalizes the drive letter; the rest of the path is untouched.
-// Without this, project-filtered conversations come back EMPTY on Windows.
-export function ccProjectSlug(projectPath: string): string {
-  const driveNormalized = projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
-  return cwdToProjectSlug(driveNormalized);
-}
 
 // Enriched session for the Conversations tab: adds a one-line preview (the first
 // user message). WHY no messageCount: an exact count needs a full transcript
@@ -84,7 +73,12 @@ function firstUserPreview(head: string): string {
 // attach a one-line preview via a BOUNDED head read (not a full transcript
 // parse). Cheap enough that the hero can call it on every project switch.
 export async function listProjectConversations(projectPath: string): Promise<ConversationSummary[]> {
-  const slug = ccProjectSlug(projectPath);
+  // CC slugs realpath(cwd) (see slug-encoding.ts fixture "symlink resolves to
+  // realpath"). Resolve the same way, falling back exactly as CC's Px() does,
+  // so a symlinked project folder finds CC's real directory.
+  let resolved: string;
+  try { resolved = fs.realpathSync.native(projectPath); } catch { resolved = projectPath; }
+  const slug = ccProjectSlug(resolved);
   const all = await listPastSessions();
   const mine = all.filter((s) => s.projectSlug === slug);
   return Promise.all(

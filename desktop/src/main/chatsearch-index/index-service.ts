@@ -18,8 +18,7 @@ import {
 } from '../conversations/service';
 import { getTagRegistry } from '../conversations/tag-registry-service';
 import { NativeHome } from '../native-home';
-import { nativeStoreSlug } from '../slug-encoding';
-import { ccProjectSlug } from '../project-conversations';
+import { nativeStoreSlug, ccProjectSlug } from '../slug-encoding';
 import { laneMatches } from '../conversations/lane-guards';
 import { buildMetaFile } from './meta-builder';
 import {
