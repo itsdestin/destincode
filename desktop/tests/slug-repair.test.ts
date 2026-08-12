@@ -36,4 +36,24 @@ describe('classifyPair — the merge-safety contract (spec §6.0)', () => {
     const b = write('b.jsonl', L('u1') + JSON.stringify({ type: 'last-prompt' }) + '\n');
     expect(classifyPair(a, b)).toBe('wrong-is-subset');
   });
+  it('same uuid, same set, but the shared message content diverges → fork (never subset)', () => {
+    const a = write('a.jsonl', JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'truncat' } }) + '\n' + L('u2'));
+    const b = write('b.jsonl', JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'truncated properly' } }) + '\n' + L('u2'));
+    expect(classifyPair(a, b)).toBe('fork');
+  });
+  it('empty vs empty → identical', () => {
+    const a = write('a.jsonl', '');
+    const b = write('b.jsonl', '');
+    expect(classifyPair(a, b)).toBe('identical');
+  });
+  it('empty wrongCopy vs non-empty correctCopy → wrong-is-subset', () => {
+    const a = write('a.jsonl', '');
+    const b = write('b.jsonl', L('u1') + L('u2'));
+    expect(classifyPair(a, b)).toBe('wrong-is-subset');
+  });
+  it('non-empty wrongCopy vs empty correctCopy → wrong-is-superset', () => {
+    const a = write('a.jsonl', L('u1') + L('u2'));
+    const b = write('b.jsonl', '');
+    expect(classifyPair(a, b)).toBe('wrong-is-superset');
+  });
 });
