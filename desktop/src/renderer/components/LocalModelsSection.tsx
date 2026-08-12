@@ -505,7 +505,9 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
   );
 }
 
-function PartialRow({
+// Exported (named) so tests can pin the resume error path without booting the
+// whole LocalModelsSection (which needs the full models API mocked).
+export function PartialRow({
   dl, quantOptsByKeyRef, onRefresh, setDownloads,
 }: {
   dl: DownloadProgress;
@@ -514,6 +516,9 @@ function PartialRow({
   setDownloads: React.Dispatch<React.SetStateAction<Record<string, DownloadProgress>>>;
 }) {
   const [busy, setBusy] = useState(false);
+  // WHY: a failed resume used to be a SILENT no-op (see resume() below) —
+  // same inline error line as RepoCard / QuantDownloadRow / InstalledRow.
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const isLive = dl.state === 'downloading' || dl.state === 'verifying';
 
   // The router-served id of part 1 (basename minus .gguf) — deleteModel removes
@@ -527,18 +532,29 @@ function PartialRow({
 
   const resume = async () => {
     setBusy(true);
+    setResumeError(null); // clear any prior failure before retrying
     try {
       let opt: QuantWithFit | undefined = quantOptsByKeyRef.current[key(dl.repo, dl.quant)];
       if (!opt) {
         // The option cache is per-session; a partial from a prior session needs
         // a fresh quants() to reconstruct the QuantOption download() expects.
-        try {
-          const opts = await window.claude.models.quants(dl.repo) as QuantWithFit[];
-          for (const o of opts) quantOptsByKeyRef.current[key(dl.repo, o.quant)] = o;
-          opt = opts.find((o) => o.quant === dl.quant);
-        } catch { /* leave opt undefined — resume just no-ops below */ }
+        const opts = await window.claude.models.quants(dl.repo) as QuantWithFit[];
+        for (const o of opts) quantOptsByKeyRef.current[key(dl.repo, o.quant)] = o;
+        opt = opts.find((o) => o.quant === dl.quant);
       }
-      if (opt) await window.claude.models.download(dl.repo, opt); // resumes from the .partial
+      if (!opt) {
+        // quants() answered but this quant is no longer listed for the repo —
+        // previously this fell through as a silent no-op too.
+        setResumeError(`Couldn't resume: ${dl.quant} is no longer listed for ${dl.repo}.`);
+        return;
+      }
+      await window.claude.models.download(dl.repo, opt); // resumes from the .partial
+    } catch (e) {
+      // WHY: this used to be an inner `catch {}` — clicking Resume while
+      // Hugging Face was unreachable did NOTHING (no error, no state change).
+      // Surface the real failure, mirroring QuantDownloadRow's error line
+      // (per docs/error-message-standards.md: specific and accurate).
+      setResumeError(e instanceof Error ? e.message : 'Could not resume the download.');
     } finally {
       setBusy(false);
     }
@@ -598,6 +614,8 @@ function PartialRow({
           </Button>
         </div>
       </div>
+      {/* Same error-line placement as QuantDownloadRow (:mt-1 under the row). */}
+      {resumeError && <p className="text-3xs text-destructive-fg mt-1">{resumeError}</p>}
     </div>
   );
 }
