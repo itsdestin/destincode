@@ -15,7 +15,8 @@ import { CommandProvider } from './command-provider';
 import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
-import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
+import { TranscriptWatcher } from './transcript-watcher';
+import { nativeStoreSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
 // registry that owns HarnessSessions and their persistence.
@@ -144,13 +145,13 @@ const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 // Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
-// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
-// cwdToProjectSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the FROZEN
+// nativeStoreSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
 // note). Used by the native RESUME path to validate a cwd BEFORE handing it to
 // nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
 // send a resume into the wrong (empty) directory (Task 9).
 function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
-  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`));
+  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', nativeStoreSlug(cwd), `${sessionId}.jsonl`));
 }
 
 

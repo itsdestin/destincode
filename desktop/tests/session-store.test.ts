@@ -241,15 +241,14 @@ describe('SessionStore', () => {
 });
 
 // Task 3 (M2 plan) — pins the DELIBERATE divergence documented at the top of
-// session-store.ts: native sessions use the raw cwdToProjectSlug, while the CC
-// layer (project-conversations.ts) additionally uppercases a lowercase
-// Windows drive letter before slugifying. This is NOT a bug to unify — see
-// that file's comment for why (it would orphan existing native transcripts).
-describe('native/CC slug divergence', () => {
-  it('encodes the deliberate slug divergence: native uses raw cwdToProjectSlug, CC layer drive-normalizes', async () => {
-    const { cwdToProjectSlug } = await import('../src/main/transcript-watcher');
-    const { ccProjectSlug } = await import('../src/main/project-conversations');
-    expect(cwdToProjectSlug('c:\\Users\\d\\proj')).toBe('c--Users-d-proj');
+// slug-encoding.ts: native sessions use the FROZEN nativeStoreSlug, while the
+// CC mirror (ccProjectSlug) additionally uppercases a lowercase Windows drive
+// letter before slugifying. This is NOT a bug to unify — see that file's
+// comment for why (it would orphan existing native transcripts).
+describe('native/CC slug divergence — FREEZE PIN, do not delete', () => {
+  it('native uses the frozen rule; the CC mirror drive-normalizes', async () => {
+    const { nativeStoreSlug, ccProjectSlug } = await import('../src/main/slug-encoding');
+    expect(nativeStoreSlug('c:\\Users\\d\\proj')).toBe('c--Users-d-proj');
     expect(ccProjectSlug('c:\\Users\\d\\proj')).toBe('C--Users-d-proj');   // NOT equal — pinned
   });
 });

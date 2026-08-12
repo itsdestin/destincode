@@ -7,12 +7,12 @@ import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
 // lazily inside listPastSessions, so the session-browser ↔ project-conversations
 // import cycle is harmless (neither uses the other at module-eval time).
 import { ccProjectSlug } from './project-conversations';
-// Task 5: native rows need the SAME raw-slug encoding NativeSessionHost writes
-// under (deliberately NOT ccProjectSlug — see harness/session-store.ts's
-// slug-divergence comment). cwdToProjectSlug already lives on transcript-watcher
-// and ipc-handlers.ts imports it from here too, so this isn't a new dependency
+// Task 5: native rows need the SAME frozen slug encoding NativeSessionHost
+// writes under (deliberately NOT ccProjectSlug — see harness/session-store.ts's
+// slug-divergence comment). nativeStoreSlug lives on slug-encoding.ts and
+// ipc-handlers.ts imports it from there too, so this isn't a new dependency
 // direction.
-import { cwdToProjectSlug } from './transcript-watcher';
+import { nativeStoreSlug } from './slug-encoding';
 import type { NativeSessionListEntry } from './harness/session-store';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -28,7 +28,7 @@ const NATIVE_SESSIONS_DIR = path.join(os.homedir(), '.youcoded', 'sessions');
 /** The on-disk path for a native session's transcript on THIS device — the
  *  probe listPastSessions uses to decide notSyncedYet for a native row. */
 function nativeJsonlPath(cwd: string, sessionId: string): string {
-  return path.join(NATIVE_SESSIONS_DIR, cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+  return path.join(NATIVE_SESSIONS_DIR, nativeStoreSlug(cwd), `${sessionId}.jsonl`);
 }
 
 /** Read per-session metadata from conversation-index.json: the user-set flag
@@ -534,14 +534,14 @@ export async function listPastSessions(
           // $HOME). The store knows the exact projectName, so resolveLocal maps
           // it by basename with no ambiguity. Only override when that folder
           // actually holds THIS transcript, so we never point resume elsewhere.
-          // Native uses cwdToProjectSlug + ~/.youcoded/sessions (its own raw-slug
-          // convention, deliberately diverging from ccProjectSlug — see
+          // Native uses nativeStoreSlug + ~/.youcoded/sessions (its own frozen
+          // slug convention, deliberately diverging from ccProjectSlug — see
           // harness/session-store.ts).
           const storeLocal = resolveLocal(rec);
           if (isNative) {
             if (storeLocal && fs.existsSync(nativeJsonlPath(storeLocal, rec.id))) {
               legacy.projectPath = storeLocal;
-              legacy.projectSlug = cwdToProjectSlug(storeLocal);
+              legacy.projectSlug = nativeStoreSlug(storeLocal);
             }
           } else if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
             legacy.projectPath = storeLocal;
@@ -565,7 +565,7 @@ export async function listPastSessions(
           result.push({
             sessionId: rec.id,
             name: rec.title || 'Untitled',
-            projectSlug: localPath ? (isNative ? cwdToProjectSlug(localPath) : ccProjectSlug(localPath)) : '',
+            projectSlug: localPath ? (isNative ? nativeStoreSlug(localPath) : ccProjectSlug(localPath)) : '',
             projectPath: localPath ?? rec.originalPath,
             lastModified: Date.parse(rec.lastActive) || 0,
             size: 0,

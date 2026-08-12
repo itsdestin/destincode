@@ -6,10 +6,11 @@
 // ~/.youcoded/ JSON (native-home invariant). Reads use NativeHome.readJson
 // (synchronous; null for a missing/corrupt file).
 //
-// WHY imported from transcript-watcher: the slug MUST match CC's project-dir
-// encoding exactly (one function, one convention — see cwdToProjectSlug docs),
-// same as session-store.ts does.
-import { cwdToProjectSlug } from '../transcript-watcher';
+// WHY nativeStoreSlug (NOT the CC mirror): this file keys
+// ~/.youcoded/permissions.json, which nothing external reads. Routing it to
+// ccProjectSlug would silently re-key every project and DROP every remembered
+// "Always allow" rule. Frozen on purpose — see slug-encoding.ts.
+import { nativeStoreSlug } from '../slug-encoding';
 import type { NativeHome } from '../native-home';
 import type { PermissionRule } from '../../shared/permission-types';
 
@@ -17,10 +18,11 @@ const FILE = 'permissions.json';
 type PermFile = { v: 1; projects: Record<string, { rules: PermissionRule[] }> };
 const EMPTY: PermFile = { v: 1, projects: {} };
 
-// SLUG COLLISIONS: cwdToProjectSlug collapses ':', '\\', '/', and spaces all to
+// SLUG COLLISIONS: nativeStoreSlug collapses ':', '\\', '/', and spaces all to
 // '-', so distinct paths can theoretically map to the same slug and share rules.
-// This is inherited from CC's project-dir encoding deliberately — do NOT diverge
-// here; the whole point of importing cwdToProjectSlug is one convention everywhere.
+// The collapse behavior is FROZEN app-private convention (slug-encoding.ts's
+// nativeStoreSlug) — it no longer claims to match CC. Do not re-point at the
+// CC mirror: that orphans every stored rule.
 //
 // UNBOUNDED GROWTH: rules per project accumulate without cap or eviction until
 // the Phase 3 permission-management UI lets the user prune them — intentional.
@@ -34,12 +36,12 @@ export class PermissionStore {
     const data = (this.home.readJson(FILE) as PermFile | null) ?? EMPTY;
     // Optional-chain `.projects` too: a hand-edited {} / [] / {"projects":null}
     // passes the cast but has no usable projects map — treat it as "nothing here".
-    return data.projects?.[cwdToProjectSlug(cwd)]?.rules ?? [];
+    return data.projects?.[nativeStoreSlug(cwd)]?.rules ?? [];
   }
 
   /** Persist one remembered decision for `cwd`'s project, deduping exact repeats. */
   async remember(cwd: string, rule: PermissionRule): Promise<void> {
-    const slug = cwdToProjectSlug(cwd);
+    const slug = nativeStoreSlug(cwd);
     // Read-modify-write under the file lock — never a bare write.
     await this.home.mutateJson(FILE, (cur) => {
       const data = (cur as PermFile | null) ?? EMPTY;

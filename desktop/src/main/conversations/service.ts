@@ -15,7 +15,7 @@ import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
 import { laneMatches } from './lane-guards';
 import { ccProjectSlug } from '../project-conversations';
-import { cwdToProjectSlug } from '../transcript-watcher';
+import { nativeStoreSlug } from '../slug-encoding';
 import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
 import { readFolders } from '../saved-folders';
 import { resolveLocalProject } from './resolve-local-project';
@@ -300,14 +300,14 @@ export function containedTranscriptPath(root: string, ref: string): string | nul
 }
 // The on-disk transcript path for this session, on THIS device.
 // 'claude' -> ~/.claude/projects/<ccProjectSlug(cwd)>/<id>.jsonl (CC's own convention).
-// 'native' -> ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl — mirrors
-// NativeHome's private sessionPath() exactly (raw slug, NOT ccProjectSlug's
-// drive-letter uppercasing — see harness/session-store.ts's slug-divergence
-// comment for why the two deliberately diverge).
+// 'native' -> ~/.youcoded/sessions/<nativeStoreSlug(cwd)>/<id>.jsonl — mirrors
+// NativeHome's private sessionPath() exactly (the FROZEN app-private rule,
+// NOT ccProjectSlug's drive-letter uppercasing — see harness/session-store.ts's
+// slug-divergence comment for why the two deliberately diverge).
 function localJsonlPath(cwd: string, sessionId: string, sessionProvider: SessionProvider): string {
   if (sessionProvider === 'native') {
     const home = new NativeHome(nativeHomeRootOpt);
-    return path.join(home.root, 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+    return path.join(home.root, 'sessions', nativeStoreSlug(cwd), `${sessionId}.jsonl`);
   }
   return path.join(projectsDir, ccProjectSlug(cwd), `${sessionId}.jsonl`);
 }

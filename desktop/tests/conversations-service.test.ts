@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ccProjectSlug } from '../src/main/project-conversations';
 // Real (pure) — mirrors localJsonlPath's native branch so Task 8 tests can
 // compute the exact ~/.youcoded/sessions/<slug>/<id>.jsonl path the service derives.
-import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import { nativeStoreSlug } from '../src/main/slug-encoding';
 
 // vi.mock factories are hoisted above imports, so shared fake state must be
 // created via vi.hoisted for the factories to close over it.
@@ -775,8 +775,8 @@ describe('conversations service composition root', () => {
       fs.mkdirSync(dir, { recursive: true });
       const id = '44444444-4444-4444-4444-444444444444';
       // Seed the local NATIVE transcript at the exact path localJsonlPath derives
-      // for provider:'native' — ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl.
-      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', cwdToProjectSlug(dir), `${id}.jsonl`);
+      // for provider:'native' — ~/.youcoded/sessions/<nativeStoreSlug(cwd)>/<id>.jsonl.
+      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', nativeStoreSlug(dir), `${id}.jsonl`);
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
       fs.writeFileSync(localPath, 'native-final-turn');
 

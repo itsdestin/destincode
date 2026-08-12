@@ -7,15 +7,13 @@
 // assistant-thinking) are display-only for the same reason.
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
-// WHY imported from transcript-watcher: native sessions use the RAW
-// cwdToProjectSlug — NOT ccProjectSlug (project-conversations.ts), which
-// additionally uppercases a lowercase Windows drive letter before slugifying.
-// This is a DELIBERATE divergence, not a bug: the two encodings disagree on a
-// cwd like 'c:\Users\d\proj' (see session-store.test.ts's slug-divergence
-// pin), and unifying them would orphan every native session file already
-// written on disk under the raw slug. conversations/service.ts's
-// localJsonlPath mirrors this same raw-slug convention for native paths.
-import { cwdToProjectSlug } from '../transcript-watcher';
+// WHY nativeStoreSlug (NOT the CC mirror): the slug is the FROZEN app-private
+// rule (slug-encoding.ts) — deliberately NOT CC's; changing it orphans
+// existing native transcripts. It disagrees with ccProjectSlug on a cwd like
+// 'c:\Users\d\proj' (see session-store.test.ts's slug-divergence pin).
+// conversations/service.ts's localJsonlPath mirrors this same convention for
+// native paths.
+import { nativeStoreSlug } from '../slug-encoding';
 import { NativeHome } from '../native-home';
 
 export interface NativeSessionHeader {
@@ -61,7 +59,7 @@ export class SessionStore {
 
   /** Write the session header as line 1 of a fresh session file. */
   async create(header: NativeSessionHeader): Promise<void> {
-    await this.home.appendSessionLine(cwdToProjectSlug(header.cwd), header.sessionId, header);
+    await this.home.appendSessionLine(nativeStoreSlug(header.cwd), header.sessionId, header);
   }
 
   /**
@@ -89,7 +87,7 @@ export class SessionStore {
       return;
     }
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = nativeStoreSlug(cwd);
     const partId = event.data?.partId;
 
     if (COALESCED_TYPES.has(event.type) && partId) {
@@ -170,7 +168,7 @@ export class SessionStore {
 
   /** Line 1 of the session file, validated as a v1 header for this session. */
   readHeader(sessionId: string, cwd: string): NativeSessionHeader | null {
-    const lines = this.home.readSessionLines(cwdToProjectSlug(cwd), sessionId);
+    const lines = this.home.readSessionLines(nativeStoreSlug(cwd), sessionId);
     return this.validateHeader(lines[0], sessionId);
   }
 
@@ -180,7 +178,7 @@ export class SessionStore {
    * must never produce duplicate reducer entries on replay.
    */
   readEvents(sessionId: string, cwd: string): TranscriptEvent[] {
-    const lines = this.home.readSessionLines(cwdToProjectSlug(cwd), sessionId);
+    const lines = this.home.readSessionLines(nativeStoreSlug(cwd), sessionId);
     const seen = new Set<string>();
     const out: TranscriptEvent[] = [];
     for (const line of lines.slice(1)) {

@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createConversationStore } from '../src/main/conversations/conversation-store';
-import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import { nativeStoreSlug } from '../src/main/slug-encoding';
 
 // Task 7 (store union): session-browser reads the Conversation Store via a
 // dynamic import of './conversations/service' inside listPastSessions. The real
@@ -75,7 +75,7 @@ function nativeEntry(overrides: Partial<{
     title: overrides.title,
     mtimeMs: overrides.mtimeMs ?? Date.parse('2026-06-15T00:00:00Z'),
     sizeBytes: overrides.sizeBytes ?? 4321,
-    slug: overrides.slug ?? cwdToProjectSlug(cwd),
+    slug: overrides.slug ?? nativeStoreSlug(cwd),
     provider: 'native' as const,
   };
 }
@@ -84,7 +84,7 @@ function nativeEntry(overrides: Partial<{
  *  notSyncedYet-for-native probe (nativeJsonlPath in session-browser.ts)
  *  checks for, mirroring writeTranscript's CC equivalent above. */
 function writeNativeTranscript(cwd: string, sid: string): string {
-  const dir = path.join(tmpHome, '.youcoded', 'sessions', cwdToProjectSlug(cwd));
+  const dir = path.join(tmpHome, '.youcoded', 'sessions', nativeStoreSlug(cwd));
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${sid}.jsonl`);
   fs.writeFileSync(file, JSON.stringify({ v: 1, sessionId: sid, cwd }) + '\n');
@@ -653,7 +653,7 @@ describe('listPastSessions — native rows join the SAME overlay (Task 5)', () =
     const row = sessions.find((s: any) => s.sessionId === 'native-6');
     expect(row?.notSyncedYet).toBeUndefined();
     expect(row?.missingProject).toBeUndefined();
-    expect(row?.projectSlug).toBe(cwdToProjectSlug(localProj));
+    expect(row?.projectSlug).toBe(nativeStoreSlug(localProj));
     expect(row?.projectPath).toBe(localProj);
   });
 
@@ -681,7 +681,7 @@ describe('listPastSessions — native rows join the SAME overlay (Task 5)', () =
     const sessions = await listSessions(undefined, entries);
     const row = sessions.find((s: any) => s.sessionId === 'native-7');
     expect(row?.projectPath).toBe(resolvedLocal);
-    expect(row?.projectSlug).toBe(cwdToProjectSlug(resolvedLocal));
+    expect(row?.projectSlug).toBe(nativeStoreSlug(resolvedLocal));
   });
 
   it('degrades to bare native rows when store.list() throws', async () => {
