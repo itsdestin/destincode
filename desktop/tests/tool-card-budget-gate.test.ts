@@ -87,4 +87,59 @@ describe('friendlyToolDisplay — malformed (non-string) inputs never leak [obje
     const d = friendlyToolDisplay(tool('AskUserQuestion', { questions: [{ header: { bad: true }, question: 'Pick one' }] }));
     expect(d.label).toBe('Pick one');
   });
+
+  // Crash-capable shapes: an object survives `(x as string) || ''` (truthy) and
+  // then a string method (.trimStart/.replace/.includes/basename) throws,
+  // taking down the whole Chat pane via its ErrorBoundary.
+  it('Bash: object-valued command neither crashes .trimStart() nor renders', () => {
+    const d = friendlyToolDisplay(tool('Bash', { command: { bad: true } }));
+    expect(d.label).toBe('Run Command');
+    expect(d.detail).toBe('');
+  });
+
+  it('Read: object-valued file_path neither crashes basename() nor renders', () => {
+    const d = friendlyToolDisplay(tool('Read', { file_path: { bad: true } }));
+    expect(d.label).toBe('Reading File');
+    expect(d.detail).toBe('');
+  });
+
+  it('Edit: object-valued file_path and old_string neither crash nor render', () => {
+    const d = friendlyToolDisplay(tool('Edit', { file_path: { bad: true }, old_string: { bad: true } }));
+    expect(d.label).toBe('Editing File');
+    expect(d.detail).toBe('');
+  });
+
+  it('Glob: object-valued pattern neither crashes .replace() nor renders', () => {
+    const d = friendlyToolDisplay(tool('Glob', { pattern: { bad: true } }));
+    expect(d.label).toBe('Finding Files');
+  });
+
+  it('Grep: object-valued pattern is not quoted into the label', () => {
+    const d = friendlyToolDisplay(tool('Grep', { pattern: { bad: true } }));
+    expect(d.label).toBe('Searching Code');
+    expect(d.label).not.toContain('[object Object]');
+  });
+
+  it('Skill: object-valued skill neither crashes .includes() nor renders', () => {
+    const d = friendlyToolDisplay(tool('Skill', { skill: { bad: true } }));
+    expect(d.label).toBe('Invoked skill');
+  });
+
+  // Display-only fields: representative [object Object] leaks.
+  it('WebFetch: object-valued url is treated as absent, not interpolated', () => {
+    const d = friendlyToolDisplay(tool('WebFetch', { url: { bad: true } }));
+    expect(d.detail).toBe('');
+  });
+
+  it('TaskUpdate: object-valued taskId is treated as absent, not interpolated', () => {
+    const d = friendlyToolDisplay(tool('TaskUpdate', { status: 'completed', taskId: { bad: true } }));
+    expect(d.label).toBe('Task Completed');
+    expect(d.detail).toBe('');
+  });
+
+  it('Read: object-valued offset/limit are treated as absent, not interpolated', () => {
+    const d = friendlyToolDisplay(tool('Read', { file_path: '/a/b.ts', offset: { bad: true }, limit: { bad: true } }));
+    expect(d.detail).not.toContain('[object Object]');
+    expect(d.detail).toBe('↳ a/');
+  });
 });
