@@ -21,7 +21,15 @@
 // previous round has a recorded pick. Don't delete old rounds — the breadcrumb
 // IS the record of how a design got where it did.
 import React from 'react';
-import { Button, Toggle, fieldClasses } from '../../../components/ui';
+import {
+  Button,
+  Radio,
+  RadioGroup,
+  SegmentedTabs,
+  SettingRow,
+  Toggle,
+  fieldClasses,
+} from '../../../components/ui';
 import { TagChip } from '../../../components/tags/TagChip';
 import { TagPicker } from '../../../components/tags/TagPicker';
 import { NoteEditor } from '../../../components/tags/NoteEditor';
@@ -31,6 +39,19 @@ import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-t
 // app does, or the comparison is against something that doesn't exist.
 import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
+import type { NativePermissionMode } from '../../../../shared/permission-types';
+// The mode copy, reproduced verbatim from the shipping screen — the candidate
+// these rounds called VariantC, which is now components/PermissionsSection.tsx.
+// See permission-modes.ts's header for why it is a copy rather than an import.
+import {
+  ALWAYS_ASKS,
+  MODES,
+  MODE_ARIA,
+  MODE_IDS,
+  MODE_LOCATION_NOTE,
+  SECTION_LABEL,
+  type PermissionModeDef,
+} from './permission-modes';
 import type { CompareSurface } from './types';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
@@ -1235,7 +1256,502 @@ function InDialog({ children }: { children: React.ReactNode }) {
   );
 }
 
-export const COMPARE_SURFACES: CompareSurface[] = [
+// ═════════════════════════════════════════════════════════════════════════════
+// SURFACE 2 — Settings → Permissions, the mode control
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// WHAT IS ACTUALLY BEING DECIDED. The Permissions screen opens with a control
+// for how much the assistant checks with you: three modes, one obviously-safe
+// default (Ask first) and two progressively riskier ones. A first round of
+// design was rejected by the owner in these words:
+//
+//   "all three offered UIs make it look like i'm selecting a permissions mode,
+//    when that selection actually does fucking nothing."
+//
+// TWO SEPARATE PROBLEMS live in that sentence, and only one of them is a design
+// problem. The setting being inert is being fixed in the main process — a
+// persisted default mode that new conversations start in. So every candidate
+// here is authored as a control that GENUINELY OWNS A VALUE: it takes `value`
+// and `onChange`, and the pane drives them from its own state. Nothing here
+// carries copy or an affordance implying a setting that does not exist.
+//
+// What is left for this surface is the design half: the three forms that exist
+// today all present the modes as three interchangeable options, and they are
+// not interchangeable — they are a default and two escalations away from it.
+//
+// FRAME. `panel` at 420px, which is the real thing: the Permissions dialog is
+// size="panel" (DIALOG_WIDTHS.panel = min(420px, 88vw)) and never gets wider.
+// These definitions wrap at that width, which is most of what there is to judge.
+// The real <Dialog> is NOT rendered — it is fixed-position and would stack every
+// pane in the middle of the screen (see types.ts).
+
+type ModeControlProps = {
+  value: NativePermissionMode;
+  onChange: (next: NativePermissionMode) => void;
+};
+
+/** One mode as a radio-list row: the <Radio> lives in SettingRow's icon slot and
+ *  the whole tile is the hit target, so you never have to aim at the 14px
+ *  circle. Shared by the candidates that use this row shape, so the only thing
+ *  differing between them is the arrangement AROUND the rows. */
+function ModeRow({ m, value, onChange }: { m: PermissionModeDef } & ModeControlProps) {
+  return (
+    <SettingRow
+      variant="item"
+      title={m.label}
+      description={m.line}
+      selected={value === m.id}
+      onSelect={() => onChange(m.id)}
+      // Roving tabindex: only the chosen option is tabbable, so Tab enters and
+      // leaves the group in one stop (what native radios give free).
+      radioTabIndex={value === m.id ? 0 : -1}
+    />
+  );
+}
+
+// ── Round 1: the three controls that already exist ───────────────────────────
+// Verbatim in behaviour and copy from VariantC.tsx's `?mc=1|2|3` scaffold, so
+// the lineage starts from something real rather than from a blank page. The one
+// change is the prop names — `value`/`onChange` instead of `mode`/`onChange` —
+// because a control that owns a value is what the next round is arguing about.
+
+/** 1 — RADIO LIST (VariantC's recommendation, and its default with no `?mc`).
+ *
+ *  K3's "any option needs a description" form: a <RadioGroup> (one tab stop,
+ *  arrow keys walk it) around three <SettingRow variant="item">s. */
+function ModeRadioList({ value, onChange }: ModeControlProps) {
+  return (
+    <RadioGroup
+      aria-label={MODE_ARIA}
+      options={MODE_IDS}
+      value={value}
+      onChange={(id) => onChange(id as NativePermissionMode)}
+      className="space-y-1"
+    >
+      {MODES.map((m) => (
+        <ModeRow key={m.id} m={m} value={value} onChange={onChange} />
+      ))}
+    </RadioGroup>
+  );
+}
+
+/** 2 — SEGMENTED, WITH THE WHOLE KEY SHOWN.
+ *
+ *  The picker stays a single row (the most compact of the three) and all three
+ *  definitions print beneath it as a fixed key. The key is deliberately
+ *  UNEMPHASISED — the segmented control already draws the selection in
+ *  bg-accent, and a second selected/unselected treatment down here would be a
+ *  hand-rolled active/inactive pair in everything but name. */
+function ModeSegmentedWithKey({ value, onChange }: ModeControlProps) {
+  return (
+    <>
+      <SegmentedTabs
+        variant="contained"
+        aria-label={MODE_ARIA}
+        tabs={MODES.map((m) => ({ id: m.id, label: m.label }))}
+        value={value}
+        onChange={(id) => onChange(id as NativePermissionMode)}
+      />
+      <ul className="mt-2 space-y-1.5">
+        {MODES.map((m) => (
+          <li key={m.id} className="text-2xs text-fg-muted leading-relaxed">
+            <span className="text-fg-2 font-medium">{m.label}</span> — {m.line}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** 3 — ROWS WITH THE RADIO ON THE RIGHT.
+ *
+ *  Same rows, opposite geometry: the <Radio> sits in SettingRow's `control`
+ *  slot, so the title and its definition get the row's full left edge — the
+ *  thing worth comparing at 420px, where these definitions wrap. The whole row
+ *  still selects, and SettingRow stops the Radio's own click from bubbling back
+ *  into it, so one tap is one change. */
+function ModeTrailingRadios({ value, onChange }: ModeControlProps) {
+  return (
+    <RadioGroup
+      aria-label={MODE_ARIA}
+      options={MODE_IDS}
+      value={value}
+      onChange={(id) => onChange(id as NativePermissionMode)}
+      className="space-y-1"
+    >
+      {MODES.map((m) => (
+        <SettingRow
+          key={m.id}
+          variant="item"
+          title={m.label}
+          description={m.line}
+          onClick={() => onChange(m.id)}
+          control={
+            <Radio
+              checked={value === m.id}
+              onChange={() => onChange(m.id)}
+              tabIndex={value === m.id ? 0 : -1}
+              aria-label={m.label}
+            />
+          }
+        />
+      ))}
+    </RadioGroup>
+  );
+}
+
+// ── Round 2: forms that are not a picker of three equals ─────────────────────
+// The axis is the SHAPE of the choice, not its copy — every mode definition is
+// still the verbatim string from permission-modes.ts in all three, so a pick
+// tells you which presentation you preferred rather than which sentence.
+
+/** A — STATE FIRST. At rest this is not a picker at all: one row states how the
+ *  assistant behaves today, with a quiet "Change" beside it. Clicking it opens
+ *  the full three-option list, and choosing closes it again, so picking a mode
+ *  is a deliberate second step rather than the screen's opening question.
+ *
+ *  The trade, stated plainly: at rest you can no longer compare the three
+ *  definitions, which is precisely what VariantC's second owner review bought by
+ *  printing all three at once. This candidate bets that a SETTING should read as
+ *  its current value, and that the comparison is one click away when you
+ *  actually want it. */
+function ModeStateFirst({ value, onChange }: ModeControlProps) {
+  const [changing, setChanging] = React.useState(false);
+  // MODE_IDS covers every NativePermissionMode, so this cannot miss — but fall
+  // back rather than assert, since a bad `!` here would blank the whole pane.
+  const current = MODES.find((m) => m.id === value) ?? MODES[0];
+
+  if (!changing) {
+    return (
+      <SettingRow
+        variant="item"
+        title={current.label}
+        description={current.line}
+        // Ghost is the family's lightest button: the row is a statement of
+        // state, and the way to change it should not out-shout the state.
+        control={
+          <Button variant="ghost" size="sm" onClick={() => setChanging(true)}>
+            Change
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <RadioGroup
+      aria-label={MODE_ARIA}
+      options={MODE_IDS}
+      value={value}
+      onChange={(id) => {
+        onChange(id as NativePermissionMode);
+        setChanging(false);
+      }}
+      className="space-y-1"
+    >
+      {MODES.map((m) => (
+        <ModeRow
+          key={m.id}
+          m={m}
+          value={value}
+          onChange={(next) => {
+            onChange(next);
+            setChanging(false);
+          }}
+        />
+      ))}
+    </RadioGroup>
+  );
+}
+
+/** B — DEFAULT, THEN THE STEP-UPS. All three rows stay visible and all three
+ *  definitions stay readable, but they stop being a flat stack: Ask first sits
+ *  alone as the plain choice, and the two that trade oversight for fewer
+ *  interruptions are held in ONE bordered card under a label saying what they
+ *  have in common.
+ *
+ *  Containment rather than indent, deliberately — the rejected Permissions
+ *  design expressed "these belong to that" with 8px of padding and nothing else,
+ *  and the fix that stuck (VariantC's FolderCard) was a border on all four
+ *  sides. Same class recipe here: rounded-lg border border-edge bg-well. */
+function ModeStepUps({ value, onChange }: ModeControlProps) {
+  const [base, ...stepUps] = MODES;
+  return (
+    <RadioGroup
+      aria-label={MODE_ARIA}
+      options={MODE_IDS}
+      value={value}
+      onChange={(id) => onChange(id as NativePermissionMode)}
+      className="space-y-2"
+    >
+      <ModeRow m={base} value={value} onChange={onChange} />
+      <div className="rounded-lg border border-edge bg-well overflow-hidden pt-2.5 px-1 pb-1">
+        {/* Authored copy classifying the rows under it — a section label, and it
+            takes the canonical spelling. px-2 lands it on the same left edge as
+            the row titles beneath (the rows carry their own px-3 inside the
+            card's px-1). */}
+        <h3 className={`${SECTION_LABEL} px-2`}>Fewer interruptions</h3>
+        <div className="space-y-1">
+          {stepUps.map((m) => (
+            <ModeRow key={m.id} m={m} value={value} onChange={onChange} />
+          ))}
+        </div>
+      </div>
+    </RadioGroup>
+  );
+}
+
+/** Indent per step. A key whose lines hang progressively further right reads as
+ *  a staircase, which is the whole point of this candidate — so the values are
+ *  named here rather than computed, and there are exactly as many as MODES. */
+const STEP_INDENT = ['', 'pl-3', 'pl-6'];
+
+/** C — A SCALE, NOT A ROW OF TABS. The compact segmented picker survives — it is
+ *  by far the smallest of the forms — but it is reframed as an axis: the ends
+ *  are named underneath it, and the key below steps one indent further right per
+ *  mode, so left-to-right and top-to-bottom both mean the same thing.
+ *
+ *  Nothing in the key is emphasised by selection, for R1·B's reason: the
+ *  segmented control already draws the selection, and a second active/inactive
+ *  treatment down here would be a hand-rolled choice group in all but name. */
+function ModeScale({ value, onChange }: ModeControlProps) {
+  return (
+    <>
+      <SegmentedTabs
+        variant="contained"
+        aria-label={MODE_ARIA}
+        tabs={MODES.map((m) => ({ id: m.id, label: m.label }))}
+        value={value}
+        onChange={(id) => onChange(id as NativePermissionMode)}
+      />
+      {/* The axis. Not a section label — no uppercase, no tracking — because
+          these are the ends of a scale, not a heading over a group. */}
+      <div className="mt-1.5 flex items-center justify-between text-3xs text-fg-muted">
+        <span>Checks with you most</span>
+        <span>Checks with you least</span>
+      </div>
+      <ul className="mt-2.5 space-y-1.5">
+        {MODES.map((m, i) => (
+          <li key={m.id} className={`text-2xs text-fg-muted leading-relaxed ${STEP_INDENT[i]}`}>
+            <span className="text-fg-2 font-medium">{m.label}</span> — {m.line}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** The always-ask list, identical in every candidate. It is here rather than
+ *  cropped out because Full auto's definition ends "The list below is the
+ *  exception" — judged without a list below it, that sentence points at nothing.
+ *  Copied from VariantC's section 2, including the reason it is a quiet card and
+ *  not a stack of rows: there is nothing here to toggle, and <SettingRow>s would
+ *  promise a control that does not exist. */
+function AlwaysAsksSection() {
+  return (
+    <div>
+      <h3 className={SECTION_LABEL}>Things it always asks about</h3>
+      <div className="rounded-lg bg-inset/50 px-3 py-2.5 space-y-1.5">
+        <p className="text-3xs text-fg-muted">Even on Full auto:</p>
+        <ul className="text-2xs text-fg-2 leading-relaxed list-disc pl-4 space-y-1">
+          {ALWAYS_ASKS.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/** Mounts one mode control in the dialog it actually lives in: the Permissions
+ *  header band above it, the section label it sits under, and the always-asks
+ *  section below. The state is HERE — every candidate is a real control over a
+ *  real value, so it responds like the setting it is about to become. */
+function ModePane({ control: Control }: { control: React.ComponentType<ModeControlProps> }) {
+  const [mode, setMode] = React.useState<NativePermissionMode>('ask');
+  return (
+    <div className="flex flex-col">
+      {/* Dialog.tsx's own header geometry, not the real <Dialog> — see the
+          surface comment above for why the component itself cannot be used. */}
+      <div className="px-4 py-3 border-b border-edge">
+        <h2 className="text-sm font-bold text-fg">Permissions</h2>
+      </div>
+      {/* px-4 py-4 space-y-5 is Dialog's scroll-body track, so the control is
+          judged with the padding it will really have. */}
+      <div className="px-4 py-4 space-y-5">
+        <div>
+          {/* Matches the explainer's own "How much it asks" section, so the (i)
+              reads as the long version of what is on screen. */}
+          <h3 className={SECTION_LABEL}>How much it asks</h3>
+          <Control value={mode} onChange={setMode} />
+        </div>
+        <AlwaysAsksSection />
+      </div>
+    </div>
+  );
+}
+
+// ── Round 3: not a control at all ────────────────────────────────────────────
+// R1 and R2 were discarded TOGETHER, and the fault was not styling. All six
+// candidates were CONTROLS — radio lists, segmented tabs, a row with a Change
+// button — and every one of them read as a live selector for a setting this
+// screen does not own:
+//
+//   "this IS NOT AND SHOULD NOT BE A REAL PERMISSIONS SELECTOR. it still looks
+//    like a live selector that changes a setting"
+//
+// The reason it can never be one: permission mode is per-CONVERSATION state,
+// owned by NativeSessionHost and set from the status-bar chip at the bottom of
+// the chat. There is no app-wide default for this screen to write to, so a
+// control here would either do nothing (a lie in the shape of a control) or
+// force the invention of a setting that does not exist. The R2 header above
+// bet that the inertness would be fixed in the main process and the design
+// question was the shape of the picker; that bet was wrong, and this round is
+// where it is paid off.
+//
+// So every candidate below is a PRESENTATION OF REFERENCE CONTENT: three terms
+// and their definitions, printed as facts, exactly the way ALWAYS_ASKS is. No
+// selected state, no radios, no tabs, nothing focusable, no hover affordance —
+// and each one prints MODE_LOCATION_NOTE, so the reader is told where the mode
+// really is changed rather than left hunting this screen for it.
+//
+// THE AXIS IS CONTAINMENT: a card of its own (A), no container at all (B), or
+// one container shared with the always-asks list below (C). Copy is identical
+// in all three, MODES verbatim, so a pick names the presentation.
+//
+// Most of this is text, so most of it is plain tokens rather than primitives —
+// which is the honest answer here, not a shortcut. There is no primitive for
+// "three definitions", and reaching for <SettingRow> to get one would put row
+// geometry (and its click affordance) around content that is not a row.
+
+/** The run-in definitions A and C share: the term in full text colour, its
+ *  sentence continuing on the same line. Identical in both on purpose, so what
+ *  separates those two candidates is the container and nothing else. */
+function RunInDefinitions() {
+  return (
+    <div className="space-y-2">
+      {MODES.map((m) => (
+        <p key={m.id} className="text-2xs text-fg-2 leading-relaxed">
+          <span className="font-medium text-fg">{m.label}</span>
+          {' — '}
+          {m.line}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** A — THE QUIET CARD. The same `bg-inset/50` informational surface the
+ *  always-asks list uses, which is already this screen's established way of
+ *  saying "this is a fact about the app, there is nothing to operate here". The
+ *  card does the grouping, so the three terms only need weight rather than
+ *  lines of their own. This is what the component does today. */
+function ModeRefCard() {
+  return (
+    <div className="rounded-lg bg-inset/50 px-3 py-2.5 space-y-2">
+      <RunInDefinitions />
+      <p className="text-3xs text-fg-muted">{MODE_LOCATION_NOTE}</p>
+    </div>
+  );
+}
+
+/** B — NO CARD, A REAL DEFINITION LIST. <dl>/<dt>/<dd> is the markup for terms
+ *  and their definitions, which is literally what this content is; a screen
+ *  reader then announces it as a definition list rather than as three
+ *  paragraphs. Nothing is drawn at all — no fill, no border — so there is no
+ *  box a reader could mistake for a group of options.
+ *
+ *  Dropping the card costs the grouping, so the terms take that job back by
+ *  standing on their own line at text-xs. That is the same move, not a second
+ *  one: without a container the labels have to be the structure. It also puts
+ *  the three names in a column you can scan without reading the sentences. */
+function ModeRefDefinitions() {
+  return (
+    <>
+      <dl className="space-y-2.5">
+        {MODES.map((m) => (
+          <div key={m.id}>
+            <dt className="text-xs font-medium text-fg">{m.label}</dt>
+            <dd className="text-2xs text-fg-2 leading-relaxed">{m.line}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3 text-3xs text-fg-muted">{MODE_LOCATION_NOTE}</p>
+    </>
+  );
+}
+
+/** C — ONE EXPLANATION. The modes and the always-asks list share a SINGLE
+ *  bg-inset/50 card, divided into bands. Full auto's own definition ends "The
+ *  list below is the exception" — here that list is inside the same box instead
+ *  of in a separate section under its own heading, so the sentence points at
+ *  something the eye already reads as part of the same statement.
+ *
+ *  Both headings survive: the always-asks label becomes the second band's
+ *  header, the way VariantC's folder cards carry band headers inside a card.
+ *  MODE_LOCATION_NOTE closes the whole card rather than just the modes, because
+ *  by then it is the one thing left to say. Costs the one-section-per-idea
+ *  rhythm the rest of the screen keeps, and it is the tallest single object on
+ *  the page. */
+function ModeRefCoupled() {
+  return (
+    <div>
+      <h3 className={SECTION_LABEL}>How much it asks</h3>
+      <div className="rounded-lg bg-inset/50">
+        <div className="px-3 py-2.5">
+          <RunInDefinitions />
+        </div>
+        <div className="border-t border-edge-dim px-3 py-2.5">
+          <h3 className={SECTION_LABEL}>Things it always asks about</h3>
+          <p className="text-3xs text-fg-muted">Even on Full auto:</p>
+          <ul className="mt-1.5 text-2xs text-fg-2 leading-relaxed list-disc pl-4 space-y-1">
+            {ALWAYS_ASKS.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div className="border-t border-edge-dim px-3 py-2">
+          <p className="text-3xs text-fg-muted">{MODE_LOCATION_NOTE}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Round 3's pane. Same dialog chrome as ModePane and NO STATE — there is
+ *  nothing on this screen that owns a value any more, and a useState here would
+ *  be scaffolding for a control that is not being built.
+ *
+ *  The body is authored by the candidate instead of being pre-drawn, because C
+ *  deliberately merges the modes with the always-asks section and so cannot be
+ *  handed a fixed "h3 + control + AlwaysAsksSection" sandwich. */
+function ReferencePane({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <div className="px-4 py-3 border-b border-edge">
+        <h2 className="text-sm font-bold text-fg">Permissions</h2>
+      </div>
+      <div className="px-4 py-4 space-y-5">{children}</div>
+    </div>
+  );
+}
+
+/** The two-section body A and B share: the canonical section label, the
+ *  candidate's presentation under it, then the always-asks section exactly as
+ *  the other rounds render it. */
+function ModeRefSections({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <div>
+        <h3 className={SECTION_LABEL}>How much it asks</h3>
+        {children}
+      </div>
+      <AlwaysAsksSection />
+    </>
+  );
+}
+
+const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
     label: 'Close session — body',
@@ -1484,4 +2000,112 @@ export const COMPARE_SURFACES: CompareSurface[] = [
       },
     ],
   },
+  {
+    id: 'permissions-mode-control',
+    label: 'Permissions — mode control',
+    question:
+      'Three modes with one safe default and two riskier ones — how should the control present them so the default reads as the default rather than as one of three equals?',
+    frame: 'panel',
+    // The real width. Settings → Permissions is <Dialog size="panel">, and
+    // DIALOG_WIDTHS.panel is min(420px, 88vw) — these definitions wrap here.
+    paneWidth: 420,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'radio-list',
+            label: 'Radio list',
+            note: 'VariantC\'s ?mc=1 and its recommendation. A RadioGroup of SettingRow "item" tiles — the radio sits in the icon slot and the whole tile is the hit target, which is what survives a phone. Tallest, and the definitions get the least width.',
+            render: () => <ModePane control={ModeRadioList} />,
+          },
+          {
+            id: 'segmented-key',
+            label: 'Segmented + full key',
+            note: 'VariantC\'s ?mc=2. The picker is one compact SegmentedTabs row and all three definitions print below it as a fixed, unemphasised key — so the control is small but the reading matter is detached from the thing it describes.',
+            render: () => <ModePane control={ModeSegmentedWithKey} />,
+          },
+          {
+            id: 'trailing-radios',
+            label: 'Rows, radio on the right',
+            note: 'VariantC\'s ?mc=3. Same rows as A with the Radio moved into SettingRow\'s control slot, so each title and its definition get the row\'s full left edge — the difference that only shows up at 420px, where these lines wrap.',
+            render: () => <ModePane control={ModeTrailingRadios} />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis:
+          'R1 — all three, not one of them. They differ on geometry and share the problem: three options of equal weight, equally drawn, in a control where one is the obviously-safe default and the other two are escalations away from it. R2 keeps every mode definition verbatim and varies only the SHAPE of the choice, so a pick names a presentation rather than a sentence. (The inertness the owner objected to is being fixed in the main process — every candidate here takes value/onChange and really owns its value.)',
+        candidates: [
+          {
+            id: 'state-first',
+            label: 'State first, Change is a step',
+            note: 'At rest this is not a picker: one row states how the assistant behaves now, with a ghost "Change" beside it; that opens the three-option list and choosing closes it again. Reads as a setting with a value. Costs the at-rest comparison of all three definitions — the exact thing VariantC\'s owner review bought back.',
+            render: () => <ModePane control={ModeStateFirst} />,
+          },
+          {
+            id: 'step-ups',
+            label: 'Default, then the step-ups',
+            note: 'All three still visible and readable, but no longer a flat stack: Ask first stands alone, and the two that trade oversight for fewer interruptions are held in one bordered card labelled with what they have in common. Containment, not indent — the same fix that settled the folder cards.',
+            render: () => <ModePane control={ModeStepUps} />,
+          },
+          {
+            id: 'scale',
+            label: 'A scale, not a row of tabs',
+            note: 'Keeps the compact segmented picker — much the smallest form — but reframes it as an axis: the ends are named beneath it, and the key steps one indent further right per mode, so left-to-right and top-to-bottom both mean "less checking". Least chrome; the escalation is carried entirely by layout.',
+            render: () => <ModePane control={ModeScale} />,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis:
+          'R1 and R2 BOTH discarded — not one over the other, the whole category. All six candidates were controls (radio lists, segmented tabs, a row with a Change button): "this IS NOT AND SHOULD NOT BE A REAL PERMISSIONS SELECTOR. it still looks like a live selector that changes a setting". Permission mode is per-CONVERSATION state, owned by NativeSessionHost and set from the status-bar chip, so this screen has no app-wide value to write — a control here either does nothing or invents a setting that does not exist. R3 compares PRESENTATIONS OF REFERENCE CONTENT instead: three terms and their definitions as facts, no selected state, nothing clickable, and each one says where the mode is really changed. The axis is containment — its own card, no container, or one shared with the always-asks list.',
+        candidates: [
+          {
+            id: 'quiet-card',
+            label: 'Quiet informational card',
+            note: 'What the component does today, as the baseline. Three run-in definitions on the same bg-inset/50 card the always-asks list uses — this screen\'s established "fact, not control" surface. The card groups them, so the terms only need weight.',
+            render: () => (
+              <ReferencePane>
+                <ModeRefSections><ModeRefCard /></ModeRefSections>
+              </ReferencePane>
+            ),
+          },
+          {
+            id: 'definition-list',
+            label: 'Definition list, no card',
+            note: 'A real <dl>: nothing drawn at all, so there is no box to mistake for a group of options, and a screen reader announces terms and definitions rather than three paragraphs. Without the card the labels have to be the structure, so they take their own line — which also puts the three names in a scannable column.',
+            render: () => (
+              <ReferencePane>
+                <ModeRefSections><ModeRefDefinitions /></ModeRefSections>
+              </ReferencePane>
+            ),
+          },
+          {
+            id: 'coupled',
+            label: 'One explanation, both bands',
+            note: 'Modes and the always-asks list share ONE card split by rules. Full auto ends "The list below is the exception" — here that list is inside the same box rather than a section away, so the sentence points at something the eye already reads as part of it. Both headings survive as band headers. Tallest object on the screen, and it breaks the one-section-per-idea rhythm.',
+            render: () => (
+              <ReferencePane>
+                <ModeRefCoupled />
+              </ReferencePane>
+            ),
+          },
+        ],
+      },
+    ],
+  },
+];
+
+// CompareView opens on COMPARE_SURFACES[0] and has no URL param for the surface,
+// so whichever entry is first is the one a plain ?view=compare lands on. Order by
+// what is under active design rather than by authoring order — otherwise every
+// visit starts with a dropdown hunt for the round actually being worked on.
+const ACTIVE_FIRST = 'permissions-mode-control';
+
+export const COMPARE_SURFACES: CompareSurface[] = [
+  ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
+  ...ALL_SURFACES.filter((s) => s.id !== ACTIVE_FIRST),
 ];
