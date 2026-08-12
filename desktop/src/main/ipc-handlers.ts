@@ -39,6 +39,8 @@ import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
+// Type-only: the payload the permissions:remove handler forwards to the host.
+import type { PermissionRule } from '../shared/permission-types';
 // Task 7b: the MCP registry (WHICH servers ~/.youcoded/mcp.json configures)
 // and the pooled connection manager that acquire()s them per session. See the
 // construction site below for the eager-vs-lazy invariant this must preserve.
@@ -2217,6 +2219,12 @@ export function registerIpcHandlers(
   // lock (fire-and-forget — list/languageModel read on demand). The catalog's
   // contextLengthFor feeds HarnessSession's context-window sizing.
   const nativeHome = new NativeHome();
+  // Hoisted out of the NativeSessionHost constructor call below (M5 2a): the
+  // permissions:list handler and the remote-server WS case both need to READ the
+  // same store the host writes through. Constructing a second one would still
+  // work (they share one file under NativeHome's lock) but would make the
+  // "one store" invariant a coincidence rather than a fact.
+  const permissionStore = new PermissionStore(nativeHome);
   const secretsStore = new SecretsStore(app.getPath('userData'));
   // Plan B: the local engine. EngineManager owns acquisition + supervision; its
   // hook makes the 'local' provider real and its listModels feeds the model
@@ -2307,7 +2315,7 @@ export function registerIpcHandlers(
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
-    new PermissionStore(nativeHome),
+    permissionStore,
     app.getVersion(),
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
@@ -2424,7 +2432,9 @@ export function registerIpcHandlers(
   // Give the remote server access to the native stack so its WS clients reach
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService });
+  // permissionStore rides along for the remote permissions:list case (M5 2a) —
+  // the WS revokes go through nativeHost, which is already here.
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2552,6 +2562,19 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SEARCH_SET_KEY, async (_e, backend: 'tavily' | 'exa', key: string) => { await searchKeyStore.setKey(backend, key); return true; });
   ipcMain.handle(IPC.SEARCH_REMOVE_KEY, async (_e, backend: 'tavily' | 'exa') => { await searchKeyStore.removeKey(backend); return true; });
   ipcMain.handle(IPC.SEARCH_TEST, async (_e, backend: 'tavily' | 'exa', key: string) => searchService.testBackend(backend, key));
+  // Remembered "Always allow" rules (Settings → Permissions, M5 2a).
+  // list READS the store directly — it only reports what is on disk.
+  // remove / remove-project go through nativeHost.revokeRule / revokeProject and
+  // NEVER through permissionStore.remove / removeProject: the store touches disk
+  // only, while the host also clears the per-session in-memory `rememberedFor`
+  // map that buildDecide unions into every decision. A disk-only delete would
+  // leave an already-running session granting exactly what the user just
+  // revoked — the failure this whole feature exists to prevent.
+  // Both revokes return true only when something actually matched; false means
+  // the renderer's list was stale, and it says so instead of claiming success.
+  ipcMain.handle(IPC.PERMISSIONS_LIST, async () => permissionStore.list());
+  ipcMain.handle(IPC.PERMISSIONS_REMOVE, async (_e, slug: string, rule: PermissionRule) => nativeHost.revokeRule(slug, rule));
+  ipcMain.handle(IPC.PERMISSIONS_REMOVE_PROJECT, async (_e, slug: string) => nativeHost.revokeProject(slug));
   // --- Local engine IPC (Plan B) ---
   // install/restart resolve to a fresh status() so the caller doesn't need a
   // second round-trip. The push emitters below keep every window + remote in
