@@ -1,19 +1,27 @@
 #!/usr/bin/env node
-// Orchestrator skeleton for the harness evaluator.
+// Orchestrator for the harness evaluator.
 //
-//   node test-engine/harness-eval.mjs --plan <file> --dry-run
-//   node test-engine/harness-eval.mjs --plan <file> --only <cellId>
+//   node test-engine/harness-eval.mjs --plan <file> --dry-run          # free, no key
+//   node test-engine/harness-eval.mjs --plan <file> --key-file <path> --max-spend 5
 //
-// WHY a skeleton and not the full CLI yet: this task (Task 7 of the harness
-// evaluator plan, docs/active/plans/2026-08-12-harness-evaluator.md in the
-// youcoded-dev workspace) only has to prove the per-cell WORKER PROCESS model
-// and the grader-isolation invariant it depends on (src/main/harness/eval/
-// paths.ts). Estimate + the hard spend cap are Task 8's deliverable, and
-// building them here would mean designing spend logic against numbers this
-// task was never asked to get right. So today: load a plan, validate it,
-// expand it into cells, print the grid. Nothing below that spends money or
-// needs an API key — --dry-run and a plain invocation currently print the
-// same thing, because there is nothing yet to gate.
+// Flags: --plan <file> (required) · --key-file <path> (required to spend)
+//        --dry-run · --yes · --max-spend <usd> · --timeout <seconds>
+//        --only <cellId> · --repeats <n>
+// Exit codes: 0 every cell ran · 2 usage/config error · 3 stopped early (cap).
+//
+// THIS TOOL SPENDS REAL MONEY, so the order of operations below is the point:
+// load and validate the plan, expand it into cells, print the grid, price it
+// from OpenRouter's public catalog, print the dollar figure WITH everything
+// that could make it wrong, and only then ask for confirmation and read the
+// credential. --dry-run stops after the estimate and needs no key anywhere on
+// the machine. Between cells, --max-spend re-reads what OpenRouter has actually
+// billed and stops the run if the cap is passed — because the failure that
+// costs the most (a model that loops) is exactly the one no past measurement
+// predicts.
+//
+// THE CREDENTIAL ARRIVES BY FILE, NEVER BY ENVIRONMENT VARIABLE, and this
+// process REFUSES to run if OPENROUTER_API_KEY is set. See loadApiKey() for the
+// mechanism and the four rounds of measurement behind it.
 //
 // INTEGRATION (Task 8 Step 0, 2026-08-12). This file used to define its own
 // local `loadPlan`/`expandPlan`, because matrix.ts and cases/ were sibling
@@ -101,10 +109,15 @@ async function importGraders() {
   const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
   const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
   const load = (rel) => import(path.join(root, rel));
-  const [matrix, cases, battery] = await Promise.all([
+  const [matrix, cases, battery, estimate] = await Promise.all([
     load('main/harness/eval/matrix.js'),
     load('main/harness/eval/cases/index.js'),
     load('main/harness/eval/battery.js'),
+    // Grader-side too: the estimate is what a human agrees to before anything
+    // spawns, so it must come from THIS checkout, never from the build under
+    // test. A branch that changed its own price table would otherwise quote
+    // itself.
+    load('main/harness/eval/estimate.js'),
   ]);
   return {
     graderRoot,
@@ -115,6 +128,10 @@ async function importGraders() {
     allCaseIds: cases.allCaseIds,
     getCase: cases.getCase,
     roster: battery.loadRoster(ROSTER_FILE),
+    estimateCells: estimate.estimateCells,
+    parsePriceCatalog: estimate.parsePriceCatalog,
+    formatUsd: estimate.formatUsd,
+    MEASURED_ROSTER_SPEND_USD: estimate.MEASURED_ROSTER_SPEND_USD,
   };
 }
 
@@ -145,7 +162,140 @@ function parseArgs(argv) {
     maxSpend: flagValue('--max-spend'),
     only: flagValue('--only'),
     repeatsFlag: flagValue('--repeats'),
+    // The credential's ONLY channel. See loadApiKey() for why it is a file path
+    // and not an environment variable.
+    keyFile: flagValue('--key-file'),
+    // Per-cell wall-clock backstop, in seconds. See DEFAULT_CELL_TIMEOUT_MS.
+    timeoutFlag: flagValue('--timeout'),
   };
+}
+
+// -- the credential -----------------------------------------------------------
+
+/**
+ * Read the OpenRouter key from a FILE, and refuse to run if it is also sitting
+ * in this process's environment.
+ *
+ * WHY A FILE AND NOT AN ENVIRONMENT VARIABLE — this is the whole point, and it
+ * is the fourth round of one bug on this branch.
+ *
+ * The model under test drives a Bash tool that spawns children with the
+ * environment it was given, so those children are same-uid DESCENDANTS of this
+ * orchestrator. Everything they print is captured into `run.events` and written
+ * to a transcript on disk. A channel of THIS process that a descendant can read
+ * is therefore a channel that writes the key into a file.
+ *
+ * `delete process.env.OPENROUTER_API_KEY` does NOT close that channel, and this
+ * is the part that fooled three earlier rounds: `delete` compiles to `unsetenv`,
+ * which edits the in-heap environ array. It never rewrites the
+ * `mm->env_start..env_end` region the kernel exposes at `/proc/<pid>/environ`
+ * and `ps eww` reads. So if this process is started as
+ * `OPENROUTER_API_KEY=sk-... node test-engine/harness-eval.mjs`, the key stays
+ * readable at `/proc/<this pid>/environ` for the process's entire lifetime, no
+ * matter what we do to `process.env` afterwards — and a Bash-tool grandchild can
+ * walk `ppid` links up to us and read it. Measured on the real three-process
+ * topology: worker environ CLEAN, ORCHESTRATOR environ LEAKED, own inherited
+ * env CLEAN. The obvious probes (`env`, `printenv`, `ps -eo args`,
+ * `/proc/self/cmdline`) all read clean, which is exactly why it survived.
+ *
+ * A file closes it because the key is only ever in this process's heap, and
+ * `/proc/<pid>/mem` is not readable by a same-uid non-tracing process under any
+ * default `ptrace_scope`. The FILE PATH is in argv, which is public — a path is
+ * not a secret. (An interactive prompt would work too; a file was chosen because
+ * a matrix run is long and unattended, and a prompt would make `--yes` mean
+ * "confirm the spend" in one place and "there is a human at the keyboard" in
+ * another.)
+ *
+ * WHY it REFUSES rather than warning when the env var is present: there is no
+ * fix available at this point in the process's life — the leak already happened
+ * at exec. Warning and continuing would spend real money into a known-leaking
+ * run. The remedy is in the message.
+ *
+ * @param {{ keyFile?: string, env?: NodeJS.ProcessEnv }} opts
+ * @returns {string} the trimmed key
+ */
+function loadApiKey({ keyFile, env = process.env } = {}) {
+  if (env.OPENROUTER_API_KEY) {
+    throw new Error(
+      'harness-eval: OPENROUTER_API_KEY is set in this process\'s environment — refusing to run.\n'
+      + '  The model under test drives a Bash tool whose subprocesses are descendants of this process, and a\n'
+      + '  descendant can read /proc/<pid>/environ and `ps eww` for every ancestor. That region is written once at\n'
+      + '  exec and is NOT rewritten by `delete process.env.X` (unsetenv only edits the in-heap copy), so the key is\n'
+      + '  already readable and nothing this program does can un-leak it.\n'
+      + '  Fix: put the key in a file and pass --key-file, with the variable unset:\n'
+      + '    printf %s "sk-or-v1-..." > ~/.openrouter-key && chmod 600 ~/.openrouter-key\n'
+      + '    unset OPENROUTER_API_KEY\n'
+      + '    node test-engine/harness-eval.mjs --plan <file> --key-file ~/.openrouter-key',
+    );
+  }
+  if (!keyFile) {
+    throw new Error(
+      'harness-eval: --key-file <path> is required for a run that spends money (--dry-run needs no key at all).\n'
+      + '  The file must contain the OpenRouter key and nothing else. It is read as a file rather than an\n'
+      + '  environment variable because an inherited env var is readable at /proc/<pid>/environ by every\n'
+      + '  descendant of this process — including the Bash tool the model under test drives.',
+    );
+  }
+  let raw;
+  try {
+    raw = fs.readFileSync(keyFile, 'utf8');
+  } catch (err) {
+    // The real errno message ("ENOENT: no such file or directory, open '...'"),
+    // never a guess at which of the several possible causes it was.
+    throw new Error(`harness-eval: could not read --key-file "${keyFile}": ${err.message}`);
+  }
+  const key = raw.trim();
+  if (!key) {
+    throw new Error(`harness-eval: --key-file "${keyFile}" is empty (or only whitespace) — there is no key in it.`);
+  }
+  if (/\s/.test(key)) {
+    // A file holding `export OPENROUTER_API_KEY=sk-...` would otherwise be sent
+    // to OpenRouter verbatim and come back as an opaque 401.
+    throw new Error(
+      `harness-eval: --key-file "${keyFile}" contains whitespace inside the key, so it is not a bare key. `
+      + 'The file must hold the key alone — not a shell `export` line, not JSON.',
+    );
+  }
+  // Advisory, not fatal: a group/other-readable key file is a different (and
+  // milder) exposure than the environ one, and it is the operator's call.
+  try {
+    const mode = fs.statSync(keyFile).mode & 0o077;
+    if (mode && process.platform !== 'win32') {
+      console.error(`harness-eval: warning — ${keyFile} is readable by other users (mode ${(fs.statSync(keyFile).mode & 0o777).toString(8)}). chmod 600 it.`);
+    }
+  } catch { /* stat failing is not a reason to refuse a key we already read */ }
+  return key;
+}
+
+/**
+ * Overwrite this process's argv region so `/proc/<pid>/cmdline` and `ps` stop
+ * naming the key FILE.
+ *
+ * WHY: --key-file puts a PATH in argv. A path is not a secret, but the file it
+ * names is readable by any same-uid process, and the model's Bash tool runs as
+ * the same uid — so a descendant that read `/proc/<ppid>/cmdline` learned
+ * exactly where to `cat`. Measured with the leak detector
+ * (tests/harness-eval-key-leak.test.ts) before this existed: the path was there,
+ * and reading it returned the key.
+ *
+ * HOW: on Linux, libuv implements `process.title =` by writing into the original
+ * argv memory — the same bytes the kernel exposes as `/proc/<pid>/cmdline` — and
+ * clears the remainder. Measured: a cmdline of
+ * `node t.mjs --key-file /home/destin/secret --plan foo` became `harness-eval`
+ * with the rest blanked, and `/proc/<pid>/environ` was untouched.
+ *
+ * WHAT THIS IS NOT: it does not make the key file unreadable. A model that
+ * learns the path another way can still read it — that residual is inherent to a
+ * file-based credential and is pinned by a test rather than hidden. This only
+ * removes the signpost, which is the part that was free to remove.
+ *
+ * Best-effort by design: on a platform where this is a no-op (or throws), the
+ * fallback is the pre-existing behaviour, not a failed run.
+ */
+function scrubProcessTitle(label) {
+  try {
+    process.title = label;
+  } catch { /* observability nicety, never a reason to fail a run */ }
 }
 
 // -- plan loading (validation + expansion both live in matrix.ts) ------------
@@ -417,6 +567,24 @@ function redactKey(text, apiKey) {
   return apiKey ? text.split(apiKey).join('[REDACTED credential]') : text;
 }
 
+/** Per-cell wall-clock backstop.
+ *
+ *  WHY 30 minutes and not something tighter: run-case.ts runs its own deadline
+ *  (BATTERY_TIMEOUT_MS = 20 minutes for the testing phase) and then spends a
+ *  wrap-up turn, so a HEALTHY battery cell can legitimately approach ~25
+ *  minutes. This timeout is not a duplicate of that one — it is the backstop for
+ *  the failures the in-run deadline cannot see, because they stop the loop that
+ *  would check it (a socket that never delivers, a worker wedged before it ever
+ *  reaches runCase). Set it below the in-run deadline and you would start
+ *  killing runs that were going to finish, which costs the money and throws away
+ *  the result. */
+const DEFAULT_CELL_TIMEOUT_MS = 1_800_000;
+
+/** How long a killed worker gets to die from SIGTERM before SIGKILL. A worker
+ *  wedged inside a native call may ignore SIGTERM entirely; without the
+ *  escalation the orchestrator would resolve while an orphan kept running. */
+const KILL_GRACE_MS = 5_000;
+
 /**
  * Runs one cell in its own worker process and resolves with its parsed
  * result. Not called anywhere in this skeleton's main flow yet — Task 8 wires
@@ -444,11 +612,19 @@ function redactKey(text, apiKey) {
  * its "SCOPE OF THAT GUARANTEE" paragraph, which records what this does NOT
  * cover (the orchestrator's own environment, closed by a Task 8 constraint).
  *
+ * WHY there is a TIMEOUT (deferred here from the Task 7 review): the worker had
+ * none, so a wedged model — a hung HTTP request, a provider that accepts the
+ * connection and never streams — hung the ORCHESTRATOR forever, after the money
+ * for that cell had already been spent, with no output and no way to tell it
+ * from a slow run. The timeout produces a LABELLED result (`timedOut: true`)
+ * rather than a silent hang or a crash, so the row appears in the report as
+ * "this cell was killed at N seconds" and the rest of the matrix continues.
+ *
  * @param {Cell} cell
- * @param {{ apiKey: string, instructionsText?: string }} opts
- * @returns {Promise<{ cellId: string, run: unknown, error?: string }>}
+ * @param {{ apiKey: string, instructionsText?: string, timeoutMs?: number }} opts
+ * @returns {Promise<{ cellId: string, run: unknown, error?: string, timedOut?: boolean }>}
  */
-async function runCell(cell, { apiKey, instructionsText }) {
+async function runCell(cell, { apiKey, instructionsText, timeoutMs = DEFAULT_CELL_TIMEOUT_MS }) {
   if (!apiKey) {
     throw new Error(`harness-eval: cell "${cell.id}" cannot run — no OpenRouter API key was supplied to runCell().`);
   }
@@ -602,10 +778,45 @@ async function runCell(cell, { apiKey, instructionsText }) {
     let stderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { stderr += chunk; process.stderr.write(chunk); });
+
+    // The timeout. `resolve` is first-wins, so resolving here makes the later
+    // 'close' resolve a no-op and the caller sees the timeout result rather than
+    // "killed by SIGKILL" — the difference between "we stopped it, here is why"
+    // and a signal the reader has to interpret. The result is still written to
+    // disk by the caller, so a wedged cell is a labelled row in the report.
+    let timedOut = false;
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      const hardKill = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+      // unref so a worker that dies promptly does not hold the event loop open
+      // for the whole grace period at the end of a run.
+      if (typeof hardKill.unref === 'function') hardKill.unref();
+      child.on('close', () => clearTimeout(hardKill));
+      resolve({
+        cellId: cell.id,
+        run: null,
+        timedOut: true,
+        error:
+          `worker exceeded the per-cell timeout of ${Math.round(timeoutMs / 1000)}s and was killed. `
+          + 'The tokens this cell had already consumed are spent; nothing was produced. '
+          + `Raise it with --timeout <seconds> if this model is legitimately slower than that.`
+          + (stderr.trim() ? ` Last worker stderr: ${redactKey(stderr.trim().slice(-2000), apiKey)}` : ''),
+      });
+    }, timeoutMs);
+    // NOT unref'd, deliberately: this timer is the only thing that ends a wedged
+    // run, so it must be able to keep the loop alive on its own. It is cleared
+    // on both the 'close' and 'error' paths, so a healthy cell never waits for it.
+
     child.on('error', (err) => {
+      clearTimeout(killTimer);
       resolve({ cellId: cell.id, run: null, error: `could not spawn worker: ${err.message}` });
     });
     child.on('close', (code, signal) => {
+      clearTimeout(killTimer);
+      // Already reported as a timeout above; the exit that follows our own
+      // SIGTERM must not overwrite that with "killed by SIGTERM".
+      if (timedOut) return;
       if (code !== 0) {
         // The worker's OWN words, never a hardcoded guess at what went wrong.
         // Tail-capped rather than truncated from the front, because the reason a
@@ -643,6 +854,222 @@ async function runCell(cell, { apiKey, instructionsText }) {
   });
 }
 
+// -- prices, the estimate, and the confirmation gate ---------------------------
+
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
+/** Both OpenRouter calls here are metadata, not inference. If the catalog is
+ *  slow, the right answer is "no prices, every model named as unpriced", not a
+ *  CLI that appears to hang before it has said anything. */
+const CATALOG_TIMEOUT_MS = 15_000;
+
+/**
+ * Fetch the public OpenRouter model catalog and map it onto ROSTER LABELS.
+ *
+ * WHY fetched rather than hardcoded: a hardcoded price table for these models
+ * would be numbers I do not actually know, wearing a "fetched on <date>" comment
+ * — which is the exact dishonest-estimate failure this whole gate exists to
+ * prevent. The catalog endpoint is public (no Authorization header, no key), so
+ * --dry-run still gets real prices with no credential anywhere on the machine.
+ *
+ * WHY a failure is not fatal: an empty record makes every model `unpriced`, and
+ * `printEstimate` names them all and refuses to show a total. That is the
+ * honest degradation. The real fetch error is printed, never a guess at why.
+ *
+ * @returns {Promise<{ prices: Record<string, {inputPerM:number,outputPerM:number}>, error?: string }>}
+ */
+async function fetchPrices(roster, parsePriceCatalog) {
+  let byModelId;
+  try {
+    const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) });
+    if (!res.ok) {
+      // The server's own status line and body, capped — never "network error".
+      const body = (await res.text().catch(() => '')).slice(0, 300);
+      return { prices: {}, error: `GET ${OPENROUTER_MODELS_URL} returned HTTP ${res.status} ${res.statusText}${body ? `: ${body}` : ''}` };
+    }
+    byModelId = parsePriceCatalog(await res.json());
+  } catch (err) {
+    return { prices: {}, error: `GET ${OPENROUTER_MODELS_URL} failed: ${err.message}` };
+  }
+  // The catalog is keyed by OpenRouter model id; cells carry roster LABELS. The
+  // roster is the only thing that knows the correspondence, so the mapping
+  // happens here rather than inside the pure estimator.
+  const prices = {};
+  for (const entry of roster) {
+    if (byModelId[entry.modelId]) prices[entry.label] = byModelId[entry.modelId];
+  }
+  return { prices };
+}
+
+/**
+ * Print the dollar figure a human is about to agree to.
+ *
+ * Everything that could make the number wrong is printed WITH it: unpriced
+ * models, models with no measured token count, a failed catalog fetch, and the
+ * fact that the measured tokens come from whole-battery runs. A total with no
+ * caveats next to it is a number someone will act on.
+ */
+function printEstimate(estimate, cells, { fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD }) {
+  console.log('\nEstimated cost');
+  const width = Math.max(...estimate.perCell.map((c) => c.cellId.length), 4);
+  for (const row of estimate.perCell) {
+    console.log(`  ${row.cellId.padEnd(width)}  ${row.usd === null ? '  (no price)' : formatUsd(row.usd).padStart(11)}`);
+  }
+  const pricedCount = estimate.perCell.filter((c) => c.usd !== null).length;
+  // WHY the zero-priced case gets words instead of a figure: "$0.00" is the one
+  // rendering of "we could not price anything" that a reader can act on, and
+  // acting on it means spending an unknown amount believing it was free.
+  console.log(`  ${'TOTAL'.padEnd(width)}  ${pricedCount === 0 ? '  UNKNOWN — nothing could be priced' : formatUsd(estimate.totalUsd).padStart(11)}`
+    + (pricedCount === 0 || pricedCount === cells.length ? '' : `   — for ${pricedCount} of ${cells.length} cells only`));
+
+  if (fetchError) {
+    console.log(`\n  ! Prices could not be fetched, so NOTHING below is priced: ${fetchError}`);
+  }
+  if (estimate.unpriced.length) {
+    console.log(`  ! No price for: ${estimate.unpriced.join(', ')} — these cells are NOT in the total above.`);
+    console.log('    They are not free. Treat the total as a floor.');
+  }
+  if (estimate.unmeasured.length) {
+    console.log(`  ! No measured token count for: ${estimate.unmeasured.join(', ')} — priced from the worst measured run,`);
+    console.log('    so those rows read HIGH rather than low.');
+  }
+  console.log('\n  Basis: token counts measured from whole-BATTERY runs (40-63 tool calls, ~20 minutes each).');
+  console.log('  A short case costs a fraction of this; a model that loops costs more. For calibration, one');
+  console.log(`  whole roster of eight battery runs was actually billed ${formatUsd(MEASURED_ROSTER_SPEND_USD)} on 2026-08-11.`);
+}
+
+/**
+ * Block until a human types y.
+ *
+ * WHY it refuses when stdin is not a TTY instead of assuming yes: a run started
+ * from a script or a CI job has nobody to answer, and "no answer" must never
+ * mean "go ahead and spend". `--yes` is the deliberate way to say so.
+ */
+async function confirmSpend(totalLabel) {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `harness-eval: refusing to spend ${totalLabel} — stdin is not a terminal, so there is nobody to confirm. `
+      + 'Pass --yes if you really mean to run this unattended.',
+    );
+  }
+  const readline = await import('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise((res) => rl.question(`\nSpend up to ${totalLabel}? [y/N] `, res));
+    return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+// -- the spend cap ------------------------------------------------------------
+
+/**
+ * Ask OpenRouter what this key has ACTUALLY been billed, in dollars.
+ *
+ * WHY the real usage endpoint rather than trusting the estimate: the estimate is
+ * built from measured tokens of past runs, and the failure mode that matters
+ * most — a model that loops — is precisely the one no past measurement predicts.
+ * One roster run already produced 1.4M input tokens from a looping model. The
+ * cap therefore reads the biller, not our own arithmetic.
+ *
+ * THROWS on any failure, deliberately: a cap that cannot measure spend is not a
+ * cap, and silently continuing without it is the one outcome nobody asked for.
+ */
+async function fetchKeyUsage(apiKey) {
+  let res;
+  try {
+    res = await fetch(OPENROUTER_KEY_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(`GET ${OPENROUTER_KEY_URL} failed: ${err.message}`);
+  }
+  if (!res.ok) {
+    const body = redactKey((await res.text().catch(() => '')).slice(0, 300), apiKey);
+    throw new Error(`GET ${OPENROUTER_KEY_URL} returned HTTP ${res.status} ${res.statusText}${body ? `: ${body}` : ''}`);
+  }
+  let body;
+  try {
+    body = await res.json();
+  } catch (err) {
+    throw new Error(`GET ${OPENROUTER_KEY_URL} returned a body that is not JSON: ${err.message}`);
+  }
+  const usage = body?.data?.usage;
+  if (typeof usage !== 'number' || !Number.isFinite(usage)) {
+    // Name what actually came back. A changed API shape must not read as $0
+    // spent, which would make the cap permanently un-trippable.
+    throw new Error(
+      `${OPENROUTER_KEY_URL} did not report a numeric data.usage (got ${JSON.stringify(usage)}). `
+      + 'Refusing to treat that as zero spend.',
+    );
+  }
+  return usage;
+}
+
+/**
+ * Run the matrix cell by cell, stopping if the cap trips.
+ *
+ * `runOne` and `readUsage` are injected so this loop — the part that decides
+ * whether more money is spent — is testable without spending any. main() passes
+ * the real `runCell` and `fetchKeyUsage`.
+ *
+ * THE CAP IS CHECKED BETWEEN CELLS, NEVER DURING ONE. A cell killed halfway
+ * costs exactly what a finished one costs and yields nothing, so interrupting is
+ * strictly worse than letting it end. The consequence — an overshoot of up to
+ * one cell's cost — is real and is printed rather than hidden.
+ *
+ * @returns {Promise<{ results: unknown[], skipped: Cell[], stopReason?: string }>}
+ */
+async function runMatrix(cells, { runOne, readUsage, maxSpendUsd, onResult }) {
+  const capped = typeof maxSpendUsd === 'number';
+  let baseline = 0;
+  if (capped) {
+    // Read BEFORE the first cell. If this throws we have spent nothing yet, and
+    // "the cap could not be established" must stop the run rather than start it
+    // uncapped — the flag was given precisely because the operator did not trust
+    // the estimate.
+    baseline = await readUsage();
+  }
+
+  const results = [];
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i];
+    console.log(`\n[${i + 1}/${cells.length}] ${cell.id}`);
+    const result = await runOne(cell);
+    results.push(result);
+    if (onResult) await onResult(cell, result);
+
+    if (!capped || i === cells.length - 1) continue;
+
+    let spent;
+    try {
+      spent = (await readUsage()) - baseline;
+    } catch (err) {
+      // Same reasoning as the baseline read: an unmeasurable cap is not a cap.
+      // Stop with the real error, keeping everything already produced.
+      return {
+        results,
+        skipped: cells.slice(i + 1),
+        stopReason: `could not read OpenRouter usage to enforce --max-spend, so the run stopped rather than continuing uncapped: ${err.message}`,
+      };
+    }
+    console.log(`  spent so far: $${spent.toFixed(4)} of $${maxSpendUsd.toFixed(2)}`);
+    if (spent >= maxSpendUsd) {
+      return {
+        results,
+        skipped: cells.slice(i + 1),
+        stopReason:
+          `--max-spend $${maxSpendUsd.toFixed(2)} reached: OpenRouter reports $${spent.toFixed(4)} billed to this key `
+          + `since the run started. Stopped after ${i + 1} of ${cells.length} cells. `
+          + '(The cap is checked BETWEEN cells and never interrupts one, so the last cell may have carried the total past the cap.)',
+      };
+    }
+  }
+  return { results, skipped: [] };
+}
+
 // -- main ---------------------------------------------------------------------
 
 async function main(argv) {
@@ -655,12 +1082,34 @@ async function main(argv) {
     console.error(err.message);
     process.exit(2);
   }
-  const { dryRun, confirmed, planPath, maxSpend, only, repeatsFlag } = parsed;
+  const { dryRun, confirmed, planPath, maxSpend, only, repeatsFlag, keyFile, timeoutFlag } = parsed;
 
   if (!planPath) {
     console.error('harness-eval: --plan <file> is required.');
-    console.error('Usage: node test-engine/harness-eval.mjs --plan <file> [--dry-run] [--yes] [--max-spend <usd>] [--only <cellId>] [--repeats <n>]');
+    console.error('Usage: node test-engine/harness-eval.mjs --plan <file> --key-file <path>');
+    console.error('       [--dry-run] [--yes] [--max-spend <usd>] [--timeout <seconds>] [--only <cellId>] [--repeats <n>]');
     process.exit(2);
+  }
+
+  // Both numeric flags are validated HERE, before the plan is even read, so a
+  // typo is a usage error rather than something discovered after a grid has been
+  // printed and a human has said yes.
+  let maxSpendUsd;
+  if (maxSpend !== undefined) {
+    maxSpendUsd = Number(maxSpend);
+    if (!Number.isFinite(maxSpendUsd) || maxSpendUsd <= 0) {
+      console.error(`harness-eval: --max-spend must be a positive number of dollars (got "${maxSpend}").`);
+      process.exit(2);
+    }
+  }
+  let timeoutMs = DEFAULT_CELL_TIMEOUT_MS;
+  if (timeoutFlag !== undefined) {
+    const seconds = Number(timeoutFlag);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      console.error(`harness-eval: --timeout must be a positive number of seconds (got "${timeoutFlag}").`);
+      process.exit(2);
+    }
+    timeoutMs = seconds * 1000;
   }
 
   let plan;
@@ -706,22 +1155,122 @@ async function main(argv) {
 
   await printGrid(plan, cells);
 
-  // Skeleton stop point. Task 8 adds: a dollar estimate for `cells`, a
-  // confirmation gate (interactive `y` or `--yes`) before the first spawn, and
-  // the `--max-spend` cap checked between cells via /api/v1/key. None of that
-  // exists yet, so nothing below this line ever calls runCell() or touches an
-  // API key — this is deliberate per the task brief's scope discipline, not an
-  // oversight. `maxSpend` and `confirmed` are parsed above only so the flags
-  // already validate/round-trip for Task 8 to pick up.
-  //
-  // The case-body half IS now solved (Task 8 Step 0): runCell loads the body
-  // from the case registry itself. What remains unwired is the INSTRUCTIONS
-  // axis — nothing reads an arm's `file` into text yet, so a non-baseline arm
-  // still refuses to run rather than sending a config identical to every other
-  // arm's.
-  console.log(dryRun
-    ? '\n(dry run: nothing would be spent — the estimate and spend gate are Task 8)'
-    : `\n(orchestrator skeleton: nothing was run — spawning is wired to runCell() but not yet called from here; that lands behind Task 8's estimate + confirmation gate)${confirmed ? ' [--yes given, but nothing to confirm yet]' : ''}${maxSpend ? ` [--max-spend ${maxSpend} given, but no cap enforced yet]` : ''}`);
+  // -- the estimate. Printed for EVERY invocation, dry-run or not, because the
+  // grid above is only half of what someone needs to decide. The prices come
+  // from a public catalog endpoint, so this path needs no credential at all.
+  const { roster, estimateCells, parsePriceCatalog, formatUsd, MEASURED_ROSTER_SPEND_USD } = await loadGraders();
+  const { prices, error: fetchError } = await fetchPrices(roster, parsePriceCatalog);
+  const estimate = estimateCells(cells, prices);
+  printEstimate(estimate, cells, { fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD });
+
+  if (dryRun) {
+    // Deliberately BEFORE any key handling: --dry-run must work on a machine
+    // with no credential anywhere, which is also how the tests exercise it.
+    if (process.env.OPENROUTER_API_KEY) {
+      console.log('\n  ! OPENROUTER_API_KEY is set in this shell. A real run would REFUSE it — an inherited env var is');
+      console.log('    readable at /proc/<pid>/environ by every descendant, including the Bash tool the model drives.');
+      console.log('    Use --key-file instead (see --help text on a real run).');
+    }
+    console.log('\n(dry run: nothing was spawned and nothing was spent)');
+    return;
+  }
+
+  // -- the credential. Acquired BEFORE the confirmation prompt so a missing or
+  // unreadable key fails immediately rather than after a human has typed y.
+  let apiKey;
+  try {
+    apiKey = loadApiKey({ keyFile });
+  } catch (err) {
+    console.error(`\n${err.message}`);
+    process.exit(2);
+  }
+  // Immediately after the key is in hand: stop `/proc/<pid>/cmdline` telling a
+  // descendant where the key file lives. The plan name is kept so the process is
+  // still identifiable in `ps` — see scrubProcessTitle for what this does and
+  // does not buy.
+  scrubProcessTitle(`harness-eval (${path.basename(planPath)})`);
+
+  // -- the gate.
+  if (!confirmed) {
+    // The prompt must never quote a figure it cannot stand behind. With nothing
+    // priced there is no number to show; with a partial total, the prompt says so
+    // in the same breath as the number.
+    const pricedCount = estimate.perCell.filter((c) => c.usd !== null).length;
+    const label = pricedCount === 0
+      ? 'an UNKNOWN amount (no model in this plan could be priced — see above)'
+      : estimate.unpriced.length
+        ? `${formatUsd(estimate.totalUsd)} for ${pricedCount} of ${cells.length} cells, plus ${estimate.unpriced.length} unpriced model(s) — the real figure is HIGHER`
+        : formatUsd(estimate.totalUsd);
+    let ok;
+    try {
+      ok = await confirmSpend(label);
+    } catch (err) {
+      console.error(`\n${err.message}`);
+      process.exit(2);
+    }
+    if (!ok) {
+      console.log('Cancelled — nothing was spawned and nothing was spent.');
+      return;
+    }
+  }
+
+  // -- the run. What remains unwired is the INSTRUCTIONS axis: nothing reads an
+  // arm's `file` into text yet, so runCell refuses a non-baseline arm rather
+  // than sending a config identical to every other arm's.
+  const runs = resolveRunsDir();
+  fs.mkdirSync(runs.dir, { recursive: true });
+  console.log(`\nRunning ${cells.length} cell${cells.length === 1 ? '' : 's'} → ${runs.dir}`);
+  if (maxSpendUsd !== undefined) console.log(`Spend cap: $${maxSpendUsd.toFixed(2)}, checked between cells.`);
+
+  // The one throw runMatrix can produce is the BASELINE usage read failing,
+  // which happens before the first cell — so nothing has been spent, and saying
+  // so is the part the reader needs. Every other failure comes back as a
+  // stopReason with partial results attached.
+  const matrix = await runMatrix(cells, {
+    maxSpendUsd,
+    runOne: (cell) => runCell(cell, { apiKey, timeoutMs }),
+    readUsage: () => fetchKeyUsage(apiKey),
+    // Written as each cell finishes, not at the end: a run that is stopped —
+    // by the cap, by Ctrl-C, or by a crash — must not also lose the results of
+    // the cells that were already paid for.
+    onResult: async (cell, result) => {
+      const file = await cellResultPath(runs.dir, cell);
+      fs.writeFileSync(file, JSON.stringify(result, null, 2));
+      const label = result.timedOut ? 'TIMED OUT' : (result.error ? 'error' : 'ok');
+      console.log(`  ${label} → ${path.basename(file)}`);
+    },
+  }).catch((err) => {
+    console.error(
+      `\nharness-eval: --max-spend was given but the starting OpenRouter usage could not be read, so the cap `
+      + `could not be established. NOTHING WAS SPENT — the run stopped before the first cell.\n  ${err.message}`,
+    );
+    process.exit(2);
+  });
+  const { results, skipped, stopReason } = matrix;
+
+  // -- the summary. `skipped` is the list this whole gate exists to make
+  // legible: exactly which rows of the printed grid never happened.
+  const summaryFile = path.join(runs.dir, 'run-summary.json');
+  fs.writeFileSync(summaryFile, JSON.stringify({
+    plan: plan.name,
+    stoppedEarly: Boolean(stopReason),
+    stopReason: stopReason ?? null,
+    estimateUsd: estimate.totalUsd,
+    unpricedModels: estimate.unpriced,
+    completed: results.map((r) => r.cellId),
+    failed: results.filter((r) => r.error).map((r) => ({ cellId: r.cellId, error: r.error })),
+    neverRan: skipped.map((c) => c.id),
+  }, null, 2));
+
+  console.log(`\n${results.length} of ${cells.length} cells ran. Summary: ${summaryFile}`);
+  if (stopReason) {
+    console.error(`\nSTOPPED EARLY: ${stopReason}`);
+    console.error(`\nThese ${skipped.length} cell${skipped.length === 1 ? '' : 's'} never ran:`);
+    for (const cell of skipped) console.error(`  ${cell.id}`);
+    // A distinct exit code so a script cannot read an incomplete matrix as a
+    // finished one. 0 = every cell ran; 2 = usage error; 3 = stopped early.
+    process.exit(3);
+  }
 }
 
 // Fix (review round 1, MINOR 3): only run main when this file IS the process's
@@ -739,4 +1288,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-export { readPlanFile, expandPlanFile, cellResultPath, resolveRunsDir, runCell, workerEnv, redactKey, loadGraders };
+export {
+  readPlanFile, expandPlanFile, cellResultPath, resolveRunsDir, runCell, workerEnv, redactKey, loadGraders,
+  loadApiKey, scrubProcessTitle, runMatrix, fetchKeyUsage, DEFAULT_CELL_TIMEOUT_MS,
+};

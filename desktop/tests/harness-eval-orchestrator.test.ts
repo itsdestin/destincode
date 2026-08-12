@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -744,5 +744,339 @@ describe('the worker refuses a config on argv', () => {
     expect(status).toBe(1);
     expect(stderr).toContain('read from STDIN, not argv');
     expect(stderr).toContain('/proc/<pid>/cmdline');
+  });
+});
+
+// ===========================================================================
+// Task 8 — the credential channel, the estimate gate, the spend cap, and the
+// per-cell timeout.
+// ===========================================================================
+
+describe('the credential never arrives in an environment variable', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  function keyFileWith(contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-key-'));
+    const file = path.join(dir, 'key');
+    fs.writeFileSync(file, contents, { mode: 0o600 });
+    return file;
+  }
+
+  it('refuses to run when OPENROUTER_API_KEY is in the environment, and says why', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    // The mechanism, in one assertion: `delete process.env.X` is unsetenv, which
+    // edits the in-heap array and never rewrites /proc/<pid>/environ. By the time
+    // this process is running, an inherited key has ALREADY leaked to every
+    // descendant — including the Bash tool the model under test drives. There is
+    // no fix at this point, so the only honest response is to refuse.
+    expect(() => loadApiKey({ env: { OPENROUTER_API_KEY: 'sk-or-v1-CANARY' } }))
+      .toThrow(/refusing to run/);
+    expect(() => loadApiKey({ env: { OPENROUTER_API_KEY: 'sk-or-v1-CANARY' } }))
+      .toThrow(/\/proc\/<pid>\/environ/);
+    // The remedy has to be in the message: the reader is a non-developer.
+    expect(() => loadApiKey({ env: { OPENROUTER_API_KEY: 'sk-or-v1-CANARY' } }))
+      .toThrow(/--key-file/);
+  });
+
+  it('still refuses when a --key-file is ALSO given', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    // The leak happened at exec, before this program had any say. Reading the key
+    // from somewhere else does not un-leak the copy already in /proc.
+    const file = keyFileWith('sk-or-v1-FROM-FILE');
+    expect(() => loadApiKey({ keyFile: file, env: { OPENROUTER_API_KEY: 'sk-or-v1-FROM-ENV' } }))
+      .toThrow(/refusing to run/);
+  });
+
+  it('requires --key-file when the environment is clean', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    expect(() => loadApiKey({ env: {} })).toThrow(/--key-file <path> is required/);
+  });
+
+  it('reads and trims the key from the file', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    // Trailing newline is what every `echo "sk-..." > file` produces.
+    expect(loadApiKey({ keyFile: keyFileWith('sk-or-v1-REAL\n'), env: {} })).toBe('sk-or-v1-REAL');
+  });
+
+  it('names the real errno for an unreadable key file, not a guess', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    expect(() => loadApiKey({ keyFile: '/nonexistent/key', env: {} }))
+      .toThrow(/could not read --key-file "\/nonexistent\/key": ENOENT/);
+  });
+
+  it('rejects an empty file rather than sending an empty key', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    expect(() => loadApiKey({ keyFile: keyFileWith('   \n'), env: {} })).toThrow(/is empty/);
+  });
+
+  it('rejects a shell export line, which would otherwise 401 opaquely', async () => {
+    const { loadApiKey } = await import('../test-engine/harness-eval.mjs');
+    expect(() => loadApiKey({ keyFile: keyFileWith('export OPENROUTER_API_KEY=sk-or-v1-X'), env: {} }))
+      .toThrow(/contains whitespace inside the key/);
+  });
+
+  // --- and the same rules through the real CLI, where they actually apply ----
+
+  function runCli(args: string[], env: NodeJS.ProcessEnv): { status: number | null; stdout: string; stderr: string } {
+    try {
+      const stdout = execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf8', stdio: 'pipe', env });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      const e = err as { status: number | null; stdout: string; stderr: string };
+      return { status: e.status, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  }
+
+  /** The operator's environment with the key definitively absent — `delete` on a
+   *  plain object is a real delete (this is not process.env). */
+  function cleanEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    delete env.OPENROUTER_API_KEY;
+    return env;
+  }
+
+  it('--dry-run works with no key anywhere and prints a dollar figure', () => {
+    const file = writePlan(BASE_PLAN);
+    const { status, stdout } = runCli(['--plan', file, '--dry-run'], cleanEnv());
+    expect(status).toBe(0);
+    expect(stdout).toContain('Estimated cost');
+    expect(stdout).toContain('TOTAL');
+    expect(stdout).toContain('(dry run: nothing was spawned and nothing was spent)');
+    // No key was read, so no key-file error can have been printed.
+    expect(stdout).not.toContain('--key-file <path> is required');
+  });
+
+  it('a PAID run refuses an inherited key, before spawning anything', () => {
+    const file = writePlan(BASE_PLAN);
+    const { status, stderr } = runCli(
+      ['--plan', file, '--yes'],
+      { ...process.env, OPENROUTER_API_KEY: 'sk-or-v1-CANARY-INHERITED' },
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain('refusing to run');
+    expect(stderr).toContain('/proc/<pid>/environ');
+  });
+
+  it('a PAID run with a clean environment still demands --key-file', () => {
+    const file = writePlan(BASE_PLAN);
+    const { status, stderr } = runCli(['--plan', file, '--yes'], cleanEnv());
+    expect(status).toBe(2);
+    expect(stderr).toContain('--key-file <path> is required');
+  });
+
+  it('validates --max-spend and --timeout before printing anything', () => {
+    const file = writePlan(BASE_PLAN);
+    expect(runCli(['--plan', file, '--max-spend', 'abc', '--dry-run'], cleanEnv()).stderr)
+      .toContain('--max-spend must be a positive number of dollars (got "abc")');
+    expect(runCli(['--plan', file, '--max-spend', '0', '--dry-run'], cleanEnv()).status).toBe(2);
+    expect(runCli(['--plan', file, '--timeout', '-1', '--dry-run'], cleanEnv()).status).toBe(2);
+  });
+});
+
+describe('the spend cap', () => {
+  const cells = ['a', 'b', 'c', 'd'].map((id) => ({ id, model: 'Claude Opus 5' }));
+
+  /** A fake cell runner that records what it was asked to run. */
+  function recorder() {
+    const ran: string[] = [];
+    return {
+      ran,
+      runOne: async (cell: { id: string }) => { ran.push(cell.id); return { cellId: cell.id, run: {} }; },
+    };
+  }
+
+  it('runs every cell and never asks about usage when no cap was given', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    let usageCalls = 0;
+    const out = await runMatrix(cells, {
+      runOne,
+      readUsage: async () => { usageCalls++; return 0; },
+      maxSpendUsd: undefined,
+    });
+    expect(ran).toEqual(['a', 'b', 'c', 'd']);
+    expect(out.skipped).toEqual([]);
+    expect(out.stopReason).toBeUndefined();
+    // A cap that was not requested must not cost a network round trip per cell.
+    expect(usageCalls).toBe(0);
+  });
+
+  it('stops when real spend passes the cap and names exactly which cells never ran', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    // Baseline 10, then +2 per cell. Cap 5 → tripped after the third cell
+    // (spend 6 >= 5), so 'd' never runs.
+    const usage = [10, 12, 14, 16];
+    let i = 0;
+    const out = await runMatrix(cells, { runOne, readUsage: async () => usage[i++], maxSpendUsd: 5 });
+    expect(ran).toEqual(['a', 'b', 'c']);
+    expect(out.results.map((r: { cellId: string }) => r.cellId)).toEqual(['a', 'b', 'c']);
+    expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['d']);
+    expect(out.stopReason).toContain('--max-spend $5.00 reached');
+    // The figures in the message are the measured ones, not the estimate's.
+    expect(out.stopReason).toContain('$6.0000 billed');
+    expect(out.stopReason).toContain('Stopped after 3 of 4 cells');
+  });
+
+  it('lets the cell that trips the cap FINISH — a half-run costs the same and yields nothing', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    // The very first cell blows the cap wide open.
+    const usage = [0, 1000];
+    let i = 0;
+    const out = await runMatrix(cells, { runOne, readUsage: async () => usage[i++], maxSpendUsd: 1 });
+    expect(ran).toEqual(['a']);
+    // The result for the offending cell is KEPT, not discarded.
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0].cellId).toBe('a');
+    expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('does not check usage after the last cell', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { runOne } = recorder();
+    let usageCalls = 0;
+    await runMatrix(cells, {
+      runOne,
+      readUsage: async () => { usageCalls++; return 0; },
+      maxSpendUsd: 1000,
+    });
+    // 1 baseline + 3 between-cell checks. A fifth would be a network call whose
+    // answer cannot change anything.
+    expect(usageCalls).toBe(4);
+  });
+
+  it('refuses to start when the BASELINE usage read fails — an unmeasurable cap is not a cap', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    await expect(runMatrix(cells, {
+      runOne,
+      readUsage: async () => { throw new Error('HTTP 401 Unauthorized'); },
+      maxSpendUsd: 5,
+    })).rejects.toThrow(/HTTP 401 Unauthorized/);
+    // Nothing was spent: the read happens before the first cell.
+    expect(ran).toEqual([]);
+  });
+
+  it('stops rather than continuing uncapped when a MID-RUN usage read fails', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    let call = 0;
+    const out = await runMatrix(cells, {
+      runOne,
+      readUsage: async () => { if (++call > 1) throw new Error('ECONNRESET'); return 0; },
+      maxSpendUsd: 5,
+    });
+    expect(ran).toEqual(['a']);
+    expect(out.stopReason).toContain('could not read OpenRouter usage');
+    // The real error, not a summary of it.
+    expect(out.stopReason).toContain('ECONNRESET');
+    expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('hands every completed result to onResult BEFORE a later stop', async () => {
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { runOne } = recorder();
+    // Results are written to disk as each cell finishes, so a run stopped by the
+    // cap does not also lose the cells that were already paid for.
+    const written: string[] = [];
+    const usage = [0, 99];
+    let i = 0;
+    await runMatrix(cells, {
+      runOne,
+      readUsage: async () => usage[i++],
+      maxSpendUsd: 1,
+      onResult: async (cell: { id: string }) => { written.push(cell.id); },
+    });
+    expect(written).toEqual(['a']);
+  });
+});
+
+describe('fetchKeyUsage never reports an unreadable answer as zero spend', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  it('returns the billed dollar figure', async () => {
+    const { fetchKeyUsage } = await import('../test-engine/harness-eval.mjs');
+    globalThis.fetch = (async () => ({
+      ok: true, status: 200, statusText: 'OK', json: async () => ({ data: { usage: 12.5 } }),
+    })) as unknown as typeof fetch;
+    expect(await fetchKeyUsage('sk-fake')).toBe(12.5);
+  });
+
+  it('throws when data.usage is not a number, naming what came back', async () => {
+    const { fetchKeyUsage } = await import('../test-engine/harness-eval.mjs');
+    // A changed API shape must not read as "$0 spent", which would make the cap
+    // silently un-trippable for the whole run.
+    globalThis.fetch = (async () => ({
+      ok: true, status: 200, statusText: 'OK', json: async () => ({ data: { usage: null } }),
+    })) as unknown as typeof fetch;
+    await expect(fetchKeyUsage('sk-fake')).rejects.toThrow(/did not report a numeric data\.usage \(got null\)/);
+  });
+
+  it('reports the server status and body, and redacts the key from it', async () => {
+    const { fetchKeyUsage } = await import('../test-engine/harness-eval.mjs');
+    globalThis.fetch = (async () => ({
+      ok: false, status: 401, statusText: 'Unauthorized',
+      text: async () => 'no such key sk-canary-123',
+    })) as unknown as typeof fetch;
+    await expect(fetchKeyUsage('sk-canary-123')).rejects.toThrow(/HTTP 401 Unauthorized/);
+    await expect(fetchKeyUsage('sk-canary-123')).rejects.toThrow(/\[REDACTED credential\]/);
+  });
+});
+
+describe('a wedged worker is killed and labelled, not left to hang', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  /** A minimal "dist under test" whose runCase() never resolves. The worker
+   *  imports run-case.js / openrouter-factory.js from the cell's dist, so this
+   *  reproduces a genuinely wedged model run — a provider that accepts the
+   *  connection and never streams — without a network or a key. */
+  function hangingDist(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-hang-'));
+    // Nearest package.json decides CJS-vs-ESM for the .js files below.
+    fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}');
+    const dir = path.join(root, 'main/harness/eval');
+    fs.mkdirSync(dir, { recursive: true });
+    // The setInterval is load-bearing: a promise that merely never resolves
+    // leaves Node's event loop EMPTY, so the worker exits 13 with "Detected
+    // unsettled top-level await" — measured, and a hang is exactly what this
+    // test needs to reproduce. A live handle is also what a real wedge looks
+    // like (an open socket waiting on bytes that never come).
+    fs.writeFileSync(
+      path.join(dir, 'run-case.js'),
+      'export const runCase = () => new Promise(() => { setInterval(() => {}, 1000); });\n',
+    );
+    fs.writeFileSync(path.join(dir, 'openrouter-factory.js'), 'export const makeOpenRouterFactory = () => async () => ({});\n');
+    return root;
+  }
+
+  it('kills a worker that outlives the timeout and returns a labelled result', async () => {
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    const result = await runCell({
+      id: 'harness-battery|baseline|Claude Opus 5|current|0',
+      caseId: 'harness-battery',
+      instructionsId: 'baseline',
+      instructionsFile: null,
+      model: 'Claude Opus 5',
+      buildId: 'current',
+      dist: hangingDist(),
+      repeat: 0,
+    }, { apiKey: 'sk-fake', timeoutMs: 2_000 });
+    // The point of the fix: a result, not a hang, and one that says what happened.
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toContain('exceeded the per-cell timeout of 2s');
+    // Honest about what it cost: the tokens are gone either way.
+    expect(result.error).toContain('already consumed are spent');
+    expect(result.error).toContain('--timeout');
+    // NOT reported as a signal death — the caller stopped it on purpose.
+    expect(result.error).not.toContain('was killed by SIGTERM');
+  }, 30_000);
+
+  it('defaults to a backstop well above run-case.ts\'s own 20-minute deadline', async () => {
+    const { DEFAULT_CELL_TIMEOUT_MS } = await import('../test-engine/harness-eval.mjs');
+    // Setting it BELOW the in-run deadline would start killing runs that were
+    // going to finish — paying for them and throwing the result away.
+    expect(DEFAULT_CELL_TIMEOUT_MS).toBeGreaterThan(1_200_000);
   });
 });
