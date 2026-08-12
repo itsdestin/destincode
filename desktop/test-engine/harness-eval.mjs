@@ -39,7 +39,20 @@ const WORKER = path.join(HERE, 'harness-eval-worker.mjs');
 function parseArgs(argv) {
   const flagValue = (name) => {
     const i = argv.indexOf(name);
-    return i === -1 ? undefined : argv[i + 1];
+    if (i === -1) return undefined;
+    const value = argv[i + 1];
+    // Fix (review round 2, MINOR 2): a flag's value used to be "whatever the
+    // next argv element is", so `--plan --dry-run` set planPath = "--dry-run"
+    // and then failed with `could not read plan "--dry-run"` — an error that
+    // names a FLAG as though the user had typed it as a filename, hiding the
+    // real mistake (the flag was given no value) behind a confusing one.
+    if (value === undefined) {
+      throw new Error(`harness-eval: ${name} needs a value, but nothing followed it.`);
+    }
+    if (value.startsWith('--')) {
+      throw new Error(`harness-eval: ${name} needs a value, but the next argument is the flag "${value}" — ${name} was given no value.`);
+    }
+    return value;
   };
   return {
     dryRun: argv.includes('--dry-run'),
@@ -61,8 +74,8 @@ function parseArgs(argv) {
  *   models: string[], builds?: BuildArm[], judge?: string | null, repeats?: number,
  * }} EvalPlan
  * @typedef {{
- *   id: string, caseId: string, instructionsId: string, model: string,
- *   buildId: string, dist: string, repeat: number,
+ *   id: string, caseId: string, instructionsId: string, instructionsFile: string | null,
+ *   model: string, buildId: string, dist: string, repeat: number,
  * }} Cell
  */
 
@@ -157,7 +170,13 @@ function expandPlan(plan) {
           for (let repeat = 1; repeat <= repeats; repeat++) {
             cells.push({
               id: `${caseId}|${arm.id}|${model}|${build.id}|${repeat}`,
-              caseId, instructionsId: arm.id, model, buildId: build.id,
+              caseId, instructionsId: arm.id,
+              // Carried onto the cell (not just the plan) so runCell can tell
+              // "this arm has nothing to load" (file: null — the baseline arm)
+              // apart from "this arm names a file nobody read yet", which is
+              // the case that must refuse to run. See runCell's guard.
+              instructionsFile: arm.file ?? null,
+              model, buildId: build.id,
               dist: build.dist, repeat,
             });
           }
@@ -188,6 +207,78 @@ function printGrid(plan, cells) {
   }
 }
 
+// -- the worker's environment -------------------------------------------------
+
+/**
+ * Fix (review round 2, MINOR 1): the worker used to be spawned with
+ * `{ ...process.env, ... }` — the operator's WHOLE shell environment. The model
+ * under test drives a Bash tool (src/main/harness/tools/bash.ts:511) that spawns
+ * its children with `{ ...process.env, ... }` in turn, and every tool result is
+ * recorded into `run.events` and saved as a transcript. So `ANTHROPIC_API_KEY`,
+ * `GITHUB_TOKEN`, `AWS_*`, and anything else the operator happened to have
+ * exported rode along into a file on disk the moment a case prompt said
+ * `printenv`. Scrubbing only the OpenRouter key fixed one var out of hundreds.
+ *
+ * So: allowlist, not denylist. Everything here is either something the harness
+ * demonstrably reads, or something Node / the OS / the shell cannot start
+ * without. Measured, not guessed — the ONLY named env var anywhere under
+ * src/main/harness is CLAUDE_CODE_GIT_BASH_PATH:
+ *
+ *   $ rg -o "process\.env\.[A-Za-z_0-9]+" src/main/harness/
+ *   src/main/harness/tools/bash.ts:process.env.CLAUDE_CODE_GIT_BASH_PATH
+ *
+ * everything else below is read by a library or by the OS rather than by our
+ * code, and is annotated with which. Adding to this list is the correct way to
+ * fix "my tool needs $FOO" — re-forwarding the whole environment is not.
+ */
+const WORKER_ENV_ALLOWLIST = [
+  // Command resolution: `which` (bash.ts's resolveOnPath) and every command
+  // the model's Bash tool runs. Nothing works without it.
+  'PATH',
+  'PATHEXT', // which.sync on Windows: which extensions count as executable
+  // os.homedir(). git, ssh, and shell rc files all resolve out of it, and the
+  // fixture workspace deliberately sits OUTSIDE it (fixture-workspace.ts).
+  'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  // os.tmpdir() — fixture-workspace.ts mkdtemps every case fixture in there,
+  // so a worker without these would write fixtures somewhere unexpected.
+  'TMPDIR', 'TEMP', 'TMP',
+  // Text decoding of tool output. Without a UTF-8 locale, subprocess output
+  // comes back mangled and the model is graded on garbage.
+  'LANG', 'LC_ALL', 'LC_CTYPE',
+  // Read by Node itself at startup: a machine behind a corporate TLS
+  // interception CA cannot reach openrouter.ai without it.
+  'NODE_EXTRA_CA_CERTS',
+  // The one env var our own harness code reads (bash.ts:77).
+  'CLAUDE_CODE_GIT_BASH_PATH',
+  // Windows can't spawn a shell at all without these: cmd/PowerShell resolve
+  // themselves and their module path out of them.
+  'SystemRoot', 'SystemDrive', 'windir', 'COMSPEC', 'PSModulePath',
+  'LOCALAPPDATA', 'APPDATA', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+];
+// Deliberately NOT forwarded, having checked rather than assumed: HTTP_PROXY /
+// HTTPS_PROXY / NO_PROXY (the rg above found zero references, and Node's global
+// fetch — what @ai-sdk/openai-compatible uses — does not honour them by
+// default), and NODE_OPTIONS (an arbitrary-flag injection channel into the
+// worker). If a proxied machine ever needs them, add them here on purpose.
+
+/** Build the worker's environment from the allowlist above.
+ *  Case-insensitive lookup because Windows env var names are case-insensitive
+ *  (`Path` vs `PATH`), and a case-sensitive match there would silently hand the
+ *  worker an empty PATH — which fails as "command not found" for every tool
+ *  call, i.e. as a fake model result rather than an obvious crash. */
+function workerEnv() {
+  const byLower = new Map();
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) byLower.set(k.toLowerCase(), [k, v]);
+  }
+  const out = {};
+  for (const name of WORKER_ENV_ALLOWLIST) {
+    const hit = byLower.get(name.toLowerCase());
+    if (hit) out[hit[0]] = hit[1];
+  }
+  return out;
+}
+
 // -- per-cell worker spawn ----------------------------------------------------
 
 /**
@@ -207,9 +298,13 @@ function printGrid(plan, cells) {
  * never `cell.dist`) sits right next to it as the obviously-correct choice
  * rather than a second ad hoc path computation.
  *
- * WHY it THROWS on a missing case body instead of running something: see the
- * `caseBody` check below. Every failure mode this function refuses to paper
- * over costs real money once Task 8's gate calls it.
+ * WHY it THROWS on a missing case body / unresolved instruction arm instead of
+ * running something: see the two checks below. Every failure mode this function
+ * refuses to paper over costs real money once Task 8's gate calls it.
+ *
+ * WHY the config goes over STDIN: it carries the OpenRouter key, and both of
+ * the other channels are readable by a descendant process — which the model's
+ * own Bash tool is. See harness-eval-worker.mjs's header for the measurements.
  *
  * @param {Cell} cell
  * @param {{ apiKey: string, caseBody: { prompt: string, wrapUpPrompt?: string, contextLength?: number, instructions?: string } }} opts
@@ -240,9 +335,27 @@ async function runCell(cell, { apiKey, caseBody }) {
       + `(it belongs to the cases/ task); running without one would silently execute the default battery prompt and bill it as case "${cell.caseId}".`,
     );
   }
+  // Fix (review round 2, IMPORTANT 2): the same hole the check above closes for
+  // the CASE axis was still wide open on the INSTRUCTIONS axis. `instructionsId`
+  // reaches the worker, but nothing resolves the arm's `file` to text, so two
+  // instruction arms produced byte-identical worker configs differing only in
+  // the cell id — N paid runs of ONE task, reported as a matrix. Resolving the
+  // file belongs to a later task; refusing to run silently does not.
+  // `file: null` (the baseline arm) is fine: there is nothing to resolve.
+  if (cell.instructionsFile && (typeof caseBody.instructions !== 'string' || !caseBody.instructions)) {
+    throw new Error(
+      `harness-eval: cell "${cell.id}" cannot run — instruction arm "${cell.instructionsId}" declares a file `
+      + `("${cell.instructionsFile}") but no instruction text was supplied for it. Reading instruction files is not wired up `
+      + `on this branch yet; running without it would send a config identical to every other arm's, so the arms would be one `
+      + `repeated task billed and reported as an instructions comparison.`,
+    );
+  }
   const { harnessRoot } = await import(path.join(DESKTOP, 'dist/main/harness/eval/paths.js'));
   const config = {
     cellId: cell.id,
+    // The key travels in the CONFIG, and the config travels over stdin — see
+    // the spawn below. It is never in argv and never in the environment.
+    apiKey,
     // Carried so the worker's own errors can name the case/arm, and so a
     // saved result is traceable back to a plan row without re-parsing the id.
     caseId: cell.caseId,
@@ -258,21 +371,40 @@ async function runCell(cell, { apiKey, caseBody }) {
     wrapUpPrompt: caseBody.wrapUpPrompt,
     contextLength: caseBody.contextLength,
     instructions: caseBody.instructions,
+    // Sent so the worker can refuse the same unresolved-arm config independently
+    // (a config assembled by something other than runCell, e.g. Task 6's
+    // matrix.ts, must not be able to slip past the guard above).
+    instructionsFile: cell.instructionsFile ?? null,
   };
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [WORKER, JSON.stringify(config)], {
-      // Only stdout is the data channel we parse (see the worker's own
-      // header comment); its stderr is passed straight through so a human
-      // watching the orchestrator still sees worker diagnostics live.
-      stdio: ['ignore', 'pipe', 'inherit'],
-      // Fix (review round 1, CRITICAL): the key goes through the ENVIRONMENT,
-      // never argv. argv is readable by any descendant of the worker via
-      // /proc/<pid>/cmdline, and the model under test drives a Bash tool that
-      // IS such a descendant — so an argv key could be read back into the
-      // saved transcript. The worker captures this and deletes it from its own
-      // env before it can spawn anything (see its header).
-      env: { ...process.env, OPENROUTER_API_KEY: apiKey },
+    const child = spawn(process.execPath, [WORKER], {
+      // Fix (review round 2, CRITICAL): the config — key included — is written
+      // to the worker's STDIN, so stdio[0] is a pipe rather than 'ignore'.
+      // Round 1 had the key in argv (/proc/<pid>/cmdline). Round 2 moved it to
+      // the environment and deleted it in the worker, which does NOT close the
+      // hole: delete/unsetenv edits the in-heap environ array, it does not
+      // rewrite the mm->env_start..env_end stack region that /proc/<pid>/environ
+      // exposes, so a descendant could still read the ORIGINAL environment
+      // (measured: /proc/<ppid>/environ and `ps eww -p <worker>` both LEAKED).
+      // The model's Bash tool is exactly such a descendant, and everything it
+      // prints lands in run.events and then in a saved transcript.
+      // stdin has no /proc mirror at all: it is a pipe, consumed once, never
+      // re-readable by anyone. stdout stays the parsed data channel; stderr is
+      // inherited so a human watching sees worker diagnostics live.
+      stdio: ['pipe', 'pipe', 'inherit'],
+      // Fix (review round 2, MINOR 1): an ALLOWLISTED environment, not the
+      // operator's whole shell. See WORKER_ENV_ALLOWLIST above. Note there is
+      // no OPENROUTER_API_KEY here at all any more — the key's only channel is
+      // the stdin config.
+      env: workerEnv(),
     });
+    // Writing the config can fail with EPIPE if the worker died before reading
+    // it (bad node install, worker syntax error). Swallow it deliberately: the
+    // 'close' handler below already reports the real non-zero exit and the
+    // worker's own stderr, and an unhandled 'error' on this stream would crash
+    // the orchestrator with a message about a pipe instead.
+    child.stdin.on('error', () => {});
+    child.stdin.end(JSON.stringify(config));
     // Fix (review round 1, IMPORTANT 3): decode as UTF-8 on the STREAM, not
     // per chunk. A transcript JSON is far bigger than one 64 KB chunk, and a
     // multi-byte character split across a chunk boundary decodes to U+FFFD
@@ -301,7 +433,16 @@ async function runCell(cell, { apiKey, caseBody }) {
 // -- main ---------------------------------------------------------------------
 
 function main(argv) {
-  const { dryRun, confirmed, planPath, maxSpend, only, repeatsFlag } = parseArgs(argv);
+  let parsed;
+  try {
+    // parseArgs now THROWS on a flag given no value (see flagValue). Turned
+    // into the same exit code 2 / stderr shape every other usage error uses.
+    parsed = parseArgs(argv);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const { dryRun, confirmed, planPath, maxSpend, only, repeatsFlag } = parsed;
 
   if (!planPath) {
     console.error('harness-eval: --plan <file> is required.');
@@ -365,4 +506,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   main(process.argv.slice(2));
 }
 
-export { loadPlan, expandPlan, runCell };
+export { loadPlan, expandPlan, runCell, workerEnv };

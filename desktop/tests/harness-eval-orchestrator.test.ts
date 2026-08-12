@@ -8,36 +8,57 @@ import { graderRoot as srcGraderRoot, harnessRoot as srcHarnessRoot } from '../s
 
 const DESKTOP = path.resolve(__dirname, '..');
 const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
-
-// WHY the COMPILED module and not just the TypeScript source: paths.ts resolves
-// its answer from `__dirname`, so the source answers `<desktop>/src/...` under
-// vitest and the compiled copy answers `<desktop>/dist` — only the latter is
-// what production actually produces. A test that only imports the source cannot
-// observe the value the orchestrator will use.
-//
-// BUILD DEPENDENCY, stated rather than papered over: this needs `npm run
-// build:main` (or `npm run build`) to have run at least once. If it hasn't, the
-// test fails with the command to run instead of a confusing module-not-found.
-// That is the same order desktop CI already uses (build, then test), and the
-// same precondition the two .mjs entry points have at runtime — they import
-// from dist/ too, so a checkout where this test can't run is a checkout where
-// the orchestrator can't run either.
-let compiled: { graderRoot: (c: { dist: string }) => string; harnessRoot: (c: { dist: string }) => string };
-
-beforeAll(() => {
-  if (!fs.existsSync(COMPILED_PATHS)) {
-    throw new Error(
-      `${COMPILED_PATHS} does not exist. Run "npm run build:main" in desktop/ first — this test deliberately `
-      + 'exercises the compiled module, because __dirname resolves differently in src/ than in dist/.',
-    );
-  }
-  // createRequire, not import(): dist/ is CommonJS (package.json is
-  // "type": "commonjs") and this loads it exactly the way Node does for the
-  // .mjs entry points, with no vite transform in between.
-  compiled = createRequire(import.meta.url)(COMPILED_PATHS);
-});
+const SOURCE_PATHS = path.join(DESKTOP, 'src/main/harness/eval/paths.ts');
+const requireCjs = createRequire(import.meta.url);
 
 describe('grader isolation', () => {
+  // WHY the COMPILED module and not just the TypeScript source: paths.ts
+  // resolves its answer from `__dirname`, so the source answers
+  // `<desktop>/src/...` under vitest and the compiled copy answers
+  // `<desktop>/dist` — only the latter is what production actually produces. A
+  // test that only imports the source cannot observe the value the orchestrator
+  // will use.
+  //
+  // BUILD DEPENDENCY — and why this hook COMPILES instead of skipping.
+  // Fix (review round 2, IMPORTANT 1): this was a file-scope `beforeAll` that
+  // THREW when dist/ was missing, which took down all 11 tests in this file
+  // including the 8 that have no build dependency. It also justified itself
+  // with "desktop CI already uses build, then test" — the opposite of what
+  // .github/workflows/desktop-ci.yml does. Its real order is `npm ci` (line 48)
+  // -> `npm test` (51) -> knip -> lint -> `npm run build` (92, Linux only), and
+  // `npm test` is bare `vitest` with no pretest hook, so dist/ NEVER exists when
+  // CI runs this file, and Windows never builds at all.
+  //
+  // So the choice was: skip when dist/ is absent, or compile on demand. Skipping
+  // would mean this invariant — the one that stops a branch-vs-master eval from
+  // silently comparing two GRADERS as well as two harnesses — is never checked
+  // in CI on any platform, which is most of the value of having it. Compiling
+  // just this one file costs ~2s, needs no project build, and lands it at
+  // exactly the production path so the assertions below stay real. A tree that
+  // has already been built is used as-is and pays nothing.
+  let compiled: { graderRoot: (c: { dist: string }) => string; harnessRoot: (c: { dist: string }) => string };
+
+  beforeAll(() => {
+    if (!fs.existsSync(COMPILED_PATHS)) {
+      // target/module are read from tsconfig.json rather than hardcoded, so an
+      // on-demand compile can never drift from what `npm run build:main`
+      // produces. paths.ts imports nothing but `path`, which is what makes a
+      // single-file compile faithful here.
+      const tsconfig = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'tsconfig.json'), 'utf8'));
+      execFileSync(process.execPath, [
+        requireCjs.resolve('typescript/bin/tsc'),
+        SOURCE_PATHS,
+        '--outDir', path.dirname(COMPILED_PATHS),
+        '--target', tsconfig.compilerOptions.target,
+        '--module', tsconfig.compilerOptions.module,
+      ], { cwd: DESKTOP, stdio: 'pipe' });
+    }
+    // createRequire, not import(): dist/ is CommonJS (package.json is
+    // "type": "commonjs") and this loads it exactly the way Node does for the
+    // .mjs entry points, with no vite transform in between.
+    compiled = requireCjs(COMPILED_PATHS);
+  });
+
   it('resolves graders against its own checkout, never the dist under test', () => {
     // Exact value, not a not-toContain: `return "/"` would have passed the
     // original assertion while breaking every grader load.
@@ -105,7 +126,7 @@ describe('loadPlan validation', () => {
   });
 });
 
-describe('--repeats flag', () => {
+describe('CLI flag parsing', () => {
   // Spawned rather than imported: the flag is parsed in main(), and the point
   // of the fix is the process's exit code, which only a real process has.
   function run(args: string[]): { status: number | null; stderr: string } {
@@ -128,6 +149,22 @@ describe('--repeats flag', () => {
   it('rejects zero', () => {
     const file = writePlan(BASE_PLAN);
     expect(run(['--plan', file, '--repeats', '0']).status).toBe(2);
+  });
+
+  it('rejects a flag given no value instead of eating the next flag', () => {
+    // Regression pin (review round 2, MINOR 2): `--plan --dry-run` used to set
+    // planPath = "--dry-run" and fail with `could not read plan "--dry-run"`,
+    // naming a flag as if it were a filename the user had typed.
+    const { status, stderr } = run(['--plan', '--dry-run']);
+    expect(status).toBe(2);
+    expect(stderr).toContain('--plan needs a value, but the next argument is the flag "--dry-run"');
+    expect(stderr).not.toContain('could not read plan');
+  });
+
+  it('rejects a trailing flag with nothing after it', () => {
+    const { status, stderr } = run(['--plan']);
+    expect(status).toBe(2);
+    expect(stderr).toContain('--plan needs a value, but nothing followed it');
   });
 
   it('accepts a positive integer and expands that many repeats', () => {
@@ -164,5 +201,89 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     const { runCell } = await import('../test-engine/harness-eval.mjs');
     await expect(runCell({ ...cell, dist: '' }, { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } }))
       .rejects.toThrow(/build arm "current"\) has no "dist"/);
+  });
+
+  it('throws when an instruction arm names a file nobody resolved, naming the arm', async () => {
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    // Regression pin (review round 2): the case axis was guarded and the
+    // instructions axis was not, so two arms produced byte-identical configs
+    // differing only in the cell id — N paid runs of one task, reported as a
+    // matrix.
+    await expect(runCell(
+      { ...cell, instructionsId: 'terse', instructionsFile: 'instructions/terse.md' },
+      { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } },
+    )).rejects.toThrow(/instruction arm "terse" declares a file \("instructions\/terse\.md"\)/);
+  });
+
+  it('does not throw for the baseline arm, which declares no file', async () => {
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    // `file: null` has nothing to resolve, so it must NOT be blocked — the
+    // guard has to be about an unread file, not about instructions being absent.
+    // (It still fails, but on the spawn, which is what proves it got past the
+    // pre-flight checks rather than being refused by them.)
+    // It also doubles as the end-to-end proof that the stdin config channel
+    // works: the worker only reaches "could not load the dist" AFTER it has read
+    // stdin, parsed the JSON, and passed every required-field check.
+    const result = await runCell(
+      { ...cell, instructionsFile: null },
+      { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } },
+    );
+    expect(result.error).toBe('worker exited 1 (see its stderr above)');
+  });
+});
+
+describe('expandPlan carries the instruction arm file onto every cell', () => {
+  it('copies arm.file so runCell can tell "nothing to load" from "not loaded yet"', async () => {
+    const { loadPlan, expandPlan } = await import('../test-engine/harness-eval.mjs');
+    const file = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'terse', file: 'instructions/terse.md' }],
+    });
+    const cells = expandPlan(loadPlan(file));
+    expect(cells.map((c: { instructionsFile: string | null }) => c.instructionsFile))
+      .toEqual([null, 'instructions/terse.md']);
+  });
+});
+
+describe('the worker environment is an allowlist, not the operator shell', () => {
+  it('drops unrelated credentials and keeps what the harness needs', async () => {
+    const { workerEnv } = await import('../test-engine/harness-eval.mjs');
+    // Regression pin (review round 2, MINOR 1): the worker used to get
+    // `{ ...process.env }`, and the model's Bash tool spawns ITS children from
+    // that same env — so every secret in the operator's shell reached a tool
+    // subprocess and, via run.events, a saved transcript on disk.
+    const saved = { ...process.env };
+    try {
+      process.env.ANTHROPIC_API_KEY = 'canary-anthropic';
+      process.env.GITHUB_TOKEN = 'canary-github';
+      process.env.OPENROUTER_API_KEY = 'canary-openrouter';
+      const env = workerEnv();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      // The OpenRouter key travels in the stdin config now — not here.
+      expect(env.OPENROUTER_API_KEY).toBeUndefined();
+      expect(Object.values(env)).not.toContain('canary-openrouter');
+      expect(env.PATH).toBe(process.env.PATH);
+    } finally {
+      process.env = saved;
+    }
+  });
+});
+
+describe('the worker refuses a config on argv', () => {
+  it('names the stdin channel and the reason instead of running', () => {
+    const worker = path.join(DESKTOP, 'test-engine/harness-eval-worker.mjs');
+    let stderr = '';
+    let status: number | null = 0;
+    try {
+      execFileSync(process.execPath, [worker, '{"cellId":"c1"}'], { encoding: 'utf8', stdio: 'pipe' });
+    } catch (err) {
+      const e = err as { status: number | null; stderr: string };
+      status = e.status;
+      stderr = e.stderr;
+    }
+    expect(status).toBe(1);
+    expect(stderr).toContain('read from STDIN, not argv');
+    expect(stderr).toContain('/proc/<pid>/cmdline');
   });
 });
