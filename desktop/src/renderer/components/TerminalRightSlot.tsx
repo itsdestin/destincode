@@ -51,6 +51,16 @@ export default function TerminalRightSlot({ sessionId, cwd, gamePane, drawerOpen
             <div className="frame-divider" />
             <div className="drawer-pane">
               <SessionDrawer
+                // Fix: remount the drawer when the active session changes so
+                // per-session state (open file, scroll, review, a late git
+                // discard failure banner) can't cross-paint into the other
+                // session's drawer. Chat view gets this by construction —
+                // App.tsx mounts one drawer per session under key={s.id} —
+                // but this overlay is a single instance bound to the ACTIVE
+                // session, so without the key a session switch reuses the old
+                // instance and its state. PR #304's token guard only covers
+                // close/reopen, not this cross-session case.
+                key={sessionId}
                 sessionId={sessionId}
                 projectRoot={activeProject?.path ?? ''}
                 projectId={activeProject?.id ?? ''}
