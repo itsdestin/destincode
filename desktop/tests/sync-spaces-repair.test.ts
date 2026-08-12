@@ -40,11 +40,14 @@ function makeWorld() {
   const root = path.join(tmp, 'device');
   fs.mkdirSync(root);
   const space: SyncSpace = { id: 'project:repair', kind: 'project', root };
-  const transport = new GitTransport({ deviceName: 'RepairTest' });
+  // Capture the injected log (the service threads its logFn the same way) so
+  // tests can assert repair() leaves a readable trace, not just a return value.
+  const logs: string[] = [];
+  const transport = new GitTransport({ deviceName: 'RepairTest', log: (m) => logs.push(m) });
   const gitDir = path.join(root, '.youcoded', 'sync.git');
   const gitEnv = { ...process.env, GIT_DIR: gitDir };
   const cleanup = () => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  return { tmp, bare, root, space, transport, gitDir, gitEnv, cleanup };
+  return { tmp, bare, root, space, transport, gitDir, gitEnv, logs, cleanup };
 }
 
 /** Clone the bare remote and return the file list + a file's content. */
@@ -113,7 +116,13 @@ describe('GitTransport.repair (real git)', () => {
     const strandedBefore = fs.statSync(path.join(w.root, 'stranded.md'));
 
     await expect(w.transport.push(w.space, 'x')).rejects.toMatchObject({ syncErrorCode: 'repo-corrupt' });
-    await w.transport.repair!(w.space);
+    const outcome = await w.transport.repair!(w.space);
+    // PR #276 review: repair() must leave a trace of what it did — tier + the
+    // previously-discarded zero-byte sweep count (exactly 1 here: the object
+    // the "crash" truncated), both returned AND logged.
+    expect(outcome).toMatchObject({ tier: 1, zeroByteObjectsDeleted: 1 });
+    expect(outcome.backupPath).toBeUndefined();
+    expect(w.logs.some(l => /repair\(project:repair\) tier=1/.test(l) && /1 zero-byte object/.test(l))).toBe(true);
     expect(fs.existsSync(w.gitDir)).toBe(true);
     // Tier 1 discriminator: no `sync.git.broken-*` sibling in .youcoded. Only
     // Tier 2 creates one (brokenBackupName + rename), so this fails if repair
@@ -151,11 +160,20 @@ describe('GitTransport.repair (real git)', () => {
       if (!fs.statSync(dir).isDirectory()) continue;
       for (const f of fs.readdirSync(dir)) truncateObject(path.join(dir, f));
     }
-    await w.transport.repair!(w.space);
+    const outcome = await w.transport.repair!(w.space);
     const parent = path.join(w.root, '.youcoded');
     const entries = fs.readdirSync(parent);
     expect(entries.some(e => e.startsWith('sync.git.broken-'))).toBe(true);  // backup kept
     expect(fs.existsSync(path.join(w.gitDir, 'HEAD'))).toBe(true);           // fresh repo
+    // Trace (PR #276 review): tier 2 records WHY tier 1 fell through, how many
+    // poison objects the sweep removed (every loose object was zeroed above),
+    // and where the broken repo went — and the same facts hit the log.
+    expect(outcome.tier).toBe(2);
+    expect(outcome.zeroByteObjectsDeleted).toBeGreaterThan(0);
+    expect(outcome.tier1Failure).toBeTruthy();
+    expect(path.basename(outcome.backupPath ?? '')).toMatch(/^sync\.git\.broken-/);
+    expect(entries).toContain(path.basename(outcome.backupPath ?? ''));
+    expect(w.logs.some(l => /repair\(project:repair\) tier=2/.test(l) && /broken repo kept at sync\.git\.broken-/.test(l))).toBe(true);
     // Re-provision (the engine's ensureProvisioned does this in prod), then a
     // normal pull+push cycle converges: remote history re-adopted, worktree pushed.
     await w.transport.setRemote(w.space, w.bare);
