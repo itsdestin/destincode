@@ -1041,6 +1041,71 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    it("the destructive deny-list cuts through the envelope: a spawn-approved child still cannot rm -rf", async () => {
+      // Critical review fix: launch consent (the envelope) is consent for the
+      // specialist's CHARTER of work, not for `rm -rf` — spec §5 says no charter
+      // or envelope overrides the destructive deny-list. Worker is read-write and
+      // has Bash, and the parent sits in the default 'ask' mode where the
+      // deny-list layer marks `rm *` denyListed — exactly the shape that used to
+      // fall into the envelope branch and come out an allow.
+      const WORKER = resolveSpecialist('worker')!;
+      fs.writeFileSync(path.join(root, 'marker.txt'), 'do not delete me');
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      const events: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/destructive-action list/i);
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);   // never ran
+      expect(asks).toEqual([]);                                          // no ask reached the host either
+      await h.destroyAll();
+    });
+
+    it("an external-directory Read is declined by the wired ask policy, not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
+      // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
+      // askUser only through the max_steps gate, which short-circuits identically
+      // whether `askUser: childAskPolicy()` is wired or deleted from createChild —
+      // so that pin alone cannot catch the wiring being dropped. This drives a
+      // DIFFERENT askUser call site: the external-directory forced ask
+      // (harness-session.ts checkPathGuard 'external' verdict, ~:1830-1852). With
+      // the policy wired, childAskPolicy denies it and the model reads the
+      // DECLINED copy (~:1854, "user declined"). With askUser undefined,
+      // harness-session's own guard answers first with the "No approval handler
+      // is wired... configuration error" copy (~:1851) instead — the two are
+      // mutually exclusive, so asserting the declined copy AND the absence of the
+      // config-error copy discriminates policy-wired from policy-missing.
+      const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-external-'));
+      const outsideFile = path.join(external, 'secret.txt');
+      fs.writeFileSync(outsideFile, 'outside the jail');
+      const readOutside = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Read', { file_path: outsideFile }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => readOutside());
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/user declined|dismissed/i);
+      expect(res.data.toolResult).not.toMatch(/No approval handler is wired/i);
+      fs.rmSync(external, { recursive: true, force: true });
+      await h.destroyAll();
+    });
+
     const writesOnce = (file: string) => async () => scriptedModel([
       stream(toolCallChunk('c1', 'Write', { file_path: file, content: 'x' }), finishChunk('tool-calls')),
       stream(...textChunks('t', 'done'), finishChunk('stop')),

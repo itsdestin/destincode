@@ -41,8 +41,9 @@ export interface ChildPermissionInputs {
  *   2. write tool under a read-only charter  → deny, naming the charter
  *   3. parent says deny                      → pass that deny through unchanged
  *   4. parent says allow                     → allow
- *   5. parent says ask + envelope granted    → allow (the user already consented)
- *   6. parent says ask + no envelope         → pass the ask through
+ *   5. parent says ask + deny-listed         → deny, always (no envelope can override — spec §5)
+ *   6. parent says ask + envelope granted    → allow (the user already consented)
+ *   7. parent says ask + no envelope         → pass the ask through
  *
  * Steps 1 and 2 short-circuit BEFORE the parent is consulted: parentDecide reads
  * the remembered-rule store (disk), and a tool the child may never call should
@@ -84,7 +85,20 @@ export function buildChildDecide(i: ChildPermissionInputs): ChildPermissionInput
     if (parent.action === 'deny') return parent;
     // 4. Parent allow → allow.
     if (parent.action === 'allow') return parent;
-    // 5/6. Parent ask. The launch approval already covered this work, so inside
+    // The destructive deny-list ALWAYS cuts through the envelope (spec §5): approving
+    // a specialist's LAUNCH is consent for its charter of work, not for `rm -rf` /
+    // `git push` / `sudo`. Children have no user to ask in 1a, so this surfaces as a
+    // typed deny the model can actually read — plan 1b's timeout-redirect will route
+    // it to the parent's user instead. A remembered "Always allow" on the parent wins
+    // upstream (it produces action 'allow', never reaching this branch) — the user
+    // stays sovereign.
+    if (parent.action === 'ask' && parent.denyListed) {
+      return {
+        action: 'deny', denyListed: true,
+        message: `${tool} on this input is on the destructive-action list and needs the user's direct approval, which specialists cannot request. Use a non-destructive approach, or note what you wanted to do in your final report.`,
+      };
+    }
+    // 6/7. Parent ask. The launch approval already covered this work, so inside
     //      a granted envelope it becomes an allow. denyListed is carried through
     //      so the decision still records that a destructive-list rule is what
     //      would have prompted. Without an envelope the ask passes through
