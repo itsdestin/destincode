@@ -48,14 +48,23 @@ const mdArtifact = { id: 'a1', kind: 'internal', path: 'notes.md' } as any;
 
 // Controllable read: each get() call parks until the test resolves/rejects it.
 let pending: Array<{ resolve: (v: any) => void; reject: (e: any) => void }>;
+// Latest watcher subscription (ActiveArtifactView's onChanged effect) so tests
+// can simulate an external write / file-reappears event.
+let changedCb: ((evt: any) => void) | null;
 
 beforeEach(() => {
   pending = [];
+  changedCb = null;
   get.mockReset().mockImplementation(
     () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); })
   );
   save.mockReset().mockResolvedValue({ ok: true, mtimeMs: 1 });
-  (window as any).claude = { artifacts: { get, save, onChanged: () => () => {} } };
+  (window as any).claude = {
+    artifacts: {
+      get, save,
+      onChanged: (cb: (evt: any) => void) => { changedCb = cb; return () => {}; },
+    },
+  };
 });
 
 // Queries bind to document.body — without cleanup, renders leak across tests
@@ -148,5 +157,40 @@ describe('artifact pane read lifecycle', () => {
     expect(get).toHaveBeenCalledTimes(2);
     expect(utils.queryByText(MISSING_MSG)).toBeNull();
     expect(utils.getByText(LOADING_MSG)).toBeTruthy();
+  });
+
+  it('ignores a stale resolve from a switched-away artifact (cancelled guard)', async () => {
+    const utils = render(<Host artifact={mdArtifact} />);
+    // Switch to a2 while a1's read is STILL pending — a1's late resolve must
+    // not paint a1's content (or any resolved phase) into a2's pane.
+    await settle(() => {
+      utils.rerender(<Host artifact={{ id: 'a2', kind: 'internal', path: 'other.md' } as any} />);
+    });
+    expect(get).toHaveBeenCalledTimes(2);
+    await settle(() => pending[0].resolve({
+      ok: true, content: '# Hello from a1', orphan: false, binary: false, mtimeMs: 1,
+    }));
+    expect(utils.queryByText('Hello from a1')).toBeNull();
+    expect(utils.getByText(LOADING_MSG)).toBeTruthy();
+  });
+
+  it('recovers from missing when the file reappears on disk (watcher refetch → onContentChange)', async () => {
+    // PR #303 review regression: ActiveArtifactView's onChanged effect hands
+    // refetched bytes back via onContentChange WITHOUT re-running the hook's
+    // read — the phase must reconcile to ready, not stay stuck on "missing"
+    // until reselect. Pre-tri-state this auto-recovered.
+    const utils = render(<Host artifact={mdArtifact} />);
+    await settle(() => pending[0].resolve({ ok: true, content: null, orphan: true }));
+    expect(utils.getByText(MISSING_MSG)).toBeTruthy();
+    // Agent recreates the file → watcher 'add'/'change' → subscribed handler
+    // refetches (the REAL production path, not a synthetic setContent call).
+    expect(changedCb).toBeTruthy();
+    await settle(() => changedCb!({ projectRoot: '/proj', artifactId: 'a1', kind: 'add' }));
+    expect(get).toHaveBeenCalledTimes(2);
+    await settle(() => pending[1].resolve({
+      ok: true, content: '# Recovered', orphan: false, binary: false, mtimeMs: 2,
+    }));
+    expect(await utils.findByText('Recovered')).toBeTruthy();
+    expect(utils.queryByText(MISSING_MSG)).toBeNull();
   });
 });

@@ -24,7 +24,9 @@ function describeReadError(error: unknown): string {
 export interface UseArtifactContentResult {
   content: string | null;
   /** Hosts pass this straight through as onContentChange — saves and
-   * external-change refetches update content without re-running the read. */
+   * external-change refetches update content without re-running the read.
+   * Delivering real content also reconciles the phase (missing/error →
+   * ready), so a file that reappears on disk recovers without a reselect. */
   setContent: (content: string | null) => void;
   contentInfo: ArtifactContentInfo | null;
   contentState: ArtifactContentState;
@@ -86,5 +88,23 @@ export function useArtifactContent(
 
   const retryRead = useCallback(() => setRetryToken((t) => t + 1), []);
 
-  return { content, setContent, contentInfo, contentState, retryRead };
+  // Reconcile phase with out-of-band content deliveries (PR #303 review fix):
+  // ActiveArtifactView's onChanged watcher effect refetches on external writes
+  // and hands the bytes back via onContentChange WITHOUT re-running this
+  // hook's read — so a file that was 'missing' and then reappears on disk
+  // (agent recreates it → watcher 'add' → refetch) would keep showing "no
+  // longer on disk" until reselect. Real content arriving through any path
+  // means the file is readable NOW: flip missing/error to ready.
+  // A null delivery deliberately flips NOTHING: no caller signals "file is
+  // gone" via onContentChange (deletion is only ever detected by the get()
+  // orphan response), so treating null as missing here would guess a cause.
+  const reconciledSetContent = useCallback((next: string | null) => {
+    setContent(next);
+    if (next !== null) {
+      setContentState((prev) =>
+        prev.phase === 'missing' || prev.phase === 'error' ? { phase: 'ready' } : prev);
+    }
+  }, []);
+
+  return { content, setContent: reconciledSetContent, contentInfo, contentState, retryRead };
 }
