@@ -773,4 +773,68 @@ describe('startWatching path source (spec §5.0)', () => {
     await new Promise(r => setTimeout(r, 1200));
     expect(events.length).toBeGreaterThan(0);
   });
+
+  // WHY: fallback tests can't distinguish dirname-based from slug-based
+  // subagentsDir — this divergent path can. Under the 3-arg fallback,
+  // path.dirname(jsonlPath) and path.join(claudeConfigDir, ccProjectSlug(cwd))
+  // are the SAME directory, so a regression that reverted subagentsDir to
+  // slug-derivation would still pass every other test in this file (including
+  // the line-~599 "records Agent tool_use" test, which is 3-arg/fallback).
+  // Here cwd's slug ("C--tmp-project") and the hook-supplied transcript
+  // directory are deliberately different strings — subagentsDir can only be
+  // computed correctly by riding jsonlPath's own dirname.
+  it('subagentsDir follows the hook-supplied transcript path, not slug(cwd)', () => {
+    const cwd = 'C:/tmp/project'; // slug(cwd) === 'C--tmp-project' — must NOT appear below
+    const divergentDir = path.join(tmpDir, 'not a slug CC would ever produce');
+    fs.mkdirSync(divergentDir, { recursive: true });
+    const sessionId = 'sess-hook';
+    const parentJsonl = path.join(divergentDir, `${sessionId}.jsonl`);
+    const subagentsDir = path.join(divergentDir, sessionId, 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+
+    fs.writeFileSync(parentJsonl, JSON.stringify({
+      type: 'assistant',
+      uuid: 'uuid-hook-1',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'toolu_HP1', name: 'Agent',
+          input: { description: 'Find bug', subagent_type: 'Explore', prompt: 'go' },
+        }],
+        stop_reason: null,
+      },
+    }) + '\n');
+
+    fs.writeFileSync(
+      path.join(subagentsDir, 'agent-hook.meta.json'),
+      JSON.stringify({ description: 'Find bug', agentType: 'Explore' }),
+    );
+    fs.writeFileSync(
+      path.join(subagentsDir, 'agent-hook.jsonl'),
+      JSON.stringify({
+        type: 'assistant', uuid: 'uuid-hook-s1', isSidechain: true,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_HS1', name: 'Read', input: { file_path: '/a' } }],
+          stop_reason: null,
+        },
+      }) + '\n',
+    );
+
+    // 4-arg: transcriptPath (parentJsonl, inside divergentDir) wins over any
+    // cwd-derived slug. If subagentsDir regressed to slug-derivation, it would
+    // look under tmpDir/C--tmp-project/sess-hook/subagents instead — a
+    // directory that was never created — and the subagent tool_use below
+    // would never be found.
+    watcher.startWatching('desktop-hook-1', sessionId, cwd, parentJsonl);
+
+    const history = watcher.getHistory('desktop-hook-1');
+
+    const parentToolUse = history.find(e => e.type === 'tool-use' && e.data.toolName === 'Agent');
+    const subagentToolUse = history.find(e => e.type === 'tool-use' && e.data.toolName === 'Read');
+    expect(parentToolUse).toBeDefined();
+    expect(subagentToolUse).toBeDefined();
+    expect(subagentToolUse!.data.parentAgentToolUseId).toBe('toolu_HP1');
+    expect(subagentToolUse!.data.agentId).toBe('hook');
+  });
 });
