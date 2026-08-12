@@ -3813,7 +3813,7 @@ export function registerIpcHandlers(
   initGitWatchers((evt) => broadcastGitChanged(evt.repoRoot));
 
   ipcMain.handle(GIT_IPC.FILE_STATUS, (_e, projectRoot: string, relPath: string) =>
-    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false },
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false, conflicted: false },
       () => gitFileStatus(projectRoot, relPath)));
 
   ipcMain.handle(GIT_IPC.FILE_REVIEW, (_e, projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>
