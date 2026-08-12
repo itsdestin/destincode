@@ -273,3 +273,39 @@ supervisor code change belongs to plan 1b, not this probe.
 truncated by the low `max_tokens`) rather than a plain chat model — re-run
 `probe-parallel.mjs` against `b9992` with the app's actual small-model tier
 before this decision is treated as load-bearing.
+
+## KV prefix reuse (specialists, plan 1a probe)
+
+**Measured 2026-08-12**, same server/model/build as above (default args, no
+`--parallel`; single manually-launched instance on port 8199).
+`desktop/test-engine/probe-prefix-cache.mjs` builds a ~2,000-token filler
+system prefix, sends two sequential requests sharing it (different user
+turns) for run (a), then two sequential requests with fully distinct
+~2,000-token prefixes for run (b), reading `timings.prompt_ms` from each
+completion payload (present on this build — no wall-clock fallback needed).
+
+| run | request | prompt_n | prompt_ms |
+|-----|---------|----------|-----------|
+| (a) identical prefix | a1 (cold) | 2209 | 1407.8 |
+| (a) identical prefix | a2 (same prefix, new user turn) | 17 | 177.6 |
+| (b) distinct prefixes | b1 (prefix A again) | 19 | 180.8 |
+| (b) distinct prefixes | b2 (prefix B, never seen) | 2207 | 1804.0 |
+
+a2/b2 prefill ratio = 177.6 / 1804.0 = **9.8%** (well under the 50% reuse
+threshold).
+
+**Verdict: prefix reuse survives sequential child-style fan-out on build
+b9957.** `prompt_n` on a repeated-prefix request drops from ~2,200 to ~17–19
+tokens (only the new user turn is reprocessed), and prefill time drops
+correspondingly from ~1.4–1.8s to ~0.18s. The server log for the parallel
+probe (above) independently corroborates this: repeat requests were
+`selected slot by LCP similarity` rather than by LRU, i.e. the router matched
+the incoming prompt against a cached slot's longest common prefix.
+
+Note run (b)'s b1 also hit the cache (reused prefix A's slot from run (a)'s
+a2, since b1 resends prefix A) — this is expected given all four requests ran
+sequentially against the same server instance and slot LRU/LCP selection
+persists across the two "runs" as scripted (they are not isolated fresh
+server starts). This does not weaken the verdict — b2 (the first-ever
+occurrence of prefix B) is the true cold-prefix comparison point, and it cost
+2207 prompt tokens vs a2's 17.
