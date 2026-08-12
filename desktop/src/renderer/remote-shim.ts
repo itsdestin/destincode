@@ -704,7 +704,11 @@ async function pickAndUploadFiles(): Promise<string[]> {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
-    input.accept = 'image/*,text/*,.pdf,.json,.csv,.md,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h';
+    // No `accept` attribute on purpose — the attachment picker must default to
+    // ALL file types (Destin's 2026-08-12 request). The old whitelist here made
+    // mobile browsers open a media-biased picker and desktop browsers preselect
+    // a "Custom Files" filter. Browsers can't offer a multi-category filter
+    // dropdown like Electron's native dialog, so "no accept" IS the whole fix.
     input.style.display = 'none';
     document.body.appendChild(input);
     input.addEventListener('change', () => {

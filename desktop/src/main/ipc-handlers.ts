@@ -824,9 +824,18 @@ export function registerIpcHandlers(
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
       filters: [
-        // All Files first so the picker opens in unrestricted mode by default
+        // All Files FIRST — the native dialog opens with the first entry
+        // selected, so the paperclip defaults to every file type (Destin's
+        // 2026-08-12 request). The rest are optional categories the user can
+        // switch to in the dialog's own filter dropdown. Pinned by
+        // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
         { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'] },
+        { name: 'Markdown & Text', extensions: ['md', 'markdown', 'txt'] },
+        { name: 'PDFs', extensions: ['pdf'] },
+        { name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] },
+        { name: 'Documents', extensions: ['docx', 'doc'] },
+        { name: 'Code', extensions: ['ts', 'tsx', 'js', 'jsx', 'py', 'json', 'html', 'css', 'sh'] },
       ],
     });
     return result.canceled ? [] : result.filePaths;
