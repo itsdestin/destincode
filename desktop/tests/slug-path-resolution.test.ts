@@ -9,7 +9,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { walkSlugParts } from '../src/main/session-browser';
+import { walkSlugParts, forwardResolveSlug } from '../src/main/session-browser';
+import { ccProjectSlug } from '../src/main/slug-encoding';
+import { r1CwdForDir } from '../src/main/transcript-cwd';
 
 describe('walkSlugParts', () => {
   let tmp: string;
@@ -42,5 +44,60 @@ describe('walkSlugParts', () => {
   it('falls back to a naive join when nothing on the path exists', () => {
     const base = path.join(tmp, 'ghost'); // never created
     expect(walkSlugParts(base, ['a', 'b'])).toBe(path.join(base, 'a-b'));
+  });
+});
+
+describe('inversion chain (spec §5.4a)', () => {
+  it('forward walk recovers a punctuated folder the split walk cannot', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-'));
+    const real = path.join(root, 'PAF 574 - Diversity, Ethics, & Public Change');
+    fs.mkdirSync(real, { recursive: true });
+    const slug = ccProjectSlug(real);
+    expect(forwardResolveSlug(slug, { posixRoot: '/' })).toBe(real);
+  });
+
+  it('BACKTRACKS past sibling a to reach a-b (the 57be5e14 failure shape)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-'));
+    fs.mkdirSync(path.join(root, 'a', 'x'), { recursive: true });          // wrong subtree exists
+    const real = path.join(root, 'a-b', 'x');
+    fs.mkdirSync(real, { recursive: true });
+    expect(forwardResolveSlug(ccProjectSlug(real), { posixRoot: '/' })).toBe(real);
+  });
+
+  // The fixture above doesn't actually exercise backtracking: 'a-b' has the
+  // LONGER encoding ('a-b', len 3) than 'a' (len 1), so longest-first picks
+  // the winner on the very first try — a greedy "take the top sorted
+  // candidate, never retry" walk passes it too (verified by hand while
+  // implementing). This fixture inverts it: the decoy 'a-b' sorts FIRST
+  // (longer encoding) but is a dead end (no child matches what's left of the
+  // slug), so only genuine backtracking — unwinding to try the shorter 'a'
+  // and descending into its real 'b-c' child — reaches the real path.
+  it('BACKTRACKS off a longer-encoded decoy that dead-ends, onto the shorter real path', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-'));
+    fs.mkdirSync(path.join(root, 'a-b', 'zzz'), { recursive: true }); // decoy: longer encoding, no matching child
+    const real = path.join(root, 'a', 'b-c');
+    fs.mkdirSync(real, { recursive: true });
+    expect(forwardResolveSlug(ccProjectSlug(real), { posixRoot: '/' })).toBe(real);
+  });
+
+  it('DECLINES on a capped slug instead of returning a plausible wrong path', () => {
+    const long = '/x/' + 'b'.repeat(300);
+    const capped = ccProjectSlug(long);
+    expect(capped.length).toBeGreaterThan(200);
+    expect(forwardResolveSlug(capped, { posixRoot: '/' })).toBeNull();
+  });
+
+  it('over-cap resolves via option 1 (R1 from a recorded cwd)', () => {
+    // build a fake projects dir containing the capped slug dir with one transcript
+    const projects = fs.mkdtempSync(path.join(os.tmpdir(), 'projs-'));
+    const long = '/x/' + 'b'.repeat(300);
+    const dir = path.join(projects, ccProjectSlug(long));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 's.jsonl'), JSON.stringify({ type: 'user', cwd: long }) + '\n');
+    // Pin platform explicitly: the fixture's local cwd is a POSIX path, so
+    // leaving this on process.platform would silently fail on Windows CI
+    // (see transcript-cwd.test.ts's same seam — adapted here per Task 8's
+    // platform-seam review fix, which the brief's original snippet predates).
+    expect(r1CwdForDir(dir, 'linux')).toBe(long);
   });
 });
