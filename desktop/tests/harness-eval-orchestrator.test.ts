@@ -8,14 +8,23 @@ import { graderRoot as srcGraderRoot, harnessRoot as srcHarnessRoot } from '../s
 
 const DESKTOP = path.resolve(__dirname, '..');
 const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
-const SOURCE_PATHS = path.join(DESKTOP, 'src/main/harness/eval/paths.ts');
 const requireCjs = createRequire(import.meta.url);
 
 /**
- * Compile src/main/harness/eval/paths.ts to its production path when the tree
- * has not been built.
+ * Every grader-side module the orchestrator loads from its OWN dist. If any is
+ * missing the CLI cannot even print a grid, so the whole suite depends on them.
+ */
+const REQUIRED_DIST_MODULES = [
+  COMPILED_PATHS,
+  path.join(DESKTOP, 'dist/main/harness/eval/matrix.js'),
+  path.join(DESKTOP, 'dist/main/harness/eval/cases/index.js'),
+  path.join(DESKTOP, 'dist/main/harness/eval/battery.js'),
+];
+
+/**
+ * Build dist/ when the tree has not been built.
  *
- * BUILD DEPENDENCY — and why this COMPILES instead of skipping.
+ * BUILD DEPENDENCY — and why this BUILDS instead of skipping.
  * Fix (review round 2, IMPORTANT 1): the grader-isolation assertions need the
  * COMPILED module (see that describe), and .github/workflows/desktop-ci.yml
  * runs `npm ci` (line 48) -> `npm test` (51) -> knip -> lint -> `npm run build`
@@ -23,33 +32,25 @@ const requireCjs = createRequire(import.meta.url);
  * is gitignored, so dist/ NEVER exists when CI runs this file, and Windows
  * never builds at all. Skipping would mean the invariant that stops a
  * branch-vs-master eval from silently comparing two GRADERS as well as two
- * harnesses is checked on no platform, ever. Compiling one file costs ~2s,
- * needs no project build, and lands it at exactly the production path so the
- * exact-value assertions stay real. An already-built tree pays nothing.
+ * harnesses is checked on no platform, ever.
  *
- * Fix (review round 3, MINOR 3): this is a module-scope function rather than
- * one describe's beforeAll, because runCell() also imports
- * dist/main/harness/eval/paths.js and therefore has the same dependency. It
- * only ever passed on an unbuilt tree by accident — the grader-isolation
- * beforeAll happened to run first and left the file behind. Filter that
- * describe away (`npx vitest run -t 'baseline arm'`) and the runCell test blew
- * up with a raw ERR_MODULE_NOT_FOUND instead. Both suites now declare it.
+ * Fix (Task 8 Step 0, 2026-08-12): this used to compile paths.ts ALONE, which
+ * was faithful only while paths.ts was the orchestrator's single dist import.
+ * The integration made it load matrix.js, cases/index.js and battery.js from
+ * the same dist, and cases/index.js transitively pulls in run-case.ts and the
+ * whole harness — not a single-file compile any more. So run the project's own
+ * build instead of a hand-rolled tsc invocation, which also removes the risk of
+ * this helper's flags drifting from what `npm run build:main` produces.
+ * Measured at ~11s on a cold tree; an already-built tree pays nothing.
  */
-function ensureCompiledPaths(): void {
-  if (fs.existsSync(COMPILED_PATHS)) return;
-  // target/module are read from tsconfig.json rather than hardcoded, so an
-  // on-demand compile can never drift from what `npm run build:main` produces.
-  // paths.ts imports nothing but `path`, which is what makes a single-file
-  // compile faithful here.
-  const tsconfig = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'tsconfig.json'), 'utf8'));
+function ensureBuiltGraders(): void {
+  const missing = REQUIRED_DIST_MODULES.filter((file) => !fs.existsSync(file));
+  if (missing.length === 0) return;
   try {
-    execFileSync(process.execPath, [
-      requireCjs.resolve('typescript/bin/tsc'),
-      SOURCE_PATHS,
-      '--outDir', path.dirname(COMPILED_PATHS),
-      '--target', tsconfig.compilerOptions.target,
-      '--module', tsconfig.compilerOptions.module,
-    ], { cwd: DESKTOP, stdio: 'pipe' });
+    execFileSync(process.execPath, [requireCjs.resolve('typescript/bin/tsc'), '-p', 'tsconfig.json'], {
+      cwd: DESKTOP,
+      stdio: 'pipe',
+    });
   } catch (err) {
     // Fix (review round 3, MINOR 4): stdio 'pipe' means tsc's diagnostics land
     // on err.stdout and execFileSync's own message is only
@@ -59,13 +60,21 @@ function ensureCompiledPaths(): void {
     // hit on a fresh checkout.
     const e = err as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     throw new Error([
-      `Could not compile ${SOURCE_PATHS} for the harness-eval tests (they need the compiled paths.js at ${COMPILED_PATHS}).`,
+      `Could not build dist/ for the harness-eval tests (they need ${missing.join(', ')}).`,
       e.message,
       String(e.stdout ?? '').trim(),
       String(e.stderr ?? '').trim(),
     ].filter(Boolean).join('\n'));
   }
+  const stillMissing = REQUIRED_DIST_MODULES.filter((file) => !fs.existsSync(file));
+  if (stillMissing.length) {
+    throw new Error(`tsc reported success but these are still missing: ${stillMissing.join(', ')}`);
+  }
 }
+
+// The build is a whole-project tsc, so give the hook room; the default 10s
+// hook timeout would fail on a cold tree for no reason but the clock.
+const BUILD_TIMEOUT_MS = 300_000;
 
 describe('grader isolation', () => {
   // WHY the COMPILED module and not just the TypeScript source: paths.ts
@@ -73,16 +82,16 @@ describe('grader isolation', () => {
   // `<desktop>/src/...` under vitest and the compiled copy answers
   // `<desktop>/dist` — only the latter is what production actually produces. A
   // test that only imports the source cannot observe the value the orchestrator
-  // will use. The compile-on-demand rationale lives on ensureCompiledPaths().
+  // will use. The build-on-demand rationale lives on ensureBuiltGraders().
   let compiled: { graderRoot: (c: { dist: string }) => string; harnessRoot: (c: { dist: string }) => string };
 
   beforeAll(() => {
-    ensureCompiledPaths();
+    ensureBuiltGraders();
     // createRequire, not import(): dist/ is CommonJS (package.json is
     // "type": "commonjs") and this loads it exactly the way Node does for the
     // .mjs entry points, with no vite transform in between.
     compiled = requireCjs(COMPILED_PATHS);
-  });
+  }, BUILD_TIMEOUT_MS);
 
   it('resolves graders against its own checkout, never the dist under test', () => {
     // Exact value, not a not-toContain: `return "/"` would have passed the
@@ -103,6 +112,21 @@ describe('grader isolation', () => {
     expect(srcGraderRoot({ dist: '/a/dist' })).toBe(srcGraderRoot({ dist: '/b/dist' }));
     expect(srcHarnessRoot({ dist: '/a/dist' })).toBe('/a/dist');
   });
+
+  it('loads the case registry and the matrix from its own dist, not a cell dist', async () => {
+    // Regression pin (Task 8 Step 0): the orchestrator now imports matrix.js,
+    // cases/index.js and battery.js at run time. Every one of them must come
+    // from graderRoot() — a grader loaded from the cell's dist would make a
+    // branch-vs-master run compare two graders as well as two harnesses, which
+    // is a silently uninterpretable diff rather than a crash.
+    const { loadGraders } = await import('../test-engine/harness-eval.mjs');
+    const graders = await loadGraders();
+    // The registry answers with THIS checkout's cases, and the roster with this
+    // checkout's roster file — observable proof the imports resolved locally.
+    expect(graders.allCaseIds()).toContain('harness-battery');
+    expect(graders.roster.map((r: { label: string }) => r.label)).toContain('Claude Opus 5');
+    expect(graders.graderRoot({ dist: '/some/cell/dist' })).toBe(path.join(DESKTOP, 'dist'));
+  }, BUILD_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -116,42 +140,91 @@ function writePlan(plan: unknown): string {
   return file;
 }
 
+// Fix (Task 8 Step 0): REAL ids. `validatePlan` cross-checks `cases` against
+// the case registry and `models` against the roster's labels, which is the
+// entire reason the orchestrator's own throwaway validator was deleted — so a
+// fixture plan full of invented ids ("case-a", "vendor/model-1") would now be
+// rejected before reaching the rule each test is actually about.
 const BASE_PLAN = {
   name: 'unit-test-plan',
-  cases: ['case-a'],
+  cases: ['harness-battery'],
   instructions: [{ id: 'baseline', file: null }],
-  models: ['vendor/model-1'],
+  models: ['Claude Opus 5'],
 };
 
-describe('loadPlan validation', () => {
+describe('plan validation goes through matrix.ts validatePlan', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  it('rejects a case id that is not in the registry — which the deleted local validator never did', async () => {
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    // The reason Step 0 exists at all: two validators had merged cleanly and the
+    // orchestrator's own one never looked at case ids or roster labels, so a
+    // plan naming a case that does not exist expanded happily and would have
+    // been billed as a real matrix.
+    await expect(readPlanFile(writePlan({ ...BASE_PLAN, cases: ['confgi-investigation'] })))
+      .rejects.toThrow(/Unknown case id "confgi-investigation"\. Known case ids: harness-battery/);
+  });
+
+  it('rejects a model that is not a roster label', async () => {
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    await expect(readPlanFile(writePlan({ ...BASE_PLAN, models: ['anthropic/claude-opus-5'] })))
+      .rejects.toThrow(/Unknown model "anthropic\/claude-opus-5"\. Known models: .*Claude Opus 5/);
+  });
+
+  it('names the plan file, which validatePlan itself cannot know', async () => {
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    const file = writePlan({ ...BASE_PLAN, cases: ['nope'] });
+    await expect(readPlanFile(file)).rejects.toThrow(new RegExp(`plan "${file.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}" is invalid`));
+  });
+
   it('rejects a build arm with no dist, naming the arm', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
     const file = writePlan({
       ...BASE_PLAN,
       builds: [{ id: 'current', dist: '/a/dist' }, { id: 'master' }],
     });
     // Regression pin: this plan used to expand and exit 0, with the "master"
     // arm silently running this checkout's own build.
-    expect(() => loadPlan(file)).toThrowError(/build arm "master" needs a non-empty "dist"/);
+    await expect(readPlanFile(file)).rejects.toThrow(/Build arm "master" has an invalid "dist"/);
   });
 
   it('accepts build arms that all name a dist', async () => {
-    const { loadPlan, expandPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
     const file = writePlan({
       ...BASE_PLAN,
       builds: [{ id: 'current', dist: '/a/dist' }, { id: 'master', dist: '/b/dist' }],
     });
-    const cells = expandPlan(loadPlan(file));
+    const cells = await expandPlanFile(await readPlanFile(file));
     expect(cells.map((c: { dist: string }) => c.dist)).toEqual(['/a/dist', '/b/dist']);
   });
 
+  it('resolves a relative build dist against the plan file, not the cwd', async () => {
+    // Fix (Task 8 Step 0): matrix.ts is a pure module, so its default build arm
+    // is the RELATIVE `dist: '.'`. A relative dist reaching the worker resolves
+    // against whatever cwd that worker inherits, i.e. "which harness am I
+    // testing" would depend on where you were standing when you typed the
+    // command. Resolution happens once, in the orchestrator, against the plan.
+    const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
+    const file = writePlan({ ...BASE_PLAN, builds: [{ id: 'master', dist: 'sibling/dist' }] });
+    const cells = await expandPlanFile(await readPlanFile(file));
+    expect(cells[0].dist).toBe(path.join(path.dirname(file), 'sibling/dist'));
+  });
+
+  it('defaults to an ABSOLUTE current build when the plan names none', async () => {
+    const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
+    const cells = await expandPlanFile(await readPlanFile(writePlan(BASE_PLAN)));
+    expect(cells[0].buildId).toBe('current');
+    expect(cells[0].dist).toBe(path.join(DESKTOP, 'dist'));
+  });
+
   it('rejects a non-positive-integer repeats in the plan file', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
-    expect(() => loadPlan(writePlan({ ...BASE_PLAN, repeats: 0 }))).toThrowError(/"repeats" must be a positive integer/);
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    await expect(readPlanFile(writePlan({ ...BASE_PLAN, repeats: 0 })))
+      .rejects.toThrow(/"repeats" must be a positive integer/);
   });
 
   it('rejects an instruction arm that omits "file", naming the arm', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
     // Regression pin (review round 3, IMPORTANT 2): `[{id:'baseline'},{id:'terse'}]`
     // — one forgotten key — used to expand into two arms that were byte-identical
     // to a legitimate baseline. Both downstream guards stay silent for it (there
@@ -159,43 +232,52 @@ describe('loadPlan validation', () => {
     // reported as an instructions comparison.
     const file = writePlan({
       ...BASE_PLAN,
-      instructions: [{ id: 'baseline' }, { id: 'terse' }],
+      instructions: [{ id: 'baseline', file: null }, { id: 'terse' }],
     });
-    expect(() => loadPlan(file)).toThrowError(/instruction arm "terse" must state "file" explicitly/);
+    await expect(readPlanFile(file)).rejects.toThrow(/Instruction arm "terse" has an invalid "file": undefined/);
   });
 
   it('rejects an instruction arm whose "file" is neither a path nor null', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
     // '' would be carried as a falsy instructionsFile, i.e. treated downstream
-    // as "baseline, nothing to resolve" — the same silent collapse by another route.
+    // as "baseline, nothing to resolve" — the same silent collapse by another
+    // route. matrix.ts's validator accepted '' until Step 0 carried this rule
+    // over from the deleted local one (`typeof '' === 'string'` passed).
     const file = writePlan({
       ...BASE_PLAN,
       instructions: [{ id: 'baseline', file: null }, { id: 'terse', file: '' }],
     });
-    expect(() => loadPlan(file)).toThrowError(/instruction arm "terse" has an invalid "file"/);
+    await expect(readPlanFile(file)).rejects.toThrow(/Instruction arm "terse" has an invalid "file": ""/);
   });
 
   it('rejects two baseline arms, which are not a comparison', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
+    // Also carried over from the deleted local validator — matrix.ts had no
+    // equivalent rule, so two `"file": null` arms validated cleanly and would
+    // have run one task twice, billed as an instructions comparison.
     const file = writePlan({
       ...BASE_PLAN,
       instructions: [{ id: 'baseline', file: null }, { id: 'control', file: null }],
     });
-    expect(() => loadPlan(file)).toThrowError(/all set "file": null — only one arm can be the no-instructions baseline/);
+    await expect(readPlanFile(file)).rejects.toThrow(/all set "file": null/);
   });
 
-  it('rejects a non-string entry in cases or models, naming the index', async () => {
-    const { loadPlan } = await import('../test-engine/harness-eval.mjs');
+  it('rejects a non-string entry in cases or models', async () => {
+    const { readPlanFile } = await import('../test-engine/harness-eval.mjs');
     // Regression pin (review round 3, MINOR 5): only array-non-emptiness was
     // checked, so `cases: [null]` produced a cell id reading "null|baseline|...".
-    expect(() => loadPlan(writePlan({ ...BASE_PLAN, cases: [null] })))
-      .toThrowError(/"cases\[0\]" must be a non-empty string \(got null\)/);
-    expect(() => loadPlan(writePlan({ ...BASE_PLAN, models: ['ok', 7] })))
-      .toThrowError(/"models\[1\]" must be a non-empty string \(got 7\)/);
+    // validatePlan catches the same class through membership: a non-string can
+    // never be a known case id or roster label.
+    await expect(readPlanFile(writePlan({ ...BASE_PLAN, cases: [null] })))
+      .rejects.toThrow(/Unknown case id null/);
+    await expect(readPlanFile(writePlan({ ...BASE_PLAN, models: ['Claude Opus 5', 7] })))
+      .rejects.toThrow(/Unknown model 7/);
   });
 });
 
 describe('CLI flag parsing', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
   // Spawned rather than imported: the flag is parsed in main(), and the point
   // of the fix is the process's exit code, which only a real process has.
   function run(args: string[]): { status: number | null; stderr: string } {
@@ -236,22 +318,27 @@ describe('CLI flag parsing', () => {
     expect(stderr).toContain('--plan needs a value, but nothing followed it');
   });
 
-  it('does not advertise cases a --only run will not touch', () => {
+  it('does not advertise models a --only run will not touch', () => {
     // Regression pin (review round 3, MINOR 6): printGrid read its axis lines
     // off the PLAN while main() filtered the CELLS, so a one-cell run printed
-    // "Cases: case-a, case-b" above a single row.
-    const file = writePlan({ ...BASE_PLAN, cases: ['case-a', 'case-b'] });
+    // "Models: m1, m2" above a single row.
+    //
+    // The discriminating axis is MODELS rather than cases (Task 8 Step 0):
+    // validatePlan now requires every case id to be in the registry, and the
+    // registry currently holds exactly one case, so a two-case plan is no
+    // longer constructible. Two roster labels are.
+    const file = writePlan({ ...BASE_PLAN, models: ['Claude Opus 5', 'Grok 4.5'] });
     const out = execFileSync(
       process.execPath,
-      [CLI, '--plan', file, '--only', 'case-a|baseline|vendor/model-1|current|1', '--dry-run'],
+      [CLI, '--plan', file, '--only', 'harness-battery|baseline|Claude Opus 5|current|0', '--dry-run'],
       { encoding: 'utf8' },
     );
-    expect(out).toContain('Cases: case-a\n');
+    expect(out).toContain('Models: Claude Opus 5\n');
     expect(out).toContain('1 cell:');
-    expect(out).not.toContain('case-b');
+    expect(out).not.toContain('Grok 4.5');
     // ...and an UNFILTERED run of the same plan still lists both.
     const all = execFileSync(process.execPath, [CLI, '--plan', file, '--dry-run'], { encoding: 'utf8' });
-    expect(all).toContain('Cases: case-a, case-b\n');
+    expect(all).toContain('Models: Claude Opus 5, Grok 4.5\n');
   });
 
   it('accepts a positive integer and expands that many repeats', () => {
@@ -262,38 +349,95 @@ describe('CLI flag parsing', () => {
       env: { ...process.env, OPENROUTER_API_KEY: undefined } as NodeJS.ProcessEnv,
     });
     expect(out).toContain('3 cells');
+    // Repeats is a COUNT of distinct indices, not max(repeat): matrix.js
+    // numbers repeats from 0, so a max would have printed "Repeats: 2" here.
+    expect(out).toContain('Repeats: 3\n');
+  });
+});
+
+describe('every path derived from a cell goes through cellFilename', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  // The characters that make a raw cell id unusable as a filename. '|' is
+  // Windows-reserved and the model axis carries roster LABELS ("Claude Opus
+  // 5"), so a real cell id contains both a reserved character and spaces.
+  const UNSAFE = /[|\s]/;
+
+  it('produces a result path with no "|" and no space, from a real plan', async () => {
+    const { readPlanFile, expandPlanFile, cellResultPath } = await import('../test-engine/harness-eval.mjs');
+    const cells = await expandPlanFile(await readPlanFile(writePlan(BASE_PLAN)));
+    // Proof the input really did contain both hazards — otherwise this test
+    // could pass by them never having been there at all.
+    expect(cells[0].id).toMatch(/\|/);
+    expect(cells[0].id).toMatch(/\s/);
+    const resolved = await cellResultPath('/runs', cells[0]);
+    expect(path.basename(resolved)).not.toMatch(UNSAFE);
+    // ...and it is not merely a sanitised id: the digest suffix is what keeps
+    // two cells whose readable slugs collapse to the same slug distinct.
+    expect(path.basename(resolved)).toMatch(/^harness-battery_baseline_claude-opus-5_current_0_[0-9a-f]{16}\.json$/);
+  });
+
+  it('is the path the CLI actually prints, not just an unused helper', () => {
+    // WHY this one exists on top of the unit test above: a helper nothing calls
+    // proves nothing about the orchestrator. This asserts the example filename
+    // in the CLI's own output — the end-to-end route from plan file, through
+    // matrix.js's expandPlan, to a filesystem name.
+    const file = writePlan({ ...BASE_PLAN, models: ['Claude Opus 5'] });
+    const out = execFileSync(process.execPath, [CLI, '--plan', file, '--dry-run'], { encoding: 'utf8' });
+    const line = out.split('\n').find((l) => l.trim().startsWith('e.g. '));
+    expect(line).toBeDefined();
+    const printed = line!.trim().replace(/^e\.g\. /, '').replace(/ \(one file per cell\)$/, '');
+    expect(printed).not.toMatch(UNSAFE);
+    expect(printed).toMatch(/^harness-battery_baseline_claude-opus-5_current_0_[0-9a-f]{16}\.json$/);
   });
 });
 
 describe('runCell refuses to run a cell it cannot run honestly', () => {
-  // runCell() imports dist/main/harness/eval/paths.js before it spawns, so this
-  // suite has the same build dependency the grader-isolation one declares. It
-  // used to have it silently: on an unbuilt tree it only passed because the
-  // FIRST describe's hook had already compiled the file. See ensureCompiledPaths().
-  beforeAll(ensureCompiledPaths);
+  // runCell() imports its graders from dist/ before it spawns, so this suite
+  // has the same build dependency the grader-isolation one declares. It used to
+  // have it silently: on an unbuilt tree it only passed because the FIRST
+  // describe's hook had already compiled the file. See ensureBuiltGraders().
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
 
+  // A real case id and a real roster label (Task 8 Step 0): runCell now looks
+  // both up, so an invented pair would fail on the lookup rather than on the
+  // guard each test is about.
   const cell = {
-    id: 'case-a|baseline|vendor/model-1|current|1',
-    caseId: 'case-a',
+    id: 'harness-battery|baseline|Claude Opus 5|current|0',
+    caseId: 'harness-battery',
     instructionsId: 'baseline',
-    model: 'vendor/model-1',
+    instructionsFile: null as string | null,
+    model: 'Claude Opus 5',
     buildId: 'current',
     dist: '/a/dist',
-    repeat: 1,
+    repeat: 0,
   };
 
-  it('throws when no case body is supplied, naming the case', async () => {
+  it('throws when the cell names a case that is not in the registry', async () => {
     const { runCell } = await import('../test-engine/harness-eval.mjs');
-    // Regression pin: without this, runCase() defaults the prompt to the
-    // harness-review battery and every cell in the matrix runs the same task.
-    await expect(runCell(cell, { apiKey: 'sk-fake', caseBody: undefined }))
-      .rejects.toThrow(/no case body was supplied for case "case-a"/);
+    // Regression pin, rewired: the case body used to be a caller-supplied
+    // argument and an absent one made runCase() fall back to the harness-review
+    // battery, so every cell in the matrix ran the same task under a different
+    // label. The body now comes from the registry, so the hole closes one level
+    // up — an unknown caseId cannot produce a body at all, and says so by name.
+    await expect(runCell({ ...cell, caseId: 'nope' }, { apiKey: 'sk-fake' }))
+      .rejects.toThrow(/Unknown case "nope"\. Known cases: harness-battery/);
   });
 
   it('throws when the cell has no dist, naming the build arm', async () => {
     const { runCell } = await import('../test-engine/harness-eval.mjs');
-    await expect(runCell({ ...cell, dist: '' }, { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } }))
+    await expect(runCell({ ...cell, dist: '' }, { apiKey: 'sk-fake' }))
       .rejects.toThrow(/build arm "current"\) has no "dist"/);
+  });
+
+  it('throws when the cell names a model that is not a roster label', async () => {
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    // A plan's `models` are roster LABELS; OpenRouter needs the model ID. This
+    // orchestrator used to send `cell.model` straight through as `modelId`, so
+    // after the switch to a label-validated plan the provider would have
+    // rejected "Claude Opus 5" as unknown — AFTER the fixture was seeded.
+    await expect(runCell({ ...cell, model: 'Claude Opus 9' }, { apiKey: 'sk-fake' }))
+      .rejects.toThrow(/names model "Claude Opus 9", which is not a label in .*review-roster\.json/);
   });
 
   it('throws when an instruction arm names a file nobody resolved, naming the arm', async () => {
@@ -304,7 +448,7 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     // matrix.
     await expect(runCell(
       { ...cell, instructionsId: 'terse', instructionsFile: 'instructions/terse.md' },
-      { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } },
+      { apiKey: 'sk-fake' },
     )).rejects.toThrow(/instruction arm "terse" declares a file \("instructions\/terse\.md"\)/);
   });
 
@@ -336,32 +480,37 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     //    captures the worker's stderr now; with stdio[2]: 'inherit' the caller
     //    could not see WHICH error occurred, which is what made the weak
     //    assertion the only one available.)
-    const result = await runCell(
-      { ...cell, instructionsFile: null },
-      { apiKey: 'sk-fake', caseBody: { prompt: 'hi' } },
-    );
+    const result = await runCell({ ...cell, instructionsFile: null }, { apiKey: 'sk-fake' });
     expect(result.error).toContain('could not load the harness under test from "/a/dist"');
     // The non-delivery messages, named explicitly so this test fails loudly
     // rather than confusingly if the config ever stops arriving.
     expect(result.error).not.toContain('stdin closed without a config');
     expect(result.error).not.toContain('is not valid JSON');
-  });
+    // ...and the config it delivered carried the case body from the registry
+    // rather than nothing: a config with no prompt is refused by the worker
+    // BEFORE it ever tries the dist import, with a different message.
+    expect(result.error).not.toContain('has no "prompt"');
+  }, 15_000);
 });
 
 describe('expandPlan carries the instruction arm file onto every cell', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
   it('copies arm.file so runCell can tell "nothing to load" from "not loaded yet"', async () => {
-    const { loadPlan, expandPlan } = await import('../test-engine/harness-eval.mjs');
+    const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
     const file = writePlan({
       ...BASE_PLAN,
       instructions: [{ id: 'baseline', file: null }, { id: 'terse', file: 'instructions/terse.md' }],
     });
-    const cells = expandPlan(loadPlan(file));
+    const cells = await expandPlanFile(await readPlanFile(file));
     expect(cells.map((c: { instructionsFile: string | null }) => c.instructionsFile))
       .toEqual([null, 'instructions/terse.md']);
   });
 });
 
 describe('worker stderr is redacted before it can reach a transcript', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
   // Regression pin (review round 4): runCell captures the worker's stderr tail
   // verbatim into `result.error`, and `result` is what the caller writes to disk
   // as a transcript. That is a FOURTH channel in this branch's long-running
@@ -392,10 +541,16 @@ describe('worker stderr is redacted before it can reach a transcript', () => {
     const key = 'sk-or-v1-CANARY-IN-A-PATH';
     const result = await runCell(
       {
-        id: 'c1', caseId: 'a', instructionsId: 'baseline', instructionsFile: null,
-        model: 'vendor/model-1', buildId: 'current', dist: `/nonexistent/${key}/dist`, repeat: 1,
+        id: 'harness-battery|baseline|Claude Opus 5|current|0',
+        caseId: 'harness-battery',
+        instructionsId: 'baseline',
+        instructionsFile: null,
+        model: 'Claude Opus 5',
+        buildId: 'current',
+        dist: `/nonexistent/${key}/dist`,
+        repeat: 0,
       },
-      { apiKey: key, caseBody: { prompt: 'hi' } },
+      { apiKey: key },
     );
     // Proof the worker really did echo the path back (otherwise this test could
     // pass by the key never having been there at all).

@@ -50,6 +50,17 @@ export interface Cell {
   id: string; // stable: `${caseId}|${instructionsId}|${model}|${buildId}|${repeat}`
   caseId: string;
   instructionsId: string;
+  /** The instruction arm's file, copied from the arm onto every cell.
+   *
+   *  WHY on the cell and not looked up from the plan later (Task 8 Step 0,
+   *  2026-08-12 integration): a runner holds a Cell, not a plan, and it has to
+   *  tell "this arm has nothing to load" (`null` — the deliberate baseline
+   *  arm) apart from "this arm names a file nobody has read yet", which is the
+   *  case that must refuse to run rather than send a config byte-identical to
+   *  every other arm's. Without this field the two are indistinguishable
+   *  downstream, which is how N paid runs of ONE task get reported as an
+   *  instructions comparison. */
+  instructionsFile: string | null;
   model: string;
   buildId: string;
   dist: string;
@@ -77,6 +88,10 @@ export function expandPlan(plan: EvalPlan): Cell[] {
               id: `${caseId}|${instruction.id}|${model}|${build.id}|${repeat}`,
               caseId,
               instructionsId: instruction.id,
+              // `?? null` rather than a bare copy: expandPlan is also called
+              // directly on hand-built plan objects (tests, and any caller
+              // that skipped validatePlan), where `file` may simply be absent.
+              instructionsFile: instruction.file ?? null,
               model,
               buildId: build.id,
               dist: build.dist,
@@ -245,9 +260,30 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
     }
     seenInstructionIds.add(id);
     const file = (instruction as Record<string, unknown>).file;
-    if (file !== null && typeof file !== 'string') {
-      throw new Error(`Instruction arm ${describe(id)} has an invalid "file": ${describe(file)}. Must be a string or null.`);
+    // Fix (Task 8 Step 0, 2026-08-12 integration): `''` used to pass here,
+    // because `typeof '' === 'string'`. An empty-string file is carried onto
+    // the cell as a FALSY instructionsFile, which every downstream guard reads
+    // as "baseline arm, nothing to resolve" — so the arm silently collapses
+    // into a second copy of the baseline instead of being rejected. This check
+    // came from the orchestrator's own now-deleted local validator (review
+    // round 3, IMPORTANT 2); it is kept here because this is the only
+    // validator left.
+    if (file !== null && (typeof file !== 'string' || file === '')) {
+      throw new Error(`Instruction arm ${describe(id)} has an invalid "file": ${describe(file)}. Must be a non-empty string, or null for the no-instructions baseline arm.`);
     }
+  }
+  // Fix (Task 8 Step 0, 2026-08-12 integration): also inherited from the
+  // deleted local validator. Two arms with `"file": null` send byte-identical
+  // configs, so they are one task run twice — billed and reported as an
+  // instructions comparison. Only one arm can be the baseline.
+  const baselineArms = (p.instructions as InstructionArm[])
+    .filter((arm) => arm && typeof arm === 'object' && arm.file === null);
+  if (baselineArms.length > 1) {
+    throw new Error(
+      `Instruction arms ${baselineArms.map((arm) => describe(arm.id)).join(', ')} all set "file": null. `
+      + 'Only one arm can be the no-instructions baseline — two of them send the identical config, so they '
+      + 'would run one task twice and be reported as an instructions comparison.',
+    );
   }
 
   if (!Array.isArray(p.models) || p.models.length === 0) {

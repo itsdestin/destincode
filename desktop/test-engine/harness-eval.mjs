@@ -15,16 +15,25 @@
 // needs an API key — --dry-run and a plain invocation currently print the
 // same thing, because there is nothing yet to gate.
 //
-// WHY this file does NOT import src/main/harness/eval/matrix.ts or cases/:
-// both are sibling deliverables being built concurrently in other worktrees
-// (this worktree only owns paths.ts + the two test-engine/*.mjs files). This
-// file defines its own minimal, self-contained plan-shape validation and
-// expansion instead of reaching into modules that don't exist on this branch
-// yet. A later integration task replaces the local `loadPlan`/`expandPlan`
-// below with the real ones from matrix.ts — the Cell shape here is written to
-// match that module's documented interface (docs/active/plans/
-// 2026-08-12-harness-evaluator.md, Task 6) so that swap is a like-for-like
-// replacement, not a redesign.
+// INTEGRATION (Task 8 Step 0, 2026-08-12). This file used to define its own
+// local `loadPlan`/`expandPlan`, because matrix.ts and cases/ were sibling
+// deliverables in other worktrees and this one was forbidden from importing
+// them. All three merged cleanly — different files — and every test stayed
+// green, which is exactly the hazard: there were then TWO plan validators that
+// already disagreed (the local one never cross-checked case ids or roster
+// labels, which is `validatePlan`'s whole job), and `cellFilename` — the
+// Windows-safe filename builder that cost a full review round — was referenced
+// zero times here. Both local copies are now DELETED and replaced by the real
+// modules; nothing below re-implements any part of them.
+//
+// WHY every grader module is loaded through `graderRoot()` and never through
+// `cell.dist`: matrix.js, cases/index.js and battery.js are GRADER-side. The
+// harness under test varies per cell; the graders must not. Loading a grader
+// from the cell's dist would mean a branch-vs-master comparison silently
+// compares two different *graders* as well as two harnesses — a diff nobody
+// can interpret, and not a crash. `src/main/harness/eval/paths.ts` exists for
+// exactly this: `graderRoot()` ignores its argument by construction and always
+// answers this checkout's own dist; `harnessRoot(cell)` answers the cell's.
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -33,6 +42,54 @@ import { spawn } from 'child_process';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP = path.resolve(HERE, '..');
 const WORKER = path.join(HERE, 'harness-eval-worker.mjs');
+/** The model roster — the same file review-harness.mjs runs its battery from,
+ *  so "which models exist" has one answer for both CLIs. Its LABELS are what a
+ *  plan's `models` array names (matrix.ts's EvalPlan documents them as roster
+ *  labels), and the OpenRouter model id is looked up from it in runCell. */
+const ROSTER_FILE = path.join(HERE, 'review-roster.json');
+
+/** paths.js is the one module that has to be located by hand: it is the module
+ *  that DEFINES where graders come from, so it cannot be located by itself.
+ *  Everything after it goes through graderRoot(). */
+const PATHS_BOOTSTRAP = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
+
+let gradersPromise = null;
+
+/** Load every grader-side module this orchestrator needs, once.
+ *
+ *  All four resolve through `graderRoot()` — this checkout's own `dist` —
+ *  which is why the argument below is a literal reminder rather than a cell:
+ *  graderRoot ignores it by construction (see paths.ts's `_cell`), and passing
+ *  something cell-derived here would only invite a future edit to start
+ *  honouring it.
+ *
+ *  THROWS with the real module-resolution error if `dist/` has not been built.
+ *  Building is `npm run build:main` (~11s measured); the tests build on demand. */
+function loadGraders() {
+  if (!gradersPromise) {
+    gradersPromise = (async () => {
+      const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
+      const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
+      const load = (rel) => import(path.join(root, rel));
+      const [matrix, cases, battery] = await Promise.all([
+        load('main/harness/eval/matrix.js'),
+        load('main/harness/eval/cases/index.js'),
+        load('main/harness/eval/battery.js'),
+      ]);
+      return {
+        graderRoot,
+        harnessRoot,
+        validatePlan: matrix.validatePlan,
+        expandPlan: matrix.expandPlan,
+        cellFilename: matrix.cellFilename,
+        allCaseIds: cases.allCaseIds,
+        getCase: cases.getCase,
+        roster: battery.loadRoster(ROSTER_FILE),
+      };
+    })();
+  }
+  return gradersPromise;
+}
 
 // -- flag parsing -----------------------------------------------------------
 
@@ -64,167 +121,140 @@ function parseArgs(argv) {
   };
 }
 
-// -- minimal local plan shape (see the file header WHY) ---------------------
+// -- plan loading (validation + expansion both live in matrix.ts) ------------
 
 /**
- * @typedef {{ id: string, file: string | null }} InstructionArm
- * @typedef {{ id: string, dist: string }} BuildArm
- * @typedef {{
- *   name: string, cases: string[], instructions: InstructionArm[],
- *   models: string[], builds?: BuildArm[], judge?: string | null, repeats?: number,
- * }} EvalPlan
- * @typedef {{
- *   id: string, caseId: string, instructionsId: string, instructionsFile: string | null,
- *   model: string, buildId: string, dist: string, repeat: number,
- * }} Cell
+ * @typedef {import('../src/main/harness/eval/matrix').Cell} Cell
  */
 
 /** The default build arm when a plan names none: this checkout's own current
  *  build. Same physical path graderRoot() resolves to (own checkout), but a
  *  DIFFERENT role — this is the harness UNDER TEST for the 'current' arm,
  *  resolved once here and then threaded through exactly like any other
- *  --dist. It is never treated as "the grader root" anywhere downstream. */
+ *  --dist. It is never treated as "the grader root" anywhere downstream.
+ *
+ *  WHY this is injected here instead of relying on matrix.ts's own default:
+ *  matrix.ts is a pure module with no filesystem access, so its DEFAULT_BUILDS
+ *  is the RELATIVE `dist: '.'`. Handed to a worker, `'.'` resolves against
+ *  whatever cwd that worker happens to have — i.e. "the harness under test" is
+ *  decided by where you were standing when you typed the command. Resolving it
+ *  to an absolute path here, once, is the fix. */
 const CURRENT_BUILD = { id: 'current', dist: path.join(DESKTOP, 'dist') };
 
-/** True only for a whole number >= 1. Shared by the plan's `repeats` field and
- *  the `--repeats` flag so the two can never disagree about what is valid —
- *  before this, the flag path was unchecked and `--repeats abc` printed
- *  "Repeats: NaN" and 0 cells while exiting 0. */
+/** True only for a whole number >= 1. Used for the `--repeats` FLAG only —
+ *  the plan file's own `repeats` field is validatePlan's business. Kept
+ *  separate on purpose: a user who typed `--repeats abc` needs to be told the
+ *  flag is wrong, not that the plan file is. Before this check existed,
+ *  `--repeats abc` printed "Repeats: NaN" and 0 cells while exiting 0. */
 function isPositiveInteger(value) {
   return Number.isInteger(value) && value >= 1;
 }
 
-/** Load + validate a plan file. Deliberately narrow: real cross-checking
- *  against known case ids / roster labels is matrix.ts's `validatePlan` job
- *  (Task 6, a sibling worktree's deliverable) — this only guards the shape
- *  the expansion loop below actually reads, so a malformed plan fails with a
- *  clear message instead of a confusing crash mid-expansion.
+/** Read a plan file and hand it to the REAL validator.
  *
- *  THROWS rather than calling process.exit so the validation is reachable
- *  from a test (main() below turns the throw into the same exit code 2 and
- *  the same stderr text a user saw before). */
-function loadPlan(filePath) {
+ *  Everything this function does is I/O and error framing: read, JSON.parse,
+ *  then `validatePlan(plan, knownCaseIds, knownModels)` from matrix.js. There
+ *  is deliberately no shape-checking here — a second validator is what Task 8
+ *  Step 0 existed to remove, and the local one it replaced never cross-checked
+ *  case ids or roster labels at all, so a plan naming a case that does not
+ *  exist expanded happily and would have been billed as a real matrix.
+ *
+ *  `knownCaseIds` comes from the case registry (cases/index.js `allCaseIds()`)
+ *  and `knownModels` from the roster's LABELS — both loaded from this
+ *  checkout's own dist via graderRoot(), never from a cell's.
+ *
+ *  THROWS rather than calling process.exit so the validation is reachable from
+ *  a test (main() below turns the throw into the same exit code 2 and the same
+ *  stderr text a user saw before). The plan's path is prepended to
+ *  validatePlan's message because validatePlan takes a parsed object and has
+ *  no idea which file it came from — and "which file" is the first thing a
+ *  user with several plans needs.
+ */
+async function readPlanFile(filePath) {
+  const { validatePlan, allCaseIds, roster } = await loadGraders();
   let text;
   try {
     text = fs.readFileSync(filePath, 'utf8');
   } catch (err) {
     throw new Error(`harness-eval: could not read plan "${filePath}": ${err.message}`);
   }
-  let plan;
+  let parsed;
   try {
-    plan = JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch (err) {
     throw new Error(`harness-eval: plan "${filePath}" is not valid JSON: ${err.message}`);
   }
-
-  const problems = [];
-  if (typeof plan.name !== 'string' || !plan.name) problems.push('"name" must be a non-empty string');
-  if (!Array.isArray(plan.cases) || plan.cases.length === 0) problems.push('"cases" must be a non-empty array');
-  if (!Array.isArray(plan.instructions) || plan.instructions.length === 0) problems.push('"instructions" must be a non-empty array');
-  if (!Array.isArray(plan.models) || plan.models.length === 0) problems.push('"models" must be a non-empty array');
-  // Fix (review round 3, MINOR 5): the ENTRIES of `cases` and `models` were
-  // never type-checked — only "is this a non-empty array". `cases: [null]`
-  // sailed through and produced a cell with `caseId: null` and the id
-  // "null|baseline|vendor/model-1|current|1", which reads like a real case in a
-  // report. Same class of hole as the instructions one below, lower stakes.
-  for (const [field, values] of [['cases', plan.cases], ['models', plan.models]]) {
-    if (!Array.isArray(values)) continue;
-    values.forEach((value, i) => {
-      if (typeof value !== 'string' || !value) {
-        problems.push(`"${field}[${i}]" must be a non-empty string (got ${JSON.stringify(value)})`);
-      }
-    });
-  }
-  if (Array.isArray(plan.instructions)) {
-    const ids = plan.instructions.map((arm) => arm && arm.id);
-    if (ids.some((id) => typeof id !== 'string' || !id)) problems.push('every instruction arm needs a non-empty "id"');
-    if (new Set(ids).size !== ids.length) problems.push('instruction arm ids must be unique (duplicate found)');
-    // Fix (review round 3, IMPORTANT 2): `file` was never validated at all,
-    // while expandPlan did `instructionsFile: arm.file ?? null`. So an arm that
-    // simply FORGOT its file key — `instructions: [{id:'baseline'},{id:'terse'}]`
-    // — became two arms that are byte-identical to a legitimate no-instructions
-    // baseline. Every guard downstream stays silent, because there is no file
-    // left unresolved to complain about, and you pay for N runs of ONE task
-    // reported as an instructions comparison. The build axis has rejected a
-    // missing `dist` by name since round 1; this is the same rule for the axis
-    // next to it. So `file` must be WRITTEN OUT on every arm: a path, or an
-    // explicit null meaning "this arm is the baseline, on purpose".
-    for (const arm of plan.instructions) {
-      if (!arm || typeof arm !== 'object') continue; // already reported by the id check above
-      const name = typeof arm.id === 'string' && arm.id ? arm.id : '(unnamed)';
-      if (!('file' in arm)) {
-        problems.push(`instruction arm "${name}" must state "file" explicitly — a path, or null for the no-instructions baseline. An omitted "file" is indistinguishable from a deliberate baseline, so one forgotten key silently collapses the instructions axis into N runs of the same task.`);
-      } else if (arm.file !== null && (typeof arm.file !== 'string' || !arm.file)) {
-        problems.push(`instruction arm "${name}" has an invalid "file" (got ${JSON.stringify(arm.file)}) — it must be a non-empty path string, or null for the baseline arm`);
-      }
-    }
-    // ...and only ONE arm may be that baseline. Two arms with no instructions
-    // file run the identical task, so a plan containing two is not a comparison
-    // no matter how carefully each was written out.
-    const baselines = plan.instructions.filter((arm) => arm && typeof arm === 'object' && arm.file === null);
-    if (baselines.length > 1) {
-      problems.push(`instruction arms ${baselines.map((a) => `"${(typeof a.id === 'string' && a.id) || '(unnamed)'}"`).join(', ')} all set "file": null — only one arm can be the no-instructions baseline, because two of them send the identical config and would be billed and reported as an instructions comparison`);
-    }
-  }
-  if (plan.repeats !== undefined && !isPositiveInteger(plan.repeats)) {
-    problems.push(`"repeats" must be a positive integer (got ${JSON.stringify(plan.repeats)})`);
-  }
-  if (plan.builds !== undefined) {
-    if (!Array.isArray(plan.builds) || plan.builds.length === 0) problems.push('"builds" must be a non-empty array when given');
-    else {
-      const ids = plan.builds.map((b) => b && b.id);
-      if (ids.some((id) => typeof id !== 'string' || !id)) problems.push('every build arm needs a non-empty "id"');
-      if (new Set(ids).size !== ids.length) problems.push('build arm ids must be unique (duplicate found)');
-      // Fix (review round 1, IMPORTANT 2): a build arm with no `dist` used to
-      // pass validation and then silently fall back to this checkout's own
-      // build, so "current vs master" ran the SAME harness twice while the
-      // report claimed two arms. A build arm's entire purpose is naming a
-      // dist, so an arm without one is invalid, not defaultable.
-      for (const b of plan.builds) {
-        if (!b || typeof b.dist !== 'string' || !b.dist) {
-          problems.push(`build arm "${(b && b.id) || '(unnamed)'}" needs a non-empty "dist" path (got ${JSON.stringify(b && b.dist)}) — an arm without one would silently run this checkout's own build`);
-        }
-      }
-    }
-  }
-  if (problems.length) {
-    throw new Error([`harness-eval: plan "${filePath}" is invalid:`, ...problems.map((p) => `  - ${p}`)].join('\n'));
+  let plan;
+  try {
+    plan = validatePlan(parsed, allCaseIds(), roster.map((entry) => entry.label));
+  } catch (err) {
+    throw new Error(`harness-eval: plan "${filePath}" is invalid: ${err.message}`);
   }
 
-  return /** @type {EvalPlan} */ (plan);
+  // Build dists are resolved to absolute paths HERE, at the one boundary that
+  // knows where the plan file lives. A relative `dist` in a hand-written plan
+  // would otherwise be resolved by the worker against whatever cwd it inherits
+  // — so the same plan would test a different harness depending on where you
+  // stood when you ran it. Relative to the plan file, not to cwd, because that
+  // is the directory the author was thinking in when they typed the path.
+  const planDir = path.dirname(path.resolve(filePath));
+  return {
+    ...plan,
+    builds: plan.builds && plan.builds.length
+      ? plan.builds.map((build) => ({ ...build, dist: path.resolve(planDir, build.dist) }))
+      : [CURRENT_BUILD],
+  };
 }
 
-/** Cases x instructions x models x builds x repeats, outermost-to-innermost
- *  in that order — same order the design doc specifies for matrix.ts, so a
- *  report built on this stays case-by-case readable. Stable, deterministic
- *  cell ids: `${caseId}|${instructionsId}|${model}|${buildId}|${repeat}`. */
-function expandPlan(plan) {
-  const builds = plan.builds && plan.builds.length ? plan.builds : [CURRENT_BUILD];
-  const repeats = plan.repeats ?? 1;
-  const cells = [];
-  for (const caseId of plan.cases) {
-    for (const arm of plan.instructions) {
-      for (const model of plan.models) {
-        for (const build of builds) {
-          for (let repeat = 1; repeat <= repeats; repeat++) {
-            cells.push({
-              id: `${caseId}|${arm.id}|${model}|${build.id}|${repeat}`,
-              caseId, instructionsId: arm.id,
-              // Carried onto the cell (not just the plan) so runCell can tell
-              // "this arm has nothing to load" (file: null — the baseline arm)
-              // apart from "this arm names a file nobody read yet", which is
-              // the case that must refuse to run. See runCell's guard.
-              instructionsFile: arm.file ?? null,
-              model, buildId: build.id,
-              dist: build.dist, repeat,
-            });
-          }
-        }
-      }
+/** Expand a validated plan into cells — matrix.js's `expandPlan`, unmodified.
+ *  It also verifies every cell's `cellFilename` is distinct across the whole
+ *  matrix before anything runs, which is why expansion is not something this
+ *  file may re-implement. */
+async function expandPlanFile(plan) {
+  const { expandPlan } = await loadGraders();
+  return expandPlan(plan);
+}
+
+// -- where a cell's result file goes -----------------------------------------
+
+/** The ONE place a filename is derived from a cell.
+ *
+ *  WHY never `cell.id`: the id is `|`-joined and carries roster labels like
+ *  "Claude Opus 5", so it contains a Windows-reserved character AND spaces —
+ *  it was never a valid filename on any platform. `cellFilename` (matrix.ts)
+ *  is the slug-plus-digest builder that cost a full review round; every path
+ *  derived from a cell goes through it, and nothing downstream should ever
+ *  build one from a raw id. */
+async function cellResultPath(runDir, cell) {
+  const { cellFilename } = await loadGraders();
+  return path.join(runDir, `${cellFilename(cell)}.json`);
+}
+
+/** Directory a run's per-cell result files land in.
+ *
+ *  The workspace-marker walk is the same one review-harness.mjs uses and for
+ *  the same reason (a git worktree sits one level deeper than the canonical
+ *  checkout, so a fixed `../..` silently resolves to the wrong tree).
+ *
+ *  WHY a fallback instead of review-harness.mjs's `process.exit(2)`: this CLI
+ *  has to keep working in a desktop-only checkout with no youcoded-dev
+ *  workspace beside it — which is exactly what CI checks out and runs the
+ *  tests in. Exiting there would make the orchestrator untestable on the only
+ *  platform that tests it. The fallback is announced in the printed output, so
+ *  nobody has to guess which one they got. */
+function resolveRunsDir() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const marker = 'docs/active/investigations';
+  let candidate = DESKTOP;
+  for (let i = 0; i < 6; i++) {
+    candidate = path.resolve(candidate, '..');
+    if (fs.existsSync(path.join(candidate, marker))) {
+      return { dir: path.join(candidate, marker, 'harness-eval-runs', stamp), inWorkspace: true };
     }
   }
-  return cells;
+  return { dir: path.join(DESKTOP, 'test-engine/harness-eval-runs', stamp), inWorkspace: false };
 }
+
 
 /** Print the plan header and the table of cells.
  *
@@ -236,14 +266,29 @@ function expandPlan(plan) {
  *  gate that will one day spend money. On an unfiltered run the output is
  *  byte-identical (expandPlan visits every axis value at least once), so the
  *  only behaviour that changed is the filtered one. */
-function printGrid(plan, cells) {
+async function printGrid(plan, cells) {
   const uniq = (values) => [...new Set(values)];
   console.log(`Plan: ${plan.name}`);
   console.log(`Cases: ${uniq(cells.map((c) => c.caseId)).join(', ')}`);
   console.log(`Instructions: ${uniq(cells.map((c) => c.instructionsId)).join(', ')}`);
   console.log(`Models: ${uniq(cells.map((c) => c.model)).join(', ')}`);
   console.log(`Builds: ${uniq(cells.map((c) => c.buildId)).join(', ')}`);
-  console.log(`Repeats: ${Math.max(...cells.map((c) => c.repeat))}`);
+  // COUNT of distinct repeat indices, not max(repeat): matrix.js numbers
+  // repeats from 0, so a max would print "Repeats: 2" for three runs. Counting
+  // also stays truthful under --only, which can leave a single repeat index.
+  console.log(`Repeats: ${uniq(cells.map((c) => c.repeat)).length}`);
+
+  // Where results land, and — concretely — what one result file is called.
+  // Printing a real cellFilename() output rather than describing it is the
+  // point: the raw cell id contains '|' and spaces, so an example here is a
+  // visible check that the Windows-safe builder is actually in the path.
+  const runs = resolveRunsDir();
+  console.log(`Results: ${runs.dir}`);
+  if (!runs.inWorkspace) {
+    console.log('  (no youcoded-dev workspace found beside this checkout — falling back to the checkout itself)');
+  }
+  console.log(`  e.g. ${path.basename(await cellResultPath(runs.dir, cells[0]))} (one file per cell)`);
+
   console.log(`\n${cells.length} cell${cells.length === 1 ? '' : 's'}:`);
   const header = ['case', 'instructions', 'model', 'build', 'repeat'];
   const widths = header.map((h, i) => Math.max(
@@ -331,6 +376,16 @@ function workerEnv() {
 
 // -- per-cell worker spawn ----------------------------------------------------
 
+/** Replace every occurrence of the credential with a marker.
+ *
+ *  Split/join rather than a RegExp: an API key is untrusted-shaped text, and
+ *  building a pattern from it would let a key containing regex metacharacters
+ *  either throw or match the wrong thing. A falsy key is a no-op so --dry-run
+ *  and the tests, which have no key at all, take the same path as a real run. */
+function redactKey(text, apiKey) {
+  return apiKey ? text.split(apiKey).join('[REDACTED credential]') : text;
+}
+
 /**
  * Runs one cell in its own worker process and resolves with its parsed
  * result. Not called anywhere in this skeleton's main flow yet — Task 8 wires
@@ -343,13 +398,12 @@ function workerEnv() {
  * WHY `harnessRoot(cell)` and not `cell.dist` directly: this is the one place
  * this orchestrator resolves "which dist does the harness under test come
  * from," and routing it through paths.ts keeps that resolution in the same
- * place the grader-isolation invariant is defined and tested — so if a future
- * task ever needs to load a grader here too, `graderRoot()` (this checkout,
- * never `cell.dist`) sits right next to it as the obviously-correct choice
- * rather than a second ad hoc path computation.
+ * place the grader-isolation invariant is defined and tested. Note the
+ * contrast with `loadGraders()` at the top of this file, which resolves the
+ * case registry and the matrix through `graderRoot()` — this checkout, never
+ * `cell.dist`. Only the harness under test varies per cell.
  *
- * WHY it THROWS on a missing case body / unresolved instruction arm instead of
- * running something: see the two checks below. Every failure mode this function
+ * WHY it THROWS instead of running something: every failure mode this function
  * refuses to paper over costs real money once Task 8's gate calls it.
  *
  * WHY the config goes over STDIN: it carries the OpenRouter key, and both of
@@ -360,42 +414,37 @@ function workerEnv() {
  * cover (the orchestrator's own environment, closed by a Task 8 constraint).
  *
  * @param {Cell} cell
- * @param {{ apiKey: string, caseBody: { prompt: string, wrapUpPrompt?: string, contextLength?: number, instructions?: string } }} opts
+ * @param {{ apiKey: string, instructionsText?: string }} opts
  * @returns {Promise<{ cellId: string, run: unknown, error?: string }>}
  */
-/** Replace every occurrence of the credential with a marker.
- *
- *  Split/join rather than a RegExp: an API key is untrusted-shaped text, and
- *  building a pattern from it would let a key containing regex metacharacters
- *  either throw or match the wrong thing. A falsy key is a no-op so --dry-run
- *  and the tests, which have no key at all, take the same path as a real run. */
-function redactKey(text, apiKey) {
-  return apiKey ? text.split(apiKey).join('[REDACTED credential]') : text;
-}
-
-async function runCell(cell, { apiKey, caseBody }) {
+async function runCell(cell, { apiKey, instructionsText }) {
   if (!apiKey) {
     throw new Error(`harness-eval: cell "${cell.id}" cannot run — no OpenRouter API key was supplied to runCell().`);
   }
   // Fix (review round 1, IMPORTANT 2): no silent `?? distRoot` fallback. A
   // cell whose build arm lost its dist must stop here, not quietly run this
-  // checkout's build and be reported as some other arm. loadPlan() now rejects
-  // a dist-less build arm too; this is the second half of the same guard, for
-  // cells that reach here from anywhere but loadPlan (e.g. Task 6's matrix.ts).
+  // checkout's build and be reported as some other arm. validatePlan rejects a
+  // dist-less build arm too; this is the second half of the same guard, for
+  // cells that reach here without having gone through a plan file.
   if (typeof cell.dist !== 'string' || !cell.dist) {
     throw new Error(`harness-eval: cell "${cell.id}" (build arm "${cell.buildId}") has no "dist" — refusing to run, because defaulting it would run this checkout's own build while the report claims build "${cell.buildId}".`);
   }
-  // Fix (review round 1, IMPORTANT 1): the worker's runCase() defaults an
-  // absent `prompt` to the harness-review BATTERY_PROMPT. Loading a case body
-  // from `caseId` is a sibling task's deliverable (cases/, not on this
-  // branch), so until that lands there is nothing to run — and running the
-  // default battery N times while labelling each row with a different caseId
-  // would bill a real matrix's worth of money for one repeated task.
-  if (!caseBody || typeof caseBody.prompt !== 'string' || !caseBody.prompt) {
+  const { harnessRoot, getCase, roster } = await loadGraders();
+  // Fix (review round 1, IMPORTANT 1), rewired in Task 8 Step 0: the worker's
+  // runCase() defaults an absent `prompt` to the harness-review BATTERY_PROMPT,
+  // so a cell with no case body would run the same task N times while each row
+  // was labelled with a different caseId — a real matrix's worth of money for
+  // one repeated task. The body now comes from the case registry
+  // (cases/index.js, loaded from THIS checkout via graderRoot), and getCase
+  // throws naming every known id if the cell's caseId is not one of them, so
+  // there is no path left on which a body can be absent. The prompt re-check
+  // below stays because a future case could be registered with an empty prompt,
+  // and that must fail here rather than silently become the battery.
+  const caseBody = getCase(cell.caseId);
+  if (typeof caseBody.prompt !== 'string' || !caseBody.prompt) {
     throw new Error(
-      `harness-eval: cell "${cell.id}" cannot run — no case body was supplied for case "${cell.caseId}" `
-      + `(instruction arm "${cell.instructionsId}"). Loading case bodies from a caseId is not wired up on this branch yet `
-      + `(it belongs to the cases/ task); running without one would silently execute the default battery prompt and bill it as case "${cell.caseId}".`,
+      `harness-eval: cell "${cell.id}" cannot run — case "${cell.caseId}" is registered with an empty prompt. `
+      + `Running it would silently execute the default battery prompt and bill it as case "${cell.caseId}".`,
     );
   }
   // Fix (review round 2, IMPORTANT 2): the same hole the check above closes for
@@ -405,7 +454,7 @@ async function runCell(cell, { apiKey, caseBody }) {
   // the cell id — N paid runs of ONE task, reported as a matrix. Resolving the
   // file belongs to a later task; refusing to run silently does not.
   // `file: null` (the baseline arm) is fine: there is nothing to resolve.
-  if (cell.instructionsFile && (typeof caseBody.instructions !== 'string' || !caseBody.instructions)) {
+  if (cell.instructionsFile && (typeof instructionsText !== 'string' || !instructionsText)) {
     throw new Error(
       `harness-eval: cell "${cell.id}" cannot run — instruction arm "${cell.instructionsId}" declares a file `
       + `("${cell.instructionsFile}") but no instruction text was supplied for it. Reading instruction files is not wired up `
@@ -413,7 +462,20 @@ async function runCell(cell, { apiKey, caseBody }) {
       + `repeated task billed and reported as an instructions comparison.`,
     );
   }
-  const { harnessRoot } = await import(path.join(DESKTOP, 'dist/main/harness/eval/paths.js'));
+  // Fix (Task 8 Step 0): `cell.model` is a roster LABEL, not an OpenRouter
+  // model id — matrix.ts's EvalPlan documents `models` that way and
+  // validatePlan cross-checks the plan against the roster's labels. Sending
+  // the label straight through as `modelId` (what this file did before the
+  // integration, when it validated nothing and assumed the plan held ids)
+  // would have OpenRouter reject "Claude Opus 5" as an unknown model AFTER the
+  // fixture was seeded. The roster is also where contextLength comes from.
+  const entry = roster.find((r) => r.label === cell.model);
+  if (!entry) {
+    throw new Error(
+      `harness-eval: cell "${cell.id}" names model "${cell.model}", which is not a label in ${ROSTER_FILE}. `
+      + `Known labels: ${roster.map((r) => r.label).join(', ')}.`,
+    );
+  }
   const config = {
     cellId: cell.id,
     // The key travels in the CONFIG, and the config travels over stdin — see
@@ -424,16 +486,18 @@ async function runCell(cell, { apiKey, caseBody }) {
     caseId: cell.caseId,
     instructionsId: cell.instructionsId,
     dist: harnessRoot(cell),
-    // `model` is the Cell field (see the typedef above) and it IS the
-    // OpenRouter model id — the plan's `models` array holds ids. `label` is
-    // the same string today; it stays a separate field because the roster
-    // format review-harness.mjs uses separates the two.
-    modelId: cell.model,
-    label: cell.model,
+    // `cell.model` is the roster LABEL; `entry.modelId` is what OpenRouter
+    // actually accepts. Both travel, because the label is what a report and
+    // every error message names, and the id is what gets billed.
+    modelId: entry.modelId,
+    label: entry.label,
     prompt: caseBody.prompt,
     wrapUpPrompt: caseBody.wrapUpPrompt,
-    contextLength: caseBody.contextLength,
-    instructions: caseBody.instructions,
+    // From the ROSTER, not the case: it is a property of the model, and
+    // getting it wrong-high overflows the model and 400s mid-run (see the
+    // RosterEntry doc comment in battery.ts).
+    contextLength: entry.contextLength,
+    instructions: instructionsText,
     // Sent so the worker can refuse the same unresolved-arm config independently
     // (a config assembled by something other than runCell, e.g. Task 6's
     // matrix.ts, must not be able to slip past the guard above).
@@ -533,7 +597,7 @@ async function runCell(cell, { apiKey, caseBody }) {
 
 // -- main ---------------------------------------------------------------------
 
-function main(argv) {
+async function main(argv) {
   let parsed;
   try {
     // parseArgs now THROWS on a flag given no value (see flagValue). Turned
@@ -553,7 +617,7 @@ function main(argv) {
 
   let plan;
   try {
-    plan = loadPlan(planPath);
+    plan = await readPlanFile(planPath);
   } catch (err) {
     console.error(err.message);
     process.exit(2);
@@ -575,7 +639,15 @@ function main(argv) {
     plan.repeats = repeatsValue;
   }
 
-  let cells = expandPlan(plan);
+  let cells;
+  try {
+    cells = await expandPlanFile(plan);
+  } catch (err) {
+    // expandPlan's own throw path is the cellFilename collision check, which
+    // fires before any run starts. Reported in its own words, not summarised.
+    console.error(`harness-eval: ${err.message}`);
+    process.exit(2);
+  }
   if (only) {
     cells = cells.filter((c) => c.id === only);
     if (!cells.length) {
@@ -584,7 +656,7 @@ function main(argv) {
     }
   }
 
-  printGrid(plan, cells);
+  await printGrid(plan, cells);
 
   // Skeleton stop point. Task 8 adds: a dollar estimate for `cells`, a
   // confirmation gate (interactive `y` or `--yes`) before the first spawn, and
@@ -594,9 +666,11 @@ function main(argv) {
   // oversight. `maxSpend` and `confirmed` are parsed above only so the flags
   // already validate/round-trip for Task 8 to pick up.
   //
-  // Task 8 also has to solve the OTHER half: runCell() now REFUSES to run
-  // without a case body, and nothing on this branch can load one from a
-  // caseId. That is deliberate — see runCell's comment.
+  // The case-body half IS now solved (Task 8 Step 0): runCell loads the body
+  // from the case registry itself. What remains unwired is the INSTRUCTIONS
+  // axis — nothing reads an arm's `file` into text yet, so a non-baseline arm
+  // still refuses to run rather than sending a config identical to every other
+  // arm's.
   console.log(dryRun
     ? '\n(dry run: nothing would be spent — the estimate and spend gate are Task 8)'
     : `\n(orchestrator skeleton: nothing was run — spawning is wired to runCell() but not yet called from here; that lands behind Task 8's estimate + confirmation gate)${confirmed ? ' [--yes given, but nothing to confirm yet]' : ''}${maxSpend ? ` [--max-spend ${maxSpend} given, but no cap enforced yet]` : ''}`);
@@ -605,10 +679,16 @@ function main(argv) {
 // Fix (review round 1, MINOR 3): only run main when this file IS the process's
 // entry point. Before this, main ran at module scope, so any `await
 // import(...)` of this module from a test immediately printed the usage error
-// and called process.exit(2) — which made loadPlan/expandPlan/runCell
+// and called process.exit(2) — which made the plan loader/runCell
 // exported-but-unreachable and the validator untestable.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2));
+  // main is async now (the graders are ES-imported from dist at run time), so a
+  // rejection would otherwise surface as an unhandled-rejection warning and a
+  // zero exit code. Exit 1, with the real error, never a summary of it.
+  main(process.argv.slice(2)).catch((err) => {
+    console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+    process.exit(1);
+  });
 }
 
-export { loadPlan, expandPlan, runCell, workerEnv, redactKey };
+export { readPlanFile, expandPlanFile, cellResultPath, resolveRunsDir, runCell, workerEnv, redactKey, loadGraders };

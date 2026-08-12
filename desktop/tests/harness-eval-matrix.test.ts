@@ -23,6 +23,18 @@ describe('expandPlan', () => {
   it('defaults to a single current build', () => {
     expect(expandPlan(PLAN as any).every((c) => c.buildId === 'current')).toBe(true);
   });
+  // Fix (Task 8 Step 0, 2026-08-12 integration): a runner holds a Cell, not a
+  // plan, and has to tell the deliberate baseline arm (null) apart from an arm
+  // that names a file nobody has read yet — the second must refuse to run.
+  it('copies each instruction arm\'s file onto its cells', () => {
+    const byArm = new Map(expandPlan(PLAN as any).map((c) => [c.instructionsId, c.instructionsFile]));
+    expect(byArm.get('none')).toBeNull();
+    expect(byArm.get('draft')).toBe('d.md');
+  });
+  it('carries null for an arm with no file key at all, rather than undefined', () => {
+    const plan = { ...PLAN, instructions: [{ id: 'none' }] };
+    expect(expandPlan(plan as any).every((c) => c.instructionsFile === null)).toBe(true);
+  });
 });
 
 describe('validatePlan', () => {
@@ -64,6 +76,32 @@ describe('validatePlan', () => {
   it.each([0, -1, 1.5])('rejects repeats of %s', (repeats) => {
     expect(() => validatePlan({ ...PLAN, repeats }, ['a', 'b'], ['M1', 'M2']))
       .toThrow(/repeats/i);
+  });
+
+  // Both of the next two rules were carried over in Task 8 Step 0 from the
+  // orchestrator's own local validator, which was deleted in that integration.
+  // matrix.ts did not enforce either one, so dropping the local copy would have
+  // dropped review-round-earned coverage silently.
+  it('rejects an empty-string instruction arm file, which reads downstream as "baseline"', () => {
+    // `typeof '' === 'string'` used to pass here. An empty file is carried onto
+    // the cell as a FALSY instructionsFile, which every downstream guard treats
+    // as "the baseline arm, nothing to resolve" — so the arm silently collapses
+    // into a second copy of the baseline and gets billed as a comparison.
+    expect(() => validatePlan(
+      { ...PLAN, instructions: [{ id: 'none', file: null }, { id: 'draft', file: '' }] },
+      ['a', 'b'], ['M1', 'M2'],
+    )).toThrow(/Instruction arm "draft" has an invalid "file": ""/);
+  });
+
+  it('rejects two arms that both set file: null, which is not a comparison', () => {
+    expect(() => validatePlan(
+      { ...PLAN, instructions: [{ id: 'none', file: null }, { id: 'control', file: null }] },
+      ['a', 'b'], ['M1', 'M2'],
+    )).toThrow(/all set "file": null/);
+  });
+
+  it('still accepts exactly one baseline arm', () => {
+    expect(() => validatePlan(PLAN, ['a', 'b'], ['M1', 'M2'])).not.toThrow();
   });
 
   it('rejects an empty-string instruction arm id', () => {
@@ -155,6 +193,7 @@ describe('cellFilename', () => {
     id: 'a|none|M1|current|0',
     caseId: 'a',
     instructionsId: 'none',
+    instructionsFile: null,
     model: 'M1',
     buildId: 'current',
     dist: '.',
@@ -227,6 +266,7 @@ describe('cellFilename', () => {
       id: `${veryLongField}|${veryLongField}|${veryLongField}|${veryLongField}|999999999999999999`,
       caseId: veryLongField,
       instructionsId: veryLongField,
+      instructionsFile: null,
       model: veryLongField,
       buildId: veryLongField,
       dist: '.',
