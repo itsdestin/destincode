@@ -112,26 +112,25 @@ describe('collectRunFacts per-task floor', () => {
 });
 
 // WHY this test exists separately from run-facts's own describe blocks: the
-// warning text quotes the floor number, and a caller who threads a custom
-// floor into collectRunFacts but forgets to thread it into renderRunFacts
-// would print a warning that quotes 10 against a run that was actually
-// judged against 2 — a false statement in a report a human is meant to
-// trust. Assert both the custom-floor wording and that the default wording
-// (still "10") is untouched, for the same reason as the floor test above.
+// warning text quotes the floor number, and renderRunFacts now reads it off
+// facts.minToolCalls instead of taking its own parameter — this pins that
+// the rendered number always matches whatever floor is recorded on facts,
+// custom or default, with no second argument through which the two could
+// ever disagree (Fix pass 1, Fix 1).
 describe('renderRunFacts per-task floor', () => {
-  const belowCustomFloor = {
+  const factsWithFloor = (minToolCalls: number) => ({
     review: '', metrics: { toolCalls: 3, toolsUsed: [], asks: 0, stepGates: 0, thinkingEvents: 0, outputTokens: 0, wallClockMs: 0 },
-    outcome: 'complete', unbackedClaims: [], belowFloor: true,
-  } as any;
+    outcome: 'complete', unbackedClaims: [], belowFloor: true, minToolCalls,
+  } as any);
 
-  it('quotes the custom floor it was measured against, not the default', () => {
-    const out = renderRunFacts(belowCustomFloor, 2);
+  it('quotes the custom floor recorded on facts, not the default', () => {
+    const out = renderRunFacts(factsWithFloor(2));
     expect(out).toContain('below the 2 ');
     expect(out).not.toContain('below the 10 ');
   });
 
-  it('quotes the default floor when none is passed', () => {
-    const out = renderRunFacts(belowCustomFloor);
+  it('quotes the default floor when facts carries the default', () => {
+    const out = renderRunFacts(factsWithFloor(10));
     expect(out).toContain('below the 10 ');
   });
 });

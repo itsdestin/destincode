@@ -33,6 +33,12 @@ export interface RunFacts {
   /** Tools the review names that never appear in metrics.toolsUsed. */
   unbackedClaims: string[];
   belowFloor: boolean;
+  // WHY this is stored rather than re-passed at render time: belowFloor above
+  // was computed against THIS number. If a future call site could pass a
+  // different floor into renderRunFacts, the warning text would quote a
+  // number that never touched the verdict — see the WHY block on
+  // renderRunFacts below for the failure this closes off.
+  minToolCalls: number;
 }
 
 /** Tool names mentioned in the review text, as whole words. WHY whole words:
@@ -63,6 +69,7 @@ export function collectRunFacts(run: BatteryRun, minToolCalls: number = MIN_TOOL
     error: run.error,
     unbackedClaims: claimedTools(run.review).filter((name) => !used.has(name)),
     belowFloor: run.metrics.toolCalls < minToolCalls,
+    minToolCalls,
   };
 }
 
@@ -75,14 +82,19 @@ function duration(ms: number): string {
  *  run measurably did. WHY warnings FLAG rather than judge: a review that
  *  honestly says "I never reached Edit" trips the unbacked-claims check too, and
  *  a reader settles that in two seconds. Refusing to append would spend real
- *  money and then discard the result on a heuristic. */
-/** WHY a parameter: the warning text below quotes the floor the run was
- *  judged against. If a caller threads a custom floor into collectRunFacts
- *  but not here, the rendered warning would claim a run failed the
- *  battery's 10 when it was actually judged against a per-task floor — a
- *  false statement in a report a human is meant to trust. Default keeps
- *  every existing caller identical. */
-export function renderRunFacts(facts: RunFacts, minToolCalls: number = MIN_TOOL_CALLS): string {
+ *  money and then discard the result on a heuristic.
+ *
+ *  WHY no separate floor parameter: the warning text below quotes the floor
+ *  the run was judged against. Earlier this took its own `minToolCalls`
+ *  argument, independent of the one `collectRunFacts` used to compute
+ *  `belowFloor` — nothing stopped a caller from computing the verdict
+ *  against one floor and rendering the warning against another, printing a
+ *  false "below the 10 it takes..." for a run actually judged against a
+ *  per-task floor of 2. The floor now travels on `facts.minToolCalls`,
+ *  written once by `collectRunFacts`, so the number in the warning and the
+ *  number behind the verdict are the same value by construction — they
+ *  cannot disagree. */
+export function renderRunFacts(facts: RunFacts): string {
   const lines: string[] = [];
 
   if (facts.unbackedClaims.length) {
@@ -95,7 +107,7 @@ export function renderRunFacts(facts: RunFacts, minToolCalls: number = MIN_TOOL_
   }
   if (facts.belowFloor) {
     lines.push(
-      `> ⚠️ Only ${facts.metrics.toolCalls} tool calls — below the ${minToolCalls} ` +
+      `> ⚠️ Only ${facts.metrics.toolCalls} tool calls — below the ${facts.minToolCalls} ` +
       `it takes to walk the battery. This run did not cover the tools.`,
       '',
     );
