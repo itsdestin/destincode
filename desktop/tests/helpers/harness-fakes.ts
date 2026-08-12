@@ -148,7 +148,21 @@ export function capturingFactory(sink: string[], steps: ScriptStep[] = [{ text: 
     doStream: async (options: any) => {
       const systemMessage = (options.prompt as any[] | undefined)
         ?.find((m) => m.role === 'system');
-      sink.push(typeof systemMessage?.content === 'string' ? systemMessage.content : '');
+      // Fix 3 (Task 3 review): a `: ''` fallback here would MASK a shape change
+      // instead of catching one. If the AI SDK ever stops representing system
+      // content as a plain string (or stops sending a system message at all),
+      // the old fallback silently recorded '' — and every negative assertion
+      // built on this sink (e.g. "the assembled prompt has no
+      // <project-instructions> block") would then pass VACUOUSLY, because an
+      // empty string trivially contains none of the text being checked for.
+      // Throwing, naming what was actually received, turns that into a loud
+      // failure on the next run instead of a test that can never fail again.
+      if (typeof systemMessage?.content !== 'string') {
+        throw new Error(
+          `capturingFactory: expected the system message's content to be a string, got: ${JSON.stringify(systemMessage)}`,
+        );
+      }
+      sink.push(systemMessage.content);
       return inner.doStream(options);
     },
   }) as any;

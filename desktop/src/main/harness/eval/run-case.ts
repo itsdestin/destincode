@@ -450,6 +450,34 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
       // the battery has never tested the shipped prompt at all. Calling the real
       // assembleSystemPrompt also gives us the <project-instructions> block, which
       // is what makes a CLAUDE.md A/B possible.
+      //
+      // KNOWN FIDELITY GAP (Task 3 review, Fix 4): this passes only the three
+      // required PromptInputs fields (presetBody, cwd, appVersion). The one
+      // production caller, native-session-host.ts (`assembleSystemPrompt({
+      // ..., promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
+      // instructionBudgetTokens: profile.injectionBudgetTokens })`), also passes
+      // promptVariant, hasTools, and instructionBudgetTokens, all sourced from the
+      // session's resolved CapabilityProfile. Omitting them here means this
+      // evaluator always assembles the prompt with NO variant overlay and
+      // prompt-assembly.ts's default 20,000-token instruction budget
+      // (DEFAULT_INSTRUCTION_BUDGET_TOKENS), regardless of which model is being
+      // tested — not the profile the real app would resolve for that model.
+      //
+      // Currently safe: tests/prompt-assembly.test.ts:118-120 pins the
+      // default/anthropic/gpt variants as byte-identical to no variant at all,
+      // and only the local-small variant appends text — the OpenRouter roster
+      // this evaluator drives never resolves to local-small. 20k tokens has also
+      // been enough for every CLAUDE.md used in an eval run to date.
+      //
+      // Stops being safe when: (1) a local/small model that resolves to the
+      // local-small prompt variant is added to the roster this evaluator runs
+      // against, so the review would silently omit the plan-then-execute
+      // steering the real app would give that model; or (2) an instruction A/B
+      // is run with a CLAUDE.md/AGENTS.md long enough to exceed 20k tokens,
+      // which fitProjectInstructions (injection-budget.ts) would then silently
+      // truncate to a budget the real profile might not have used. Wiring a
+      // resolved CapabilityProfile through `runCase` is out of scope for this
+      // fix — see the Task 3 Fix pass 1 report.
       systemPrompt: assembleSystemPrompt({
         presetBody: resolvePreset('assistant').body,
         cwd: fixtureRoot,

@@ -72,17 +72,21 @@ describe('seedFixtureWorkspace', () => {
 
   it('plants a .git marker so the instruction walk-up cannot escape the fixture', () => {
     const root = seedFixtureWorkspace();
+    // Fix 2 (Task 3 review): registered with the shared `made` cleanup registry
+    // (afterEach above), same as every other test in this file, instead of an
+    // inline rmSync — a failing assertion below used to skip that line and
+    // orphan a yc-harness-review-* tree in /tmp.
+    made.push(root);
     expect(fs.existsSync(path.join(root, '.git'))).toBe(true);
-    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it('writes instructions as CLAUDE.md only when given', () => {
     const withNone = seedFixtureWorkspace();
+    made.push(withNone); // see WHY above
     expect(fs.existsSync(path.join(withNone, 'CLAUDE.md'))).toBe(false);
     const withSome = seedFixtureWorkspace('# hi');
+    made.push(withSome); // see WHY above
     expect(fs.readFileSync(path.join(withSome, 'CLAUDE.md'), 'utf8')).toBe('# hi');
-    fs.rmSync(withNone, { recursive: true, force: true });
-    fs.rmSync(withSome, { recursive: true, force: true });
   });
 
   it('produces byte-identical trees across runs, so two models face the same tree', () => {
