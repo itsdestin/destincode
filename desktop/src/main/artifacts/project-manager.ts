@@ -64,8 +64,11 @@ export async function applyGitTreatment(projectRoot: string): Promise<void> {
   }
   if (/^\.youcoded\/?\s*$/m.test(current)) return;
   const next = (current && !current.endsWith('\n') ? current + '\n' : current) + '.youcoded/\n';
-  await fs.writeFile(gitignorePath + '.tmp', next, 'utf8');
-  await fs.rename(gitignorePath + '.tmp', gitignorePath);
+  // pid+time-suffixed temp name: two processes writing the same .gitignore
+  // must not race the same .tmp — the loser's rename would ENOENT.
+  const tmpPath = `${gitignorePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tmpPath, next, 'utf8');
+  await fs.rename(tmpPath, gitignorePath);
 }
 
 // NOTE: detectOrphan / rebuildIndex were removed in the 2026-07-10 dead-code

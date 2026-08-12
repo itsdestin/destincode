@@ -3713,9 +3713,12 @@ export function registerIpcHandlers(
 
     // Suppress the watcher echo of our own write (spec §8.4), then atomic
     // write: .tmp + rename so the original is never half-written.
+    // pid+time-suffixed temp name: two processes (dev + built app) writing the
+    // same file must not race the same .tmp — the loser's rename would ENOENT.
     noteOwnWrite(realPath);
-    await fs.promises.writeFile(realPath + '.tmp', newContent, 'utf8');
-    await fs.promises.rename(realPath + '.tmp', realPath);
+    const tmpPath = `${realPath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(tmpPath, newContent, 'utf8');
+    await fs.promises.rename(tmpPath, realPath);
     const st = await fs.promises.stat(realPath).catch(() => null);
 
     if (artifact) {

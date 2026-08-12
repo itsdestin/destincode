@@ -72,7 +72,9 @@ async function acquireLock(lock: string): Promise<boolean> {
 
 /** Atomic tmp-write + fsync + rename onto `target`. */
 async function atomicWrite(target: string, content: string): Promise<void> {
-  const tmp = target + '.tmp';
+  // pid+time-suffixed temp name: two processes (dev + built app) writing the
+  // same file must not race the same .tmp — the loser's rename would ENOENT.
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tmp, content, 'utf8');
   const fh = await fs.open(tmp, 'r+');
   await fh.sync();

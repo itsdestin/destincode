@@ -80,8 +80,9 @@ class FsStoreBacking implements Backing {
   private save(): void {
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Atomic write: write to temp file then rename to prevent corruption on crash
-    const tmp = this.filePath + '.tmp';
+    // Atomic write: write to temp file then rename to prevent corruption on crash.
+    // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+    const tmp = `${this.filePath}.${process.pid}.tmp`;
     // Intentionally no JSON pretty-print: token file is never read by humans
     // Fix: 0o600 so only the owner can read this file (bearer token inside).
     // Windows ignores the mode; macOS/Linux enforce it. renameSync preserves permissions.

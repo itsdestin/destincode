@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, promises as fsp } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { casWrite } from '../../src/main/artifacts/cas-write';
@@ -52,5 +52,25 @@ describe('casWrite', () => {
     const target = join(dir, 'foo.json');
     await casWrite(target, null, '{}');
     expect(existsSync(target + '.tmp')).toBe(false);
+  });
+
+  it('uses a per-process temp name (pid-suffixed), never a fixed <file>.tmp', async () => {
+    // WHY: dev instance and built app share ~/.claude — a fixed '<file>.tmp'
+    // lets two processes race the same temp path (loser's rename ENOENTs).
+    const renameSpy = vi.spyOn(fsp, 'rename');
+    try {
+      const target = join(dir, 'pid.json');
+      const result = await casWrite(target, null, '{"v":1}');
+      expect(result.committed).toBe(true);
+      const tmpSources = renameSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((s) => s.endsWith('.tmp'));
+      expect(tmpSources.length).toBeGreaterThan(0);
+      for (const src of tmpSources) {
+        expect(src).toContain(`.${process.pid}.`);
+      }
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 });
