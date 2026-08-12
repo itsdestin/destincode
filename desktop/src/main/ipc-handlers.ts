@@ -145,8 +145,8 @@ const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 // Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
-// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the FROZEN
-// nativeStoreSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
+// frozen nativeStoreSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
 // note). Used by the native RESUME path to validate a cwd BEFORE handing it to
 // nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
 // send a resume into the wrong (empty) directory (Task 9).

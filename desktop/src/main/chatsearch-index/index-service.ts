@@ -238,7 +238,7 @@ async function refreshFromLiveState(): Promise<void> {
           provider: 'native',
           lane: 'native',
           records: nativeRecords,
-          // FROZEN app-private slug, not ccProjectSlug — the two encodings
+          // RAW frozen app-private slug, not ccProjectSlug — the two encodings
           // diverge deliberately (ccProjectSlug uppercases a lowercase Windows
           // drive letter).
           resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(

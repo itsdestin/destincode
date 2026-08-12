@@ -301,9 +301,10 @@ export function containedTranscriptPath(root: string, ref: string): string | nul
 // The on-disk transcript path for this session, on THIS device.
 // 'claude' -> ~/.claude/projects/<ccProjectSlug(cwd)>/<id>.jsonl (CC's own convention).
 // 'native' -> ~/.youcoded/sessions/<nativeStoreSlug(cwd)>/<id>.jsonl — mirrors
-// NativeHome's private sessionPath() exactly (the FROZEN app-private rule,
-// NOT ccProjectSlug's drive-letter uppercasing — see harness/session-store.ts's
-// slug-divergence comment for why the two deliberately diverge).
+// NativeHome's private sessionPath() exactly (the FROZEN app-private rule —
+// raw slug, NOT ccProjectSlug's drive-letter uppercasing — see
+// harness/session-store.ts's slug-divergence comment for why the two
+// deliberately diverge).
 function localJsonlPath(cwd: string, sessionId: string, sessionProvider: SessionProvider): string {
   if (sessionProvider === 'native') {
     const home = new NativeHome(nativeHomeRootOpt);
