@@ -363,6 +363,16 @@ function workerEnv() {
  * @param {{ apiKey: string, caseBody: { prompt: string, wrapUpPrompt?: string, contextLength?: number, instructions?: string } }} opts
  * @returns {Promise<{ cellId: string, run: unknown, error?: string }>}
  */
+/** Replace every occurrence of the credential with a marker.
+ *
+ *  Split/join rather than a RegExp: an API key is untrusted-shaped text, and
+ *  building a pattern from it would let a key containing regex metacharacters
+ *  either throw or match the wrong thing. A falsy key is a no-op so --dry-run
+ *  and the tests, which have no key at all, take the same path as a real run. */
+function redactKey(text, apiKey) {
+  return apiKey ? text.split(apiKey).join('[REDACTED credential]') : text;
+}
+
 async function runCell(cell, { apiKey, caseBody }) {
   if (!apiKey) {
     throw new Error(`harness-eval: cell "${cell.id}" cannot run — no OpenRouter API key was supplied to runCell().`);
@@ -489,7 +499,21 @@ async function runCell(cell, { apiKey, caseBody }) {
         // Tail-capped rather than truncated from the front, because the reason a
         // process died is at the END of its stderr; the untruncated text was
         // already mirrored above for anyone watching.
-        const tail = stderr.trim().slice(-2000);
+        // Redact the credential before this text can reach a transcript.
+        //
+        // WHY, even though no CURRENT path puts it here: this branch's whole
+        // review history is three rounds of the same bug — the key reached the
+        // model first through argv, then through the environment, each time
+        // certified clean by a check aimed at the channel it had just left.
+        // Capturing arbitrary worker stderr verbatim into `result.error` opens a
+        // fourth channel: `result` is what the caller writes to disk as a
+        // transcript. Today's failure paths are clean (the worker's own fail()
+        // messages never interpolate the key's value), but an uncaught throw, a
+        // warning from the provider SDK, or a future bug in run-case.ts could all
+        // land the literal key on stderr, and this code would file it. Scrubbing
+        // an exact string is one line; discovering the fourth instance of this
+        // bug in a saved transcript is not.
+        const tail = redactKey(stderr.trim().slice(-2000), apiKey);
         const how = code === null ? `was killed by ${signal}` : `exited ${code}`;
         resolve({
           cellId: cell.id,
@@ -587,4 +611,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   main(process.argv.slice(2));
 }
 
-export { loadPlan, expandPlan, runCell, workerEnv };
+export { loadPlan, expandPlan, runCell, workerEnv, redactKey };

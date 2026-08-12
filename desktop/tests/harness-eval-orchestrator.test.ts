@@ -361,6 +361,64 @@ describe('expandPlan carries the instruction arm file onto every cell', () => {
   });
 });
 
+describe('worker stderr is redacted before it can reach a transcript', () => {
+  // Regression pin (review round 4): runCell captures the worker's stderr tail
+  // verbatim into `result.error`, and `result` is what the caller writes to disk
+  // as a transcript. That is a FOURTH channel in this branch's long-running
+  // credential-leak story (argv, then the environment, then /proc/environ one
+  // process up). No current failure path prints the key, so this guards the
+  // future: an uncaught throw or a provider-SDK warning would otherwise be filed
+  // verbatim.
+  it('replaces every occurrence of the key, anywhere in the text', async () => {
+    const { redactKey } = await import('../test-engine/harness-eval.mjs');
+    const key = 'sk-or-v1-CANARY';
+    const out = redactKey(`boom ${key} mid ${key}\ntrailing ${key}`, key);
+    expect(out).not.toContain(key);
+    expect(out.match(/\[REDACTED credential\]/g)).toHaveLength(3);
+  });
+
+  it('scrubs a real worker run, not just the helper in isolation', async () => {
+    // WHY this one exists on top of the unit tests above: those pin redactKey
+    // itself, and a first draft of them passed with the call site DELETED —
+    // exactly the tautological-test shape this branch's reviews have caught
+    // twice. This exercises the wiring instead.
+    //
+    // The trick is getting the key into real worker stderr without any code
+    // that prints it: the worker's dist-load failure interpolates the `dist`
+    // path it was given, so a path CONTAINING the canary makes the worker emit
+    // the canary in its own words, through the same stderr -> result.error ->
+    // transcript route a provider-SDK warning would take.
+    const { runCell } = await import('../test-engine/harness-eval.mjs');
+    const key = 'sk-or-v1-CANARY-IN-A-PATH';
+    const result = await runCell(
+      {
+        id: 'c1', caseId: 'a', instructionsId: 'baseline', instructionsFile: null,
+        model: 'vendor/model-1', buildId: 'current', dist: `/nonexistent/${key}/dist`, repeat: 1,
+      },
+      { apiKey: key, caseBody: { prompt: 'hi' } },
+    );
+    // Proof the worker really did echo the path back (otherwise this test could
+    // pass by the key never having been there at all).
+    expect(result.error).toContain('could not load the harness under test');
+    expect(result.error).toContain('[REDACTED credential]');
+    expect(result.error).not.toContain(key);
+  }, 15_000);
+
+  it('is a no-op when there is no key, so --dry-run takes the same path', async () => {
+    const { redactKey } = await import('../test-engine/harness-eval.mjs');
+    expect(redactKey('plain text', undefined)).toBe('plain text');
+    expect(redactKey('plain text', '')).toBe('plain text');
+  });
+
+  it('survives a key containing regex metacharacters', async () => {
+    const { redactKey } = await import('../test-engine/harness-eval.mjs');
+    // WHY this case: building a RegExp from the key would throw on an unbalanced
+    // bracket, or silently match the wrong span. split/join cannot.
+    const key = 'sk-a+b[c).*d';
+    expect(redactKey(`x ${key} y`, key)).toBe('x [REDACTED credential] y');
+  });
+});
+
 describe('the worker environment is an allowlist, not the operator shell', () => {
   it('drops unrelated credentials and keeps what the harness needs', async () => {
     const { workerEnv } = await import('../test-engine/harness-eval.mjs');
