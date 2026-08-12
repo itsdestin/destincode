@@ -98,6 +98,10 @@ export async function listProjectConversations(projectPath: string): Promise<Con
 export async function projectConversationHistory(
   projectPath: string, sessionId: string, count: number, all: boolean,
 ): Promise<HistoryMessage[]> {
-  const slug = ccProjectSlug(projectPath);
+  // CC realpaths the cwd before slugging (probe-verified) — resolve
+  // caller-supplied paths the same way, falling back to the raw path.
+  let resolved: string;
+  try { resolved = fs.realpathSync.native(projectPath); } catch { resolved = projectPath; }
+  const slug = ccProjectSlug(resolved);
   return loadHistory(sessionId, slug, count, all);
 }
