@@ -14,7 +14,8 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useProjectWatch } from '../hooks/useProjectWatch';
 import { useGitFileStatus } from '../hooks/useGitFileStatus';
 import { gitFooterState } from '../utils/git-footer';
-import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
+import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
+import { useArtifactContent } from './artifact-views/useArtifactContent';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
@@ -164,32 +165,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // "Show deleted" while viewing a now-filtered-out file must not blank the
   // content pane (the file is still open; only the LIST hides it).
   const active = allArtifacts.find((a) => a.id === activeArtifactId);
-  const [content, setContent] = useState<string | null>(null);
-  // get() metadata the content string cannot carry: binary sniff (routes
-  // unknown extensions to the code view), tooLarge (renders the size notice).
-  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
-
-  useEffect(() => {
-    if (!active) { setContent(null); return; }
-    let cancelled = false;
-    // Fix: clear the PREVIOUS file's content before the read resolves. Without
-    // this, switching artifacts remounts the viewer (ViewerErrorBoundary is
-    // keyed by artifact.id) with stale content, so HtmlView's sandboxed iframe
-    // gets a srcDoc write for the old file and a second one milliseconds later
-    // for the new one — the aborted-then-restarted navigation leaves the frame
-    // permanently blank. ProjectView's FilesTab and ArtifactThumbnail already
-    // null-gate the same way; this drawer was the only one that didn't.
-    setContent(null);
-    setContentInfo(null);
-    (window.claude as any).artifacts.get(projectRoot, active.id).then((res: any) => {
-      if (cancelled) return;
-      if (res && res.ok) {
-        setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
-      }
-    });
-    return () => { cancelled = true; };
-  }, [active?.id, projectRoot]);
+  // Read lifecycle (fetch + null-gate on switch + loading/missing/error
+  // phases) lives in the shared useArtifactContent hook — this drawer and
+  // FilesTab used to carry duplicate effects that conflated "loading" with
+  // "no longer on disk" (the flash bug).
+  const { content, setContent, contentInfo, contentState, retryRead } =
+    useArtifactContent(projectRoot, active?.id ?? null);
 
   // ── B2 panel UI state ──
   // The list stays open once toggled; it closes on the ☰ toggle, on selecting an
@@ -724,6 +705,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                   artifact={active}
                   content={content}
                   contentInfo={contentInfo}
+                  contentState={contentState}
+                  onRetryRead={retryRead}
                   projectRoot={projectRoot}
                   projectId={projectId}
                   projectName={projectName}

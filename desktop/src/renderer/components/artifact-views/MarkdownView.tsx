@@ -13,7 +13,11 @@ export function MarkdownView({
   editing = false, draft = '', onDraftChange,
 }: ArtifactViewProps) {
   if (content === null) {
-    return <div className="text-fg-muted p-4">This file is no longer on disk.</div>;
+    // Loading / missing / read-error are rendered by ActiveArtifactView (which
+    // knows WHICH of the three it is — see ArtifactContentState). A null here
+    // is an edge the router shouldn't reach (e.g. a binary sniff routed
+    // elsewhere); render nothing rather than claim the file is gone.
+    return null;
   }
 
   if (editing) {
