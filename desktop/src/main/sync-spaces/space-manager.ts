@@ -83,7 +83,8 @@ export class SpaceManager {
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
     // Temp-file + rename: the dev instance and the built app share ~/.claude,
     // and rename is atomic — a concurrent reader never sees a half-written file.
-    const tmp = `${this.stateFile}.tmp`;
+    // pid-suffixed temp name: two processes must not race the same .tmp
+    const tmp = `${this.stateFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
     fs.renameSync(tmp, this.stateFile);
   }

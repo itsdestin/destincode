@@ -214,7 +214,8 @@ export function createGithubClient(opts: GithubClientOpts): GithubClient {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // Temp-file + rename (atomic) with 0600 from the first byte — the token
     // must never exist on disk world-readable, even transiently.
-    const tmp = `${file}.tmp`;
+    // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+    const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
     fs.renameSync(tmp, file);
     cache = null;

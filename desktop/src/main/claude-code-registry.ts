@@ -116,7 +116,8 @@ function readJson(file: string): any {
 
 function writeJsonAtomic(file: string, data: any): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
+  // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+  const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, file);
 }
