@@ -24,7 +24,6 @@ import java.util.concurrent.ConcurrentHashMap
  * to read only new content, and deduplicate by uuid.
  */
 class TranscriptWatcher(
-    private val projectsDir: File, // e.g., $HOME/.claude/projects/
     private val scope: CoroutineScope,
 ) {
     companion object {
@@ -48,21 +47,6 @@ class TranscriptWatcher(
             var result = STRIP_ENTIRELY_REGEX.replace(text, "")
             result = ANSI_REGEX.replace(result, "")
             return result.trim()
-        }
-
-        /**
-         * Convert a working directory path to Claude Code's project slug.
-         * Mirrors desktop's cwdToProjectSlug(): replace \, :, /, and space with -.
-         * Leading dash is preserved. Space handling is required — CC encodes spaces
-         * as dashes too, and without it the watcher reads from a non-existent
-         * directory for any cwd containing spaces (e.g. "PAF 540 Final Data Project").
-         */
-        fun cwdToProjectSlug(cwdPath: String): String {
-            return cwdPath
-                .replace('\\', '-')
-                .replace(':', '-')
-                .replace('/', '-')
-                .replace(' ', '-')
         }
     }
 
