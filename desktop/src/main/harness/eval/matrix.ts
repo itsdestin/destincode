@@ -6,6 +6,8 @@
 // task being built concurrently in another worktree. Keeping this module
 // pure and dependency-free means it never has to reach for them, and it
 // stays independently testable/mergeable regardless of that task's state.
+// `crypto` is Node's own built-in (not a sibling task's module), so
+// importing it for `cellFilename`'s hash does not violate this.
 //
 // WHY expandPlan must be deterministic: a later task uses the cell id as a
 // resume key, so the same plan must always produce the same cells in the
@@ -21,6 +23,8 @@
 // on any platform, independent of which delimiter joins it. `cellFilename`
 // below produces the filesystem-safe name; `id` and the slug are
 // deliberately different strings serving different purposes.
+
+import { createHash } from 'node:crypto';
 
 export interface InstructionArm {
   id: string;
@@ -83,43 +87,106 @@ export function expandPlan(plan: EvalPlan): Cell[] {
       }
     }
   }
+  // Fix pass 2 (2026-08-12 review): the hex-suffix scheme cellFilename used
+  // to rely on was provably injective, but this uniqueness check is what
+  // replaces that proof now that the suffix is a short, truncated hash
+  // (astronomically unlikely to collide, not impossible). expandPlan is the
+  // only place that ever sees the FULL cell set in one place, so it's the
+  // only place that can turn "improbable" into "verified before any run
+  // starts" -- at the cost of one extra pass over an array already built.
+  assertUniqueFilenames(cells);
   return cells;
 }
+
+/** WHY this lives in expandPlan rather than being left to cellFilename
+ *  callers to discover downstream: a collision here means two different
+ *  cells would silently overwrite each other's result file mid-run, and the
+ *  earliest possible point to catch that is right after the full cell set
+ *  exists -- before any money is spent running either cell. */
+function assertUniqueFilenames(cells: Cell[]): void {
+  const seenBy = new Map<string, Cell>();
+  for (const cell of cells) {
+    const filename = cellFilename(cell);
+    const existing = seenBy.get(filename);
+    if (existing) {
+      throw new Error(
+        `Cell filename collision: "${existing.id}" and "${cell.id}" both produce filename `
+        + `"${filename}". This should be astronomically unlikely with a 16-hex-char hash -- if `
+        + 'it happens for real plan data (not a contrived test), the hash length in '
+        + 'cellFilename needs to grow.',
+      );
+    }
+    seenBy.set(filename, cell);
+  }
+}
+
+// WHY each readable field is capped at MAX_FIELD_CHARS: a filename lands at
+// docs/active/investigations/harness-eval-runs/<date>/<name>.json, and on
+// Windows MAX_PATH is 260 characters for the WHOLE path, not just the
+// filename. The old scheme (full hex-encoded id appended to an unbounded
+// slug) measured ~214 characters for the bare filename alone on a realistic
+// cell -- combined with an ~80-character directory prefix, that blew the
+// budget outright. Capping every field means one unusually long case id or
+// model label can no longer blow the budget by itself; the hash suffix
+// below is fixed-length regardless of input size, so the whole filename now
+// has a small, computable worst case (see the test for the exact bound).
+const MAX_FIELD_CHARS = 20;
 
 /** Filesystem-safe name for a cell (no extension). Follows the slugging
  *  convention already used in this repo for the same problem --
  *  `test-engine/review-harness.mjs`'s roster-label-to-transcript-filename
  *  slug: lowercase, then collapse every run of non-alphanumeric characters
  *  to a single '-'. Applied here to all five discriminating fields of the
- *  cell (not just a label), joined with '_'.
+ *  cell (not just a label), joined with '_', each capped to
+ *  `MAX_FIELD_CHARS`.
  *
- *  WHY a hex suffix is appended rather than trusting the slug alone: the
- *  slug transform is lossy by design (folds case, and collapses a literal
- *  '-', '_', '/', ' ', etc. all down to the same single '-'), so two
- *  DIFFERENT cells can produce an IDENTICAL slug -- e.g. a caseId of "a-b"
- *  and a caseId of "a_b" both slug to "a-b". Hoping that never happens is
- *  exactly what the review asked us not to do. Appending
- *  `Buffer.from(cell.id, 'utf8').toString('hex')` closes the gap
- *  deterministically: hex encoding is byte-for-byte reversible (injective),
- *  so two different raw ids can never produce the same suffix, and `id` is
- *  already guaranteed unique per cell within one `expandPlan` call (the
- *  Fix-1 duplicate checks in `validatePlan`, plus `instructions`/`builds`
- *  already being duplicate-checked, mean every cell's 5-tuple is a distinct
- *  combination). So the filename is unique even in the exact case where the
- *  human-readable part collides -- provably, not just probably. */
+ *  WHY a short hash (not the old full-hex id) is appended, and why that's
+ *  still safe (Fix pass 2, 2026-08-12 review): the slug transform is lossy
+ *  by design (folds case, and collapses a literal '-', '_', '/', ' ', etc.
+ *  all down to the same single '-'), so two DIFFERENT cells can produce an
+ *  IDENTICAL slug -- e.g. a caseId of "a-b" and a caseId of "a_b" both slug
+ *  to "a-b". The previous fix closed that gap by appending the full raw id
+ *  hex-encoded, which is provably injective -- but hex doubles the id's
+ *  length, and a realistic cell id measured ~214 characters as a bare
+ *  filename that way, which alone exceeds Windows' 260-character whole-path
+ *  budget once the directory prefix is added. That defeated the point of a
+ *  function built specifically to be Windows-filename-safe. The fix here
+ *  trades the *proof* of injectivity for a *short, fixed-length* digest (16
+ *  hex chars of SHA-256, astronomically unlikely to collide but not
+ *  impossible in principle) plus an actual check: `expandPlan` verifies
+ *  every cell's filename is distinct across the whole matrix before
+ *  returning it (see `assertUniqueFilenames`), which is what now guarantees
+ *  correctness -- detected before any run starts, not just "probably fine". */
 export function cellFilename(cell: Cell): string {
   const readable = [cell.caseId, cell.instructionsId, cell.model, cell.buildId, String(cell.repeat)]
     .map(slugPart)
     .join('_');
-  const suffix = Buffer.from(cell.id, 'utf8').toString('hex');
-  return `${readable}_${suffix}`;
+  const digest = createHash('sha256').update(cell.id, 'utf8').digest('hex').slice(0, 16);
+  return `${readable}_${digest}`;
 }
 
-/** Lowercase, then collapse every run of non-alphanumeric characters to a
- *  single '-'. Mirrors `test-engine/review-harness.mjs`'s roster-label slug
- *  exactly, applied per-field here instead of to a whole label. */
+/** Lowercase, collapse every run of non-alphanumeric characters to a single
+ *  '-', then cap to `MAX_FIELD_CHARS`. Mirrors
+ *  `test-engine/review-harness.mjs`'s roster-label slug exactly for the
+ *  first two steps, applied per-field here instead of to a whole label; the
+ *  cap is new in Fix pass 2 to keep the Windows path budget. */
 function slugPart(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, MAX_FIELD_CHARS);
+}
+
+/** Fix pass 2 (2026-08-12 review): the three duplicate-detection call sites
+ *  below (cases, instruction arm ids, build ids) each spelled the same
+ *  failure differently, and only the build-id one carried "Seen so far"
+ *  context -- which is the part that actually helps a plan author spot the
+ *  mistake in a long hand-edited list. One shared template means all three
+ *  read the same way and all three get that context, instead of a future
+ *  fourth duplicate-checked field inventing a fourth phrasing. */
+function duplicateError(kind: string, value: string, seenSoFar: Iterable<string>): Error {
+  const capitalizedKind = kind.charAt(0).toUpperCase() + kind.slice(1);
+  return new Error(
+    `Duplicate ${kind} ${describe(value)}. ${capitalizedKind}s must be unique within this plan. `
+    + `Seen so far: ${[...seenSoFar].join(', ')}.`,
+  );
 }
 
 /** Validate an untrusted, hand-editable plan (e.g. parsed from JSON) before
@@ -154,7 +221,7 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
       throw new Error(`Unknown case id ${describe(caseId)}. Known case ids: ${knownCaseIds.join(', ')}.`);
     }
     if (seenCaseIds.has(caseId)) {
-      throw new Error(`Duplicate case id ${describe(caseId)}. Plan "cases" must not repeat a case.`);
+      throw duplicateError('case id', caseId, seenCaseIds);
     }
     seenCaseIds.add(caseId);
   }
@@ -174,7 +241,7 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
     }
     const id = (instruction as InstructionArm).id;
     if (seenInstructionIds.has(id)) {
-      throw new Error(`Duplicate instruction arm id ${describe(id)}. Instruction arm ids must be unique.`);
+      throw duplicateError('instruction arm id', id, seenInstructionIds);
     }
     seenInstructionIds.add(id);
     const file = (instruction as Record<string, unknown>).file;
@@ -194,7 +261,7 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
       throw new Error(`Unknown model ${describe(model)}. Known models: ${knownModels.join(', ')}.`);
     }
     if (seenModels.has(model)) {
-      throw new Error(`Duplicate model ${describe(model)}. Plan "models" must not repeat a model.`);
+      throw duplicateError('model', model, seenModels);
     }
     seenModels.add(model);
   }
@@ -222,7 +289,7 @@ export function validatePlan(plan: unknown, knownCaseIds: string[], knownModels:
         throw new Error(`Build arm ${describe(buildId)} has an invalid "dist": ${describe(dist)}. Must be a non-empty string.`);
       }
       if (seenBuildIds.has(buildId)) {
-        throw new Error(`Duplicate build id ${describe(buildId)}. Build ids must be unique. Seen so far: ${[...seenBuildIds].join(', ')}.`);
+        throw duplicateError('build id', buildId, seenBuildIds);
       }
       seenBuildIds.add(buildId);
     }

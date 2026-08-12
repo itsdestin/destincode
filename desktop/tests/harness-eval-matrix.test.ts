@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { expandPlan, validatePlan, cellFilename, type Cell } from '../src/main/harness/eval/matrix';
 
 const PLAN = {
@@ -201,5 +201,79 @@ describe('cellFilename', () => {
     };
     const names = expandPlan(plan as any).map(cellFilename);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  // Fix pass 2 (2026-08-12 review): the old full-hex suffix was provably
+  // injective but measured ~214 characters on a realistic cell -- combined
+  // with the ~80-character directory prefix the review measured for
+  // docs/active/investigations/harness-eval-runs/<date>/, that blows past
+  // Windows' 260-character whole-path MAX_PATH. The fix bounds every
+  // readable field to MAX_FIELD_CHARS (20) and replaces the full-hex id
+  // with a fixed 16-hex-char SHA-256 digest, so the worst case is
+  // computable regardless of how long the real caseId/instructionsId/
+  // model/buildId/repeat values are:
+  //   5 fields * 20 chars + 4 '_' separators between them
+  //   + 1 '_' before the digest + 16 hex digest chars = 121 chars.
+  // 121 (filename) + 5 ('.json') + 80 (measured directory prefix) = 206,
+  // comfortably under 260 with ~54 characters of headroom to spare.
+  it('stays within the 121-char worst-case bound even with maximally long fields, leaving headroom under Windows MAX_PATH', () => {
+    const WORST_CASE_FILENAME_CHARS = 121;
+    const DIRECTORY_PREFIX_CHARS = 80; // measured by the review for docs/active/investigations/harness-eval-runs/<date>/
+    const EXTENSION_CHARS = '.json'.length;
+    const WINDOWS_MAX_PATH = 260;
+
+    const veryLongField = 'x'.repeat(500);
+    const cell: Cell = {
+      id: `${veryLongField}|${veryLongField}|${veryLongField}|${veryLongField}|999999999999999999`,
+      caseId: veryLongField,
+      instructionsId: veryLongField,
+      model: veryLongField,
+      buildId: veryLongField,
+      dist: '.',
+      repeat: 999999999999999999,
+    };
+    const filename = cellFilename(cell);
+    expect(filename.length).toBeLessThanOrEqual(WORST_CASE_FILENAME_CHARS);
+    expect(filename.length + EXTENSION_CHARS + DIRECTORY_PREFIX_CHARS).toBeLessThan(WINDOWS_MAX_PATH);
+  });
+});
+
+describe('expandPlan filename collision detection', () => {
+  // A genuine SHA-256 collision cannot be constructed through the public
+  // API -- finding two different cell ids whose first 16 hex chars of
+  // SHA-256 match is computationally infeasible (that infeasibility is the
+  // whole reason the hash is trusted). To exercise assertUniqueFilenames's
+  // throw path for real, this test mocks node:crypto so createHash returns
+  // a FIXED digest for every input, then reuses the "a-b" vs "a_b" caseId
+  // pair (which the tests above already prove collide on the READABLE
+  // slug). With both the digest and the readable slug forced equal,
+  // cellFilename produces byte-identical output for two cells with
+  // different ids -- the exact scenario assertUniqueFilenames exists to
+  // catch. Production code is untouched; only this test's module instance
+  // sees the mocked hash.
+  it('throws naming both colliding cells when two cells would produce the same filename', async () => {
+    vi.resetModules();
+    vi.doMock('node:crypto', () => ({
+      createHash: () => ({
+        update: () => ({
+          digest: () => '0'.repeat(64),
+        }),
+      }),
+    }));
+    try {
+      const mocked = await import('../src/main/harness/eval/matrix');
+      const plan = {
+        name: 'x',
+        cases: ['a-b', 'a_b'],
+        instructions: [{ id: 'none', file: null }],
+        models: ['M1'],
+      };
+      expect(() => mocked.expandPlan(plan as any)).toThrow(
+        /a-b\|none\|M1\|current\|0.*a_b\|none\|M1\|current\|0|a_b\|none\|M1\|current\|0.*a-b\|none\|M1\|current\|0/s,
+      );
+    } finally {
+      vi.doUnmock('node:crypto');
+      vi.resetModules();
+    }
   });
 });
