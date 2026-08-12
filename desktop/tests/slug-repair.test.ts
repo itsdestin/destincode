@@ -296,4 +296,79 @@ describe('repairRecordsAndSpace (spec §6.2)', () => {
     expect(fs.existsSync(path.join(w.lane, 'Change'))).toBe(false);     // emptied fragment retired
     expect(fs.existsSync(path.join(w.lane, w.bucket))).toBe(true);      // project bucket stays
   });
+
+  // --- Review fix (2026-08-12): fork-gate the space keeper; distinct
+  // 'record-repaired' finding kind; structurally protect the $HOME bucket ---
+
+  it('three space copies where two are clean subsets of the keeper: moves proceed (fork gate does not misfire)', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'A'), { recursive: true });
+    fs.mkdirSync(path.join(w.lane, 'B'), { recursive: true });
+    fs.mkdirSync(path.join(w.lane, 'C'), { recursive: true });
+    const keeperFile = path.join(w.lane, 'A', 's7.jsonl');
+    const subset1 = path.join(w.lane, 'B', 's7.jsonl');
+    const subset2 = path.join(w.lane, 'C', 's7.jsonl');
+    fs.writeFileSync(keeperFile, F('u1', w.P) + F('u2', w.P) + F('u3', w.P));
+    fs.writeFileSync(subset1, F('u1', w.P));
+    fs.writeFileSync(subset2, F('u2', w.P));
+    age(keeperFile); age(subset1); age(subset2);
+    const out = await repairRecordsAndSpace(w.opts);
+    const target = path.join(w.lane, w.bucket, 's7.jsonl');
+    expect(fs.existsSync(target)).toBe(true);
+    expect(uuidSet(target).size).toBe(3);
+    expect(fs.existsSync(subset1)).toBe(false);
+    expect(fs.existsSync(subset2)).toBe(false);
+    expect(fs.existsSync(keeperFile)).toBe(false);
+    expect(out.find(f => f.sessionId === 's7')?.kind).toBe('moved');
+    expect((await w.store.get('claude', 's7'))?.projectName).toBe(w.bucket);
+  });
+
+  it('two space copies with disjoint uuid sets are an unmerged fork: nothing moves, both snapshotted, no record upsert', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'A'), { recursive: true });
+    fs.mkdirSync(path.join(w.lane, 'B'), { recursive: true });
+    const a = path.join(w.lane, 'A', 's8.jsonl');
+    const b = path.join(w.lane, 'B', 's8.jsonl');
+    fs.writeFileSync(a, F('u1', w.P) + F('uA', w.P));
+    fs.writeFileSync(b, F('u1', w.P) + F('uB', w.P));
+    age(a); age(b);
+    const before = [fs.readFileSync(a, 'utf8'), fs.readFileSync(b, 'utf8')];
+    const out = await repairRecordsAndSpace(w.opts);
+    const found = out.find(f => f.sessionId === 's8');
+    expect(found?.kind).toBe('fork-surfaced');
+    expect(fs.existsSync(a)).toBe(true);
+    expect(fs.existsSync(b)).toBe(true);
+    expect(fs.readFileSync(a, 'utf8')).toBe(before[0]);
+    expect(fs.readFileSync(b, 'utf8')).toBe(before[1]);
+    expect(await w.store.get('claude', 's8')).toBeNull();
+  });
+
+  it('two space copies with equal uuid counts but diverging content for a shared uuid: fork, not silently kept', async () => {
+    const w = makeWorld();
+    fs.mkdirSync(path.join(w.lane, 'A'), { recursive: true });
+    fs.mkdirSync(path.join(w.lane, 'B'), { recursive: true });
+    const a = path.join(w.lane, 'A', 's9.jsonl');
+    const b = path.join(w.lane, 'B', 's9.jsonl');
+    fs.writeFileSync(a, JSON.stringify({ type: 'user', uuid: 'u1', cwd: w.P, message: { content: 'truncat' } }) + '\n');
+    fs.writeFileSync(b, JSON.stringify({ type: 'user', uuid: 'u1', cwd: w.P, message: { content: 'truncated properly' } }) + '\n');
+    age(a); age(b);
+    const before = [fs.readFileSync(a, 'utf8'), fs.readFileSync(b, 'utf8')];
+    const out = await repairRecordsAndSpace(w.opts);
+    const found = out.find(f => f.sessionId === 's9');
+    expect(found?.kind).toBe('fork-surfaced');
+    expect(fs.readFileSync(a, 'utf8')).toBe(before[0]);
+    expect(fs.readFileSync(b, 'utf8')).toBe(before[1]);
+    expect(await w.store.get('claude', 's9')).toBeNull();
+  });
+
+  it('never retires the actual $HOME bucket, even if a move empties it (structural protection, not incidental)', async () => {
+    const w = makeWorld();
+    const homeBucket = path.basename(w.home);
+    fs.mkdirSync(path.join(w.lane, homeBucket), { recursive: true });
+    const f = path.join(w.lane, homeBucket, 's6.jsonl');
+    fs.writeFileSync(f, F('u1', w.P)); age(f);   // mis-filed under the $HOME bucket, but R2-owned by P
+    await repairRecordsAndSpace(w.opts);
+    expect(fs.existsSync(path.join(w.lane, w.bucket, 's6.jsonl'))).toBe(true); // moved to the correct bucket
+    expect(fs.existsSync(path.join(w.lane, homeBucket))).toBe(true);          // $HOME bucket itself survives, empty
+  });
 });

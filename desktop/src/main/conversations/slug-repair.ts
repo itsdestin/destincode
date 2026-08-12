@@ -144,7 +144,10 @@ export interface RepairFinding {
   // physical copies survive (one at the $HOME path, or one in quarantine +
   // one at $HOME) — this kind exists so a run failure never silently drops
   // a finding, it just can't say where the session finally landed.
-  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live' | 'rename-failed';
+  // 'record-repaired' (review fix, §6.2): the session's record was
+  // upserted but no file was renamed/moved — distinct from 'moved' so a
+  // consumer never treats `paths` as proof a physical relocation happened.
+  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live' | 'rename-failed' | 'record-repaired';
   paths: string[];
 }
 
@@ -275,7 +278,7 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
 export async function repairRecordsAndSpace(
   opts: RepairOpts & { store: import('./conversation-store').ConversationStore; spaceRoot: string },
 ): Promise<RepairFinding[]> {
-  const { projectsDir, knownFolders, quarantine: q, store, spaceRoot } = opts;
+  const { projectsDir, homeDir, knownFolders, quarantine: q, store, spaceRoot } = opts;
   const liveMs = opts.liveMs ?? LIVE_MTIME_MS;
   const now = opts.now ?? Date.now;
   // Adaptation (disclosed): thread the platform test seam through firstCwd/
@@ -284,7 +287,14 @@ export async function repairRecordsAndSpace(
   const platform = opts.platform ?? process.platform;
   const findings: RepairFinding[] = [];
   const lane = path.join(spaceRoot, 'claude', 'transcripts');
-  const knownBasenames = new Set(knownFolders.map(p => path.basename(p)));
+  // Review fix (IMPORTANT 2): protection for the $HOME bucket must be
+  // STRUCTURAL, not incidental. Before this fix, knownBasenames only held
+  // known-folder basenames — if the actual $HOME bucket (spec: 'destin' is
+  // real $HOME data) happened to go empty during a run, nothing stopped it
+  // from being retired right alongside a truncation fragment. Add
+  // basename(homeDir) explicitly so the protection holds regardless of
+  // whether $HOME also happens to collide with a known folder's name.
+  const knownBasenames = new Set([...knownFolders.map(p => path.basename(p)), path.basename(homeDir)]);
 
   // Build the repair set BY SESSION (spec §4 #6: 'destin' is a legitimate
   // bucket with two mis-filed sessions — bucket-scoped repair would either
@@ -321,20 +331,45 @@ export async function repairRecordsAndSpace(
       .filter(p => fs.existsSync(p));
     if (copies.length === 0 && recordOk) continue; // nothing to do — idempotent re-run
 
+    let moved = false; // did an actual file rename happen for this session?
     if (copies.length > 0) {
       if (copies.some(c => isLive(c, liveMs, now))) {
         findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: copies });
         continue;
       }
       // Keeper = the copy every other copy is a subset of; tie → most uuids.
-      // NEVER merge (spec §6.0) — a fork among copies keeps the largest and
-      // quarantines the rest (reversible), loudly.
       const sized = copies.map(c => ({ c, u: uuidSet(c) }))
         .sort((a, b) => b.u.size - a.u.size);
       const keeper = sized[0];
+
+      // Fork gate (spec §6.0 Case C — review fix, CRITICAL). The uuid-count
+      // sort above only PICKS a candidate keeper; it does not prove every
+      // other copy is actually contained in it. classifyPair already knows
+      // how to tell "clean subset" from "diverges" (including same-uuid
+      // content divergence), so run it before touching disk: any copy that
+      // ISN'T identical-to or a uuid-subset-of the keeper holds content the
+      // keeper lacks, and quarantining it would silently discard that
+      // content — exactly the forbidden "auto-resolve a fork" hazard §6.1
+      // already guards against for the $HOME-fork case. An equal-uuid-COUNT
+      // tie between two non-identical copies is NECESSARILY a fork by this
+      // same check: equal count + not byte-identical means neither can be a
+      // uuid subset of the other, so classifyPair can only return 'fork' for
+      // that pair — the containment check subsumes the count tie-break, it
+      // is not a separate rule.
+      const forkPairs = sized.slice(1).filter(other => {
+        const verdict = classifyPair(other.c, keeper.c);
+        return verdict !== 'identical' && verdict !== 'wrong-is-subset';
+      });
+      if (forkPairs.length > 0) {
+        // Case C — NEVER automated. Snapshot every copy, change nothing,
+        // surface it — mirrors §6.1's fork discipline exactly.
+        for (const { c } of sized) q.snapshot(c, `6.2 FORK ${sessionId} (space copy)`);
+        q.log(`ATTENTION space fork ${sessionId}: ${copies.join(', ')} — not a clean containment chain; all copies left on disk, user decision required`);
+        findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: copies });
+        continue; // no moves, no record upsert — the whole session is skipped
+      }
+
       for (const other of sized.slice(1)) {
-        let onlyInOther = 0; for (const u of other.u) if (!keeper.u.has(u)) onlyInOther++;
-        if (onlyInOther > 0) q.log(`ATTENTION space fork ${sessionId}: ${other.c} has ${onlyInOther} uuids the keeper lacks`);
         if (q.move(other.c, `6.2 ${sessionId}: non-keeper space copy`)) {
           const b = path.basename(path.dirname(other.c));
           if (topLevelJsonl(path.join(lane, b)).length === 0) emptiedBuckets.add(b);
@@ -356,6 +391,7 @@ export async function repairRecordsAndSpace(
           continue;
         }
         q.log(`MOVE-BUCKET ${keeper.c} -> ${target}`);
+        moved = true;
         const b = path.basename(path.dirname(keeper.c));
         if (topLevelJsonl(path.join(lane, b)).length === 0) emptiedBuckets.add(b);
       }
@@ -368,7 +404,13 @@ export async function repairRecordsAndSpace(
       projectName: bucketName, originalPath: P,
       transcriptRef: `claude/transcripts/${bucketName}/${sessionId}.jsonl`,
     });
-    findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [target] });
+    // Review fix (IMPORTANT 1): a session with no space copies to move (or
+    // whose keeper was already correctly bucketed) never touches a file —
+    // 'moved' would misdescribe it as a physical relocation that never
+    // happened. 'record-repaired' names the no-file-move path precisely;
+    // Task 17's consumer can tell the two apart instead of trusting a path
+    // that may never have existed.
+    findings.push({ sessionId, homeFolder: P, kind: moved ? 'moved' : 'record-repaired', paths: [target] });
   }
 
   // Retire ONLY emptied truncation-fragment buckets — never a legitimate one
