@@ -274,7 +274,7 @@ truncated by the low `max_tokens`) rather than a plain chat model — re-run
 `probe-parallel.mjs` against `b9992` with the app's actual small-model tier
 before this decision is treated as load-bearing.
 
-## KV prefix reuse (specialists, plan 1a probe)
+### KV prefix reuse (specialists, plan 1a probe)
 
 **Measured 2026-08-12**, same server/model/build as above (default args, no
 `--parallel`; single manually-launched instance on port 8199).

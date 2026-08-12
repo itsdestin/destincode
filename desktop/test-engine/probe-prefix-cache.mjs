@@ -10,7 +10,8 @@
 //       shared prefix at all), sent sequentially
 // For each request this reads prefill time from the llama-server completion
 // payload (`timings.prompt_ms`); if a build ever omits that field, it falls
-// back to wall-clock time-to-first-token via a streamed request.
+// back to wall-clocking the full non-streaming round-trip — an UPPER BOUND on
+// prefill (includes the small generation), good enough for the <50% comparison.
 //
 // Verdict: prefix reuse is proven if run (a)'s SECOND request prefills
 // materially faster than run (b)'s SECOND request — "materially faster"
@@ -67,7 +68,7 @@ async function chatTimed(systemPrefix, userContent) {
   }
   // Fallback: this build's payload has no timings block — wall-clock stands
   // in for time-to-first-token since we only issued a non-streaming request.
-  return { promptMs: wallMs, promptN: null, source: 'wall-clock fallback (no timings field)', wallMs };
+  return { promptMs: wallMs, promptN: null, source: 'wall-clock fallback upper-bound (no timings field)', wallMs };
 }
 
 (async () => {
