@@ -355,3 +355,56 @@ describe('transcript:read-meta path containment', () => {
     expect(meta?.model).toBe('test-model');
   });
 });
+
+describe('dialog:open-file attachment picker filters', () => {
+  // Pins Destin's 2026-08-12 request: the paperclip picker must OPEN showing
+  // ALL files (the first filter entry is the native dialog's default), with
+  // named category filters available in the dropdown for narrowing. A filter
+  // reorder that puts Images first would silently regress the default.
+  async function getFilters() {
+    const mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+    const mockSessionManager = {
+      createSession: vi.fn(), destroySession: vi.fn(), listSessions: vi.fn(() => []),
+      sendInput: vi.fn(), resizeSession: vi.fn(), on: vi.fn(),
+    };
+    const mockWindow = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    const mockSkillProvider = { configStore: { getPackages: vi.fn(() => ({})) } };
+    registerIpcHandlers(
+      mockIpcMain as any, mockSessionManager as any, mockWindow as any, mockSkillProvider as any,
+    );
+    const { dialog } = await import('electron');
+    (dialog.showOpenDialog as any).mockResolvedValue({ canceled: true, filePaths: [] });
+    const handler = (mockIpcMain.handle as any).mock.calls.find(
+      (c: any) => c[0] === 'dialog:open-file',
+    )[1];
+    await handler({});
+    const options = (dialog.showOpenDialog as any).mock.calls.at(-1)[1];
+    return options.filters as { name: string; extensions: string[] }[];
+  }
+
+  it('defaults to All Files (first filter entry)', async () => {
+    const filters = await getFilters();
+    expect(filters[0]).toEqual({ name: 'All Files', extensions: ['*'] });
+  });
+
+  it('offers the named category filters as dropdown options', async () => {
+    const filters = await getFilters();
+    const names = filters.map((f) => f.name);
+    expect(names).toEqual([
+      'All Files',
+      'Images',
+      'Markdown & Text',
+      'PDFs',
+      'Spreadsheets',
+      'Documents',
+      'Code',
+    ]);
+    // Every category must carry at least one extension, and none may carry
+    // the wildcard — a '*' inside a named category would make it a second
+    // "all files" entry and defeat the dropdown's purpose.
+    for (const f of filters.slice(1)) {
+      expect(f.extensions.length).toBeGreaterThan(0);
+      expect(f.extensions).not.toContain('*');
+    }
+  });
+});
