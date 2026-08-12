@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
 import { graderRoot as srcGraderRoot, harnessRoot as srcHarnessRoot } from '../src/main/harness/eval/paths';
 
@@ -974,6 +975,72 @@ describe('the spend cap', () => {
     expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['b', 'c', 'd']);
   });
 
+  it('turns a runOne THROW into a stopReason instead of losing the whole matrix', async () => {
+    // Fix pass 1 (2026-08-12 review, CRITICAL). runCell throws — rather than
+    // resolving with an `error` field — for four per-cell conditions, all of them
+    // reachable on cell N after cells 1..N-1 have been billed. That rejection used
+    // to escape runMatrix, taking `results` and `skipped` with it.
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const ran: string[] = [];
+    const out = await runMatrix(cells, {
+      runOne: async (cell: { id: string }) => {
+        if (cell.id === 'c') throw new Error('instruction arm "guided" declares a file');
+        ran.push(cell.id);
+        return { cellId: cell.id, run: {} };
+      },
+      readUsage: async () => 0,
+      maxSpendUsd: undefined,
+    });
+    expect(ran).toEqual(['a', 'b']);
+    expect(out.results.map((r: { cellId: string }) => r.cellId)).toEqual(['a', 'b']);
+    // The failing cell produced nothing, so it is named alongside the ones after it.
+    expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['c', 'd']);
+    // The real error, not a summary or a guess at it.
+    expect(out.stopReason).toContain('instruction arm "guided" declares a file');
+    expect(out.stopReason).toContain('cell "c"');
+  });
+
+  it('turns an onResult write failure into a stopReason, keeping the cell that already ran', async () => {
+    // ENOSPC / EACCES on cell N is not evidence that cells 1..N-1 did not happen.
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { ran, runOne } = recorder();
+    const out = await runMatrix(cells, {
+      runOne,
+      readUsage: async () => 0,
+      maxSpendUsd: undefined,
+      onResult: async (cell: { id: string }) => {
+        if (cell.id === 'b') throw new Error("ENOSPC: no space left on device, open '/x/b.json'");
+      },
+    });
+    expect(ran).toEqual(['a', 'b']);
+    // 'b' RAN and was billed, so it is in results and NOT in neverRan.
+    expect(out.results.map((r: { cellId: string }) => r.cellId)).toEqual(['a', 'b']);
+    expect(out.skipped.map((c: { id: string }) => c.id)).toEqual(['c', 'd']);
+    expect(out.stopReason).toContain('ENOSPC');
+  });
+
+  it('tags ONLY the baseline failure as "before the first cell"', async () => {
+    // The tag is what lets the CLI say "nothing was spent" without guessing —
+    // and, crucially, what stops it saying that about anything else.
+    const { runMatrix } = await import('../test-engine/harness-eval.mjs');
+    const { runOne } = recorder();
+    const err = await runMatrix(cells, {
+      runOne,
+      readUsage: async () => { throw new Error('HTTP 401 Unauthorized'); },
+      maxSpendUsd: 5,
+    }).catch((e: Error & { beforeFirstCell?: boolean }) => e);
+    expect((err as Error & { beforeFirstCell?: boolean }).beforeFirstCell).toBe(true);
+    // A non-Error rejection still gets tagged (ESM is strict mode, so assigning a
+    // property to a primitive would throw and lose the failure entirely).
+    const err2 = await runMatrix(cells, {
+      runOne,
+      readUsage: async () => { throw 'a bare string'; },
+      maxSpendUsd: 5,
+    }).catch((e: Error & { beforeFirstCell?: boolean }) => e);
+    expect((err2 as Error & { beforeFirstCell?: boolean }).beforeFirstCell).toBe(true);
+    expect((err2 as Error).message).toContain('a bare string');
+  });
+
   it('hands every completed result to onResult BEFORE a later stop', async () => {
     const { runMatrix } = await import('../test-engine/harness-eval.mjs');
     const { runOne } = recorder();
@@ -990,6 +1057,215 @@ describe('the spend cap', () => {
     });
     expect(written).toEqual(['a']);
   });
+});
+
+/**
+ * END-TO-END THROUGH THE REAL CLI, with only `fetch` faked.
+ *
+ * WHY this block exists (fix pass 1, 2026-08-12 review, CRITICAL + IMPORTANT 3).
+ * Every test above injects `runOne` / `readUsage` / `maxSpendUsd` straight into
+ * `runMatrix`, so all of them keep passing if the CLI stops passing `maxSpendUsd`
+ * at all — the cap would be inert in the shipped tool and nothing would notice.
+ * That is the same shape as the three credential rounds that were each certified
+ * one level below the behaviour they claimed to guard. These spawn the real
+ * `harness-eval.mjs`, with a real plan, a real worker subprocess, and a real
+ * `run-summary.json` on disk.
+ *
+ * NOTHING IS SPENT AND NO KEY IS USED: `--import` preloads a stub that replaces
+ * `globalThis.fetch`, and the build arm points at a fake dist whose `runCase`
+ * returns immediately without touching a network or a model.
+ */
+describe('the real CLI, end to end (fetch faked, no key, no spend)', () => {
+  beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
+
+  /** A "dist under test" whose runCase resolves at once. The worker imports
+   *  run-case.js / openrouter-factory.js from the CELL's dist, so this is a
+   *  complete stand-in for a paid model run. */
+  function fastDist(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-fast-'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}');
+    const dir = path.join(root, 'main/harness/eval');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'run-case.js'),
+      'export const runCase = async (c) => ({ label: c.label, outcome: "completed", events: [] });\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'openrouter-factory.js'),
+      'export const makeOpenRouterFactory = () => async () => ({});\n',
+    );
+    return root;
+  }
+
+  /** A preload module that replaces `fetch`. `usage` is the sequence
+   *  GET /api/v1/key hands back, one per call; the catalog is empty, so every
+   *  model comes back `unpriced` (which also pins the null-estimate branch). */
+  function fetchStub(usage: number[]): string {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-stub-')), 'stub.mjs');
+    fs.writeFileSync(file, `
+const usage = ${JSON.stringify(usage)};
+let i = 0;
+globalThis.fetch = async (url) => {
+  const u = String(url);
+  if (u.includes('/api/v1/models')) {
+    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: [] }) };
+  }
+  if (u.includes('/api/v1/key')) {
+    const value = usage[Math.min(i++, usage.length - 1)];
+    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: { usage: value } }) };
+  }
+  throw new Error('the CLI made an unexpected network call in a test: ' + u);
+};
+`);
+    return file;
+  }
+
+  /** A key file holding an obvious canary. It is never sent anywhere — `fetch`
+   *  is stubbed and the fake dist's runCase ignores its model factory. */
+  function canaryKeyFile(): string {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-key-')), 'key');
+    fs.writeFileSync(file, 'sk-or-v1-CANARY-NEVER-SENT');
+    fs.chmodSync(file, 0o600); // keeps the group-readable warning out of stderr
+    return file;
+  }
+
+  function runCliStubbed(stub: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const env = { ...process.env };
+    delete env.OPENROUTER_API_KEY;
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['--import', pathToFileURL(stub).href, CLI, ...args],
+        { encoding: 'utf8', stdio: 'pipe', env },
+      );
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      const e = err as { status: number | null; stdout: string; stderr: string };
+      return { status: e.status, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  }
+
+  /**
+   * The CLI writes into the workspace's `docs/active/investigations/...` by
+   * design (resolveRunsDir), which is a REAL directory on a developer's machine
+   * — so remember what was there and put it back. Anything the run created is
+   * removed; anything that was already there is left alone.
+   */
+  function runsDirGuard(dir: string): () => void {
+    const existed = fs.existsSync(dir);
+    const before = existed ? new Set(fs.readdirSync(dir)) : new Set<string>();
+    // The CLI mkdirs RECURSIVELY, so a first run creates the `harness-eval-runs`
+    // parent as well as the dated child. Remember whether that existed too, or
+    // the tests leave an empty directory behind in the workspace every time.
+    const parent = path.dirname(dir);
+    const parentExisted = fs.existsSync(parent);
+    return () => {
+      if (fs.existsSync(dir)) {
+        if (existed) {
+          for (const entry of fs.readdirSync(dir)) {
+            if (!before.has(entry)) fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
+          }
+        } else {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      if (!parentExisted && fs.existsSync(parent) && fs.readdirSync(parent).length === 0) {
+        fs.rmdirSync(parent);
+      }
+    };
+  }
+
+  /** Ask the CLI itself where it would write, so the test never re-implements
+   *  resolveRunsDir's workspace walk. --dry-run spends nothing and needs no key. */
+  function runsDirOf(stub: string, planFile: string): string {
+    const { stdout } = runCliStubbed(stub, ['--plan', planFile, '--dry-run']);
+    const line = stdout.split('\n').find((l) => l.trim().startsWith('Results: '));
+    if (!line) throw new Error(`the CLI printed no "Results:" line:\n${stdout}`);
+    return line.trim().slice('Results: '.length);
+  }
+
+  it('a MID-MATRIX rejection still writes the summary, names the cells that never ran, and never claims nothing was spent', () => {
+    // THE REPRODUCTION, exactly as the review described it: a guidance-vs-baseline
+    // plan. expandPlan emits the baseline cell first; it runs and (in a real run)
+    // is BILLED. The guidance cell then throws, because the instructions axis is
+    // still unwired. The operator used to be told "NOTHING WAS SPENT", handed exit
+    // 2 (usage error), and given no run-summary.json at all.
+    const stub = fetchStub([0]);
+    const plan = writePlan({
+      ...BASE_PLAN,
+      instructions: [{ id: 'baseline', file: null }, { id: 'guided', file: 'guide.md' }],
+      builds: [{ id: 'fake', dist: fastDist() }],
+    });
+    const runsDir = runsDirOf(stub, plan);
+    const restore = runsDirGuard(runsDir);
+    try {
+      const { status, stdout, stderr } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+      const all = `${stdout}${stderr}`;
+
+      // 1. The lie is gone.
+      expect(all).not.toContain('NOTHING WAS SPENT');
+      expect(all).not.toContain('nothing was spent');
+      // 2. The REAL error, in the words runCell used — no guessed cause.
+      expect(stderr).toContain('instruction arm "guided"');
+      expect(stderr).toContain('no instruction text was supplied');
+      // 3. Stopped early (3), not usage error (2).
+      expect(status).toBe(3);
+      // 4. The cells that never ran are named.
+      expect(stderr).toContain('STOPPED EARLY');
+      expect(stderr).toContain('harness-battery|guided|Claude Opus 5|fake|0');
+
+      // 5. And the summary exists, with the same facts in machine-readable form.
+      const summaryFile = path.join(runsDir, 'run-summary.json');
+      expect(fs.existsSync(summaryFile)).toBe(true);
+      const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+      expect(summary.stoppedEarly).toBe(true);
+      expect(summary.stopReason).toContain('no instruction text was supplied');
+      expect(summary.completed).toEqual(['harness-battery|baseline|Claude Opus 5|fake|0']);
+      expect(summary.neverRan).toEqual(['harness-battery|guided|Claude Opus 5|fake|0']);
+      // The stubbed catalog is empty, so nothing could be priced: NULL, never 0.
+      // A 0 here is the silent zero the human-facing output already refuses.
+      expect(summary.estimateUsd).toBeNull();
+    } finally {
+      restore();
+    }
+  }, 60_000);
+
+  it('--max-spend actually reaches runMatrix — the flag stops a real run, not just an injected one', () => {
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 3). Delete `maxSpendUsd` from the
+    // options object main() passes to runMatrix and every OTHER cap test still
+    // passes; this one does not. Two cells, and the stub reports $1000 billed
+    // after the first, so the cap must trip between them.
+    const stub = fetchStub([0, 1000]);
+    const plan = writePlan({
+      ...BASE_PLAN,
+      builds: [{ id: 'fake', dist: fastDist() }],
+      repeats: 2,
+    });
+    const runsDir = runsDirOf(stub, plan);
+    const restore = runsDirGuard(runsDir);
+    try {
+      const { status, stdout, stderr } = runCliStubbed(
+        stub,
+        ['--plan', plan, '--yes', '--key-file', canaryKeyFile(), '--max-spend', '1'],
+      );
+      // The trip itself is the evidence the flag arrived: only runMatrix's
+      // `capped` branch reads usage, and only it can produce this message.
+      expect(stderr).toContain('--max-spend $1.00 reached');
+      expect(stderr).toContain('Stopped after 1 of 2 cells');
+      expect(status).toBe(3);
+      // Cell 1 ran to completion through a real worker subprocess...
+      expect(stdout).toContain('[1/2] harness-battery|baseline|Claude Opus 5|fake|0');
+      // ...and cell 2 never started.
+      expect(stdout).not.toContain('[2/2]');
+      expect(stderr).toContain('harness-battery|baseline|Claude Opus 5|fake|1');
+
+      const summary = JSON.parse(fs.readFileSync(path.join(runsDir, 'run-summary.json'), 'utf8'));
+      expect(summary.completed).toEqual(['harness-battery|baseline|Claude Opus 5|fake|0']);
+      expect(summary.neverRan).toEqual(['harness-battery|baseline|Claude Opus 5|fake|1']);
+    } finally {
+      restore();
+    }
+  }, 60_000);
 });
 
 describe('fetchKeyUsage never reports an unreadable answer as zero spend', () => {

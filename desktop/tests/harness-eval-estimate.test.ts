@@ -10,6 +10,9 @@ import {
   FALLBACK_INPUT_TOKENS,
   FALLBACK_OUTPUT_TOKENS,
   MEASURED_ROSTER_SPEND_USD,
+  MEASURED_ROSTER_SPEND_ROUNDS,
+  MEASURED_ROSTER_SPEND_TOTAL_USD,
+  TRUNCATED_SAMPLES,
   type Price,
 } from '../src/main/harness/eval/estimate';
 
@@ -80,12 +83,24 @@ describe('estimateCells', () => {
   });
 
   it('deduplicates and sorts both problem lists', () => {
-    const out = estimateCells(
-      [cell('c1', 'ZED'), cell('c2', 'ABE'), cell('c3', 'ZED')],
-      {},
-    );
-    expect(out.unpriced).toEqual(['ABE', 'ZED']);
-    expect(out.unmeasured).toEqual(['ABE', 'ZED']);
+    const dupes = [cell('c1', 'ZED'), cell('c2', 'ABE'), cell('c3', 'ZED')];
+    expect(estimateCells(dupes, {}).unpriced).toEqual(['ABE', 'ZED']);
+    // Priced, so the models reach the `unmeasured` branch at all — see the next
+    // test for why an unpriced model is deliberately NOT also listed there.
+    expect(estimateCells(dupes, { ZED: M1, ABE: M1 }).unmeasured).toEqual(['ABE', 'ZED']);
+  });
+
+  it('does not report an unpriced model as ALSO unmeasured — the two lists contradict', () => {
+    // Fix pass 1 (2026-08-12 review, MINOR): a model that is both unpriced and
+    // unmeasured used to appear in both lists, and the CLI prints prose under
+    // each: "priced from the worst measured run, so those rows read HIGH" and
+    // "no price for these — NOT in the total above". Only the second is true of
+    // such a row; it was never priced from anything. `unmeasured` now means
+    // "priced, but from an assumption".
+    const out = estimateCells([cell('c1', 'MYSTERY')], {});
+    expect(out.unpriced).toEqual(['MYSTERY']);
+    expect(out.unmeasured).toEqual([]);
+    expect(out.perCell[0].usd).toBeNull();
   });
 
   it('refuses a mis-shaped cell rather than pricing a row called undefined', () => {
@@ -99,18 +114,59 @@ describe('estimateCells', () => {
 });
 
 describe('the measured token tables', () => {
-  it('covers every label in the shipped roster, so no real plan estimates from the fallback', () => {
+  it('accounts for every label in the shipped roster — measured, or explicitly truncated', () => {
     // WHY read the real roster file: the tables are keyed by roster LABEL, and a
     // label typo ("Deepseek v4 Flash 0731" vs the roster's lowercase "flash")
     // silently degrades that model to the conservative fallback instead of
     // erroring. Nothing else would catch it.
+    //
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 1): a label may now be accounted
+    // for in TRUNCATED_SAMPLES instead of in the tables. That is NOT a loosening
+    // — a new or renamed roster label still appears in none of the three and
+    // still fails here; the only thing allowed is a label whose exclusion was
+    // written down on purpose.
     const roster = JSON.parse(
       fs.readFileSync(path.join(DESKTOP, 'test-engine/review-roster.json'), 'utf8'),
     ) as { label: string }[];
     const labels = roster.map((r) => r.label);
     expect(labels.length).toBeGreaterThan(0);
-    expect(labels.filter((l) => MEASURED_OUTPUT_TOKENS[l] === undefined)).toEqual([]);
-    expect(labels.filter((l) => MEASURED_INPUT_TOKENS[l] === undefined)).toEqual([]);
+    const accounted = (l: string) =>
+      (MEASURED_OUTPUT_TOKENS[l] !== undefined && MEASURED_INPUT_TOKENS[l] !== undefined)
+      || TRUNCATED_SAMPLES[l] !== undefined;
+    expect(labels.filter((l) => !accounted(l))).toEqual([]);
+    // A label is in ONE place or the other, never both — otherwise a sample the
+    // module says it refuses to price would still be pricing cells.
+    expect(Object.keys(TRUNCATED_SAMPLES).filter((l) => MEASURED_OUTPUT_TOKENS[l] !== undefined)).toEqual([]);
+    expect(Object.keys(TRUNCATED_SAMPLES).filter((l) => MEASURED_INPUT_TOKENS[l] !== undefined)).toEqual([]);
+  });
+
+  it('prices a TRUNCATED sample from the conservative fallback and names it, rather than from its own run', () => {
+    // The finding: Qwen 3.6 27B's numbers came from a run that gave up after 7
+    // tool calls. Its 29,987 input tokens are ~20x below Opus's 620,813 for the
+    // same battery, and that gap is early termination, not cheapness — so a
+    // matrix weighted toward it estimated LOW, the one direction this module
+    // exists to prevent.
+    const [label, sample] = Object.entries(TRUNCATED_SAMPLES)[0];
+    const M: Price = { inputPerM: 1, outputPerM: 10 };
+    const out = estimateCells([cell('c1', label)], { [label]: M });
+    const truncated = (sample.inputTokens / 1e6) * 1 + (sample.outputTokens / 1e6) * 10;
+    const fallback = (FALLBACK_INPUT_TOKENS / 1e6) * 1 + (FALLBACK_OUTPUT_TOKENS / 1e6) * 10;
+    expect(out.perCell[0].usd).toBeCloseTo(fallback, 12);
+    // And the direction that matters: the figure it would have used is LOWER.
+    expect(truncated).toBeLessThan(fallback);
+    // Named, so an operator can see the row is an assumption.
+    expect(out.unmeasured).toEqual([label]);
+    // The reason is recorded, not just the exclusion.
+    expect(sample.why).toMatch(/\S/);
+  });
+
+  it('records the calibration anchor as an average, with the billed total it came from', () => {
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 2): $3.46 is 10.38 / 3 rounds, not
+    // one measured round. Pinning the relationship stops a future edit from
+    // quietly turning the mean back into "what one round cost".
+    expect(MEASURED_ROSTER_SPEND_ROUNDS).toBe(3);
+    expect(MEASURED_ROSTER_SPEND_USD)
+      .toBeCloseTo(MEASURED_ROSTER_SPEND_TOTAL_USD / MEASURED_ROSTER_SPEND_ROUNDS, 2);
   });
 
   it('keeps input well above output, which is what makes input the dominant cost', () => {

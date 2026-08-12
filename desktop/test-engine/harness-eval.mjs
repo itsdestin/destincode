@@ -132,6 +132,11 @@ async function importGraders() {
     parsePriceCatalog: estimate.parsePriceCatalog,
     formatUsd: estimate.formatUsd,
     MEASURED_ROSTER_SPEND_USD: estimate.MEASURED_ROSTER_SPEND_USD,
+    // Both halves of the anchor, so the CLI can print WHAT WAS BILLED and OVER
+    // HOW MANY ROUNDS rather than only the derived per-round average — see
+    // printEstimate (fix pass 1, 2026-08-12 review, IMPORTANT 2).
+    MEASURED_ROSTER_SPEND_ROUNDS: estimate.MEASURED_ROSTER_SPEND_ROUNDS,
+    MEASURED_ROSTER_SPEND_TOTAL_USD: estimate.MEASURED_ROSTER_SPEND_TOTAL_USD,
   };
 }
 
@@ -198,9 +203,17 @@ function parseArgs(argv) {
  * env CLEAN. The obvious probes (`env`, `printenv`, `ps -eo args`,
  * `/proc/self/cmdline`) all read clean, which is exactly why it survived.
  *
- * A file closes it because the key is only ever in this process's heap, and
- * `/proc/<pid>/mem` is not readable by a same-uid non-tracing process under any
- * default `ptrace_scope`. The FILE PATH is in argv, which is public — a path is
+ * A file NARROWS it because the key is only ever in this process's heap, which
+ * has no `/proc` mirror the way `environ` and `cmdline` do. Fix pass 1
+ * (2026-08-12 review, MINOR): this used to claim `/proc/<pid>/mem` is unreadable
+ * "under any default ptrace_scope", which is more than was measured. What was
+ * measured is this machine, `/proc/sys/kernel/yama/ptrace_scope` = 1, where a
+ * same-uid non-ancestor process cannot attach and the read fails. Under
+ * `ptrace_scope=0` — the default wherever Yama is not compiled in or not enabled
+ * — a same-uid process CAN attach and read the heap, so this is a much narrower
+ * channel than an environment variable, not a closed one.
+ *
+ * The FILE PATH is in argv, which is public — a path is
  * not a secret. (An interactive prompt would work too; a file was chosen because
  * a matrix run is long and unattended, and a prompt would make `--yes` mean
  * "confirm the spend" in one place and "there is a human at the keyboard" in
@@ -222,10 +235,14 @@ function loadApiKey({ keyFile, env = process.env } = {}) {
       + '  descendant can read /proc/<pid>/environ and `ps eww` for every ancestor. That region is written once at\n'
       + '  exec and is NOT rewritten by `delete process.env.X` (unsetenv only edits the in-heap copy), so the key is\n'
       + '  already readable and nothing this program does can un-leak it.\n'
-      + '  Fix: put the key in a file and pass --key-file, with the variable unset:\n'
+      // Fix pass 1 (2026-08-12 review, MINOR): the remedy used to be `unset
+      // OPENROUTER_API_KEY`, which destroys the variable for the operator's whole
+      // shell — everything else he runs in that terminal loses the key. `env -u`
+      // drops it for THIS command only, and is what the verification for this
+      // branch actually used.
+      + '  Fix: put the key in a file and pass --key-file, and drop the variable for THIS command only:\n'
       + '    printf %s "sk-or-v1-..." > ~/.openrouter-key && chmod 600 ~/.openrouter-key\n'
-      + '    unset OPENROUTER_API_KEY\n'
-      + '    node test-engine/harness-eval.mjs --plan <file> --key-file ~/.openrouter-key',
+      + '    env -u OPENROUTER_API_KEY node test-engine/harness-eval.mjs --plan <file> --key-file ~/.openrouter-key',
     );
   }
   if (!keyFile) {
@@ -259,9 +276,13 @@ function loadApiKey({ keyFile, env = process.env } = {}) {
   // Advisory, not fatal: a group/other-readable key file is a different (and
   // milder) exposure than the environ one, and it is the operator's call.
   try {
-    const mode = fs.statSync(keyFile).mode & 0o077;
-    if (mode && process.platform !== 'win32') {
-      console.error(`harness-eval: warning — ${keyFile} is readable by other users (mode ${(fs.statSync(keyFile).mode & 0o777).toString(8)}). chmod 600 it.`);
+    // Fix pass 1 (2026-08-12 review, MINOR): ONE stat. This used to call
+    // statSync twice — once for the test, once to print the mode — so the
+    // warning could in principle describe a mode different from the one that
+    // triggered it, and it did twice the filesystem work for one message.
+    const mode = fs.statSync(keyFile).mode;
+    if ((mode & 0o077) && process.platform !== 'win32') {
+      console.error(`harness-eval: warning — ${keyFile} is readable by other users (mode ${(mode & 0o777).toString(8)}). chmod 600 it.`);
     }
   } catch { /* stat failing is not a reason to refuse a key we already read */ }
   return key;
@@ -789,9 +810,13 @@ async function runCell(cell, { apiKey, instructionsText, timeoutMs = DEFAULT_CEL
       timedOut = true;
       child.kill('SIGTERM');
       const hardKill = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
-      // unref so a worker that dies promptly does not hold the event loop open
-      // for the whole grace period at the end of a run.
-      if (typeof hardKill.unref === 'function') hardKill.unref();
+      // Fix pass 1 (2026-08-12 review, MINOR): NOT unref'd. It was, "so a worker
+      // that dies promptly does not hold the event loop open" — but a worker that
+      // dies promptly clears this timer on 'close' one line below, so the unref
+      // bought nothing in that case and cost everything in the case the timer
+      // exists for: a worker that IGNORES SIGTERM. There, unref let the
+      // orchestrator's loop empty and the process exit before SIGKILL was ever
+      // sent, orphaning the worker that was wedged badly enough to need it.
       child.on('close', () => clearTimeout(hardKill));
       resolve({
         cellId: cell.id,
@@ -909,7 +934,9 @@ async function fetchPrices(roster, parsePriceCatalog) {
  * fact that the measured tokens come from whole-battery runs. A total with no
  * caveats next to it is a number someone will act on.
  */
-function printEstimate(estimate, cells, { fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD }) {
+function printEstimate(estimate, cells, {
+  fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
+}) {
   console.log('\nEstimated cost');
   const width = Math.max(...estimate.perCell.map((c) => c.cellId.length), 4);
   for (const row of estimate.perCell) {
@@ -934,8 +961,18 @@ function printEstimate(estimate, cells, { fetchError, formatUsd, MEASURED_ROSTER
     console.log('    so those rows read HIGH rather than low.');
   }
   console.log('\n  Basis: token counts measured from whole-BATTERY runs (40-63 tool calls, ~20 minutes each).');
-  console.log('  A short case costs a fraction of this; a model that loops costs more. For calibration, one');
-  console.log(`  whole roster of eight battery runs was actually billed ${formatUsd(MEASURED_ROSTER_SPEND_USD)} on 2026-08-11.`);
+  console.log('  A short case costs a fraction of this; a model that loops costs more.');
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 2): the caveat is printed HERE, next
+  // to the number, not only in the comment where the constant is defined. The
+  // line used to read "one whole roster of eight battery runs was actually billed
+  // $3.46", which is not what the source says: $10.38 covered THREE rounds and
+  // $3.46 is their mean. Nobody recorded the rounds separately, so whether this
+  // estimator reads high or low against a single round is genuinely unknown —
+  // and the operator reading this line is the person who needs to know that.
+  console.log(`  Calibration: three whole-roster rounds were billed ${formatUsd(MEASURED_ROSTER_SPEND_TOTAL_USD)} between them`);
+  console.log(`  (${formatUsd(MEASURED_ROSTER_SPEND_USD)} a round on AVERAGE, ${MEASURED_ROSTER_SPEND_ROUNDS} rounds, 2026-08-11). The per-round figures were never`);
+  console.log('  recorded, so treat that as a rough anchor: whether this estimate errs high or low against any');
+  console.log('  ONE round has not been measured. Use --max-spend if the number matters.');
 }
 
 /**
@@ -1008,6 +1045,14 @@ async function fetchKeyUsage(apiKey) {
   return usage;
 }
 
+/** A thrown value's own text, whatever shape it was thrown in.
+ *  WHY: a rejection is not guaranteed to be an Error, and `err.message` on a
+ *  thrown string is `undefined` — which would turn "the real reason" into the
+ *  word "undefined" in exactly the messages that exist to carry it. */
+function errText(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Run the matrix cell by cell, stopping if the cap trips.
  *
@@ -1020,6 +1065,15 @@ async function fetchKeyUsage(apiKey) {
  * strictly worse than letting it end. The consequence — an overshoot of up to
  * one cell's cost — is real and is printed rather than hidden.
  *
+ * REJECTION CONTRACT (fix pass 1, 2026-08-12 review, CRITICAL). Exactly ONE
+ * failure rejects: the BASELINE usage read, which happens before the first cell
+ * and is tagged `err.beforeFirstCell = true`. It is the only failure after which
+ * a caller may honestly tell a human that nothing was spent. Every other failure
+ * — including a `runOne` that throws on cell N and an `onResult` that cannot
+ * write cell N's file — comes back as a normal return with `results`, `skipped`
+ * and a `stopReason`, because by then money HAS been spent and the list of cells
+ * that never ran is the thing the operator needs.
+ *
  * @returns {Promise<{ results: unknown[], skipped: Cell[], stopReason?: string }>}
  */
 async function runMatrix(cells, { runOne, readUsage, maxSpendUsd, onResult }) {
@@ -1030,16 +1084,76 @@ async function runMatrix(cells, { runOne, readUsage, maxSpendUsd, onResult }) {
     // "the cap could not be established" must stop the run rather than start it
     // uncapped — the flag was given precisely because the operator did not trust
     // the estimate.
-    baseline = await readUsage();
+    try {
+      baseline = await readUsage();
+    } catch (err) {
+      // Fix pass 1 (2026-08-12 review, CRITICAL): TAG it. This is the one and
+      // only failure of this function on which "nothing was spent" is true, and
+      // the caller used to infer that from the mere fact of a rejection — so
+      // every per-cell throw below (all four of them reachable after earlier
+      // cells had already been billed) was reported to the operator as
+      // "NOTHING WAS SPENT". The caller must be able to TELL, not guess.
+      // Wrapped when it is not an Error, because ES modules are strict mode and
+      // assigning a property to a primitive rejection would throw.
+      const tagged = err instanceof Error ? err : new Error(String(err));
+      tagged.beforeFirstCell = true;
+      throw tagged;
+    }
   }
 
   const results = [];
   for (let i = 0; i < cells.length; i++) {
     const cell = cells[i];
     console.log(`\n[${i + 1}/${cells.length}] ${cell.id}`);
-    const result = await runOne(cell);
+    // Fix pass 1 (2026-08-12 review, CRITICAL): runOne is WRAPPED. runCell
+    // THROWS (rather than resolving with an `error` field) for four per-cell
+    // conditions — a non-absolute `dist`, a case registered with an empty
+    // prompt, an instruction arm whose file nobody resolved, and a model that is
+    // not a roster label — and every one of those is reachable on cell N after
+    // cells 1..N-1 have run and been billed. The instructions one is not
+    // hypothetical: the instructions axis is still unwired, and expandPlan emits
+    // a baseline cell alongside each guidance cell, so "baseline runs, guidance
+    // throws" is the ordinary shape of the very comparison this tool exists for.
+    //
+    // Letting that rejection escape threw away `results` and `skipped`, so the
+    // caller could write no summary and name no cells — the exact "print exactly
+    // which cells never ran" guarantee this loop exists to provide. It comes back
+    // as a stopReason instead, like every other stop.
+    //
+    // The failing cell is counted as NEVER RAN: all four of runCell's throws fire
+    // before the worker is spawned, so nothing was spent on it. A runOne that
+    // could throw after spending would need this to say something weaker.
+    let result;
+    try {
+      result = await runOne(cell);
+    } catch (err) {
+      return {
+        results,
+        skipped: cells.slice(i),
+        // `String(err)` for a non-Error rejection rather than `undefined` — the
+        // whole point of this branch is that the operator gets the REAL reason.
+        stopReason: `cell "${cell.id}" could not be started, so the matrix stopped there: ${errText(err)}`,
+      };
+    }
     results.push(result);
-    if (onResult) await onResult(cell, result);
+    if (onResult) {
+      // Wrapped for the same reason: onResult is a filesystem write in the real
+      // caller, and ENOSPC / EACCES on cell N is not evidence that cells 1..N-1
+      // did not happen. This cell DID run and was billed, so it stays in
+      // `results` and is not listed as never-ran — but its result file may be
+      // missing or truncated, which the stopReason says.
+      try {
+        await onResult(cell, result);
+      } catch (err) {
+        return {
+          results,
+          skipped: cells.slice(i + 1),
+          stopReason:
+            `cell "${cell.id}" ran, but its result could not be written to disk, so the matrix stopped rather than `
+            + `spending more money it could not record: ${errText(err)}`,
+        };
+      }
+    }
 
     if (!capped || i === cells.length - 1) continue;
 
@@ -1158,10 +1272,15 @@ async function main(argv) {
   // -- the estimate. Printed for EVERY invocation, dry-run or not, because the
   // grid above is only half of what someone needs to decide. The prices come
   // from a public catalog endpoint, so this path needs no credential at all.
-  const { roster, estimateCells, parsePriceCatalog, formatUsd, MEASURED_ROSTER_SPEND_USD } = await loadGraders();
+  const {
+    roster, estimateCells, parsePriceCatalog, formatUsd,
+    MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
+  } = await loadGraders();
   const { prices, error: fetchError } = await fetchPrices(roster, parsePriceCatalog);
   const estimate = estimateCells(cells, prices);
-  printEstimate(estimate, cells, { fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD });
+  printEstimate(estimate, cells, {
+    fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
+  });
 
   if (dryRun) {
     // Deliberately BEFORE any key handling: --dry-run must work on a machine
@@ -1169,7 +1288,10 @@ async function main(argv) {
     if (process.env.OPENROUTER_API_KEY) {
       console.log('\n  ! OPENROUTER_API_KEY is set in this shell. A real run would REFUSE it — an inherited env var is');
       console.log('    readable at /proc/<pid>/environ by every descendant, including the Bash tool the model drives.');
-      console.log('    Use --key-file instead (see --help text on a real run).');
+      // Fix pass 1 (2026-08-12 review, MINOR): this used to say "see --help text
+      // on a real run". parseArgs has never parsed --help, so that pointed at
+      // nothing. The remedy is short enough to just say.
+      console.log('    Run it as:  env -u OPENROUTER_API_KEY node test-engine/harness-eval.mjs --plan <file> --key-file <path>');
     }
     console.log('\n(dry run: nothing was spawned and nothing was spent)');
     return;
@@ -1222,10 +1344,31 @@ async function main(argv) {
   console.log(`\nRunning ${cells.length} cell${cells.length === 1 ? '' : 's'} → ${runs.dir}`);
   if (maxSpendUsd !== undefined) console.log(`Spend cap: $${maxSpendUsd.toFixed(2)}, checked between cells.`);
 
-  // The one throw runMatrix can produce is the BASELINE usage read failing,
-  // which happens before the first cell — so nothing has been spent, and saying
-  // so is the part the reader needs. Every other failure comes back as a
-  // stopReason with partial results attached.
+  // -- the summary writer, hoisted so EVERY exit path below can use it (fix pass
+  // 1, 2026-08-12 review, CRITICAL). It used to be written only on the paths
+  // that returned normally, so the whole class of failures that rejected out of
+  // runMatrix left no run-summary.json at all — no `neverRan`, nothing.
+  const summaryFile = path.join(runs.dir, 'run-summary.json');
+  const writeSummary = ({ stopReason, results, skipped }) => {
+    fs.writeFileSync(summaryFile, JSON.stringify({
+      plan: plan.name,
+      stoppedEarly: Boolean(stopReason),
+      stopReason: stopReason ?? null,
+      // NULL, not 0, when nothing could be priced (fix pass 1, MINOR): a literal
+      // 0 in a machine-readable file is the same silent zero the human-facing
+      // output refuses to print, and a script summing these would read an
+      // unpriced matrix as free.
+      estimateUsd: estimate.perCell.some((c) => c.usd !== null) ? estimate.totalUsd : null,
+      unpricedModels: estimate.unpriced,
+      // `null` (not `[]`) means "this run failed in a way it could not attribute,
+      // so which cells ran is unknown" — see the untagged branch below. An empty
+      // array would be a claim that no cell ran.
+      completed: results ? results.map((r) => r.cellId) : null,
+      failed: results ? results.filter((r) => r.error).map((r) => ({ cellId: r.cellId, error: r.error })) : null,
+      neverRan: skipped ? skipped.map((c) => c.id) : null,
+    }, null, 2));
+  };
+
   const matrix = await runMatrix(cells, {
     maxSpendUsd,
     runOne: (cell) => runCell(cell, { apiKey, timeoutMs }),
@@ -1240,27 +1383,44 @@ async function main(argv) {
       console.log(`  ${label} → ${path.basename(file)}`);
     },
   }).catch((err) => {
+    // Fix pass 1 (2026-08-12 review, CRITICAL). This used to print one hardcoded
+    // sentence — "--max-spend was given but the starting OpenRouter usage could
+    // not be read ... NOTHING WAS SPENT" — for EVERY rejection, and runMatrix had
+    // four other reachable rejection paths, all of them AFTER earlier cells had
+    // been billed. A tool whose entire purpose is spend control told the operator
+    // his money was safe when it was not. Two branches now, and neither guesses:
+    // the tag comes from runMatrix, which is the only code that knows.
+    //
+    // Normalised first because a rejection is not guaranteed to be an Error, and
+    // reading `.message` off `null` here would replace the real failure with a
+    // TypeError from the error handler itself.
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    if (err instanceof Error && err.beforeFirstCell) {
+      console.error(
+        `\nharness-eval: the run stopped BEFORE the first cell, so nothing was spawned and nothing was spent.`
+        + `\n  ${err.message}`,
+      );
+      process.exit(2);
+    }
+    // Not attributable. Say exactly that, print the real error, and do NOT claim
+    // anything about what was spent — per-cell result files are written as each
+    // cell finishes, so whatever ran is already on disk.
+    writeSummary({ stopReason: `the run failed in a way it could not attribute: ${detail}` });
     console.error(
-      `\nharness-eval: --max-spend was given but the starting OpenRouter usage could not be read, so the cap `
-      + `could not be established. NOTHING WAS SPENT — the run stopped before the first cell.\n  ${err.message}`,
+      `\nharness-eval: the run stopped and could not attribute the failure to a cell.`
+      + `\n  ${detail}`
+      + `\n  Cells may already have run and been BILLED. Per-cell results, if any, are in ${runs.dir}`
+      + `\n  Summary: ${summaryFile}`,
     );
-    process.exit(2);
+    // 3 (stopped early), not 2 (usage error): whether the matrix is complete is
+    // unknown, and a script must not read it as finished.
+    process.exit(3);
   });
   const { results, skipped, stopReason } = matrix;
 
   // -- the summary. `skipped` is the list this whole gate exists to make
   // legible: exactly which rows of the printed grid never happened.
-  const summaryFile = path.join(runs.dir, 'run-summary.json');
-  fs.writeFileSync(summaryFile, JSON.stringify({
-    plan: plan.name,
-    stoppedEarly: Boolean(stopReason),
-    stopReason: stopReason ?? null,
-    estimateUsd: estimate.totalUsd,
-    unpricedModels: estimate.unpriced,
-    completed: results.map((r) => r.cellId),
-    failed: results.filter((r) => r.error).map((r) => ({ cellId: r.cellId, error: r.error })),
-    neverRan: skipped.map((c) => c.id),
-  }, null, 2));
+  writeSummary({ stopReason, results, skipped });
 
   console.log(`\n${results.length} of ${cells.length} cells ran. Summary: ${summaryFile}`);
   if (stopReason) {

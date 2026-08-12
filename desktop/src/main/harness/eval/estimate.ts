@@ -1,9 +1,12 @@
 // What a matrix of eval cells will cost, in dollars, BEFORE anything is spawned.
 //
 // WHY this module exists and why it is pure: the owner of this repo is not a
-// developer and has been careful about cost — a previous whole-roster review
-// run was measured at $10.38. Nothing may be spent without him first seeing an
-// expanded grid and a dollar figure. A dollar figure that quietly treats an
+// developer and has been careful about cost — three whole-roster review rounds
+// (6-8) were billed $10.38 between them, about $3.46 a round. (Fix pass 1,
+// 2026-08-12 review, MINOR: this line used to read "a previous whole-roster
+// review run was measured at $10.38", which overstated one round's cost by 3x
+// — the source figure covers three rounds.) Nothing may be spent without him
+// first seeing an expanded grid and a dollar figure. A figure that quietly treats an
 // unknown model as free is worse than no figure at all, because it is the exact
 // shape of a number someone would act on. So every gap in the inputs is NAMED
 // in the return value rather than defaulted to zero, and the whole calculation
@@ -57,10 +60,19 @@ export interface EstimatableCell {
 // agentic task is not deterministic. An estimate that under-predicts is the one
 // that costs someone money they did not agree to, so where the evidence
 // disagrees this takes the higher number.
+//
+// AND, BY THE SAME RULE (fix pass 1, 2026-08-12 review, IMPORTANT 1): a run that
+// GAVE UP EARLY is not a measurement of what the battery costs — it is a
+// measurement of how long that model lasted. Those samples are kept below in
+// TRUNCATED_SAMPLES, out of the tables, so their labels fall to the conservative
+// fallback and are NAMED in `unmeasured`. Leaving them in the tables made the
+// estimate read LOW for exactly the plans that lean on them, which is the one
+// direction this module exists to prevent.
 // ---------------------------------------------------------------------------
 
 /** Measured whole-run OUTPUT tokens, per roster label. See the block above for
- *  provenance; values are max(2026-08-10 figure where one exists, 2026-08-11). */
+ *  provenance; values are max(2026-08-10 figure where one exists, 2026-08-11).
+ *  Labels in TRUNCATED_SAMPLES are deliberately absent. */
 export const MEASURED_OUTPUT_TOKENS: Record<string, number> = {
   'Claude Opus 5': 14_200, //  2026-08-10:  8,379 · 2026-08-11: 14,200
   'Qwen 3.8 Max': 11_766, //   2026-08-10: 11,766 · 2026-08-11: 11,490
@@ -68,8 +80,7 @@ export const MEASURED_OUTPUT_TOKENS: Record<string, number> = {
   'GPT 5.6 Luna': 4_375, //    2026-08-10:  4,098 · 2026-08-11:  4,375
   'Grok 4.5': 3_790, //        2026-08-10:  3,662 · 2026-08-11:  3,790
   'Qwen 3.5 122B A10B': 3_773, //      2026-08-11 only
-  'Qwen 3.6 35B A3B': 6_906, //        2026-08-11 only (run ended 'wrapped-up')
-  'Qwen 3.6 27B': 2_861, //            2026-08-11 only (7 calls, 'wrapped-up')
+  'Qwen 3.6 35B A3B': 6_906, //        2026-08-11 only (looped, then wrapped up)
 };
 
 /** Measured whole-run INPUT tokens, per roster label — 2026-08-11 round only,
@@ -77,36 +88,78 @@ export const MEASURED_OUTPUT_TOKENS: Record<string, number> = {
  *
  *  WHY input is tracked separately and not derived from output by a ratio: the
  *  ratio is not stable. It runs from 10x (Qwen 3.6 27B, which gave up after 7
- *  calls) to 206x (Qwen 3.6 35B A3B, which looped), so any single multiplier
- *  would be an invented number dressed up as a measurement. */
+ *  calls — see TRUNCATED_SAMPLES) to 206x (Qwen 3.6 35B A3B, which looped), so
+ *  any single multiplier would be an invented number dressed up as a
+ *  measurement. Labels in TRUNCATED_SAMPLES are deliberately absent here too. */
 export const MEASURED_INPUT_TOKENS: Record<string, number> = {
   'Claude Opus 5': 620_813,
   'Deepseek v4 flash 0731': 565_321,
   'GPT 5.6 Luna': 255_319,
   'Grok 4.5': 125_690,
   'Qwen 3.5 122B A10B': 257_658,
-  'Qwen 3.6 27B': 29_987,
   'Qwen 3.6 35B A3B': 1_419_716, // a looping run — the reason --max-spend exists
   'Qwen 3.8 Max': 304_615,
 };
 
-/** Whole-roster spend actually billed for one round, measured 2026-08-11 from
- *  OpenRouter's own `/api/v1/key` usage counter and recorded in
- *  `.claude/rules/harness-review-runner.md` ("$10.38 for rounds 6-8, ~$3.46 a
- *  roster"). Exported as a CALIBRATION ANCHOR, not as an input to the maths: it
- *  is the one figure here that came from the biller rather than from token
- *  counting, so an estimate for eight battery cells that lands nowhere near it
- *  means the token table or the catalog prices are wrong.
+/**
+ * Roster labels whose only sample came from a run that STOPPED EARLY, recorded
+ * here and deliberately NOT used to price anything.
  *
- *  CALIBRATED 2026-08-12 against live catalog prices: this module estimates
- *  $4.82 for the eight-cell roster the biller charged $3.46 for — 39% HIGH,
- *  which is the direction an estimate should err in for a spend decision. The
- *  likely gap is prompt caching (an agentic loop re-sends its history every
- *  step, and OpenRouter lists Opus cache reads at $0.50/M against $5/M for
- *  fresh input — a 10x discount this estimate deliberately does not assume),
- *  plus the anchor itself being an average over rounds 6-8 rather than one
- *  measured round. */
+ * WHY they are excluded rather than used (fix pass 1, 2026-08-12 review,
+ * IMPORTANT 1): Qwen 3.6 27B's 29,987 input tokens sit ~20x below Opus's
+ * 620,813 for the same battery, and that gap is a property of the run ending
+ * after 7 tool calls, not of the model being cheap. Pricing a cell from it means
+ * a matrix weighted toward that model estimates LOW — the failure this module
+ * exists to prevent — and it contradicts the rule two blocks up, which takes the
+ * LARGER of two rounds precisely because one sample of a non-deterministic path
+ * does not establish a cost.
+ *
+ * The effect of being listed here: `estimateCells` finds no entry in either
+ * measured table, prices the cell from FALLBACK_*_TOKENS (the worst measured
+ * row), and NAMES the label in `unmeasured` so the operator is told the row is
+ * an assumption rather than a measurement. The numbers are kept so a future
+ * round can compare against them instead of re-deriving them from gitignored
+ * transcripts.
+ */
+export const TRUNCATED_SAMPLES: Record<string, { inputTokens: number; outputTokens: number; why: string }> = {
+  'Qwen 3.6 27B': {
+    inputTokens: 29_987,
+    outputTokens: 2_861,
+    why: "2026-08-11: gave up after 7 tool calls and ended 'wrapped-up'. A measurement of how long it lasted, not of what the battery costs.",
+  },
+};
+
+/** The AVERAGE whole-roster spend across THREE rounds, not one measured round:
+ *  OpenRouter's own `/api/v1/key` usage counter recorded $10.38 for rounds 6-8
+ *  (`.claude/rules/harness-review-runner.md`, "$10.38 for rounds 6-8, ~$3.46 a
+ *  roster"), and 10.38 / 3 = 3.46.
+ *
+ *  Exported as a rough CALIBRATION ANCHOR, not as an input to the maths: it is
+ *  the one figure here that came from the biller rather than from token
+ *  counting, so an estimate for eight battery cells landing an order of
+ *  magnitude away from it means the token table or the catalog prices are wrong.
+ *
+ *  WHAT IT DOES NOT ESTABLISH (fix pass 1, 2026-08-12 review, IMPORTANT 2). This
+ *  comment used to say "$4.82 estimated vs $3.46 billed — 39% HIGH, the safe
+ *  direction". That comparison does not hold up: the token tables come from ONE
+ *  round (2026-08-11) and this figure is the MEAN of three. If 2026-08-11 was the
+ *  expensive round of the three, the same arithmetic could be showing the
+ *  estimate reading LOW. The per-round figures were never recorded separately, so
+ *  the direction of the error is UNMEASURED and no directional claim is made
+ *  here or in what the CLI prints. Establishing one means recording
+ *  `/api/v1/key` usage before and after a single roster round.
+ *
+ *  The size of the gap is likewise unexplained. Prompt caching is one candidate
+ *  (an agentic loop re-sends its history every step, and OpenRouter lists cache
+ *  reads far below fresh input) but nothing here measured whether these runs hit
+ *  a cache, so it is named as a candidate and not as the cause. */
 export const MEASURED_ROSTER_SPEND_USD = 3.46;
+
+/** The raw billed figure and the number of rounds it covers, so a reader never
+ *  has to trust that the division above was done right — and so the CLI can
+ *  print the caveat next to the number instead of only next to its definition. */
+export const MEASURED_ROSTER_SPEND_ROUNDS = 3;
+export const MEASURED_ROSTER_SPEND_TOTAL_USD = 10.38;
 
 /** Token counts used for a model with no measurement at all — the worst row of
  *  each measured table.
@@ -176,14 +229,21 @@ export function estimateCells(
 
     const outputTokens = MEASURED_OUTPUT_TOKENS[cell.model];
     const inputTokens = MEASURED_INPUT_TOKENS[cell.model];
-    if (outputTokens === undefined || inputTokens === undefined) unmeasured.add(cell.model);
 
+    // Fix pass 1 (2026-08-12 review, MINOR): the `unmeasured` add used to happen
+    // HERE, before the price check below. A model that is both unpriced and
+    // unmeasured then appeared in BOTH printed lists, whose prose contradicts:
+    // "priced from the worst measured run, so those rows read HIGH" next to
+    // "no price for these — they are NOT in the total". Only one can be true of a
+    // given row, and it is the unpriced one, because that row was never priced at
+    // all. So `unmeasured` now means "priced, but from an assumption".
     const price = Object.prototype.hasOwnProperty.call(prices, cell.model) ? prices[cell.model] : undefined;
     if (!price) {
       unpriced.add(cell.model);
       perCell.push({ cellId: cell.id, model: cell.model, usd: null });
       continue;
     }
+    if (outputTokens === undefined || inputTokens === undefined) unmeasured.add(cell.model);
 
     const usd =
       ((inputTokens ?? FALLBACK_INPUT_TOKENS) / 1_000_000) * price.inputPerM
@@ -215,11 +275,19 @@ export function estimateCells(
  *
  * WHY only `prompt`/`completion` and not the other catalog rates: `pricing` also
  * carries `input_cache_read`, `input_cache_write` and per-model `overrides`
- * (Grok 4.5 doubles above a 200k-token prompt). None are modelled here — this
- * harness sends no cached prefixes, and the measured per-run input totals are
- * SUMS across ~50 steps rather than one giant prompt, so no single request is
- * near the override threshold. If that stops being true the estimate reads LOW,
- * which is why --max-spend exists as well as this.
+ * (Grok 4.5 doubles above a 200k-token prompt). Neither is modelled here.
+ *
+ * Fix pass 1 (2026-08-12 review, IMPORTANT 2): this paragraph used to assert
+ * "this harness sends no cached prefixes", while MEASURED_ROSTER_SPEND_USD's
+ * comment simultaneously explained the whole estimate-vs-billed gap AS prompt
+ * caching. Both cannot be true, and NEITHER was measured — so both assertions
+ * are gone rather than one of them being picked. What is actually known: cache
+ * rates are not modelled, so if these runs DO hit a provider cache the estimate
+ * reads high, and if they do not it is unaffected. The override threshold is
+ * likewise not modelled; measured per-run input totals are SUMS across ~50 steps
+ * rather than one giant prompt, so no single request was near it. If that stops
+ * being true the estimate reads LOW, which is why --max-spend exists as well as
+ * this.
  *
  * Malformed or non-numeric entries are SKIPPED rather than coerced, so they
  * surface as `unpriced` (named) instead of as a wrong number.
