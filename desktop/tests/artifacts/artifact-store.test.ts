@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration } from '../../src/main/artifacts/artifact-store';
@@ -270,12 +270,39 @@ describe('runSidecarMigration', () => {
       path: 'flappy-bird/play.html', kind: 'internal', absolutePath: null,
     });
 
-    // No-op via the reclassified === 0 gate — NOT via the process memo, which a
-    // fresh temp root cannot have populated for a second distinct project.
+    // Both calls share this test's projectRoot AND this test's module instance,
+    // so the first call's `migrationChecked.add(projectRoot)` is still warm here
+    // — this second call short-circuits on the MEMO, before readSidecar ever
+    // runs. That's cheap and worth pinning (repeat calls in one process should
+    // not re-scan), but it proves nothing about the production run-once gate
+    // (`reclassified === 0` from the pure migration). See the next test for that.
     const second = await runSidecarMigration(projectRoot);
     expect(second).toMatchObject({ migrated: false, reclassified: 0 });
     const unchanged = await readSidecar(projectRoot) as ProjectSidecar;
     expect(unchanged.updatedAt).toBe(after.updatedAt);   // it did not rewrite
+  });
+
+  // The test above cannot reach the real gate: same process + same projectRoot
+  // means the memo is always warm on the second call. This test forces a COLD
+  // memo — via vi.resetModules() + a dynamic re-import, which re-evaluates
+  // artifact-store.ts and so constructs a brand new, empty `migrationChecked`
+  // Set — and re-runs the migration against the already-repaired sidecar on
+  // disk. If this ever regresses to relying on the memo, a peer device that
+  // wrote a fresh relative-external record after this process's memo was
+  // populated would never get it repaired; if it regresses to re-writing
+  // unconditionally, every LIST_SESSION call would rewrite the sidecar.
+  it('declines to rewrite an already-repaired sidecar even with a cold memo', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    await runSidecarMigration(projectRoot);
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+
+    vi.resetModules();
+    const fresh = await import('../../src/main/artifacts/artifact-store');
+    const second = await fresh.runSidecarMigration(projectRoot);
+    expect(second).toEqual({ migrated: false, reclassified: 0, merged: 0 });
+
+    const unchanged = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(unchanged.updatedAt).toBe(after.updatedAt);   // genuinely declined to rewrite
   });
 
   it('does not write, or back up, a sidecar with nothing to repair', async () => {
@@ -288,12 +315,33 @@ describe('runSidecarMigration', () => {
     expect(readdirSync(join(projectRoot, '.youcoded')).filter((f) => f.includes('.bak'))).toHaveLength(0);
   });
 
-  it('backs the sidecar up exactly once before rewriting it', async () => {
+  // Pins the FIXED backup name (not one file per attempt). The second
+  // migration call in the old version of this test was a memo short-circuit —
+  // it never reached the copyFile/EEXIST branch a second time — so it proved
+  // nothing beyond what one call already does; calling once is honest about
+  // what's being checked.
+  it('backs the sidecar up under a fixed name before rewriting it', async () => {
     await writeSidecar(projectRoot, null, legacy() as any);
-    await runSidecarMigration(projectRoot);
     await runSidecarMigration(projectRoot);
     const backups = readdirSync(join(projectRoot, '.youcoded'))
       .filter((f) => f.startsWith('artifacts.json.pre-migration'));
     expect(backups).toEqual(['artifacts.json.pre-migration.bak']);
+  });
+
+  // The backup is the only way back from a bad migration, so it must protect
+  // the OLDEST copy — a retry (or a second window racing the same repair)
+  // must never clobber it with already-half-migrated state. Pre-creating the
+  // backup file with a sentinel and asserting the sentinel survives is what
+  // actually exercises the COPYFILE_EXCL + swallowed-EEXIST branch; without
+  // COPYFILE_EXCL (a plain copyFile) this test fails because the sentinel
+  // gets overwritten.
+  it('never overwrites an existing backup', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    const backupPath = join(projectRoot, '.youcoded/artifacts.json.pre-migration.bak');
+    writeFileSync(backupPath, 'SENTINEL-PRE-EXISTING-BACKUP');
+
+    const res = await runSidecarMigration(projectRoot);
+    expect(res.migrated).toBe(true);   // migration itself still proceeds
+    expect(readFileSync(backupPath, 'utf8')).toBe('SENTINEL-PRE-EXISTING-BACKUP');
   });
 });
