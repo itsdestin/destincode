@@ -14,6 +14,24 @@ export interface PermissionRule {
   action: PermissionAction;
 }
 
+/** A remembered rule as STORED — the engine's PermissionRule plus provenance
+ *  the engine never reads. `grantedAt` is absent on every rule written before
+ *  the management UI existed; the UI shows no date rather than inventing one. */
+export interface StoredRule extends PermissionRule {
+  /** ISO-8601. Absent on pre-existing rules. */
+  grantedAt?: string;
+}
+
+/** One project's slice of permissions.json, as the management UI reads it.
+ *  `cwd` is absent for entries written before the UI existed: cwdToProjectSlug
+ *  collapses ':', '\', '/' AND spaces all to '-', so the original path is NOT
+ *  recoverable from the slug. That is why removal keys by slug, not cwd. */
+export interface StoredProject {
+  slug: string;
+  cwd?: string;
+  rules: StoredRule[];
+}
+
 export interface PermissionDecision {
   action: PermissionAction;
   /** True when the winning rule came from the destructive deny-list — drives

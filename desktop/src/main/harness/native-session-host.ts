@@ -44,6 +44,10 @@ import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
+// Same import PermissionStore uses, for the same reason: the project slug MUST
+// come from ONE function everywhere, or the host and the store would disagree
+// about which live sessions a stored entry belongs to.
+import { cwdToProjectSlug } from '../transcript-watcher';
 import type { McpLease } from './mcp/mcp-manager';
 
 export interface CreateNativeSessionOpts {
@@ -59,10 +63,19 @@ export interface CreateNativeSessionOpts {
 export interface RememberedRuleStore {
   rulesFor(cwd: string): Promise<PermissionRule[]>;
   remember(cwd: string, rule: PermissionRule): Promise<void>;
+  // Removal keys by project SLUG, not cwd: the slug is what is actually on disk,
+  // and cwdToProjectSlug is lossy (see revokeRule), so an entry written before
+  // the management UI existed has no recoverable cwd to pass. Both return
+  // whether anything actually matched, so the caller can tell the user their
+  // on-screen list was stale instead of claiming a success that never happened.
+  remove(slug: string, rule: PermissionRule): Promise<boolean>;
+  removeProject(slug: string): Promise<boolean>;
 }
 const NOOP_REMEMBERED_STORE: RememberedRuleStore = {
   async rulesFor() { return []; },
   async remember() { /* no-op */ },
+  async remove() { return false; },
+  async removeProject() { return false; },
 };
 
 // M1 send queue: bounded per program §2.1 — past this many FIFO'd sends, send()
@@ -608,6 +621,53 @@ export class NativeSessionHost extends EventEmitter {
     }
     this.modeFor.set(sessionId, mode);
     return mode;
+  }
+
+  /** Revoke ONE remembered "Always allow": disk first, then every live session's
+   *  in-memory copy. Returns whether the store actually matched anything on disk
+   *  — the renderer uses that to say "we couldn't find it" rather than reporting
+   *  success against a list that had gone stale.
+   *
+   *  ONE ENTRY POINT ON PURPOSE. buildDecide() unions the on-disk rules with
+   *  `rememberedFor` on EVERY decision, so a disk-only delete leaves a running
+   *  session granting exactly what the user just revoked — the failure this whole
+   *  feature exists to prevent. That is also why the naming differs from the
+   *  store's: PermissionStore.remove / removeProject are DISK ONLY, while
+   *  revokeRule / revokeProject are disk PLUS live memory. IPC handlers must call
+   *  these, never the store's — "fixing the inconsistency" reintroduces the bug.
+   *
+   *  Matching is by SLUG, never by path equality: cwdToProjectSlug collapses ':',
+   *  '\', '/' AND spaces all to '-', so two differently-spelled cwds ('/home/d/my
+   *  project' and '/home/d/my-project') genuinely share one entry on disk — and
+   *  must therefore both be cleared in memory too.
+   *
+   *  The in-memory filter compares the (tool, pattern, action) TRIPLE, not whole
+   *  objects: a rule read back off disk carries a `grantedAt` key the in-memory
+   *  copy never had, so an equality check would silently stop matching. */
+  async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
+    const hit = await this.permissionStore.remove(slug, rule);
+    for (const [sessionId, entry] of this.live) {
+      if (cwdToProjectSlug(entry.cwd) !== slug) continue;
+      const mem = this.rememberedFor.get(sessionId);
+      if (!mem) continue;
+      this.rememberedFor.set(sessionId, mem.filter(
+        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action),
+      ));
+    }
+    return hit;
+  }
+
+  /** Revoke EVERY remembered rule for a project (the "clear all for this folder"
+   *  control). Same disk-plus-live-memory contract and same slug matching as
+   *  revokeRule — see its comment for why both halves are mandatory. */
+  async revokeProject(slug: string): Promise<boolean> {
+    const hit = await this.permissionStore.removeProject(slug);
+    for (const [sessionId, entry] of this.live) {
+      // delete, not set([]): an absent entry and an empty one read identically in
+      // buildDecide (`?? []`), and deleting keeps the map from accumulating empties.
+      if (cwdToProjectSlug(entry.cwd) === slug) this.rememberedFor.delete(sessionId);
+    }
+    return hit;
   }
 
   /** The per-session permission decision closure passed into each HarnessSession.

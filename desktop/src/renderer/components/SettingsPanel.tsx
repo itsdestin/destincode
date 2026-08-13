@@ -24,6 +24,8 @@ import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
+import PermissionsSection from './PermissionsSection';
+import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from './permissions/permissions-explainer';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
@@ -1770,6 +1772,69 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   );
 }
 
+// ─── Permissions (M5 item 2a) ──────────────────────────────────────────────
+
+// Settings → Permissions: every "Always allow" a native session remembered,
+// with a way to take it back. The list itself lives in PermissionsSection.tsx;
+// this is only the row + the Dialog frame + the (i) explainer toggle, which is
+// the same shape Remote Access, Backup & Sync and Appearance already use.
+//
+// NOT gated on window.claude.native.supported, unlike ModelProvidersSection
+// above. remote-shim.ts hardcodes that flag false, so copying the gate would
+// render nothing over remote access — the one transport where revoking a grant
+// from a phone matters. Spec 2026-08-11, "Open item for Phase 1 review".
+//
+// No popupRef / outside-click effect here: <Dialog>'s own Scrim already calls
+// onClose. The older popups in this file predate that and keep a duplicate
+// handler; new ones should not grow one.
+function PermissionsButton() {
+  const [open, setOpen] = useState(false);
+  // Flips the dialog body to the plain-language explainer. Reset on every
+  // re-open so the user always lands on the list, not on whichever view they
+  // happened to leave behind (same reason RemoteButton resets its showInfo).
+  const [showInfo, setShowInfo] = useState(false);
+
+  useEffect(() => {
+    if (!open) setShowInfo(false);
+  }, [open]);
+
+  return (
+    <>
+      <SettingRow
+        icon={
+          // Shield + check: an approval you granted, not a lock you're behind.
+          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+        }
+        title="Permissions"
+        description="Things you approved with “Always allow”"
+        onClick={() => setOpen(true)}
+      />
+
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={showInfo ? 'About Permissions' : 'Permissions'}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
+        size="panel"
+        fill
+      >
+        {showInfo ? (
+          <SettingsExplainer
+            intro={PERMISSIONS_EXPLAINER_INTRO}
+            sections={PERMISSIONS_EXPLAINER_SECTIONS}
+          />
+        ) : (
+          <PermissionsSection />
+        )}
+      </Dialog>
+    </>
+  );
+}
+
 // ─── Tier selector popup ───────────────────────────────────────────────────
 
 // Mirrors PackageTier.kt — descriptions list the actual packages each tier
@@ -2568,6 +2633,15 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, on
         />
 
         <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
+
+        {/* Permissions sits directly under Defaults because they are the two
+            halves of the same question: Defaults sets how much a NEW session
+            asks, Permissions lists the individual asks you already waived.
+            Desktop-authoritative — NOT mounted in AndroidSettings, whose
+            runtime stubs the permissions:* channels (M8 owns Android parity).
+            A phone reaching this over remote access reports platform 'browser',
+            so it renders DesktopSettings and still gets the screen. */}
+        <PermissionsButton />
 
         {/* Development — bug reports, contributions, known issues */}
         <SettingRow

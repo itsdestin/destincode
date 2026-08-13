@@ -38,12 +38,32 @@ function existsInPreload(path: string): boolean {
   return !!block && new RegExp(`^    ${parts[1]}\\s*[:(]`, 'm').test(block);
 }
 
-/** remote-shim is a flatter file than preload, so scope by nothing and match the
- *  leaf. Looser than the preload scan on purpose — it is the fallback for the
- *  few channels preload legitimately lacks, not the primary check. */
+// remote-shim nests its namespaces one level deeper than preload (indent 4, with
+// members at indent 6), so it needs its own brace scan rather than reusing
+// namespaceBlock's indent-2 pattern.
+function remoteShimNamespaceBlock(ns: string): string | null {
+  const start = remoteShim.search(new RegExp(`^    ${ns}: \\{`, 'm'));
+  if (start < 0) return null;
+  const end = remoteShim.indexOf('\n    },', start);
+  return end < 0 ? remoteShim.slice(start) : remoteShim.slice(start, end);
+}
+
+/** `'on.chatHydrate'` -> is there a `chatHydrate` inside remote-shim's `on` block?
+ *
+ *  WHY namespace-scoped and not a bare leaf match (which is what this was until
+ *  2026-08-11): a leaf regex reports `permissions.list` as REAL because some
+ *  other namespace happens to have a `list:`. That false positive made the
+ *  MOCK_ONLY staleness check below fail the moment MOCK_ONLY got its first
+ *  entries — the check would have kept firing for any future `*.list` or
+ *  `*.remove` channel too. Scoping is strictly stronger; `on.chatHydrate`, the
+ *  one channel that legitimately relies on this fallback, still resolves. */
 function existsInRemoteShim(path: string): boolean {
-  const leaf = path.split('.').pop()!;
-  return new RegExp(`\\b${leaf}\\s*:`).test(remoteShim);
+  const parts = path.split('.');
+  if (parts.length === 1) {
+    return new RegExp(`\\b${parts[0]}\\s*:`).test(remoteShim);
+  }
+  const block = remoteShimNamespaceBlock(parts[0]);
+  return !!block && new RegExp(`^      ${parts[1]}\\s*[:(]`, 'm').test(block);
 }
 
 function existsSomewhereReal(path: string): boolean {
@@ -62,6 +82,24 @@ describe('workbench mock contract', () => {
     // in `models`, not `session`. A file-wide regex would call this true.
     expect(existsInPreload('session.memoryCheck')).toBe(false);
     expect(existsInPreload('models.memoryCheck')).toBe(true);
+  });
+
+  // Same sanity guard for the shim scan: if it silently resolved nothing, the
+  // MOCK_ONLY staleness check below would pass vacuously.
+  it('the remote-shim scan actually resolves known channels', () => {
+    expect(existsInRemoteShim('on.chatHydrate')).toBe(true);
+    expect(existsInRemoteShim('providers.list')).toBe(true);
+    expect(existsInRemoteShim('on.thisDoesNotExist')).toBe(false);
+    // The false positive that scoping exists to kill. This probe used to be
+    // `permissions.list` / `permissions.remove`, which stopped proving anything
+    // the moment permissions gained a real remote-shim namespace (M5 2a) — a
+    // probe has to name something that genuinely does NOT exist. `notifications`
+    // has no namespace in the shim, while `list:` and `remove:` are real leaves
+    // elsewhere in the file, so an unscoped leaf match would resolve these.
+    expect(existsInRemoteShim('notifications.list')).toBe(false);
+    expect(existsInRemoteShim('notifications.remove')).toBe(false);
+    // ...and permissions, which DID gain one, must now resolve.
+    expect(existsInRemoteShim('permissions.list')).toBe(true);
   });
 
   // The rule that keeps UI-first development honest: a hand-written channel

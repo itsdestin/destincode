@@ -4,6 +4,8 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
+import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
@@ -689,6 +691,10 @@ describe('NativeSessionHost', () => {
       const hangingStore = {
         rulesFor: async () => [] as any[],
         remember: () => new Promise<void>(() => { /* never resolves */ }),
+        // Present only to satisfy RememberedRuleStore, which the revocation task
+        // widened with remove/removeProject. Never called in this test.
+        remove: async () => false,
+        removeProject: async () => false,
       };
       const p = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
@@ -711,6 +717,174 @@ describe('NativeSessionHost', () => {
       await waitForTurnComplete(p, 1);
       expect(asks).toHaveLength(1);       // still just the first ask (no re-ask)
       expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
+    });
+  });
+
+  // ---- M5 2a Task 7: revocation that reaches a LIVE session ----
+  // The whole feature rests on this. buildDecide() unions the on-disk rules with
+  // the per-session `rememberedFor` map on EVERY permission decision, so deleting
+  // a rule from disk alone leaves a running session still granting exactly what
+  // the user just revoked. These tests drive REAL turns (writeFactory builds a
+  // fresh scripted model per turn, so every turn genuinely re-attempts the gated
+  // Write) and assert on whether the session asks again — the only observable
+  // that proves the revoke actually landed.
+  describe('revokeRule / revokeProject', () => {
+    const binding = { providerId: 'openrouter', modelId: 'm' } as const;
+
+    /** A host wired to the given remembered-rule store, driving the Write-then-stop turn. */
+    const revokeHost = (permStore: any) => new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      permStore, '9.9.9',
+    );
+
+    /** Drive one whole turn whose gated Write is answered with "Always allow".
+     *  Sequential by construction — firstAsk/waitForTurnComplete are host-wide,
+     *  not per-session, so two of these must never overlap. */
+    async function alwaysAllowTurn(p: NativeSessionHost, sessionId: string, text: string): Promise<void> {
+      const ask = firstAsk(p);
+      const done = waitForTurnComplete(p, 1);
+      p.send(sessionId, text);
+      p.respondPermission(await ask, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
+      await done;
+    }
+
+    /** Drive one whole turn and report whether it raised a permission ask.
+     *  Answers any ask with a deny so the turn always finishes — a firstAsk()
+     *  await would hang forever on the (expected) no-ask path. */
+    async function turnAsked(p: NativeSessionHost, sessionId: string, text: string): Promise<boolean> {
+      let asked = false;
+      const onHook = (e: any) => {
+        if (e.type !== 'PermissionRequest' || asked) return;
+        asked = true;
+        p.respondPermission(e.payload._requestId, { decision: { behavior: 'deny' } });
+      };
+      p.on('hook-event', onHook);
+      const done = waitForTurnComplete(p, 1);
+      p.send(sessionId, text);
+      await done;
+      p.off('hook-event', onHook);
+      return asked;
+    }
+
+    /** The disk persist behind "Always allow" is fire-and-forget (mutateJson under
+     *  a file lock), so wait for it to land before revoking — otherwise remove()
+     *  could run BEFORE the write and report a miss that is really a race. */
+    async function waitForStoredRule(store: PermissionStore, cwd: string): Promise<PermissionRule> {
+      for (let i = 0; i < 100; i++) {
+        const hit = (await store.rulesFor(cwd)).find((r) => r.tool === 'Write' && r.action === 'allow');
+        if (hit) return hit;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error('the remembered Write rule never reached disk');
+    }
+
+    it('stops a live session granting the revoked rule', async () => {
+      const store = new PermissionStore(new NativeHome(root));
+      const p = revokeHost(store);
+      await p.create({ sessionId: 's', cwd: root, binding });
+
+      await alwaysAllowTurn(p, 's', 'write once');
+      expect(await turnAsked(p, 's', 'write again')).toBe(false);   // remembered — no ask
+
+      // Pass the rule AS STORED, which carries a grantedAt key the in-memory copy
+      // never had. Matching must be on the (tool, pattern, action) TRIPLE — a
+      // whole-object comparison would silently stop dropping the in-memory rule.
+      const stored = await waitForStoredRule(store, root);
+      expect((stored as any).grantedAt).toBeTypeOf('string');
+      await expect(p.revokeRule(cwdToProjectSlug(root), stored)).resolves.toBe(true);
+
+      // Disk is clear AND the SAME still-running session asks again. If revokeRule
+      // had only touched disk, rememberedFor would still grant and this stays false.
+      expect(await store.rulesFor(root)).toEqual([]);
+      expect(await turnAsked(p, 's', 'write a third time')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('clears sessions whose cwd differs in spelling but shares the slug', async () => {
+      // cwdToProjectSlug collapses spaces to '-' exactly as it does '/', so these
+      // two REAL, distinct directories genuinely share one entry on disk.
+      const spacedCwd = path.join(root, 'my project');
+      const dashedCwd = path.join(root, 'my-project');
+      fs.mkdirSync(spacedCwd); fs.mkdirSync(dashedCwd);
+      expect(cwdToProjectSlug(spacedCwd)).toBe(cwdToProjectSlug(dashedCwd));   // the premise
+
+      // A store that never grants and never persists: rulesFor is always [], so
+      // the ONLY thing that can make either session grant is its in-memory copy —
+      // which is precisely what a slug-keyed drop has to clear in BOTH sessions.
+      // (A real store would also mean the first session's disk write silently
+      // pre-granted the second one, so it could never build an in-memory copy.)
+      const memoryOnlyStore = {
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      };
+      const p = revokeHost(memoryOnlyStore);
+      await p.create({ sessionId: 'spaced', cwd: spacedCwd, binding });
+      await p.create({ sessionId: 'dashed', cwd: dashedCwd, binding });
+      await alwaysAllowTurn(p, 'spaced', 'write once');
+      await alwaysAllowTurn(p, 'dashed', 'write once');
+      expect(await turnAsked(p, 'spaced', 'again')).toBe(false);
+      expect(await turnAsked(p, 'dashed', 'again')).toBe(false);
+
+      await p.revokeRule(cwdToProjectSlug(spacedCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+
+      // Path equality would have cleared at most one of these.
+      expect(await turnAsked(p, 'spaced', 'after revoke')).toBe(true);
+      expect(await turnAsked(p, 'dashed', 'after revoke')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('leaves an unrelated project untouched', async () => {
+      const mineCwd = path.join(root, 'mine');
+      const otherCwd = path.join(root, 'other');
+      fs.mkdirSync(mineCwd); fs.mkdirSync(otherCwd);
+      const memoryOnlyStore = {
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      };
+      const p = revokeHost(memoryOnlyStore);
+      await p.create({ sessionId: 'mine', cwd: mineCwd, binding });
+      await p.create({ sessionId: 'other', cwd: otherCwd, binding });
+      await alwaysAllowTurn(p, 'mine', 'write once');
+      await alwaysAllowTurn(p, 'other', 'write once');
+
+      await p.revokeRule(cwdToProjectSlug(mineCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+
+      expect(await turnAsked(p, 'mine', 'after revoke')).toBe(true);
+      expect(await turnAsked(p, 'other', 'after revoke')).toBe(false);   // untouched
+      await p.destroyAll();
+    });
+
+    it('returns false when the store matched nothing', async () => {
+      const p = revokeHost(new PermissionStore(new NativeHome(root)));
+      await expect(
+        p.revokeRule('-never-granted', { tool: 'Bash', pattern: 'ls', action: 'allow' }),
+      ).resolves.toBe(false);
+      await p.destroyAll();
+    });
+
+    it('revokeProject clears the whole slice on disk AND in the live session', async () => {
+      const store = new PermissionStore(new NativeHome(root));
+      const p = revokeHost(store);
+      await p.create({ sessionId: 's', cwd: root, binding });
+      await alwaysAllowTurn(p, 's', 'write once');
+      await waitForStoredRule(store, root);
+      expect(await turnAsked(p, 's', 'write again')).toBe(false);
+
+      await expect(p.revokeProject(cwdToProjectSlug(root))).resolves.toBe(true);
+
+      expect(await store.list()).toEqual([]);
+      expect(await turnAsked(p, 's', 'after revoke')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('revokeProject returns false for a slug with nothing stored', async () => {
+      const p = revokeHost(new PermissionStore(new NativeHome(root)));
+      await expect(p.revokeProject('-never-granted')).resolves.toBe(false);
       await p.destroyAll();
     });
   });

@@ -1,0 +1,103 @@
+import type { ExplainerSection } from '../SettingsExplainer';
+
+// The "What is this?" content behind the (i) on Settings → Permissions.
+//
+// Layman's terms on purpose — this doubles as in-app help (see the
+// SettingsExplainer module header). No tool ids, no rule syntax, nothing a
+// non-developer would have to look up.
+//
+// WHY this is data rather than markup: SettingsExplainer owns every bit of the
+// rendering, so the copy can be reviewed (and later translated) without reading
+// a component. It also keeps SettingsPanel.tsx, already 2,600+ lines, from
+// growing another screen of prose.
+//
+// THIS FILE IS WHERE THE EXPLANATION LIVES. The Permissions body is reference
+// and data — three one-line mode definitions, the short list of what the app
+// never waves through, and the approvals themselves. It carries NO mode control:
+// mode is per-conversation state set from the status-bar chip in the chat, so a
+// control on that screen would set nothing (PermissionsSection.tsx, MODES).
+// Everything that used to be a paragraph on that screen was folded in here (the
+// mode caption, the always-asks framing, how far an approval reaches), and the
+// paragraph the body used to print about Claude Code was deleted outright
+// because this file already had it. Length is fine here; a reader opened the (i)
+// on purpose.
+//
+// The intro deliberately does NOT restate what the list itself says. The
+// section's own first line already tells the user what the entries ARE and what
+// removing one does; this tells them where the entries come from and points at
+// the settings that decide how often they get asked in the first place.
+export const PERMISSIONS_EXPLAINER_INTRO =
+  'The assistant asks you first before it does anything that changes your computer — running a command, editing a file. Choosing “Always allow” when it asks is what puts something on this list. How often it checks with you in the first place is a separate setting, explained below.';
+
+export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
+  {
+    // Wording follows the chip at the bottom of the chat exactly (StatusBar's
+    // PERMISSION_DISPLAY: ASK FIRST / AUTO EDIT / FULL AUTO), so the help text
+    // names the same three things the user can see and click.
+    //
+    // The second paragraph is the caption that used to sit under the mode
+    // control on the screen itself. It says "each conversation" and "change it
+    // at any time" and nothing about a saved default, because there is no
+    // persisted default-mode setting — the mode belongs to the conversation.
+    heading: 'How much it asks',
+    paragraphs: [
+      'Each conversation has its own setting for how often it checks with you, and you can change it part-way through — from the bar at the bottom of the chat.',
+    ],
+    bullets: [
+      { term: 'Ask first', text: 'checks with you before anything that changes your files or runs a command. Reading and searching never ask.' },
+      { term: 'Auto edit', text: 'edits files without asking, but still checks before running commands.' },
+      { term: 'Full auto', text: 'does not check with you at all, apart from the things it always asks about. Use it when you are watching.' },
+    ],
+  },
+  {
+    // "Preset" is the label on the new-session form (RuntimeBinding's preset
+    // picker). The code calls these personality profiles; the user never sees
+    // that word, so the heading uses the one on screen.
+    heading: 'Presets',
+    paragraphs: [
+      'When you start a conversation you pick a preset, and that decides where it starts out.',
+    ],
+    bullets: [
+      { term: 'Assistant', text: 'starts out cautious and asks about most things.' },
+      { term: 'Coder', text: 'starts out able to edit files without asking, since that is most of the work.' },
+    ],
+  },
+  {
+    // The framing that used to wrap the four items on the screen. Two facts the
+    // heading alone cannot carry: the mode does not switch this off, and a
+    // folder where you have approved everything else is no exception.
+    //
+    // The third sentence is the honest caveat. The old on-screen line said "This
+    // part cannot be turned off", which is not what the engine does: these are
+    // `ask` entries, not `deny` ones, and remembered approvals are the LAST
+    // layer applied (native-session-host.ts:291-301), so an explicit "Always
+    // allow" on one of them wins from then on. The app makes that deliberately
+    // hard — a deny-listed ask puts a second confirm in front of the "Always
+    // allow" button (ToolCard.tsx PermissionButtons) — but it is possible, and
+    // the result is visible and removable on the screen this explains.
+    heading: 'Things it always asks about',
+    paragraphs: [
+      'The short list on this screen stops and asks every time, whichever setting you are on — including Full auto, and including a folder where you have approved everything else. They are the things that are hardest to undo once they have happened.',
+      'If you ever choose “Always allow” on one of these, the app asks you to confirm you meant it, and from then on that one exact thing stops asking. It appears in the list on this screen like any other approval, and removing it there puts the question back.',
+    ],
+  },
+  {
+    // Where an approval reaches. This is the line that used to sit under the
+    // count on screen; the rows themselves already show which folder they are
+    // in, so on screen it was telling the user something the layout shows.
+    heading: 'Approvals you have already given',
+    paragraphs: [
+      'Every approval belongs to the folder you were working in when you gave it. The same request in a different folder asks again — a copy of a project kept somewhere else does not inherit anything.',
+      'Removing an approval does not undo whatever it already did. It only means you get asked the next time that thing comes up.',
+    ],
+  },
+  {
+    // The single most likely source of confusion: a screen called "Permissions"
+    // implies it covers everything, and it does not — Claude Code keeps its own
+    // allow list in its own settings, which nothing here reads or writes.
+    heading: 'Approvals you gave Claude Code',
+    paragraphs: [
+      "Conversations running on Claude Code keep their own separate list of approvals, which this screen does not manage. You can change those in Claude Code's own settings.",
+    ],
+  },
+];

@@ -358,10 +358,15 @@ describe('transcript:read-meta path containment', () => {
 
 describe('dialog:open-file attachment picker filters', () => {
   // Pins Destin's 2026-08-12 request: the paperclip picker must OPEN showing
-  // ALL files (the first filter entry is the native dialog's default), with
-  // named category filters available in the dropdown for narrowing. A filter
-  // reorder that puts Images first would silently regress the default.
-  async function getFilters() {
+  // ALL files, on every platform. The way to get that from Electron is to pass
+  // NO `filters` key at all: on Linux the XDG portal ignores our ordering
+  // (wildcard stripped, "*.*" appended last, no current_filter emitted —
+  // electron#43491) and on Windows the dialog skips a leading All Files entry
+  // when picking its default (electron#19492), so ANY filter list defaults
+  // the dialog to the first named category (Images) instead of all files.
+  // A lone All-Files filter is no fix either: its '*' becomes the glob '*.*',
+  // which on Linux excludes extensionless files like Makefile.
+  async function getDialogOptions(channel: string) {
     const mockIpcMain = { handle: vi.fn(), on: vi.fn() };
     const mockSessionManager = {
       createSession: vi.fn(), destroySession: vi.fn(), listSessions: vi.fn(() => []),
@@ -375,36 +380,31 @@ describe('dialog:open-file attachment picker filters', () => {
     const { dialog } = await import('electron');
     (dialog.showOpenDialog as any).mockResolvedValue({ canceled: true, filePaths: [] });
     const handler = (mockIpcMain.handle as any).mock.calls.find(
-      (c: any) => c[0] === 'dialog:open-file',
+      (c: any) => c[0] === channel,
     )[1];
     await handler({});
-    const options = (dialog.showOpenDialog as any).mock.calls.at(-1)[1];
-    return options.filters as { name: string; extensions: string[] }[];
+    return (dialog.showOpenDialog as any).mock.calls.at(-1)[1];
   }
 
-  it('defaults to All Files (first filter entry)', async () => {
-    const filters = await getFilters();
-    expect(filters[0]).toEqual({ name: 'All Files', extensions: ['*'] });
+  it('passes NO filters key, so the dialog shows all files on every platform', async () => {
+    const options = await getDialogOptions('dialog:open-file');
+    expect('filters' in options).toBe(false);
   });
 
-  it('offers the named category filters as dropdown options', async () => {
-    const filters = await getFilters();
-    const names = filters.map((f) => f.name);
-    expect(names).toEqual([
-      'All Files',
-      'Images',
-      'Markdown & Text',
-      'PDFs',
-      'Spreadsheets',
-      'Documents',
-      'Code',
-    ]);
-    // Every category must carry at least one extension, and none may carry
-    // the wildcard — a '*' inside a named category would make it a second
-    // "all files" entry and defeat the dropdown's purpose.
-    for (const f of filters.slice(1)) {
-      expect(f.extensions.length).toBeGreaterThan(0);
-      expect(f.extensions).not.toContain('*');
-    }
+  it('still requests an openFile + multiSelections dialog', async () => {
+    const options = await getDialogOptions('dialog:open-file');
+    expect(options.properties).toEqual(['openFile', 'multiSelections']);
+  });
+
+  it('open-sound keeps its audio filter FIRST and wildcard last', async () => {
+    // The sound picker's intended default IS its first concrete filter (Audio
+    // Files). Electron's Linux rewrite only strips/moves the wildcard entry to
+    // the end — already its position here — so the portal's first listed filter
+    // stays Audio Files and the default is correct on all platforms. This pin
+    // fails if someone reorders the list or adds a category above Audio Files.
+    const options = await getDialogOptions('dialog:open-sound');
+    const names = options.filters.map((f: { name: string }) => f.name);
+    expect(names[0]).toBe('Audio Files');
+    expect(options.filters.at(-1)).toEqual({ name: 'All Files', extensions: ['*'] });
   });
 });
