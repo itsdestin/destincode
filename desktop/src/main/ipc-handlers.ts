@@ -2272,6 +2272,17 @@ export function registerIpcHandlers(
   // line — the normal case for almost every install.
   const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
   const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
+  // Task 13 fix pass: the engine's measured parallel-slot count (n_slots),
+  // captured here so the slotCountFor closure below can hand it to
+  // NativeSessionHost without a second /props round trip. Only
+  // contextLengthFor's local-engine branch ever writes this — it is the ONE
+  // closure that actually calls engineManager for a given binding.
+  // native-session-host.ts's resolveContextAndProfile always awaits
+  // contextLengthFor before slotCountFor for the SAME binding, so this is
+  // never stale by the time it's read; reset to null on every non-local
+  // binding so a later local read can never accidentally see a PREVIOUS
+  // binding's leftover count.
+  let lastLocalSlotReading: number | null = null;
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
@@ -2283,7 +2294,12 @@ export function registerIpcHandlers(
     async (binding) => {
       const providers = await providerRegistry.list();
       const p = providers.find((x) => x.id === binding.providerId);
-      if (p?.type === 'local-engine') return engineManager.effectiveContextWindow(binding.modelId);
+      if (p?.type === 'local-engine') {
+        const { contextLength, totalSlots } = await engineManager.effectiveContextWindow(binding.modelId);
+        lastLocalSlotReading = totalSlots;
+        return contextLength;
+      }
+      lastLocalSlotReading = null;
       return modelCatalog.contextLengthFor(binding, providers);
     },
     // Provider TYPE resolver (Task 5): the host picks a CapabilityProfile from
@@ -2316,6 +2332,15 @@ export function registerIpcHandlers(
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
     },
+    // Task 13 fix pass — the fourth wiring: the engine's REAL parallel-slot
+    // count, threaded into CapabilityProfile's local concurrency cap
+    // (capability-profile.ts's known-model overlay / localSlotCap). Reads the
+    // value contextLengthFor's local-engine branch above already captured —
+    // see `lastLocalSlotReading`'s comment for why this never triggers a
+    // second engine query. Ignores its own `binding` argument on purpose:
+    // the shared variable already reflects THIS binding, because
+    // resolveContextAndProfile always resolves contextLengthFor first.
+    async (_binding) => lastLocalSlotReading,
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
@@ -2324,15 +2349,16 @@ export function registerIpcHandlers(
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
     { search: searchService },
-    // skillCatalog (9th param — shifted from 8th by Task 6c's new
-    // visionSupportFor closure above): NOT wired yet — a different task's
-    // scope (see task-7b-brief.md "Explicitly NOT in scope"). Passed
-    // explicitly so mcpManager lands in the 10th positional slot instead of
-    // silently taking skillCatalog's place.
+    // skillCatalog (10th param — shifted from 9th by the Task 13 fix pass's
+    // new slotCountFor closure above, itself shifted from 8th by Task 6c's
+    // visionSupportFor): NOT wired yet — a different task's scope (see
+    // task-7b-brief.md "Explicitly NOT in scope"). Passed explicitly so
+    // mcpManager lands in the 11th positional slot instead of silently
+    // taking skillCatalog's place.
     undefined,
-    // mcpManager (10th param, Task 7b — shifted from 9th by Task 6c): makes
-    // the whole native-MCP stack reachable — see the construction comment
-    // above.
+    // mcpManager (11th param, Task 7b — shifted from 10th by the Task 13 fix
+    // pass's new slotCountFor closure): makes the whole native-MCP stack
+    // reachable — see the construction comment above.
     mcpManager,
   );
 

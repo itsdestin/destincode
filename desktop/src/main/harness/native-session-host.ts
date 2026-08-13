@@ -612,6 +612,19 @@ export class NativeSessionHost extends EventEmitter {
     // reason that one sits after contextLengthFor: all three are resolved
     // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
+    // Task 13 fix pass — the engine's REAL measured parallel-slot count
+    // (llama-server's n_slots), read from the SAME /props call
+    // contextLengthFor already pays for on a local-engine binding (see
+    // engine-manager.ts's effectiveContextWindow and the ipc-handlers.ts
+    // wiring comment for how the two closures share one HTTP round trip
+    // instead of each fetching it separately). null means "not local-engine,
+    // or the engine hasn't reported a real count" — resolveProfile's
+    // known-model overlay then floors the concurrency cap to 1 rather than
+    // guessing (capability-profile.ts's localSlotCap). Defaults to a no-op
+    // (like permissionStore below) so pre-existing 5-arg test constructions
+    // still compile; a construction that cares about the local concurrency
+    // cap must supply this explicitly, same as visionSupportFor/contextLengthFor.
+    private slotCountFor: (binding: ModelBinding) => Promise<number | null> = async () => null,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 5-arg test constructions (store, modelFactory,
     // contextLengthFor, providerTypeFor, visionSupportFor — the first four params
@@ -792,6 +805,13 @@ export class NativeSessionHost extends EventEmitter {
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
   private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
     const raw = await this.contextLengthFor(binding);
+    // Task 13 fix pass: resolved immediately after contextLengthFor, not
+    // later — the local-engine wiring's slot reading rides that SAME call's
+    // /props response (see the slotCountFor constructor param's comment and
+    // the ipc-handlers.ts wiring site), so reading it here, right after the
+    // call that populated it, is what keeps this a single HTTP round trip
+    // rather than an incidental ordering that happens to work today.
+    const discoveredSlots = (await this.slotCountFor(binding)) ?? undefined;
     const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
     // The registry ceiling (effectiveContextForModel) is a LOCAL-model concern: it
     // caps a small GGUF loaded at a too-large -c to its real trained window. But
@@ -807,7 +827,14 @@ export class NativeSessionHost extends EventEmitter {
     // it then falls through to the registry/provider-type default exactly as
     // it did before this closure existed.
     const discoveredVision = (await this.visionSupportFor(binding)) ?? undefined;
-    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision });
+    const profile = resolveProfile({
+      providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision,
+      // Task 13 fix pass: threads the engine's real slot reading into the
+      // known-model overlay's concurrency clamp (capability-profile.ts's
+      // localSlotCap). undefined for every non-local-engine binding — the
+      // ipc-handlers wiring never queries the engine for those.
+      totalSlots: discoveredSlots,
+    });
     return { contextLength, profile };
   }
 

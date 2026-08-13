@@ -75,6 +75,20 @@ export function clampContextWindow(loaded: number | null, trainedMax: number | n
   return vals.length ? Math.min(...vals) : 32_768;   // conservative default
 }
 
+// Task 13 fix pass — DiscoveredModel.totalSlots (capability-profile.ts) is fed
+// by the SAME /props response effectiveContextWindow already reads for
+// n_ctx, at the SAME "absent/zero/non-numeric means unknown" posture: router
+// mode reports either a missing n_slots or (once a model IS loaded but the
+// build predates this field) leaves it undefined, and a literal 0 must never
+// be read as "zero slots" any more than n_ctx's literal 0 means "zero
+// context" above. Extracted as its own pure function (mirroring
+// resolveEffectiveContext just above, for the identical reason: the n_ctx
+// router-mode bug shipped once already because the parsing lived inline
+// where no test could reach it).
+export function resolveSlotCount(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
 export class EngineManager extends EventEmitter {
   private acquisition: EngineAcquisition;
   private supervisor: EngineSupervisor | null = null;
@@ -294,13 +308,23 @@ export class EngineManager extends EventEmitter {
    *  than its trained ceiling. Boots the engine if needed (single-flight; it would
    *  boot on the first send anyway) to read the live number. NEVER throws — a
    *  status read must not break session create; on any failure we return the same
-   *  conservative default clampContextWindow uses. */
-  async effectiveContextWindow(modelId: string): Promise<number> {
+   *  conservative default clampContextWindow uses.
+   *
+   *  Task 13 fix pass: also returns `totalSlots` (llama-server's n_slots) —
+   *  the ipc-handlers.ts wiring's local concurrency cap needs this, and it
+   *  lives in the exact same /props response this function already fetches.
+   *  Folding it into this return value (rather than a second method with its
+   *  own fetch) is WHY the two never cost a second HTTP round trip: whichever
+   *  caller reads contextLength first captures totalSlots for free, and the
+   *  ipc-handlers wiring hands that captured value to the separate
+   *  slotCountFor closure instead of querying the engine again. */
+  async effectiveContextWindow(modelId: string): Promise<{ contextLength: number; totalSlots: number | null }> {
     try {
       const inst = this.currentInstall();
       // Engine not installed yet → no live number to read; fall through to the
-      // trained max (also null today) → conservative default.
-      if (!inst) return clampContextWindow(null, this.trainedContextFor(modelId));
+      // trained max (also null today) → conservative default. No engine means
+      // no slot count either — totalSlots is unknown, not zero.
+      if (!inst) return { contextLength: clampContextWindow(null, this.trainedContextFor(modelId)), totalSlots: null };
       await this.rebuildSupervisor(inst);
       await this.supervisor!.ensureRunning();
       // /props is a llama-server management endpoint at ROOT (not the /v1 OpenAI
@@ -311,6 +335,10 @@ export class EngineManager extends EventEmitter {
       // The field carrying the loaded context has drifted across llama.cpp builds
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
       const loadedRaw = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
+      // Task 13 fix pass: n_slots rides the SAME response body — see
+      // resolveSlotCount's own comment for why an absent/zero/non-numeric
+      // reading resolves to null ("unknown") rather than a guessed count.
+      const totalSlots = resolveSlotCount(props?.n_slots);
       const trained = this.trainedContextFor(modelId);
       // Fall back to the -c WE spawned the server with, not a blind constant.
       //
@@ -344,10 +372,16 @@ export class EngineManager extends EventEmitter {
       // Closing the gap properly means parsing <arch>.context_length from the GGUF
       // — tracked as the trainedContextFor TODO below, not solved by guessing low.
       const configured = readEngineConfig(this.home).contextSize ?? null;
-      return resolveEffectiveContext(loadedRaw, configured, trained);
+      return { contextLength: resolveEffectiveContext(loadedRaw, configured, trained), totalSlots };
     } catch {
       // Same reasoning on the error path — prefer our own -c over a guess.
-      try { return resolveEffectiveContext(null, readEngineConfig(this.home).contextSize ?? null, null); } catch { return 32_768; }
+      // A failed read (network error, bad JSON, no supervisor) means the slot
+      // count is unknown too — never guess a number here either.
+      try {
+        return { contextLength: resolveEffectiveContext(null, readEngineConfig(this.home).contextSize ?? null, null), totalSlots: null };
+      } catch {
+        return { contextLength: 32_768, totalSlots: null };
+      }
     }
   }
 

@@ -45,7 +45,10 @@ export interface ToolServices {
    *  gates the tool on (harness-session.ts's syncTaskTool). */
   specialists?: {
     /** Task 1 (plan 1b) — reserve one of this parent's concurrent-specialist
-     *  slots (HOSTED_MAX_CONCURRENT_SPECIALISTS, per-parent) AND, for a
+     *  slots (the parent's resolved CapabilityProfile.maxConcurrentSpecialists
+     *  ceiling, per-parent — see the Task 13 paragraph below; NOT the flat
+     *  HOSTED_MAX_CONCURRENT_SPECIALISTS constant, which only the cloud/hosted
+     *  layer of that profile actually uses) AND, for a
      *  writer request, the single-writer lock (spec §5: two concurrent
      *  write-capable children could race edits to the same files) — both in
      *  ONE synchronous call. Replaces 1a's tryReserveSlot/isWriterBusy pair:

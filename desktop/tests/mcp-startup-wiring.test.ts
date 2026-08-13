@@ -174,15 +174,18 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 10 args (Task 6c added
+    // Positional shape pinned by the brief: 11 args (Task 6c added
     // visionSupportFor as the 5th positional parameter — the 3rd injected
     // closure, after contextLengthFor and providerTypeFor — shifting
-    // everything after providerTypeFor down by one), skillCatalog (index 8)
-    // explicitly undefined so mcpManager (index 9) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(10);
-    expect(capturedCtorArgs![8]).toBeUndefined();
+    // everything after providerTypeFor down by one; the Task 13 fix pass then
+    // added slotCountFor as the 6th positional parameter — the 4th injected
+    // closure, right after visionSupportFor — shifting everything after it
+    // down by one more), skillCatalog (index 9) explicitly undefined so
+    // mcpManager (index 10) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(11);
+    expect(capturedCtorArgs![9]).toBeUndefined();
 
-    const mcpManager = capturedCtorArgs![9] as {
+    const mcpManager = capturedCtorArgs![10] as {
       acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
@@ -226,7 +229,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![9] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const mcpManager = capturedCtorArgs![10] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
     const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
@@ -297,5 +300,76 @@ describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', 
     const result = await visionSupportFor({ providerId: 'local', modelId: 'some-gguf' });
     expect(result).toBeNull();
     expect(modelCatalogGetSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Task 13 fix pass: proves the actual GAP the review found — before this fix,
+// DiscoveredModel.totalSlots was built and tested at the capability-profile.ts
+// layer, but no production code ever WROTE it, so every local session
+// silently got the conservative floor of 1. This spies on EngineManager's
+// effectiveContextWindow (the one place that reads /props) to prove
+// ipc-handlers.ts's contextLengthFor and slotCountFor closures both resolve
+// through it for the SAME local-engine binding, and that doing so costs
+// exactly ONE call — never a second engine query for the slot count.
+const effectiveContextWindowSpy = vi.fn(async () => ({ contextLength: 999, totalSlots: 3 }));
+vi.mock('../src/main/engine/engine-manager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/main/engine/engine-manager')>();
+  class SpyEngineManager extends actual.EngineManager {
+    effectiveContextWindow(modelId: string) { return effectiveContextWindowSpy(modelId); }
+  }
+  return { ...actual, EngineManager: SpyEngineManager };
+});
+
+describe('slotCountFor wiring (Task 13 fix pass)', () => {
+  beforeEach(() => {
+    testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-slotcount-wiring-'));
+    capturedCtorArgs = undefined;
+    effectiveContextWindowSpy.mockClear();
+  });
+
+  it('resolves null for a non-local-engine binding without ever touching the engine', async () => {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'anthropic-test', type: 'anthropic', label: 'Anthropic', enabled: true }] }),
+    );
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    expect(capturedCtorArgs).toBeDefined();
+    const slotCountFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
+    const result = await slotCountFor({ providerId: 'anthropic-test', modelId: 'claude-opus-5' });
+    expect(result).toBeNull();
+    expect(effectiveContextWindowSpy).not.toHaveBeenCalled();
+  });
+
+  it('for a local-engine binding, contextLengthFor and slotCountFor both surface the SAME engine reading from ONE call', async () => {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true }] }),
+    );
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    expect(capturedCtorArgs).toBeDefined();
+    const contextLengthFor = capturedCtorArgs![2] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
+    const slotCountFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
+    const binding = { providerId: 'local', modelId: 'some-gguf' };
+
+    // resolveContextAndProfile's real call order: contextLengthFor first.
+    expect(await contextLengthFor(binding)).toBe(999);
+    expect(await slotCountFor(binding)).toBe(3);
+    expect(effectiveContextWindowSpy).toHaveBeenCalledTimes(1);
   });
 });

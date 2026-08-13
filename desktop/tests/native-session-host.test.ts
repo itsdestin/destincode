@@ -316,7 +316,7 @@ describe('NativeSessionHost', () => {
       const mcpDestroyAll = vi.fn(async () => {});
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: mcpDestroyAll },
       );
       await h.destroyAll();
@@ -347,7 +347,7 @@ describe('NativeSessionHost', () => {
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -361,7 +361,7 @@ describe('NativeSessionHost', () => {
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -373,7 +373,7 @@ describe('NativeSessionHost', () => {
 
       const h2 = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
       const resumed = await h2.resume('s-1', root);
@@ -388,7 +388,7 @@ describe('NativeSessionHost', () => {
       const release = vi.fn(async () => {});
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire: async () => fakeLease([], release) },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -415,7 +415,7 @@ describe('NativeSessionHost', () => {
       const acquire = vi.fn(async () => leases[n++]);
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
       await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -439,7 +439,7 @@ describe('NativeSessionHost', () => {
       const acquire = vi.fn(async () => { throw new Error('registry file corrupt'); });
       const h = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
       await expect(h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } })).resolves.toBeUndefined();
@@ -575,6 +575,28 @@ describe('NativeSessionHost', () => {
       expect(h.reserveSpecialist('cloud-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
       await h.destroyAll();
     });
+
+    // Fix pass (gap the review found): DiscoveredModel.totalSlots was built and
+    // tested at the capability-profile.ts layer, but nothing threaded a REAL
+    // engine reading into it — every local session silently fell back to the
+    // conservative floor of 1, a regression from the pre-Task-13 flat cap of 4.
+    // This is the closing link: a slotCountFor closure that answers "2" for a
+    // KNOWN local model (qwen3.6-35b-moe matches KNOWN_MODELS, 'full' tier,
+    // same modelId capability-profile.test.ts already proves clamps to a live
+    // reading) must make the HOST actually enforce 2, not 1 and not the
+    // hosted 4.
+    it('a KNOWN local model with a live 2-slot engine reading caps reservations at 2', async () => {
+      const slotCountFor = async (b: any) => (b.providerId === 'local' ? 2 : null);
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        async () => null, slotCountFor,
+      );
+      await h.create({ sessionId: 'local-parent-2', cwd: root, binding: { providerId: 'local', modelId: 'qwen3.6-35b-moe-q4' } });
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 2 });
+      await h.destroyAll();
+    });
   });
 
   // ---- Task 5: the host resolves + threads a CapabilityProfile per binding ----
@@ -661,6 +683,7 @@ describe('NativeSessionHost', () => {
     // app version, driving the Write-then-stop turn.
     const permHost = () => new NativeSessionHost(
       new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      async () => null,
       new PermissionStore(new NativeHome(root)), '9.9.9',
     );
 
@@ -736,7 +759,8 @@ describe('NativeSessionHost', () => {
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, store, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+        async () => null, store, '9.9.9',
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
@@ -771,7 +795,8 @@ describe('NativeSessionHost', () => {
         removeProject: async () => false,
       };
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+        async () => null, hangingStore, '9.9.9',
       );
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -809,7 +834,7 @@ describe('NativeSessionHost', () => {
     /** A host wired to the given remembered-rule store, driving the Write-then-stop turn. */
     const revokeHost = (permStore: any) => new NativeSessionHost(
       new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
-      permStore, '9.9.9',
+      async () => null, permStore, '9.9.9',
     );
 
     /** Drive one whole turn whose gated Write is answered with "Always allow".
@@ -1216,7 +1241,7 @@ describe('NativeSessionHost', () => {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
         store, modelFactory, async () => null, async () => null, async () => null,
-        undefined, undefined, undefined, skillCatalog,
+        undefined, undefined, undefined, undefined, skillCatalog,
       );
       return { store, h };
     }
@@ -1510,6 +1535,7 @@ describe('NativeSessionHost', () => {
         stream(...textChunks('t', 'done'), finishChunk('stop')),
       ]) as any;
       const h = new NativeSessionHost(store, globOnce, async () => null, async () => null, async () => null,
+        async () => null,
         { rulesFor, remember: async () => { /* no-op */ } });
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const sub = path.join(root, 'sub-perms');
