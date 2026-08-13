@@ -18,6 +18,13 @@ export interface AskRequest {
   /** Winning rule came from the destructive deny-list → renderer shows the
    *  consequence warning on Always-allow (Task 13 consumes this). */
   denyListed: boolean;
+  /** The ask was FORCED by a path outside the session cwd, which also skips the
+   *  permission rules on every future call — so a remembered rule could never
+   *  fire. Renderer hides "Always allow" rather than promising a grant the
+   *  engine will not honor. Optional (unlike denyListed) because it only means
+   *  anything for path-subject tool asks; budget gates never set it.
+   *  See spec 2026-08-11 (permissions management UI), finding 3. */
+  external?: boolean;
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny' | 'canceled';
@@ -38,7 +45,8 @@ export class PermissionBroker extends EventEmitter {
       this.pending.set(requestId, { sessionId: req.sessionId, resolve });
       // Payload field names MUST match what hook-dispatcher extracts
       // (src/renderer/state/hook-dispatcher.ts): tool_name, tool_input,
-      // _requestId. denyListed rides along for the Task 13 warning.
+      // _requestId. denyListed rides along for the Task 13 warning, and
+      // `external` the same way so ToolCard can hide Always-allow.
       this.emit('hook-event', {
         sessionId: req.sessionId,
         type: 'PermissionRequest',
@@ -47,6 +55,7 @@ export class PermissionBroker extends EventEmitter {
           tool_name: req.toolName,
           tool_input: req.toolInput,
           denyListed: req.denyListed,
+          external: req.external === true,
         },
         timestamp: Date.now(),
       });

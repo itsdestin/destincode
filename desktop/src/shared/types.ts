@@ -318,6 +318,11 @@ export interface ToolCallState {
   /** Native broker only: winning rule came from the destructive deny-list →
    *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
   denyListed?: boolean;
+  /** Native broker only: the ask was forced by a path outside the session
+   *  folder → the "Always allow" button is HIDDEN. The engine forces an ask on
+   *  every external path and never consults the stored rules there, so a
+   *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
+  external?: boolean;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */

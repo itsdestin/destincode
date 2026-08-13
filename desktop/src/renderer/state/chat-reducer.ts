@@ -863,6 +863,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            // Carried for the same reason as denyListed: ToolCard gates the
+            // "Always allow" button on it, so losing it here would re-offer a
+            // grant the engine can never honor.
+            external: synTool.external,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -1226,6 +1230,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 ? { input: action.input } : {}),
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
         });
         found = true;
       }
@@ -1251,6 +1256,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
         });
 
         const groupId = nextGroupId();
