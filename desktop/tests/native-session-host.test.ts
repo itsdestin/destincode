@@ -1742,4 +1742,165 @@ describe('NativeSessionHost', () => {
       expect((h as any).live.has(childId)).toBe(false);
     });
   });
+
+  // Task 5 (plan 1b): the per-turn specialist status block. wire() attaches
+  // opts.specialistStatus to every ROOT session; this suite pins what that
+  // callback reports given a stamped ledger, reaching the private ledger
+  // directly (same pattern the Task 2 tests above use) rather than driving a
+  // real specialist run end-to-end.
+  describe('specialist status block (Task 5, plan 1b)', () => {
+    it('the host status block lists running and undelivered-finished specialists and omits delivered ones', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-running', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-finished', parentToolCallId: 'tc-2', agentType: 'researcher', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-delivered', parentToolCallId: 'tc-3', agentType: 'writer', title: 'Priya',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: true, owner: OWNER, missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toBeTruthy();
+      expect(status).toContain('Nadia');
+      expect(status).toContain('running');
+      expect(status).toContain('Otis');
+      expect(status).toContain('report delivery pending');
+      // Delivered specialist never appears.
+      expect(status).not.toContain('Priya');
+
+      await h.destroyAll();
+    });
+
+    it('returns null (and wires nothing to inject) when the session has no delegations at all', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      expect(rootSession.opts.specialistStatus?.()).toBeNull();
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 1: DelegationRecord.steps is only ever written AT
+    // COMPLETION (spawnSpecialist's success-path patch) — recordStart never
+    // sets it, so a RUNNING record's `steps` is always undefined. The old
+    // `r.steps ?? 0` rendered a permanently-wrong "step 0" for the entire
+    // life of every running child. Pin that the running line never claims a
+    // step count it doesn't have.
+    it('a running specialist with no live step count omits the step clause instead of claiming "step 0"', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-running', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toBeTruthy();
+      expect(status).not.toContain('step 0');
+      expect(status).not.toMatch(/step \d/);
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 2: `stale` only ever means "at least SPECIALIST_IDLE_
+    // STALE_MS has elapsed" (setStale in this file never fires sooner) — the
+    // real elapsed time can be far larger (e.g. the 5m in-tool threshold, or
+    // just more wall-clock time). The old wording ("no activity for 2m") read
+    // as an exact measurement. Pin that the floor is now stated as a floor.
+    it('a stale running specialist reports the idle threshold as an "at least" floor, not a measurement', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-stale', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [], stale: true,
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toContain('no activity for at least 2m');
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 3: claimUndelivered() (delegation-ledger.ts) only
+    // ever claims status === 'completed' records — a 'failed' or
+    // 'interrupted' record NEVER gets delivered. The old code gave every
+    // undelivered non-running record the identical "finished — report
+    // delivery pending" line, which then repeated, unchanged and false, on
+    // every future turn. Pin that failed/interrupted get their own honest
+    // line naming what happened, using the record's real failureText (never
+    // a guessed cause), and that "delivery pending" wording never appears
+    // for them.
+    it('failed and interrupted specialists get an honest line naming what happened, never "delivery pending"', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-failed', parentToolCallId: 'tc-1', agentType: 'debugger', title: 'Fiona',
+        workDir: root, description: 'd', background: true,
+        status: 'failed', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER,
+        missedSteers: [], failureText: 'ENOENT: no such file or directory',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-interrupted', parentToolCallId: 'tc-2', agentType: 'writer', title: 'Greg',
+        workDir: root, description: 'd', background: true,
+        status: 'interrupted', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER,
+        missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+      const lines = (status ?? '').split('\n');
+
+      const failedLine = lines.find((l) => l.startsWith('Fiona'));
+      expect(failedLine).toBe('Fiona (debugger): failed — ENOENT: no such file or directory — no report will arrive');
+      expect(failedLine).not.toContain('delivery pending');
+
+      const interruptedLine = lines.find((l) => l.startsWith('Greg'));
+      expect(interruptedLine).toBe('Greg (writer): interrupted — no report will arrive');
+      expect(interruptedLine).not.toContain('delivery pending');
+
+      await h.destroyAll();
+    });
+  });
 });

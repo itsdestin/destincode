@@ -1090,12 +1090,77 @@ export class NativeSessionHost extends EventEmitter {
     }
   }
 
+  /** Task 5 (plan 1b): one line per NON-DELIVERED delegation for `sessionId`
+   *  (its parent), or null when there's nothing to report — the zero-cost case
+   *  for a session that never delegates. A record with `delivered: true` never
+   *  appears: its report already rode into the parent's history, so restating
+   *  it here would be stale noise, not a status.
+   *
+   *  Fix pass, Finding 1: NO step count on the running line. `steps` is only
+   *  ever written by the ledger's write path AT COMPLETION (see
+   *  spawnSpecialist's `update(...steps: run.steps...)`) — recordStart never
+   *  sets it, so a RUNNING record's `steps` is ALWAYS undefined; there is no
+   *  live, per-child step counter surfaced anywhere a status line could read
+   *  from without reaching into spawnSpecialist/createChild's own bookkeeping
+   *  (out of scope here — a different in-flight lane owns those methods). The
+   *  old `step ${r.steps ?? 0}` therefore rendered a permanently-wrong
+   *  "step 0" for the ENTIRE life of every running child — a known-wrong
+   *  number, not an approximation, and the never-mislead-the-model rule does
+   *  not allow reporting it. Elapsed time (which IS live and real) is
+   *  reported instead; nothing invented fills the gap.
+   *
+   *  `stale` likewise only ever surfaces the ledger's own boolean (Task 7 sets
+   *  it) — this method never re-derives staleness. Fix pass, Finding 2: the
+   *  "no activity for {m}m" minute count is worded as a FLOOR ("at least"),
+   *  not a measurement — the ledger stores no last-activity TIMESTAMP, only
+   *  the boolean, so there is no exact duration to surface, and the actual
+   *  threshold that fired can be the 5m in-tool one, not the 2m idle one this
+   *  reports. What IS true by construction (setStale below) is that `stale`
+   *  never flips true before SPECIALIST_IDLE_STALE_MS has elapsed with no
+   *  activity, so "at least" is always accurate even when it understates.
+   *
+   *  Fix pass, Finding 3: failed/interrupted get their OWN line, not the
+   *  running-record's "finished — report delivery pending" wording.
+   *  claimUndelivered() (delegation-ledger.ts) only ever claims
+   *  status === 'completed' records — a 'failed' or 'interrupted' record is
+   *  NEVER delivered, so reusing the "pending" line repeated a permanently
+   *  false claim on every future turn. failureText is the real thrown
+   *  message (never a guessed cause — error-message-standards.md);
+   *  'interrupted' always means a parent teardown killed the child (see
+   *  updateIfRunning's WHY comment above), so naming it is accurate, not
+   *  guessed. */
+  private buildSpecialistStatus(sessionId: string, cwd: string): string | null {
+    if (!this.ledger) return null;
+    const lines = this.ledger.listFor(cwd, sessionId)
+      .filter((r) => !r.delivered)
+      .map((r) => {
+        if (r.status === 'running') {
+          const elapsedS = Math.max(0, Math.round((Date.now() - r.startedAt) / 1000));
+          const staleNote = r.stale ? `, may be stuck — no activity for at least ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
+          return `${r.title} (${r.agentType}): running — ${elapsedS}s${staleNote}`;
+        }
+        if (r.status === 'completed') {
+          return `${r.title} (${r.agentType}): finished — report delivery pending`;
+        }
+        if (r.status === 'failed') {
+          return `${r.title} (${r.agentType}): failed${r.failureText ? ` — ${r.failureText}` : ''} — no report will arrive`;
+        }
+        // status === 'interrupted'
+        return `${r.title} (${r.agentType}): interrupted — no report will arrive`;
+      });
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
     const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false, mcpLease };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
+    // Task 5 (plan 1b): wired for ROOT sessions only — wire() is never called
+    // for a specialist child (createChild has its own inline live.set, see its
+    // "NOT wire()" comment), so a child never grows its own status block.
+    session.setSpecialistStatus(() => this.buildSpecialistStatus(sessionId, cwd));
     // Persist "Always allow" decisions for THIS session's project. The session
     // emits 'remember-rule' {tool, pattern?, action} — a plain EventEmitter
     // event, NOT a transcript event (the frozen transcript surface is untouched)
