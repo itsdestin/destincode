@@ -48,7 +48,39 @@ Native sessions now write through the same Conversation Store (`conversations/se
 - **Permission precedence is two-tier:** tool-layer guards (secret paths, `external_directory`) sit BELOW all configuration and never yield; the destructive deny-list is CONFIG — an explicit remembered Always-allow beats it (by design, consequence-gated in UI, surfaced via the `denyListed` flag on the ask). Guard: `permission-engine.test.ts`.
 - **The Bash tool bypasses the file-tool guards** — secret-path denial and the cwd jail live in the file tools; `cat .env` through Bash defeats them, and the command-glob deny-list can't catch every phrasing. ACCEPTED limitation (CC has the same hole); the guards are honest friction, not a sandbox. Don't present them as a security boundary, and don't try to glob your way to one. (Migrated from workspace `docs/PITFALLS.md`.)
 - **`PERMISSION_RESPOND` routes by `native-` id prefix** — native ask ids are `native-`-prefixed so the handler tries `nativeHost.respondPermission(requestId, …)` FIRST, then falls through to `hookRelay.respond` (which may be absent in native-only sessions). Don't collapse the two brokers into one. Verify: `src/main/ipc-handlers.ts` (`respondPermission` before `hookRelay`).
-- **The serialization contract now also covers ask-pauses** — `HarnessSession.send()` still hard-throws when a turn is in flight, but an ask PAUSES the turn, it does NOT end it: the same in-flight turn resumes on `respondPermission`. Callers must not re-`send()` while an ask is open. Guard: `harness-session-loop.test.ts` (canceled-ask regression).
+- **The serialization contract now also covers ask-pauses** — `HarnessSession.send()` still hard-throws when a turn is in flight, but an ask PAUSES the turn, it does NOT end it: the same in-flight turn resumes on `respondPermission`. Callers must not re-`send()` while an ask is open. Guard: `harness-session-loop.test.ts` (canceled-ask regression). **One carve-out since 2026-08-13: a HUMAN dismissal of an interactive ask ends the turn** — see "A dismissed question ends the turn" below.
+
+### A dismissed question ends the turn (2026-08-13)
+
+Denying an ordinary permission ask returns "the user declined this action" and the
+model may try a different approach — still true. An interactive ask is different:
+the user closing an `AskUserQuestion` card is them taking the turn back, so the
+driver records `DISMISSED_TOOL_TEXT` as that call's real result, back-fills any
+un-executed siblings in the step with `NOT_RUN_TOOL_TEXT`, and `break turnLoop`s
+to `turn-complete` with `stopReason: 'question_dismissed'`. `AssistantTurnBubble`
+renders that as *"Question closed — waiting for you."*
+
+**A human "no" and a policy "no" are different things wearing one word, and the
+driver must not confuse them.** There are exactly three `askUser` implementations:
+`native-session-host.ts:747` (→ `PermissionBroker.ask`, the only one with a person
+behind it), `childAskPolicy()`, and the harness evaluator's fixture jail
+(`eval/run-case.ts`). Only the first can produce a dismissal, so
+`PermissionBroker.respond` stamps `dismissed: true` on a deny and the driver keys
+the end-turn on THAT, not on `behavior === 'deny'`. For the two policies a deny
+still means "you may not ask, carry on and finish" and returns `REFUSED_ASK_TEXT`.
+This is not theoretical: the evaluator's wrap-up turn denies `AskUserQuestion`
+precisely so the model answers instead of asking, and an early version that ended
+the turn on any deny lost the review outright (`harness-review-runner.test.ts`).
+Guard: `harness-session-loop.test.ts` → "POLICY deny (no `dismissed`)".
+
+Three more things are load-bearing. It is `turn-complete`, not `user-interrupt`:
+an interrupted turn skips the usage payload and the reducer stamps
+`stopReason: 'interrupted'`, and a dismissal should report usage and let queued
+messages drain (typing during the turn IS taking over). The sibling copy is its
+own string, because `CANCELED_TOOL_TEXT` names a cause — "the user interrupted
+this action" — that did not happen. And the signal is a driver-private
+`EndTurnResult` wrapper rather than a field on `ToolResultPayload`, so an ordinary
+tool cannot end a turn.
 - **Tool-call/result pairing is an invariant EVERYWHERE** — the driver back-fills canceled/interrupted calls, `rebuildHistory` back-fills crash-truncated ones, and `fitToContext` trims pair-aware. *Why:* a dangling tool_call 400s on real providers and bricks the session. Guards: `harness-session-loop.test.ts` + `harness-history-rebuild.test.ts` (truncated-tail).
 - **The driver emits ALL of a step's tool-use events BEFORE executing** (not interleaved) — `rebuildHistory` groups by event adjacency and relies on this ordering; don't "fix" it back to interleaved. Guard: `harness-session-loop.test.ts`.
 - **The read-before-edit registry RESETS on resume** — files change while a session is closed, so a stored Read can't stand in for a fresh one. Don't "optimize" the registry back from persisted Read events. Guard: `harness-session-loop.test.ts`.
