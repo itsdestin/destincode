@@ -25,7 +25,7 @@ import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
-import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
+import { rulesForMode, sameRule, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
@@ -1882,22 +1882,22 @@ export class NativeSessionHost extends EventEmitter {
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
    *
-   *  The in-memory filter compares the (tool, pattern, action, specialist)
-   *  QUAD (Task 11 added `specialist`, the same axis the store's dedupe/remove
-   *  and the UI's key use), not whole objects: a rule read back off disk
-   *  carries a `grantedAt` key the in-memory copy never had, so an equality
-   *  check would silently stop matching. Without `specialist` in the compare,
-   *  revoking a root grant would also drop a same-triple SPECIALIST-keyed
-   *  grant (or vice versa) still held by a live session. */
+   *  The in-memory filter compares the (tool, pattern, action, match, specialist)
+   *  QUINT via sameRule, not whole objects: a rule read back off disk carries a
+   *  `grantedAt` key the in-memory copy never had, so an equality check would
+   *  silently stop matching. `match` joined the identity when Bash grants gained
+   *  a scoped wide shape — without it, "this exact command" and "any command of
+   *  this kind" collapse into one row and Settings revokes the wrong one.
+   *  `specialist` joined it in Task 11 — without it, revoking a root grant would
+   *  also drop a same-triple SPECIALIST-keyed grant (or vice versa) still held
+   *  by a live session. */
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
       if (cwdToProjectSlug(entry.cwd) !== slug) continue;
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
-      this.rememberedFor.set(sessionId, mem.filter(
-        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist),
-      ));
+      this.rememberedFor.set(sessionId, mem.filter((r) => !sameRule(r, rule)));
     }
     return hit;
   }
@@ -1923,11 +1923,12 @@ export class NativeSessionHost extends EventEmitter {
    *  `opts.specialistScope` (Task 11): a child's parentDecide passes its own
    *  agentType here. A specialist-keyed remembered rule must never widen the
    *  ROOT session's own permissions, and must never apply to a DIFFERENT
-   *  specialist type — that is the whole reason rule identity grew a fourth
-   *  axis (PermissionRule.specialist, shared/permission-types.ts). `scope ===
-   *  undefined` (every root-session call site) sees ONLY unscoped rules; a
-   *  child's scope additionally sees rules tagged for that SAME agentType,
-   *  never another's. */
+   *  specialist type — that is the whole reason rule identity grew a
+   *  `specialist` axis (PermissionRule.specialist, shared/permission-types.ts,
+   *  one leg of the sameRule QUINT alongside tool/pattern/action/match).
+   *  `scope === undefined` (every root-session call site) sees ONLY unscoped
+   *  rules; a child's scope additionally sees rules tagged for that SAME
+   *  agentType, never another's. */
   private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[], opts?: { specialistScope?: string }) {
     const scope = opts?.specialistScope;
     const inScope = (r: PermissionRule) => (
@@ -2025,7 +2026,10 @@ export class NativeSessionHost extends EventEmitter {
       // and the session agree on one source, and a test can inject a fake.
       ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
-      askUser: (req) => this.broker.ask(req),
+      // Stamp the CURRENT mode on every ask (read at call time, not wiring
+      // time — a mid-session mode flip must show on the next ask). The
+      // renderer's full-auto safety-stop footer keys on it.
+      askUser: (req) => this.broker.ask({ ...req, permissionMode: this.modeFor.get(sessionId) ?? 'ask' }),
       // Thread injected runtime services (WebSearch's SearchService, Task 6's
       // specialists collaborators) into the HarnessSession opts. `specialists`
       // is ALWAYS present (unlike `search`, which depends on an optional
@@ -2177,7 +2181,7 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   /** Record ONE remembered "Always allow" under `sessionId`'s in-memory bucket
-   *  (synchronously, deduping on the full identity quad) and fire-and-forget
+   *  (synchronously, deduping on the full sameRule identity) and fire-and-forget
    *  persist it to disk. Shared by two callers (Task 11):
    *   - wire()'s 'remember-rule' listener, for a ROOT session's own grant
    *     (`rule.specialist` absent — HarnessSession has no concept of being a
@@ -2191,16 +2195,17 @@ export class NativeSessionHost extends EventEmitter {
    *     grant from leaking to the root session or a different specialist type
    *     — this method only WRITES the rule, it doesn't decide who can see it.
    *
-   *  Dedup compares the quad (tool, pattern, action, specialist) — the same
-   *  identity axis the store, the revoke matcher, and the UI's key use. A
-   *  triple-only compare would silently merge a specialist-keyed grant into
-   *  an existing same-triple root grant (or vice versa), discarding one. */
+   *  Dedup compares the sameRule QUINT (tool, pattern, action, match,
+   *  specialist) — the same identity the store, the revoke matcher, and the
+   *  UI's key use. A narrower compare would silently merge a specialist-keyed
+   *  grant into an existing root grant (or vice versa), or collapse two grants
+   *  that differ only in `match`, discarding one. */
   private rememberRule(sessionId: string, cwd: string, rule: PermissionRule): void {
     // (1) Record in-memory SYNCHRONOUSLY first — this is what makes the
     // Always-allow stick for the rest of the session regardless of whether the
     // disk write below succeeds or wins the race with the next tool call.
     const mem = this.rememberedFor.get(sessionId) ?? [];
-    if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist)) {
+    if (!mem.some((r) => sameRule(r, rule))) {
       mem.push(rule);
       this.rememberedFor.set(sessionId, mem);
     }

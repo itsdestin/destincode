@@ -834,6 +834,39 @@ describe('NativeSessionHost', () => {
       await p.destroyAll();
     });
 
+    it('stamps the CURRENT permission mode on each ask — a full-auto deny-listed ask carries full-auto', async () => {
+      // A model that calls deny-listed Bash: the ONLY ask full-auto still
+      // raises, and exactly the renderer's safety-stop condition
+      // (permissionMode === 'full-auto' && denyListed). Mode is flipped AFTER
+      // create(), so a wiring-time snapshot would report 'ask' — this pins the
+      // read-at-ask-time behavior.
+      const bashFactory = async () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'git push origin master' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const p = new NativeSessionHost(
+        // 3rd arg must be NO_CONTEXT (an object-returning stub), not a bare
+        // `async () => null` — the constructor's 3rd param answers BOTH
+        // context length and slot count in one closure (Task 13), so a plain
+        // null return fails the destructure in resolveContextAndProfile.
+        new SessionStore(new NativeHome(root)), bashFactory, NO_CONTEXT, async () => null, async () => null,
+        new PermissionStore(new NativeHome(root)), '9.9.9',
+      );
+      const asks: any[] = [];
+      p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      p.setPermissionMode('s', 'full-auto');
+      const ask = firstAsk(p);
+      const turnDone = waitForTurnComplete(p, 1);
+      p.send('s', 'push it');
+      const requestId = await ask;
+      expect(asks[0].payload.permissionMode).toBe('full-auto');
+      expect(asks[0].payload.denyListed).toBe(true);
+      p.respondPermission(requestId, { decision: { behavior: 'deny' } });   // finish the turn, run nothing
+      await turnDone;
+      await p.destroyAll();
+    });
+
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
@@ -1033,6 +1066,28 @@ describe('NativeSessionHost', () => {
 
       expect(await turnAsked(p, 'mine', 'after revoke')).toBe(true);
       expect(await turnAsked(p, 'other', 'after revoke')).toBe(false);   // untouched
+      await p.destroyAll();
+    });
+
+    it('revokes only the matching QUAD from a live session', async () => {
+      // Two grants that differ ONLY in `match`. Under the old triple identity the
+      // in-memory filter dropped both, so revoking the wide one from Settings
+      // silently took the exact one with it.
+      const store = new PermissionStore(new NativeHome(root));
+      const exact = { tool: 'Write', pattern: 'note.txt', action: 'allow' as const, match: 'exact' as const };
+      const wide = { tool: 'Write', pattern: 'note.txt', action: 'allow' as const, match: 'glob' as const };
+      await store.remember(root, exact);
+      await store.remember(root, wide);
+
+      const p = revokeHost(store);
+      await p.create({ sessionId: 'quad', cwd: root, binding });
+      expect(await turnAsked(p, 'quad', 'write once')).toBe(false);   // granted by both
+
+      await expect(p.revokeRule(cwdToProjectSlug(root), wide)).resolves.toBe(true);
+
+      // The exact grant survives on disk AND in the still-running session.
+      expect(await store.rulesFor(root)).toMatchObject([{ pattern: 'note.txt', match: 'exact' }]);
+      expect(await turnAsked(p, 'quad', 'write again')).toBe(false);
       await p.destroyAll();
     });
 

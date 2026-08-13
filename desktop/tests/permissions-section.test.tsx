@@ -298,7 +298,7 @@ describe('PermissionsSection — behavioural contracts', () => {
   // Task 11: a specialist-keyed rule must read as what it actually is — a
   // grant a SPECIALIST holds, not the assistant itself — and it must be a
   // DISTINCT row from a root grant that happens to share the same tool/
-  // pattern/action (ruleKey's fourth axis; a React key collision would drop
+  // pattern/action (ruleKey's identity axis; a React key collision would drop
   // one of the two rows silently instead of failing loudly).
   it('renders a specialist-keyed rule with its own row, distinct from the identical root grant', async () => {
     list.mockResolvedValue([
@@ -322,6 +322,33 @@ describe('PermissionsSection — behavioural contracts', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Revoke permission:/ }));
     fireEvent.click(screen.getByRole('button', { name: /^Confirm revoking permission:/ }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith('-p', { tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' }));
+  });
+
+  // M5 2c: a scoped grant HAS a pattern but is narrow by construction. Putting
+  // the breadth note on it would teach the user to ignore the note on the
+  // tool-wide grants where it is true.
+  it('renders a scoped push grant as a branch sentence, with no breadth note', async () => {
+    list.mockResolvedValue([
+      { slug: '-p', cwd: '/p', rules: [
+        { tool: 'Bash', pattern: 'git push*origin master', action: 'allow', match: 'glob' },
+      ] },
+    ]);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    expect(screen.getByText(/Pushing to master/)).toBeTruthy();
+    expect(screen.queryByText(/every command/i)).toBeNull();
+    // And never the raw pattern, on a screen written for people who have never
+    // seen a glob.
+    expect(screen.queryByText(/git push\*/)).toBeNull();
+  });
+
+  it('still shows the breadth note on a genuinely tool-wide Bash grant', async () => {
+    list.mockResolvedValue([
+      { slug: '-p', cwd: '/p', rules: [{ tool: 'Bash', action: 'allow' }] },
+    ]);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    expect(screen.getByText(/every command/i)).toBeTruthy();
   });
 
   // The confirm is the guard against a mis-click revoking something the user

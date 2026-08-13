@@ -942,3 +942,108 @@ describe('chatReducer TRANSCRIPT_REPLAY_COMPLETE on a live session', () => {
     expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('running');
   });
 });
+
+describe('chatReducer NATIVE_TOOL_PREPARING', () => {
+  const SESSION = 'sess-1';
+  function initState(): ChatState {
+    return new Map([[SESSION, createSessionChatState()]]);
+  }
+  const prep = (chars: number, extra: Record<string, unknown> = {}) => ({
+    type: 'NATIVE_TOOL_PREPARING' as const,
+    sessionId: SESSION,
+    toolCallId: 'c1',
+    toolName: 'Write',
+    chars,
+    ...extra,
+  });
+  const groupsOf = (s: ChatState) => [...s.get(SESSION)!.toolGroups.values()];
+  const idCount = (s: ChatState, id: string) =>
+    groupsOf(s).flatMap((g) => g.toolIds).filter((t) => t === id).length;
+
+  it('creates a running+preparing card with empty input, placed in a group', () => {
+    const next = chatReducer(initState(), prep(0));
+    const session = next.get(SESSION)!;
+    const card = session.toolCalls.get('c1')!;
+    expect(card).toMatchObject({
+      toolUseId: 'c1', toolName: 'Write', status: 'running', preparing: true, preparingChars: 0,
+    });
+    expect(card.input).toEqual({});
+    expect(idCount(next, 'c1')).toBe(1);
+    expect(session.activeTurnToolIds.has('c1')).toBe(true);
+  });
+
+  it('a later progress update changes only the count — no second card, no re-placement', () => {
+    let state = chatReducer(initState(), prep(0));
+    const groupIdBefore = groupsOf(state)[0].id;
+    state = chatReducer(state, prep(512));
+    state = chatReducer(state, prep(2048));
+    expect(state.get(SESSION)!.toolCalls.size).toBe(1);
+    expect(state.get(SESSION)!.toolCalls.get('c1')!.preparingChars).toBe(2048);
+    expect(idCount(state, 'c1')).toBe(1);
+    expect(groupsOf(state)[0].id).toBe(groupIdBefore);
+  });
+
+  it('TRANSCRIPT_TOOL_USE with the same id supersedes it IN PLACE', () => {
+    // This is the load-bearing behavior: the completed tool-call carries the
+    // SAME provider id as tool-input-start, and TRANSCRIPT_TOOL_USE is already
+    // idempotent by toolUseId, so no merge machinery is needed. If the
+    // idempotent group placement ever regresses, this test is what catches it.
+    let state = chatReducer(initState(), prep(2048));
+    const groupIdBefore = groupsOf(state)[0].id;
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'c1', toolName: 'Write', toolInput: { file_path: 'a.ts', content: 'x' },
+    } as any);
+
+    const card = state.get(SESSION)!.toolCalls.get('c1')!;
+    expect(card.preparing).toBeUndefined();
+    expect(card.status).toBe('running');
+    expect(card.input).toEqual({ file_path: 'a.ts', content: 'x' });
+    expect(idCount(state, 'c1')).toBe(1);
+    expect(groupsOf(state)[0].id).toBe(groupIdBefore);
+  });
+
+  it('cleared removes the card and prunes the emptied group and its turn segment', () => {
+    let state = chatReducer(initState(), prep(2048));
+    const turnId = state.get(SESSION)!.currentTurnId!;
+    state = chatReducer(state, prep(2048, { cleared: true }));
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.has('c1')).toBe(false);
+    expect(session.activeTurnToolIds.has('c1')).toBe(false);
+    expect(session.toolGroups.size).toBe(0);
+    expect(session.assistantTurns.get(turnId)!.segments).toEqual([]);
+  });
+
+  it('cleared is a NO-OP once the id became a real tool card', () => {
+    // A retry-clear must never delete a real card. The clear can only race a
+    // tool-use that already landed, and deleting THAT would drop a tool whose
+    // result is still coming — the dangling-pair failure the runtime forbids.
+    let state = chatReducer(initState(), prep(2048));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'c1', toolName: 'Write', toolInput: { file_path: 'a.ts' },
+    } as any);
+    state = chatReducer(state, prep(2048, { cleared: true }));
+
+    expect(state.get(SESSION)!.toolCalls.get('c1')).toBeDefined();
+    expect(state.get(SESSION)!.toolCalls.get('c1')!.input).toEqual({ file_path: 'a.ts' });
+  });
+
+  it('endTurn DELETES preparing cards but still FAILS real running ones', () => {
+    // No tool was ever invoked for a preparing card, so "Write · failed" would
+    // describe an event that did not happen (Destin, 2026-08-12).
+    let state = chatReducer(initState(), prep(2048));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'real-1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: SESSION, uuid: 'u-2', timestamp: 2000,
+    } as any);
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.has('c1')).toBe(false);
+    expect(session.toolCalls.get('real-1')!.status).toBe('failed');
+  });
+});

@@ -92,6 +92,28 @@ describe('SessionStore', () => {
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
 
+  it('never persists a toolPreparing heartbeat, and does not flush the open part', async () => {
+    // Partial tool arguments must not reach the JSONL — a resume would replay a
+    // half-written file. The filter this relies on keys off "assistant-thinking
+    // with no text and no partId", so ADDING A FIELD to that event is exactly
+    // how it would silently regress.
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Writing', partId: 'p1' }, 'u-1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', {
+      toolPreparing: { toolCallId: 'c1', toolName: 'Write', chars: 512 },
+    }, 'u-2') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: ' a file', partId: 'p1' }, 'u-3') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 'u-4') as any);
+
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.some((e: any) => e.data?.toolPreparing)).toBe(false);
+    // The open p1 part was NOT flushed by the heartbeat: both halves coalesced
+    // into ONE persisted assistant-text.
+    const texts = events.filter((e: any) => e.type === 'assistant-text');
+    expect(texts).toHaveLength(1);
+    expect((texts[0] as any).data.text).toBe('Writing a file');
+  });
+
   it('a new partId flushes the previous open part', async () => {
     await store.create(HEADER);
     await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'thi', partId: 'r1' }, 'r1a') as any);

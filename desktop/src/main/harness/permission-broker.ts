@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { log } from '../logger';
+import type { GrantScope } from '../../shared/bash-grant-shapes';
 
 export interface AskRequest {
   sessionId: string;
@@ -26,6 +27,10 @@ export interface AskRequest {
    *  anything for path-subject tool asks; budget gates never set it.
    *  See spec 2026-08-11 (permissions management UI), finding 3. */
   external?: boolean;
+  /** The session's permission mode at ask time. Full-auto + denyListed is the
+   *  renderer's cue to swap the generic row for the safety-stop footer
+   *  (spec 2026-08-12, M5 2b). Optional: CC-path asks never carry it. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
   /** Plan 1b Task 8: set by childAskRouter when this ask is being ROUTED from a
    *  specialist child rather than raised directly by `sessionId`'s own turn.
    *  `sessionId` above is already the PARENT's id by the time this reaches
@@ -66,6 +71,12 @@ export interface AskDecision {
    *  so the model reads the true reason (still pending, not refused) instead
    *  of a sentence that blames a user who never actually answered. */
   message?: string;
+  /** Which grant width the user picked, when they picked "Always allow".
+   *  A SELECTOR, never a pattern: the renderer must not be able to name the rule
+   *  it is granting itself — remembered rules are the top precedence layer, above
+   *  the destructive deny-list. Always populated on a resolved ask; defaults to
+   *  the narrow option. */
+  grantScope?: GrantScope;
 }
 
 /** Task 8: the shape handed to a late-response handler — everything about the
@@ -158,6 +169,9 @@ export class PermissionBroker extends EventEmitter {
           denyListed: req.denyListed,
           external: req.external === true,
           ...(req.specialist ? { specialist: req.specialist } : {}),
+          // Spread-omitted (not `undefined`-valued) so the CC-path payload
+          // shape is byte-identical to before this field existed.
+          ...(req.permissionMode ? { permissionMode: req.permissionMode } : {}),
         },
         timestamp: Date.now(),
       });
@@ -186,7 +200,11 @@ export class PermissionBroker extends EventEmitter {
     // updatedPermissions and must never influence `always`.
     const updatedInput = inner.updatedInput && typeof inner.updatedInput === 'object'
       ? (inner.updatedInput as Record<string, unknown>) : undefined;
-    const resolved: AskDecision = { behavior, always, ...(updatedInput ? { updatedInput } : {}) };
+    // Validate to the two literals and FAIL NARROW on anything else. This value
+    // is PERSISTED (unlike permissionMode, which is display-only), so it is
+    // checked here AND re-derived at the session rather than trusted.
+    const grantScope: GrantScope = decision.grantScope === 'wide' ? 'wide' : 'exact';
+    const resolved: AskDecision = { behavior, always, grantScope, ...(updatedInput ? { updatedInput } : {}) };
 
     if (entry.timedOut) {
       // Task 8: the entry's own promise already settled (with the redirect,

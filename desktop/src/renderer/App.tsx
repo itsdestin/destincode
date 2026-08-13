@@ -1229,6 +1229,22 @@ function AppInner() {
               partId: event.data.partId,
             });
           } else {
+            // Argument-generation progress: draw/update the preparing tool card.
+            // Dispatched IN ADDITION to the heartbeat, not instead of it — the
+            // heartbeat's promptProcessing:null is the right outcome here (prefill
+            // is over once arguments are streaming), and suppressing it would
+            // strand the previous phase's progress line on screen.
+            // MUST mirror BubbleFeed.tsx.
+            if (event.data?.toolPreparing) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_TOOL_PREPARING',
+                sessionId: event.sessionId,
+                toolCallId: event.data.toolPreparing.toolCallId,
+                toolName: event.data.toolPreparing.toolName,
+                chars: event.data.toolPreparing.chars,
+                cleared: event.data.toolPreparing.cleared,
+              });
+            }
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,

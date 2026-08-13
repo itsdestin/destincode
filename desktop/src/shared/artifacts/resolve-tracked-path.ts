@@ -58,7 +58,13 @@ export function resolveTrackedPath(recordedPath: string, projectRoot: string): T
   //    (follow-up). Same-username same-OS devices have identical paths → step 1.
   const recordedIsWindows = /^[a-zA-Z]:[\\/]/.test(recordedPath);
   const rootIsWindows = /^[a-zA-Z]:[\\/]/.test(projectRoot);
-  if (recordedIsWindows !== rootIsWindows) {
+  // Fix: step 2 remaps ANOTHER DEVICE'S ABSOLUTE PATH. A relative path has no
+  // OS-ness of its own, so the `recordedIsWindows !== rootIsWindows` gate below
+  // fired on every relative path under a Windows root and, if the path happened
+  // to contain the project folder name as a segment, silently returned the WRONG
+  // file ('proj/notes.md' → 'notes.md', when the harness meant proj/proj/notes.md).
+  const recordedIsAbsolute = recordedIsWindows || fwdPath.startsWith('/');
+  if (recordedIsAbsolute && recordedIsWindows !== rootIsWindows) {
     const rootBase = fwdRoot.split('/').pop() || '';
     if (rootBase) {
       const segs = fwdPath.split('/');
@@ -70,7 +76,33 @@ export function resolveTrackedPath(recordedPath: string, projectRoot: string): T
     }
   }
 
-  // 3. Genuinely external — store the absolute path canonical, basename for display.
+  // 3. Relative recorded path → internal. The native harness tools accept a
+  //    relative file_path and resolve it with path.resolve(ctx.cwd, p) themselves
+  //    (main/harness/tools/guards.ts), but the transcript event we consume
+  //    carries the RAW arg. The tracker passes session.cwd as projectRoot
+  //    (App.tsx:1507) — the SAME value the harness resolved against — so a
+  //    relative path here is in-project by identity, not by inference.
+  //
+  //    WHY internal rather than absolutising into an external: internal records
+  //    survive cross-device sync (that is the entire point of step 2). An
+  //    external carrying a machine-specific absolute path breaks again the next
+  //    time the conversation is resumed on another device.
+  //
+  //    MUST run AFTER step 2. 'C:/Users/...' is not absolute by POSIX rules, so
+  //    on Linux it reaches here; the drive-letter test below catches the case
+  //    where step 2 ran but found no project-root segment to remap. Without it
+  //    we would produce join(root, 'C:/Users/...') — worse than leaving the
+  //    record external.
+  if (!recordedIsAbsolute && fwdPath !== '') {
+    // A '..' segment escapes the root once joined, manufacturing a phantom
+    // internal artifact. Leave those external — authorizeArtifactRead's in-root
+    // check would reject them anyway, but as an unexplained "not found".
+    if (!fwdPath.split('/').includes('..')) {
+      return { kind: 'internal', path: fwdPath.replace(/^\.\//, ''), absolutePath: null };
+    }
+  }
+
+  // 4. Genuinely external — store the absolute path canonical, basename for display.
   const basename = fwdPath.split('/').pop() || fwdPath;
   return { kind: 'external', path: basename, absolutePath: fwdPath };
 }

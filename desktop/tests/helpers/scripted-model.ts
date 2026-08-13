@@ -38,6 +38,20 @@ export function toolCallChunk(toolCallId: string, toolName: string, input: unkno
   return { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) };
 }
 
+/** tool-input-start / delta(s) / end framing for ONE tool call's argument
+ *  stream, using the RAW provider part shape (`id` + `delta`, NOT the
+ *  UIMessageChunk `toolCallId` + `inputTextDelta`). streamText forwards these
+ *  onto fullStream unchanged. Pair with toolCallChunk() for the completed call:
+ *  a real provider emits both, and the driver needs the completed part to
+ *  actually run the tool. */
+export function toolInputChunks(toolCallId: string, toolName: string, ...deltas: string[]) {
+  return [
+    { type: 'tool-input-start', id: toolCallId, toolName },
+    ...deltas.map((delta) => ({ type: 'tool-input-delta', id: toolCallId, delta })),
+    { type: 'tool-input-end', id: toolCallId },
+  ];
+}
+
 export function finishChunk(reason: string, inTok = 1, outTok = 1) {
   return { type: 'finish', finishReason: { unified: reason, raw: reason }, usage: { inputTokens: { total: inTok }, outputTokens: { total: outTok } } };
 }

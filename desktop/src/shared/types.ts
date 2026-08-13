@@ -233,6 +233,24 @@ export interface TranscriptEvent {
      */
     promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
     /**
+     * Native runtime only. The model is GENERATING a tool call's arguments —
+     * nothing has executed yet. This is what makes a "preparing" ToolCard
+     * appear instead of minutes of bare thinking spinner on a big Write.
+     *
+     * Rides `assistant-thinking` with NO text and NO partId so
+     * SessionStore.append drops it (session-store.ts): partial arguments must
+     * never reach the JSONL, or a resume would replay a half-written file.
+     *
+     * `toolCallId` is the provider's REAL id — identical to the one the
+     * completed `tool-call` stream part carries — which is what lets the card
+     * transition in place instead of being swapped.
+     *
+     * `cleared: true` means "remove this preparing card": the stall auto-retry
+     * re-runs a step WITHOUT ending the turn, so its cards must be withdrawn
+     * explicitly (every other death path ends the turn, where endTurn reaps).
+     */
+    toolPreparing?: { toolCallId: string; toolName: string; chars: number; cleared?: boolean };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
@@ -344,6 +362,28 @@ export interface ToolCallState {
    *  every external path and never consults the stored rules there, so a
    *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
   external?: boolean;
+  /** Native broker only: the session's permission mode when the ask fired.
+   *  'full-auto' + denyListed swaps the generic button row for the safety-stop
+   *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /**
+   * Native runtime only. The model is still GENERATING this call's arguments —
+   * nothing has executed, and `input` is an empty object until the real
+   * tool-use event supersedes this entry in place.
+   *
+   * A FLAG on a 'running' entry rather than a fifth ToolCallStatus, so every
+   * existing status consumer (endTurn, ChatView's hasRunningTools, ToolCard's
+   * spinner, AssistantTurnBubble's awaiting-approval hiding) keeps working
+   * untouched. Exactly two places opt in: ToolCard's body and reaping.
+   *
+   * Display-only and NEVER persisted — a preparing entry is DELETED on turn
+   * end, never failed and never given a result, so the tool-call/result pairing
+   * invariant is not involved.
+   */
+  preparing?: boolean;
+  /** Argument characters generated so far — the preparing card's liveness
+   *  counter. Meaningless once `preparing` is gone. */
+  preparingChars?: number;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */

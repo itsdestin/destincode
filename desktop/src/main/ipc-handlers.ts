@@ -96,7 +96,7 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
@@ -109,7 +109,7 @@ import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
-import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
+import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
 import { GIT_IPC } from './git/ipc-channels';
@@ -3497,6 +3497,20 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
+    // Repair legacy relative-external records before listing. The Session
+    // Drawer is the only surface where an unpinned external is visible, so this
+    // is where the false "no longer on disk" actually renders. Memoized per
+    // project per process — this handler also fires after every tracked write.
+    const migration = await runSidecarMigration(projectRoot);
+    // Fix: every other sidecar writer here calls invalidateSidecarIdCache after
+    // committing (see APPEND_VERSION/RENAME/REMOVE_RECORD above) so the
+    // watcher's path-to-id map doesn't go stale. runSidecarMigration writes too
+    // (it rewrites reclassified records' path/kind) but had no caller doing
+    // this. Wiring it from artifact-store.ts would import project-watcher.ts,
+    // which already imports artifact-store.ts's readSidecar — a cycle — so it's
+    // done here at each of the three call sites instead, and only when a write
+    // actually happened.
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot);
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
@@ -3563,6 +3577,11 @@ export function registerIpcHandlers(
     // index entry — fall back to reading the sidecar at that path so their
     // artifacts resolve too. A bogus id simply yields no sidecar.
     const projectRoot = p ? p.path : projectId;
+    // Same legacy-repair call as LIST_SESSION above (filepath pills + the
+    // hero/switcher count also read through this handler) — memoized per
+    // project per process, so this costs one Set lookup after the first call.
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const sidecar = await readSidecar(projectRoot);
 
     let tracked: any[] = [];
@@ -3599,6 +3618,15 @@ export function registerIpcHandlers(
     if (isGatedRoot(projectRoot) && !opts?.force) {
       return { ok: true, files: [], truncated: false, gated: true };
     }
+    // Fix: this repair call used to run BEFORE the gated-root check above,
+    // so a gated root (home dir / drive root) could have its sidecar read
+    // and rewritten on a listing the user never confirmed via "Browse
+    // anyway?". Moved below the early return so the repair only touches a
+    // gated root once the user has actually agreed to browse it. Same
+    // legacy-repair call as LIST_SESSION above. Memoized per project per
+    // process.
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const r = await projectAllFiles(projectRoot);
     return { ok: true, files: r.files, truncated: r.truncated };
   });
@@ -4114,10 +4142,16 @@ export function registerIpcHandlers(
       artifactIds.map(async (id) => {
         const a = byId.get(id);
         if (!a) return id; // unknown id treated as missing
+        // A corrupt record (relative absolutePath) resolves against the PROCESS
+        // cwd here, which cuts both ways: it reports an in-project file as
+        // missing (the Session Drawer's "no longer on disk" — this handler feeds
+        // that label, SessionDrawer.tsx:42) AND would report an artifact as
+        // present if a same-named file happens to sit in the process cwd.
         const fullPath = a.kind === 'internal'
           ? path.join(projectRoot, a.path)
           : a.absolutePath;
         if (!fullPath) return id;
+        if (a.kind !== 'internal' && !isAbsoluteRecorded(fullPath)) return id;
         try {
           await fs.promises.access(fullPath);
           return null;

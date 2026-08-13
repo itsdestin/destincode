@@ -19,7 +19,7 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // Scripted-mock builders live in a shared helper — the history-rebuild test
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
-import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+import { textChunks, toolCallChunk, toolInputChunks, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
 // Direct MockLanguageModelV4 construction — only the postSteer tests below need
 // a per-call SIDE EFFECT (posting a steer from inside doStream) that the
 // scripted-model helpers don't support; everything else in this suite goes
@@ -490,8 +490,74 @@ describe('HarnessSession — multi-step turn driver', () => {
       session.on('remember-rule', (r) => remembered.push(r));
       collect(session);
       await session.send('go');
-      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow' }]);
+      // match:'exact' — a file path containing '*' was a wildcard grant on this
+      // exact code path until M5 2c.
+      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow', match: 'exact' }]);
       expect(askUser.mock.calls[0][0].external).toBe(false);
+    });
+  });
+
+  // M5 2c: the RENDERER never names a pattern — it sends a width selector and the
+  // session re-derives from the tool call it already holds. A renderer that could
+  // name its own pattern could grant itself anything, because remembered rules are
+  // the final precedence layer, above the destructive deny-list.
+  describe('"Always allow" derives the rule it stores', () => {
+    const bashTool = () => fakeTool('Bash', {
+      schema: z.object({ command: z.string() }),
+      permissionSubject: (a: any) => a.command,
+    });
+    const oneBash = (command: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Bash', { command }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    /** Drive one gated Bash call answered with "Always allow" at `grantScope`. */
+    async function rulesFor(command: string, grantScope?: 'exact' | 'wide'): Promise<unknown[]> {
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow', always: true, grantScope }));
+      const session = new HarnessSession(
+        makeOpts({
+          tools: [bashTool()],
+          decide: async () => ({ action: 'ask', denyListed: false }) as PermissionDecision,
+          askUser,
+        }),
+        async () => oneBash(command) as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      return remembered;
+    }
+
+    it('an exact grant stores the literal command with match:exact', async () => {
+      expect(await rulesFor('rm *.log', 'exact'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm *.log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a wide grant stores the DERIVED rule, not the raw command', async () => {
+      expect(await rulesFor('git push origin feat/x', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git push*origin feat/x', action: 'allow', match: 'glob' }]);
+    });
+
+    it('a renderer asking for "wide" on a command with no wide rung gets the narrow one', async () => {
+      expect(await rulesFor('rm -rf build', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm -rf build', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a renderer asking for "wide" on a WITHHELD rung gets the narrow one', async () => {
+      // 'Any git command' is withheld because it would cover pushes and resets.
+      expect(await rulesFor('git --no-pager log', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git --no-pager log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('nothing is remembered when the command offers no grant at all', async () => {
+      // Bare `git push` sends whatever branch is checked out AT RUN TIME.
+      expect(await rulesFor('git push', 'exact')).toEqual([]);
+    });
+
+    it('a missing selector is treated as the narrowest option', async () => {
+      expect(await rulesFor('npm run build', undefined))
+        .toEqual([{ tool: 'Bash', pattern: 'npm run build', action: 'allow', match: 'exact' }]);
     });
   });
 
@@ -738,6 +804,92 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'tool-use')).toBe(false);
     expect(decide).not.toHaveBeenCalled();
     expect(askUser).not.toHaveBeenCalled();
+  });
+
+  it('emits a toolPreparing heartbeat at tool-input-start, before the tool-call completes', async () => {
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', '{"file_path":', '"x.ts"}'),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    const prep = events.filter((e) => e.data?.toolPreparing);
+    // The FIRST preparing event must precede the tool-use card entirely.
+    expect(prep.length).toBeGreaterThan(0);
+    expect(prep[0].type).toBe('assistant-thinking');
+    expect(prep[0].data.toolPreparing).toMatchObject({ toolCallId: 'c1', toolName: 'Read', chars: 0 });
+    expect(events.indexOf(prep[0])).toBeLessThan(events.findIndex((e) => e.type === 'tool-use'));
+  });
+
+  it('preparing heartbeats carry no text and no partId, so SessionStore drops them', async () => {
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', '{"file_path":"x.ts"}'),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    for (const e of events.filter((ev) => ev.data?.toolPreparing)) {
+      expect(e.data.text).toBeUndefined();
+      expect(e.data.partId).toBeUndefined();
+    }
+  });
+
+  it('throttles argument-progress emits to one per TOOL_PREPARING_EMIT_MS per call', async () => {
+    // 40 deltas arrive back-to-back within one tick. Unthrottled that is 41
+    // events; throttled it is the unconditional start plus at most a couple of
+    // window crossings. Asserting "far fewer than the delta count" pins the
+    // throttle without pinning wall-clock timing, which is flaky in CI.
+    const read = fakeTool('Read');
+    const deltas = Array.from({ length: 40 }, (_, i) => `chunk${i}`);
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', ...deltas),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    const prep = events.filter((e) => e.data?.toolPreparing);
+    expect(prep.length).toBeLessThan(10);
+    expect(prep.length).toBeGreaterThan(0);
+  });
+
+  it('tool-input-end emits nothing on its own', async () => {
+    // The completed tool-call part follows immediately and supersedes the card;
+    // an event here would be pure noise on every single tool call.
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        { type: 'tool-input-start', id: 'c1', toolName: 'Read' },
+        { type: 'tool-input-end', id: 'c1' },
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    expect(events.filter((e) => e.data?.toolPreparing).length).toBe(1);
   });
 });
 

@@ -921,6 +921,14 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
   );
 
   const inner = (() => {
+    // No arguments exist yet — every view below would render an empty shell.
+    if (tool.preparing) {
+      return (
+        <div className="px-3 py-2 text-xs text-fg-muted">
+          {`Still preparing tool call… ${(tool.preparingChars ?? 0).toLocaleString()} characters so far`}
+        </div>
+      );
+    }
     switch (tool.toolName) {
       case 'Edit':
         return <EditView tool={tool} sessionId={sessionId} />;

@@ -3,10 +3,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import { makeOpenRouterFactory } from '../src/main/harness/review/openrouter-factory';
-import { appendReview } from '../src/main/harness/review/append-review';
-import { runBattery, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_REPORT_FLOOR, assertHistoryBudget, DEFAULT_BATTERY_CONTEXT_LENGTH, BATTERY_CONTEXT_CAP } from '../src/main/harness/review/run-battery';
-import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/review/run-facts';
+import { makeOpenRouterFactory } from '../src/main/harness/eval/openrouter-factory';
+import { appendReview } from '../src/main/harness/eval/append-review';
+import { runCase, STEP_GATE_ALLOWANCE, BATTERY_MAX_OUTPUT_TOKENS, BATTERY_STEP_BUDGET, BATTERY_HARNESS, WRAP_UP_PROMPT, REPEAT_REPORT_FLOOR, assertHistoryBudget, DEFAULT_BATTERY_CONTEXT_LENGTH, BATTERY_CONTEXT_CAP } from '../src/main/harness/eval/run-case';
+import { collectRunFacts, claimedTools, renderRunFacts, MIN_TOOL_CALLS } from '../src/main/harness/eval/run-facts';
 import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
@@ -32,14 +32,14 @@ describe('makeOpenRouterFactory', () => {
 // max output — 65,536 for Claude Opus 5 — and the account failed twice with
 // "requested up to 65536 tokens, but can only afford 63293" even though
 // Opus's last successful battery run used only 8,379 output tokens total.
-// runBattery must send an explicit, proportionate ceiling instead of
+// runCase must send an explicit, proportionate ceiling instead of
 // inheriting that undefined-maximum behavior. Real HarnessSession.opts.harness
 // (ai/test's MockLanguageModelV4 records every doStream call's options in
 // doStreamCalls, which is how this proves the SENT value, not an inferred one).
-describe('runBattery output ceiling (2026-08-10 incident)', () => {
+describe('runCase output ceiling (2026-08-10 incident)', () => {
   it('caps maxOutputTokens instead of leaving it unset (which lets OpenRouter reserve the model max)', async () => {
     const model = scriptModel([{ text: 'Final review.' }]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model',
       label: 'Fake',
@@ -332,19 +332,19 @@ Prompt block here.
   });
 });
 
-// Destin's ruling (overrides the plan brief): the brief's three runBattery
+// Destin's ruling (overrides the plan brief): the brief's three runCase
 // tests each had an assertion that could never fail (e.g.
 // `expect(run.asks).toBeGreaterThanOrEqual(0)`, true of every possible
 // implementation including a broken one). Same test names/intent, but each
 // assertion below is wired to something that would actually break if the
 // driver regressed.
-describe('runBattery', () => {
+describe('runCase', () => {
   it('auto-approves tool use so the battery never blocks on a permission prompt', async () => {
     // Script a REAL tool call (Read of the fixture's own README.md) followed by
     // the model's final text. If decide()/askUser were wired wrong, this call
     // would stall on an unanswered permission ask and the 5s timeout below
     // would fire, failing the test — unlike the brief's vacuous assertion.
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () =>
         scriptModel([
           { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
@@ -371,7 +371,7 @@ describe('runBattery', () => {
     // makes runs reproducible across models. Read the tool-result text the
     // driver's answer actually produced (formatAnswers' "Q: ...\nA: ..." shape)
     // rather than asserting only `asks > 0`.
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () =>
         scriptModel([
           {
@@ -409,7 +409,7 @@ describe('runBattery', () => {
     // HarnessSession funnels FOUR ask kinds through the single askUser callback
     // (harness-session.ts:1478 external-path forced ask, :1432 doom_loop,
     // :1100 max_steps, :1449 real AskUserQuestion). A prior version of
-    // run-battery's askUser answered all of them with `allow` because its
+    // run-case's askUser answered all of them with `allow` because its
     // `questions` loop silently ran zero times on anything that wasn't a real
     // AskUserQuestion. That let a scripted Write escape the fixture and write
     // to a real path on the machine running the CLI — this test is the one
@@ -422,7 +422,7 @@ describe('runBattery', () => {
     const outsideDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'yc-harness-review-test-outside-'));
     const outsideFile = path.join(outsideDir, 'pwned.txt');
     try {
-      const run = await runBattery({
+      const run = await runCase({
         modelFactory: async () =>
           scriptModel([
             { toolCalls: [{ name: 'Write', input: { file_path: outsideFile, content: 'pwned' } }] },
@@ -443,11 +443,11 @@ describe('runBattery', () => {
       expect(writeResult).toBeDefined();
       expect(writeResult!.data.isError).toBe(true);
 
-      // (b) `asks` counts this: run-battery's askUser increments `asks` for
+      // (b) `asks` counts this: run-case's askUser increments `asks` for
       // EVERY ask that reaches it, answered or denied, because the field means
       // "how many times something needed a human" — a denied external-path
       // ask is still one of those. See the WHY comment on askUser in
-      // run-battery.ts for the reasoning.
+      // run-case.ts for the reasoning.
       expect(run.asks).toBe(1);
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -456,7 +456,7 @@ describe('runBattery', () => {
 
   it('cleans up the fixture directory when the run finishes, after actually creating it', async () => {
     let seenDuringRun: string[] = [];
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => {
         // modelFactory only runs mid-send(), strictly after the fixture is
         // seeded — snapshotting os.tmpdir() here proves the directory really
@@ -478,7 +478,7 @@ describe('runBattery', () => {
   });
 
   it('keeps the fixture directory when keepFixture is true', async () => {
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => scriptModel([{ text: 'kept' }]) as any,
       modelId: 'fake/model',
       label: 'Fake',
@@ -495,7 +495,7 @@ describe('runBattery', () => {
   });
 
   it('returns label, modelId, a trimmed review, and a fixtureRoot inside the OS tmpdir', async () => {
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => scriptModel([{ text: '  Final review text.  ' }]) as any,
       modelId: 'fake/model-x',
       label: 'Fake X',
@@ -516,7 +516,7 @@ describe('runBattery', () => {
     // the real review with no separator. Script a model that narrates BEFORE a
     // tool call, then writes a distinct final message after — the review must
     // contain only the latter.
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () =>
         scriptModel([
           {
@@ -538,7 +538,7 @@ describe('runBattery', () => {
     // There is no tool-result to anchor on when a model just answers — every
     // assistant-text event in the run IS the final message, so the "after the
     // last tool-result" rule must not collapse to an empty string here.
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => scriptModel([{ text: 'No tools needed, here is my review.' }]) as any,
       modelId: 'fake/model',
       label: 'Fake',
@@ -550,7 +550,7 @@ describe('runBattery', () => {
 
   it('wires WebSearch to the keyless DDG backend instead of leaving it unconfigured (Defect 2)', async () => {
     // The live run got "Web search is not wired for this session; this is a
-    // configuration error" because runBattery never passed toolServices.
+    // configuration error" because runCase never passed toolServices.
     // Stub global fetch with the captured DDG fixture (tests/search-backends.test.ts
     // uses the same file) so this proves real end-to-end wiring — model calls
     // WebSearch, the tool reaches ctx.services.search, the adapter calls the
@@ -559,7 +559,7 @@ describe('runBattery', () => {
     const fetchSpy = vi.fn(async () => new Response(fixtureHtml));
     vi.stubGlobal('fetch', fetchSpy);
     try {
-      const run = await runBattery({
+      const run = await runCase({
         modelFactory: async () =>
           scriptModel([
             { toolCalls: [{ name: 'WebSearch', input: { query: 'node lts version' } }] },
@@ -581,7 +581,7 @@ describe('runBattery', () => {
     }
   });
 
-  // Root cause (2026-08-09 live run): run-battery's askUser used to deny
+  // Root cause (2026-08-09 live run): run-case's askUser used to deny
   // EVERY max_steps ask outright. harness-session.ts:1100-1102 turns a
   // non-'allow' answer to that specific ask into stopReason='max_steps' and
   // ENDS THE TURN — unlike doom_loop, which only fails the one repeated call.
@@ -600,7 +600,7 @@ describe('runBattery', () => {
   // (denial never resets the window, only 'allow' does — harness-session.ts:
   // 1438), inflating `asks` with doom_loop hits unrelated to what this test
   // is proving about max_steps. Unique-per-call (not merely alternating
-  // between two values) ALSO keeps this run under REPEAT_LIMIT (run-battery.ts)
+  // between two values) ALSO keeps this run under REPEAT_LIMIT (run-case.ts)
   // — an alternating two-value script run for 100+ steps would otherwise trip
   // the restart-detection wrap-up before max_steps ever gets the chance to,
   // which is what this test exists to prove.
@@ -620,7 +620,7 @@ describe('runBattery', () => {
       ...toolCallSteps(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET),
       { text: 'Final review after surviving every step gate.' },
     ];
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => scriptModel(steps) as any,
       modelId: 'fake/model',
       label: 'Fake',
@@ -633,7 +633,7 @@ describe('runBattery', () => {
     // reach this many tool calls.
     expect(run.toolCalls).toBe(STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET);
     expect(run.stepGates).toBe(STEP_GATE_ALLOWANCE);
-    // Design choice (see the WHY comment on run-battery.ts's askUser): a
+    // Design choice (see the WHY comment on run-case.ts's askUser): a
     // bounded max_steps allowance still counts as an `asks` — it's a real
     // spend/policy decision made on the model's behalf, same as a denied
     // doom_loop or external-path ask. All gate hits here were the ONLY
@@ -665,7 +665,7 @@ describe('wrap-up turn', () => {
     // different mechanism that would muddy what these tests prove) AND so no
     // call recurs at all across the whole run. Recurring between just two
     // alternating values would, at this function's typical call counts
-    // (100+), cross REPEAT_LIMIT (run-battery.ts) and send the run to a
+    // (100+), cross REPEAT_LIMIT (run-case.ts) and send the run to a
     // 'restart' wrap-up before the budget/timeout trigger these tests are
     // actually exercising ever fires — restart detection has its own
     // dedicated tests below.
@@ -687,7 +687,7 @@ describe('wrap-up turn', () => {
       ...toolCallSteps((STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET),
       { text: 'Review written after being asked to wrap up.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -706,7 +706,7 @@ describe('wrap-up turn', () => {
       // ...and only then answers.
       { text: 'Fine, here is the review.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -728,7 +728,7 @@ describe('wrap-up turn', () => {
   it('denies a genuine AskUserQuestion during wrap-up, so WRAP_UP_PROMPT\'s "every tool call will be denied" claim is true (Fix pass 2, Finding 2)', async () => {
     // AskUserQuestion is declared `interactive: true` (ask-user-question.ts)
     // and harness-session.ts routes interactive tools AROUND decide()
-    // entirely, straight to askUser. Before this fix, run-battery's askUser
+    // entirely, straight to askUser. Before this fix, run-case's askUser
     // allowed any genuine AskUserQuestion unconditionally — including during
     // wrap-up — so a model could keep calling it, bounded only by
     // WRAP_UP_TIMEOUT_MS, while WRAP_UP_PROMPT told it every tool call would
@@ -755,7 +755,7 @@ describe('wrap-up turn', () => {
       // Wrap-up turn, step 2: the ask was denied, so the model gives up and answers.
       { text: 'Fine, here is the review.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -786,7 +786,7 @@ describe('wrap-up turn', () => {
       toolCalls: [{ name: 'Read', input: { file_path: 'README.md', offset: 9 } }],
     };
     const model = scriptModel([...steps, { text: 'The actual review.' }]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -816,7 +816,7 @@ describe('wrap-up turn', () => {
       // ask), so the turn loops once more — the model gives up here.
       {},
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -846,7 +846,7 @@ describe('wrap-up turn', () => {
       // up testing and writes the real review.
       { text: 'The actual review text.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -910,7 +910,7 @@ describe('wrap-up turn', () => {
       },
     });
 
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 200,
     });
@@ -938,7 +938,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
   // phantom "restart" behaviour that cost two rounds of threshold-tuning.
   //
   // 48 tests were green throughout, because every one of them asserted on what
-  // runBattery RETURNS and none on what reaches the model. These assert on the
+  // runCase RETURNS and none on what reaches the model. These assert on the
   // transmitted prompt.
   function recordingModel(prompts: any[]) {
     let call = 0;
@@ -962,7 +962,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
 
   it('the wrap-up turn carries the testing turn — its prompt, its calls, its results', async () => {
     const prompts: any[] = [];
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => recordingModel(prompts) as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
@@ -977,7 +977,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
 
   it('keeps history through the testing turn, not just the newest exchange', async () => {
     const prompts: any[] = [];
-    await runBattery({
+    await runCase({
       modelFactory: async () => recordingModel(prompts) as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
@@ -988,7 +988,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
 
   it('refuses to spend money when the output ceiling has eaten the history budget', async () => {
     // A window barely above the output ceiling — the shape that shipped.
-    await expect(runBattery({
+    await expect(runCase({
       modelFactory: async () => scriptModel([{ text: 'x' }]) as any,
       modelId: 'fake/model', label: 'Fake', contextLength: BATTERY_MAX_OUTPUT_TOKENS + 2_000,
     })).rejects.toThrow(/Battery misconfigured/);
@@ -1002,7 +1002,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
 
   it('caps a huge roster window so history does not ride unbounded on every request', async () => {
     const model = scriptModel([{ text: 'Review.' }]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
       contextLength: 1_000_000,   // Qwen 3.8 Max's real window
@@ -1041,7 +1041,7 @@ describe('repeat reporting (diagnostic only)', () => {
       ...repeatingSteps(48),
       { text: 'Finished on my own terms.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -1056,7 +1056,7 @@ describe('repeat reporting (diagnostic only)', () => {
     // off saved transcripts is how the false-positive bug was diagnosed in the
     // first place.
     const model = scriptModel([...repeatingSteps(8), { text: 'Done.' }]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -1067,7 +1067,7 @@ describe('repeat reporting (diagnostic only)', () => {
 
   it('reports nothing for a run whose repeats stay under the reporting floor', async () => {
     const model = scriptModel([...repeatingSteps(REPEAT_REPORT_FLOOR - 1), { text: 'Done.' }]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
     });
@@ -1076,16 +1076,16 @@ describe('repeat reporting (diagnostic only)', () => {
   });
 });
 
-describe('runBattery salvage', () => {
+describe('runCase salvage', () => {
   it('returns the run with the real error instead of throwing, when the model errors mid-run', async () => {
-    // WHY this matters: round 5 lost four models entirely. runBattery threw, the
+    // WHY this matters: round 5 lost four models entirely. runCase threw, the
     // CLI caught, and no transcript was written - so the failures were not even
     // diagnosable after the fact.
     const model = scriptModel([
       { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
       { throwError: 'provider exploded' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model',
       label: 'Fake',
@@ -1114,7 +1114,7 @@ describe('runBattery salvage', () => {
       // Reached only by the SECOND send() the trigger issues.
       { text: 'Asked, so here is my review.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
@@ -1131,7 +1131,7 @@ describe('runBattery salvage', () => {
       { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
       { text: 'A complete review.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
@@ -1151,7 +1151,7 @@ describe('runBattery salvage', () => {
       {},   // testing turn stops here, having emitted narration but no review
       { text: 'Asked anyway.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });
@@ -1167,7 +1167,7 @@ describe('runBattery salvage', () => {
       { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
       { text: 'The review.' },
     ]);
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: async () => model as any,
       modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
     });

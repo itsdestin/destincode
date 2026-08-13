@@ -69,4 +69,16 @@ describe('transcript event surface parity: App.tsx vs BubbleFeed.tsx', () => {
     const app = handledTypes('App.tsx');
     for (const t of Object.keys(KNOWN_GAPS)) expect(app).toContain(t);
   });
+
+  it('both switches dispatch the preparing-tool-card payload', () => {
+    // Case-label parity (the test above) cannot see this: both files already
+    // handle 'assistant-thinking', so a toolPreparing branch missing from one
+    // of them is invisible to a label comparison.
+    const app = readFileSync(join(RENDERER, 'App.tsx'), 'utf8');
+    const buddy = readFileSync(join(RENDERER, 'components', 'buddy', 'BubbleFeed.tsx'), 'utf8');
+    expect(app).toContain('toolPreparing');
+    expect(buddy).toContain('toolPreparing');
+    expect(app).toContain('NATIVE_TOOL_PREPARING');
+    expect(buddy).toContain('NATIVE_TOOL_PREPARING');
+  });
 });

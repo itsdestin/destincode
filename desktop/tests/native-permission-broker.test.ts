@@ -29,6 +29,22 @@ describe('PermissionBroker', () => {
     await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true });
   });
 
+  it('rides permissionMode along the PermissionRequest payload (full-auto safety stop keys on it)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git push' }, denyListed: true, permissionMode: 'full-auto' });
+    expect(emitted[0].payload.permissionMode).toBe('full-auto');
+  });
+
+  it('omits permissionMode when the caller did not supply one (CC-path payload shape unchanged)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    expect('permissionMode' in emitted[0].payload).toBe(false);
+  });
+
   it('does NOT flag always when behavior is deny (guards against persisting an allow rule for a denied tool)', async () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
@@ -195,6 +211,35 @@ describe('PermissionBroker', () => {
       expect(broker.respond(requestId, { behavior: 'allow' })).toBe(false); // gone — parent teardown removed it
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('PermissionBroker — grantScope', () => {
+  /** ask() + the id it emitted, so each case reads as one call. */
+  const askOnce = (broker: PermissionBroker) => {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's', toolName: 'Bash', toolInput: { command: 'npm run build' }, denyListed: false });
+    return { p, id: emitted[0].payload._requestId as string };
+  };
+
+  it('passes a valid selector through', async () => {
+    const broker = new PermissionBroker();
+    const { p, id } = askOnce(broker);
+    broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: 'wide' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true, grantScope: 'wide' });
+  });
+
+  it('fails NARROW on anything that is not the literal "wide"', async () => {
+    // This value is persisted, so it is validated here AND re-derived at the
+    // session. A renderer that could widen its own grant by sending junk would
+    // be writing the top precedence layer.
+    for (const bad of [undefined, 'WIDE', 'tool-wide', 42, { scope: 'wide' }, null]) {
+      const broker = new PermissionBroker();
+      const { p, id } = askOnce(broker);
+      broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: bad });
+      await expect(p).resolves.toMatchObject({ grantScope: 'exact' });
     }
   });
 });

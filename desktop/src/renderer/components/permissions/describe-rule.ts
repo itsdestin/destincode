@@ -1,14 +1,22 @@
 import type { PermissionRule } from '../../../shared/permission-types';
+import { describeBashPattern } from '../../../shared/bash-grant-shapes';
 
 export interface RuleDescription {
-  /** Plain-language action, e.g. "Run" or "Create or overwrite". */
+  /** Plain-language action, e.g. "Run" or "Create or overwrite". For a scoped
+   *  Bash grant this carries the WHOLE sentence ("Pushing to master") and
+   *  `subject` is absent. */
   verb: string;
-  /** The thing acted on. Absent for a tool-wide grant and for MCP tools,
-   *  whose subject is already folded into `verb`. */
+  /** The thing acted on. Absent for a tool-wide grant, for MCP tools (whose
+   *  subject is folded into `verb`), and for a scoped Bash grant. */
   subject?: string;
-  /** True when the rule has no pattern, so it covers EVERY use of that tool.
-   *  The UI must render this as visibly broader than a specific grant. */
-  broad: boolean;
+  /** How much this rule covers.
+   *  'exact'     — one literal command or path, byte-for-byte
+   *  'wide'      — a pattern grant, e.g. pushes to one branch
+   *  'tool-wide' — no pattern at all; every use of that tool
+   *  The UI must render 'tool-wide' as visibly broader than the other two.
+   *  Replaced a `broad: boolean` in M5 2c: an exact grant and a scoped one are
+   *  both "not broad" while covering wildly different amounts. */
+  width: 'exact' | 'wide' | 'tool-wide';
 }
 
 // WHY a lookup rather than the raw tool name: the store speaks in tool ids
@@ -72,20 +80,25 @@ export function describeRule(rule: PermissionRule): RuleDescription {
 }
 
 function describeRuleBody(rule: PermissionRule): RuleDescription {
-  const broad = rule.pattern === undefined;
+  // WHY not just `pattern === undefined`: an exact grant and a scoped wide grant
+  // both HAVE a pattern but cover wildly different amounts, and the screen has to
+  // tell them apart. A missing `match` means a legacy rule, which PermissionStore
+  // normalizes to 'exact' on read — so anything still missing it here is exact too.
+  const width: RuleDescription['width'] =
+    rule.pattern === undefined ? 'tool-wide' : rule.match === 'glob' ? 'wide' : 'exact';
 
   // MCP grants are per-tool and namespaced `mcp__{server}__{tool}`. Split on the
   // FIRST '__' after the prefix: a server id may itself contain '__', and the
   // tool name is whatever remains.
   //
-  // Never `broad`, even though an MCP rule has no pattern: the pattern axis does
+  // Never 'tool-wide', even though an MCP rule has no pattern: the pattern axis does
   // not exist for MCP tools, so its absence is not a widening. The grant already
   // names one exact tool on one exact connection. Reporting it as "covers every
   // use" would put a scary badge on EVERY MCP row and teach the user to ignore
   // the badge on the tool-wide grants where it is true.
   const mcp = /^mcp__(.+?)__(.+)$/.exec(rule.tool);
   if (mcp) {
-    return { verb: `Use the ${mcp[2]} tool from the ${mcp[1]} connection`, broad: false };
+    return { verb: `Use the ${mcp[2]} tool from the ${mcp[1]} connection`, width: 'exact' };
   }
 
   // WHY Task gets its own branch instead of falling into VERBS+pattern below:
@@ -98,26 +111,36 @@ function describeRuleBody(rule: PermissionRule): RuleDescription {
   // user reads it. Strip the charter prefix and speak the user's word instead.
   if (rule.tool === 'Task') {
     if (rule.pattern === undefined) {
-      return { verb: 'Let specialists work anywhere in this project', broad: true };
+      return { verb: 'Let specialists work anywhere in this project', width: 'tool-wide' };
     }
     if (rule.pattern.startsWith('read-only:')) {
-      return { verb: 'Let a read-only specialist work in', subject: rule.pattern.slice('read-only:'.length), broad: false };
+      return { verb: 'Let a read-only specialist work in', subject: rule.pattern.slice('read-only:'.length), width: 'exact' };
     }
     if (rule.pattern.startsWith('read-write:')) {
-      return { verb: 'Let a specialist edit files in', subject: rule.pattern.slice('read-write:'.length), broad: false };
+      return { verb: 'Let a specialist edit files in', subject: rule.pattern.slice('read-write:'.length), width: 'exact' };
     }
     // No charter prefix: task.ts's permissionSubject only produces this for an
     // unresolvable agent name, which execute() already refuses before ever
     // spawning — so this is an ask that's about to be declined, never a real
     // standing grant. Still render something sane rather than raw syntax.
-    return { verb: 'Let a specialist work in', subject: rule.pattern, broad: false };
+    return { verb: 'Let a specialist work in', subject: rule.pattern, width: 'exact' };
+  }
+
+  // A scoped Bash grant already IS a sentence — "Pushing to master" — built by
+  // the same module that built the rule. Rendering it as verb + subject would put
+  // the raw pattern (asterisk and all) on a screen written for people who have
+  // never seen a glob. A pattern this module did not produce falls through to the
+  // generic rendering below rather than getting an invented sentence.
+  if (rule.tool === 'Bash' && width === 'wide' && rule.pattern !== undefined) {
+    const phrase = describeBashPattern(rule.pattern);
+    if (phrase) return { verb: phrase, width };
   }
 
   const base = VERBS[rule.tool] ?? `Use ${rule.tool}`;
   // Nothing writes a deny rule today, but PermissionRule permits one — render it
   // as a block rather than silently as a grant.
   const verb = rule.action === 'deny' ? (rule.tool === 'Bash' ? 'Never run' : `Never ${base.toLowerCase()}`) : base;
-  return { verb, subject: rule.pattern, broad };
+  return { verb, subject: rule.pattern, width };
 }
 
 // ── Grouping vocabulary ─────────────────────────────────────────────────────
@@ -176,7 +199,7 @@ export function ruleKind(rule: PermissionRule): RuleKind {
 
 /** What a pattern-less grant actually covers, in the user's words.
  *
- *  `describeRule` only reports THAT a rule is broad; the noun depends on the
+ *  `describeRule` only reports THAT a rule is tool-wide; the noun depends on the
  *  tool, which is why this reads the same table's vocabulary. */
 export function broadNote(tool: string): string {
   if (tool === '*') return 'Covers everything the assistant can do, not just the one thing it first asked about.';

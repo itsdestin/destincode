@@ -244,6 +244,34 @@ describe('PERMISSION_REQUEST tool matching', () => {
     expect(session.toolCalls.get('tool-a')!.status).toBe('running');
   });
 
+  it('carries permissionMode onto the tool entry, on the matched AND synthetic paths', () => {
+    // Matched-running-tool path.
+    state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'git push origin master' }));
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'git push origin master' },
+      requestId: 'req-fa',
+      denyListed: true,
+      permissionMode: 'full-auto',
+    });
+    expect(state.get(SESSION)!.toolCalls.get('tool-a')!.permissionMode).toBe('full-auto');
+
+    // Permission-before-transcript synthetic path (no running tool to match).
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'sudo ls' },
+      requestId: 'req-syn',
+      denyListed: true,
+      permissionMode: 'full-auto',
+    });
+    const syn = [...state.get(SESSION)!.toolCalls.values()].find((t) => t.requestId === 'req-syn')!;
+    expect(syn.permissionMode).toBe('full-auto');
+  });
+
   it('matches input regardless of key order', () => {
     state = dispatch(state, toolUse('tool-a', 'Write', { file_path: '/x', content: 'one' }));
     state = dispatch(state, toolUse('tool-b', 'Write', { content: 'two', file_path: '/y' }));

@@ -279,26 +279,34 @@ function grantedLabel(grantedAt?: string): string | null {
   return `Approved ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 }
 
-/** React list key. remember() dedupes exact repeats, so (tool, pattern, action,
- *  specialist) is unique within a project — the same quad the removal API
- *  matches on (Task 11 added `specialist` as the fourth axis: a root grant and
- *  a specialist-keyed grant can share the same tool/pattern/action and must
- *  still render as two distinct rows, not collide on one React key). */
+/** React list key. remember() dedupes exact repeats, so the sameRule QUINT
+ *  (tool, pattern, action, match, specialist) is unique within a project —
+ *  the same identity the removal API matches on. Both `match` and
+ *  `specialist` must be in the key: `specialist` (Task 11) so a root grant
+ *  and a specialist-keyed grant sharing the same tool/pattern/action still
+ *  render as two distinct rows instead of colliding on one React key, and
+ *  `match` so an exact grant and a wide (glob) grant sharing the same
+ *  pattern don't collide either. Rules come from list(), which already
+ *  normalizes `match` via normalizeRule — so a legacy row reads 'exact' here
+ *  exactly as sameRule would compare it. */
 function ruleKey(rule: PermissionRule): string {
-  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}::${rule.specialist ?? ''}`;
+  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}::${rule.match ?? ''}::${rule.specialist ?? ''}`;
 }
 
 /** Hand the backend a bare PermissionRule, not the StoredRule the list returned:
  *  grantedAt is provenance the matcher never reads, and sending it invites a
- *  future exact-shape comparison to silently stop matching. `specialist` DOES
- *  ride along (Task 11) — the remove matcher needs it to tell a specialist-
- *  keyed grant apart from a same-triple root grant; dropping it here would
- *  revoke the wrong one (or both, or neither) the first time the two coexist. */
+ *  future exact-shape comparison to silently stop matching. `match` and
+ *  `specialist` DO ride along — the remove matcher (sameRule) needs both to
+ *  tell rules apart: dropping `specialist` would revoke a same-triple root
+ *  grant instead of (or as well as) the specialist-keyed one; dropping `match`
+ *  would make a wide (glob) grant compare as 'exact' once stripped, so
+ *  sameRule would never find it on disk and the revoke would silently no-op. */
 function toPermissionRule(rule: StoredRule): PermissionRule {
   return {
     tool: rule.tool,
     ...(rule.pattern !== undefined ? { pattern: rule.pattern } : {}),
     action: rule.action,
+    ...(rule.match !== undefined ? { match: rule.match } : {}),
     ...(rule.specialist !== undefined ? { specialist: rule.specialist } : {}),
   };
 }
@@ -734,10 +742,12 @@ function RuleRow({
 
   const described = describeRule(rule);
   const name = plainName(rule);
-  // Plain words under the title, never a status glyph or a badge. describeRule
-  // already reports MCP grants as not-broad, so the breadth note never fires on
-  // one — it marks the genuinely pattern-less grants, which cover every use.
-  const detail = [described.broad ? broadNote(rule.tool) : null, grantedLabel(rule.grantedAt)]
+  // Plain words under the title, never a status glyph or a badge. Only a
+  // genuinely TOOL-WIDE grant gets the note: describeRule already reports MCP
+  // grants as exact, and a scoped Bash grant ("Pushing to master") is narrow by
+  // construction and says what it covers in its own sentence — putting the scary
+  // note on it would teach the user to ignore it where it is true.
+  const detail = [described.width === 'tool-wide' ? broadNote(rule.tool) : null, grantedLabel(rule.grantedAt)]
     .filter(Boolean)
     .join(' · ');
 

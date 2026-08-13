@@ -126,11 +126,11 @@ describe('PermissionStore', () => {
     await expect(store.removeProject('-never-granted')).resolves.toBe(false);
   });
 
-  // ── Task 11: specialist-keyed identity (the quad, not the triple) ──────────
+  // ── Task 11: specialist-keyed identity (one axis of sameRule's QUINT) ──────
 
   it('does NOT dedupe a specialist-keyed rule against the root session\'s identical rule', async () => {
     // Same (tool, pattern, action) as the root grant below, but scoped to the
-    // 'worker' specialist — the FOURTH axis of identity. If dedupe only
+    // 'worker' specialist — one axis of sameRule's identity. If dedupe only
     // compared the triple, this would silently vanish into the root grant,
     // which is exactly the widening this task exists to prevent.
     await store.remember('/p', { tool: 'Bash', pattern: 'npm test*', action: 'allow' });
@@ -182,5 +182,52 @@ describe('PermissionStore', () => {
     await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow' });
     const raw = JSON.parse(fs.readFileSync(path.join(dir, '.youcoded', 'permissions.json'), 'utf8'));
     expect(raw.v).toBe(2);
+  });
+});
+
+describe('PermissionStore — legacy normalization and sameRule identity', () => {
+  it('a stored rule with no match field reads back as exact', async () => {
+    // Written before this feature existed: the raw command, evaluated as a glob.
+    await store.remember('/p', { tool: 'Bash', pattern: 'rm *.log', action: 'allow' });
+    const rules = await store.rulesFor('/p');
+    expect(rules[0].match).toBe('exact');
+  });
+
+  it('normalization also applies to the management list', async () => {
+    await store.remember('/p', { tool: 'Bash', pattern: 'rm *.log', action: 'allow' });
+    const projects = await store.list();
+    expect(projects[0].rules[0].match).toBe('exact');
+  });
+
+  it('remove() matches a normalized rule against an un-normalized disk row', async () => {
+    await store.remember('/p', { tool: 'Bash', pattern: 'rm *.log', action: 'allow' });
+    const listed = (await store.list())[0];
+    // The renderer round-trips exactly what list() gave it — which now carries
+    // match:'exact' while the disk row does not.
+    expect(await store.remove(listed.slug, listed.rules[0])).toBe(true);
+    expect(await store.rulesFor('/p')).toEqual([]);
+  });
+
+  it('two grants differing only in match are different grants', async () => {
+    const exact = { tool: 'Bash', pattern: 'npm run build', action: 'allow' as const, match: 'exact' as const };
+    const wide = { tool: 'Bash', pattern: 'npm run*', action: 'allow' as const, match: 'glob' as const };
+    await store.remember('/p', exact);
+    await store.remember('/p', wide);
+    expect(await store.rulesFor('/p')).toHaveLength(2);
+    const slug = (await store.list())[0].slug;
+    expect(await store.remove(slug, wide)).toBe(true);
+    const left = await store.rulesFor('/p');
+    expect(left).toHaveLength(1);
+    expect(left[0].pattern).toBe('npm run build');
+  });
+
+  it('re-approving the same grant does not duplicate it or reset its date', async () => {
+    const rule = { tool: 'Bash', pattern: 'npm run build', action: 'allow' as const, match: 'exact' as const };
+    await store.remember('/p', rule);
+    const first = (await store.list())[0].rules[0].grantedAt;
+    await store.remember('/p', rule);
+    const after = (await store.list())[0].rules;
+    expect(after).toHaveLength(1);
+    expect(after[0].grantedAt).toBe(first);
   });
 });
