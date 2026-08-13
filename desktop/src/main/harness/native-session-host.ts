@@ -1669,20 +1669,54 @@ export class NativeSessionHost extends EventEmitter {
    *  `session.runSkill` (same turn machinery, different transcript event).
    *  Queued follow-ups are always plain sends, so queue semantics are unchanged. */
   private async runTurns(sessionId: string, entry: LiveEntry, first: SendUnit | (() => Promise<void>)): Promise<void> {
-    let next: SendUnit | (() => Promise<void>) | undefined = first;
-    while (next !== undefined) {
-      try {
-        if (typeof next === 'function') await next();
-        else await entry.session.send(next.text, next.attachments);
-      } catch (err) {
-        log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
+    // Fix (Task 4 fix pass 3): the WHOLE body is now wrapped in a single
+    // try/finally so "every runTurns exit clears entry.inFlight" is true by
+    // CONSTRUCTION — one statement, not a comment asserting a property the
+    // code has to remember to uphold at every return/break/throw site. Before
+    // this, `entry.inFlight = false` was a bare statement at the tail: a
+    // throw from ANY of the unguarded `await this.ledger.*` calls inside the
+    // delivery loop below (claimUndelivered at the top of the loop,
+    // releaseClaim on either liveness-mismatch branch) propagated straight
+    // out of this function, so that tail statement was never reached and the
+    // session was permanently stuck "in flight" — the exact bug the loop
+    // unification was meant to prevent, arriving by exception instead of by
+    // `return`. The early `return` in the queue-drain loop below (destroy()
+    // raced this turn) still runs this finally too, which is harmless: by
+    // definition `this.live.get(sessionId) !== entry` there, so `entry` is
+    // already a discarded object and setting its `inFlight` flag touches
+    // nothing live.
+    try {
+      let next: SendUnit | (() => Promise<void>) | undefined = first;
+      while (next !== undefined) {
+        try {
+          if (typeof next === 'function') await next();
+          else await entry.session.send(next.text, next.attachments);
+        } catch (err) {
+          log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
+        }
+        // Destroy() may have removed/replaced the entry mid-turn — stop draining then.
+        if (this.live.get(sessionId) !== entry) return;
+        // .text: queue entries are {id, text} (Task 11) — the id only matters to
+        // removeQueued(); shift() here is what makes a removed entry unreachable.
+        next = entry.queue.shift();
       }
-      // Destroy() may have removed/replaced the entry mid-turn — stop draining then.
-      if (this.live.get(sessionId) !== entry) return;
-      // .text: queue entries are {id, text} (Task 11) — the id only matters to
-      // removeQueued(); shift() here is what makes a removed entry unreachable.
-      next = entry.queue.shift();
+      await this.drainDeliveries(sessionId, entry);
+    } finally {
+      entry.inFlight = false;
     }
+  }
+
+  /** The idle-boundary delivery pass: drains both the durable ledger lane and
+   *  the in-memory fallback lane for `sessionId` until neither has anything
+   *  left, or a destroy() race stops the pass early. Split out of runTurns so
+   *  the "no throw escapes, inFlight always clears" guarantee at that
+   *  function's try/finally applies here as a BACKSTOP even though every
+   *  ledger call below is already individually guarded — belt AND suspenders,
+   *  not either/or: the per-call guards are what let a broken ledger lane
+   *  still fall through to the fallback lane in the SAME pass (see below);
+   *  the outer finally is what protects against a throw from anywhere this
+   *  function didn't anticipate. */
+  private async drainDeliveries(sessionId: string, entry: LiveEntry): Promise<void> {
     // WHY (spec §3, Task 4): background completions inject as a synthetic
     // user-role turn at an idle boundary — never spliced mid-turn (role
     // alternation + local prompt cache). A claim is a LEASE: delivered flips
@@ -1718,7 +1752,24 @@ export class NativeSessionHost extends EventEmitter {
       // the SAME `entry.inFlight = false` at the bottom — an early `return`
       // here would leave a session permanently stuck "in flight".
       while (this.pendingDeliveryParents.has(sessionId)) {
-        const rec = await this.ledger.claimUndelivered(entry.cwd, sessionId);   // lease, not delivery
+        // Fix (Task 4 fix pass 3): claimUndelivered itself can throw under the
+        // exact systemic failure (disk full, corrupt sidecar, lock
+        // exhaustion) the in-memory fallback lane exists to survive — and it
+        // runs at the TOP of every iteration, before the fallback lane below
+        // gets a turn. Guarding it here (rather than leaving it unguarded, as
+        // it was pre-fix) is what stops that throw from both wedging the
+        // session (now also backstopped by runTurns' outer finally) AND, more
+        // subtly, from stranding a report already sitting safely in
+        // `inMemoryFallback` by never letting this pass reach it. Treat "the
+        // ledger threw" the same as "the ledger has nothing claimable this
+        // iteration" — `rec` stays null and control falls through to the
+        // fallback lane below in the SAME iteration.
+        let rec: DelegationRecord | null = null;
+        try {
+          rec = await this.ledger.claimUndelivered(entry.cwd, sessionId);   // lease, not delivery
+        } catch (err) {
+          log('WARN', 'NativeSessionHost', 'claimUndelivered failed — falling back to the in-memory lane for this pass', { sessionId, error: String((err as any)?.message ?? err) });
+        }
         if (rec) {
           // Fix (Task 4 fix-pass, finding 3): destroy() (direct, or via
           // destroyAll() at app shutdown, which has no in-flight gate) can
@@ -1737,7 +1788,7 @@ export class NativeSessionHost extends EventEmitter {
           // for the next real delivery pass) instead of either silently
           // confirming a report nobody saw or losing the lease forever.
           if (this.live.get(sessionId) !== entry) {
-            await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+            await this.releaseClaimSafely(entry.cwd, sessionId, rec.childId);
             break;
           }
           try {
@@ -1747,7 +1798,7 @@ export class NativeSessionHost extends EventEmitter {
             // never be reached on a session that stopped being live while the
             // notice was in flight.
             if (this.live.get(sessionId) !== entry) {
-              await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+              await this.releaseClaimSafely(entry.cwd, sessionId, rec.childId);
               break;
             }
             await this.ledger.confirmDelivered(entry.cwd, sessionId, rec.childId); // only now is it delivered
@@ -1758,7 +1809,12 @@ export class NativeSessionHost extends EventEmitter {
             this.inMemoryFallback.delete(rec.childId);
             continue; // more ledger records may remain — try the ledger again before falling to the fallback lane
           } catch (err) {
-            await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+            // Fix (Task 4 fix pass 3): releaseClaimSafely (not a bare await)
+            // — this catch already fires from a genuine failure (runNotice or
+            // confirmDelivered threw); a SECOND throw from the release call
+            // itself must not escape and skip the `break` below, which is
+            // what lets the fallback lane still run this same pass.
+            await this.releaseClaimSafely(entry.cwd, sessionId, rec.childId);
             log('WARN', 'NativeSessionHost', 'background specialist delivery failed — will retry at the next idle boundary', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
             break;
           }
@@ -1797,7 +1853,29 @@ export class NativeSessionHost extends EventEmitter {
         }
       }
     }
-    entry.inFlight = false;
+    // No `entry.inFlight = false` here — that guarantee now lives ONLY in
+    // runTurns' outer try/finally (the whole point of this fix pass: one
+    // control-flow guarantee, not a statement duplicated at every function
+    // that happens to precede it).
+  }
+
+  /** Best-effort release of a delivery-claim lease: swallows a throw from the
+   *  ledger itself rather than letting it propagate. WHY this needs to exist
+   *  at all — releaseClaim runs from THREE places in drainDeliveries, every
+   *  one of them already inside a failure path (a destroy race, or a
+   *  runNotice/confirmDelivered error); a second throw from the release call
+   *  must not itself escape, or it would skip the `break` each caller relies
+   *  on to fall through to the fallback lane in the same pass. Not releasing
+   *  leaves the lease claimed by this (live) session's owner marker, so
+   *  claimUndelivered's owner-liveness filter won't reclaim it until this
+   *  session dies — an honest degradation (retried next restart via Task 9's
+   *  dead-owner reconcile), not a silent one; logged so it's visible. */
+  private async releaseClaimSafely(parentCwd: string, parentId: string, childId: string): Promise<void> {
+    try {
+      await this.ledger?.releaseClaim(parentCwd, parentId, childId);
+    } catch (err) {
+      log('WARN', 'NativeSessionHost', 'releaseClaim failed — the delivery lease may stay held until owner-liveness reconcile releases it', { parentId, childId, error: String((err as any)?.message ?? err) });
+    }
   }
 
   /** User-initiated /compact for a native session (M3 item 2). Returns a coded
@@ -2096,6 +2174,15 @@ export class NativeSessionHost extends EventEmitter {
     await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
     this.live.delete(sessionId);
+    // Fix (Task 4 fix pass 3): drop any in-memory fallback reports still
+    // queued for this parent. They can only ever be delivered by THIS
+    // parent's own runTurns idle boundary (drainDeliveries reads
+    // `this.live.get(sessionId)`, which is now gone) — leaving them in the
+    // map after the parent is torn down would hold a full specialist report
+    // in memory forever for a session that is never coming back to read it.
+    for (const [childId, fb] of this.inMemoryFallback) {
+      if (fb.parentId === sessionId) this.inMemoryFallback.delete(childId);
+    }
     // Drop per-session runtime state so it can't leak and so a destroy→resume of
     // the SAME sessionId within one app run starts clean: mode resets to the
     // default 'ask', and the in-memory remembered rules fall back to the disk
@@ -2128,6 +2215,15 @@ export class NativeSessionHost extends EventEmitter {
     for (const id of [...this.live.keys()]) {
       await this.destroy(id);
     }
+    // Fix (Task 4 fix pass 3): belt-and-suspenders sweep on top of the
+    // per-session cleanup destroy() now does above. Covers the one case that
+    // loop can't: a fallback entry whose parent's destroy() already ran
+    // BEFORE spawnSpecialistBackground's async `.then` handler got around to
+    // stashing the report (the parent left `this.live` first, so destroy()'s
+    // own cleanup found nothing for it yet). App shutdown is exactly the
+    // moment such a stray entry can never be delivered anyway, so clearing
+    // the whole map here is correct, not just convenient.
+    this.inMemoryFallback.clear();
     await this.store.flushAll();
     // Tear down every pooled MCP server connection HERE too. Without this, an
     // MCP server's spawned subprocess (e.g. a stdio server) would outlive the

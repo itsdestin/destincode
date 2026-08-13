@@ -830,4 +830,131 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(rec.status).toBe('completed');
     expect(rec.delivered).toBe(false);
   });
+
+  it('Fix pass 3: claimUndelivered throwing does not wedge the session, and an in-memory fallback report still delivers in the same pass', async () => {
+    // Pre-fix, `await this.ledger.claimUndelivered(...)` at the top of the
+    // delivery loop was unguarded. A throw there propagated straight out of
+    // runTurns (no try/finally existed), so the bare `entry.inFlight = false`
+    // at the tail was never reached — the session stayed "in flight" forever,
+    // and worse, a report already sitting safely in the in-memory fallback
+    // lane was never even attempted this pass (the ledger lane runs first,
+    // every iteration). This test proves both: the throw doesn't wedge the
+    // session, AND the fallback lane still gets its turn in the SAME pass.
+    const model = scriptedModel([
+      stream(...textChunks('t', 'still here')), stream(finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    vi.spyOn(ledger, 'claimUndelivered').mockRejectedValue(new Error('simulated ledger read failure'));
+
+    // Seed the fallback lane directly with a report the child genuinely
+    // produced — this is the exact state fix pass 2 leaves behind when the
+    // ledger's completion write didn't land. This test's job is to prove a
+    // THROWING ledger (not just an empty one) still lets this lane through.
+    (host as any).inMemoryFallback.set('child-fb', {
+      parentId: 'root-1',
+      rec: {
+        childId: 'child-fb', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-fb', workDir: root,
+        description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+        steps: 1, rawReport: 'REPORT: from the fallback lane', delivered: false, owner: OWNER, missedSteers: [],
+      },
+    });
+
+    (host as any).queueDelivery('root-1');
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toContain('REPORT: from the fallback lane');
+
+    // Not wedged: the entry the delivery pass ran on cleared inFlight, and
+    // the session accepts (not queues-behind-forever) a subsequent send.
+    await vi.waitFor(() => expect(host.isIdle('root-1')).toBe(true));
+    const result = host.send('root-1', 'are you still there?');
+    expect(result.status).toBe('sent');
+  });
+
+  it('Fix pass 3: a releaseClaim throw on a liveness-mismatch path does not escape runTurns or leave inFlight stuck', async () => {
+    // Same destroy-races-delivery setup as "Finding 3" above, but this time
+    // releaseClaim itself (the call the liveness-mismatch branch makes to
+    // give the lease back) always throws. Pre-fix, that `await
+    // this.ledger.releaseClaim(...)` was unguarded, so the throw propagated
+    // out of runTurns with no try/finally to catch it — inFlight on the
+    // entry the delivery pass was operating on would stay stuck at `true`
+    // forever, the same wedge shape as the claimUndelivered case above.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const ledger = (host as any).ledger;
+    await ledger.recordStart(root, 'root-1', {
+      childId: 'child-x', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-x', workDir: root,
+      description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+      delivered: false, owner: OWNER, missedSteers: [],
+    });
+    await ledger.update(root, 'root-1', 'child-x', { status: 'completed', endedAt: Date.now(), steps: 1, rawReport: 'REPORT: done' });
+    vi.spyOn(ledger, 'releaseClaim').mockRejectedValue(new Error('simulated ledger write failure'));
+
+    const entry = (host as any).live.get('root-1');
+    let enteredNotice = false;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((res) => { releaseGate = res; });
+    entry.session.runNotice = vi.fn(async () => { enteredNotice = true; await gate; });
+
+    (host as any).queueDelivery('root-1');
+    await vi.waitFor(() => expect(enteredNotice).toBe(true));
+
+    // destroy() lands while runNotice is paused — the same race Finding 3
+    // guards against — but now the release it triggers cannot succeed.
+    await host.destroy('root-1');
+    releaseGate();
+
+    // Even though releaseClaim (mocked to always fail) never actually frees
+    // the lease, the throw it produces must not escape runTurns and skip
+    // clearing inFlight on the entry the delivery pass was operating on.
+    await vi.waitFor(() => expect(entry.inFlight).toBe(false));
+  });
+
+  it('Fix pass 3: in-memory fallback entries for a parent are dropped once that parent session is destroyed', async () => {
+    // Pre-fix, `inMemoryFallback` was never swept on destroy() or
+    // destroyAll() — an entry for a parent torn down before its next idle
+    // boundary stayed in the map forever, holding a full specialist report
+    // in memory for a session that can never come back to read it.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    (host as any).inMemoryFallback.set('child-fb', {
+      parentId: 'root-1',
+      rec: {
+        childId: 'child-fb', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-fb', workDir: root,
+        description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+        steps: 1, rawReport: 'REPORT: never delivered', delivered: false, owner: OWNER, missedSteers: [],
+      },
+    });
+
+    await host.destroy('root-1');
+
+    const stillHeld = [...(host as any).inMemoryFallback.values()].some((e: any) => e.parentId === 'root-1');
+    expect(stillHeld).toBe(false);
+  });
 });
