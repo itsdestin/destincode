@@ -883,14 +883,25 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(result.status).toBe('sent');
   });
 
-  it('Fix pass 3: a releaseClaim throw on a liveness-mismatch path does not escape runTurns or leave inFlight stuck', async () => {
-    // Same destroy-races-delivery setup as "Finding 3" above, but this time
-    // releaseClaim itself (the call the liveness-mismatch branch makes to
-    // give the lease back) always throws. Pre-fix, that `await
-    // this.ledger.releaseClaim(...)` was unguarded, so the throw propagated
-    // out of runTurns with no try/finally to catch it — inFlight on the
-    // entry the delivery pass was operating on would stay stuck at `true`
-    // forever, the same wedge shape as the claimUndelivered case above.
+  it('Fix pass 4: a releaseClaim throw on a liveness-mismatch path is swallowed by releaseClaimSafely, not merely papered over by runTurns\' outer finally', async () => {
+    // This replaces an earlier "Fix pass 3" version of this test that only
+    // asserted `entry.inFlight` ends up `false`. That assertion does NOT
+    // discriminate: runTurns' own outer try/finally (fix pass 3, unrelated to
+    // releaseClaimSafely) clears `inFlight` on ANY throw escaping
+    // drainDeliveries, guard or no guard — so the old test would still pass
+    // even if releaseClaimSafely were reverted to a bare, unguarded
+    // `await this.ledger.releaseClaim(...)`. It re-proved the structural fix
+    // an earlier test ("claimUndelivered throwing does not wedge the
+    // session…") already covers, not anything specific to this guard.
+    //
+    // The one thing that's ONLY true when the per-call guard exists: the
+    // delivery pass itself completes WITHOUT throwing — releaseClaimSafely's
+    // whole job is to swallow the ledger's throw so drainDeliveries (and the
+    // runTurns call that awaits it) settle normally instead of rejecting.
+    // Calling runTurns directly and awaiting its own returned promise (rather
+    // than going through queueDelivery's `entry.running`, which is built with
+    // `.then(resolve, resolve)` and would swallow a rejection before this
+    // test could ever observe it) is what makes that difference observable.
     const model = scriptedModel([stream(finishChunk('stop'))]);
     const home = new NativeHome(root);
     store = new SessionStore(home);
@@ -915,18 +926,22 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const gate = new Promise<void>((res) => { releaseGate = res; });
     entry.session.runNotice = vi.fn(async () => { enteredNotice = true; await gate; });
 
-    (host as any).queueDelivery('root-1');
+    // Drive runTurns directly (not via queueDelivery) so its returned promise
+    // is the one this test awaits — the same delivery-loop code path, just
+    // without the fire-and-forget wrapper that would hide a rejection.
+    (host as any).pendingDeliveryParents.add('root-1');
+    const pass = (host as any).runTurns('root-1', entry, async () => {}) as Promise<void>;
     await vi.waitFor(() => expect(enteredNotice).toBe(true));
 
-    // destroy() lands while runNotice is paused — the same race Finding 3
-    // guards against — but now the release it triggers cannot succeed.
+    // destroy() lands while runNotice is paused — the delivery loop's second
+    // liveness recheck (right after runNotice resolves) finds the entry
+    // stale and calls releaseClaimSafely, which is mocked here to fail.
     await host.destroy('root-1');
     releaseGate();
 
-    // Even though releaseClaim (mocked to always fail) never actually frees
-    // the lease, the throw it produces must not escape runTurns and skip
-    // clearing inFlight on the entry the delivery pass was operating on.
-    await vi.waitFor(() => expect(entry.inFlight).toBe(false));
+    // Only true with the per-call guard in place: the pass resolves cleanly.
+    // Without it, this same mocked failure would make `pass` reject.
+    await expect(pass).resolves.toBeUndefined();
   });
 
   it('Fix pass 3: in-memory fallback entries for a parent are dropped once that parent session is destroyed', async () => {
@@ -956,5 +971,34 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
 
     const stillHeld = [...(host as any).inMemoryFallback.values()].some((e: any) => e.parentId === 'root-1');
     expect(stillHeld).toBe(false);
+  });
+
+  it('Fix pass 4: a background completion landing AFTER a plain destroy() of its parent is not leaked into inMemoryFallback', async () => {
+    // The test above covers destroy()'s own sweep, which only removes
+    // entries present AT CALL TIME. This covers the gap that sweep can't
+    // reach: a background completion whose `.then` handler stashes a
+    // fallback entry AFTER that destroy() already dropped the parent from
+    // `this.live` — the same race destroyAll()'s own comment describes, but
+    // previously patched only there. Exercised directly against
+    // stashFallbackIfParentAlive (the guard spawnSpecialistBackground's
+    // `.then` handlers route every stash through) rather than trying to win
+    // a real async race, since the point under test is the guard itself.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    await host.destroy('root-1'); // parent gone BEFORE the late completion arrives
+
+    (host as any).stashFallbackIfParentAlive('root-1', 'child-late', {
+      childId: 'child-late', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-late', workDir: root,
+      description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+      steps: 1, rawReport: 'REPORT: arrived too late', delivered: false, owner: OWNER, missedSteers: [],
+    });
+
+    expect((host as any).inMemoryFallback.has('child-late')).toBe(false);
   });
 });

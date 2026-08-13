@@ -193,12 +193,33 @@ export class DelegationLedger {
       // still owes the parent a typed failure notice, not silence; this
       // filter originally covered 'completed' only, written before the
       // background failure-delivery path existed), not yet delivered, and
-      // either never claimed or claimed by an owner that isn't around anymore
-      // (a crash between claim and the injected turn reaching the parent —
-      // see the module comment: a claim is a LEASE, not a delivery, so a dead
-      // owner's claim must not block redelivery forever).
+      // the lease doesn't belong to someone else who's still around to
+      // finish using it. Three ways a lease clears that bar:
+      //   1. never claimed (`!d.claimedBy`)
+      //   2. claimed by a DEAD owner — a crash between claim and the
+      //      injected turn reaching the parent (module comment: a claim is a
+      //      LEASE, not a delivery, so a dead owner's claim must not block
+      //      redelivery forever)
+      //   3. claimed by THIS EXACT process instance (fix pass 4, Finding 3)
+      //      — claimUndelivered's own write can commit to disk and then
+      //      still have the call that made it throw (e.g. mutateJson's lock
+      //      release failing in its own `finally`, after atomicWrite already
+      //      landed). The caller never learns which childId got the lease,
+      //      so it can't release() it either — the record is stuck bearing
+      //      OUR OWN owner stamp, which isOwnerAlive always reports as alive
+      //      (case 2 above can never fire for it). Only one delivery pass
+      //      per parent runs at a time (native-session-host.ts's
+      //      pendingDeliveryParents/entry.inFlight machinery), so if a LATER
+      //      pass sees a lease stamped by this same process, that can only
+      //      mean an EARLIER pass's claim outlived its own caller's ability
+      //      to act on it — reclaiming it here is what turns that stuck
+      //      state back into a normal delivery attempt instead of a report
+      //      stranded forever behind a lease its own owner can't release. A
+      //      lease held by a DIFFERENT live owner (case 2 does not apply,
+      //      case 3 does not apply) keeps its current meaning: not eligible.
       const eligible = data.delegations.filter(
-        (d) => (d.status === 'completed' || d.status === 'failed') && !d.delivered && (!d.claimedBy || !isOwnerAlive(d.claimedBy))
+        (d) => (d.status === 'completed' || d.status === 'failed') && !d.delivered &&
+          (!d.claimedBy || d.claimedBy.instanceId === OWNER.instanceId || !isOwnerAlive(d.claimedBy))
       );
       if (eligible.length === 0) return data;
       const target = eligible.reduce((oldest, d) => (d.startedAt < oldest.startedAt ? d : oldest));

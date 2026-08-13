@@ -130,6 +130,32 @@ describe('DelegationLedger', () => {
     expect(rec?.claimedBy).toEqual(OWNER);
   });
 
+  // Fix pass 4, Finding 3: claimUndelivered's own write (inside mutateJson)
+  // can commit to disk and THEN have the surrounding call still throw — e.g.
+  // mutateFileUnderLock's lock-release (fs.rm on the .lock dir) fails in its
+  // `finally`, AFTER atomicWrite already landed the claimedBy stamp. The
+  // caller (native-session-host.ts's delivery loop) sees only the throw and
+  // never learns which childId got claimed, so it can't release it either —
+  // the record is left with a lease stamped by THIS process, which
+  // isOwnerAlive always reports as alive. Without this branch, nothing would
+  // ever reclaim it short of a restart, stranding the report forever in a
+  // live, running session. This test seeds that exact stuck state directly
+  // (no need to reproduce the lock-release race itself) and asserts the next
+  // claimUndelivered call reclaims it anyway.
+  it('a record leased by OUR OWN process instance is reclaimable — only one delivery pass per parent runs at a time, so seeing our own stale lease means our earlier attempt never finished', async () => {
+    await ledger.recordStart(CWD, 'p1', makeRecord({
+      childId: 'self-claimed-stale',
+      status: 'completed',
+      startedAt: 100,
+      delivered: false,
+      claimedBy: OWNER, // exactly this process's own stamp, not a stranger's
+      claimedAt: 1,
+    }));
+    const rec = await ledger.claimUndelivered(CWD, 'p1');
+    expect(rec?.childId).toBe('self-claimed-stale');
+    expect(rec?.claimedBy).toEqual(OWNER); // re-stamped, same owner either way
+  });
+
   it('a record leased by a LIVE owner (not us) is NOT claimable', async () => {
     await ledger.recordStart(CWD, 'p1', makeRecord({
       childId: 'someone-else-has-it',
