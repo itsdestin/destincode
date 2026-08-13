@@ -2334,6 +2334,11 @@ export function registerIpcHandlers(
     // the whole native-MCP stack reachable — see the construction comment
     // above.
     mcpManager,
+    // nativeHome (11th param, plan 1b Task 2): backs the DelegationLedger the
+    // host constructs internally (see delegation-ledger.ts) — the SAME
+    // nativeHome instance every other ~/.youcoded/ writer above shares, never
+    // a second one.
+    nativeHome,
   );
 
   // Task 4: resolves sessionId's CURRENT model binding into the portable ref
