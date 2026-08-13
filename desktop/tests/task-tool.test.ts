@@ -386,7 +386,7 @@ describe('Task tool — model resolution (Task 14)', () => {
     // exact same value via its own opts.binding ?? parent.session.binding
     // default even without this.
     expect(spawn).toHaveBeenCalledWith('parent-1', expect.objectContaining({ binding: PARENT_BINDING }));
-    expect(r.text).toBe('done\n\n(No frontier model is set in Settings — using this conversation\'s model.)');
+    expect(r.text).toBe('done\n\n(No frontier model is designated — using this conversation\'s model.)');
   });
 
   it('a specific model id that IS in the live catalog resolves and spawns on it', async () => {

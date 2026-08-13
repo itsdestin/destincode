@@ -2646,6 +2646,17 @@ describe('NativeSessionHost', () => {
 
       spy.mockRestore();
 
+      // Final-review fix (Finding 5): without this, the `else` branch below
+      // "passes" identically whether the completion write genuinely ran (and
+      // rolled back cleanly) or never ran AT ALL — e.g. a regression that
+      // skips the `if (this.ledger && parentCwd)` gate, or swallows a throw
+      // before it ever reaches mutateJson. Both leave status 'running' and
+      // missedSteers empty, so the old else branch blessed "the completion
+      // write never happened" as an equally valid pass. Proving `call >= 1`
+      // means mutateJson really was invoked for this record — the write was
+      // attempted, whatever the outcome.
+      expect(call).toBeGreaterThanOrEqual(1);
+
       const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
       // The forbidden state: status durably flipped to 'completed' while the
       // steer this run genuinely drained is nowhere on the record — the
@@ -2753,14 +2764,34 @@ describe('NativeSessionHost', () => {
     // and the steers were already wiped from the ledger by the take. Lost,
     // with no retry.
     //
-    // This hooks whichever ledger call actually carries the resume's
-    // status-flip patch (`{ status: 'running', ... }` for this childId) and
-    // makes IT throw — a dual hook on both `update` and `takeMissedSteers`
-    // covers the pre-fix shape (a separate update() call) and the fixed
-    // shape (the patch folded into takeMissedSteers) identically, so this
-    // test proves the same thing regardless of which call site currently
-    // carries the patch. Only one of the two conditions can ever match a
-    // given build; the other is a silent no-op.
+    // Final-review fix (Finding 5): the previous version of this test made
+    // `DelegationLedger.prototype.update`/`takeMissedSteers` THROW directly
+    // for matching args, instead of exercising the real methods at all. That
+    // proves nothing about takeMissedSteers' own atomicity — the mock
+    // intercepts the call before any disk I/O runs, so "the steer survives"
+    // held simply because NEITHER method ever got a chance to touch disk;
+    // re-splitting takeMissedSteers back into two separate writes (patch,
+    // then a second clear) would still pass, since the mock would keep
+    // intercepting the whole method either way, before either write ran.
+    //
+    // Retargeted to the SAME technique the split-write-gap test above uses:
+    // hook the ledger's underlying NativeHome.mutateJson (the ONE primitive
+    // every ledger write bottoms out in) and fail the SECOND call this hook
+    // sees against this record, exactly as that test does — not the first.
+    // Failing the first call can't distinguish "one atomic write failed"
+    // from "the first of two writes never even ran"; failing the SECOND is
+    // what actually exercises the partial-commit shape a re-split would
+    // introduce. By the time this hook is installed (right before resume),
+    // recordStart and steerSpecialist's appendMissedSteers have already
+    // landed via the real, unhooked mutateJson, so THIS hook's own call
+    // count starts fresh at resume. Today takeMissedSteers makes exactly
+    // ONE call for this record, so "call === 2" never fires here — the real
+    // write succeeds and resume completes normally; the dual-branch
+    // assertion below accepts that as the (currently correct) outcome. If
+    // takeMissedSteers were ever re-split into two mutateJson calls, this
+    // hook's "call === 2" WOULD fire on the second one — forcing the exact
+    // partial-commit shape (first write's half landed, second one didn't)
+    // the comment above describes, which the assertion below rejects.
     it('a taken steer must not be lost when the resume\'s own status-flip write fails (regression — the resume split-write gap)', async () => {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
@@ -2798,26 +2829,17 @@ describe('NativeSessionHost', () => {
       const reservation = h.reserveSpecialist('root-1', { writer: false });
       if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
 
-      const originalUpdate = DelegationLedger.prototype.update;
-      const updateSpy = vi.spyOn(DelegationLedger.prototype, 'update').mockImplementation(
-        async function (this: DelegationLedger, ...args: Parameters<DelegationLedger['update']>) {
-          const [, , cId, patch] = args;
-          if (cId === childId && (patch as any)?.status === 'running') {
-            throw new Error('simulated ledger write failure (resume status flip)');
-          }
-          return originalUpdate.apply(this, args);
-        },
-      );
-      const originalTake = DelegationLedger.prototype.takeMissedSteers;
-      const takeSpy = vi.spyOn(DelegationLedger.prototype, 'takeMissedSteers').mockImplementation(
-        async function (this: DelegationLedger, ...args: Parameters<DelegationLedger['takeMissedSteers']>) {
-          const [, , cId, patch] = args;
-          if (cId === childId && (patch as any)?.status === 'running') {
-            throw new Error('simulated ledger write failure (resume status flip)');
-          }
-          return originalTake.apply(this, args);
-        },
-      );
+      const ledgerHome = (h as any).ledger.home as NativeHome;
+      const originalMutateJson = ledgerHome.mutateJson.bind(ledgerHome);
+      let call = 0;
+      const spy = vi.spyOn(ledgerHome, 'mutateJson').mockImplementation(async (...args: any[]) => {
+        const rel = args[0];
+        if (typeof rel === 'string' && rel.includes('root-1.delegations.json')) {
+          call++;
+          if (call === 2) throw new Error('simulated ledger write failure (resume status flip)');
+        }
+        return originalMutateJson(...(args as [any, any, any?]));
+      });
 
       let resumeError: unknown = null;
       try {
@@ -2828,21 +2850,27 @@ describe('NativeSessionHost', () => {
       } catch (err) {
         resumeError = err;
       }
-      updateSpy.mockRestore();
-      takeSpy.mockRestore();
-
-      // The injected failure landed either way (proves the hook actually
-      // fired, so this isn't a vacuous pass from neither spy ever matching).
-      expect(resumeError).toBeTruthy();
+      spy.mockRestore();
 
       const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
-      // The forbidden state: the steer is gone from the ledger while the
-      // resume itself also failed — nowhere delivered (the resume never
-      // completed, so no turn ever read it) AND nowhere recoverable (wiped
-      // from the ledger too). A single atomic write can't produce this: it
-      // either commits the clear+patch together, or (on throw) commits
-      // neither, leaving the steer right where it was.
-      expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+      // Same dual-branch shape as the split-write-gap test above, and for
+      // the identical reason: today's atomic single-call takeMissedSteers
+      // never reaches "call === 2" for this record, so the real write
+      // succeeds and resume completes normally (steer folded into the
+      // resumed brief and cleared from the ledger). The forbidden state — a
+      // re-split write leaves the steer gone from the ledger WHILE the
+      // resume itself also failed, meaning it was never delivered (no turn
+      // ever read it) and never recoverable (wiped from the ledger too) — is
+      // what the else branch rejects; a real two-call split hits exactly
+      // that branch, and the injected failure at "call === 2" is what would
+      // put it there.
+      if (resumeError) {
+        expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+        expect(recAfter.status).toBe('running');
+      } else {
+        expect(recAfter.missedSteers).toEqual([]);
+        expect(recAfter.status).toBe('running'); // takeMissedSteers' own patch restores 'running'
+      }
 
       await h.destroyAll();
     });
@@ -2928,6 +2956,60 @@ describe('NativeSessionHost', () => {
       const recAfterRun2 = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
       expect(recAfterRun2.delivered).toBe(true);
       expect(recAfterRun2.rawReport).toContain('SECOND REPORT');
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 2 (final review): `rg "Background specialist failed"
+    // tests` returned NOTHING before this test — every existing status-block
+    // test synthesizes a 'failed' ledger row directly via recordStart and
+    // only asserts the status-line WORDING (see "specialist status block"
+    // below), never driving a real child through death and confirming the
+    // typed failure notice actually reaches the parent's conversation as an
+    // injected turn. This drives the real chain end to end: a model factory
+    // that throws on the child's own turn -> runDelegation's catch writes
+    // 'failed' to the ledger -> runBackgroundDelegation's .finally calls
+    // queueDelivery -> claimUndelivered (widened, per Important 4, to also
+    // claim 'failed' records) -> formatDelivery's failed branch -> runNotice
+    // injects "[Background specialist failed] ..." as a real parent turn.
+    it('a background specialist that dies delivers a typed "[Background specialist failed]" notice to the parent', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      // Call 1 is the child's own first (and only) turn; every later call —
+      // including the parent's turn that receives the injected failure
+      // notice — gets the suite's default text-only model.
+      let calls = 0;
+      const seqFactory = async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('scripted specialist crash');
+        return factory();
+      };
+      const h = new NativeSessionHost(
+        store, seqFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('transcript-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      });
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      const notice = events.find((e) => e.data?.injected === 'specialist-report')!;
+      expect(notice.data.text).toContain('[Background specialist failed]');
+      expect(notice.data.text).toContain('scripted specialist crash');
+
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.status).toBe('failed');
+      expect(rec.delivered).toBe(true);
 
       await h.destroyAll();
     });
@@ -3131,16 +3213,23 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    // Fix pass, Finding 3: claimUndelivered() (delegation-ledger.ts) only
-    // ever claims status === 'completed' records — a 'failed' or
-    // 'interrupted' record NEVER gets delivered. The old code gave every
-    // undelivered non-running record the identical "finished — report
-    // delivery pending" line, which then repeated, unchanged and false, on
-    // every future turn. Pin that failed/interrupted get their own honest
-    // line naming what happened, using the record's real failureText (never
-    // a guessed cause), and that "delivery pending" wording never appears
-    // for them.
-    it('failed and interrupted specialists get an honest line naming what happened, never "delivery pending"', async () => {
+    // Fix pass, Finding 3 (original): 'interrupted' records never get
+    // delivered (a parent teardown killed the child — nothing is left to
+    // claim them), so they keep their own honest "no report will arrive"
+    // line, distinct from the running-record's "finished — report delivery
+    // pending" wording.
+    //
+    // Final-review fix (Finding 1): 'failed' is NOT like 'interrupted' — the
+    // ledger's own claimUndelivered() eligibility was later widened
+    // (Important 4) to claim 'completed' OR 'failed' records, so a background
+    // child's death DOES eventually deliver a typed
+    // "[Background specialist failed] ..." notice (see the end-to-end test
+    // above). "no report will arrive" for 'failed' was therefore a stale
+    // claim once that widening landed. 'failed' now gets the SAME "delivery
+    // pending" framing as 'completed', naming the real failureText inline
+    // (never a guessed cause — error-message-standards.md); only
+    // 'interrupted' keeps "no report will arrive".
+    it('failed specialists get an honest "delivery pending" line (they DO get claimed); interrupted specialists still say no report will arrive', async () => {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
         store, factory, NO_CONTEXT, async () => null, async () => null,
@@ -3166,8 +3255,8 @@ describe('NativeSessionHost', () => {
       const lines = (status ?? '').split('\n');
 
       const failedLine = lines.find((l) => l.startsWith('Fiona'));
-      expect(failedLine).toBe('Fiona (debugger): failed — ENOENT: no such file or directory — no report will arrive');
-      expect(failedLine).not.toContain('delivery pending');
+      expect(failedLine).toBe('Fiona (debugger): failed — ENOENT: no such file or directory — report delivery pending');
+      expect(failedLine).not.toContain('no report will arrive');
 
       const interruptedLine = lines.find((l) => l.startsWith('Greg'));
       expect(interruptedLine).toBe('Greg (writer): interrupted — no report will arrive');

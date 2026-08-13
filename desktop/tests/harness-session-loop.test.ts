@@ -1450,6 +1450,18 @@ describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', ()
   // stays undefined — true for every specialist child, and any root session
   // wire() never touched) must pay literally nothing for this feature, not
   // just "no history mutation" but no scan of history at all.
+  //
+  // Final-review fix (Finding 5): the ORIGINAL version of this test only
+  // asserted `expect(spy).not.toHaveBeenCalled()` for the UNWIRED session —
+  // an assertion that also passes if the whole guarded-scan feature were
+  // deleted outright (no specialistStatus handling anywhere in beginTurn),
+  // since then findIndex would never be called for ANY session, wired or
+  // not. Added a positive control: a second, WIRED session (specialistStatus
+  // present) must still call findIndex — proving the "zero cost when unwired"
+  // claim is actually the guard skipping REAL work, not the absence of the
+  // feature entirely. A regression that deletes the whole
+  // `if (this.opts.specialistStatus) { ... }` block now fails the wired
+  // assertion below instead of passing both.
   it('a session with no specialistStatus wired never scans history for a status block (Finding 6: zero cost)', async () => {
     const model = scriptedModel([stream(...textChunks('a', 'ok'), finishChunk('stop'))], []);
     const session = new HarnessSession(makeOpts({ decide: async () => ALLOW }), async () => model as any);
@@ -1459,6 +1471,20 @@ describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', ()
     await session.send('go');
 
     expect(spy).not.toHaveBeenCalled();
+
+    // Positive control: an otherwise-identical WIRED session DOES scan —
+    // same model script, same decide, only specialistStatus differs.
+    const wiredModel = scriptedModel([stream(...textChunks('a', 'ok'), finishChunk('stop'))], []);
+    const wiredSession = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => null }),
+      async () => wiredModel as any,
+    );
+    const wiredHistoryRef = (wiredSession as any).history;
+    const wiredSpy = vi.spyOn(wiredHistoryRef, 'findIndex');
+
+    await wiredSession.send('go');
+
+    expect(wiredSpy).toHaveBeenCalled();
   });
 });
 

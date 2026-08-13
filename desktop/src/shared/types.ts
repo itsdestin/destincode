@@ -203,10 +203,22 @@ export interface TranscriptEvent {
      * event as a SYNTHETIC turn the host injected (a background specialist's
      * finished report, or its typed failure notice), not something the user
      * actually typed. Data-field extension, not a new TranscriptEventType — the
-     * frozen emit surface stays frozen; a renderer that doesn't know this field
-     * yet still renders the event as a plain message. Only value today is
-     * 'specialist-report'; a plain `string` (not a union) so a future injected
-     * kind never needs a TranscriptEvent schema change either.
+     * frozen emit surface stays frozen.
+     *
+     * Final-review fix: this is a PERSISTED HOOK with no renderer consumer yet.
+     * Neither `preload.ts` nor `remote-shim.ts` forwards it, and no chat-reducer
+     * case reads it (`rg injected src/renderer` is empty) — its only current
+     * readers are test assertions (native-session-host.test.ts,
+     * specialist-run.test.ts) that use it to pick the injected event out of a
+     * list, not product code. Until a renderer case is added, an injected
+     * report renders as an ordinary user bubble, indistinguishable from
+     * something the user typed. Do not claim elsewhere that this field already
+     * gives injected turns distinct styling — it does not. Kept (not deleted)
+     * because harness-session.ts already writes it and removing it would mean
+     * re-deriving "which event was the injected one" in every test that needs
+     * it; styling the bubble is a follow-up plan's scope, not this fix pass's.
+     * Only value today is 'specialist-report'; a plain `string` (not a union)
+     * so a future injected kind never needs a TranscriptEvent schema change.
      */
     injected?: string;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */

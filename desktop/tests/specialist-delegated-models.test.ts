@@ -66,13 +66,13 @@ describe('resolveDelegatedBinding — tier resolution', () => {
     const r = resolveDelegatedBinding({ requested: 'budget', parent: PARENT, designated, catalog: null });
     expect(r.binding).toEqual(PARENT);
     expect(r.fellBack).toBe(true);
-    expect(r.reason).toBe('no budget model is set in Settings');
+    expect(r.reason).toBe('no budget model is designated');
   });
 
   it('the frontier tier names itself in the fallback reason (not a copy-pasted "budget")', () => {
     const r = resolveDelegatedBinding({ requested: 'frontier', parent: PARENT, designated, catalog: null });
     expect(r.fellBack).toBe(true);
-    expect(r.reason).toBe('no frontier model is set in Settings');
+    expect(r.reason).toBe('no frontier model is designated');
   });
 
   it('"parent" passes the parent binding straight through, no fallback flag', () => {

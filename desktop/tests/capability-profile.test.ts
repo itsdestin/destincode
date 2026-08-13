@@ -346,6 +346,20 @@ describe('supportsVision — three-level precedence (registry > discovered > pro
 // ---------------------------------------------------------------------------
 describe('maxConcurrentSpecialists (Task 13 — local concurrency from the engine, hosted from the profile)', () => {
   it('hosted/cloud providers get the flat spec constant', () => {
+    // Final-review fix (Finding 5): `expect(CLOUD_DEFAULT.maxConcurrentSpecialists)
+    // .toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS)` alone can never fail from a
+    // regression in the VALUE this feature is supposed to produce —
+    // capability-profile.ts sets CLOUD_DEFAULT.maxConcurrentSpecialists to
+    // exactly that same imported binding (line ~122), so the comparison is
+    // between a symbol and itself; it would keep passing even if
+    // HOSTED_MAX_CONCURRENT_SPECIALISTS's own value drifted to something
+    // nonsensical (0, -1, 9999), since both sides would still agree. Pin the
+    // actual spec number (limits.ts's own comment: "spec §5 Global
+    // Constraints", currently 4) so a change to the constant itself is a
+    // failure, not a silent pass. The symbol-equality check below is kept
+    // TOO — it still catches the OTHER real regression, a hardcoded literal
+    // replacing the import in capability-profile.ts.
+    expect(HOSTED_MAX_CONCURRENT_SPECIALISTS).toBe(4);
     expect(CLOUD_DEFAULT.maxConcurrentSpecialists).toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS);
     for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
       expect(resolveProfile({ providerType, modelId: 'x', contextLength: 128_000 }).maxConcurrentSpecialists, providerType)

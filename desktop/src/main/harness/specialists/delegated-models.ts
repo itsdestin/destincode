@@ -117,7 +117,16 @@ export function resolveDelegatedBinding(i: {
   if (requested === 'budget' || requested === 'frontier') {
     const designatedBinding = designated.get(requested);
     if (designatedBinding) return { binding: designatedBinding, fellBack: false };
-    return { binding: parent, fellBack: true, reason: `no ${requested} model is set in Settings` };
+    // Final-review fix (Finding 6): this used to say "is set in Settings" —
+    // true once the plan 1c Settings UI ships, false today. This release has
+    // no menu that lets a user designate a budget/frontier model at all
+    // (DelegatedModels.set()'s own comment: "The Settings UI (1c) is the
+    // only production caller" — not yet written), so pointing the model (and,
+    // via task.ts's fallbackNote, the user) at "Settings" named a control
+    // nobody can find. General and non-committal instead: state the fact
+    // (nothing is designated) without claiming a place to fix it that
+    // doesn't exist yet.
+    return { binding: parent, fellBack: true, reason: `no ${requested} model is designated` };
   }
 
   // requested is { modelId }: a user-directed override, validated against the

@@ -85,12 +85,21 @@ export interface DiscoveredModel {
    *  contextLength (see docs/engine-dependencies.md § "Parallel
    *  slots" — the 2026-08-12 probe that measured n_slots=4 batching cleanly
    *  at ~1.7-1.85x single-request latency, the largest tested N that still
-   *  cleared that bar). Optional for the same reason contextLength can be
-   *  null and supportsVision can be undefined: no construction site wires a
-   *  live reading through yet (that's the engine-integration task, not this
-   *  one) — undefined here means "not discovered", and the known-model
-   *  overlay treats that identically to an explicit null: conservative 1,
-   *  never "one slot confirmed". */
+   *  cleared that bar). engine-manager.ts's effectiveContextWindow() now
+   *  reads it off that same /props call and threads it through
+   *  ipc-handlers.ts's contextAndSlotsFor closure into
+   *  NativeSessionHost.resolveContextAndProfile() — so, unlike when this
+   *  comment first landed, a construction site DOES wire a live reading
+   *  through. Still optional: resolveContextAndProfile coalesces
+   *  contextAndSlotsFor's `null` (no running engine instance, an older
+   *  llama.cpp build with no `n_slots` in its /props response, or a
+   *  non-local-engine binding, which never queries the engine at all) into
+   *  `undefined` before calling resolveProfile — so in production this
+   *  field is either a real discovered count or `undefined`, never the
+   *  explicit `null` the type also allows for a lower-level caller (the
+   *  resolveProfile unit tests exercise `null` directly). Either absent form
+   *  reaches the same fallback in the known-model overlay below:
+   *  conservative 1, never "one slot confirmed". */
   totalSlots?: number | null;
 }
 

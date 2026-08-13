@@ -406,7 +406,14 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         if (resolution.fellBack) {
           // requestedModel is a DelegatedTier here — the { modelId } branch
           // above either resolves or throws, it never falls back.
-          fallbackNote = `\n\n(No ${requestedModel as DelegatedTier} model is set in Settings — using this conversation's model.)`;
+          //
+          // Final-review fix (Finding 6): this used to say "is set in
+          // Settings" — this release ships no Settings UI for designating a
+          // budget/frontier model (plan 1c, not yet written), so it pointed
+          // the model AND the user at a control neither can find. Matches
+          // resolveDelegatedBinding's own reason string (delegated-models.ts)
+          // — state the fact, not a place to fix it that doesn't exist yet.
+          fallbackNote = `\n\n(No ${requestedModel as DelegatedTier} model is designated — using this conversation's model.)`;
         }
       }
 

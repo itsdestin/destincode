@@ -382,12 +382,16 @@ export class NativeSessionHost extends EventEmitter {
   private pendingHostNotices = new Map<string, string[]>();
 
   // Plan 1b Task 8 — a routed ask's late APPROVE, recorded once the child that
-  // raised it has already ended, keyed by childId. WHY it exists but nothing
-  // in this file reads it back yet: there is no wired path today that resumes
-  // a specific specialist child by its task_id (resume() rebuilds an ordinary
-  // session's decide(), never buildChildDecide) — recording the grant here is
-  // forward-looking storage for that future resume path, honestly inert until
-  // one exists. It is NOT a promise that a resume will skip the ask today.
+  // raised it has already ended, keyed by childId.
+  //
+  // Final-review fix: this used to say "nothing in this file reads it back
+  // yet" / "honestly inert" — true when Task 8 first wrote it, false now.
+  // resumeSpecialist (below, around the `childApprovedAsks.get(opts.childId)`
+  // call) is its consumer: it folds any late approval into the resumed
+  // child's steer lines and clears the entry, so a later resume of the same
+  // child never repeats an ask the user already answered. A maintainer
+  // trusting the old wording could delete this write believing nothing reads
+  // it, which would silently break that ask-skipping on resume.
   private childApprovedAsks = new Map<string, { tool: string }[]>();
 
   /** Pop (remove) the first in-memory fallback report belonging to `parentId`,
@@ -2216,34 +2220,56 @@ export class NativeSessionHost extends EventEmitter {
    *  never flips true before SPECIALIST_IDLE_STALE_MS has elapsed with no
    *  activity, so "at least" is always accurate even when it understates.
    *
-   *  Fix pass, Finding 3: failed/interrupted get their OWN line, not the
-   *  running-record's "finished — report delivery pending" wording.
-   *  claimUndelivered() (delegation-ledger.ts) only ever claims
-   *  status === 'completed' records — a 'failed' or 'interrupted' record is
-   *  NEVER delivered, so reusing the "pending" line repeated a permanently
-   *  false claim on every future turn. failureText is the real thrown
-   *  message (never a guessed cause — error-message-standards.md);
-   *  'interrupted' always means a parent teardown killed the child (see
-   *  updateIfRunning's WHY comment above), so naming it is accurate, not
-   *  guessed. */
+   *  Fix pass, Finding 3 (original): 'interrupted' gets its OWN line, not the
+   *  running-record's "finished — report delivery pending" wording — a parent
+   *  teardown killed the child (see updateIfRunning's WHY comment above), so
+   *  no claim ever gets made against this record and no report ever arrives.
+   *
+   *  Final-review fix (Finding 1): 'failed' used to get the SAME
+   *  "no report will arrive" treatment as 'interrupted', on the reasoning
+   *  that claimUndelivered() (delegation-ledger.ts) "only ever claims
+   *  status === 'completed' records". That eligibility was later widened
+   *  (Important 4, final review) to claim 'completed' OR 'failed' — a
+   *  background run that dies still owes the parent a typed
+   *  "[Background specialist failed] ..." notice, not silence — so telling
+   *  the model no report is coming was, from that point on, actively wrong:
+   *  the model would be told nothing is coming and then have one arrive a
+   *  turn or two later. 'failed' now gets the SAME "delivery pending" framing
+   *  as 'completed', with the real failureText named inline (never a guessed
+   *  cause — error-message-standards.md). Only 'interrupted' still says "no
+   *  report will arrive", because that one claim stayed true.
+   *
+   *  The final branch below is an explicit `switch`, not a trailing
+   *  `if`/`else` — a plain `else` would silently render any FUTURE fifth
+   *  DelegationRecord status as "interrupted" instead of failing to compile;
+   *  the `never` assignment in `default` turns that into a typecheck error
+   *  the day the status union grows. */
   private buildSpecialistStatus(sessionId: string, cwd: string): string | null {
     if (!this.ledger) return null;
     const lines = this.ledger.listFor(cwd, sessionId)
       .filter((r) => !r.delivered)
       .map((r) => {
-        if (r.status === 'running') {
-          const elapsedS = Math.max(0, Math.round((Date.now() - r.startedAt) / 1000));
-          const staleNote = r.stale ? `, may be stuck — no activity for at least ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
-          return `${r.title} (${r.agentType}): running — ${elapsedS}s${staleNote}`;
+        switch (r.status) {
+          case 'running': {
+            const elapsedS = Math.max(0, Math.round((Date.now() - r.startedAt) / 1000));
+            const staleNote = r.stale ? `, may be stuck — no activity for at least ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
+            return `${r.title} (${r.agentType}): running — ${elapsedS}s${staleNote}`;
+          }
+          case 'completed':
+            return `${r.title} (${r.agentType}): finished — report delivery pending`;
+          case 'failed':
+            return `${r.title} (${r.agentType}): failed${r.failureText ? ` — ${r.failureText}` : ''} — report delivery pending`;
+          case 'interrupted':
+            return `${r.title} (${r.agentType}): interrupted — no report will arrive`;
+          default: {
+            // Exhaustiveness guard: a status literal added to
+            // DelegationRecord['status'] without a case here fails `tsc`
+            // right here (assigning a non-`never` type to `never`), instead
+            // of silently falling through and mislabeling the new status.
+            const _exhaustive: never = r.status;
+            return `${r.title} (${r.agentType}): ${_exhaustive}`;
+          }
         }
-        if (r.status === 'completed') {
-          return `${r.title} (${r.agentType}): finished — report delivery pending`;
-        }
-        if (r.status === 'failed') {
-          return `${r.title} (${r.agentType}): failed${r.failureText ? ` — ${r.failureText}` : ''} — no report will arrive`;
-        }
-        // status === 'interrupted'
-        return `${r.title} (${r.agentType}): interrupted — no report will arrive`;
       });
     return lines.length > 0 ? lines.join('\n') : null;
   }
@@ -3053,9 +3079,14 @@ export class NativeSessionHost extends EventEmitter {
           // committed (see markInjectionAttempted's own comment for the full
           // reasoning) — logged, and deliberately NOT treated as a reason to
           // abandon this delivery attempt: proceeding to runNotice() anyway.
+          // Tracked so the catch below can say something TRUE about whether
+          // a later failure is retryable, instead of assuming it always is
+          // (final-review fix — see that catch's own comment).
+          let injectionMarkerStamped = true;
           try {
             await this.ledger.markInjectionAttempted(entry.cwd, sessionId, rec.childId);
           } catch (err) {
+            injectionMarkerStamped = false;
             log('WARN', 'NativeSessionHost', 'markInjectionAttempted failed — proceeding with delivery anyway; see markInjectionAttempted\'s own comment for the residual duplicate risk this can leave', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
           }
           try {
@@ -3095,7 +3126,23 @@ export class NativeSessionHost extends EventEmitter {
             // itself must not escape and skip the `break` below, which is
             // what lets the fallback lane still run this same pass.
             await this.releaseClaimSafely(entry.cwd, sessionId, rec.childId);
-            log('WARN', 'NativeSessionHost', 'background specialist delivery failed — will retry at the next idle boundary', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
+            // Final-review fix: this used to unconditionally say "will retry
+            // at the next idle boundary". That was false in the dominant
+            // case — markInjectionAttempted (above) durably stamps
+            // injectionAttempted BEFORE runNotice() is ever called, and
+            // claimUndelivered's eligibility filter (delegation-ledger.ts)
+            // excludes any record with injectionAttempted set, no matter
+            // what releaseClaimSafely just did to the lease. Once that
+            // marker landed, THIS record can never be reclaimed again — the
+            // release above only frees a lease nothing is allowed to grab.
+            // The message now says what's actually true given whether the
+            // marker write above succeeded; it is internal-log-only, but
+            // it's exactly the line a future session would trust while
+            // debugging a "report never arrived" complaint.
+            const retryNote = injectionMarkerStamped
+              ? 'the injection marker was already stamped before this failure, so claimUndelivered will never reclaim this record again — this report will not be retried'
+              : 'markInjectionAttempted itself failed above, so this record MAY still be reclaimed at the next idle boundary (not guaranteed — see markInjectionAttempted\'s own comment on the ambiguity when its own write fails)';
+            log('WARN', 'NativeSessionHost', `background specialist delivery failed — ${retryNote}`, { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
             break;
           }
         }
