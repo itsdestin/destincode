@@ -209,6 +209,53 @@ describe('DelegationLedger', () => {
     });
   });
 
+  // ---- Fix (Critical 3, final review): a teardown's `{status:'interrupted'}`
+  // write is fire-and-forget and can land AFTER runDelegation's own
+  // 'completed' write (that write happens first, then the child is
+  // de-registered a few microtasks later — a parent destroy()/quiesce() firing
+  // its own teardown write can slip in between). Unlike a 'failed' status
+  // (which is honestly just a SYMPTOM of the same interrupt, per the
+  // "interrupted wins" rule above — update() itself must keep clobbering it,
+  // pinned by the describe block above), a 'completed' record is a REAL,
+  // already-reported outcome: its report is sitting in rawReport/reportPath
+  // waiting to be delivered, and only claimUndelivered ever looks at
+  // 'completed'/'failed', never 'interrupted' — so overwriting it silently
+  // strands that report forever, including across a restart. This is a NEW,
+  // narrower primitive for the two call sites that fire a teardown-driven
+  // interrupted write (destroyChildrenOf, interruptSpecialist) — update()
+  // itself is untouched and stays unconditional, exactly as the tests above
+  // pin.
+  describe('updateUnlessCompleted — teardown must never clobber an already-completed record', () => {
+    it('applies the patch when the record is still running (the normal teardown case)', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'running' }));
+      await ledger.updateUnlessCompleted(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 1 });
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.status).toBe('interrupted');
+    });
+
+    it('skips the patch entirely when the record is already completed — the report survives untouched', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'c1', status: 'completed', startedAt: 100, endedAt: 200, rawReport: 'the real report',
+      }));
+      await ledger.updateUnlessCompleted(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 9999 });
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.status).toBe('completed');       // NOT clobbered
+      expect(rec?.endedAt).toBe(200);               // the real completion time, not the late teardown's
+      expect(rec?.rawReport).toBe('the real report');
+      // And still claimable — the outcome that actually matters: the report
+      // is not stranded behind a status claimUndelivered never looks at.
+      const claimed = await ledger.claimUndelivered(CWD, 'p1');
+      expect(claimed?.childId).toBe('c1');
+    });
+
+    it('still applies over a failed record — only "completed" is protected, "interrupted wins" over "failed" is preserved', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'failed', startedAt: 100, endedAt: 150, failureText: 'aborted' }));
+      await ledger.updateUnlessCompleted(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 200 });
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.status).toBe('interrupted');
+    });
+  });
+
   // ---- Fix pass 5 — distinguishing "claimed, never injected" from
   // "injected, never confirmed". Two on-disk states look identical
   // (claimedBy = some owner, delivered = false) but mean opposite things:

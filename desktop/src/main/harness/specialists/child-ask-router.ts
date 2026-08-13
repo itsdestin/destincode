@@ -1,5 +1,5 @@
 import type { AskRequest, AskDecision, PermissionBroker } from '../permission-broker';
-import type { HarnessSessionOpts } from '../harness-session';
+import { rememberedRuleFor, type HarnessSessionOpts } from '../harness-session';
 import type { PermissionRule } from '../../../shared/permission-types';
 import { SPECIALIST_ASK_HOLD_MS } from './limits';
 
@@ -104,13 +104,20 @@ export function childAskRouter(deps: ChildAskRouterDeps): NonNullable<HarnessSes
     // exclusion below is the one exception that DOES still need a check:
     // max_steps/doom_loop reach this same code path (they're not filtered out
     // above), but never support "Always allow" even for a root session.
+    //
+    // Fix (Important 6, final review): rememberedRuleFor (harness-session.ts)
+    // is the ONE function that turns (toolName, subject, grantScope) into the
+    // rule to store — the same builder a root session's own ask uses. This
+    // used to hand-build `{tool, pattern: subject, action:'allow'}` itself,
+    // which silently discarded the grant WIDTH the user picked (always
+    // storing an exact-match rule regardless of decision.grantScope) and
+    // skipped the builder's own "never rememberable" cases (e.g. a bare
+    // `git push`, whose bashGrantOptions is empty). `specialist` is merged in
+    // here, not inside the shared builder — that function has no concept of
+    // a specialist key; it's the same one a root session's ask reuses as-is.
     if (decision.behavior === 'allow' && decision.always && !BUDGET_ASK_TOOL_NAMES.has(req.toolName)) {
-      deps.remember?.({
-        tool: req.toolName,
-        ...(req.subject !== undefined ? { pattern: req.subject } : {}),
-        action: 'allow',
-        specialist: deps.agentType,
-      });
+      const rule = rememberedRuleFor(req.toolName, req.subject, decision.grantScope);
+      if (rule) deps.remember?.({ ...rule, specialist: deps.agentType });
     }
     return decision;
   };

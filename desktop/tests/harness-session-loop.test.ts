@@ -561,6 +561,38 @@ describe('HarnessSession — multi-step turn driver', () => {
     });
   });
 
+  // Fix (Critical 1, final review): a Task task_id call (steer/resume/interrupt
+  // an EXISTING specialist) omits work_dir entirely, so permissionSubject
+  // returns undefined for it — the SAME shape as a genuinely subject-less tool
+  // (TodoWrite). Before this fix rememberedRuleFor treated undefined subject as
+  // "tool has no meaningful subject, so remember tool-wide" for EVERY tool,
+  // which was safe when Task always had a `${charter}:${work_dir}` subject
+  // (work_dir was required) but became a hole once task_id calls made work_dir
+  // optional: an "Always allow" on a task_id management call would persist a
+  // pattern-less `{tool:'Task', action:'allow'}` rule that then silently
+  // pre-approves EVERY future Task call, including a brand-new read-write spawn
+  // at any directory. Task must never mint a tool-wide rule — mirrors the
+  // existing "no grant possible" precedent for a Bash command with no safe
+  // width (rulesFor('git push', ...) above).
+  it('never remembers a tool-wide rule for a Task call with no subject (task_id management)', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => undefined, schema: z.object({ task_id: z.string() }) });
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { task_id: 'abc' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [task], decide: async () => ({ action: 'ask', denyListed: false }) as PermissionDecision, askUser }),
+      async () => model as any,
+    );
+    const remembered: unknown[] = [];
+    session.on('remember-rule', (r) => remembered.push(r));
+    collect(session);
+    await session.send('go');
+    expect(askUser).toHaveBeenCalledTimes(1);   // the one-time approval still happens
+    expect(remembered).toEqual([]);              // …but nothing tool-wide is ever persisted
+  });
+
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
     // C:/x/.env is a dotenv file → isSensitivePath → checkPathGuard 'deny'.
     const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });

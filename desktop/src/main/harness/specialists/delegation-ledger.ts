@@ -315,6 +315,44 @@ export class DelegationLedger {
     return taken;
   }
 
+  /**
+   * Same shape as updateIfRunning(), but the opposite guard: skip the patch
+   * ONLY when the record is already 'completed' — apply it against every
+   * other status ('running', 'failed', 'interrupted'). For the two teardown
+   * call sites that write `{ status: 'interrupted' }` fire-and-forget
+   * (destroyChildrenOf, interruptSpecialist), NOT for update() itself, which
+   * stays unconditional (the "interrupted wins" tests above call update()
+   * directly and must keep passing unchanged).
+   *
+   * WHY (Critical 3, final review): runDelegation writes 'completed' and only
+   * de-registers the child a few microtasks later. A parent
+   * destroy()/quiesce() (takeover, session close, app quit) can fire its
+   * teardown write in that gap, landing AFTER the completion write. A
+   * 'completed' record is a real, already-reported outcome — its report sits
+   * in rawReport/reportPath waiting for claimUndelivered, which only ever
+   * looks at 'completed'/'failed', never 'interrupted'. Clobbering it to
+   * 'interrupted' strands that report permanently, including across a
+   * restart (nothing ever re-derives 'completed' from 'interrupted').
+   *
+   * WHY NOT also guard 'failed': the "interrupted wins" rule (see the
+   * updateIfRunning describe block above) is deliberate — an abort-driven
+   * 'failed' write racing the SAME teardown is only ever a SYMPTOM of that
+   * teardown, and 'interrupted' must still win over it regardless of arrival
+   * order. Guarding 'failed' here too would flip that outcome for exactly the
+   * ordering the existing pinned test ("failure-first ordering… interrupted
+   * still wins") covers. Only 'completed' — a genuinely different, already-
+   * finished outcome unrelated to the interrupt — needs protecting.
+   */
+  async updateUnlessCompleted(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>): Promise<void> {
+    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
+      const data = this.coerce(cur);
+      return {
+        v: FILE_VERSION,
+        delegations: data.delegations.map((d) => (d.childId === childId && d.status !== 'completed' ? { ...d, ...patch } : d)),
+      };
+    });
+  }
+
   async claimUndelivered(parentCwd: string, parentId: string): Promise<DelegationRecord | null> {
     let claimed: DelegationRecord | null = null;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {

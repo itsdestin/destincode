@@ -18,7 +18,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
-import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
+import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
 import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
@@ -162,6 +162,22 @@ export function mergeChildEvents(
 // as an ordinary user turn, so anything longer competes with the brief for the
 // child's attention.
 const EMPTY_REPORT_NUDGE = 'Your final message is your report — reply with your findings now.';
+
+// Fix (Important 5, final review): the SUBDIRECTORY every specialist-report
+// spill file (writeSessionArtifact) lands in, under a project's
+// sessions/<slug>/ directory — and the ONLY thing toolWiring's
+// internalReadRoots exemption is scoped to (see its own comment). Before this
+// fix the exemption covered the ENTIRE sessions/<slug>/ directory, which also
+// holds every OTHER conversation's transcript .jsonl and the delegation
+// ledger sidecars — a truncated report's footer names a path under
+// sessions/<slug>/, and the model could then Read/Grep/Glob anything else in
+// that same directory (other conversations included) without the
+// external_directory ask it would need for any other path outside its own
+// session. Narrowing writeSessionArtifact's target AND the exemption to this
+// one subdirectory closes that without touching what the exemption exists
+// for: a spilled report is still readable, nothing else in the project's
+// session storage is.
+const SPECIALIST_REPORT_SPILL_SUBDIR = 'specialist-reports';
 
 // Task 1 (plan 1b) — the placeholder value activeWriterChild holds for a
 // writer reservation between reserveSpecialist() (which must set the lock
@@ -603,7 +619,17 @@ export class NativeSessionHost extends EventEmitter {
     const { title, description } = this.titleAndDescriptionFor(childId, entry.cwd, record);
     const parentCwd = this.live.get(parentId)?.cwd;
     if (this.ledger && parentCwd) {
-      void this.ledger.update(parentCwd, parentId, childId, { status: 'interrupted', endedAt: Date.now() })
+      // Fix (Critical 3, final review): updateUnlessCompleted, not update() —
+      // this write is fire-and-forget (no await below), so it can still be
+      // in flight when runDelegation's OWN completion write lands first (the
+      // child finishes on its own in the gap between this call starting and
+      // its ledger write actually committing). A 'completed' record already
+      // has a real report waiting on claimUndelivered; update() would
+      // silently clobber it to 'interrupted', which claimUndelivered never
+      // looks at, stranding the report forever. See updateUnlessCompleted's
+      // own comment for why 'failed' stays unprotected (interrupted must
+      // still win over a merely-symptomatic failure).
+      void this.ledger.updateUnlessCompleted(parentCwd, parentId, childId, { status: 'interrupted', endedAt: Date.now() })
         .catch((err) => log('ERROR', 'NativeSessionHost', 'failed to record an explicit specialist interrupt in the ledger', { childId, parentId, error: String(err) }));
     }
     this.interrupt(childId);
@@ -706,6 +732,37 @@ export class NativeSessionHost extends EventEmitter {
         missedSteers = await this.ledger.takeMissedSteers(parent.cwd, parentId, opts.childId, {
           status: 'running', startedAt: Date.now(), endedAt: undefined, failureText: undefined,
           delivered: false, background: !!opts.background,
+          // Fix (Critical 2, final review): this patch merges onto the SAME
+          // ledger row RUN 1 left behind (resume never recordStart's a second
+          // row — see this method's own header comment) — every field RUN 1's
+          // completion write stamped that only makes sense for THAT run must
+          // be reset here, or RUN 2 silently inherits it:
+          //  - injectionAttempted is the loss-bearing one. Left true (RUN 1
+          //    delivered successfully, so fix pass 5's marker is stamped),
+          //    claimUndelivered's `!d.injectionAttempted` bar
+          //    (delegation-ledger.ts) can never pass again for this childId —
+          //    RUN 2's real completion is claimed by nobody, ever: not the
+          //    ledger lane, not the in-memory fallback (never stashed, since
+          //    RUN 2's own completion write succeeds), not reconcile, not a
+          //    restart. The status block repeats "report delivery pending"
+          //    forever, falsely.
+          //  - reportPath/rawReport, if RUN 1 spilled an oversized body,
+          //    survive untouched; if RUN 2's shorter report never spills
+          //    again, delivery reads the STALE file and hands the parent RUN
+          //    1's body labeled as RUN 2's report.
+          //  - steps is read straight into the delivery preamble — also RUN
+          //    1's, not RUN 2's, until reset.
+          //  - claimedBy/claimedAt/stale are RUN 1's stale lease/idle
+          //    bookkeeping; a lease held over from a run that already
+          //    confirmDelivered'd has no meaning for a run that hasn't
+          //    started yet, and STALE must not carry over onto a session that
+          //    just went active again.
+          // Explicit `undefined` (not omitted) so the patch merge
+          // (`{...d, ...patch}` in delegation-ledger.ts) actually overwrites
+          // whatever RUN 1 left on disk — same convention releaseClaim() uses
+          // for the identical reason (delegation-ledger.ts's own comment).
+          injectionAttempted: undefined, reportPath: undefined, rawReport: undefined,
+          steps: undefined, stale: undefined, claimedBy: undefined, claimedAt: undefined,
         });
       } catch (err) {
         // Mirrors recordDelegationStart's own leak guard: if this write
@@ -868,7 +925,7 @@ export class NativeSessionHost extends EventEmitter {
       // copy either way.
       if (this.nativeHome && parentCwd && run.report.length > RAW_REPORT_CAP_CHARS) {
         try {
-          reportPath = this.nativeHome.writeSessionArtifact(cwdToProjectSlug(parentCwd), `${childId}.report.md`, run.report);
+          reportPath = this.nativeHome.writeSessionArtifact(cwdToProjectSlug(parentCwd), path.join(SPECIALIST_REPORT_SPILL_SUBDIR, `${childId}.report.md`), run.report);
         } catch (spillErr) {
           log('ERROR', 'NativeSessionHost', 'failed to spill an oversized specialist report to disk — the ledger copy will be capped', { childId, parentId, error: String(spillErr) });
         }
@@ -1242,15 +1299,21 @@ export class NativeSessionHost extends EventEmitter {
     // Budget asks (max_steps/doom_loop) never support "Always allow" even for
     // a root session (child-ask-router.ts's BUDGET_ASK_TOOL_NAMES) — excluded
     // here for the same reason the in-time path excludes them.
+    //
+    // Fix (Important 6, final review): same fix as child-ask-router.ts's
+    // in-time path, applied to the LATE path — this used to hand-build
+    // `{tool, pattern: subject, action:'allow'}` itself instead of calling
+    // the shared rememberedRuleFor() builder, discarding the grant WIDTH the
+    // user picked (decision.grantScope) and skipping the builder's own
+    // "never rememberable" cases. See child-ask-router.ts's own comment on
+    // its now-identical call for the full reasoning; both sites must derive
+    // the rule the SAME way or a late answer and an in-time answer to the
+    // identical ask could persist two different rules.
     if (allowed && decision.always && entry.specialist && !BUDGET_ASK_TOOL_NAMES.has(entry.toolName)) {
       const parent = this.live.get(entry.sessionId);
       if (parent) {
-        this.rememberRule(entry.sessionId, parent.cwd, {
-          tool: entry.toolName,
-          ...(entry.subject !== undefined ? { pattern: entry.subject } : {}),
-          action: 'allow',
-          specialist: entry.specialist.agentType,
-        });
+        const rule = rememberedRuleFor(entry.toolName, entry.subject, decision.grantScope);
+        if (rule) this.rememberRule(entry.sessionId, parent.cwd, { ...rule, specialist: entry.specialist.agentType });
       } else {
         // The parent session was torn down before the late answer arrived —
         // there is no live cwd left to persist against (the store is keyed by
@@ -1646,7 +1709,7 @@ export class NativeSessionHost extends EventEmitter {
         const parentCwd = this.live.get(i.parentId)?.cwd;
         if (this.nativeHome && parentCwd) {
           try {
-            reportPath = this.nativeHome.writeSessionArtifact(cwdToProjectSlug(parentCwd), `${i.childId}.report.md`, i.body);
+            reportPath = this.nativeHome.writeSessionArtifact(cwdToProjectSlug(parentCwd), path.join(SPECIALIST_REPORT_SPILL_SUBDIR, `${i.childId}.report.md`), i.body);
           } catch (err) {
             // Fix: a spill failure must degrade gracefully — the parent still
             // gets the truncated text above, and the footer below must NEVER
@@ -2010,16 +2073,21 @@ export class NativeSessionHost extends EventEmitter {
       // per tool call would be a real cost on a large repo.
       triggers: buildTriggerIndex(cwd),
       // Task 10 (plan 1b): the ONE root a ROOT session is allowed to Read
-      // without an external_directory ask — this PROJECT's sessions/<slug>/
-      // artifact directory, the exact place writeSessionArtifact spills an
-      // oversized specialist report to. Not exclusive to this one session
-      // (every session sharing this cwd writes into the same slug directory,
-      // same as the ledger sidecar and every session JSONL already do) — it
-      // is scoped to "this project's own harness storage", not to secrets or
-      // anything outside ~/.youcoded/sessions/<slug>/. Only create()/resume()
-      // call toolWiring; createChild (specialist children) builds its opts by
-      // hand and never does, so a child never inherits this.
-      ...(this.nativeHome ? { internalReadRoots: [path.join(this.nativeHome.root, 'sessions', cwdToProjectSlug(cwd))] } : {}),
+      // without an external_directory ask — this PROJECT's
+      // sessions/<slug>/specialist-reports/ subdirectory, the exact place
+      // writeSessionArtifact spills an oversized specialist report to (Fix,
+      // Important 5, final review: narrowed from the WHOLE sessions/<slug>/
+      // directory, which also held every OTHER conversation's transcript
+      // .jsonl and the delegation ledger sidecars — this project's own
+      // harness storage that has nothing to do with a spilled report — see
+      // SPECIALIST_REPORT_SPILL_SUBDIR's own comment). Not exclusive to this
+      // one session (every session sharing this cwd writes into the same
+      // slug's spill subdirectory, same as before) — it is scoped to "this
+      // project's own specialist-report spill storage", not to secrets or
+      // anything outside it. Only create()/resume() call toolWiring;
+      // createChild (specialist children) builds its opts by hand and never
+      // does, so a child never inherits this.
+      ...(this.nativeHome ? { internalReadRoots: [path.join(this.nativeHome.root, 'sessions', cwdToProjectSlug(cwd), SPECIALIST_REPORT_SPILL_SUBDIR)] } : {}),
       // Skill is NOT in CORE_TOOLS — it is attached per session by
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
@@ -2605,9 +2673,19 @@ export class NativeSessionHost extends EventEmitter {
         }
       }
       // Read from the ORIGINAL snapshot, not a re-fetch — a record just
-      // marked 'interrupted' above can never also be 'completed' here, so
-      // there is no ordering hazard in checking the pre-reconcile status.
-      if (rec.status === 'completed' && !rec.delivered) hasUndelivered = true;
+      // marked 'interrupted' above can never also be 'completed'/'failed'
+      // here, so there is no ordering hazard in checking the pre-reconcile
+      // status.
+      //
+      // Fix (Important 4, final review): claimUndelivered's own eligibility
+      // (delegation-ledger.ts) was deliberately widened to 'completed' OR
+      // 'failed' — a dead background child still owes the parent a typed
+      // failure notice, not silence. This flag stayed 'completed'-only, so a
+      // parent whose ONLY undelivered record was 'failed' never got queued
+      // after a restart: the ledger delivery lane was skipped entirely and
+      // the failure notice never arrived, even though claimUndelivered itself
+      // was perfectly willing to hand it over once asked.
+      if ((rec.status === 'completed' || rec.status === 'failed') && !rec.delivered) hasUndelivered = true;
     }
     // One call regardless of how many records are undelivered — queueDelivery
     // just marks the parent pending and kicks a pass if it's already idle;
@@ -3378,16 +3456,26 @@ export class NativeSessionHost extends EventEmitter {
     const parentCwd = this.live.get(sessionId)?.cwd;
     for (const childId of [...children]) {
       this.interrupt(childId);
-      // Any child still in this set is, by construction, still 'running' in
-      // the ledger — a completed/failed foreground child already tore itself
-      // down (and de-registered from childrenOf) in spawnSpecialist's own
-      // finally. FIRE-AND-FORGET (not awaited): destroy()/quiesce() (this
-      // method's only callers) can themselves be invoked without an await
-      // from a sync caller, and a lock-contended ledger write must never make
-      // an unrelated caller's teardown appear to hang. .catch(log) turns a
-      // failed write into a log line instead of an unhandled rejection.
+      // A FOREGROUND child still in this set really is, by construction,
+      // still 'running' in the ledger — a completed/failed foreground child
+      // already tore itself down (and de-registered from childrenOf) in
+      // spawnSpecialist's own finally, synchronously with its ledger write.
+      // A BACKGROUND child does NOT have that guarantee (Critical 3, final
+      // review): runDelegation's own completion write lands, then the child
+      // is de-registered from childrenOf a few microtasks later — so this
+      // loop's snapshot (`[...children]`, taken once above) can still name a
+      // childId whose ledger row is ALREADY 'completed' by the time this
+      // fires. Fixed by updateUnlessCompleted (see its own comment): a real,
+      // already-reported outcome is never clobbered to 'interrupted', which
+      // claimUndelivered never looks at — while a merely-running child still
+      // gets marked 'interrupted' exactly as before. FIRE-AND-FORGET (not
+      // awaited): destroy()/quiesce() (this method's only callers) can
+      // themselves be invoked without an await from a sync caller, and a
+      // lock-contended ledger write must never make an unrelated caller's
+      // teardown appear to hang. .catch(log) turns a failed write into a log
+      // line instead of an unhandled rejection.
       if (this.ledger && parentCwd) {
-        this.ledger.update(parentCwd, sessionId, childId, { status: 'interrupted', endedAt: Date.now() })
+        this.ledger.updateUnlessCompleted(parentCwd, sessionId, childId, { status: 'interrupted', endedAt: Date.now() })
           .catch((e) => log('ERROR', 'NativeSessionHost', 'failed to record an interrupted delegation', { childId, parentId: sessionId, error: String(e) }));
       }
       await this.destroy(childId);

@@ -54,8 +54,22 @@ const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
  *  name its own pattern could grant itself anything, because remembered rules are
  *  the final precedence layer, above the destructive deny-list.
  *
- *  Returns null when nothing may be remembered for this call. */
-function rememberedRuleFor(
+ *  Returns null when nothing may be remembered for this call.
+ *
+ *  Exported (Fix, Important 6, final review): this is the ONE function that
+ *  decides both the confirm-sentence width (indirectly, via the caller
+ *  reading `scope`) and the stored rule's pattern/match shape — a routed
+ *  specialist ask (child-ask-router.ts) and a LATE routed answer
+ *  (native-session-host.ts's onLateResponse) used to hand-build their own
+ *  `{tool, pattern: subject, action:'allow', specialist}` object instead of
+ *  calling this, which silently dropped every "never rememberable" case this
+ *  function enforces (e.g. a bare `git push`, whose bashGrantOptions is empty
+ *  — see below) and discarded the grant WIDTH the user actually picked,
+ *  always storing an exact-match rule regardless of `grantScope`. Both call
+ *  sites now go through here, merging in `specialist` themselves (this
+ *  function has no concept of a specialist key — it's the same builder a
+ *  root session's own ask uses). */
+export function rememberedRuleFor(
   toolName: string,
   subject: string | undefined,
   scope: GrantScope | undefined,
@@ -71,6 +85,20 @@ function rememberedRuleFor(
     // for this command — never widen past what bashGrantOptions produced.
     return (options.find((o) => o.scope === (scope ?? 'exact')) ?? options[0]).rule;
   }
+  // Fix (Critical 1, final review): Task's subject is undefined ONLY for a
+  // task_id management call (steer/resume/interrupt), which never carries a
+  // charter/work_dir — every OTHER Task call has a real `${charter}:${workDir}`
+  // subject (tools/task.ts's permissionSubject). Falling through to the
+  // tool-wide branch below (built for genuinely subject-less tools like
+  // TodoWrite) would let a single "Always allow" on a task_id call persist a
+  // pattern-less `{tool:'Task', action:'allow'}` rule that then silently
+  // pre-approves EVERY future Task call — including a brand-new read-write
+  // spawn at any directory, which the user never saw or consented to. Fail
+  // closed: no rule of ANY width is ever remembered for a subject-less Task
+  // call — mirrors the existing "no grant possible" precedent (Bash commands
+  // with no safe width, e.g. bare `git push`, above return null the same way).
+  // The ask itself still resolves 'allow' for this one call either way.
+  if (toolName === 'Task' && subject === undefined) return null;
   if (subject === undefined) return { tool: toolName, action: 'allow' };
   // Non-Bash subjects are literal paths / ids. match:'exact' makes them mean what
   // the confirm always claimed — a path containing '*' was a wildcard grant.

@@ -88,4 +88,61 @@ describe('childAskRouter', () => {
     expect(d2.message).not.toMatch(/user declined/i);
     expect(emitted).toEqual([]);
   });
+
+  // Fix (Important 6, final review): the router used to hand-build
+  // `{tool, pattern: subject, action:'allow', specialist}` itself instead of
+  // calling the shared rememberedRuleFor() builder (harness-session.ts) — the
+  // SAME function a root session's own ask uses. Two consequences of that
+  // divergence, both pinned here:
+  //  1. The grant WIDTH the user picked (grantScope: 'wide') was discarded —
+  //     an exact-match rule was stored regardless, so the specialist would
+  //     re-ask on the next call the wide grant should have covered, and
+  //     Settings would show a row that doesn't say what the user approved.
+  //  2. The builder's "never rememberable" cases weren't enforced — a bare
+  //     `git push` (whose target isn't in the command and changes underneath
+  //     the grant) would get remembered anyway, exactly the hole
+  //     rememberedRuleFor's own Bash branch exists to close.
+  describe('"Always allow" routes through the shared rememberedRuleFor builder', () => {
+    it('a WIDE grant persists the DERIVED wide rule, not the raw exact command', async () => {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const remember = vi.fn();
+      const router = childAskRouter({
+        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', remember,
+      });
+      const p = router({
+        sessionId: 'child-1', toolName: 'Bash', toolInput: { command: 'git push origin feat/x' },
+        denyListed: false, subject: 'git push origin feat/x',
+      });
+      const requestId = firstPayload(emitted)._requestId as string;
+      expect(broker.respond(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }], grantScope: 'wide' })).toBe(true);
+      await p;
+      expect(remember).toHaveBeenCalledWith({
+        tool: 'Bash', pattern: 'git push*origin feat/x', action: 'allow', match: 'glob', specialist: 'worker',
+      });
+    });
+
+    it('a command with NO safe grant width is never remembered at all — the router used to remember it anyway', async () => {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const remember = vi.fn();
+      const router = childAskRouter({
+        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', remember,
+      });
+      // Bare `git push` — its target isn't in the command and changes
+      // underneath the grant (same case rememberedRuleFor's own test suite
+      // pins for the root-session path).
+      const p = router({
+        sessionId: 'child-1', toolName: 'Bash', toolInput: { command: 'git push' },
+        denyListed: false, subject: 'git push',
+      });
+      const requestId = firstPayload(emitted)._requestId as string;
+      expect(broker.respond(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+      const d = await p;
+      expect(d.behavior).toBe('allow'); // the one-time approval still happens
+      expect(remember).not.toHaveBeenCalled(); // …but nothing is ever persisted
+    });
+  });
 });
