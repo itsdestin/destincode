@@ -263,7 +263,8 @@ export class DelegationLedger {
   /**
    * Atomically read-and-clear `missedSteers`, returning exactly what was on
    * disk at the moment this call won the lock — the resume-time counterpart
-   * to appendMissedSteers' commutative append.
+   * to appendMissedSteers' commutative append. Also applies `patch` to the
+   * SAME record, in the SAME mutateJson call.
    *
    * WHY (fix pass 2 — external review: the resume-clear race the reviewer
    * flagged but couldn't see in the diff). resumeSpecialist used to read
@@ -281,8 +282,24 @@ export class DelegationLedger {
    * call wins the lock is exactly what gets returned AND cleared, so nothing
    * landing before or after this call can be dropped or (since it's cleared
    * here, not just read) replayed twice by a later resume.
+   *
+   * WHY `patch` (fix pass 3 — external review: the split-write gap survives
+   * in the resume path too). resumeSpecialist used to call this take-and-
+   * clear, THEN separately await a plain update() to flip status back to
+   * 'running' — two mutateJson calls, two independent lock acquisitions. If
+   * the take landed (steers cleared) and the status-flip write then threw,
+   * the steers were gone from the ledger AND never delivered (the resumed
+   * child was torn down before ever getting a turn to read them). Accepting
+   * `patch` here and merging it into the SAME callback that reads and clears
+   * `missedSteers` restores the all-or-nothing guarantee `update()`'s own
+   * fix pass 2 established for the completion/failure writes: mutateJson's
+   * underlying mutateFileUnderLock only calls atomicWrite AFTER computing the
+   * full next value (see cas-write.ts), so a throw from this call means the
+   * write never reached disk — the record, including `missedSteers`, is left
+   * exactly as it was, not half-cleared. Defaults to `{}` so every other
+   * caller (there is currently only resumeSpecialist) is unaffected.
    */
-  async takeMissedSteers(parentCwd: string, parentId: string, childId: string): Promise<string[]> {
+  async takeMissedSteers(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord> = {}): Promise<string[]> {
     let taken: string[] = [];
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
       const data = this.coerce(cur);
@@ -291,7 +308,7 @@ export class DelegationLedger {
         delegations: data.delegations.map((d) => {
           if (d.childId !== childId) return d;
           taken = d.missedSteers;
-          return { ...d, missedSteers: [] };
+          return { ...d, ...patch, missedSteers: [] };
         }),
       };
     });

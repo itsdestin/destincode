@@ -674,29 +674,55 @@ export class NativeSessionHost extends EventEmitter {
     // format postSteer itself uses — the child reads a course-correction it
     // missed identically whether it arrives live or at resume.
     //
-    // Fix pass 2 (external review — the resume-clear race the reviewer
-    // flagged as unreviewed, not as a confirmed bug): this used to read
-    // `record.missedSteers` from the SNAPSHOT `locateOwnChild` took above,
-    // well before wireChildLive() just made this child live again, then
-    // LATER fire a plain `missedSteers: []` clear through the ledger.update()
-    // patch below — two independent operations with an unlocked gap between
-    // them. A steer landing in that gap (e.g. a task_id steer call arriving
-    // the instant this child goes live, before the clear-write runs) would
-    // be silently wiped by the blind `[]` overwrite — the same clobber shape
-    // the completion-write fix closed, just between a different pair of
-    // writers, and this time of a steer the user just gave. takeMissedSteers
-    // folds the read and the clear into ONE lock-guarded mutateJson call
-    // (see its own WHY), so whatever is on disk at the moment it runs is
-    // exactly what gets used here AND cleared — nothing appended before or
-    // after this call can be dropped or replayed by a later resume. Read
-    // AFTER wireChildLive (rather than before, alongside the earlier
-    // snapshot) so a steer that manages to land in the moments before this
-    // call still gets folded into THIS resumed brief instead of only the
-    // next one. Best-effort fallback to the pre-lock snapshot when no ledger
-    // is wired, matching every other "no ledger" fallback in this file.
-    const missedSteers = this.ledger && parent.cwd
-      ? await this.ledger.takeMissedSteers(parent.cwd, parentId, opts.childId)
-      : (record.missedSteers ?? []);
+    // Fix pass 3 (external review — the split-write gap survives here too):
+    // fix pass 2 folded the read-and-clear into ONE atomic takeMissedSteers()
+    // call, but the status flip that used to follow it stayed a SEPARATE,
+    // later `update()` — two lock acquisitions. If the take landed (steers
+    // cleared on disk) and that following update() then threw, the catch
+    // below tore the freshly-wired child down and rethrew before this child
+    // ever got a turn — the resume never delivered the brief carrying those
+    // steers, and they were already wiped from the ledger by the take. Lost,
+    // with no retry: exactly the split-write shape fix pass 2 closed for
+    // runDelegation's own completion/failure writes, left open here.
+    //
+    // Fix: takeMissedSteers now accepts the same status-flip patch update()
+    // used to carry, applied INSIDE the same mutateJson callback that reads
+    // and clears missedSteers (see its own WHY). mutateFileUnderLock only
+    // calls atomicWrite AFTER computing the full next value, so a throw from
+    // this one call means NEITHER the clear NOR the patch reached disk — the
+    // record is untouched. This resume attempt still fails and the catch
+    // below still tears the freshly-wired child down (nothing else has taken
+    // ownership of it), but the steers remain exactly where they were,
+    // recoverable by a later resume, instead of vanishing. Read AFTER
+    // wireChildLive (rather than before) so a steer that manages to land in
+    // the moments before this call still gets folded into THIS resumed brief
+    // instead of only the next one. Best-effort fallback to the pre-lock
+    // snapshot when no ledger is wired, matching every other "no ledger"
+    // fallback in this file — that path was never split, so it needs no fix.
+    let missedSteers: string[];
+    if (this.ledger && parent.cwd) {
+      try {
+        missedSteers = await this.ledger.takeMissedSteers(parent.cwd, parentId, opts.childId, {
+          status: 'running', startedAt: Date.now(), endedAt: undefined, failureText: undefined,
+          delivered: false, background: !!opts.background,
+        });
+      } catch (err) {
+        // Mirrors recordDelegationStart's own leak guard: if this write
+        // throws, nothing else has taken ownership of the freshly re-wired
+        // child yet (runDelegation, which owns teardown from here on, was
+        // never entered) — so this tears it down itself before rethrowing.
+        // Safe unconditionally: the throw above means the ledger record
+        // itself was never touched (see the WHY above), so this teardown
+        // only ever discards the live child construction this call just did
+        // — it never discards bookkeeping, because none of it committed.
+        try { await this.destroy(opts.childId); } catch (destroyErr) {
+          log('ERROR', 'NativeSessionHost', 'specialist teardown failed after a resume ledger-flip failure', { childId: opts.childId, parentId, error: String(destroyErr) });
+        }
+        throw err;
+      }
+    } else {
+      missedSteers = record.missedSteers ?? [];
+    }
 
     // childApprovedAsks (Task 8's forward-looking storage — this is its FIRST
     // consumer): an approval that landed on a routed ask AFTER this child had
@@ -715,28 +741,6 @@ export class NativeSessionHost extends EventEmitter {
       specialist, binding, prompt, workDir, parentToolCallId: opts.parentToolCallId,
       token: opts.reservation, description: record.description,
     };
-
-    if (this.ledger && parent.cwd) {
-      try {
-        // `missedSteers` is deliberately NOT part of this patch — takeMissedSteers
-        // above already cleared it atomically. Setting it here again would risk
-        // clobbering anything appended in the (much shorter) window between that
-        // take and this write, reintroducing the exact race this fix removes.
-        await this.ledger.update(parent.cwd, parentId, opts.childId, {
-          status: 'running', startedAt: Date.now(), endedAt: undefined, failureText: undefined,
-          delivered: false, background: !!opts.background,
-        });
-      } catch (err) {
-        // Mirrors recordDelegationStart's own leak guard: if this write
-        // throws, nothing else has taken ownership of the freshly re-wired
-        // child yet (runDelegation, which owns teardown from here on, was
-        // never entered) — so this tears it down itself before rethrowing.
-        try { await this.destroy(opts.childId); } catch (destroyErr) {
-          log('ERROR', 'NativeSessionHost', 'specialist teardown failed after a resume ledger-flip failure', { childId: opts.childId, parentId, error: String(destroyErr) });
-        }
-        throw err;
-      }
-    }
 
     if (opts.background) {
       this.runBackgroundDelegation(parentId, opts.childId, title, spawnOptsLike, opts.reservation);
