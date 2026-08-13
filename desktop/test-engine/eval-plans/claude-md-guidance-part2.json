@@ -1,0 +1,19 @@
+{
+  "_notes": [
+    "PART 2 of the guidance experiment. The calibration slice (2026-08-13) ran config-investigation across all three arms and both models; this covers the two remaining cases that test the CLAUSES of the guidance that case could not reach.",
+    "WHY these two and not all four: config-investigation had ONE correct answer and both models found it in all six runs, so the task itself discriminated nothing — only the writing varied. These two have room to vary in the behaviour the guidance actually asks for:",
+    "  options-proposal tests 'explain the pros/cons of all options ... and why you would recommend for/against each' — does each option carry a real downside, and does the model COMMIT to one?",
+    "  port-bump tests judgement under genuine ambiguity — the fixture's two config files disagree about the port, so the question is unanswerable from the tree and the correct move is to ASK rather than guess. That is also the one case with a mechanical check (asked-instead-of-guessing) rather than only judge scores.",
+    "code-explanation is deliberately left out: it is the closest of the four to config-investigation (describe a thing accurately) and the account balance is limited. Add it if the account is topped up.",
+    "Measured rate from the calibration run: ~$0.253 per cell including its judge call, so 12 cells is ~$3.04. The printed estimate will say far more — it prices every cell as a 40-63 tool call battery. See the calibration report for the 8x measurement."
+  ],
+  "name": "claude-md-guidance-part2",
+  "cases": ["options-proposal", "port-bump"],
+  "instructions": [
+    { "id": "none", "file": null },
+    { "id": "draft", "file": "../eval-guidance/draft.md" },
+    { "id": "tightened", "file": "../eval-guidance/tightened.md" }
+  ],
+  "models": ["Claude Opus 5", "Qwen 3.8 Max"],
+  "judge": "x-ai/grok-4.5"
+}
