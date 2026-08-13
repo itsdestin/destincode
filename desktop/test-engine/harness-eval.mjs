@@ -490,7 +490,15 @@ function loadInstructionTexts(plan, planPath) {
     // are indistinguishable from a real comparison in the report. Compared on
     // the trimmed text so a stray trailing newline is not mistaken for a
     // difference: it changes no instruction the model reads.
-    const key = text.trim();
+    //
+    // Line endings are normalized FIRST, for the same reason and a sharper one:
+    // the failure this guard exists to catch is "duplicated the file and forgot
+    // to edit the copy", and a copy that crossed an editor or a platform can
+    // come back CRLF while the original is LF. Every byte then differs, the
+    // guard sees two distinct arms, and you pay to run one arm twice — which is
+    // exactly what it was built to prevent. `.trim()` alone only normalizes the
+    // ENDS of the text, so interior line endings would sail through it.
+    const key = text.replace(/\r\n/g, '\n').trim();
     const twin = firstArmWithText.get(key);
     if (twin !== undefined) {
       throw new Error(

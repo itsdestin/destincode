@@ -1408,7 +1408,13 @@ globalThis.fetch = async (url) => {
     // through the CLI: main() resolves every arm's file before the first cell
     // (and a missing one now exits 2 having spawned nothing — pinned by the
     // "refuses a plan whose instruction file cannot be read" test below), so
-    // NONE of runCell's four throws is reachable from a validated plan any more.
+    // none of runCell's four throws is reachable GIVEN THE CURRENT CASE
+    // REGISTRY. That qualifier is load-bearing and was added after review:
+    // `validatePlan` checks case-id MEMBERSHIP only, never prompt CONTENT, so
+    // the empty-prompt throw is unreachable purely because the registry holds
+    // one case whose prompt is non-empty. Register a second case with an empty
+    // prompt and it becomes CLI-reachable again — which would silently
+    // invalidate the reason this test was repointed rather than deleted.
     // The mid-matrix stop is therefore driven by the other CLI-reachable
     // after-the-first-cell failure: the between-cells usage read coming back in
     // a shape fetchKeyUsage refuses to read as "$0 spent". Everything this test
