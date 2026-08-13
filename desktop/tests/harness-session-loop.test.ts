@@ -652,22 +652,103 @@ describe('HarnessSession — multi-step turn driver', () => {
       expect(events.some((e) => e.type === 'turn-complete')).toBe(true);   // turn ended
     });
 
-    it('deny (dismissal) → error result telling the model the question was dismissed; loop continues', async () => {
+    it('deny (dismissal) → records the result, ends the turn as question_dismissed, takes NO further step', async () => {
+      const ask = fakeInteractive();
+      // `dismissed` is what PermissionBroker.respond stamps on a HUMAN "no" —
+      // the flag that separates a person closing the card from a policy refusal.
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny', dismissed: true }));
+      const seen: any[] = [];
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
+        // If the loop wrongly continued it would consume this second step and
+        // emit its text — which is exactly the guessing behavior this change removes.
+        stream(...textChunks('b', 'GUESSED ANYWAY'), finishChunk('stop')),
+      ], seen);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      // The dismissal is a REAL tool result on the real call id — pairing holds.
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.toolUseId).toBe('c1');
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toBe('The user closed this question without answering and took over. Stop here and wait for their next message.');
+      // The loop STOPPED: the model was consulted exactly once.
+      expect(seen).toHaveLength(1);
+      expect(events.some((e) => e.type === 'assistant-text' && e.data.text === 'GUESSED ANYWAY')).toBe(false);
+      // ORDERLY end — turn-complete with the new reason, never a user-interrupt.
+      const done = events.find((e) => e.type === 'turn-complete')!;
+      expect(done.data.stopReason).toBe('question_dismissed');
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);
+    });
+
+    it('multi-call step, dismissal on the FIRST call → sibling marked not-run, both paired, turn ends', async () => {
+      // A step with two tool-calls where the first is the question. The sibling
+      // must still get a tool-result or it dangles → provider 400 on the next
+      // send. It must NOT get the interrupt copy: the user did not interrupt.
+      const ask = fakeInteractive();
+      const read = fakeTool('Read');
+      const askUser = async (): Promise<AskDecision> => ({ behavior: 'deny', dismissed: true });
+      const model = scriptedModel([
+        stream(
+          toolCallChunk('c1', 'AskUserQuestion', oneQuestion()),
+          toolCallChunk('c2', 'Read', { file_path: 'x.ts' }),
+          finishChunk('tool-calls'),
+        ),
+        stream(...textChunks('b', 'unreached'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask, read], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      const results = events.filter((e) => e.type === 'tool-result');
+      expect(results.map((e) => e.data.toolUseId)).toEqual(['c1', 'c2']);
+      expect(results[1].data.toolResult).toBe('Not run: the turn ended when the user closed the question.');
+      expect(results[1].data.toolResult).not.toMatch(/interrupted/i);
+      expect(results[1].data.isError).toBe(true);
+      expect((read as any).calls).toHaveLength(0);   // sibling never executed
+
+      // Pairing invariant: every tool-call in history has a matching tool-result.
+      const history = (session as any).history as any[];
+      const callIds = new Set<string>(); const resultIds = new Set<string>();
+      for (const m of history) {
+        if (!Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+          if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+          if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+        }
+      }
+      expect([...callIds].sort()).toEqual(['c1', 'c2']);
+      expect([...resultIds].sort()).toEqual(['c1', 'c2']);
+      expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('question_dismissed');
+    });
+
+    it('POLICY deny (no `dismissed`) → corrective text and the loop CONTINUES', async () => {
+      // The discrimination test for the whole feature. Two askUser
+      // implementations have no human behind them — childAskPolicy() and the
+      // harness evaluator's fixture jail — and for both, deny means "you may not
+      // ask, carry on and finish". The evaluator's wrap-up turn REQUIRES this:
+      // it denies AskUserQuestion so the model answers instead, and ending the
+      // turn there loses the review outright.
       const ask = fakeInteractive();
       const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny' }));
       const seen: any[] = [];
       const model = scriptedModel([
         stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
-        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        stream(...textChunks('b', 'fine, here is the answer'), finishChunk('stop')),
       ], seen);
       const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
       const events = collect(session);
       await session.send('go');
+
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/dismiss|without answering/i);
-      expect(JSON.stringify(seen[1])).toMatch(/dismiss|without answering/i);   // model sees it on the next step
-      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
+      expect(res.data.toolResult).toMatch(/without answering/i);
+      // The loop CONTINUED: the model was consulted twice and produced its answer.
+      expect(seen).toHaveLength(2);
+      expect(events.some((e) => e.type === 'assistant-text' && e.data.text === 'fine, here is the answer')).toBe(true);
+      // A normal completion — NOT the dismissal reason.
+      expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).not.toBe('question_dismissed');
     });
 
     it('canceled (interrupt) → back-filled canceled result + user-interrupt, no turn-complete', async () => {

@@ -45,6 +45,20 @@ export interface AskDecision {
    *  the destructive deny-list. Always populated on a resolved ask; defaults to
    *  the narrow option. */
   grantScope?: GrantScope;
+  /** A HUMAN answered "no" on a card — set ONLY by respond() below, which is the
+   *  only path a person's decision travels (renderer and remote WS clients both
+   *  land there). The driver reads it on interactive asks: a dismissed
+   *  AskUserQuestion ends the turn, because closing the card is the user taking
+   *  the turn back.
+   *
+   *  WHY this is not just `behavior === 'deny'`: the other two askUser
+   *  implementations are POLICIES with no human behind them — childAskPolicy()
+   *  and the harness evaluator's fixture jail (eval/run-case.ts) — and for both,
+   *  deny means "you may not use this, carry on and finish", NOT "stop". The
+   *  evaluator depends on that: its wrap-up turn denies AskUserQuestion
+   *  precisely so the model answers instead of asking, and ending the turn there
+   *  loses the review entirely (caught by harness-review-runner.test.ts). */
+  dismissed?: boolean;
 }
 
 export class PermissionBroker extends EventEmitter {
@@ -103,7 +117,10 @@ export class PermissionBroker extends EventEmitter {
     // is PERSISTED (unlike permissionMode, which is display-only), so it is
     // checked here AND re-derived at the session rather than trusted.
     const grantScope: GrantScope = decision.grantScope === 'wide' ? 'wide' : 'exact';
-    entry.resolve({ behavior, always, grantScope, ...(updatedInput ? { updatedInput } : {}) });
+    // Stamp a human "no" so the driver can tell it from a policy refusal (see
+    // AskDecision.dismissed). Only reachable from here — a policy askUser
+    // constructs its own decision and never sets it.
+    entry.resolve({ behavior, always, grantScope, ...(behavior === 'deny' ? { dismissed: true } : {}), ...(updatedInput ? { updatedInput } : {}) });
     return true;
   }
 
