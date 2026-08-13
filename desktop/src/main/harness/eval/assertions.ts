@@ -98,13 +98,26 @@ const MODEL_STEP_EVENTS = new Set<TranscriptEvent['type']>([
  *  never got a turn. Its tests only passed because the local helper defaulted to
  *  `events: []`, a shape runCase cannot emit.
  *
+ *  Fix pass 2, IMPORTANT: condition 2 used to scan `eventsOf(run)` — the FULL
+ *  stream, wrap-up turn included. That re-opened the exact bug this gate
+ *  exists to close, by a different route: a testing turn that times out
+ *  produces zero model-step events (a timeout sets `wrapUpReason`, per point 1
+ *  above), but the wrap-up turn can still succeed and write a review — one
+ *  `assistant-text` event, unscoped, was enough to flip this to "the model took
+ *  a step" and route `calledTool`/`askedInsteadOfGuessing` to `failed` about a
+ *  model that never got a working testing turn. Scoped to
+ *  `testingTurnEvents(run).events` (the same wrap-up exclusion `noToolErrors`
+ *  already used) so a wrap-up-only answer can no longer stand in for the
+ *  testing turn it is meant to rescue, not replace.
+ *
  *  Note this gate only ever guards the NEGATIVE verdict: each check tests its
  *  positive evidence first, so a tool the model really did reach before the
  *  provider died still reports `passed`. */
 function noGradableModelTurn(run: CaseRun): boolean {
   if (run?.error) return true;
   return (
-    !eventsOf(run).some((e) => MODEL_STEP_EVENTS.has(e.type)) && toolsAttempted(run).length === 0
+    !testingTurnEvents(run).events.some((e) => MODEL_STEP_EVENTS.has(e.type))
+    && toolsAttempted(run).length === 0
   );
 }
 
@@ -146,6 +159,21 @@ function words(text: string): number {
   return trimmed ? trimmed.split(/\s+/).length : 0;
 }
 
+/** The wrap-up-exclusion caveat for `calledTool`'s failed detail — but ONLY
+ *  when this run actually HAD a wrap-up turn. Fix pass 2, Minor: it used to be
+ *  unconditional, printed even on a run with no `wrapUpReason` at all, warning
+ *  about a turn that never ran. Same rule Fix pass 1 established for
+ *  `uninspectedNote` — a caveat about a thing that didn't happen isn't a
+ *  caveat, it's noise a reader has to discount every time. */
+function wrapUpCaveat(run: CaseRun, name: string): string {
+  if (!run?.wrapUpReason) return '';
+  return (
+    ` (Attempts are recorded from the testing turn only — run-case.ts excludes the wrap-up ` +
+    `turn from metrics.toolsUsed, so a ${name} call made only while wrapping up would not ` +
+    `appear here.)`
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 /** Did the model call `name` at any point?
@@ -173,15 +201,13 @@ export function calledTool(name: string): Check {
       return {
         id,
         state: 'failed',
-        // The wrap-up caveat is in the doc comment above, but a reader sees only
-        // this line — and "No X call" reads as a stronger claim than the evidence
-        // supports: run-case.ts gates `toolsUsed` on `!wrappingUp`, so a call made
-        // only during the wrap-up turn is not in the list this check reads.
-        detail:
-          `No ${name} call. Tools attempted: ${listed}. ` +
-          `(Attempts are recorded from the testing turn only — run-case.ts excludes the wrap-up ` +
-          `turn from metrics.toolsUsed, so a ${name} call made only while wrapping up would not ` +
-          `appear here.)`,
+        // The wrap-up caveat is in wrapUpCaveat's doc comment, but a reader sees
+        // only this line — and "No X call" reads as a stronger claim than the
+        // evidence supports: run-case.ts gates `toolsUsed` on `!wrappingUp`, so a
+        // call made only during the wrap-up turn is not in the list this check
+        // reads. Appended ONLY when this run actually had a wrap-up turn
+        // (Fix pass 2, Minor) — otherwise the caveat itself would be misleading.
+        detail: `No ${name} call. Tools attempted: ${listed}.${wrapUpCaveat(run, name)}`,
       };
     },
   };

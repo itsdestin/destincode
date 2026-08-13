@@ -9,9 +9,11 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { spillRoot } from '../src/main/harness/tools/spill-paths';
 import { runCase } from '../src/main/harness/eval/run-case';
 import { scriptModel } from './helpers/harness-fakes';
+import { textChunks, finishChunk, stream as scriptedStream } from './helpers/scripted-model';
 import {
   calledTool,
   stayedInsideTestFolder,
@@ -191,11 +193,24 @@ describe('calledTool', () => {
     expect(r.detail).toContain('Read');
   });
 
-  it('says the wrap-up turn is excluded, since that is where a call can hide', () => {
+  it('says the wrap-up turn is excluded when one actually ran, since that is where a call can hide', () => {
     // run-case.ts gates toolsUsed on !wrappingUp, so a tool called ONLY while
     // wrapping up is absent from the evidence this check reads. A "No X call"
     // that does not say so reads as a stronger claim than it is.
-    expect(calledTool('Grep').run(attempted('Read')).detail).toMatch(/wrap-up/i);
+    const r = calledTool('Grep').run(run({
+      wrapUpReason: 'budget',
+      events: [userMsg('do the task'), use('Read')],
+      metrics: { ...run({}).metrics, toolsUsed: ['Read'] },
+    }));
+    expect(r.detail).toMatch(/wrap-up/i);
+  });
+
+  it('DISCRIMINATES: says nothing about the wrap-up turn when the run never had one', () => {
+    // Fix pass 2, Minor: the caveat used to be UNCONDITIONAL — printed even on
+    // a run with no wrapUpReason at all (this same `attempted('Read')` run),
+    // which warns about a turn that never happened. Same wrong-premise fix
+    // Fix pass 1 made for uninspectedNote.
+    expect(calledTool('Grep').run(attempted('Read')).detail).not.toMatch(/wrap-up/i);
   });
 });
 
@@ -659,5 +674,66 @@ describe('against a real runCase transcript', () => {
     expect(verdict.state).toBe('passed');            // the denial was policy, not a tool failure
     expect(verdict.detail).toContain('wrap-up');
     expect(endedWithAnAnswer().run(run).state).toBe('passed');
+  }, 20_000);
+
+  it('never-ran, not failed: the testing turn times out producing NOTHING, and the wrap-up turn alone succeeds', async () => {
+    // Fix pass 2, IMPORTANT: the case the never-ran gate re-opened by a
+    // different route than the 402 bug it was built to close. noGradableModelTurn
+    // used to scan the FULL event stream (wrap-up turn included), so a wrap-up
+    // turn's lone assistant-text event flipped it to "the model took a step"
+    // even when the TESTING turn produced zero model-step events — a live
+    // reachable path, because a testing-turn timeout sets wrapUpReason (see
+    // noGradableModelTurn's own doc comment) rather than run.error, so the
+    // run.error escape hatch does not catch this shape.
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) {
+          // The testing turn's only doStream call HANGS — never enqueues, never
+          // closes — so runCase's own timeoutMs deadline is what ends it
+          // (session.interrupt()), producing a 'user-interrupt' event and
+          // NOTHING model-shaped: no assistant-text, no assistant-thinking, no
+          // tool-use (mirrors hangingFirstCallModel in harness-fakes.ts, used
+          // the same way in harness-compaction.test.ts's C1).
+          return { stream: new ReadableStream<any>({ start() { /* intentionally idle */ } }) };
+        }
+        // The wrap-up turn's call: a REAL answer, so the run reaches the exact
+        // shape this test is about — testing turn empty, wrap-up turn succeeds.
+        return {
+          stream: simulateReadableStream({
+            chunks: scriptedStream(...textChunks('t', 'The testing turn never started.'), finishChunk('stop')),
+          }),
+        };
+      },
+    });
+
+    const run = await runCase({
+      // Hoisted model, not built inside the factory: HarnessSession calls
+      // modelFactory once PER TURN (harness-session.ts:988/:1288), so a
+      // factory that constructed a fresh model here would hand the wrap-up
+      // turn its own fresh `calls` counter and replay the hang instead of
+      // answering — the exact trap Fix pass 1's report recorded for the
+      // "finds the wrap-up boundary" test above.
+      modelFactory: async () => model as any,
+      modelId: 'fake/model',
+      label: 'Fake',
+      timeoutMs: 200,   // far below STALL_WARNING_MS (60s), so no heartbeat fires first
+    });
+
+    expect(run.wrapUpReason).toBe('timeout');
+    expect(run.review).not.toBe('');              // the wrap-up turn really did answer
+    expect(run.metrics.toolsUsed).toEqual([]);     // the testing turn made no attempt either
+
+    // The claim this test exists to pin: every check whose negative verdict is
+    // a statement about the MODEL must say never-ran here, not failed — the
+    // model never had a working testing turn, so "No Grep call" or "never
+    // asked" would blame it for something it never had the chance to do.
+    for (const check of [calledTool('Grep'), askedInsteadOfGuessing()]) {
+      expect(
+        check.run(run).state,
+        `${check.id} on a testing-turn timeout whose wrap-up alone succeeded`,
+      ).toBe('never-ran');
+    }
   }, 20_000);
 });
