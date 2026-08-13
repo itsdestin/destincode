@@ -17,6 +17,7 @@ import { readSidecar } from './artifact-store';
 import { listProjects } from './central-index';
 import { buildSavedFolderProjects } from './saved-folder-projects';
 import { trackedArtifacts } from './visible-artifacts';
+import { isAbsoluteRecorded } from './write-authorization';
 import { discoverProjectFiles } from './project-file-discovery';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { readFolders, type SavedFolder } from '../saved-folders';
@@ -40,6 +41,10 @@ export async function countArtifacts(projectRoot: string): Promise<number> {
   // Delete tool, so this is the common case). fs.access in parallel is cheap.
   const alive = await Promise.all(visible.map(async (a: any) => {
     const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath!;
+    // Same corrupt-record guard as artifacts:check-existence — never let
+    // fs.access resolve a relative record against the process cwd and count a
+    // coincidentally-named file as this artifact.
+    if (a.kind !== 'internal' && !isAbsoluteRecorded(full)) return false;
     try { await fs.promises.access(full); return true; } catch { return false; }
   }));
   return alive.filter(Boolean).length;

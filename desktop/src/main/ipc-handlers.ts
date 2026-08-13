@@ -109,7 +109,7 @@ import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
-import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
+import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
 import { GIT_IPC } from './git/ipc-channels';
@@ -4086,10 +4086,16 @@ export function registerIpcHandlers(
       artifactIds.map(async (id) => {
         const a = byId.get(id);
         if (!a) return id; // unknown id treated as missing
+        // A corrupt record (relative absolutePath) resolves against the PROCESS
+        // cwd here, which cuts both ways: it reports an in-project file as
+        // missing (the Session Drawer's "no longer on disk" — this handler feeds
+        // that label, SessionDrawer.tsx:42) AND would report an artifact as
+        // present if a same-named file happens to sit in the process cwd.
         const fullPath = a.kind === 'internal'
           ? path.join(projectRoot, a.path)
           : a.absolutePath;
         if (!fullPath) return id;
+        if (a.kind !== 'internal' && !isAbsoluteRecorded(fullPath)) return id;
         try {
           await fs.promises.access(fullPath);
           return null;
