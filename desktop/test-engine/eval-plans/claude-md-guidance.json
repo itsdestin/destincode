@@ -1,0 +1,18 @@
+{
+  "_notes": [
+    "Does adding a block of writing guidance to CLAUDE.md change how a model writes?",
+    "Three arms: no instructions at all (the baseline), Destin's own draft verbatim, and a tightened rewrite that resolves the draft's three competing absolutes (thorough / fewest possible words / pros-and-cons of everything) into an explicit priority order.",
+    "JUDGE CHOICE IS DELIBERATE: x-ai/grok-4.5 is on the roster but is NOT one of the two models under test, so no cell is graded by itself. judge.ts flags self-grading rather than refusing it; avoiding it entirely is better than being warned about it.",
+    "Instruction paths are resolved against THIS FILE's directory, not the working directory (harness-eval.mjs loadInstructionTexts), which is why they start with '../'.",
+    "Keys starting with '_' are ignored by validatePlan (matrix.ts) — this block is for readers, not for the runner."
+  ],
+  "name": "claude-md-guidance",
+  "cases": ["config-investigation", "options-proposal", "port-bump", "code-explanation"],
+  "instructions": [
+    { "id": "none", "file": null },
+    { "id": "draft", "file": "../eval-guidance/draft.md" },
+    { "id": "tightened", "file": "../eval-guidance/tightened.md" }
+  ],
+  "models": ["Claude Opus 5", "Qwen 3.8 Max"],
+  "judge": "x-ai/grok-4.5"
+}

@@ -74,13 +74,13 @@ const only = onlyAt === -1 ? null : args[onlyAt + 1];
 // The compiled output is what runs — build first so this script never diverges
 // from the TypeScript the app ships.
 //
-// WHY only battery.js is imported up front: run-battery.js transitively pulls in
+// WHY only battery.js is imported up front: run-case.js transitively pulls in
 // HarnessSession, the tools/ tree, and shared/ — a much bigger import graph than
 // this script needs just to print a dry run. Importing it lazily, after the
 // --dry-run early-exit below, means `--dry-run` still works even if something
 // deep in that graph turns out to need an Electron runtime this plain-Node
 // script doesn't have.
-const { loadRoster, BATTERY_PROMPT } = await import(path.join(DESKTOP, 'dist/main/harness/review/battery.js'));
+const { loadRoster, BATTERY_PROMPT } = await import(path.join(DESKTOP, 'dist/main/harness/eval/battery.js'));
 
 let roster = loadRoster(path.join(HERE, 'review-roster.json'));
 if (only) roster = roster.filter((r) => r.label === only);
@@ -114,12 +114,12 @@ delete process.env.OPENROUTER_API_KEY;
 
 // Deferred until here — see the WHY above the battery.js import. Only a live
 // run needs HarnessSession, the tool tree, and the OpenRouter model factory.
-const { runBattery } = await import(path.join(DESKTOP, 'dist/main/harness/review/run-battery.js'));
-const { appendReview } = await import(path.join(DESKTOP, 'dist/main/harness/review/append-review.js'));
-const { makeOpenRouterFactory } = await import(path.join(DESKTOP, 'dist/main/harness/review/openrouter-factory.js'));
+const { runCase } = await import(path.join(DESKTOP, 'dist/main/harness/eval/run-case.js'));
+const { appendReview } = await import(path.join(DESKTOP, 'dist/main/harness/eval/append-review.js'));
+const { makeOpenRouterFactory } = await import(path.join(DESKTOP, 'dist/main/harness/eval/openrouter-factory.js'));
 // Task 5 widened appendReview to require a rendered run-facts block; this is
 // the CLI's own call site for that, so it has to build one per run.
-const { collectRunFacts, renderRunFacts } = await import(path.join(DESKTOP, 'dist/main/harness/review/run-facts.js'));
+const { collectRunFacts, renderRunFacts } = await import(path.join(DESKTOP, 'dist/main/harness/eval/run-facts.js'));
 
 const stamp = new Date().toISOString().slice(0, 10);
 const runDir = path.join(WORKSPACE, 'docs/active/investigations/harness-review-runs', stamp);
@@ -134,11 +134,11 @@ for (const entry of roster) {
   const slug = entry.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const transcriptPath = path.join(runDir, `${slug}.json`);
   try {
-    const run = await runBattery({
+    const run = await runCase({
       modelFactory: makeOpenRouterFactory(key, entry.modelId),
       modelId: entry.modelId,
       label: entry.label,
-      // Load-bearing: without it runBattery falls back to a 32_768 default that,
+      // Load-bearing: without it runCase falls back to a 32_768 default that,
       // against the harness's output ceiling, left a NEGATIVE history budget and
       // gave every model amnesia for three paid rounds (2026-08-11).
       contextLength: entry.contextLength,
@@ -168,7 +168,7 @@ for (const entry of roster) {
     );
     console.log(`  tools: ${m.toolsUsed.join(' ') || 'none'}`);
     // Independent of outcome: a wrap-up turn that itself failed still reports
-    // outcome 'wrapped-up' (see run-battery.ts's outcome comment), so a reader
+    // outcome 'wrapped-up' (see run-case.ts's outcome comment), so a reader
     // branching only on outcome would miss a real provider failure here.
     if (run.error) console.log(`  error: ${run.error}`);
 
@@ -193,9 +193,9 @@ for (const entry of roster) {
     console.log('  → review appended');
   } catch (err) {
     // Fix pass 2, Finding 8: this catch wraps the WHOLE try block, not just
-    // runBattery — a throw from the review extraction inside runBattery, or
+    // runCase — a throw from the review extraction inside runCase, or
     // from session.destroy()/fs.rmSync in its `finally`, or from the
-    // fs.writeFileSync/appendReview calls above also lands here, so "runBattery
+    // fs.writeFileSync/appendReview calls above also lands here, so "runCase
     // only throws when it could not seed the fixture or construct the session"
     // overclaimed what this catch actually guards. Name the transcript path so
     // a failed entry still says where its evidence would have been, even when

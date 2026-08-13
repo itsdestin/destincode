@@ -48,8 +48,12 @@ const BIG_MODULE = Array.from(
 ).join('\n');
 
 /** Create a fresh fixture tree and return its absolute root.
- *  Deterministic: identical bytes on every call, so runs are comparable. */
-export function seedFixtureWorkspace(): string {
+ *  Deterministic: identical bytes on every call, so runs are comparable
+ *  (except for `instructions`, which is opt-in and absent by default).
+ *  `instructions`, when given, is written verbatim as CLAUDE.md so an
+ *  instruction A/B goes through the real assembleSystemPrompt disk read
+ *  (prompt-assembly.ts) rather than a pretend version of the feature. */
+export function seedFixtureWorkspace(instructions?: string | null): string {
   // realpathSync because macOS reports /var/... for a /private/var/... tmpdir, and
   // the harness's own path guard canonicalizes — a mismatch would read as "outside
   // the workspace" and revert every cd.
@@ -104,5 +108,20 @@ export function seedFixtureWorkspace(): string {
   // the negative test is gone again.
   write('notes/pristine.md', '# Pristine\n\nReserved for the read-before-edit test. Nothing else in the battery reads this file.\n');
   write('a dir with spaces/a file with spaces.txt', 'content in a path with spaces\n');
+
+  // WHY an empty .git directory: projectInstructions (prompt-assembly.ts:59-64)
+  // walks UP from cwd looking for AGENTS.md/CLAUDE.md and only stops at a .git
+  // directory or the filesystem root. Without this marker the walk escapes the
+  // fixture into os.tmpdir() and beyond, so a stray CLAUDE.md anywhere above
+  // /tmp would silently contaminate the no-instructions arm of an experiment.
+  // git itself never runs against this — gitSnapshot's execFileSync fails and
+  // is caught, reporting "Git: not a repository", the same as before.
+  fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+
+  // WHY written as a real file rather than handed to the session directly:
+  // assembleSystemPrompt reads AGENTS.md/CLAUDE.md off disk. Feeding the text
+  // in some other way would test a pretend version of the feature.
+  if (instructions) write('CLAUDE.md', instructions);
+
   return root;
 }

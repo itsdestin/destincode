@@ -1,0 +1,16 @@
+{
+  "_notes": [
+    "Does an EXPLICIT unintended-consequences clause fix the one thing every other arm failed at?",
+    "Evidence this exists to answer: on options-proposal, 'real-downsides' scored 0/5 with no instructions and 1/5 with the original draft — even though that draft explicitly asks for 'the pros/cons of all options'. Only the tightened rewrite's blunter phrasing reached 3-4/5. So the clause was being asked for and ignored.",
+    "draft-v2.md = the original draft VERBATIM plus 109 words: consider your own change's side effects before proposing; focus on what the user will EXPERIENCE rather than read about; the test is whether he would connect the difference back to the change, because if not he will assume it regressed.",
+    "Only ONE arm here on purpose. The other three arms' scores for options-proposal were measured on 2026-08-13 in the same fixture with the same judge, so this is compared against those rather than re-paying for them.",
+    "WATCH THE PADDING SCORE, not just real-downsides. draft-v2 is the longest arm (212 words vs 103 original, 148 tightened), and across every arm tested so far a longer instruction produced a longer answer and a WORSE padding score. If real-downsides rises while padding falls, that is a trade to decide on, not a win."
+  ],
+  "name": "claude-md-guidance-v2",
+  "cases": ["options-proposal"],
+  "instructions": [
+    { "id": "draft-v2", "file": "../eval-guidance/draft-v2.md" }
+  ],
+  "models": ["Claude Opus 5", "Qwen 3.8 Max"],
+  "judge": "x-ai/grok-4.5"
+}

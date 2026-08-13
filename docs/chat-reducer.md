@@ -16,13 +16,16 @@ To prevent stale `running` / `awaiting-approval` entries from old turns affectin
 
 ## endTurn() helper
 
-`endTurn()` in chat-reducer.ts:145-167 is the shared path for ending a turn. It:
+`endTurn()` in `chat-reducer.ts:270` is the shared path for ending a turn. It:
 
-- Iterates `activeTurnToolIds` and marks any `running` or `awaiting-approval` tool as `failed` with error `'Turn ended'`
+- Iterates `activeTurnToolIds` and marks any `running` or `awaiting-approval` tool as `failed` with error `'Turn ended'` — **except** a native `preparing` card, which is **deleted** instead (`removePreparingTool`). The model was still composing that call's arguments, so no tool was ever invoked and "failed" would name an event that did not happen. Deleting also prunes the group it emptied and that group's turn segment, or an empty group renders as a stray bar.
 - Returns a fresh empty `activeTurnToolIds: new Set()`
 - Clears `isThinking`, `streamingText`, `currentGroupId`, `currentTurnId`, and resets `attentionState: 'ok'`
+- Returns `toolGroups` and `assistantTurns` too, because of that pruning — see the trap below
 
 **Always use this helper when adding a new turn-ending code path.** Don't manually clear these fields.
+
+**Trap: `endTurn()` returns `assistantTurns`, so spreading it LAST discards your own edit to that map.** Any caller that builds its own `assistantTurns` must pass it in as the third argument (`endTurn(session, message, assistantTurns)`) rather than writing `{...session, assistantTurns, ...endTurn(session)}`. Two callers do this today: `TRANSCRIPT_TURN_COMPLETE` (stamps usage/model/stopReason) and `TRANSCRIPT_INTERRUPT` (stamps `stopReason: 'interrupted'`). This was true the moment preparing-card reaping landed, and it broke the interrupt footer immediately — caught by `chat-reducer.test.ts` → "chatReducer TRANSCRIPT_INTERRUPT".
 
 `SESSION_PROCESS_EXITED` spreads `endTurn()` and then overrides `attentionState: 'session-died'` — one of two cases where the post-endTurn attention is not `'ok'`. The other is `NATIVE_SESSION_ERROR` (native runtime, PR Plan A), which spreads `endTurn()` then overrides `attentionState: 'error'` + `errorMessage`; both follow the same spread-then-override pattern.
 
@@ -47,12 +50,12 @@ Replaces the prior content-match-against-last-10-entries approach, which silentl
 ### Tool cards dedup STRUCTURALLY, never by uuid
 
 `TRANSCRIPT_TOOL_USE` deliberately has **no `seenUuids` guard**, unlike `TRANSCRIPT_USER_MESSAGE` / `TRANSCRIPT_ASSISTANT_TEXT`. CC rewrites a JSONL line as the assistant message grows, and a rewrite can carry **new** `tool_use` blocks under the already-seen line uuid — so the watcher re-emits tool-use on repeats by design (`transcript-watcher.ts` `readNewLines`). A uuid guard here would silently swallow those tools; missing cards are far worse than doubled ones.
-<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "group placement must be IDEMPOTENT"} -->
+<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "IDEMPOTENT by tool id"} -->
 
 Instead every write on this path is idempotent by `toolUseId`:
 
 - the `toolCalls` Map — `Map.set` overwrites;
-- **group placement** — the handler scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land;
+- **group placement** — `placeToolInCurrentGroup` scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land. This is a shared helper, not inline in the handler: `NATIVE_TOOL_PREPARING` (the native runtime's preparing card, drawn while a tool call's arguments are still streaming) places its card through the **same** function under the provider's real tool call id, which is what lets the later `TRANSCRIPT_TOOL_USE` supersede it in place rather than render a second card beside it. If the two paths ever place differently, that is the bug;
 - `injectPlanSegment` (ExitPlanMode) — dedups by `toolUseId`, updating in place so a later, fuller emit still refreshes content.
 
 `PERMISSION_REQUEST` matches only `running` tools, so a re-delivery for a tool already flipped to `awaiting-approval` would fall through to the synthetic-placeholder branch; it bails first if any tool already carries that `requestId`.
@@ -71,7 +74,7 @@ Guard: `chat-reducer.test.ts` → "chatReducer tool card duplication". Historica
 
 **Distinct from the permission-flow `requestId`** on `ToolCallState` (used by `PERMISSION_REQUEST` / `PERMISSION_RESPONSE`). The permission `requestId` is a YouCoded-internal approval-flow ID; `anthropicRequestId` is the Anthropic API request ID. Don't conflate — the distinctive name prevents silent cross-wiring.
 
-All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TURN_COMPLETE` handler attaches metadata to the completing turn via a spread-then-override BEFORE calling `endTurn()`, because `endTurn()` doesn't touch `assistantTurns` and the override must survive the endTurn state merge.
+All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TURN_COMPLETE` handler builds the metadata-stamped `assistantTurns` first and then **hands that map to `endTurn()` as its third argument**. It must not spread `endTurn()` over its own `assistantTurns`: since preparing-card reaping landed, `endTurn()` returns an `assistantTurns` of its own (it prunes the turn segment of any group it empties), so a trailing spread would silently drop the metadata this section is about. See the trap under [endTurn() helper](#endturn-helper).
 
 ## PITFALLS-triage additions (2026-07-15)
 
