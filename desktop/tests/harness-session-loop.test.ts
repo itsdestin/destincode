@@ -20,6 +20,11 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
 import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+// Direct MockLanguageModelV4 construction — only the postSteer tests below need
+// a per-call SIDE EFFECT (posting a steer from inside doStream) that the
+// scripted-model helpers don't support; everything else in this suite goes
+// through scriptedModel/scriptModel.
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 // Session-construction scaffolding (HARNESS/makeOpts/fakeTool) lives in a shared
 // helper so the profile-driven driver test (Task 5) reuses the exact same setup.
 // makeSession/scriptModel/drainTurn (2026-08-11 review fixes) reused from the
@@ -1043,5 +1048,87 @@ describe('shown-image cache reset on history-discarding events (Fixes 1 & 2, 202
     const result = await session.compactNow();
     expect(result).toEqual({ ok: true });
     expect((session as any).shownImages.size).toBe(0);
+  });
+});
+
+// Task 3: postSteer — mid-run course corrections drained at turn-loop
+// iteration boundaries, never mid-step (a tool call is never cut).
+describe('HarnessSession — postSteer', () => {
+  it('postSteer lands as a user-role message before the NEXT model step, never mid-step', async () => {
+    const seen: any[] = [];
+    let session!: HarnessSession;
+    // Hook mid-STEP-1 tool execution — the earliest a caller could plausibly
+    // course-correct a running child. postSteer must report success (a turn
+    // IS in flight) but must not be visible in step 1's request, since that
+    // request was already sent before the tool ran.
+    const read = fakeTool('Read', {
+      onExecute: async () => {
+        expect(session.postSteer('focus on X')).toBe(true);
+        return { text: 'Read ran' };
+      },
+    });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ], seen);
+    session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    // Step 1's request predates the steer — it can't be in there.
+    expect(JSON.stringify(seen[0])).not.toContain('<steer>');
+    // Step 2's request has it, positioned AFTER step 1's tool result — proof
+    // it landed at the iteration boundary, not mid-step.
+    const p2 = JSON.stringify(seen[1]);
+    expect(p2).toContain('<steer>');
+    expect(p2).toContain('focus on X');
+    expect(p2.indexOf('Read ran')).toBeLessThan(p2.indexOf('<steer>'));
+    // History-only, like injectPathTriggers: no new transcript event type, and
+    // nothing on the existing events references it — the frozen emit surface
+    // is untouched.
+    expect(JSON.stringify(events)).not.toContain('<steer>');
+  });
+
+  it('postSteer with no turn in flight returns false and injects nothing', () => {
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW }),
+      async () => { throw new Error('model factory should not be called — no turn is ever started'); },
+    );
+    expect(session.postSteer('late note')).toBe(false);
+    expect((session as any).history).toHaveLength(0);
+    expect(session.drainUnappliedSteers()).toEqual([]);
+  });
+
+  it('a steer posted during the FINAL step never lands — drainUnappliedSteers returns it after the turn', async () => {
+    const read = fakeTool('Read');
+    const seen: any[] = [];
+    let session!: HarnessSession;
+    let call = 0;
+    // Custom model (not scriptedModel): the side effect must fire from INSIDE
+    // doStream for the second, LAST step (a plain-text end) — after that
+    // iteration's steer-drain check has already run and with no further
+    // iteration for a freshly-posted steer to land in.
+    const model = new MockLanguageModelV4({
+      doStream: async (req: any) => {
+        seen.push(req.prompt);
+        call++;
+        if (call === 2) {
+          expect(session.postSteer('the steer')).toBe(true);
+        }
+        const chunks = call === 1
+          ? stream(toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls'))
+          : stream(...textChunks('t2', 'done'), finishChunk('stop'));
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    await session.send('go');
+
+    expect(session.drainUnappliedSteers()).toEqual(['the steer']);
+    // Never reached any model request, nor persisted history.
+    expect(seen.some((p) => JSON.stringify(p).includes('<steer>'))).toBe(false);
+    expect(JSON.stringify((session as any).history)).not.toContain('<steer>');
+    // Draining empties the queue.
+    expect(session.drainUnappliedSteers()).toEqual([]);
   });
 });
