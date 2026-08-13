@@ -1184,4 +1184,53 @@ describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', ()
     expect(p2).toContain('step 3');
     expect(p2).not.toContain('step 1');
   });
+
+  // Fix pass, Finding 4: opts.specialistStatus?.() runs in beginTurn AFTER
+  // emit() (the user-message transcript event has already fired) but BEFORE
+  // this.abort is set. The real callback reaches NativeHome.readJson, which
+  // deliberately RETHROWS any non-ENOENT I/O error (permissions, disk full,
+  // AV lock) — an uncaught throw here would escape beginTurn entirely: no
+  // assistant reply, no error surfaced, and the re-entrancy guard (this.abort)
+  // never gets set, stranding the session on every future send(). Pin that a
+  // throwing callback degrades to "no status block" instead.
+  it('a specialistStatus callback that throws degrades to no status block instead of stranding the turn', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({
+        decide: async () => ALLOW,
+        specialistStatus: () => { throw new Error('EACCES: permission denied'); },
+      }),
+      async () => model as any,
+    );
+
+    // Must not throw / must not hang — the turn completes normally.
+    await expect(session.send('go')).resolves.toBeUndefined();
+
+    // No status block was injected — the callback never produced a value.
+    expect(JSON.stringify(seen[0])).not.toContain('<specialists-status>');
+
+    // Re-entrancy guard cleared: a second turn on the same session still
+    // works (this.abort was set and released normally by the first turn).
+    await expect(session.send('again')).resolves.toBeUndefined();
+    expect(seen.length).toBe(2);
+  });
+
+  // Fix pass, Finding 6: a session that never delegates (opts.specialistStatus
+  // stays undefined — true for every specialist child, and any root session
+  // wire() never touched) must pay literally nothing for this feature, not
+  // just "no history mutation" but no scan of history at all.
+  it('a session with no specialistStatus wired never scans history for a status block (Finding 6: zero cost)', async () => {
+    const model = scriptedModel([stream(...textChunks('a', 'ok'), finishChunk('stop'))], []);
+    const session = new HarnessSession(makeOpts({ decide: async () => ALLOW }), async () => model as any);
+    const historyRef = (session as any).history;
+    const spy = vi.spyOn(historyRef, 'findIndex');
+
+    await session.send('go');
+
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

@@ -1366,12 +1366,38 @@ export class HarnessSession extends EventEmitter {
     // (external review 2026-08-12 — appending accumulates stale, contradictory
     // blocks over a long child run). Accepted cost: removing a mid-history message
     // invalidates local KV prefix cache from that point while specialists run.
-    const statusIdx = this.history.findIndex(
-      (m) => typeof m.content === 'string' && m.content.startsWith('<specialists-status>'),
-    );
-    if (statusIdx >= 0) this.history.splice(statusIdx, 1);
-    const status = this.opts.specialistStatus?.();
-    if (status) this.history.push({ role: 'user', content: `<specialists-status>\n${status}\n</specialists-status>` });
+    //
+    // Fix pass, Finding 6: guarded on opts.specialistStatus being wired at all.
+    // That field stays permanently undefined for any session wire() never
+    // touched (every specialist child, per its own "NOT wire()" comment) — for
+    // those sessions there is never a block to remove or add, so the whole
+    // history scan below is skipped rather than run as an unconditional no-op
+    // every single turn.
+    if (this.opts.specialistStatus) {
+      const statusIdx = this.history.findIndex(
+        (m) => typeof m.content === 'string' && m.content.startsWith('<specialists-status>'),
+      );
+      if (statusIdx >= 0) this.history.splice(statusIdx, 1);
+      // Fix pass, Finding 4: opts.specialistStatus() reaches
+      // NativeSessionHost.buildSpecialistStatus -> DelegationLedger.listFor ->
+      // NativeHome.readJson, which deliberately RETHROWS any non-ENOENT I/O
+      // error (permissions, disk full, AV lock — see native-home.ts). Before
+      // this try/catch, that throw escaped beginTurn uncaught: it ran AFTER
+      // emit() had already announced the user's message but BEFORE this.abort
+      // was set and before the turn's own try block began, so the throw was
+      // never caught anywhere — no assistant reply, no error surfaced, and the
+      // re-entrancy guard never got set (stranding every later send() on this
+      // session). Degrade the same way this file's other fallible side-read
+      // already does (acquireMcp, above: log and continue with no MCP
+      // servers) — a missing status block must never cost the user a turn.
+      let status: string | null = null;
+      try {
+        status = this.opts.specialistStatus() ?? null;
+      } catch (err) {
+        log('ERROR', 'HarnessSession', 'specialist status callback threw — turn continues with no status block', { error: String(err) });
+      }
+      if (status) this.history.push({ role: 'user', content: `<specialists-status>\n${status}\n</specialists-status>` });
+    }
     // A plain string when there are no image parts — that is the byte-identical
     // shape every existing test and rebuildHistory() already assert on, so the
     // no-attachment path must not become a one-element parts array.

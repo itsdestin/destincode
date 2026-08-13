@@ -1096,23 +1096,39 @@ export class NativeSessionHost extends EventEmitter {
    *  appears: its report already rode into the parent's history, so restating
    *  it here would be stale noise, not a status.
    *
-   *  `steps` is read straight off the ledger record, which Task 2's write path
-   *  only ever sets AT COMPLETION (see spawnSpecialist's `update(...steps:
-   *  run.steps...)`) — there is no live, per-child step counter surfaced
-   *  anywhere a status line could read from without reaching into
-   *  spawnSpecialist/createChild's own bookkeeping (out of this task's scope,
-   *  and a different in-flight lane owns those methods). So a still-running
-   *  child legitimately shows `step 0` until its next status-changing write;
-   *  that is what the ledger actually knows, not a guessed number.
+   *  Fix pass, Finding 1: NO step count on the running line. `steps` is only
+   *  ever written by the ledger's write path AT COMPLETION (see
+   *  spawnSpecialist's `update(...steps: run.steps...)`) — recordStart never
+   *  sets it, so a RUNNING record's `steps` is ALWAYS undefined; there is no
+   *  live, per-child step counter surfaced anywhere a status line could read
+   *  from without reaching into spawnSpecialist/createChild's own bookkeeping
+   *  (out of scope here — a different in-flight lane owns those methods). The
+   *  old `step ${r.steps ?? 0}` therefore rendered a permanently-wrong
+   *  "step 0" for the ENTIRE life of every running child — a known-wrong
+   *  number, not an approximation, and the never-mislead-the-model rule does
+   *  not allow reporting it. Elapsed time (which IS live and real) is
+   *  reported instead; nothing invented fills the gap.
    *
    *  `stale` likewise only ever surfaces the ledger's own boolean (Task 7 sets
-   *  it) — this method never re-derives staleness. The one exception is the
-   *  "no activity for {m}m" minute count: the ledger stores no last-activity
-   *  TIMESTAMP, only the boolean, so there is no exact duration to surface.
-   *  What IS true by construction (native-session-host.ts's setStale) is that
-   *  `stale` never flips true before SPECIALIST_IDLE_STALE_MS has elapsed with
-   *  no activity — so that constant is reported as a floor ("at least this
-   *  long"), not a measurement, and is never overstated. */
+   *  it) — this method never re-derives staleness. Fix pass, Finding 2: the
+   *  "no activity for {m}m" minute count is worded as a FLOOR ("at least"),
+   *  not a measurement — the ledger stores no last-activity TIMESTAMP, only
+   *  the boolean, so there is no exact duration to surface, and the actual
+   *  threshold that fired can be the 5m in-tool one, not the 2m idle one this
+   *  reports. What IS true by construction (setStale below) is that `stale`
+   *  never flips true before SPECIALIST_IDLE_STALE_MS has elapsed with no
+   *  activity, so "at least" is always accurate even when it understates.
+   *
+   *  Fix pass, Finding 3: failed/interrupted get their OWN line, not the
+   *  running-record's "finished — report delivery pending" wording.
+   *  claimUndelivered() (delegation-ledger.ts) only ever claims
+   *  status === 'completed' records — a 'failed' or 'interrupted' record is
+   *  NEVER delivered, so reusing the "pending" line repeated a permanently
+   *  false claim on every future turn. failureText is the real thrown
+   *  message (never a guessed cause — error-message-standards.md);
+   *  'interrupted' always means a parent teardown killed the child (see
+   *  updateIfRunning's WHY comment above), so naming it is accurate, not
+   *  guessed. */
   private buildSpecialistStatus(sessionId: string, cwd: string): string | null {
     if (!this.ledger) return null;
     const lines = this.ledger.listFor(cwd, sessionId)
@@ -1120,10 +1136,17 @@ export class NativeSessionHost extends EventEmitter {
       .map((r) => {
         if (r.status === 'running') {
           const elapsedS = Math.max(0, Math.round((Date.now() - r.startedAt) / 1000));
-          const staleNote = r.stale ? `, may be stuck — no activity for ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
-          return `${r.title} (${r.agentType}): running — step ${r.steps ?? 0}, ${elapsedS}s${staleNote}`;
+          const staleNote = r.stale ? `, may be stuck — no activity for at least ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
+          return `${r.title} (${r.agentType}): running — ${elapsedS}s${staleNote}`;
         }
-        return `${r.title} (${r.agentType}): finished — report delivery pending`;
+        if (r.status === 'completed') {
+          return `${r.title} (${r.agentType}): finished — report delivery pending`;
+        }
+        if (r.status === 'failed') {
+          return `${r.title} (${r.agentType}): failed${r.failureText ? ` — ${r.failureText}` : ''} — no report will arrive`;
+        }
+        // status === 'interrupted'
+        return `${r.title} (${r.agentType}): interrupted — no report will arrive`;
       });
     return lines.length > 0 ? lines.join('\n') : null;
   }
