@@ -29,6 +29,22 @@ describe('PermissionBroker', () => {
     await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true });
   });
 
+  it('rides permissionMode along the PermissionRequest payload (full-auto safety stop keys on it)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git push' }, denyListed: true, permissionMode: 'full-auto' });
+    expect(emitted[0].payload.permissionMode).toBe('full-auto');
+  });
+
+  it('omits permissionMode when the caller did not supply one (CC-path payload shape unchanged)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    expect('permissionMode' in emitted[0].payload).toBe(false);
+  });
+
   it('does NOT flag always when behavior is deny (guards against persisting an allow rule for a denied tool)', async () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];

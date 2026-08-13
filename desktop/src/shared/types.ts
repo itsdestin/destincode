@@ -333,6 +333,10 @@ export interface ToolCallState {
    *  every external path and never consults the stored rules there, so a
    *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
   external?: boolean;
+  /** Native broker only: the session's permission mode when the ask fired.
+   *  'full-auto' + denyListed swaps the generic button row for the safety-stop
+   *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */

@@ -25,6 +25,10 @@ export interface AskRequest {
    *  anything for path-subject tool asks; budget gates never set it.
    *  See spec 2026-08-11 (permissions management UI), finding 3. */
   external?: boolean;
+  /** The session's permission mode at ask time. Full-auto + denyListed is the
+   *  renderer's cue to swap the generic row for the safety-stop footer
+   *  (spec 2026-08-12, M5 2b). Optional: CC-path asks never carry it. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny' | 'canceled';
@@ -56,6 +60,9 @@ export class PermissionBroker extends EventEmitter {
           tool_input: req.toolInput,
           denyListed: req.denyListed,
           external: req.external === true,
+          // Spread-omitted (not `undefined`-valued) so the CC-path payload
+          // shape is byte-identical to before this field existed.
+          ...(req.permissionMode ? { permissionMode: req.permissionMode } : {}),
         },
         timestamp: Date.now(),
       });

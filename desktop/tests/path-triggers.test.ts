@@ -147,7 +147,7 @@ describe('path-scoped rules', () => {
   });
 
   it('a single * stays inside one path segment; ** crosses them', () => {
-    // WHY this is pinned: tools/subject-glob.ts deliberately lets * cross
+    // WHY this is pinned: shared/subject-glob.ts deliberately lets * cross
     // separators (correct for bash command strings — "git push*" must match
     // "git push origin x"). Reusing it here would make src/*.ts match
     // src/deep/nested.ts and inject a rule into work it does not govern. This

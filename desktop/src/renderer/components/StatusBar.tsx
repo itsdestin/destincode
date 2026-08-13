@@ -110,7 +110,9 @@ const nativeChipStyle = {
 // the same "increasing autonomy = warmer color" convention: ask ≈ normal (muted),
 // auto-edit ≈ auto-accept (accent, mostly safe), full-auto = amber (autonomous,
 // but still deny-list-guarded so not the salmon reserved for CC's bypass).
-const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknown', { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
+// Exported: ToolCard's full-auto safety-stop footer paints with the SAME chip
+// colors, so the band and the status-bar chip can never drift apart.
+export const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknown', { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
   normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
   'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
   plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--inset)',  border: 'var(--edge)' },

@@ -53,6 +53,8 @@ import {
   type PermissionModeDef,
 } from './permission-modes';
 import type { CompareSurface } from './types';
+// The ask card's status glyph — same mark ToolCard's awaiting-approval header draws.
+import { QuestionIcon } from '../../../components/Icons';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
 const NOTE = 'blocked on the gh dead-end';
@@ -1751,6 +1753,277 @@ function ModeRefSections({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ── Full-auto ask (M5 2b) ────────────────────────────────────────────────────
+// The only rule-based prompt full-auto still shows is a destructive-command
+// stop (rulesForMode('full-auto') is `*→allow`; only the deny-list outranks
+// it), yet PermissionButtons renders the same generic row as Ask mode —
+// nothing says WHY the mode that "works without checking with you" stopped.
+// Candidates vary two axes: how much the card explains the stop, and which
+// actions it offers. Hard constraint from the shipped Permissions screen: the
+// four families (deleting, git push/reset, sudo, format) must KEEP asking.
+
+// StatusBar's full-auto chip colors (PERMISSION_DISPLAY['full-auto']) —
+// duplicated because that record is a private const of StatusBar.tsx; if a
+// candidate wins, export it and delete this.
+const FULL_AUTO_CHIP = {
+  color: '#F2B33D',
+  bg: 'rgba(242,179,61,0.15)',
+  border: 'rgba(242,179,61,0.25)',
+};
+
+// The button marks, verbatim from PermissionButtons (ToolCard.tsx) — these are
+// the app's hardcoded STATUS colors, deliberately outside ui/Button (spec §11
+// change 61), so the candidates must draw exactly these.
+const ASK_BTN = 'px-3 py-1 text-xs font-medium rounded-lg transition-colors';
+const ASK_GREEN = `${ASK_BTN} bg-green-600/60 hover:bg-green-600/80 text-green-100`;
+const ASK_BLUE = `${ASK_BTN} bg-blue-600/60 hover:bg-blue-600/80 text-blue-100`;
+const ASK_RED = `${ASK_BTN} bg-red-600/60 hover:bg-red-600/80 text-red-100`;
+
+/** The awaiting-approval ToolCard shell, fixture: a deny-listed `git push` in a
+ *  full-auto session. Same classes as ToolCard's header row — the candidates
+ *  only vary the footer, so the shell must be the production card or the
+ *  comparison is against something that doesn't exist. */
+function FullAutoAskShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="border border-edge rounded-lg overflow-hidden">
+      <div className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left">
+        <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        <span className="text-fg-faint text-xs select-none">|</span>
+        <span className="text-xs font-medium text-fg-2">Push local commits</span>
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">↳ git push origin master</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** A — today's three buttons, plus one amber line naming why the mode stopped. */
+function FullAutoExplainedRow() {
+  return (
+    <FullAutoAskShell>
+      <div className="px-3 py-2 space-y-2 border-t border-edge bg-inset/30">
+        <p className="text-2xs leading-relaxed" style={{ color: FULL_AUTO_CHIP.color }}>
+          Full auto paused — pushing code is one of the four things it always checks first.
+        </p>
+        <div className="flex items-center gap-2">
+          <button className={ASK_GREEN}>Yes</button>
+          <button className={ASK_BLUE}>Always Allow</button>
+          <button className={ASK_RED}>No</button>
+        </div>
+      </div>
+    </FullAutoAskShell>
+  );
+}
+
+/** B — a safety stop: two verbs, and the rule-making action demoted to a quiet
+ *  line that opens the existing are-you-sure step. */
+function FullAutoSafetyStop() {
+  // The link swaps in the existing consequence confirm so the flow is judgeable,
+  // not just describable — same copy PermissionButtons ships today.
+  const [confirming, setConfirming] = React.useState(false);
+  return (
+    <FullAutoAskShell>
+      <div
+        className="px-3 py-2 space-y-2 border-t"
+        style={{ background: FULL_AUTO_CHIP.bg, borderColor: FULL_AUTO_CHIP.border }}
+      >
+        {confirming ? (
+          <>
+            <p className="text-xs font-medium text-fg-2">Always allow this exact command in youcoded?</p>
+            <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
+              git push origin master
+            </p>
+            <p className="text-2xs text-fg-dim leading-relaxed">
+              It can delete files or change published code, and you won't be asked again.
+            </p>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
+              <button className={ASK_RED}>Always allow</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-xs font-medium" style={{ color: FULL_AUTO_CHIP.color }}>
+              Stopped before pushing code
+            </p>
+            <p className="text-2xs text-fg-dim leading-relaxed">
+              Full auto always checks this first — it changes your published code.
+            </p>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN}>Run it</button>
+              <button className={ASK_RED}>Skip it</button>
+            </div>
+            <button
+              className="text-3xs text-fg-muted hover:text-fg underline underline-offset-2 transition-colors"
+              onClick={() => setConfirming(true)}
+            >
+              Stop checking this exact command in youcoded
+            </button>
+          </>
+        )}
+      </div>
+    </FullAutoAskShell>
+  );
+}
+
+/** C — a mode-branded checkpoint: the chip carries the why, one primary verb,
+ *  and no rule-making from the card at all. */
+function FullAutoCheckpoint() {
+  return (
+    <FullAutoAskShell>
+      <div
+        className="px-3 py-2 space-y-2 border-t"
+        style={{ background: FULL_AUTO_CHIP.bg, borderColor: FULL_AUTO_CHIP.border }}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="text-3xs font-semibold tracking-wider px-1.5 py-0.5 rounded border"
+            style={{
+              color: FULL_AUTO_CHIP.color,
+              backgroundColor: FULL_AUTO_CHIP.bg,
+              borderColor: FULL_AUTO_CHIP.border,
+            }}
+          >
+            FULL AUTO
+          </span>
+          <span className="text-2xs text-fg-2">checkpoint — pushing code</span>
+        </div>
+        <p className="text-2xs text-fg-dim leading-relaxed">
+          This mode only checks with you before deleting, pushing, sudo, and formatting.
+        </p>
+        <div className="flex items-center gap-2">
+          <button className={ASK_GREEN}>Continue</button>
+          <button className="px-3 py-1 text-xs font-medium rounded-lg text-fg-muted hover:text-fg hover:bg-inset transition-colors">
+            Don't run
+          </button>
+        </div>
+      </div>
+    </FullAutoAskShell>
+  );
+}
+
+/** R2 — R1·B with the owner's correction: the quiet link becomes a third
+ *  button, right of Skip it, behind the header-style `|` divider. The round
+ *  varies only the button's orange. Clicking it still opens the same
+ *  are-you-sure step — the deny-list consequence confirm is not in question. */
+function FullAutoSafetyStopR2({ always }: { always: 'status-orange' | 'mode-amber' | 'ghost' }) {
+  const [confirming, setConfirming] = React.useState(false);
+  const alwaysClass =
+    always === 'status-orange'
+      ? `${ASK_BTN} bg-orange-600/60 hover:bg-orange-600/80 text-orange-100`
+      : always === 'mode-amber'
+        ? ASK_BTN // colors inline below — the chip amber isn't a Tailwind step
+        : `${ASK_BTN} border hover:bg-inset`;
+  const alwaysStyle =
+    always === 'mode-amber'
+      ? { backgroundColor: 'rgba(242,179,61,0.35)', color: '#F8D998' }
+      : always === 'ghost'
+        ? { borderColor: FULL_AUTO_CHIP.border, color: FULL_AUTO_CHIP.color }
+        : undefined;
+  return (
+    <FullAutoAskShell>
+      <div
+        className="px-3 py-2 space-y-2 border-t"
+        style={{ background: FULL_AUTO_CHIP.bg, borderColor: FULL_AUTO_CHIP.border }}
+      >
+        {confirming ? (
+          <>
+            <p className="text-xs font-medium text-fg-2">Always allow this exact command in youcoded?</p>
+            <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
+              git push origin master
+            </p>
+            <p className="text-2xs text-fg-dim leading-relaxed">
+              It can delete files or change published code, and you won't be asked again.
+            </p>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
+              <button className={ASK_RED}>Always allow</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-xs font-medium" style={{ color: FULL_AUTO_CHIP.color }}>
+              Stopped before pushing code
+            </p>
+            <p className="text-2xs text-fg-dim leading-relaxed">
+              Full auto always checks this first — it changes your published code.
+            </p>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN}>Run it</button>
+              <button className={ASK_RED}>Skip it</button>
+              <span className="text-fg-faint text-xs select-none">|</span>
+              <button className={alwaysClass} style={alwaysStyle} onClick={() => setConfirming(true)}>
+                Always Allow
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </FullAutoAskShell>
+  );
+}
+
+/** R3 — R2·A (status orange) with the owner's copy + spacing direction: the
+ *  subline tucks under the header as a subheader (2px), the only real gap is
+ *  before the buttons (8px). Varies only the subline's verb. */
+function FullAutoSafetyStopR3({ copy }: { copy: 'prohibits' | 'stops' | 'limits' }) {
+  const [confirming, setConfirming] = React.useState(false);
+  const sub =
+    copy === 'prohibits'
+      // Owner's line, verbatim — punctuation included.
+      ? 'YouCoded prohibits this action, even in Full Auto - It changes your published code'
+      : copy === 'stops'
+        ? 'YouCoded always stops this action, even in Full Auto — it changes your published code.'
+        // R4 settled: the owner's third verb, on the normalized punctuation.
+        : 'YouCoded limits this action, even in Full Auto — it changes your published code.';
+  return (
+    <FullAutoAskShell>
+      <div
+        className="px-3 py-2 space-y-2 border-t"
+        style={{ background: FULL_AUTO_CHIP.bg, borderColor: FULL_AUTO_CHIP.border }}
+      >
+        {confirming ? (
+          <>
+            <p className="text-xs font-medium text-fg-2">Always allow this exact command in youcoded?</p>
+            <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
+              git push origin master
+            </p>
+            <p className="text-2xs text-fg-dim leading-relaxed">
+              It may delete files or change published code, and you won't be asked again during future sessions in this project.
+            </p>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
+              <button className={ASK_RED}>Always allow</button>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Header + subheader as ONE tight block; the container's space-y-2
+                then puts the round's only real gap before the buttons. */}
+            <div className="space-y-0.5">
+              <p className="text-xs font-medium" style={{ color: FULL_AUTO_CHIP.color }}>
+                Stopped before pushing code
+              </p>
+              <p className="text-2xs text-fg-dim leading-relaxed">{sub}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className={ASK_GREEN}>Run it</button>
+              <button className={ASK_RED}>Skip it</button>
+              <span className="text-fg-faint text-xs select-none">|</span>
+              <button
+                className={`${ASK_BTN} bg-orange-600/60 hover:bg-orange-600/80 text-orange-100`}
+                onClick={() => setConfirming(true)}
+              >
+                Always Allow
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </FullAutoAskShell>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -2097,13 +2370,104 @@ const ALL_SURFACES: CompareSurface[] = [
       },
     ],
   },
+  {
+    id: 'full-auto-ask',
+    label: 'Full auto — the destructive-command stop',
+    question:
+      'The only prompt full auto still shows is the stop before a destructive command — how should that card explain the stop, and which actions belong on it?',
+    frame: 'canvas',
+    // Chat-column width — the card lives in the timeline, not a dialog.
+    paneWidth: 560,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'explained-row',
+            label: 'Explain, keep the buttons',
+            note: 'Smallest change: today\'s Yes / Always Allow / No survives untouched (muscle memory, arrow-key row, the confirm behind Always Allow), and one amber line above it names why the mode stopped. Cost: three buttons still read as an ordinary "may I?" question, which is the complaint.',
+            render: () => <FullAutoExplainedRow />,
+          },
+          {
+            id: 'safety-stop',
+            label: 'Safety stop — run it / skip it',
+            note: 'The footer becomes the mode\'s own amber surface with two verbs, so it reads as "your agent stopped itself", not a permission quiz. "Always allow" demotes to a quiet line that opens the SAME are-you-sure step as today (click it — it works here). Cost: the rule-making action is easy to miss, on the one mode where it matters most.',
+            render: () => <FullAutoSafetyStop />,
+          },
+          {
+            id: 'checkpoint',
+            label: 'Checkpoint — chip carries the why',
+            note: 'The StatusBar\'s FULL AUTO chip re-appears on the card, the copy restates the mode\'s whole contract, one primary Continue. No way to create an always-allow rule from the card at all — that would move to Settings, which today can only revoke, and the shipped Permissions copy ("an entry switches off the last check") would need rewriting. The honest version of "auto-approve plus acknowledge".',
+            render: () => <FullAutoCheckpoint />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis:
+          'R1 · B (safety stop). Owner correction: the underlined "stop checking this" line is out — the rule-making action returns as a real third button, an orange Always Allow to the right of Skip it with a | between (the header-row pipe). Framing, verbs, and the are-you-sure step behind Always Allow are settled; the round varies only which orange the button wears.',
+        candidates: [
+          {
+            id: 'status-orange',
+            label: 'Status orange',
+            note: 'bg-orange-600/60, the exact grammar of the green/red/blue buttons one shade-family over — reads as a fourth member of the app\'s permission-button set. Distinct from both the amber band behind it and the blue Always Allow that Ask mode uses.',
+            render: () => <FullAutoSafetyStopR2 always="status-orange" />,
+          },
+          {
+            id: 'mode-amber',
+            label: 'Mode amber',
+            note: 'The FULL AUTO chip\'s own #F2B33D, saturated to button weight — ties the button to the mode identity, at the cost of sitting on an amber band of the same hue (least separation of the three).',
+            render: () => <FullAutoSafetyStopR2 always="mode-amber" />,
+          },
+          {
+            id: 'ghost-orange',
+            label: 'Outlined orange',
+            note: 'Same slot and color family but outlined, no fill — a half-step quieter than Run/Skip, keeping a whisper of R1·B\'s demotion while still being a visible button. Included as the conservative reading; skip if the solid buttons already look right.',
+            render: () => <FullAutoSafetyStopR2 always="ghost" />,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis:
+          'R2 · A (status orange). Layout, verbs, and the orange are settled. Owner direction: subline copy becomes "YouCoded prohibits this action…" and tightens under the header as a subheader — the only real space sits before the buttons. Compared: the VERB. "Prohibits" claims the app forbids what the green button one line down will run — the same shape of claim the Permissions screen walked back ("cannot be turned off" was false). A is the direction verbatim; B keeps the sentence but says what actually happens.',
+        candidates: [
+          {
+            id: 'prohibits',
+            label: '"Prohibits" (verbatim)',
+            note: 'The owner\'s line untouched. Strongest wording — but the card itself offers Run it and Always Allow, so "prohibits" is contradicted two centimetres below the word.',
+            render: () => <FullAutoSafetyStopR3 copy="prohibits" />,
+          },
+          {
+            id: 'always-stops',
+            label: '"Always stops"',
+            note: 'Same sentence shape, accurate verb: the app always STOPS the action for your say-so, which is exactly what the card is doing. Punctuation normalized to the app\'s em-dash style.',
+            render: () => <FullAutoSafetyStopR3 copy="stops" />,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis:
+          'R3 — neither pane verbatim; the owner supplied a third verb, "limits". Settled line: "YouCoded limits this action, even in Full Auto — it changes your published code." on the normalized punctuation. Nothing left to compare — this round IS the record of the settled card.',
+        candidates: [
+          {
+            id: 'settled',
+            label: 'Settled',
+            note: 'R2·A layout (Run it / Skip it | Always Allow in status orange), R3 subheader spacing, the "limits" line. The card that goes to spec.',
+            render: () => <FullAutoSafetyStopR3 copy="limits" />,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 // CompareView opens on COMPARE_SURFACES[0] and has no URL param for the surface,
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'permissions-mode-control';
+const ACTIVE_FIRST = 'full-auto-ask';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
