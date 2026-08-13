@@ -320,12 +320,33 @@ describe('runSidecarMigration', () => {
   // it never reached the copyFile/EEXIST branch a second time — so it proved
   // nothing beyond what one call already does; calling once is honest about
   // what's being checked.
+  //
+  // This test also pins the backup's CONTENT, not just its name. The backup
+  // exists so a maintainer can recover a sidecar if the repair turns out
+  // wrong for a record nobody anticipated — a file merely existing at the
+  // right name proves nothing about whether it's actually restorable. So we
+  // capture the sidecar's raw bytes BEFORE migration runs, then assert the
+  // backup holds exactly those pre-migration bytes (byte for byte — if the
+  // copy read from the wrong source, ran too late, or wrote empty/truncated
+  // output, this catches it). We also assert the live sidecar's bytes CHANGED
+  // from that snapshot; without that check, a migration that silently did
+  // nothing at all would still make the backup content match trivially
+  // (backup == pre-migration == post-migration, all identical), so the
+  // byte-equality assertion above would pass for the wrong reason.
   it('backs the sidecar up under a fixed name before rewriting it', async () => {
     await writeSidecar(projectRoot, null, legacy() as any);
+    const sidecarPath = join(projectRoot, '.youcoded/artifacts.json');
+    const preMigrationBytes = readFileSync(sidecarPath, 'utf8');
+
     await runSidecarMigration(projectRoot);
+
     const backups = readdirSync(join(projectRoot, '.youcoded'))
       .filter((f) => f.startsWith('artifacts.json.pre-migration'));
     expect(backups).toEqual(['artifacts.json.pre-migration.bak']);
+
+    const backupPath = join(projectRoot, '.youcoded/artifacts.json.pre-migration.bak');
+    expect(readFileSync(backupPath, 'utf8')).toBe(preMigrationBytes);
+    expect(readFileSync(sidecarPath, 'utf8')).not.toBe(preMigrationBytes);
   });
 
   // The backup is the only way back from a bad migration, so it must protect
