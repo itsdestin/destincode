@@ -116,6 +116,75 @@ describe('bashGrantOptions — postcondition 2: an option admits nothing hostile
   });
 });
 
+describe('bashGrantOptions — git push scopes to one branch', () => {
+  it('derives a remote-anchored pattern and a branch-named label', () => {
+    const opt = wideOf('git push origin feat/x')!;
+    expect(opt.rule.pattern).toBe('git push*origin feat/x');
+    expect(opt.label).toBe('Always allow pushing to feat/x');
+  });
+
+  it('covers the harmless flag forms of the same push', () => {
+    const rule = wideOf('git push origin feat/x')!.rule;
+    expect(ruleMatches(rule, 'git push origin feat/x')).toBe(true);
+    expect(ruleMatches(rule, 'git push -u origin feat/x')).toBe(true);
+    expect(ruleMatches(rule, 'git push --set-upstream origin feat/x')).toBe(true);
+  });
+
+  it('does NOT cover the flags that would unbind it (safety rule 2)', () => {
+    const rule = wideOf('git push origin feat/x')!.rule;
+    expect(ruleMatches(rule, 'git push --delete origin feat/x')).toBe(false);
+    expect(ruleMatches(rule, 'git push --prune origin feat/x')).toBe(false);
+    expect(ruleMatches(rule, 'git push --force origin feat/x')).toBe(false);
+    expect(ruleMatches(rule, 'git push --all origin feat/x')).toBe(false);
+  });
+
+  it('does NOT leak to another branch, a longer branch name, or a multi-ref push', () => {
+    const rule = wideOf('git push origin feat/x')!.rule;
+    expect(ruleMatches(rule, 'git push origin feat/x-2')).toBe(false);
+    expect(ruleMatches(rule, 'git push origin master')).toBe(false);
+    // The whole reason the remote is in the pattern: this pushes master TOO.
+    expect(ruleMatches(rule, 'git push origin master feat/x')).toBe(false);
+    expect(ruleMatches(rule, 'git push origin feat/x master')).toBe(false);
+  });
+
+  it('master is an ordinary branch — it scopes like any other', () => {
+    const opt = wideOf('git push origin master')!;
+    expect(opt.rule.pattern).toBe('git push*origin master');
+    expect(opt.label).toBe('Always allow pushing to master');
+  });
+
+  it('reads the destination out of a HEAD: refspec for the LABEL only', () => {
+    expect(wideOf('git push origin HEAD:feat/x')!.label).toBe('Always allow pushing to feat/x');
+    expect(wideOf('git push origin HEAD:feat/x')!.rule.pattern).toBe('git push*origin HEAD:feat/x');
+  });
+
+  it('a push with no target of its own offers NOTHING — not even exact', () => {
+    // These send whatever branch is checked out AT RUN TIME. The branch changes
+    // underneath the grant, so no grant — however narrow — can honestly name it.
+    expect(bashGrantOptions('git push')).toEqual([]);
+    expect(bashGrantOptions('git push --force')).toEqual([]);
+    expect(bashGrantOptions('git push origin')).toEqual([]);
+    expect(bashGrantOptions('git push origin HEAD')).toEqual([]);
+    expect(bashGrantOptions('git push origin @')).toEqual([]);
+  });
+
+  it('a push it cannot scope still gets its exact rung', () => {
+    // "Cannot widen" is not "cannot remember". Each of these names its target in
+    // the command text, so byte-exact is honest and safe.
+    for (const cmd of [
+      'git push origin master feat/x',   // two refs — cannot bound to one branch
+      'git push origin +feat/x',         // force form — a "pushing to" label would lie
+      'git push origin :feat/x',         // delete form — ditto
+      "git push 'o*' 'b*'",              // metacharacters would become wildcards
+    ]) {
+      expect(wideOf(cmd), `wide for ${cmd}`).toBeUndefined();
+      expect(exactOf(cmd)!.rule, `exact for ${cmd}`).toEqual({
+        tool: 'Bash', pattern: cmd, action: 'allow', match: 'exact',
+      });
+    }
+  });
+});
+
 describe('bashGrantOptions — deny-listed families', () => {
   it.each(['rm -rf build', 'rmdir old', 'sudo apt install x', 'format d:', 'git reset --hard HEAD~1'])(
     'offers exact only for %s', (cmd) => {

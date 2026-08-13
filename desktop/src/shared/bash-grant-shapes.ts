@@ -67,8 +67,77 @@ interface CommandShape {
   scope(tokens: string[]): { pattern: string; label: string } | null;
 }
 
-// Populated in Task 3.
-const COMMAND_SHAPES: CommandShape[] = [];
+/** Positional arguments to `git push` — the remote and the refspecs, with flags
+ *  removed. `--opt=value` is one token so it filters out cleanly; a `--opt value`
+ *  form would leave `value` looking positional, which is why the branch rung is
+ *  produced ONLY at exactly two positionals. */
+function pushPositionals(tokens: string[]): string[] {
+  return tokens.slice(2).filter((t) => !t.startsWith('-'));
+}
+
+/** The branch a refspec ends up writing to, ignoring decoration. `HEAD:feat/x`
+ *  and `+feat/x` and `:feat/x` all end at feat/x. */
+function refDestination(refspec: string): string {
+  const afterColon = refspec.includes(':')
+    ? refspec.slice(refspec.indexOf(':') + 1)
+    : refspec.replace(/^\+/, '');
+  return afterColon.replace(/^refs\/heads\//i, '');
+}
+
+/** Does the command TEXT fix where this ref goes? `HEAD` and `@` do not — they
+ *  resolve to whatever is checked out when the command runs, which is a different
+ *  branch next week. Nothing can be remembered about them, at any width. */
+function namesItsTarget(refspec: string): boolean {
+  const dest = refDestination(refspec);
+  return dest.length > 0 && !/^(HEAD|@)$/i.test(dest);
+}
+
+const COMMAND_SHAPES: CommandShape[] = [
+  {
+    key: 'git push',
+    // A bare `git push` pushes whatever branch is checked out AT RUN TIME, and
+    // that branch changes underneath the grant — approve it on a feature branch
+    // and next week it silently pushes master. Nothing here can name the target,
+    // so no "Always allow" is offered at all; allow-once only. Same for
+    // `git push origin` and `git push origin HEAD`.
+    //
+    // Everything else IS remembered, at least exactly: a two-ref push or a `+`/`:`
+    // refspec cannot be widened honestly, but it names its own targets, so a
+    // byte-exact grant is as safe as any other.
+    rememberable: (tokens) => {
+      const pos = pushPositionals(tokens);
+      return pos.length >= 2 && pos.slice(1).every(namesItsTarget);
+    },
+    scope: (tokens) => {
+      const pos = pushPositionals(tokens);
+      // Exactly one remote + one refspec. Zero or one positional never reaches
+      // here (rememberable already returned false); three or more is a multi-ref
+      // push, which cannot be bounded to a single branch.
+      if (pos.length !== 2) return null;
+      const [remote, refspec] = pos;
+      // A '*' or '?' would become a WILDCARD in the stored pattern rather than a
+      // literal. Git forbids both in ref names, so this only fires on something
+      // adversarial — refuse to widen rather than widen wrongly.
+      if (/[*?]/.test(remote) || /[*?]/.test(refspec)) return null;
+      // '+feat/x' force-pushes and ':feat/x' DELETES the branch. A rung labelled
+      // "pushing to feat/x" would describe neither. Exact only.
+      if (refspec.startsWith('+') || refspec.startsWith(':')) return null;
+      // WHY the remote is in the pattern and not just the branch: `git push*feat/x`
+      // also matches `git push origin master feat/x`, which pushes master TOO —
+      // git takes any number of refspecs and this glob cannot count tokens. Pinning
+      // the token that must immediately precede the refspec is the only way to
+      // bound the command to a single ref. A grant named "pushing to feat/x" that
+      // silently also pushes master is exactly what this item exists to prevent.
+      //
+      // The trailing text after the wildcard is also what makes safety rule 2 fire
+      // on this rule, keeping --delete / --prune / --force out of it.
+      return {
+        pattern: `git push*${remote} ${refspec}`,
+        label: `Always allow pushing to ${refDestination(refspec)}`,
+      };
+    },
+  },
+];
 
 /** Whitespace split that keeps quoted runs together. */
 function tokenize(command: string): string[] {
