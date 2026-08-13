@@ -452,6 +452,33 @@ export class HarnessSession extends EventEmitter {
    *  from what this session actually runs with (setBinding can have changed it). */
   get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
+  // How full this session's context window is right now, in tokens — the SAME
+  // number the turn-complete usage payload reports (see the emit site near the
+  // end of send()), kept on the instance so a caller can read it BETWEEN turns.
+  //
+  // WHY this exists (Task 7, specialists): sizing a specialist's report against
+  // the parent's remaining headroom needs the parent's occupancy, and main has
+  // no per-session usage cache — the old one was deliberately deleted
+  // (ipc-handlers.ts, near the noteModelUsed wiring) and the StatusBar's own
+  // context gauge is renderer-side, computed from the event it receives.
+  //
+  // WHY NOT usage.inputTokens: that field SUMS every step of the turn, so it
+  // re-counts the whole history once per step (a 5-step turn reports ~5x the
+  // real occupancy — Destin, 2026-07-28). The last step's prompt already
+  // contains everything, so lastIn + lastOut is the honest "how full".
+  private _contextUsedTokens: number | null = null;
+  /** Tokens occupying this session's window after its last COMPLETED step, or
+   *  null when no step has ever reported usage (a session that has not run a
+   *  turn, or a provider that reports nothing). Mid-turn it is stale by at most
+   *  one step, which is fine for a budget heuristic — the alternative is a
+   *  per-step event nobody else needs. */
+  get contextUsedTokens(): number | null { return this._contextUsedTokens; }
+  /** This session's resolved context window in tokens (null when no source
+   *  could answer). Paired with contextUsedTokens: "remaining" needs both, and
+   *  the session is the only place that tracks the CURRENT one — setBinding
+   *  re-resolves it on a mid-session model swap. */
+  get contextWindowTokens(): number | null { return this.opts.contextLength ?? null; }
+
   // Ids of MCP servers left off the LAST buildAiTools() pass for budget reasons
   // (Task 6) — recomputed every call, so a UI reading this after buildAiTools
   // always sees the CURRENT reason, not a stale one from a prior model/binding.
@@ -1369,6 +1396,13 @@ export class HarnessSession extends EventEmitter {
 
         lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
         lastOutputTokens = step.usage.outputTokens;
+        // Publish the same how-full number the turn-complete payload below
+        // reports, one step at a time, so `contextUsedTokens` is readable
+        // between turns (and mid-turn, stale by one step) instead of only
+        // existing inside this closure. Guarded on inputTokens > 0 for the same
+        // reason the emit site is: a provider that reports nothing must not
+        // overwrite a real reading with a zero.
+        if (lastInputTokens > 0) this._contextUsedTokens = lastInputTokens + lastOutputTokens;
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;

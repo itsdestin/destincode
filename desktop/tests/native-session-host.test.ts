@@ -1288,30 +1288,32 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    // ---- Task 6 review fix 1: spawnSpecialist's stub ALWAYS throws (Task 7,
-    // the real run loop, doesn't exist yet) — before this fix its finally block
-    // released only the writer lock, leaving the child createChild() minted
-    // (live entry, disk header, retainModel ref, childrenOf registration) alive
-    // forever on EVERY Task call. Mirrors "destroying the parent destroys its
-    // children and releases their model ref" above, but drives the leak through
-    // spawnSpecialist directly (the stub itself) rather than through destroy(). --
-    it('a thrown spawnSpecialist stub run does not leak the minted child (leak guard)', async () => {
+    // ---- Task 6 review fix 1 (kept, retargeted at Task 7's real run loop):
+    // spawnSpecialist's finally block once released only the writer lock,
+    // leaving the child createChild() minted (live entry, disk header,
+    // retainModel ref, childrenOf registration) alive forever on EVERY Task
+    // call. Mirrors "destroying the parent destroys its children and releases
+    // their model ref" above, but drives the teardown through spawnSpecialist
+    // directly rather than through destroy(). The FAILED-run half of the same
+    // guard lives in specialist-run.test.ts. --
+    it('a completed spawnSpecialist run does not leak the minted child (leak guard)', async () => {
       const { store, h } = await withParent();
       const released: string[] = [];
       h.setModelReleasedHandler((id) => released.push(id));
 
-      await expect(h.spawnSpecialist('root-1', {
+      // The suite's default `factory` answers with one text step ("Hi there"),
+      // which IS this child's report — a one-shot specialist that says its
+      // piece and is torn down.
+      const { childId, report } = await h.spawnSpecialist('root-1', {
         specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
-      })).rejects.toThrow(/Task 7/);
+      });
+      expect(report).toContain('Hi there');
 
-      // Find the child the stub minted (store.list is the only route back to
-      // its id from out here — spawnSpecialist's rejection only names it inside
-      // the error text).
+      // The persisted record still names it as this parent's child.
       const childRow = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1');
-      expect(childRow).toBeDefined();
-      const childId = childRow!.sessionId;
+      expect(childRow?.sessionId).toBe(childId);
 
-      // No live child entry survives the throw — the leak guard's whole point.
+      // No live child entry survives the run — the leak guard's whole point.
       expect((h as any).live.has(childId)).toBe(false);
       expect(h.isNative(childId)).toBe(false);
       // De-registered from the parent's live children set too (destroy() does

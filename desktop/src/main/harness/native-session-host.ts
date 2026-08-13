@@ -36,6 +36,9 @@ import type { SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
+import { computeReportBudget } from './specialists/report-budget';
+import { truncateOutput, composeNotice } from './tools/truncate';
+import { APPROX_CHARS_PER_TOKEN } from './message-size';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
@@ -69,6 +72,39 @@ const NOOP_REMEMBERED_STORE: RememberedRuleStore = {
 type SendUnit = { text: string; attachments: string[] };
 
 const SEND_QUEUE_LIMIT = 10;
+
+// Specialists (Task 7) — the ONLY child transcript event types that are
+// re-emitted as stamped DISPLAY copies under the parent's session id.
+//
+// WHY exactly these three and nothing else: they are precisely what the
+// renderer's applySubagentEvent consumes (chat-reducer.ts) to fill the subagent
+// card's segments. Every OTHER type is persisted to the child's own file and
+// stops there, because a display copy is an event that LOOKS like the parent's
+// own — a stamped `turn-complete` would reach the conversation-record IPC
+// listener (noteModelUsed) and the conversation-title feeder under the PARENT's
+// id, ending the parent's turn in the reducer and attributing the child's model
+// usage to the parent. A stamped `session-error` would render the parent's
+// session as failed when only the child failed. `user-message` would put the
+// child's brief in the parent's timeline as if the user had typed it.
+const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+
+// The ONE reminder a silent specialist gets before its run is called a failure
+// (retry budget 1, spec §3). Deliberately a single short sentence: it is sent
+// as an ordinary user turn, so anything longer competes with the brief for the
+// child's attention.
+const EMPTY_REPORT_NUDGE = 'Your final message is your report — reply with your findings now.';
+
+/** What one specialist run produced. `usage` is summed across the run's turns
+ *  (the brief turn plus a nudge turn, if one was needed). */
+export interface SpecialistRunResult {
+  report: string;
+  /** Tool calls the child made, plus its final answering step. The transcript
+   *  has no per-step event, so this is counted from `tool-use` events rather
+   *  than read off the driver — good enough for a progress/telemetry number,
+   *  and it over-counts a step that emitted parallel tool calls. */
+  steps: number;
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
+}
 
 interface LiveEntry {
   session: HarnessSession;
@@ -199,17 +235,17 @@ export class NativeSessionHost extends EventEmitter {
     return this.activeWriterChild.has(parentId);
   }
 
-  /** Mint + (Task 7: actually run) a specialist child. THIN STUB for now —
-   *  Task 6's scope is the gate, the per-parent slot/writer bookkeeping, and
-   *  the wiring; Task 7's runSpecialist() delivers `opts.prompt` as the
-   *  child's first turn, awaits its natural completion, and returns its last
-   *  message (headroom-truncated to specialist.reportBudgetTokens). Task 6's
-   *  own tests never reach this method — the four typed refusals it covers
-   *  (unknown specialist / trivial prompt / at-capacity / writer-busy) all
-   *  return from tools/task.ts BEFORE this is ever called — so throwing here
-   *  is honest about what's real today rather than silently fabricating a
-   *  report. The writer-lock IS real from Task 6 on: it wraps the mint +
-   *  (future) run in try/finally so a throw during either still clears it. */
+  /** Mint a specialist child, run it to completion, and return its report
+   *  (Task 6's gate + bookkeeping, Task 7's run loop).
+   *
+   *  The whole foreground delegation flow lives here: createChild mints the
+   *  cold-started child (Task 5), runSpecialist delivers `opts.prompt` as its
+   *  first user turn and returns its last message, and this method wraps that
+   *  message with a header + transcript pointer after capping it against the
+   *  parent's remaining headroom. The Task tool (tools/task.ts) is what the
+   *  MODEL calls; it has already resolved the specialist and reserved the slot
+   *  before reaching here, and it renders a throw from this method as an
+   *  `isError` tool result rather than a dangling call. */
   async spawnSpecialist(parentId: string, opts: {
     specialist: SpecialistDefinition;
     prompt: string;
@@ -217,9 +253,23 @@ export class NativeSessionHost extends EventEmitter {
     parentToolCallId: string;
   }): Promise<{ childId: string; report: string }> {
     const { childId } = await this.createChild(parentId, opts);
+    // WRITER LOCK (Task 6 review handoff note 2): this is a check-then-set
+    // across an await — tools/task.ts checks isWriterBusy(), then we set the
+    // lock after createChild's awaits. That is safe under 1a's SERIAL tool
+    // execution (the driver runs one tool at a time, so no second Task call
+    // can interleave between the check and this line) and is deliberately left
+    // as-is. Plan 1b's parallel delegation breaks that assumption and must move
+    // the check and the set into one synchronous reserve-or-refuse step.
     if (opts.specialist.charter === 'read-write') this.activeWriterChild.set(parentId, childId);
     try {
-      throw new Error(`specialist ${childId} was created but its run loop (Task 7) is not implemented yet`);
+      // PRODUCE THE REPORT FIRST, tear down after (Task 6 review handoff note
+      // 1). Both statements below are pure/local once the run has finished, so
+      // by the time the finally block runs the report is already a value this
+      // method owns — a teardown failure can no longer discard work the child
+      // genuinely produced.
+      const run = await this.runSpecialist(childId, opts.prompt);
+      const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, body: run.report });
+      return { childId, report };
     } finally {
       // Fix 5 (review round 1): OWNER-CHECKED release. An unconditional delete
       // would clear whichever child currently holds parentId's writer lock,
@@ -227,15 +277,184 @@ export class NativeSessionHost extends EventEmitter {
       // parent once 1b adds parallel delegation — this finally block must only
       // ever release the lock IT set, never someone else's.
       if (this.activeWriterChild.get(parentId) === childId) this.activeWriterChild.delete(parentId);
-      // Fix 1 (review round 1): LEAK GUARD. The stub above always throws (Task 7,
-      // the real run loop, doesn't exist yet), so without this every Task call
-      // would permanently strand the child createChild() just minted — a live
-      // `this.live` entry, its on-disk header, a retainModel() ref (so its model
-      // could never fully unload), and its `childrenOf` registration. destroy()
-      // is what tears all of that back down; the throw itself is unchanged and
-      // still the honest signal that Task 7's run loop is the missing piece.
-      await this.destroy(childId);
+      // Fix 1 (review round 1): LEAK GUARD. Without this, a Task call would
+      // strand the child createChild() just minted — a live `this.live` entry,
+      // its on-disk header, a retainModel() ref (so its model could never fully
+      // unload), and its `childrenOf` registration. The child is a one-shot
+      // worker: its report is the only thing that outlives it (its transcript
+      // stays on disk), so it is torn down on EVERY exit path, success or not.
+      //
+      // SWALLOW-AND-LOG, never rethrow (handoff note 1): a throw out of a
+      // `finally` REPLACES whatever the try block was returning or throwing. So
+      // a teardown failure here would either discard a report the child already
+      // produced, or bury the real failure reason under a teardown error. Both
+      // are strictly worse than a logged teardown error plus the true outcome.
+      try {
+        await this.destroy(childId);
+      } catch (err) {
+        log('ERROR', 'NativeSessionHost', 'specialist teardown failed after the run finished', { childId, parentId, error: String(err) });
+      }
     }
+  }
+
+  /** Drive ONE specialist child to completion and return its last message.
+   *
+   *  Failure detection is EVENT-based, not promise-based: the child's turn
+   *  drain (`entry.running`) never rejects — runTurns try/catches its send()
+   *  (see send()) — so awaiting it only tells us the turn SETTLED, never
+   *  whether it succeeded. The transcript stream is what says which: a
+   *  `session-error` means the provider/stream failed, `user-interrupt` means
+   *  the user (or a parent teardown) stopped it, and `turn-complete`'s
+   *  stopReason distinguishes a natural finish from the step cap.
+   *
+   *  Throws (typed, with the child id) on every no-report outcome; the Task
+   *  tool renders that as an isError result for the parent model to read. */
+  private async runSpecialist(childId: string, prompt: string): Promise<SpecialistRunResult> {
+    const entry = this.live.get(childId);
+    if (!entry) throw new Error(`the specialist session ${childId} was gone before its work could start.`);
+
+    // ---- Observation state, written by the listener below ----
+    let errorText: string | null = null;      // a session-error ended a turn
+    let interrupted = false;                  // Stop / parent teardown reached the child
+    let stopReason: string | undefined;       // the LAST turn's stopReason
+    // Assistant text since the last tool-use. Text emitted BEFORE a tool call
+    // is narration ("let me check X"), not the report — the report is whatever
+    // the child says after its final tool call, so a tool-use resets this.
+    let sinceLastTool = '';
+    // The most recent non-empty block, kept for the step-cap case: a child cut
+    // off mid-plan never gets to write a final message, and its last narration
+    // beats returning nothing at all.
+    let lastNonEmpty = '';
+    let steps = 0;
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+
+    const onEvent = (event: TranscriptEvent) => {
+      switch (event.type) {
+        case 'assistant-text':
+          sinceLastTool += String(event.data.text ?? '');
+          if (sinceLastTool.trim()) lastNonEmpty = sinceLastTool;
+          break;
+        case 'tool-use':
+          steps += 1;
+          sinceLastTool = '';
+          break;
+        case 'turn-complete': {
+          stopReason = event.data.stopReason;
+          const u = event.data.usage;
+          if (u) {
+            usage.inputTokens += u.inputTokens; usage.outputTokens += u.outputTokens;
+            usage.cacheReadTokens += u.cacheReadTokens; usage.cacheCreationTokens += u.cacheCreationTokens;
+          }
+          break;
+        }
+        case 'session-error':
+          errorText = String(event.data.text ?? '').trim() || null;
+          break;
+        case 'user-interrupt':
+          interrupted = true;
+          break;
+        default:
+          break;   // every other type is persistence-only for this purpose
+      }
+    };
+    entry.session.on('transcript-event', onEvent);
+
+    /** Run one turn and wait for its whole drain to settle. */
+    const runTurn = async (text: string): Promise<void> => {
+      stopReason = undefined;
+      sinceLastTool = '';
+      const res = this.send(childId, text);
+      // send() only refuses for reasons that cannot apply to a freshly-minted,
+      // idle child (not live / queue full) — so this is a wiring bug, not a
+      // model outcome, and it says exactly which refusal happened.
+      if (res.status !== 'sent') throw new Error(`the specialist session ${childId} refused its turn (${res.status}${'reason' in res && res.reason ? `: ${res.reason}` : ''}).`);
+      await entry.running;
+    };
+
+    /** The report this turn produced, or null when the child said nothing. */
+    const reportSoFar = (): string | null => {
+      const capped = stopReason === 'max_steps';
+      const text = (sinceLastTool.trim() || (capped ? lastNonEmpty.trim() : '')) || '';
+      if (!text) return null;
+      // A step-capped child DID work and DID say something — the parent needs
+      // both the partial finding and the fact that it is partial.
+      return capped ? `${text}\n\n(stopped at its step limit)` : text;
+    };
+
+    /** Turn the run's terminal conditions into a typed throw. Checked after
+     *  EVERY turn, because the nudge turn can fail the same ways the first one
+     *  can. */
+    const throwIfEnded = (): void => {
+      if (errorText) throw new Error(`${errorText} (specialist session ${childId})`);
+      if (interrupted) throw new Error(`the specialist was stopped before it could report (specialist session ${childId}).`);
+      // The parent was destroyed / quiesced mid-run, which cascade-destroys its
+      // children — there is no session left to nudge or read from.
+      if (!this.live.has(childId)) throw new Error(`the specialist session ${childId} was torn down before it could report.`);
+    };
+
+    try {
+      await runTurn(prompt);
+      throwIfEnded();
+
+      let report = reportSoFar();
+      if (report === null) {
+        // ONE nudge, then accept or fail (retry budget 1, spec §3). NOT when
+        // the step cap is what ended the turn: that child has no steps left, so
+        // another turn would burn the same cap again and still say nothing.
+        if (stopReason === 'max_steps') {
+          throw new Error(`the specialist hit its step limit without producing a report (specialist session ${childId}).`);
+        }
+        await runTurn(EMPTY_REPORT_NUDGE);
+        throwIfEnded();
+        report = reportSoFar();
+      }
+      if (report === null) {
+        throw new Error(`the specialist finished without producing a report — no final message, even after one reminder (specialist session ${childId}).`);
+      }
+      // +1 for the step that produced the final message (see SpecialistRunResult).
+      return { report, steps: steps + 1, usage };
+    } finally {
+      // Detach BEFORE the caller tears the session down, so this listener can
+      // never observe teardown-time events (and so a run that throws does not
+      // leave a listener attached to a session the caller may keep alive).
+      entry.session.off('transcript-event', onEvent);
+    }
+  }
+
+  /** Wrap a child's last message as the tool result the parent model reads.
+   *
+   *  Three jobs: say WHO reported (the parent asked for a specialist, not for
+   *  an anonymous blob of text), cap the body against what the parent can still
+   *  afford, and point at the child's own transcript for anything that got cut.
+   *  Text-only truncation in 1a — spilling the overflow to a file is 1b, which
+   *  is why the pointer names the session rather than a path. */
+  private formatSpecialistReport(i: { parentId: string; childId: string; specialist: SpecialistDefinition; body: string }): string {
+    const parent = this.live.get(i.parentId)?.session;
+    const window = parent?.contextWindowTokens ?? null;
+    const used = parent?.contextUsedTokens ?? null;
+    // Infinity = "we cannot measure the parent's occupancy" (a parent that has
+    // not completed a step, or a provider that reports no usage). That degrades
+    // to the definition's static cap — see computeReportBudget.
+    const remaining = window != null && used != null ? window - used : Infinity;
+    const budgetTokens = computeReportBudget({
+      staticCapTokens: i.specialist.reportBudgetTokens,
+      parentRemainingTokens: remaining,
+      concurrentReporters: 1,   // 1a is FOREGROUND: the parent is blocked on exactly one child
+    });
+    const cut = truncateOutput(i.body, { maxChars: budgetTokens * APPROX_CHARS_PER_TOKEN });
+    // Same notice vocabulary every other capped tool result uses, so a cut
+    // report reads like a cut Bash/Grep result rather than a new dialect. The
+    // hint has to be in the PARENT's vocabulary — it cannot re-read this child
+    // (the session is torn down), so the advice is about the next delegation.
+    const notice = cut.truncated
+      ? composeNotice(undefined, { shown: cut.text.length, total: cut.totalChars },
+        'delegate a narrower piece of work, or ask for a shorter report')
+      : '';
+    // Task 8 replaces displayName with the child's assigned (fun) name; the
+    // role id stays alongside it either way, so the parent can always tell
+    // WHICH kind of specialist answered.
+    return `## Report from ${i.specialist.displayName} (${i.specialist.id})\n\n${cut.text}${notice}\n\n`
+      + `[full transcript: specialist session ${i.childId}]`;
   }
 
   // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
@@ -745,9 +964,12 @@ export class NativeSessionHost extends EventEmitter {
     if (!siblings) { siblings = new Set(); this.childrenOf.set(parentId, siblings); }
     siblings.add(childId);
     session.on('transcript-event', (event: TranscriptEvent) => {
-      // Persist on the child's OWN chain, to the child's own JSONL. Same
-      // serialization contract as wire()'s append, same swallow-and-log so one
-      // failed append cannot wedge the chain.
+      // (1) PERSISTENCE — on the child's OWN chain, to the child's own JSONL,
+      // with the ORIGINAL event (child sessionId) untouched. Same serialization
+      // contract as wire()'s append, same swallow-and-log so one failed append
+      // cannot wedge the chain. EVERY type lands here, including the ones that
+      // are never re-emitted below: the child's file is the complete record the
+      // report's "[full transcript: …]" pointer refers to.
       entry.appendChain = entry.appendChain
         .then(() => this.store.append(workDir, event))
         .catch((err) => {
@@ -755,6 +977,20 @@ export class NativeSessionHost extends EventEmitter {
             sessionId: childId, type: event.type, error: String(err),
           });
         });
+      // (2) DISPLAY (Task 7) — a stamped COPY, for the three types the
+      // renderer's subagent card consumes and NOTHING else (see
+      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break).
+      // The copy rides under the PARENT's session id, because that is the
+      // session a window actually owns; `parentAgentToolUseId` threads it into
+      // the parent's Task tool card and `agentId` identifies which child spoke.
+      // The original is never mutated — the persisted event above and this copy
+      // are two different objects on purpose.
+      if (!SUBAGENT_DISPLAY_TYPES.has(event.type)) return;
+      this.emit('transcript-event', {
+        ...event,
+        sessionId: parentId,
+        data: { ...event.data, parentAgentToolUseId: opts.parentToolCallId, agentId: childId },
+      } satisfies TranscriptEvent);
     });
     return { childId };
   }
