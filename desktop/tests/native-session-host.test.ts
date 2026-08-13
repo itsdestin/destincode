@@ -40,6 +40,13 @@ const CHUNKS = [
 ];
 const factory = async () => new MockLanguageModelV4({ doStream: async () => ({ stream: simulateReadableStream({ chunks: CHUNKS }) }) }) as any;
 
+// Fix pass 2 (Task 13): the constructor's 3rd param collapsed from a bare
+// contextLengthFor(binding) => Promise<number|null> into ONE closure that
+// also answers the engine's slot count (contextAndSlotsFor). Most fixtures
+// below don't care about either value — this stub answers "no source could
+// tell" for both, matching the old `async () => null`'s intent.
+const NO_CONTEXT = async () => ({ contextLength: null, totalSlots: null });
+
 // A ReadableStream that trickles chunks with a per-chunk delay so a turn can be
 // caught mid-stream (for the destroy-while-streaming test). The enqueue loop is
 // guarded so a mid-stream cancel (abort → iterator.return) doesn't surface as an
@@ -95,7 +102,7 @@ describe('NativeSessionHost', () => {
   let root: string; let host: NativeSessionHost;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
-    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -120,7 +127,7 @@ describe('NativeSessionHost', () => {
     await host.drain('s-1');
     await host.destroyAll();
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root);
     expect(resumed).toBe(true);
     expect(host2.getHistory('s-1')!.length).toBe(3);
@@ -143,7 +150,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
     await host.destroy('s-1');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-1')).toBe('model-B');
@@ -155,7 +162,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
     await host.destroy('s-2');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-2', root);
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-2')).toBe('header-model');
@@ -185,7 +192,7 @@ describe('NativeSessionHost', () => {
 
   it('destroy() while a stream is mid-emit: no throw, coherent prefix persisted', async () => {
     const store = new SessionStore(new NativeHome(root));
-    const midHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+    const midHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       midHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -220,7 +227,7 @@ describe('NativeSessionHost', () => {
     });
     // delayedFactory trickles chunks, so the first turn is genuinely mid-stream
     // when resume lands — the exact window where an orphan does its damage.
-    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+    const orphanHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -260,7 +267,7 @@ describe('NativeSessionHost', () => {
       if (!threw && event.type === 'assistant-text') { threw = true; throw new Error('disk hiccup'); }
       return realAppend(cwd, event);
     });
-    const failHost = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+    const failHost = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
     await failHost.create({ sessionId: 's-f', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     failHost.send('s-f', 'hello');       // M1: dispatch-only — wait for the turn separately
     await waitForTurnComplete(failHost, 1);
@@ -316,7 +323,7 @@ describe('NativeSessionHost', () => {
     it('destroyAll() also tears down the pooled MCP connections', async () => {
       const mcpDestroyAll = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: mcpDestroyAll },
       );
@@ -325,7 +332,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('destroyAll() works fine with no mcpManager wired (pre-Task-6 wiring)', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
       await expect(h.destroyAll()).resolves.toBeUndefined();
     });
   });
@@ -347,7 +354,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv0')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -361,7 +368,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv1')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -373,7 +380,7 @@ describe('NativeSessionHost', () => {
       acquire.mockClear();
 
       const h2 = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -388,7 +395,7 @@ describe('NativeSessionHost', () => {
     it('destroy() releases this session\'s hold on MCP servers', async () => {
       const release = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire: async () => fakeLease([], release) },
       );
@@ -415,7 +422,7 @@ describe('NativeSessionHost', () => {
       let n = 0;
       const acquire = vi.fn(async () => leases[n++]);
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -439,7 +446,7 @@ describe('NativeSessionHost', () => {
     it('a registry-wide acquire failure does not block session creation — the session just opens with no MCP servers', async () => {
       const acquire = vi.fn(async () => { throw new Error('registry file corrupt'); });
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -467,7 +474,10 @@ describe('NativeSessionHost', () => {
       for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
         expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(true);
       }
-      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
+      // Task 13: no live session under 'A' → maxSpecialistsFor's defensive
+      // fallback (HOSTED_MAX_CONCURRENT_SPECIALISTS), carried on the refusal
+      // as `max` so tools/task.ts can render the REAL resolved number.
+      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
     });
 
     it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
@@ -542,7 +552,116 @@ describe('NativeSessionHost', () => {
 
     it('readers do not consume the writer lock and cap at the profile max', () => {
       for (let i = 0; i < 4; i++) expect(host.reserveSpecialist('parent-1', { writer: false }).ok).toBe(true);
-      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
+      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+    });
+  });
+
+  // ---- Task 13: maxSpecialistsFor now resolves the PARENT'S OWN live
+  // CapabilityProfile snapshot (capability-profile.ts's maxConcurrentSpecialists)
+  // instead of the flat HOSTED_MAX_CONCURRENT_SPECIALISTS constant — a local
+  // session's real ceiling can be smaller than hosted's. The fallback constant
+  // above still applies whenever no live session backs the parent id (the
+  // 'never created' cases in the describe block above). ----
+  describe('specialist concurrency cap follows the profile (Task 13)', () => {
+    const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
+    // Fix pass 2: contextLengthFor collapsed into contextAndSlotsFor — this
+    // fixture doesn't care about slots (totalSlots: null keeps the Layer 3
+    // fallback/unknown-model floor of 1 in play for the first two tests).
+    const contextAndSlotsFor = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: null });
+
+    it('a local-engine parent (unknown model → Layer 3 fallback) caps reservations at 1, not the hosted constant', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'local-parent', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(h.reserveSpecialist('local-parent', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 1 });
+      await h.destroyAll();
+    });
+
+    it('a cloud/hosted parent is unaffected — still caps at HOSTED_MAX_CONCURRENT_SPECIALISTS', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'cloud-parent', cwd: root, binding: { providerId: 'openrouter', modelId: 'gpt-4o' } });
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        expect(h.reserveSpecialist('cloud-parent', { writer: false }).ok).toBe(true);
+      }
+      expect(h.reserveSpecialist('cloud-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+      await h.destroyAll();
+    });
+
+    // Fix pass (gap the review found): DiscoveredModel.totalSlots was built and
+    // tested at the capability-profile.ts layer, but nothing threaded a REAL
+    // engine reading into it — every local session silently fell back to the
+    // conservative floor of 1, a regression from the pre-Task-13 flat cap of 4.
+    // This is the closing link: a contextAndSlotsFor closure that answers a
+    // live 2-slot reading for a KNOWN local model (qwen3.6-35b-moe matches
+    // KNOWN_MODELS, 'full' tier, same modelId capability-profile.test.ts
+    // already proves clamps to a live reading) must make the HOST actually
+    // enforce 2, not 1 and not the hosted 4. Fix pass 2 folds the old separate
+    // slotCountFor closure into this same one — see the constructor param's
+    // comment for why that removes the shared-state race this test's sibling
+    // (below, "no cross-talk") now covers directly.
+    it('a KNOWN local model with a live 2-slot engine reading caps reservations at 2', async () => {
+      const localTwoSlots = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: b.providerId === 'local' ? 2 : null });
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, localTwoSlots as any, providerTypeFor as any, async () => null,
+      );
+      await h.create({ sessionId: 'local-parent-2', cwd: root, binding: { providerId: 'local', modelId: 'qwen3.6-35b-moe-q4' } });
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 2 });
+      await h.destroyAll();
+    });
+
+    // Fix pass 2 concurrency regression: the OLD design shared one /props
+    // reading between two closures (contextLengthFor, slotCountFor) through a
+    // variable scoped at the ipc-handlers.ts wiring site — correct only if
+    // every resolveContextAndProfile call awaited both closures back-to-back
+    // with nothing else able to run in between. Two local-engine sessions
+    // starting while the OTHER is still mid-resolution is exactly the
+    // interleaving that variable could not survive. The new design has no
+    // shared state to interleave: this drives two overlapping create() calls
+    // for two DIFFERENT local bindings with two DIFFERENT slot counts and
+    // proves each session's resolved cap is its own — never the other's,
+    // never zeroed by the other landing in between.
+    it('two overlapping local-engine session starts each resolve their OWN slot count — no cross-talk', async () => {
+      let releaseA: () => void;
+      const stallA = new Promise<void>((res) => { releaseA = res; });
+      // Both ids must match a KNOWN_MODELS entry — an unknown local model hits
+      // the Layer 3 fallback, which floors to 1 UNCONDITIONALLY regardless of
+      // totalSlots (capability-profile.ts's localFallback), which would mask
+      // the exact cross-talk this test exists to catch. 'model-a' hits the
+      // Qwen 3.6 MoE entry, 'model-b' the Qwen 3.5 9B entry — different
+      // families, so a mix-up between them is unambiguous.
+      //
+      // model-a's read stalls mid-flight (simulating its /props round trip
+      // still being in the air) until the test explicitly releases it —
+      // model-b's read resolves immediately, landing WHILE model-a is still
+      // pending. The old shared-variable design could not tell these apart.
+      const contextAndSlotsFor = async (b: any) => {
+        if (b.modelId === 'model-a-qwen3.6-35b-moe') { await stallA; return { contextLength: 8192, totalSlots: 2 }; }
+        return { contextLength: 8192, totalSlots: 4 };
+      };
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null,
+      );
+
+      const createA = h.create({ sessionId: 'race-a', cwd: root, binding: { providerId: 'local', modelId: 'model-a-qwen3.6-35b-moe' } });
+      // Started WHILE createA is still stalled inside its own contextAndSlotsFor
+      // await — the exact overlap the review flagged.
+      await h.create({ sessionId: 'race-b', cwd: root, binding: { providerId: 'local', modelId: 'model-b-qwen3.5-9b' } });
+      releaseA!();
+      await createA;
+
+      // race-a's own reading (2 slots) — NOT 4 (race-b's), NOT 1 (floored by
+      // a stale/null read).
+      expect(h.reserveSpecialist('race-a', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-a', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-a', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 2 });
+
+      // race-b's own reading (4 slots) — unaffected by race-a's later resolve.
+      for (let i = 0; i < 4; i++) expect(h.reserveSpecialist('race-b', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-b', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 4 });
+
+      await h.destroyAll();
     });
   });
 
@@ -551,11 +670,11 @@ describe('NativeSessionHost', () => {
     // Binding-aware fakes: a 'local' provider is a small local engine; anything
     // else is a cloud provider. Reach into the live session's resolved profile.
     const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
-    const contextLengthFor = async (b: any) => (b.providerId === 'local' ? 8192 : 200_000);
+    const contextAndSlotsFor = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: null });
     const profileOf = (h: NativeSessionHost, id: string) => ((h as any).live.get(id).session as any).profile;
 
     it('a small local-engine binding yields a simplified profile; a swap to cloud re-resolves to full', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
       await h.create({ sessionId: 's', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
       expect(profileOf(h, 's').maxToolPresentation).toBe('simplified');
       expect(profileOf(h, 's').promptVariant).toBe('local-small');
@@ -578,7 +697,7 @@ describe('NativeSessionHost', () => {
     // fail this exact assertion.
     it('a discovered supportsVision:true from visionSupportFor reaches the resolved profile', async () => {
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
         async () => true,
       );
       await h.create({ sessionId: 'v', cwd: root, binding: { providerId: 'openrouter', modelId: 'vision-model' } });
@@ -592,7 +711,7 @@ describe('NativeSessionHost', () => {
     // openrouter has no VISION_PROVIDERS default, so this pins supportsVision: false.
     it('visionSupportFor returning null leaves the profile exactly as it was before this task', async () => {
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
         async () => null,
       );
       await h.create({ sessionId: 'v2', cwd: root, binding: { providerId: 'openrouter', modelId: 'unknown-model' } });
@@ -609,7 +728,7 @@ describe('NativeSessionHost', () => {
 
     it('a NON-local binding matching a registry family is NOT clamped to the registry ceiling', async () => {
       // Same model id, same raw 1M window; only the provider TYPE differs.
-      const bigWindow = async () => 1_000_000;
+      const bigWindow = async () => ({ contextLength: 1_000_000, totalSlots: null });
       const typeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
       const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, bigWindow as any, typeFor as any, async () => null);
 
@@ -629,7 +748,7 @@ describe('NativeSessionHost', () => {
     // A host wired with a REAL PermissionStore (over the temp home) + an injected
     // app version, driving the Write-then-stop turn.
     const permHost = () => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
       new PermissionStore(new NativeHome(root)), '9.9.9',
     );
 
@@ -705,7 +824,8 @@ describe('NativeSessionHost', () => {
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, store, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
+        store, '9.9.9',
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
@@ -740,7 +860,8 @@ describe('NativeSessionHost', () => {
         removeProject: async () => false,
       };
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
+        hangingStore, '9.9.9',
       );
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -777,7 +898,7 @@ describe('NativeSessionHost', () => {
 
     /** A host wired to the given remembered-rule store, driving the Write-then-stop turn. */
     const revokeHost = (permStore: any) => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
       permStore, '9.9.9',
     );
 
@@ -938,7 +1059,7 @@ describe('NativeSessionHost', () => {
 
     it('create stamps the chosen preset in the header and seeds its default mode', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's1', cwd: root, binding, presetId: 'coder' });
       expect(store.readHeader('s1', root)?.harnessId).toBe('coder');
       expect(h.getPermissionMode('s1')).toBe('auto-edit');
@@ -947,7 +1068,7 @@ describe('NativeSessionHost', () => {
 
     it('create defaults to assistant when no preset is given', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's2', cwd: root, binding });
       expect(store.readHeader('s2', root)?.harnessId).toBe('assistant');
       expect(h.getPermissionMode('s2')).toBe('ask');
@@ -959,7 +1080,7 @@ describe('NativeSessionHost', () => {
       const store = new SessionStore(new NativeHome(root));
       await store.create({ v: 1, sessionId: 'legacy1', harnessId: 'chat', binding, cwd: root, createdAt: Date.now() });
 
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
       expect(await h.resume('legacy1', root)).toBe(true);
       expect(h.getHarnessId('legacy1')).toBe('assistant');
       expect(store.readHeader('legacy1', root)?.harnessId).toBe('chat'); // header untouched — mapping is read-side
@@ -968,7 +1089,7 @@ describe('NativeSessionHost', () => {
 
     it('an explicit user mode flip still beats the preset default', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's3', cwd: root, binding, presetId: 'coder' });
       h.setPermissionMode('s3', 'ask');
       expect(h.getPermissionMode('s3')).toBe('ask');
@@ -990,7 +1111,7 @@ describe('NativeSessionHost', () => {
     let id: string;
 
     beforeEach(async () => {
-      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null, async () => null, async () => null);
+      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, NO_CONTEXT, async () => null, async () => null);
       id = 'q-1';
       await host.create({ sessionId: id, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     });
@@ -1077,7 +1198,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('a failed turn (factory throw) does not strand the queue', async () => {
-      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null, async () => null, async () => null);
+      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), NO_CONTEXT, async () => null, async () => null);
       await errHost.create({ sessionId: 'e-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const types: string[] = [];
       errHost.on('transcript-event', (e) => types.push(e.type));
@@ -1133,7 +1254,7 @@ describe('NativeSessionHost', () => {
     it('quiesce clears the queue, aborts mid-stream, and no appends occur after it resolves', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       qHost.send('qz', 'long');              // slow (delayedFactory) turn in flight
       qHost.send('qz', 'queued-survivor');   // FIFO'd behind it — must NEVER run
@@ -1154,7 +1275,7 @@ describe('NativeSessionHost', () => {
     it('quiesce catches a same-tick send (setImmediate defer) — the turn is aborted, never completed', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       // send() and quiesce() in the SAME synchronous tick. send() defers its
       // runTurns dispatch one macrotask (setImmediate), so an interrupt that ran
@@ -1184,7 +1305,7 @@ describe('NativeSessionHost', () => {
     function bootHost(modelFactory: any = factory, skillCatalog?: any) {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
-        store, modelFactory, async () => null, async () => null, async () => null,
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, skillCatalog,
       );
       return { store, h };
@@ -1478,7 +1599,7 @@ describe('NativeSessionHost', () => {
         stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
         stream(...textChunks('t', 'done'), finishChunk('stop')),
       ]) as any;
-      const h = new NativeSessionHost(store, globOnce, async () => null, async () => null, async () => null,
+      const h = new NativeSessionHost(store, globOnce, NO_CONTEXT, async () => null, async () => null,
         { rulesFor, remember: async () => { /* no-op */ } });
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const sub = path.join(root, 'sub-perms');
@@ -1587,7 +1708,7 @@ describe('NativeSessionHost', () => {
     it('interrupt(parentId) does NOT cascade to a BACKGROUND specialist child — it keeps working', async () => {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
-        store, delayedFactory, async () => null, async () => null, async () => null,
+        store, delayedFactory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
       );
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });

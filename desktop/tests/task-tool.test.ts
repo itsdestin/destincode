@@ -16,7 +16,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskTool } from '../src/main/harness/tools/task';
 import type { ToolContext } from '../src/main/harness/tools/types';
-import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../src/main/harness/specialists/limits';
+import { SPECIALIST_SPAWN_BUDGET_PER_SESSION, HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 
 interface RunOpts {
   slotFree?: boolean;
@@ -44,7 +44,11 @@ function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
       specialists: {
         reserve: (parentId: string, reserveOpts: { writer: boolean }) => {
           if (reserveOpts.writer && opts.writerBusy) return { ok: false, reason: 'writer-busy' } as const;
-          if (opts.slotFree === false) return { ok: false, reason: 'at-capacity' } as const;
+          // Task 13: the real reserveSpecialist() now carries the RESOLVED
+          // ceiling on an at-capacity refusal (native-session-host.ts) —
+          // this fake mirrors that shape so task.ts's copy-interpolation
+          // (`reservation.max`) is what actually gets exercised here.
+          if (opts.slotFree === false) return { ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS } as const;
           return { ok: true, token: { parentId, writer: reserveOpts.writer } } as const;
         },
         release,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveProfile, effectiveContextForModel, CLOUD_DEFAULT, type DiscoveredModel } from '../src/main/harness/capability-profile';
 import type { KnownModelEntry } from '../src/main/harness/known-models';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 
 const local = (modelId: string, contextLength: number | null): DiscoveredModel => ({ providerType: 'local-engine', modelId, contextLength });
 
@@ -329,5 +330,58 @@ describe('supportsVision — three-level precedence (registry > discovered > pro
       { providerType: 'openrouter', modelId: 'special-novision-model', contextLength: 128_000, supportsVision: true },
       registryVisionFalse,
     ).supportsVision).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 13 — maxConcurrentSpecialists: the per-parent specialist concurrency
+// ceiling moves from the flat HOSTED_MAX_CONCURRENT_SPECIALISTS constant onto
+// the profile. Hosted/cloud stays the flat spec constant (CLOUD_DEFAULT); a
+// local session's ceiling is derived from the ENGINE's own measured slot
+// count (DiscoveredModel.totalSlots, read from the same /props call that
+// already supplies contextLength — see engine-dependencies.md § "Parallel
+// slots"), clamped to [1, 4]. An UNKNOWN local model (Layer 3) gets the
+// conservative floor unconditionally — same posture as canDelegate, which is
+// already false for it, so the Task tool is never even attached.
+// ---------------------------------------------------------------------------
+describe('maxConcurrentSpecialists (Task 13 — local concurrency from the engine, hosted from the profile)', () => {
+  it('hosted/cloud providers get the flat spec constant', () => {
+    expect(CLOUD_DEFAULT.maxConcurrentSpecialists).toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS);
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 128_000 }).maxConcurrentSpecialists, providerType)
+        .toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS);
+    }
+  });
+
+  it('an UNKNOWN local model gets the conservative floor of 1, even when a live slot count is provided', () => {
+    // Layer 3 is unconditional — an unvetted model's real behavior under
+    // concurrent load is unknown regardless of what the engine reports, the
+    // same reasoning canDelegate already applies to this layer.
+    expect(resolveProfile(local('mystery-3b', 8_192)).maxConcurrentSpecialists).toBe(1);
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'mystery-3b', contextLength: 8_192, totalSlots: 4 }).maxConcurrentSpecialists).toBe(1);
+  });
+
+  it('a KNOWN local model with a live slot reading clamps to it (within 1-4)', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 4 }, registry).maxConcurrentSpecialists).toBe(4);
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 2 }, registry).maxConcurrentSpecialists).toBe(2);
+  });
+
+  it('a KNOWN local model clamps a slot reading ABOVE 4 down to the ceiling', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 8 }, registry).maxConcurrentSpecialists).toBe(4);
+  });
+
+  it('a KNOWN local model clamps a slot reading of 0 up to the floor of 1', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 0 }, registry).maxConcurrentSpecialists).toBe(1);
+  });
+
+  it('a KNOWN local model with NO slot count on this build falls back to 1, not the ceiling', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    // totalSlots absent entirely (the DiscoveredModel never set it).
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).maxConcurrentSpecialists).toBe(1);
+    // totalSlots explicitly null (the /props read ran but reported nothing).
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: null }, registry).maxConcurrentSpecialists).toBe(1);
   });
 });

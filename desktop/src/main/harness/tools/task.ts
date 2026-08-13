@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 import { resolveSpecialist, listSpecialists } from '../specialists/registry';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
+import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 
 // Minimal weak-model hardening (plan 1a): a specialist has NO access to the
 // parent conversation, so a one-line prompt like "do the thing" leaves it to
@@ -160,7 +160,12 @@ export function createTaskTool(): NativeTool<TaskArgs> {
           // Fix: the parenthetical was closing before "concurrent specialists",
           // reading as "(max 3) concurrent specialists" instead of qualifying
           // the whole noun phrase — "at capacity (max 3 concurrent specialists)".
-          text: `Refused: this session is at capacity (max ${HOSTED_MAX_CONCURRENT_SPECIALISTS} concurrent specialists). `
+          //
+          // Task 13: reservation.max is the RESOLVED ceiling reserveSpecialist
+          // actually enforced (a local session's engine-measured cap can be
+          // smaller than the hosted constant) — never a hardcoded constant,
+          // per error-message-standards.md ("must be specific and accurate").
+          text: `Refused: this session is at capacity (max ${reservation.max} concurrent specialists). `
             + 'Wait for one of the running specialists to finish before starting another.',
           isError: true,
         };

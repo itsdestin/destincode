@@ -45,16 +45,28 @@ export interface ToolServices {
    *  gates the tool on (harness-session.ts's syncTaskTool). */
   specialists?: {
     /** Task 1 (plan 1b) — reserve one of this parent's concurrent-specialist
-     *  slots (HOSTED_MAX_CONCURRENT_SPECIALISTS, per-parent) AND, for a
+     *  slots (the parent's resolved CapabilityProfile.maxConcurrentSpecialists
+     *  ceiling, per-parent — see the Task 13 paragraph below; NOT the flat
+     *  HOSTED_MAX_CONCURRENT_SPECIALISTS constant, which only the cloud/hosted
+     *  layer of that profile actually uses) AND, for a
      *  writer request, the single-writer lock (spec §5: two concurrent
      *  write-capable children could race edits to the same files) — both in
      *  ONE synchronous call. Replaces 1a's tryReserveSlot/isWriterBusy pair:
      *  that split let a caller check isWriterBusy, then set the lock after an
      *  await elsewhere, which two parallel Task calls could both slip through.
      *  `ok: false` never spawns; a successful reservation MUST be paired with
-     *  exactly one release() call, however the spawn turns out. */
+     *  exactly one release() call, however the spawn turns out.
+     *
+     *  Task 13: the 'at-capacity' refusal carries `max`, the RESOLVED ceiling
+     *  that was actually enforced (profile-derived for a local session, the
+     *  flat hosted constant otherwise) — tools/task.ts renders it directly
+     *  into the refusal copy so the number the model sees always matches the
+     *  number that was checked, never a hardcoded constant that could read
+     *  differently from what a local session's engine-measured cap allows. */
     reserve(parentId: string, opts: { writer: boolean }):
-      { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' };
+      { ok: true; token: SpecialistReservation }
+      | { ok: false; reason: 'at-capacity'; max: number }
+      | { ok: false; reason: 'writer-busy' };
     release(token: SpecialistReservation): void;
     /** Task 12, item 3 — spend one unit of this parent's LIFETIME spawn
      *  budget (SPECIALIST_SPAWN_BUDGET_PER_SESSION, specialists/limits.ts).

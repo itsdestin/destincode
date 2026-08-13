@@ -234,7 +234,10 @@ export class NativeSessionHost extends EventEmitter {
   // fan-out must not be capped, or blocked, by an UNRELATED session's
   // children). Both are keyed by PARENT session id, never by child id.
   //   specialistSlots: how many children this parent currently has running,
-  //     against HOSTED_MAX_CONCURRENT_SPECIALISTS (specialists/limits.ts).
+  //     against maxSpecialistsFor(parentId) (Task 13: profile-derived — see
+  //     capability-profile.ts's maxConcurrentSpecialists; HOSTED_MAX_CONCURRENT_SPECIALISTS,
+  //     specialists/limits.ts, remains the value for a hosted profile AND the
+  //     defensive fallback below when no live profile is available).
   //   activeWriterChild: the single write-capable (charter: 'read-write')
   //     child currently running under this parent, if any — the single-writer
   //     invariant (two concurrent write-capable children could race edits to
@@ -255,10 +258,18 @@ export class NativeSessionHost extends EventEmitter {
   // (ipc-handlers.ts always injects the shared nativeHome).
   private ledger?: DelegationLedger;
 
-  /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
-   *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
-  private maxSpecialistsFor(_parentId: string): number {
-    return HOSTED_MAX_CONCURRENT_SPECIALISTS;
+  /** Task 13 — the parent's own resolved CapabilityProfile now carries its
+   *  concurrency ceiling (maxConcurrentSpecialists): the spec's flat hosted
+   *  constant for a cloud/hosted session, an engine-measured (clamped 1-4)
+   *  number for a known local model, 1 for an unrecognized one — see
+   *  capability-profile.ts. Falls back to HOSTED_MAX_CONCURRENT_SPECIALISTS
+   *  only when the parent isn't live to ask (reserveSpecialist is only ever
+   *  called against a live parent in production, so this branch shouldn't be
+   *  reachable there — but a missing snapshot must degrade to the
+   *  conservative hosted number, never silently allow unbounded fan-out). */
+  private maxSpecialistsFor(parentId: string): number {
+    return this.live.get(parentId)?.session.profileSnapshot.maxConcurrentSpecialists
+      ?? HOSTED_MAX_CONCURRENT_SPECIALISTS;
   }
 
   // WHY: 1a checked writer-busy in task.ts and set the lock after an await in
@@ -266,10 +277,17 @@ export class NativeSessionHost extends EventEmitter {
   // this plan. Reserve slot AND writer in one synchronous step; the token is the
   // only way to release, so a throw between reserve and spawn can't leak either.
   reserveSpecialist(parentId: string, opts: { writer: boolean }):
-    { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' } {
+    { ok: true; token: SpecialistReservation }
+    | { ok: false; reason: 'at-capacity'; max: number }
+    | { ok: false; reason: 'writer-busy' } {
     if (opts.writer && this.activeWriterChild.has(parentId)) return { ok: false, reason: 'writer-busy' };
     const current = this.specialistSlots.get(parentId) ?? 0;
-    if (current >= this.maxSpecialistsFor(parentId)) return { ok: false, reason: 'at-capacity' };
+    const max = this.maxSpecialistsFor(parentId);
+    // Task 13: carry the RESOLVED ceiling on the refusal itself — tools/task.ts
+    // renders `max` straight into the at-capacity message, so a local
+    // session's real (possibly smaller) ceiling is what the model reads,
+    // never a hardcoded hosted constant that doesn't match what was enforced.
+    if (current >= max) return { ok: false, reason: 'at-capacity', max };
     this.specialistSlots.set(parentId, current + 1);
     const token: SpecialistReservation = { parentId, writer: opts.writer };
     if (opts.writer) this.activeWriterChild.set(parentId, RESERVED_WRITER); // placeholder until a childId binds
@@ -659,12 +677,24 @@ export class NativeSessionHost extends EventEmitter {
   constructor(
     private store: SessionStore,
     private modelFactory: ModelFactory,
-    private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
+    // Fix pass 2 (Task 13): ONE closure now answers both the context window
+    // AND the engine's real parallel-slot count, from ONE call. Before this,
+    // contextLengthFor and a separate slotCountFor closure shared one /props
+    // reading through a variable scoped at the ipc-handlers.ts wiring site
+    // (`lastLocalSlotReading`) — correct only if every caller awaited the two
+    // closures back-to-back for the SAME binding with nothing else able to
+    // run in between. Two local-engine sessions starting concurrently (or a
+    // cloud binding's resolution landing between the two awaits, which resets
+    // the shared variable to null) could silently read each other's slot
+    // count, or read null instead of a real number — with no throw, just a
+    // wrong cap. Collapsing to one return value removes the shared state
+    // entirely: there is no ordering left to get wrong.
+    private contextAndSlotsFor: (binding: ModelBinding) => Promise<{ contextLength: number | null; totalSlots: number | null }>,
     // Resolves a binding's provider TYPE (local-engine / openrouter / anthropic /
     // …) so the host can pick the right CapabilityProfile (Task 5). A binding
     // whose provider is unknown returns null → resolveContextAndProfile falls back
-    // to a cloud-safe default. Positioned right after contextLengthFor because the
-    // two are resolved together for every create/resume/swap.
+    // to a cloud-safe default. Positioned right after contextAndSlotsFor because
+    // the two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Per-model vision fact read from the provider catalog's declared input
     // modalities (Task 6c). Today only OpenRouter's catalog can actually
@@ -676,18 +706,18 @@ export class NativeSessionHost extends EventEmitter {
     // behavior (DiscoveredModel.supportsVision left undefined) — it is never
     // allowed to throw. It is also never allowed to block a NON-OpenRouter
     // session start; for a live OpenRouter binding it does await the same
-    // bounded (AbortSignal.timeout-guarded) catalog fetch contextLengthFor
+    // bounded (AbortSignal.timeout-guarded) catalog fetch contextAndSlotsFor
     // already pays for that binding, so it is not fully non-blocking there —
     // see the ipc-handlers.ts construction site for the short-circuit that
     // makes this true. Positioned right after providerTypeFor for the same
-    // reason that one sits after contextLengthFor: all three are resolved
+    // reason that one sits after contextAndSlotsFor: all three are resolved
     // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 5-arg test constructions (store, modelFactory,
-    // contextLengthFor, providerTypeFor, visionSupportFor — the first four params
-    // plus Task 6c's new closure have no defaults) still compile; the real
-    // wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
+    // contextAndSlotsFor, providerTypeFor, visionSupportFor — these five have no
+    // defaults) still compile; the real wiring (ipc-handlers) injects a
+    // PermissionStore over ~/.youcoded/.
     private permissionStore: RememberedRuleStore = NOOP_REMEMBERED_STORE,
     // Injected because electron's `app` is not importable in tests (mirrors the
     // other injected functions/values above). Feeds the <env> block of the
@@ -872,7 +902,14 @@ export class NativeSessionHost extends EventEmitter {
    *  provider type + model id + that clamped context. An unknown provider type
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
   private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
-    const raw = await this.contextLengthFor(binding);
+    // Fix pass 2 (Task 13): ONE call gets both the context window and the
+    // engine's real slot count — see the contextAndSlotsFor constructor
+    // param's comment for why this replaces two separately-injected closures
+    // that used to share one /props reading through a variable at the
+    // ipc-handlers.ts wiring site. There is nothing left to order: this is
+    // the single await that produces both values for this binding.
+    const { contextLength: raw, totalSlots } = await this.contextAndSlotsFor(binding);
+    const discoveredSlots = totalSlots ?? undefined;
     const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
     // The registry ceiling (effectiveContextForModel) is a LOCAL-model concern: it
     // caps a small GGUF loaded at a too-large -c to its real trained window. But
@@ -883,12 +920,19 @@ export class NativeSessionHost extends EventEmitter {
     // cloud/hosted bindings pass their real window through unchanged.
     const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
     // null (no source could answer — the closure's convention, matching
-    // contextLengthFor/providerTypeFor above) becomes undefined on the
+    // contextAndSlotsFor/providerTypeFor above) becomes undefined on the
     // DiscoveredModel, which is visionFor()'s OWN "not discovered" sentinel —
     // it then falls through to the registry/provider-type default exactly as
     // it did before this closure existed.
     const discoveredVision = (await this.visionSupportFor(binding)) ?? undefined;
-    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision });
+    const profile = resolveProfile({
+      providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision,
+      // Threads the engine's real slot reading into the known-model overlay's
+      // concurrency clamp (capability-profile.ts's localSlotCap). undefined
+      // for every non-local-engine binding — the ipc-handlers wiring never
+      // queries the engine for those.
+      totalSlots: discoveredSlots,
+    });
     return { contextLength, profile };
   }
 
