@@ -668,4 +668,158 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(spilled.length).toBe(huge.length); // the FULL, uncapped body
     expect(spilled.startsWith(huge.slice(0, 200))).toBe(true);
   });
+
+  // ---- Fix pass (external review, 2026-08-12): three follow-on gaps ----------
+
+  it('Finding 1: delivery of a spilled oversized report reads the FULL body back from disk, not the capped ledger copy', async () => {
+    // The ledger's own rawReport is capped at RAW_REPORT_CAP_CHARS on every
+    // write (delegation-ledger.ts's update()) — formatting delivery from
+    // THAT copy alone understates the report's true size in
+    // formatSpecialistReport's truncation notice for anything the completion
+    // handler had to spill to disk. Proof: the notice must cite the FULL
+    // body's length (bigger than the cap), not the capped copy's.
+    const huge = 'z'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    // The notice must cite the REAL total (the spilled file's length), not
+    // the ledger's capped copy — proof delivery read reportPath back rather
+    // than formatting from rec.rawReport alone.
+    expect(injected.data.text).toContain(`of ${huge.length} chars`);
+    expect(injected.data.text).not.toContain(`of ${RAW_REPORT_CAP_CHARS} chars`);
+  });
+
+  it('Finding 2: a background completion-write failure does not strand the report — a retry recovers it and still delivers it to the parent', async () => {
+    // runDelegation's own completion write (ledger.update, inside its own
+    // try/catch) is deliberately log-only on failure. Before this fix,
+    // NOTHING downstream of runDelegation on the background path ever
+    // captured the resolved run — a failed write left the ledger record
+    // stuck at 'running' forever: never claimed (claimUndelivered only
+    // selects 'completed'/'failed'), never delivered, never even surfaced as
+    // a failure. This simulates exactly that write failing, then proves the
+    // report still reaches the parent.
+    const model = scriptedModel([
+      stream(...textChunks('t', 'REPORT: done via background'), finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    const realUpdate = ledger.update.bind(ledger);
+    let primaryWriteAttempts = 0;
+    // Fail ONLY the primary completion write (status: 'completed' with a
+    // report body) — every other ledger.update call (e.g. confirmDelivered's
+    // bare { delivered: true } patch) goes through untouched, so this pins
+    // the retry's recovery, not a coincidentally-broken ledger overall.
+    vi.spyOn(ledger, 'update').mockImplementation(async (...args: any[]) => {
+      const [parentCwd, parentId, childId, patch] = args as [string, string, string, any];
+      if (patch.status === 'completed' && patch.rawReport !== undefined) {
+        primaryWriteAttempts++;
+        throw new Error('simulated disk failure while recording specialist completion');
+      }
+      return realUpdate(parentCwd, parentId, childId, patch);
+    });
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    // The parent still learns the truth: the report is injected once the
+    // retry recovers the record, delivered at the next idle boundary.
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toContain('REPORT: done via background');
+
+    // The ledger record itself reflects the recovered completion — never a
+    // 'running' row stranded where nothing will ever claim it.
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.status).toBe('completed');
+    expect(rec.delivered).toBe(true);
+    expect(primaryWriteAttempts).toBeGreaterThan(0); // the primary write really did fail first
+  });
+
+  it('Finding 3: a destroy() racing the delivery loop leaves the report claimable again, never falsely confirmed', async () => {
+    // The pre-existing queue-drain loop rechecks `this.live.get(sessionId)
+    // !== entry` after every turn because destroy() can land mid-turn. The
+    // delivery loop reused the same captured `entry` across three awaits
+    // with no equivalent recheck — HarnessSession.destroy() aborts and
+    // removeAllListeners()s (which is what actually stops appends being
+    // persisted) WITHOUT throwing and WITHOUT setting any flag runNotice
+    // checks, so an orphaned runNotice() call completes normally, having
+    // shown the report to nobody. Simulate that exact "resolves normally on
+    // a dead session" shape directly (rather than fighting HarnessSession's
+    // real abort timing) by overriding the live session's own runNotice with
+    // a manually-gated stub, destroying the parent while it's paused
+    // mid-call, then releasing it.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const ledger = (host as any).ledger;
+    await ledger.recordStart(root, 'root-1', {
+      childId: 'child-x', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-x', workDir: root,
+      description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+      delivered: false, owner: OWNER, missedSteers: [],
+    });
+    await ledger.update(root, 'root-1', 'child-x', { status: 'completed', endedAt: Date.now(), steps: 1, rawReport: 'REPORT: done' });
+
+    const entry = (host as any).live.get('root-1');
+    let enteredNotice = false;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((res) => { releaseGate = res; });
+    // Replace the live session's runNotice with a stub that pauses mid-call
+    // (mirrors runNotice being suspended on an in-flight provider stream) and
+    // then RESOLVES NORMALLY (no throw) once released — exactly the "no
+    // throw" shape the WHY comment on the fix names.
+    entry.session.runNotice = vi.fn(async () => { enteredNotice = true; await gate; });
+
+    (host as any).queueDelivery('root-1');
+    await vi.waitFor(() => expect(enteredNotice).toBe(true));
+
+    // destroy() lands WHILE the delivery loop is awaiting runNotice — the
+    // exact race the fix closes.
+    await host.destroy('root-1');
+    releaseGate();
+
+    // The record must come back CLAIMABLE (not confirmed delivered): status
+    // stays 'completed', delivered stays false, and the lease was released
+    // rather than left dangling.
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === 'child-x');
+      expect(rec?.claimedBy).toBeUndefined();
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === 'child-x');
+    expect(rec.status).toBe('completed');
+    expect(rec.delivered).toBe(false);
+  });
 });

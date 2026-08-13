@@ -244,6 +244,25 @@ export class NativeHome {
     return p;
   }
 
+  /**
+   * Read back an artifact written by writeSessionArtifact(), given the
+   * ABSOLUTE path it returned. Added for the Task 4 fix-pass (finding 1,
+   * external review 2026-08-12): the completion handler spills an oversized
+   * specialist report to disk, but delivery was formatting from the ledger's
+   * own capped copy and never reading the spill file back — this is the read
+   * half of that write. Returns null (never throws) on ANY read failure —
+   * missing file, permission error, whatever — so a caller can fall back to
+   * the capped in-ledger copy instead of failing delivery outright over a
+   * spill file that's gone missing.
+   */
+  readSessionArtifact(absolutePath: string): string | null {
+    try {
+      return fs.readFileSync(absolutePath, 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
   /** Enumerate every sessions/<slug>/<id>.jsonl with stat info (for browse/resume UIs). */
   listSessionFiles(): SessionFileInfo[] {
     const base = path.join(this.dir, 'sessions');

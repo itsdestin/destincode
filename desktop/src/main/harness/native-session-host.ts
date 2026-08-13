@@ -526,34 +526,94 @@ export class NativeSessionHost extends EventEmitter {
    *  recordDelegationStart's own leak guard covers.
    *
    *  The chain below must NEVER produce an unhandled rejection: runDelegation
-   *  can reject (a failed run), so `.catch` is mandatory, not optional — every
-   *  outcome (completed or failed) already became a ledger write INSIDE
-   *  runDelegation itself, so this chain's own `.catch` only has to log and
-   *  stop the rejection from propagating further, never re-record anything. */
+   *  can reject (a failed run), so both branches of `.then` are mandatory,
+   *  not optional. */
   async spawnSpecialistBackground(
     parentId: string, opts: SpecialistSpawnOpts,
   ): Promise<{ childId: string; title: string }> {
     const { childId, title } = await this.createChild(parentId, opts);
     this.bindReservation(opts.token, childId);
     await this.recordDelegationStart(parentId, childId, title, opts, true);
+    // Captured HERE, synchronously, while the parent session is known live —
+    // by the time the handlers below run (after the child's whole turn has
+    // played out), the parent may have gone idle, ended its own turn, or even
+    // been torn down, so `this.live.get(parentId)` is no longer a reliable
+    // source for the cwd its ledger record lives under (Task 4 fix-pass,
+    // finding 2).
+    const parentCwd = this.live.get(parentId)?.cwd;
     void this.runDelegation(parentId, childId, title, opts, opts.token)
-      .catch((err: any) => {
-        // runDelegation's own catch already wrote the 'failed' ledger record
-        // (or, if THAT write failed too, already logged that separately) and
-        // rethrew — this catch exists solely so the un-awaited promise
-        // settling as a rejection can never surface as an unhandled
-        // rejection (which would crash the main process). There is nothing
-        // further to record: the ledger already holds the truth.
-        log('ERROR', 'NativeSessionHost', 'background specialist run failed', { childId, parentId, error: String(err?.message ?? err) });
-      })
+      .then(
+        async (run) => {
+          // Fix (Task 4 fix-pass, finding 2): runDelegation's own completion
+          // write happens INSIDE its own try/catch and is log-only on
+          // failure — correct for the FOREGROUND caller (spawnSpecialist),
+          // which still has `run` in hand and returns it to its caller
+          // regardless of whether that write landed. The background path had
+          // no equivalent: before this fix, nothing downstream of
+          // runDelegation ever looked at its resolved value — `run` was
+          // simply discarded — so a failed completion write left the ledger
+          // record stuck at 'running' forever. claimUndelivered only selects
+          // 'completed'/'failed' rows, so a 'running' record is never
+          // claimed, never delivered, and never even surfaces as a failure:
+          // total, silent loss of a report the child genuinely produced.
+          //
+          // `updateIfRunning` is a SECOND, independent attempt at the exact
+          // same write, using the `run` value THIS chain captured — a cheap
+          // no-op if runDelegation's own write already landed (the record's
+          // status is no longer 'running'), a genuine second chance if it
+          // didn't. `missedSteers` isn't re-included here: it was drained
+          // from the child's own session inside runDelegation, and by the
+          // time this handler runs the child has already been torn down
+          // (runDelegation's `finally`) — an acceptable loss of an
+          // informational field next to actually recovering the report.
+          if (this.ledger && parentCwd) {
+            try {
+              await this.ledger.updateIfRunning(parentCwd, parentId, childId, {
+                status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report,
+              });
+            } catch (retryErr) {
+              // Both the write inside runDelegation AND this retry failed —
+              // genuinely broken storage, not a one-off; there is no third
+              // ledger write left to try, since it would fail the same way.
+              // This is the last chance to avoid the report vanishing in
+              // total silence: log it in full — specific and accurate
+              // (error-message-standards.md), never a guessed cause — so a
+              // human reading the log can still recover it even though it
+              // never reached disk or the parent.
+              log('ERROR', 'NativeSessionHost', 'a background specialist finished but its report could not be recorded after two attempts — logging the report here so it is not lost entirely', {
+                childId, parentId, error: String((retryErr as any)?.message ?? retryErr), report: run.report,
+              });
+            }
+          }
+        },
+        (err: any) => {
+          // runDelegation's own catch already attempted a 'failed' write
+          // (also via updateIfRunning, log-only on failure — see the WHY on
+          // runDelegation's own catch block) before rethrowing this same
+          // error. Symmetric second attempt for the identical reason as the
+          // success branch above: a record stuck at 'running' is never
+          // claimed, so the parent would never even learn its specialist
+          // died — this is the failure-path half of finding 2's fix.
+          log('ERROR', 'NativeSessionHost', 'background specialist run failed', { childId, parentId, error: String(err?.message ?? err) });
+          if (this.ledger && parentCwd) {
+            this.ledger.updateIfRunning(parentCwd, parentId, childId, {
+              status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
+            }).catch((retryErr: any) => {
+              log('ERROR', 'NativeSessionHost', 'a background specialist failed and its failure could not be recorded after two attempts', { childId, parentId, error: String(retryErr?.message ?? retryErr) });
+            });
+          }
+        },
+      )
       .finally(() => {
-        // Belt-and-suspenders against the same unhandled-rejection risk the
-        // WHY above names: a `.finally` callback that itself throws makes the
-        // chain's OWN resulting promise reject, and nothing downstream awaits
-        // or catches it (this whole chain is `void`-fired). Neither call is
-        // expected to throw (both are synchronous Map/Set bookkeeping), but
-        // "not expected to" is exactly the standard this method exists to
-        // raise past — see the class-level WHY on this same chain.
+        // Belt-and-suspenders against an unhandled-rejection risk: a
+        // `.finally` callback that itself throws makes the chain's OWN
+        // resulting promise reject, and nothing downstream awaits or catches
+        // it (this whole chain is `void`-fired). Neither call is expected to
+        // throw (both are synchronous Map/Set bookkeeping), but "not
+        // expected to" is exactly the standard this method exists to raise
+        // past — see the class-level WHY on this same chain. Both branches
+        // above already catch their own ledger-write failures internally, so
+        // this chain's overall promise cannot reject on their account either.
         try { this.releaseReservation(opts.token); } catch (err) {
           log('ERROR', 'NativeSessionHost', 'failed to release a background specialist reservation', { childId, parentId, error: String(err) });
         }
@@ -606,11 +666,21 @@ export class NativeSessionHost extends EventEmitter {
     const minutesAgo = Math.max(0, Math.round((Date.now() - rec.startedAt) / 60000));
     const preamble = `[Background specialist finished] ${rec.title} (${rec.agentType}) completed the task you delegated ("${rec.description}", started ${minutesAgo}m ago, ${rec.steps ?? 0} steps).\n\n`;
     const specialist = resolveSpecialist(rec.agentType);
+    // Fix (Task 4 fix-pass, finding 1): rec.rawReport is the copy that rode in
+    // the ledger file, already capped at RAW_REPORT_CAP_CHARS by
+    // DelegationLedger.update() on every write — formatting from it alone
+    // would understate the report's true size in formatSpecialistReport's own
+    // truncation notice for anything the completion handler had to spill to
+    // disk. When a spill file exists, read the FULL body back from disk so
+    // that notice's totals are accurate; fall back to the capped ledger copy
+    // only if the spill file itself can't be read (e.g. deleted out from
+    // under us) — a missing spill file must never fail delivery outright.
+    const rawBody = (rec.reportPath && this.nativeHome?.readSessionArtifact(rec.reportPath)) ?? rec.rawReport ?? '';
     const body = specialist
       ? this.formatSpecialistReport({
-          parentId: sessionId, childId: rec.childId, specialist, title: rec.title, body: rec.rawReport ?? '', concurrentReporters,
+          parentId: sessionId, childId: rec.childId, specialist, title: rec.title, body: rawBody, concurrentReporters,
         })
-      : (rec.rawReport ?? '');
+      : rawBody;
     return preamble + body;
   }
 
@@ -1588,13 +1658,44 @@ export class NativeSessionHost extends EventEmitter {
       // been confirmed delivered (the 1a arithmetic pin: computeReportBudget
       // splits headroom across CONCURRENT reporters, and everything queued
       // here became concurrent the moment it queued while the parent was busy).
+      // Counts only 'completed' records: a 'failed' record's notice is a
+      // short, fixed string built straight from failureText in formatDelivery
+      // — it never goes through formatSpecialistReport's budget math, so it
+      // isn't a "reporter" competing for headroom in the sense this count means.
       const concurrentReporters = Math.max(1, this.ledger.listFor(entry.cwd, sessionId)
         .filter((d) => d.status === 'completed' && !d.delivered).length);
       while (this.pendingDeliveryParents.has(sessionId)) {
         const rec = await this.ledger.claimUndelivered(entry.cwd, sessionId);   // lease, not delivery
         if (!rec) { this.pendingDeliveryParents.delete(sessionId); break; }
+        // Fix (Task 4 fix-pass, finding 3): destroy() (direct, or via
+        // destroyAll() at app shutdown, which has no in-flight gate) can land
+        // in the gap between any of this loop's awaits. destroy() sets no
+        // "destroyed" flag anything here checks — it aborts the stream and
+        // removeAllListeners()s the session (THAT is what actually stops
+        // transcript appends being persisted), then drops it from `this.live`.
+        // So `entry` can go on being a perfectly usable, callable object
+        // pointing at an orphaned session that no longer persists or emits
+        // anything — runNotice() on it would resolve normally, having shown
+        // the report to nobody. The sibling queue-drain loop above guards the
+        // exact same race with `this.live.get(sessionId) !== entry`; this
+        // recheck is that same guard, run before every remaining step so a
+        // destroy mid-delivery releases the claimed lease (leaving the record
+        // claimable again for the next real delivery pass) instead of either
+        // silently confirming a report nobody saw or losing the lease forever.
+        if (this.live.get(sessionId) !== entry) {
+          await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+          break;
+        }
         try {
           await entry.session.runNotice(this.formatDelivery(sessionId, rec, concurrentReporters));
+          // Recheck AGAIN: destroy() can land during the runNotice() await
+          // itself (no throw, per the WHY above), so confirmDelivered must
+          // never be reached on a session that stopped being live while the
+          // notice was in flight.
+          if (this.live.get(sessionId) !== entry) {
+            await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+            break;
+          }
           await this.ledger.confirmDelivered(entry.cwd, sessionId, rec.childId); // only now is it delivered
         } catch (err) {
           await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
