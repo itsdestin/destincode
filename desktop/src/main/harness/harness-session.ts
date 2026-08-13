@@ -1879,7 +1879,24 @@ export class HarnessSession extends EventEmitter {
 
     // 1. Validate (zod) — invalid args are a RESULT the model repairs from, not
     //    a crash, and precede permissions (never ask about garbage).
-    const parsed = tool.inputSchema.safeParse(call.input);
+    let parsed = tool.inputSchema.safeParse(call.input);
+    if (!parsed.success && typeof call.input === 'string') {
+      // Weak-model hardening (Task 12, spec §3): the ai@7 SDK already parses a
+      // provider tool-call's stringified args into an object for us (see
+      // harness-sdk-toolcall-contract.test.ts), but a weak local model
+      // sometimes puts its WHOLE args object as a STRING one level further in
+      // — e.g. it emits `"{\"prompt\": ...}"` where a real object belongs. If
+      // the raw string itself JSON.parses to an object, give it ONE recovery
+      // attempt before falling back to the normal arg error — never a general
+      // coercion layer (YAGNI: one attempt, then the ordinary failure path).
+      try {
+        const recovered: unknown = JSON.parse(call.input);
+        if (recovered && typeof recovered === 'object') {
+          const reparsed = tool.inputSchema.safeParse(recovered);
+          if (reparsed.success) parsed = reparsed;
+        }
+      } catch { /* not JSON — fall through to the normal arg error below */ }
+    }
     if (!parsed.success) {
       return { text: `Invalid arguments for ${call.toolName}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}. Fix the arguments and call again.`, isError: true };
     }

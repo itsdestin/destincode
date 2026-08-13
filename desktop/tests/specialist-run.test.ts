@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
@@ -329,5 +330,158 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report).toContain('REPORT: found it');            // the head survives
     expect(report.length).toBeLessThan(huge.length / 2);     // ...but the bulk did not
     expect(report).toMatch(/truncated/i);                    // and the cut is stated, never silent
+  });
+});
+
+// ---- Task 12, item 4: compaction-finalize ----------------------------------
+// A small local window can force the child to auto-compact MORE THAN ONCE
+// during one delegated run (spec §3: a designed path for small windows, not an
+// edge case). On the SECOND auto-compaction, runSpecialist's listener posts a
+// steer telling the child to stop exploring and write up what it has — via
+// postSteer (Task 3's primitive), never a prompt edit. These tests drive the
+// listener directly by emitting synthetic `compact-summary` events on the
+// child's OWN session emitter (the exact channel runSpecialist listens on),
+// rather than engineering a real tiny-context compaction trigger — the
+// compaction MATH itself is already pinned in harness-compaction.test.ts; this
+// suite is about the LISTENER's count-to-two-then-steer-once behavior.
+describe('compaction-finalize steer (Task 12, item 4)', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-finalize-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  const FINALIZE_STEER = 'You are running low on room even after summarizing. Stop new exploration — '
+    + 'write up what you have and finish with your report now.';
+
+  // Builds a host whose model, on every doStream call, looks up the freshly
+  // minted specialist child (the one live entry that is not the root) and
+  // fires `fakeCompactionCalls` synthetic compact-summary(autoCompaction:true)
+  // events on the CHILD's own session emitter — the same 'transcript-event'
+  // channel runSpecialist's onEvent listens on — before returning that step's
+  // real scripted chunks. A spy on the child's postSteer is installed the
+  // first time the child is found, so it is in place before any steer could
+  // possibly fire.
+  function bootWithFakeCompactions(scripts: any[][], compactionsPerCall: number[]) {
+    let call = 0;
+    let postSteerSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const childEntry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+        if (childEntry) {
+          const [childId, entry] = childEntry as [string, { session: any }];
+          if (!postSteerSpy) postSteerSpy = vi.spyOn(entry.session, 'postSteer');
+          const n = compactionsPerCall[call] ?? 0;
+          for (let i = 0; i < n; i++) {
+            entry.session.emit('transcript-event', {
+              type: 'compact-summary',
+              sessionId: childId,
+              uuid: `fake-compaction-${call}-${i}`,
+              timestamp: Date.now(),
+              data: { summary: 'fake summary', autoCompaction: true },
+            });
+          }
+        }
+        const chunks = scripts[Math.min(call, scripts.length - 1)];
+        call += 1;
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(store, async () => model as any, async () => null, async () => null, async () => null);
+    return () => postSteerSpy!;
+  }
+
+  const TWO_TOOLS_THEN_REPORT = [
+    stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
+    stream(toolCallChunk('c2', 'Glob', { pattern: '*.md' }), finishChunk('tool-calls')),
+    stream(...textChunks('t', 'REPORT: found it at src/x.ts'), finishChunk('stop')),
+  ];
+
+  it('posts the finalize steer exactly once, on the SECOND auto-compaction', async () => {
+    // One auto-compaction on step 1 (no steer yet), the second on step 2
+    // (steer fires here), none on step 3.
+    const getSpy = bootWithFakeCompactions(TWO_TOOLS_THEN_REPORT, [1, 1, 0]);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist BINDS a reservation the Task tool
+      // made; these tests drive the run loop directly, so they hand it a
+      // plain reader token instead of going through reserveSpecialist.
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    const postSteerSpy = getSpy();
+    expect(postSteerSpy).toHaveBeenCalledTimes(1);
+    expect(postSteerSpy).toHaveBeenCalledWith(FINALIZE_STEER);
+  });
+
+  it('still posts only ONCE per child even with a third auto-compaction later in the same run', async () => {
+    const getSpy = bootWithFakeCompactions(TWO_TOOLS_THEN_REPORT, [1, 1, 1]);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist BINDS a reservation the Task tool
+      // made; these tests drive the run loop directly, so they hand it a
+      // plain reader token instead of going through reserveSpecialist.
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    expect(getSpy()).toHaveBeenCalledTimes(1);
+  });
+
+  it('never steers when auto-compaction happens only once in the whole run', async () => {
+    const getSpy = bootWithFakeCompactions(TWO_TOOLS_THEN_REPORT, [1, 0, 0]);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist BINDS a reservation the Task tool
+      // made; these tests drive the run loop directly, so they hand it a
+      // plain reader token instead of going through reserveSpecialist.
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    expect(getSpy()).not.toHaveBeenCalled();
+  });
+
+  it('a manual (non-auto) compact-summary event never counts toward the finalize steer', async () => {
+    // Same shape as maybeCompact's manual-/compact path (harness-session.ts
+    // line ~1083): compact-summary WITHOUT autoCompaction. Two of these must
+    // not add up to a steer — only autoCompaction:true events count.
+    let call = 0;
+    let postSteerSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const childEntry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+        if (childEntry) {
+          const [childId, entry] = childEntry as [string, { session: any }];
+          if (!postSteerSpy) postSteerSpy = vi.spyOn(entry.session, 'postSteer');
+          entry.session.emit('transcript-event', {
+            type: 'compact-summary', sessionId: childId, uuid: `fake-manual-${call}`, timestamp: Date.now(),
+            data: { summary: 'fake summary' },   // NO autoCompaction flag
+          });
+        }
+        const chunks = TWO_TOOLS_THEN_REPORT[Math.min(call, TWO_TOOLS_THEN_REPORT.length - 1)];
+        call += 1;
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(store, async () => model as any, async () => null, async () => null, async () => null);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist BINDS a reservation the Task tool
+      // made; these tests drive the run loop directly, so they hand it a
+      // plain reader token instead of going through reserveSpecialist.
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    expect(postSteerSpy).not.toHaveBeenCalled();
   });
 });

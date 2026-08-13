@@ -56,6 +56,12 @@ export interface ToolServices {
     reserve(parentId: string, opts: { writer: boolean }):
       { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' };
     release(token: SpecialistReservation): void;
+    /** Task 12, item 3 — spend one unit of this parent's LIFETIME spawn
+     *  budget (SPECIALIST_SPAWN_BUDGET_PER_SESSION, specialists/limits.ts).
+     *  false = budget exhausted, the caller must not spawn. Unlike
+     *  reserve(), a spend is never released — it is a runaway-loop
+     *  backstop, not a concurrency gate. */
+    trySpendSpawnBudget(parentId: string): boolean;
     /** Mint + (eventually, Task 7) run the child, returning its final report. */
     spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
   };

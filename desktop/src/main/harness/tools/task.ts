@@ -16,13 +16,26 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 import { resolveSpecialist, listSpecialists } from '../specialists/registry';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 
 // Minimal weak-model hardening (plan 1a): a specialist has NO access to the
 // parent conversation, so a one-line prompt like "do the thing" leaves it to
 // guess the entire brief. This is a floor, not a quality bar — the full pass
 // (rubric-checked briefs) is plan 1b.
 const MIN_PROMPT_LENGTH = 40;
+
+// Task 12, item 2 (plan 1b, spec §3): reject placeholder prompts — TODO, "task
+// 1", unexpanded template markers. This is layered ON TOP of the 40-char floor
+// above, not instead of it: a bare "todo"/"tbd"/"fixme" is already caught by
+// the floor, but a PADDED marker like "{{TASK_DESCRIPTION_GOES_HERE_PLEASE_FILL}}"
+// clears 40 chars while still being nothing but an unexpanded template — an
+// observed weak-model failure mode (platform research), not speculation.
+// Deliberately NARROW and tested against the WHOLE TRIMMED PROMPT ONLY (never
+// per-line) — external review 2026-08-12 flagged the false-positive risk of a
+// per-line variant, which would catch a real multi-line brief that happens to
+// contain a "TODO:" note among real content. See task-tool.test.ts's pinned
+// ~45-char real-sentence boundary test.
+const PLACEHOLDER_RE = /^(?:todo|tbd|task ?\d*|fixme|<[^>]*>|\{\{[^}]*\}\}|\.{3}|xxx+)[.!]?$/i;
 
 const schema = z.object({
   description: z.string().describe('A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug").'),
@@ -87,10 +100,19 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         return { text: `Unknown specialist "${args.agent}". Available specialists: ${available}.`, isError: true };
       }
 
-      if (args.prompt.trim().length < MIN_PROMPT_LENGTH) {
+      const trimmedPrompt = args.prompt.trim();
+      if (trimmedPrompt.length < MIN_PROMPT_LENGTH) {
         return {
           text: `That prompt is too short to be a self-contained brief (needs at least ${MIN_PROMPT_LENGTH} characters). `
             + 'The specialist has no access to this conversation — include what to do, relevant file paths, and what "done" looks like.',
+          isError: true,
+        };
+      }
+
+      if (PLACEHOLDER_RE.test(trimmedPrompt)) {
+        return {
+          text: 'That prompt looks like an unexpanded placeholder. Write the actual self-contained brief: '
+            + 'what to do, relevant paths, what "done" looks like.',
           isError: true,
         };
       }
@@ -103,6 +125,19 @@ export function createTaskTool(): NativeTool<TaskArgs> {
       }
 
       const parentId = ctx.sessionId;
+
+      // Per-conversation spawn budget (Task 12, item 3): a LIFETIME cap,
+      // distinct from the concurrency slot below — checked BEFORE reserving a
+      // slot so a budget refusal never needs to release one. A runaway-loop
+      // backstop for a model that keeps delegating without end, not a normal
+      // capacity limit; the user's fix is a fresh conversation, not "wait".
+      if (!services.trySpendSpawnBudget(parentId)) {
+        return {
+          text: `Refused: this conversation has reached its specialist budget (${SPECIALIST_SPAWN_BUDGET_PER_SESSION}). `
+            + 'This is a runaway guard — the user can start a fresh conversation to continue delegating.',
+          isError: true,
+        };
+      }
 
       // Task 1 (plan 1b): ONE synchronous reserve-or-refuse call, folding the
       // single-writer check and the slot check into the same step (host-side:

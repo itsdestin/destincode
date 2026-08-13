@@ -16,12 +16,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskTool } from '../src/main/harness/tools/task';
 import type { ToolContext } from '../src/main/harness/tools/types';
+import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../src/main/harness/specialists/limits';
 
 interface RunOpts {
   slotFree?: boolean;
   writerBusy?: boolean;
   spawn?: ReturnType<typeof vi.fn>;
   release?: ReturnType<typeof vi.fn>;
+  // Task 12, item 3: the per-conversation spawn budget is a SEPARATE gate from
+  // the concurrency slot above (reserve) — default true (budget available)
+  // so every existing test in this file, which never cares about the budget,
+  // keeps passing unmodified.
+  budgetOk?: boolean;
 }
 
 function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
@@ -42,6 +48,7 @@ function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
           return { ok: true, token: { parentId, writer: reserveOpts.writer } } as const;
         },
         release,
+        trySpendSpawnBudget: () => opts.budgetOk !== false,
         spawn,
       },
     },
@@ -64,6 +71,62 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     const r = await runTaskTool({ agent: 'explorer', prompt: 'do the thing' });
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/self-contained brief/i);   // minimal weak-model hardening; full pass is plan 1b
+  });
+
+  // Task 12, item 2 — placeholder prompt rejection (spec §3). The regex only
+  // matches the WHOLE trimmed prompt, so a bare "todo"/"tbd"/"fixme" is already
+  // caught by the 40-char floor above — these cases specifically pin the ones
+  // the floor MISSES: longer placeholder-shaped junk that clears 40 chars
+  // while still being nothing but an unexpanded marker (never real content
+  // padded around a real marker — that would legitimately not match, by design).
+  describe('placeholder prompt rejection (Task 12, item 2)', () => {
+    const PLACEHOLDER_PROMPTS = [
+      '<placeholder text goes right here please>',      // <[^>]*>
+      '{{TASK_DESCRIPTION_GOES_HERE_PLEASE_FILL}}',      // the exact padded example from the brief
+      'x'.repeat(45),                                    // xxx+
+      `task ${'1'.repeat(40)}`,                           // task ?\d*
+    ];
+    for (const prompt of PLACEHOLDER_PROMPTS) {
+      it(`rejects ${JSON.stringify(prompt)}`, async () => {
+        expect(prompt.length).toBeGreaterThanOrEqual(40);   // sanity: actually clears the floor
+        const r = await runTaskTool({ agent: 'explorer', prompt });
+        expect(r.isError).toBe(true);
+        expect(r.text).toBe(
+          'That prompt looks like an unexpanded placeholder. Write the actual self-contained brief: '
+          + 'what to do, relevant paths, what "done" looks like.',
+        );
+      });
+    }
+
+    // The pinned false-positive boundary (external review 2026-08-12): a real,
+    // self-contained ~45-char sentence must NOT be caught by the narrow regex.
+    it('a real ~45-char sentence is NOT rejected as a placeholder', async () => {
+      const realPrompt = 'Find every call site of parseConfig() in src/.';   // 46 chars
+      expect(realPrompt.length).toBeGreaterThanOrEqual(45);
+      const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+      const r = await runTaskTool({ agent: 'explorer', prompt: realPrompt }, { spawn });
+      expect(r.isError).toBeFalsy();
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Task 12, item 3 — per-conversation spawn budget: a runaway-loop backstop
+  // distinct from the concurrency slot (HOSTED_MAX_CONCURRENT_SPECIALISTS) —
+  // this one is a LIFETIME cap per parent conversation, never released.
+  it('refuses once the per-conversation spawn budget is exhausted, naming the budget', async () => {
+    const r = await runTaskTool({ agent: 'explorer' }, { budgetOk: false });
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe(
+      `Refused: this conversation has reached its specialist budget (${SPECIALIST_SPAWN_BUDGET_PER_SESSION}). `
+      + 'This is a runaway guard — the user can start a fresh conversation to continue delegating.',
+    );
+  });
+
+  it('spawns normally when the budget still has room', async () => {
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool({ agent: 'explorer' }, { budgetOk: true, spawn });
+    expect(r.isError).toBeFalsy();
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 
   it('returns a typed at-capacity result when this parent has no slot free', async () => {
@@ -148,6 +211,7 @@ describe('Task tool — typed refusals (plan 1a)', () => {
         specialists: {
           reserve: () => ({ ok: true, token }),
           release,
+          trySpendSpawnBudget: () => true,
           spawn: async () => { throw new Error('boom'); },
         },
       },
