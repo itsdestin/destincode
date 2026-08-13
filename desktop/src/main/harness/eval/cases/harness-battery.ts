@@ -1,6 +1,7 @@
 import { BATTERY_PROMPT } from '../battery';
 import { WRAP_UP_PROMPT } from '../run-case';
 import { MIN_TOOL_CALLS } from '../run-facts';
+import { calledTool, endedWithAnAnswer, stayedInsideTestFolder } from '../assertions';
 import type { EvalCase } from '../case-types';
 
 /** The original harness review, now one case among many. Its checks are
@@ -12,9 +13,16 @@ export const HARNESS_BATTERY: EvalCase = {
   prompt: BATTERY_PROMPT,
   wrapUpPrompt: WRAP_UP_PROMPT,
   minToolCalls: MIN_TOOL_CALLS,
-  // Stubbed empty: `calledTool`/`stayedInsideTestFolder`/`endedWithAnAnswer`
-  // come from assertions.ts, which Task 9 builds. Filled in by that task's
-  // commit — see docs/active/plans/2026-08-12-harness-evaluator.md Task 5.
-  expect: [],
+  // Three mechanical checks, kept thin on purpose (see the doc comment above).
+  // Each answers a question this battery genuinely has an exact answer to:
+  //   - the fixture jail held on the model's side (a Critical finding once
+  //     caught it not holding on the harness's side),
+  //   - the run produced the review that is the whole point of paying for it —
+  //     four models in round 5 ended a paid run with no deliverable at all,
+  //   - the battery reached Grep, the tool most often skipped when a model
+  //     substitutes `Bash grep` and then reviews a tool it never called.
+  // Any of the three can report `never-ran` (assertions.ts), which is how a run
+  // that never reached the precondition is told apart from one that failed it.
+  expect: [stayedInsideTestFolder(), endedWithAnAnswer(), calledTool('Grep')],
   rubric: [],
 };
