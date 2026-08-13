@@ -466,7 +466,10 @@ describe('NativeSessionHost', () => {
       for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
         expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(true);
       }
-      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
+      // Task 13: no live session under 'A' → maxSpecialistsFor's defensive
+      // fallback (HOSTED_MAX_CONCURRENT_SPECIALISTS), carried on the refusal
+      // as `max` so tools/task.ts can render the REAL resolved number.
+      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
     });
 
     it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
@@ -541,7 +544,36 @@ describe('NativeSessionHost', () => {
 
     it('readers do not consume the writer lock and cap at the profile max', () => {
       for (let i = 0; i < 4; i++) expect(host.reserveSpecialist('parent-1', { writer: false }).ok).toBe(true);
-      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
+      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+    });
+  });
+
+  // ---- Task 13: maxSpecialistsFor now resolves the PARENT'S OWN live
+  // CapabilityProfile snapshot (capability-profile.ts's maxConcurrentSpecialists)
+  // instead of the flat HOSTED_MAX_CONCURRENT_SPECIALISTS constant — a local
+  // session's real ceiling can be smaller than hosted's. The fallback constant
+  // above still applies whenever no live session backs the parent id (the
+  // 'never created' cases in the describe block above). ----
+  describe('specialist concurrency cap follows the profile (Task 13)', () => {
+    const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
+    const contextLengthFor = async (b: any) => (b.providerId === 'local' ? 8192 : 200_000);
+
+    it('a local-engine parent (unknown model → Layer 3 fallback) caps reservations at 1, not the hosted constant', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'local-parent', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(h.reserveSpecialist('local-parent', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 1 });
+      await h.destroyAll();
+    });
+
+    it('a cloud/hosted parent is unaffected — still caps at HOSTED_MAX_CONCURRENT_SPECIALISTS', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'cloud-parent', cwd: root, binding: { providerId: 'openrouter', modelId: 'gpt-4o' } });
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        expect(h.reserveSpecialist('cloud-parent', { writer: false }).ok).toBe(true);
+      }
+      expect(h.reserveSpecialist('cloud-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+      await h.destroyAll();
     });
   });
 

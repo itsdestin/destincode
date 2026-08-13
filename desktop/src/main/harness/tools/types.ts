@@ -52,9 +52,18 @@ export interface ToolServices {
      *  that split let a caller check isWriterBusy, then set the lock after an
      *  await elsewhere, which two parallel Task calls could both slip through.
      *  `ok: false` never spawns; a successful reservation MUST be paired with
-     *  exactly one release() call, however the spawn turns out. */
+     *  exactly one release() call, however the spawn turns out.
+     *
+     *  Task 13: the 'at-capacity' refusal carries `max`, the RESOLVED ceiling
+     *  that was actually enforced (profile-derived for a local session, the
+     *  flat hosted constant otherwise) — tools/task.ts renders it directly
+     *  into the refusal copy so the number the model sees always matches the
+     *  number that was checked, never a hardcoded constant that could read
+     *  differently from what a local session's engine-measured cap allows. */
     reserve(parentId: string, opts: { writer: boolean }):
-      { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' };
+      { ok: true; token: SpecialistReservation }
+      | { ok: false; reason: 'at-capacity'; max: number }
+      | { ok: false; reason: 'writer-busy' };
     release(token: SpecialistReservation): void;
     /** Task 12, item 3 — spend one unit of this parent's LIFETIME spawn
      *  budget (SPECIALIST_SPAWN_BUDGET_PER_SESSION, specialists/limits.ts).

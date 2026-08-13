@@ -232,7 +232,10 @@ export class NativeSessionHost extends EventEmitter {
   // fan-out must not be capped, or blocked, by an UNRELATED session's
   // children). Both are keyed by PARENT session id, never by child id.
   //   specialistSlots: how many children this parent currently has running,
-  //     against HOSTED_MAX_CONCURRENT_SPECIALISTS (specialists/limits.ts).
+  //     against maxSpecialistsFor(parentId) (Task 13: profile-derived — see
+  //     capability-profile.ts's maxConcurrentSpecialists; HOSTED_MAX_CONCURRENT_SPECIALISTS,
+  //     specialists/limits.ts, remains the value for a hosted profile AND the
+  //     defensive fallback below when no live profile is available).
   //   activeWriterChild: the single write-capable (charter: 'read-write')
   //     child currently running under this parent, if any — the single-writer
   //     invariant (two concurrent write-capable children could race edits to
@@ -245,10 +248,18 @@ export class NativeSessionHost extends EventEmitter {
   // concurrency gate. In-memory only: a fresh conversation gets a fresh budget.
   private specialistSpawnCounts = new Map<string, number>();
 
-  /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
-   *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
-  private maxSpecialistsFor(_parentId: string): number {
-    return HOSTED_MAX_CONCURRENT_SPECIALISTS;
+  /** Task 13 — the parent's own resolved CapabilityProfile now carries its
+   *  concurrency ceiling (maxConcurrentSpecialists): the spec's flat hosted
+   *  constant for a cloud/hosted session, an engine-measured (clamped 1-4)
+   *  number for a known local model, 1 for an unrecognized one — see
+   *  capability-profile.ts. Falls back to HOSTED_MAX_CONCURRENT_SPECIALISTS
+   *  only when the parent isn't live to ask (reserveSpecialist is only ever
+   *  called against a live parent in production, so this branch shouldn't be
+   *  reachable there — but a missing snapshot must degrade to the
+   *  conservative hosted number, never silently allow unbounded fan-out). */
+  private maxSpecialistsFor(parentId: string): number {
+    return this.live.get(parentId)?.session.profileSnapshot.maxConcurrentSpecialists
+      ?? HOSTED_MAX_CONCURRENT_SPECIALISTS;
   }
 
   // WHY: 1a checked writer-busy in task.ts and set the lock after an await in
@@ -256,10 +267,17 @@ export class NativeSessionHost extends EventEmitter {
   // this plan. Reserve slot AND writer in one synchronous step; the token is the
   // only way to release, so a throw between reserve and spawn can't leak either.
   reserveSpecialist(parentId: string, opts: { writer: boolean }):
-    { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' } {
+    { ok: true; token: SpecialistReservation }
+    | { ok: false; reason: 'at-capacity'; max: number }
+    | { ok: false; reason: 'writer-busy' } {
     if (opts.writer && this.activeWriterChild.has(parentId)) return { ok: false, reason: 'writer-busy' };
     const current = this.specialistSlots.get(parentId) ?? 0;
-    if (current >= this.maxSpecialistsFor(parentId)) return { ok: false, reason: 'at-capacity' };
+    const max = this.maxSpecialistsFor(parentId);
+    // Task 13: carry the RESOLVED ceiling on the refusal itself — tools/task.ts
+    // renders `max` straight into the at-capacity message, so a local
+    // session's real (possibly smaller) ceiling is what the model reads,
+    // never a hardcoded hosted constant that doesn't match what was enforced.
+    if (current >= max) return { ok: false, reason: 'at-capacity', max };
     this.specialistSlots.set(parentId, current + 1);
     const token: SpecialistReservation = { parentId, writer: opts.writer };
     if (opts.writer) this.activeWriterChild.set(parentId, RESERVED_WRITER); // placeholder until a childId binds
