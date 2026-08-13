@@ -126,6 +126,19 @@ export interface HarnessSessionOpts {
    *  Absent → no injection, which is exactly the pre-Task-5 behavior every
    *  existing test relies on (zero cost for a session that never delegates). */
   specialistStatus?: () => string | null;
+  /** Task 10 (plan 1b): directories checkPathGuard treats as internal to THIS
+   *  session — readable without an external_directory ask, the same way
+   *  Bash's own spillRoot() is (tools/guards.ts). Wired by NativeSessionHost
+   *  (toolWiring) to exactly one root: this project's own sessions/<slug>/
+   *  artifact directory (shared with every OTHER session in this same
+   *  project, not exclusive to this one — same sharing every session JSONL
+   *  and the delegation ledger sidecar already have), where an oversized
+   *  specialist report's spill file (NativeHome.writeSessionArtifact) lands —
+   *  so the footer that tells the model "Read it if you need the rest"
+   *  points at a path the guard will actually let it open. Absent → no
+   *  exemption, which is the pre-Task-10 behavior every existing session (and
+   *  every specialist CHILD, which never gets this wired) still gets. */
+  internalReadRoots?: string[];
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -2030,7 +2043,7 @@ export class HarnessSession extends EventEmitter {
     const subject = tool.permissionSubject(args);
     let externalAsk = false;
     if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
-      const verdict = checkPathGuard(subject, this.opts.cwd);
+      const verdict = checkPathGuard(subject, this.opts.cwd, this.opts.internalReadRoots);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
       if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask
     }

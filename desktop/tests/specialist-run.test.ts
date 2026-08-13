@@ -119,9 +119,12 @@ describe('specialist foreground run (Task 7)', () => {
     // (e) the report comes back, wrapped with a header and a transcript pointer
     // — Task 8: the header carries the child's assigned fun title, not the
     // bare displayName, so match the title shape rather than a fixed string.
+    // Task 10: the UNTRUNCATED footer is the short `[specialist session <id>]`
+    // tag (1c's card-linking anchor) — 1a's "[full transcript: ...]" wording
+    // is now reserved for the truncated case's real file pointer below.
     expect(report).toContain('REPORT: found it');
     expect(report).toMatch(new RegExp(`## Report from \\w+ the \\w+ Explorer \\(${EXPLORER.id}\\)`));
-    expect(report).toContain(`[full transcript: specialist session ${childId}]`);
+    expect(report).toContain(`[specialist session ${childId}]`);
   });
 
   // Fix: harness-session.ts:1769 emits one assistant-text event per STREAM
@@ -334,6 +337,88 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report).toContain('REPORT: found it');            // the head survives
     expect(report.length).toBeLessThan(huge.length / 2);     // ...but the bulk did not
     expect(report).toMatch(/truncated/i);                    // and the cut is stated, never silent
+  });
+
+  // ---- Task 10 (plan 1b): oversized reports spill to a readable file --------
+  // `withParent` above never wires a nativeHome, so the truncation notice is
+  // as far as those tests can check — these use a real NativeHome (same shape
+  // as `withLedgerParent` below) so the spill file and its footer pointer are
+  // both real and checkable on disk.
+  describe('report overflow spills to a file', () => {
+    async function withHomeParent(scripts: any[][]) {
+      const model = scriptedModel(scripts);
+      const home = new NativeHome(root);
+      store = new SessionStore(new NativeHome(root));
+      host = new NativeSessionHost(
+        store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      return home;
+    }
+
+    it('spills the full body to a file when the report is truncated, and the footer names the real path', async () => {
+      // Comfortably over EXPLORER's 2000-token static budget (~8000 chars)
+      // but far under RAW_REPORT_CAP_CHARS (64,000) — isolates this
+      // truncation-time spill from the separate completion-time one (Task 4).
+      const big = 'y'.repeat(20_000);
+      const full = `REPORT: found it\n${big}`;
+      await withHomeParent([stream(...textChunks('t', full), finishChunk('stop'))]);
+
+      const { childId, report } = await host.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      expect(report).toMatch(/truncated/i);
+      const m = report.match(/Full report saved to: (.+) — Read it if you need the rest\.\]/);
+      expect(m).toBeTruthy();
+      const spilledPath = m![1];
+      expect(fs.existsSync(spilledPath)).toBe(true);
+      expect(fs.readFileSync(spilledPath, 'utf8')).toBe(full); // the FULL, untruncated body
+
+      // Task 10's own doc comment on DelegationRecord.reportPath: "written at
+      // COMPLETION ... or at delivery on budget truncation (Task 10)" — the
+      // ledger record must carry the same path the footer names.
+      const ledger = (host as any).ledger;
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec.reportPath).toBe(spilledPath);
+    });
+
+    it('does not spill a file when the report fits the budget', async () => {
+      await withHomeParent([stream(...textChunks('t', 'REPORT: found it at src/x.ts'), finishChunk('stop'))]);
+
+      const { childId, report } = await host.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      expect(report).not.toMatch(/truncated/i);
+      expect(report).not.toContain('saved to');
+      expect(report).toContain(`[specialist session ${childId}]`);
+
+      const ledger = (host as any).ledger;
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec.reportPath).toBeUndefined();
+    });
+
+    it('degrades honestly when the spill write itself fails — the footer never claims a file that is not there', async () => {
+      const big = 'y'.repeat(20_000);
+      const home = await withHomeParent([stream(...textChunks('t', `REPORT: found it\n${big}`), finishChunk('stop'))]);
+      vi.spyOn(home, 'writeSessionArtifact').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+
+      const { report } = await host.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      expect(report).toMatch(/truncated/i);
+      // The exact opposite of the success case: no path, no false claim.
+      expect(report).not.toContain('saved to:');
+      expect(report).not.toContain('Read it if you need the rest');
+    });
   });
 
   // ---- Review round 2, Findings 1 & 2: a ledger write can throw (mutateJson
@@ -1114,6 +1199,42 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const spilled = fs.readFileSync(rec.reportPath, 'utf8');
     expect(spilled.length).toBe(huge.length); // the FULL, uncapped body
     expect(spilled.startsWith(huge.slice(0, 200))).toBe(true);
+  });
+
+  it('Task 10: a report already spilled at completion time is not spilled a SECOND time by delivery', async () => {
+    // `huge` blows BOTH thresholds — RAW_REPORT_CAP_CHARS (64,000, the
+    // ledger's completion-time spill) and EXPLORER's much smaller report
+    // budget (formatSpecialistReport's own truncation-time spill, Task 10) —
+    // so without reuse this would write the identical full body to disk
+    // twice. `reportPath` on the ledger record (passed into formatDelivery)
+    // is what lets Task 10's formatting step recognize "already spilled" and
+    // skip its own write.
+    const huge = 'w'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    const writeSpy = vi.spyOn(home, 'writeSessionArtifact');
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+
+    // ONE write total: runDelegation's completion-time spill. Delivery must
+    // reuse that same path rather than writing the full body a second time.
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toContain('Full report saved to:');
   });
 
   // ---- Fix pass (external review, 2026-08-12): three follow-on gaps ----------

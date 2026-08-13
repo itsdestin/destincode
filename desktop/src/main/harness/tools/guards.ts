@@ -120,7 +120,7 @@ export type GuardVerdict =
   | { kind: 'deny'; reason: string }
   | { kind: 'external'; canonicalPath: string };
 
-export function checkPathGuard(rawPath: string, cwd: string): GuardVerdict {
+export function checkPathGuard(rawPath: string, cwd: string, internalReadRoots?: string[]): GuardVerdict {
   const canonical = canonicalize(rawPath, cwd);
   // isSensitivePath already covers .ssh/.gnupg/.aws segments, credential
   // basenames, .config/gh, and (as of Phase 2) dotenv files.
@@ -154,6 +154,18 @@ export function checkPathGuard(rawPath: string, cwd: string): GuardVerdict {
   // widens nothing the threat model didn't already accept: per the KNOWN
   // LIMITATIONS at the top of this file, Bash can read any of it directly.
   if (isUnderRoot(canonical, canonicalize(spillRoot(), cwd))) return { kind: 'ok' };
+  // Task 10 (plan 1b) — a session's own internal read roots (e.g. the spill
+  // directory an oversized specialist report was written to) are readable
+  // without an external_directory ask, same shape as the spillRoot exemption
+  // just above and for the identical reason: the footer that names the path
+  // tells the model to Read it, and the guard has to agree that it's allowed
+  // to. Unlike spillRoot() (one fixed global constant), these roots are
+  // PER-SESSION — the caller (HarnessSession, from opts.internalReadRoots)
+  // decides what counts as "this session's own", so the exemption can never
+  // widen beyond what that one session was actually wired with. Checked here,
+  // AFTER the credential denies above and BEFORE the external-directory
+  // branch below, so it can deny-override but never bypass a secret path.
+  if (internalReadRoots?.some((root) => isUnderRoot(canonical, canonicalize(root, cwd)))) return { kind: 'ok' };
   if (!isUnderRoot(canonical, canonicalize(cwd, cwd))) {
     return { kind: 'external', canonicalPath: canonical }; // → external_directory ask
   }

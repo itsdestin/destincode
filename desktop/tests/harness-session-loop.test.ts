@@ -371,6 +371,48 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
   });
 
+  // Task 10 (plan 1b): the parent has to be able to Read the spill file its
+  // own truncated specialist report was written to, without the guard
+  // treating that path like any other file outside the workspace — otherwise
+  // the footer's "Read it if you need the rest" advice hits the exact same
+  // ask/block wall the Bash spill-file fix (guards.ts) already closed for
+  // Bash's own output. internalReadRoots is how NativeSessionHost wires that
+  // exemption in per-session, scoped to this one session's own artifact dir.
+  it('tool-layer guard: internalReadRoots lets the parent Read its own spill path without an ask', async () => {
+    const spillDir = 'C:/spill/session-1';
+    const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: `${spillDir}/child-1.report.md` }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [read], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
+    );
+    collect(session);
+    await session.send('go');
+    expect(askUser).not.toHaveBeenCalled();                          // internal root → no forced ask
+    expect(decide).toHaveBeenCalledWith('Read', `${spillDir}/child-1.report.md`); // reaches decide() normally
+  });
+
+  it('tool-layer guard: internalReadRoots does not widen to a sibling directory — that still asks', async () => {
+    const spillDir = 'C:/spill/session-1';
+    const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: 'C:/spill/not-our-session/x.txt' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [read], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
+    );
+    collect(session);
+    await session.send('go');
+    expect(askUser).toHaveBeenCalledTimes(1);   // sibling directory outside the exempted root still forces an ask
+  });
+
   // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
   // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
   // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
