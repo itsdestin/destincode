@@ -661,6 +661,14 @@ export class NativeSessionHost extends EventEmitter {
     this.bindReservation(opts.token, childId);
     await this.recordDelegationStart(parentId, childId, title, opts, false);
     const run = await this.runDelegation(parentId, childId, title, opts, opts.token);
+    // Minor (external review 2026-08-13): deliberately NOT plumbing
+    // runDelegation's own reportPath (if it already spilled run.report for
+    // exceeding RAW_REPORT_CAP_CHARS, a few lines up its own call stack) in
+    // here — when that AND the specialist's much smaller report budget both
+    // trip, this writes the identical full body to the identical path a
+    // second time. Harmless (deterministic overwrite, same bytes) and the
+    // rare case, so left as an accepted inefficiency rather than threading an
+    // extra return value through runDelegation for it.
     const { text: report, reportPath } = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
     const parentCwd = this.live.get(parentId)?.cwd;
     if (this.ledger && parentCwd) {
@@ -854,14 +862,28 @@ export class NativeSessionHost extends EventEmitter {
     // that notice's totals are accurate; fall back to the capped ledger copy
     // only if the spill file itself can't be read (e.g. deleted out from
     // under us) — a missing spill file must never fail delivery outright.
-    const rawBody = (rec.reportPath && this.nativeHome?.readSessionArtifact(rec.reportPath)) ?? rec.rawReport ?? '';
+    const spilledBody = rec.reportPath ? this.nativeHome?.readSessionArtifact(rec.reportPath) : undefined;
+    const readSucceeded = typeof spilledBody === 'string';
+    const rawBody = readSucceeded ? spilledBody : (rec.rawReport ?? '');
     if (!specialist) return { text: preamble + rawBody };
-    // reportPath: rec.reportPath — Task 10: reuse Task 4's completion-time
-    // spill (when this record already has one) instead of writing the exact
-    // same full body to the exact same path a second time.
+    // Critical fix (external review 2026-08-13): reportPath is reused ONLY
+    // when the read two lines up actually just proved the file is still
+    // there. Passing rec.reportPath through unconditionally (as before) made
+    // formatSpecialistReport treat it as truthy and skip its own
+    // write-guard — so a spill file deleted out from under us (the exact case
+    // readSessionArtifact's own doc comment anticipates) still got named in
+    // the footer as "Full report saved to: <path>", pointing the parent at a
+    // Read that was already known to fail. When the read fails, leaving
+    // reportPath undefined sends formatSpecialistReport down its normal
+    // "no path in hand yet" branch, which re-spills `rawBody` (the ledger's
+    // still-capped copy — the best we still have) to the SAME filename and
+    // names the path only if THAT write succeeds; a write failure there
+    // degrades to the honest "could not be saved" footer, same as any other
+    // fresh spill. The footer never again claims a file the code knows it
+    // could not read.
     const spilled = this.formatSpecialistReport({
       parentId: sessionId, childId: rec.childId, specialist, title: rec.title, body: rawBody, concurrentReporters,
-      reportPath: rec.reportPath,
+      reportPath: readSucceeded ? rec.reportPath : undefined,
     });
     return { text: preamble + spilled.text, reportPath: spilled.reportPath };
   }
@@ -1104,13 +1126,17 @@ export class NativeSessionHost extends EventEmitter {
     // pending count so simultaneous reports split the parent's headroom
     // instead of each claiming the full single-reporter share.
     concurrentReporters?: number;
-    // Task 10: a spill path the CALLER already knows about — formatDelivery
-    // passes rec.reportPath when Task 4's completion-time spill (runDelegation,
-    // fired when the raw body alone exceeds RAW_REPORT_CAP_CHARS) already wrote
-    // this exact child's full body to disk. Reusing it means this method never
-    // writes the identical bytes to the identical path a second time. Absent
-    // for the foreground path and for any background report the completion
-    // handler never had to spill.
+    // Task 10: a spill path the CALLER already knows is READABLE right now —
+    // formatDelivery passes rec.reportPath only when it just confirmed (via
+    // readSessionArtifact) that Task 4's completion-time spill is still on
+    // disk. Reusing it means this method never writes the identical bytes to
+    // the identical path a second time. Absent for the foreground path, for
+    // any background report the completion handler never had to spill, AND
+    // (critical fix, external review 2026-08-13) for a background report
+    // whose spill file WAS written but is gone by delivery time — in that
+    // case the caller deliberately omits it so the branch below re-spills
+    // from what it still has rather than naming a path it just failed to
+    // read.
     reportPath?: string;
   }): { text: string; reportPath?: string } {
     const parent = this.live.get(i.parentId)?.session;

@@ -1237,6 +1237,56 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(injected.data.text).toContain('Full report saved to:');
   });
 
+  it('Critical fix (external review 2026-08-13): delivery never names a spill path it just failed to read', async () => {
+    // Simulates the completion-time spill file being gone by delivery time
+    // (process restart, external cleanup — exactly what readSessionArtifact's
+    // own doc comment anticipates). Mocking the READ (rather than deleting
+    // the real file) isolates the assertion to what formatDelivery DOES when
+    // told the file can't be read, with no race against the delivery loop's
+    // own timing. `writeSessionArtifact` is left real (spied, not mocked) so
+    // a re-spill is independently provable by call count and by the file it
+    // actually leaves on disk.
+    const huge = 'q'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    const writeSpy = vi.spyOn(home, 'writeSessionArtifact');
+    vi.spyOn(home, 'readSessionArtifact').mockReturnValue(null);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+
+    // TWO writes: runDelegation's completion-time spill, PLUS a re-spill at
+    // delivery once the read came back null. Before the fix, a truthy
+    // rec.reportPath was passed straight through regardless of the read
+    // result, so formatSpecialistReport's write-guard was skipped and this
+    // would be ONE — the exact defect this test pins.
+    expect(writeSpy).toHaveBeenCalledTimes(2);
+
+    const ledger = (host as any).ledger;
+    const rec = ledger.listFor(root, 'root-1')[0];
+    expect(rec.reportPath).toBeTruthy();
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    // The footer must name a path the delivery-time re-spill actually just
+    // wrote (real, readable content), never a stale path reused blindly
+    // after the read above proved it unreadable — and it must never claim
+    // the write failed when it didn't.
+    expect(injected.data.text).toContain(`Full report saved to: ${rec.reportPath}`);
+    expect(injected.data.text).not.toContain('could not be saved');
+  });
+
   // ---- Fix pass (external review, 2026-08-12): three follow-on gaps ----------
 
   it('Finding 1: delivery of a spilled oversized report reads the FULL body back from disk, not the capped ledger copy', async () => {
