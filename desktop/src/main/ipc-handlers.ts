@@ -96,7 +96,7 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
@@ -3469,6 +3469,11 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
+    // Repair legacy relative-external records before listing. The Session
+    // Drawer is the only surface where an unpinned external is visible, so this
+    // is where the false "no longer on disk" actually renders. Memoized per
+    // project per process — this handler also fires after every tracked write.
+    await runSidecarMigration(projectRoot);
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
@@ -3535,6 +3540,10 @@ export function registerIpcHandlers(
     // index entry — fall back to reading the sidecar at that path so their
     // artifacts resolve too. A bogus id simply yields no sidecar.
     const projectRoot = p ? p.path : projectId;
+    // Same legacy-repair call as LIST_SESSION above (filepath pills + the
+    // hero/switcher count also read through this handler) — memoized per
+    // project per process, so this costs one Set lookup after the first call.
+    await runSidecarMigration(projectRoot);
     const sidecar = await readSidecar(projectRoot);
 
     let tracked: any[] = [];
@@ -3568,6 +3577,9 @@ export function registerIpcHandlers(
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
     const projectRoot = p ? p.path : projectId;
+    // Same legacy-repair call as LIST_SESSION above — this is actual project
+    // open (Project View → Files). Memoized per project per process.
+    await runSidecarMigration(projectRoot);
     if (isGatedRoot(projectRoot) && !opts?.force) {
       return { ok: true, files: [], truncated: false, gated: true };
     }

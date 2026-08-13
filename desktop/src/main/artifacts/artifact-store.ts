@@ -1,9 +1,10 @@
-import { promises as fs } from 'fs';
+import { promises as fs, constants as fsConstants } from 'fs';
 import { join, dirname, extname } from 'path';
 import { ProjectSidecar } from '../../shared/artifacts/types';
 import { newArtifactId, newVersionId } from '../../shared/artifacts/ulid';
 import { SIDECAR_SCHEMA_VERSION } from '../../shared/artifacts/types';
 import { casWrite } from './cas-write';
+import { migrateRelativeExternals } from '../../shared/artifacts/migrate-relative-externals';
 
 const SIDECAR_RELATIVE = '.youcoded/artifacts.json';
 
@@ -211,6 +212,77 @@ export async function removeArtifactRecord(
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Project roots already checked in THIS process. The migration is safe to call
+// from hot handlers (LIST_SESSION fires after every tracked write), and the
+// pure pass over a 2,800-record array is cheap — but it is not free, and there
+// is no reason to redo it every call.
+//
+// Process-lifetime, deliberately: a peer device on a pre-fix build can keep
+// writing new relative-external records into a synced sidecar, and clearing the
+// memo on app launch is what lets us repair those. That is the trade for having
+// no persistent "already migrated" marker — see the plan's design decision 2.
+const migrationChecked = new Set<string>();
+
+/**
+ * One-time repair of relative-external records (see
+ * shared/artifacts/migrate-relative-externals.ts).
+ *
+ * The run-once gate is `reclassified === 0`, NOT a $schema bump. appendVersion
+ * round-trips $schema from disk, so a schema marker would say "repaired" while
+ * a stale peer build kept producing new damage that this would then never fix.
+ * The pure function already tells us whether anything changed; nothing is
+ * written when it hasn't.
+ *
+ * WHY here and not inside readSidecar: readSidecar is a hot path (every get,
+ * save, and list call). A function that writes from inside a read is both
+ * surprising and a lock-contention risk.
+ */
+export async function runSidecarMigration(
+  projectRoot: string
+): Promise<{ migrated: boolean; reclassified: number; merged: number }> {
+  const NOTHING = { migrated: false, reclassified: 0, merged: 0 };
+  if (migrationChecked.has(projectRoot)) return NOTHING;
+
+  // The sidecar is written continuously by the running app, so a CAS conflict is
+  // a real (if rare) outcome. Mirror appendVersion: re-read and retry rather
+  // than deferring to "some later project open", which for the busiest project
+  // is the least likely to win.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await readSidecar(projectRoot);
+    if (current === null || 'corrupted' in current) {
+      migrationChecked.add(projectRoot);
+      return NOTHING;
+    }
+
+    const result = migrateRelativeExternals(current, projectRoot);
+    if (result.reclassified === 0) {
+      migrationChecked.add(projectRoot);   // nothing to do — don't re-scan this process
+      return NOTHING;
+    }
+
+    // Back up before the first rewrite. This edits weeks of artifact history in
+    // place; a copy is the only way back if the merge rule turns out wrong for a
+    // record we did not anticipate. FIXED name, written only if absent: a
+    // timestamped name would accumulate one file per retry and per relapse.
+    const sidecarPath = join(projectRoot, SIDECAR_RELATIVE);
+    try {
+      await fs.copyFile(sidecarPath, `${sidecarPath}.pre-migration.bak`, fsConstants.COPYFILE_EXCL);
+    } catch (e: any) {
+      if (e.code !== 'EEXIST') throw e;   // a backup already exists — keep the oldest
+    }
+
+    // CAS on the value we read: if another window wrote in between, re-read and
+    // recompute rather than clobber.
+    const next: ProjectSidecar = result.sidecar;
+    const { committed } = await writeSidecar(projectRoot, current.updatedAt, next);
+    if (committed) {
+      migrationChecked.add(projectRoot);
+      return { migrated: true, reclassified: result.reclassified, merged: result.merged };
+    }
+  }
+  return NOTHING;   // three conflicts — do NOT memo; the next call retries
 }
 
 export interface RenameResult {

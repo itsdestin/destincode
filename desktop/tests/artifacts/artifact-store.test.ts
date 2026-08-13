@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
+import { SIDECAR_SCHEMA_VERSION } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
 
 // The 60-iteration concurrency loop below does real fs work (mkdtemp, fsync,
@@ -235,5 +236,64 @@ describe('removeArtifactRecord', () => {
     });
     const res = await removeArtifactRecord(projectRoot, 'nope');
     expect(res).toEqual({ ok: false, error: 'artifact-not-found' });
+  });
+});
+
+describe('runSidecarMigration', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-migrate-'));
+    mkdirSync(join(projectRoot, '.youcoded'), { recursive: true });
+  });
+  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const legacy = () => ({
+    $schema: SIDECAR_SCHEMA_VERSION, projectId: 'p', name: 'proj',
+    createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z',
+    artifacts: [{
+      id: 'art_A', path: 'play.html', kind: 'external' as const,
+      absolutePath: 'flappy-bird/play.html',
+      lastModified: '2026-08-13T00:00:00.000Z', status: 'active' as const,
+      versions: [], comments: [], tags: [],
+    }],
+    manualExcludes: [], manualIncludes: [],
+  });
+
+  it('repairs relative externals and is a no-op on the second call', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+
+    const first = await runSidecarMigration(projectRoot);
+    expect(first).toMatchObject({ migrated: true, reclassified: 1, merged: 0 });
+
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(after.artifacts[0]).toMatchObject({
+      path: 'flappy-bird/play.html', kind: 'internal', absolutePath: null,
+    });
+
+    // No-op via the reclassified === 0 gate — NOT via the process memo, which a
+    // fresh temp root cannot have populated for a second distinct project.
+    const second = await runSidecarMigration(projectRoot);
+    expect(second).toMatchObject({ migrated: false, reclassified: 0 });
+    const unchanged = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(unchanged.updatedAt).toBe(after.updatedAt);   // it did not rewrite
+  });
+
+  it('does not write, or back up, a sidecar with nothing to repair', async () => {
+    const clean = legacy();
+    clean.artifacts[0] = { ...clean.artifacts[0], kind: 'internal' as any, absolutePath: null };
+    await writeSidecar(projectRoot, null, clean as any);
+
+    const res = await runSidecarMigration(projectRoot);
+    expect(res.migrated).toBe(false);
+    expect(readdirSync(join(projectRoot, '.youcoded')).filter((f) => f.includes('.bak'))).toHaveLength(0);
+  });
+
+  it('backs the sidecar up exactly once before rewriting it', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    await runSidecarMigration(projectRoot);
+    await runSidecarMigration(projectRoot);
+    const backups = readdirSync(join(projectRoot, '.youcoded'))
+      .filter((f) => f.startsWith('artifacts.json.pre-migration'));
+    expect(backups).toEqual(['artifacts.json.pre-migration.bak']);
   });
 });
