@@ -136,13 +136,28 @@ function MacTrafficLights({ headerRef }: { headerRef: React.RefObject<HTMLDivEle
     // Window move on screen changes rect.left/top without firing ResizeObserver
     // (size didn't change), so lights would drift. Re-measure on window resize
     // and on fullscreen toggle (which Electron relays via onFullscreenChanged).
-    window.addEventListener('resize', update);
+    //
+    // Perf: rAF-coalesced because `window.resize` is not frame-batched — on
+    // Wayland it fires once per compositor configure during a drag-resize, and
+    // each call measured + setState'd in the window where the compositor is
+    // waiting for our new-size frame. The ResizeObserver above is already
+    // frame-batched by the browser, so it calls `update` directly.
+    let rafId: number | null = null;
+    const updateOnFrame = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        update();
+      });
+    };
+    window.addEventListener('resize', updateOnFrame);
     const offFullscreen = (window as any).claude?.window?.onFullscreenChanged?.(() => update());
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       ro.disconnect();
       mo.disconnect();
-      window.removeEventListener('resize', update);
+      window.removeEventListener('resize', updateOnFrame);
       offFullscreen?.();
     };
   }, [headerRef]);

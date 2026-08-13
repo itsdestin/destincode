@@ -384,6 +384,25 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* Fix: black bars at the growing edge during a window resize.
+   The compositor applies the new window size before the renderer can commit a
+   frame at that size, so any region we have not painted yet shows the raw
+   (unpainted) buffer — which reads as black. Our opaque fill comes from
+   `bg-canvas` on a div INSIDE #root, so it only covers the new area once React
+   has laid out, one or more frames late. Painting the root element's background
+   makes the viewport canvas itself theme-colored, so the transient gap is the
+   theme's canvas instead of black.
+
+   `html` ONLY, deliberately. The wallpaper layer (#theme-bg) is
+   `position: fixed; z-index: -1` inside #root, and a negative-z child paints
+   ABOVE its stacking-context root's background but BELOW block descendants'
+   backgrounds — so putting this on `body` or `#root` would hide the wallpaper.
+   The root element's background paints the viewport canvas beneath everything
+   and cannot. Buddy windows force all three transparent (buddy.css). */
+html {
+  background-color: var(--canvas);
+}
+
 /* Prevent iOS Safari auto-zoom on input focus (triggers at font-size < 16px) */
 @media screen and (max-width: 768px) {
   textarea, input[type="text"], input {
