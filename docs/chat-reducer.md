@@ -47,12 +47,12 @@ Replaces the prior content-match-against-last-10-entries approach, which silentl
 ### Tool cards dedup STRUCTURALLY, never by uuid
 
 `TRANSCRIPT_TOOL_USE` deliberately has **no `seenUuids` guard**, unlike `TRANSCRIPT_USER_MESSAGE` / `TRANSCRIPT_ASSISTANT_TEXT`. CC rewrites a JSONL line as the assistant message grows, and a rewrite can carry **new** `tool_use` blocks under the already-seen line uuid — so the watcher re-emits tool-use on repeats by design (`transcript-watcher.ts` `readNewLines`). A uuid guard here would silently swallow those tools; missing cards are far worse than doubled ones.
-<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "group placement must be IDEMPOTENT"} -->
+<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "IDEMPOTENT by tool id"} -->
 
 Instead every write on this path is idempotent by `toolUseId`:
 
 - the `toolCalls` Map — `Map.set` overwrites;
-- **group placement** — the handler scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land;
+- **group placement** — `placeToolInCurrentGroup` scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land. This is a shared helper, not inline in the handler: `NATIVE_TOOL_PREPARING` (the native runtime's preparing card, drawn while a tool call's arguments are still streaming) places its card through the **same** function under the provider's real tool call id, which is what lets the later `TRANSCRIPT_TOOL_USE` supersede it in place rather than render a second card beside it. If the two paths ever place differently, that is the bug;
 - `injectPlanSegment` (ExitPlanMode) — dedups by `toolUseId`, updating in place so a later, fuller emit still refreshes content.
 
 `PERMISSION_REQUEST` matches only `running` tools, so a re-delivery for a tool already flipped to `awaiting-approval` would fall through to the synthetic-placeholder branch; it bails first if any tool already carries that `requestId`.
