@@ -67,9 +67,10 @@ function describeSpecialists(): string {
     .join('\n');
 }
 
-// Codex's orchestration-doctrine line: a specialist cannot ask a follow-up
-// question (child-ask-policy.ts answers every ask as a decline), so the
-// caller must front-load everything into one brief.
+// Codex's orchestration-doctrine line: a specialist cannot ask a conversational
+// follow-up question (child-ask-router.ts denies AskUserQuestion instantly —
+// it routes permission GATES to the parent's card, not interactive questions),
+// so the caller must front-load everything into one brief.
 const DOCTRINE = 'Specialists work independently and report back once; give each specialist a complete, self-contained brief — they cannot ask you a follow-up question.';
 
 export function createTaskTool(): NativeTool<TaskArgs> {

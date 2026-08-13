@@ -34,14 +34,21 @@ describe('specialist foreground run (Task 7)', () => {
   // spanning MORE THAN ONE TURN (the empty-report nudge) advances rather than
   // restarting — the factory is called once per turn, and a fresh instance per
   // call would replay script[0] forever.
-  function boot(scripts: any[][]) {
+  // `askHoldMs` (Task 8): overrides specialistAskHoldMs for a test that drives
+  // a routed ask (max_steps/doom_loop/deny-listed) all the way to its
+  // timeout — undefined keeps the real 5-minute production default, which
+  // every OTHER test in this file relies on never actually firing.
+  function boot(scripts: any[][], askHoldMs?: number) {
     const model = scriptedModel(scripts);
     store = new SessionStore(new NativeHome(root));
-    host = new NativeSessionHost(store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, undefined, askHoldMs,
+    );
     return model;
   }
-  async function withParent(scripts: any[][]) {
-    boot(scripts);
+  async function withParent(scripts: any[][], askHoldMs?: number) {
+    boot(scripts, askHoldMs);
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
   }
   // Every event the HOST emitted (what ipc-handlers forwards to the renderer).
@@ -295,11 +302,14 @@ describe('specialist foreground run (Task 7)', () => {
 
   it("a step-capped child is NOT a failure: its last text comes back with a '(stopped at its step limit)' suffix", async () => {
     // stepCap 1 means the very first tool step trips the budget gate, which
-    // ends the turn with stopReason 'max_steps' (Task 5.5's ask-policy path).
+    // ends the turn with stopReason 'max_steps' (harness-session's max_steps
+    // ask). Task 8: that ask now ROUTES to the parent instead of denying
+    // instantly, so this run only completes once it times out — a small
+    // askHoldMs override keeps the test fast instead of waiting 5 real minutes.
     const CAPPED = { ...EXPLORER, stepCap: 1 };
     await withParent([
       stream(...textChunks('t', 'Found half of it in src/a.ts'), toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
-    ]);
+    ], 20);
 
     const { childId, report } = await host.spawnSpecialist('root-1', {
       specialist: CAPPED, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',

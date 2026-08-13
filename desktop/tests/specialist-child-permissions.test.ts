@@ -98,18 +98,20 @@ describe('buildChildDecide', () => {
     expect(parentDecide).not.toHaveBeenCalled();
   });
 
-  it('a deny-listed parent ASK is denied even inside a granted envelope — spec §5, no override', async () => {
-    // Guards the fix for the Critical review finding: launch consent covers the
-    // charter of work, not `rm -rf` / `git push` / `sudo`. Without this the
-    // envelope branch below would silently convert this into an allow.
+  it('a deny-listed ask inside a granted envelope ROUTES to the parent and is denied only by timeout', async () => {
+    // Task 8 flip: launch consent still covers the charter of work, not
+    // `rm -rf` / `git push` / `sudo` — but a specialist no longer hard-denies
+    // this itself. It passes the parent's 'ask' straight through UNCHANGED so
+    // childAskRouter can carry it to a REAL user via the parent's card; the
+    // envelope branch below (6/7) never gets a chance to silently convert it
+    // into an allow because this branch still runs BEFORE it.
     const decide = buildChildDecide({
       parentDecide: async () => ({ action: 'ask', denyListed: true }),
       charter: 'read-write', allowedTools: ['Bash'], envelopeGranted: true,
     });
     const d = await decide('Bash', 'rm -rf /');
-    expect(d.action).toBe('deny');
+    expect(d.action).toBe('ask');
     expect(d.denyListed).toBe(true);
-    expect(d.message).toMatch(/destructive-action list/i);
   });
 
   it('the refusal names the tools the specialist DOES have — a dead end becomes a next step', async () => {

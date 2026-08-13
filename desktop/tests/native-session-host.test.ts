@@ -30,6 +30,17 @@ function firstAsk(h: NativeSessionHost): Promise<string> {
   });
 }
 
+// Task 8: resolves with the first transcript-event matching `match` — used to
+// catch a delivered host notice (a synthetic user-message with
+// data.injected === 'specialist-report', same shape a background specialist
+// report rides in on) without racing the delivery pass's own async timing.
+function waitForEvent(h: NativeSessionHost, match: (e: any) => boolean): Promise<any> {
+  return new Promise((res) => {
+    const on = (e: any) => { if (match(e)) { h.off('transcript-event', on); res(e); } };
+    h.on('transcript-event', on);
+  });
+}
+
 // RAW V4 stream-part shapes (see harness-session.test.ts): deltas carry `delta`, usage is nested.
 const CHUNKS = [
   { type: 'stream-start', warnings: [] },
@@ -1315,6 +1326,19 @@ describe('NativeSessionHost', () => {
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       return { store, h };
     }
+    // Task 8: a host whose specialistAskHoldMs is overridden to a small,
+    // real (not fake-timer) delay — see the constructor param's own WHY for
+    // why tests prefer this over vi.useFakeTimers() against a file this
+    // heavy in setImmediate-driven async machinery.
+    async function withParentFastAskHold(askHoldMs: number, modelFactory: any = factory) {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, askHoldMs,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      return { store, h };
+    }
     // The child's live HarnessSession — Task 7 reaches it the same way (through
     // the host's live map); here it is the only route to the child's tool surface.
     const childSession = (h: NativeSessionHost, id: string) => (h as any).live.get(id).session;
@@ -1439,13 +1463,14 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    it("the destructive deny-list cuts through the envelope: a spawn-approved child still cannot rm -rf", async () => {
-      // Critical review fix: launch consent (the envelope) is consent for the
-      // specialist's CHARTER of work, not for `rm -rf` — spec §5 says no charter
-      // or envelope overrides the destructive deny-list. Worker is read-write and
-      // has Bash, and the parent sits in the default 'ask' mode where the
-      // deny-list layer marks `rm *` denyListed — exactly the shape that used to
-      // fall into the envelope branch and come out an allow.
+    it("the destructive deny-list cuts through the envelope, but now ROUTES to the parent instead of hard-denying (Task 8)", async () => {
+      // Critical review fix (plan 1a): launch consent (the envelope) is consent
+      // for the specialist's CHARTER of work, not for `rm -rf` — spec §5 says no
+      // charter or envelope overrides the destructive deny-list. Worker is
+      // read-write and has Bash, and the parent sits in the default 'ask' mode
+      // where the deny-list layer marks `rm *` denyListed. Plan 1b Task 8 flips
+      // the OUTCOME of that (a real user can now approve it) without touching
+      // the invariant itself (the envelope still never silently overrides it).
       const WORKER = resolveSpecialist('worker')!;
       fs.writeFileSync(path.join(root, 'marker.txt'), 'do not delete me');
       const rmOnce = () => scriptedModel([
@@ -1460,28 +1485,171 @@ describe('NativeSessionHost', () => {
       const events: any[] = [];
       h.on('hook-event', (e) => asks.push(e));
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
-      await childSession(h, childId).send('go');
+      const askArrived = firstAsk(h);
+      const sendPromise = childSession(h, childId).send('go');
+      const requestId = await askArrived;
+      // The ask reaches the host under the PARENT's id (root-1), with the
+      // specialist labelled — not the child's own id, which no window owns.
+      const ask = asks.find((e) => e.type === 'PermissionRequest')!;
+      expect(ask.sessionId).toBe('root-1');
+      expect(ask.payload.denyListed).toBe(true);
+      expect(ask.payload.specialist).toMatchObject({ childId, agentType: 'worker' });
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true); // still hasn't run — awaiting an answer
+      // A real user answers (deny) within the window — real declines get the
+      // plain copy, no redirect wording.
+      expect(h.respondPermission(requestId, { behavior: 'deny' })).toBe(true);
+      await sendPromise;
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/destructive-action list/i);
-      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);   // never ran
-      expect(asks).toEqual([]);                                          // no ask reached the host either
+      expect(res.data.toolResult).toMatch(/user declined/i);
+      expect(res.data.toolResult).not.toMatch(/pending on their screen/i); // not the timeout redirect
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);     // never ran
       await h.destroyAll();
     });
 
-    it("an external-directory Read is declined by the wired ask policy, not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
+    it('an unanswered destructive-action ask times out into the redirect, and the ask stays answerable after', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      const events: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // resolves once the (timed-out) turn settles
+      const requestId = await askArrived;
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/pending on their screen/i);
+      expect(res.data.toolResult).toMatch(/Do NOT attempt the blocked action by any other means/);
+      // Nothing expired the card — no PermissionExpired for this id, so it is
+      // exactly what "the entry stays answerable" means.
+      expect(asks.some((e) => e.type === 'PermissionExpired' && e.payload._requestId === requestId)).toBe(false);
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true); // still findable
+      await h.destroyAll();
+    });
+
+    it('a late APPROVE while the child is still live arrives as a steer naming the tool', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go'); // times out into the redirect; the child stays LIVE (never destroy()'d here)
+      const requestId = await askArrived;
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true);
+      expect(steerSpy).toHaveBeenCalledTimes(1);
+      const [text] = steerSpy.mock.calls[0];
+      expect(text).toMatch(/Bash/);
+      expect(text).toMatch(/APPROVED — you may do it now/);
+      await h.destroyAll();
+    });
+
+    it('a late DENY while the child is still live arrives as a steer naming the tool, denied', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go');
+      const requestId = await askArrived;
+      expect(h.respondPermission(requestId, { behavior: 'deny' })).toBe(true);
+      const [text] = steerSpy.mock.calls[0];
+      expect(text).toMatch(/DENIED — do not attempt it/);
+      await h.destroyAll();
+    });
+
+    it('a late APPROVE after the child ended queues a parent delivery naming task_id', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      // First factory call (the child's turn) attempts the destructive Bash
+      // call; every later call (the parent's own turns, including the
+      // injected notice's turn) gets the plain text-only model.
+      let calls = 0;
+      const rmThenText = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return scriptedModel([
+            stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+            stream(...textChunks('t', 'done'), finishChunk('stop')),
+          ]) as any;
+        }
+        return factory();
+      };
+      const { h } = await withParentFastAskHold(20, rmThenText);
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // times out into the redirect
+      const requestId = await askArrived;
+      await h.destroy(childId); // the specialist's own normal teardown, AFTER its ask already timed out
+      const noticeArrived = waitForEvent(h, (e) => e.sessionId === 'root-1' && e.type === 'user-message' && e.data.injected === 'specialist-report');
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true);
+      const notice = await noticeArrived;
+      expect(notice.data.text).toMatch(/^\[Specialist follow-up\]/);
+      expect(notice.data.text).toMatch(/approved/i);
+      expect(notice.data.text).toMatch(/Bash/);
+      expect(notice.data.text).toContain(childId); // task_id, so the parent can name what to resume
+      await h.destroyAll();
+    });
+
+    it('destroy(childId) cancels a routed ask registered under the parent id (raisedBy match) while still within its window', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => rmOnce()); // real 5-minute hold — never lets the timeout race this test
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      const askArrived = firstAsk(h);
+      const sendPromise = childSession(h, childId).send('go');
+      await askArrived;
+      await h.destroy(childId); // torn down WHILE the ask is still pending, not yet timed out
+      await sendPromise; // the child's own turn unwinds via the 'canceled' interrupt path
+      expect(asks.some((e) => e.type === 'PermissionExpired')).toBe(true); // card cleared
+      await h.destroyAll();
+    });
+
+    it("an external-directory Read is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
       // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
       // askUser only through the max_steps gate, which short-circuits identically
-      // whether `askUser: childAskPolicy()` is wired or deleted from createChild —
-      // so that pin alone cannot catch the wiring being dropped. This drives a
+      // whether `askUser: childAskRouter(...)` is wired or deleted from createChild
+      // — so that pin alone cannot catch the wiring being dropped. This drives a
       // DIFFERENT askUser call site: the external-directory forced ask
       // (harness-session.ts checkPathGuard 'external' verdict, ~:1830-1852). With
-      // the policy wired, childAskPolicy denies it and the model reads the
-      // DECLINED copy (~:1854, "user declined"). With askUser undefined,
-      // harness-session's own guard answers first with the "No approval handler
-      // is wired... configuration error" copy (~:1851) instead — the two are
-      // mutually exclusive, so asserting the declined copy AND the absence of the
-      // config-error copy discriminates policy-wired from policy-missing.
+      // the router wired, it denies this instantly (never reaching the broker —
+      // see child-ask-router.ts) with FACTUAL copy naming the real constraint —
+      // Task 8 deliberately dropped the old "user declined" wording here since no
+      // user was ever asked (error-message-standards.md: never blame a user for a
+      // decision they never made). With askUser undefined, harness-session's own
+      // guard answers first with the "No approval handler is wired... configuration
+      // error" copy instead — the two are mutually exclusive, so asserting the
+      // router's copy AND the absence of the config-error copy discriminates
+      // router-wired from router-missing.
       const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-external-'));
       const outsideFile = path.join(external, 'secret.txt');
       fs.writeFileSync(outsideFile, 'outside the jail');
@@ -1493,13 +1661,17 @@ describe('NativeSessionHost', () => {
       const { childId } = await h.createChild('root-1', {
         specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
       const events: any[] = [];
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
       await childSession(h, childId).send('go');
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/user declined|dismissed/i);
+      expect(res.data.toolResult).toMatch(/work directory/i);
+      expect(res.data.toolResult).not.toMatch(/user declined|dismissed/i); // no user was ever asked
       expect(res.data.toolResult).not.toMatch(/No approval handler is wired/i);
+      expect(asks).toEqual([]); // never reached the broker/card at all — an instant, local deny
       fs.rmSync(external, { recursive: true, force: true });
       await h.destroyAll();
     });
@@ -1552,20 +1724,21 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    // Task 5.5 step 4 — the behavioral pin the ask-policy exists for. Four paths
-    // in harness-session call askUser directly, bypassing decide(); the step-cap
-    // gate is one of them. Wired to a broker, the child's ask would go to a
-    // sessionId no window owns, the reducer would drop it, and the promise would
-    // never resolve — the child would hang until teardown. With the policy it
-    // ends the turn cleanly.
-    it("stepCap is enforced: the turn ends with stopReason 'max_steps' instead of hanging, and no ask is raised", async () => {
+    // Task 5.5 step 4 — the behavioral pin the ask-policy/ask-router exists
+    // for. Four paths in harness-session call askUser directly, bypassing
+    // decide(); the step-cap gate is one of them. Plan 1a's childAskPolicy
+    // denied this instantly so the turn could never hang; plan 1b Task 8
+    // routes it to the parent's card instead — still never hangs (the
+    // timeout redirect guarantees an eventual answer), but it is no longer
+    // instant and an ask now genuinely reaches the host.
+    it("stepCap is enforced: the turn ends with stopReason 'max_steps' once the routed ask times out — never hangs", async () => {
       const CAPPED = { ...EXPLORER, stepCap: 2 };   // definition-driven, not a global
       // A model that never stops calling tools (scriptedModel replays its last
       // script forever), so only the step cap can end this turn.
       const loops = () => scriptedModel([
         stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
       ]) as any;
-      const { h } = await withParent(async () => loops());
+      const { h } = await withParentFastAskHold(20, async () => loops());
       const { childId } = await h.createChild('root-1', {
         specialist: CAPPED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
@@ -1583,8 +1756,11 @@ describe('NativeSessionHost', () => {
       // exactly two steps ran. Without the harness.limits.maxSteps wiring this
       // model would loop to stepBudgetFor(modelId) — same stopReason, ~25 steps.
       expect(events.filter((e) => e.type === 'tool-use')).toHaveLength(2);
-      expect(asks.filter((e) => e.payload?.sessionId === childId || e.payload?._sessionId === childId)).toEqual([]);
-      expect(asks).toEqual([]);   // nothing reached the host emitter at all
+      // Task 8: the ask DOES now reach the host — under the PARENT's id, never
+      // answered here, ended only by the timeout redirect.
+      const maxStepsAsk = asks.find((e) => e.type === 'PermissionRequest');
+      expect(maxStepsAsk?.sessionId).toBe('root-1');
+      expect(maxStepsAsk?.payload.tool_name).toBe('max_steps');
       await h.destroyAll();
     });
 
