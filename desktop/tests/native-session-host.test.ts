@@ -659,6 +659,35 @@ describe('NativeSessionHost', () => {
       await p.destroyAll();
     });
 
+    it('stamps the CURRENT permission mode on each ask — a full-auto deny-listed ask carries full-auto', async () => {
+      // A model that calls deny-listed Bash: the ONLY ask full-auto still
+      // raises, and exactly the renderer's safety-stop condition
+      // (permissionMode === 'full-auto' && denyListed). Mode is flipped AFTER
+      // create(), so a wiring-time snapshot would report 'ask' — this pins the
+      // read-at-ask-time behavior.
+      const bashFactory = async () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'git push origin master' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const p = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), bashFactory, async () => null, async () => null, async () => null,
+        new PermissionStore(new NativeHome(root)), '9.9.9',
+      );
+      const asks: any[] = [];
+      p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      p.setPermissionMode('s', 'full-auto');
+      const ask = firstAsk(p);
+      const turnDone = waitForTurnComplete(p, 1);
+      p.send('s', 'push it');
+      const requestId = await ask;
+      expect(asks[0].payload.permissionMode).toBe('full-auto');
+      expect(asks[0].payload.denyListed).toBe(true);
+      p.respondPermission(requestId, { decision: { behavior: 'deny' } });   // finish the turn, run nothing
+      await turnDone;
+      await p.destroyAll();
+    });
+
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
