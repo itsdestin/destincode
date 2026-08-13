@@ -577,17 +577,16 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   const stateFile = overrides?.stateFile ?? path.join(homeDir, '.youcoded', 'slug-repair-state.json');
   let state: { v: 1; deferred: Record<string, number> } = { v: 1, deferred: {} };
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
+  // Review fix: the deferral contract is per-RUN ("3 runs in a row"), not
+  // per-FINDING. One session can produce a 'deferred-live' finding from more
+  // than one step in the SAME run — e.g. live in both the $HOME slug dir
+  // (§6.1's scan) and an orphan-dir pair (§6.3's scan) — so dedupe to a Set
+  // BEFORE incrementing, or a single launch could silently burn through
+  // multiple deferrals at once and surface a session in fewer real runs than
+  // the contract states.
+  const deferredThisRun = new Set(all.filter(f => f.kind === 'deferred-live').map(f => f.sessionId));
   for (const f of all) {
-    if (f.kind === 'deferred-live') {
-      const n = (state.deferred[f.sessionId] ?? 0) + 1;
-      state.deferred[f.sessionId] = n;
-      if (n >= MAX_DEFERRALS) {
-        log('WARN', 'SlugRepair', 'session still live after repeated deferrals — needs manual quiescence', { sessionId: f.sessionId, deferrals: n });
-        quarantine.log(`ATTENTION deferred ${f.sessionId} ${n}x — repair it manually while the app is closed`);
-      }
-    } else {
-      delete state.deferred[f.sessionId];
-    }
+    if (f.kind !== 'deferred-live') delete state.deferred[f.sessionId];
     if (f.kind === 'fork-surfaced') {
       log('WARN', 'SlugRepair', 'true fork left on disk — user decision required', { sessionId: f.sessionId, paths: f.paths });
       const rec = await store.get('claude', f.sessionId);
@@ -595,6 +594,14 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
         await store.setNote('claude', f.sessionId,
           `Repair notice: this conversation has two diverged copies on disk (see ~/.youcoded/repair-quarantine). Both were preserved.`);
       }
+    }
+  }
+  for (const sessionId of deferredThisRun) {
+    const n = (state.deferred[sessionId] ?? 0) + 1;
+    state.deferred[sessionId] = n;
+    if (n >= MAX_DEFERRALS) {
+      log('WARN', 'SlugRepair', 'session still live after repeated deferrals — needs manual quiescence', { sessionId, deferrals: n });
+      quarantine.log(`ATTENTION deferred ${sessionId} ${n}x — repair it manually while the app is closed`);
     }
   }
   try {

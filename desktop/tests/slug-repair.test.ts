@@ -580,6 +580,27 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
     expect(fs.readFileSync(path.join(w.quarantine.dir, 'decisions.log'), 'utf8')).toContain('ATTENTION deferred live1');
   });
 
+  // Review fix: the deferral contract is per-RUN ("3 runs in a row"), not
+  // per-finding. A session live in BOTH the $HOME slug dir (6.1's scan) and
+  // an orphan-dir pair (6.3's scan) in the SAME run must still only count as
+  // ONE deferral for that run — otherwise it reaches MAX_DEFERRALS in fewer
+  // real launches than the contract promises.
+  it('a session live in BOTH the $HOME scan (6.1) and an orphan-dir pair (6.3) is deferred ONCE per run, not once per finding', async () => {
+    const w = makeWorld();
+    const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+    fs.mkdirSync(homeSlugDir, { recursive: true });
+    fs.writeFileSync(path.join(homeSlugDir, 'dup1.jsonl'), F('u1', w.P)); // fresh mtime — live (6.1 scan)
+
+    const orphanDir = path.join(w.opts.projectsDir, nativeStoreSlug(w.P));
+    fs.mkdirSync(orphanDir, { recursive: true });
+    fs.writeFileSync(path.join(orphanDir, 'dup1.jsonl'), F('u1', w.P));   // fresh mtime — live (6.3 scan)
+
+    const stateFile = path.join(w.home, '.youcoded', 'state.json');
+    await runSlugRepair({ ...w.opts, stateFile });
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    expect(state.deferred['dup1']).toBe(1);
+  });
+
   it('a surfaced fork gets a store note when the record note is empty', async () => {
     const w = makeWorld();
     const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
