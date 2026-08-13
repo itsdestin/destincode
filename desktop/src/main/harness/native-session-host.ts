@@ -37,7 +37,7 @@ import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
 import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from './specialists/limits';
-import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, type DelegationRecord } from './specialists/delegation-ledger';
+import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, type DelegationRecord } from './specialists/delegation-ledger';
 import { DelegatedModels } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
@@ -103,7 +103,58 @@ const SEND_QUEUE_LIMIT = 10;
 // usage to the parent. A stamped `session-error` would render the parent's
 // session as failed when only the child failed. `user-message` would put the
 // child's brief in the parent's timeline as if the user had typed it.
-const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+// Exported (Task 9) so restart-recovery card replay can filter against the
+// exact same set the live path uses, and so tests can assert against it
+// directly rather than duplicating the literal list.
+export const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+
+/**
+ * Card replay (Task 9) — pure splice function, exported for direct testing.
+ * For each ledger record, filters its child's own events to the display-safe
+ * subset and stamps them EXACTLY the way the live child listener does below
+ * (createChild's 'transcript-event' subscription: same sessionId override,
+ * same parentAgentToolUseId/agentId shape) — a resumed parent's history must
+ * be indistinguishable from one that was live the whole time. The stamped block
+ * is spliced immediately after the parent event whose `data.toolUseId`
+ * matches the record's `parentToolCallId`, because the renderer's
+ * applySubagentEvent (chat-reducer.ts) bails out (returns state unchanged) on
+ * any subagent event that arrives before the parent's own Task tool-use event
+ * has created the card it attaches to — ordering here is not cosmetic, it's
+ * load-bearing for the reducer.
+ *
+ * A record whose parentToolCallId has no matching tool-use event in
+ * `parentEvents` is skipped defensively rather than guessed at: that shape
+ * happens when the app dies in the narrow window after a child is minted but
+ * before the parent's own Task tool-use event is appended to its transcript —
+ * there is no parent card for it to attach to, ever, so splicing "somewhere"
+ * or dropping other parent events to make room would both be worse than
+ * simply not replaying that one child's segments.
+ *
+ * Pure and side-effect-free: computed fresh from each `getHistory()` call
+ * rather than written back to the parent's own file, so calling it (or
+ * resuming) more than once can never accumulate duplicate entries — there is
+ * nothing on disk for a second call to duplicate.
+ */
+export function mergeChildEvents(
+  parentId: string,
+  parentEvents: TranscriptEvent[],
+  children: Array<{ record: DelegationRecord; events: TranscriptEvent[] }>,
+): TranscriptEvent[] {
+  const merged = [...parentEvents];
+  for (const { record, events } of children) {
+    const idx = merged.findIndex((e) => e.type === 'tool-use' && e.data.toolUseId === record.parentToolCallId);
+    if (idx === -1) continue; // defensive skip — see the function's own WHY above
+    const stamped = events
+      .filter((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))
+      .map((e) => ({
+        ...e,
+        sessionId: parentId,
+        data: { ...e.data, parentAgentToolUseId: record.parentToolCallId, agentId: record.childId },
+      } satisfies TranscriptEvent));
+    merged.splice(idx + 1, 0, ...stamped);
+  }
+  return merged;
+}
 
 // The ONE reminder a silent specialist gets before its run is called a failure
 // (retry budget 1, spec §3). Deliberately a single short sentence: it is sent
@@ -1783,6 +1834,69 @@ export class NativeSessionHost extends EventEmitter {
     return { childId, title };
   }
 
+  /**
+   * Restart recovery (Task 9) — reconcile this parent's delegation ledger
+   * against reality the moment its session becomes live again. Three
+   * independent passes, each individually guarded (a bookkeeping failure here
+   * must never cost the user their session — the standing rule every other
+   * ledger call in this file already follows):
+   *
+   *  1. A record still marked 'running' whose owner process is gone really
+   *     did stop — nothing ever wrote its outcome, because the process that
+   *     would have written it is the one that died. Marked 'interrupted'
+   *     HONESTLY, never 'failed' or silently dropped: the child is an
+   *     ordinary session the user can still pick back up by its task_id.
+   *  2. A record holding a delivery LEASE (`claimedBy`) whose owner is dead
+   *     has that lease released — delegation-ledger.ts's module comment: a
+   *     claim is a lease, not a delivery, so a dead owner's lease must not
+   *     block redelivery forever (the crash-between-claim-and-injection gap,
+   *     external review 2026-08-12).
+   *  3. A record that is 'completed' and undelivered is queued via the
+   *     EXISTING delivery machinery (queueDelivery/drainDeliveries) so its
+   *     report lands at the first idle boundary after resume — this never
+   *     builds a second delivery path.
+   *
+   *  Only ever touches records whose owner FAILS isOwnerAlive — a lease or a
+   *  'running' record belonging to a still-live process (including this
+   *  process, mid-run) is left completely alone.
+   */
+  private async reconcileDelegations(parentId: string, cwd: string): Promise<void> {
+    if (!this.ledger) return;
+    let records: DelegationRecord[];
+    try {
+      records = this.ledger.listFor(cwd, parentId);
+    } catch (err) {
+      log('WARN', 'NativeSessionHost', 'reconcileDelegations: failed to read the ledger — skipping restart reconcile for this resume', { parentId, error: String((err as any)?.message ?? err) });
+      return;
+    }
+    let hasUndelivered = false;
+    for (const rec of records) {
+      if (rec.status === 'running' && !isOwnerAlive(rec.owner)) {
+        try {
+          await this.ledger.update(cwd, parentId, rec.childId, { status: 'interrupted', endedAt: Date.now() });
+        } catch (err) {
+          log('WARN', 'NativeSessionHost', 'reconcileDelegations: failed to mark a dead-owner running child interrupted', { parentId, childId: rec.childId, error: String((err as any)?.message ?? err) });
+        }
+      }
+      if (rec.claimedBy && !isOwnerAlive(rec.claimedBy)) {
+        try {
+          await this.ledger.releaseClaim(cwd, parentId, rec.childId);
+        } catch (err) {
+          log('WARN', 'NativeSessionHost', 'reconcileDelegations: failed to release a dead-owner delivery lease', { parentId, childId: rec.childId, error: String((err as any)?.message ?? err) });
+        }
+      }
+      // Read from the ORIGINAL snapshot, not a re-fetch — a record just
+      // marked 'interrupted' above can never also be 'completed' here, so
+      // there is no ordering hazard in checking the pre-reconcile status.
+      if (rec.status === 'completed' && !rec.delivered) hasUndelivered = true;
+    }
+    // One call regardless of how many records are undelivered — queueDelivery
+    // just marks the parent pending and kicks a pass if it's already idle;
+    // drainDeliveries itself drains every eligible record in the ledger, not
+    // just one.
+    if (hasUndelivered) this.queueDelivery(parentId);
+  }
+
   /** Rebuild a live session from its stored header + events. Returns false when
    *  no native session file exists for this id (caller should fall through).
    *  `bindingOverride` (Task 6 — resume-time model selector) wins over the
@@ -1864,6 +1978,14 @@ export class NativeSessionHost extends EventEmitter {
     }
     this.presetIdFor.set(sessionId, preset.manifest.id);
     this.wire(sessionId, cwd, session, mcpLease);
+    // Task 9 — AFTER wire(), not before: reconcileDelegations's own
+    // queueDelivery() call needs this.live.get(sessionId) to already resolve
+    // (it reads/sets `entry.inFlight` to kick an immediate delivery pass when
+    // the parent comes up idle), and wire() above is what puts the entry
+    // there. A ledger/reconcile failure must never fail resume() itself —
+    // reconcileDelegations already guards every fallible step internally, so
+    // it is not wrapped in a try/catch here on top of that.
+    await this.reconcileDelegations(sessionId, cwd);
     return true;
   }
 
@@ -2416,11 +2538,32 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   /** Replay source for a native session. null for unknown/non-native ids so
-   *  the caller (TRANSCRIPT_REPLAY) falls through to the CC transcript watcher. */
+   *  the caller (TRANSCRIPT_REPLAY) falls through to the CC transcript watcher.
+   *
+   *  Task 9 — card replay: any specialist this parent ever delegated to gets
+   *  its display-safe events spliced back in via mergeChildEvents (see that
+   *  function's own WHY), so a subagent card the user saw live still shows
+   *  its work after an app restart. `this.ledger.listFor` reads the sidecar
+   *  straight off disk and CAN throw on a real I/O error (same
+   *  non-ENOENT-rethrows contract as every other ledger read in this file,
+   *  e.g. drainDeliveries) — guarded the same way: log and fall back to the
+   *  parent's own events alone, because a broken ledger read must degrade
+   *  replay, never break it outright. */
   getHistory(sessionId: string): TranscriptEvent[] | null {
     const entry = this.live.get(sessionId);
     if (!entry) return null;
-    return this.store.readEvents(sessionId, entry.cwd);
+    const parentEvents = this.store.readEvents(sessionId, entry.cwd);
+    if (!this.ledger) return parentEvents;
+    let records: DelegationRecord[];
+    try {
+      records = this.ledger.listFor(entry.cwd, sessionId);
+    } catch (err) {
+      log('WARN', 'NativeSessionHost', 'getHistory: failed to read the delegation ledger — replaying the parent\'s own events without card replay', { sessionId, error: String((err as any)?.message ?? err) });
+      return parentEvents;
+    }
+    if (records.length === 0) return parentEvents;
+    const children = records.map((record) => ({ record, events: this.store.readEvents(record.childId, record.workDir) }));
+    return mergeChildEvents(sessionId, parentEvents, children);
   }
 
   /** True only when we can AFFIRM this native session has no work in flight —

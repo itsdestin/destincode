@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
-import { NativeSessionHost } from '../src/main/harness/native-session-host';
+import { NativeSessionHost, SUBAGENT_DISPLAY_TYPES, mergeChildEvents } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
 import { cwdToProjectSlug } from '../src/main/transcript-watcher';
 import type { PermissionRule } from '../src/shared/permission-types';
@@ -2001,6 +2001,285 @@ describe('NativeSessionHost', () => {
       const catalog = await session.opts.toolServices.models.catalog();
       expect(catalog).toBeNull();
       await h.destroyAll();
+    });
+  });
+
+  // Task 9 (plan 1b) — restart recovery + subagent-card replay. Unrelated to
+  // the "Task 9" label on the `quiesce` describe above (Phase 1 Plan A used
+  // its own numbering) — both names are pinned in their own commit history,
+  // not renamed here to avoid an unrelated diff.
+  //
+  // Reconcile needs a REAL ledger (a NativeHome pointed at the test's tmp
+  // root), same as the Task 4 background-delivery suite in
+  // specialist-run.test.ts — the delivery loop and reconcile both read/write
+  // it directly, so a fake would just be reimplementing the real thing.
+  describe('restart recovery + subagent-card replay (Task 9, plan 1b)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    function bootHost(home: NativeHome, store: SessionStore, modelFactory: any = factory) {
+      return new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+    }
+
+    it('resuming a parent marks dead-owner running children as interrupted, honestly — and leaves a live owner\'s record untouched', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // A record whose owner is a process that does not exist — the shape a
+      // real crash-and-restart leaves behind (nothing ever marked it
+      // 'interrupted' because the process that would have died mid-flight).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-dead', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false,
+        owner: { pid: 999999, instanceId: 'dead-instance' }, missedSteers: [],
+      });
+      // A record owned by THIS process (OWNER is a module singleton, so it
+      // reads as alive to every host built in this test file) — reconcile
+      // must never touch a live owner's record.
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-alive', parentToolCallId: 'tc-2', agentType: 'explorer', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false,
+        owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1'); // parent goes away without ever marking either child
+
+      const h2 = bootHost(home, store);
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      const records = (h2 as any).ledger.listFor(root, 'root-1');
+      const dead = records.find((r: any) => r.childId === 'child-dead');
+      expect(dead?.status).toBe('interrupted'); // honest — the child really did stop
+      expect(dead?.endedAt).toBeDefined();
+
+      const alive = records.find((r: any) => r.childId === 'child-alive');
+      expect(alive?.status).toBe('running'); // untouched — its owner is still around
+
+      await h2.destroyAll();
+    });
+
+    it('an undelivered background report from before the restart is delivered at the first idle boundary', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-done', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: true,
+        status: 'completed', startedAt: Date.now() - 60_000, endedAt: Date.now(), steps: 3,
+        rawReport: 'REPORT: found it in src/config.ts', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+      expect(injected.type).toBe('user-message');
+      expect(injected.data.text).toContain('REPORT: found it in src/config.ts');
+
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-done');
+      expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    it('a report CLAIMED by a dead instance but never confirmed is re-delivered after restart', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-claimed', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: true,
+        status: 'completed', startedAt: Date.now() - 60_000, endedAt: Date.now(), steps: 2,
+        rawReport: 'REPORT: config lives in src/config.ts', delivered: false, owner: OWNER,
+        missedSteers: [], claimedBy: { pid: 999999, instanceId: 'gone' }, claimedAt: Date.now() - 30_000,
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      // Settle a bit longer — a duplicate delivery (the bug this reconcile
+      // pass exists to prevent) would show up as a SECOND injected event.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-claimed');
+      expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    it('getHistory splices stamped child events immediately after the parent Task tool-use', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // What a real turn produces when the model calls Task (task.ts): a
+      // tool-use event on the PARENT's own transcript, then a tool-result once
+      // the specialist's report comes back. Appended directly rather than
+      // driven through a scripted Task tool-call — the Task tool's own
+      // execute() path is exercised in task-tool.test.ts; this test only needs
+      // the parent-side shape getHistory splices against.
+      await store.append(root, {
+        type: 'tool-use', sessionId: 'root-1', uuid: 'u-tool-use', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolName: 'Task', toolInput: { agent: 'explorer' } },
+      });
+
+      const { childId, report } = await h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+      expect(report).toContain('Hi there'); // the suite's default `factory`'s one text step
+
+      await store.append(root, {
+        type: 'tool-result', sessionId: 'root-1', uuid: 'u-tool-result', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolResult: report },
+      });
+
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      const events = h2.getHistory('root-1')!;
+      const taskIdx = events.findIndex((e) => e.type === 'tool-use' && e.data.toolName === 'Task');
+      expect(taskIdx).toBeGreaterThanOrEqual(0);
+      // Immediately after — not just "somewhere after".
+      expect(events[taskIdx + 1].data.agentId).toBe(childId);
+      expect(events[taskIdx + 1].data.parentAgentToolUseId).toBe(events[taskIdx].data.toolUseId);
+      // Every stamped (agentId-bearing) event is display-safe — nothing else
+      // rode along under the parent's id.
+      const stamped = events.filter((e) => e.data.agentId);
+      expect(stamped.length).toBeGreaterThan(0);
+      expect(stamped.every((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    it('replayed stamped events preserve partId so the reducer coalesces deltas identically', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await store.append(root, {
+        type: 'tool-use', sessionId: 'root-1', uuid: 'u-tool-use', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolName: 'Task', toolInput: { agent: 'explorer' } },
+      });
+
+      await h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      // The child's own persisted assistant-text event, straight off disk —
+      // this is the source of truth the replay must match, not a guess.
+      const childHeader = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1')!;
+      const childOwnEvents = store.readEvents(childHeader.sessionId, root);
+      const originalText = childOwnEvents.find((e) => e.type === 'assistant-text')!;
+      expect(originalText.data.partId).toBeTruthy(); // sanity: the fixture really does carry one
+
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      await h2.resume('root-1', root);
+
+      const events = h2.getHistory('root-1')!;
+      const replayedText = events.find((e) => e.type === 'assistant-text' && e.data.agentId === childHeader.sessionId)!;
+      expect(replayedText.data.partId).toBe(originalText.data.partId);
+
+      await h2.destroyAll();
+    });
+  });
+
+  // mergeChildEvents (Task 9, plan 1b) — the pure splice function, tested
+  // directly per the brief rather than only through getHistory() above.
+  describe('mergeChildEvents (pure function)', () => {
+    const rec = (over: Partial<any> = {}) => ({
+      childId: 'child-1', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+      workDir: '/x', description: 'd', background: false, status: 'completed',
+      startedAt: 0, delivered: true, owner: OWNER, missedSteers: [], ...over,
+    });
+    const ev = (type: string, over: Partial<any> = {}): any => ({
+      type, sessionId: 'child-1', uuid: `u-${Math.random()}`, timestamp: 0, data: {}, ...over,
+    });
+
+    it('splices the stamped block immediately after the matching parent Task tool-use event', () => {
+      const parentEvents = [
+        ev('user-message', { sessionId: 'root-1' }),
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1', toolName: 'Task' } }),
+        ev('turn-complete', { sessionId: 'root-1' }),
+      ];
+      const childEvents = [ev('assistant-text', { data: { text: 'child said this' } })];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged).toHaveLength(4);
+      expect(merged[1].type).toBe('tool-use');
+      expect(merged[2].type).toBe('assistant-text');
+      expect(merged[2].sessionId).toBe('root-1');
+      expect(merged[2].data.agentId).toBe('child-1');
+      expect(merged[2].data.parentAgentToolUseId).toBe('tc-1');
+      expect(merged[3].type).toBe('turn-complete');
+    });
+
+    it('filters child events down to the display-safe subset — turn-complete/user-message never ride along', () => {
+      const parentEvents = [ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } })];
+      const childEvents = [
+        ev('user-message', { data: { text: 'the brief' } }),
+        ev('assistant-text', { data: { text: 'ok' } }),
+        ev('turn-complete', {}),
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged.map((e) => e.type)).toEqual(['tool-use', 'assistant-text']);
+    });
+
+    // Explicit requirement (brief): a crash between minting the child and
+    // appending the parent's own Task tool-use event leaves a ledger record
+    // with no matching parent event — must be skipped, never guessed at.
+    it('skips a record defensively when its parentToolCallId has no matching parent tool-use event', () => {
+      const parentEvents = [ev('user-message', { sessionId: 'root-1' })];
+      const childEvents = [ev('assistant-text', { data: { text: 'orphaned' } })];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged).toEqual(parentEvents); // untouched — no guess, no drop of parent events
+    });
+
+    it('splices multiple children after their OWN respective parent tool-use events, in order', () => {
+      const parentEvents = [
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } }),
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-2' } }),
+      ];
+      const children = [
+        { record: rec({ childId: 'child-1', parentToolCallId: 'tc-1' }), events: [ev('assistant-text', { data: { text: 'from child 1' } })] },
+        { record: rec({ childId: 'child-2', parentToolCallId: 'tc-2' }), events: [ev('assistant-text', { data: { text: 'from child 2' } })] },
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, children);
+      expect(merged.map((e) => `${e.type}:${e.data.agentId ?? e.data.toolUseId}`)).toEqual([
+        'tool-use:tc-1', 'assistant-text:child-1', 'tool-use:tc-2', 'assistant-text:child-2',
+      ]);
     });
   });
 });
