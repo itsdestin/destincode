@@ -36,7 +36,7 @@ import type { SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
 import { assignSpecialistName } from './specialists/names';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from './specialists/limits';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
 import { APPROX_CHARS_PER_TOKEN } from './message-size';
@@ -232,6 +232,11 @@ export class NativeSessionHost extends EventEmitter {
   //     the same files). Absent = no writer active.
   private specialistSlots = new Map<string, number>();
   private activeWriterChild = new Map<string, string>();
+  // Task 12, item 3: per-parent LIFETIME spawn count against
+  // SPECIALIST_SPAWN_BUDGET_PER_SESSION — never decremented (unlike
+  // specialistSlots above), because it is a runaway-loop backstop, not a
+  // concurrency gate. In-memory only: a fresh conversation gets a fresh budget.
+  private specialistSpawnCounts = new Map<string, number>();
 
   /** Reserve one of this parent's concurrent-specialist slots. false = at
    *  capacity; the caller (tools/task.ts) must not spawn. A successful
@@ -257,6 +262,17 @@ export class NativeSessionHost extends EventEmitter {
    *  this BEFORE spawning a read-write-charter specialist, never after. */
   isSpecialistWriterBusy(parentId: string): boolean {
     return this.activeWriterChild.has(parentId);
+  }
+
+  /** Spend one unit of this parent's lifetime specialist-spawn budget (Task
+   *  12, item 3). false = budget exhausted; the caller (tools/task.ts) must
+   *  not spawn. Never released — a runaway-loop backstop, not a resource
+   *  limit that frees up as children finish (see specialistSlots for that). */
+  trySpendSpecialistSpawnBudget(parentId: string): boolean {
+    const used = this.specialistSpawnCounts.get(parentId) ?? 0;
+    if (used >= SPECIALIST_SPAWN_BUDGET_PER_SESSION) return false;
+    this.specialistSpawnCounts.set(parentId, used + 1);
+    return true;
   }
 
   /** Mint a specialist child, run it to completion, and return its report
@@ -351,6 +367,15 @@ export class NativeSessionHost extends EventEmitter {
     let lastNonEmpty = '';
     let steps = 0;
     const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    // Task 12, item 4 — compaction-finalize: counts SPONTANEOUS auto-compactions
+    // (data.autoCompaction, harness-session.ts's maybeCompact) during this run.
+    // A small local context window can force more than one across a long
+    // delegated task (spec §3: a designed path, not an edge case) — on the
+    // SECOND one, tell the child to wrap up rather than let it compact its way
+    // through the whole window and still never report. `steered` caps this at
+    // once per child even if a third compaction fires later in the same run.
+    let autoCompactionCount = 0;
+    let steered = false;
 
     const onEvent = (event: TranscriptEvent) => {
       switch (event.type) {
@@ -376,6 +401,24 @@ export class NativeSessionHost extends EventEmitter {
           break;
         case 'user-interrupt':
           interrupted = true;
+          break;
+        case 'compact-summary':
+          if (event.data.autoCompaction) {
+            autoCompactionCount += 1;
+            if (autoCompactionCount === 2 && !steered) {
+              steered = true;
+              // Injection is a MESSAGE, never a prompt edit — postSteer (Task 3)
+              // queues this as a <steer> user-role history entry drained at the
+              // next turn-loop iteration boundary, same as any other course
+              // correction. A false return (no turn in flight) is fine to
+              // ignore here: the child's turn just ended on its own, in which
+              // case there is nothing left for a steer to interrupt.
+              entry.session.postSteer(
+                'You are running low on room even after summarizing. Stop new exploration — '
+                + 'write up what you have and finish with your report now.',
+              );
+            }
+          }
           break;
         default:
           break;   // every other type is persistence-only for this purpose
@@ -755,6 +798,7 @@ export class NativeSessionHost extends EventEmitter {
           tryReserveSlot: (parentId: string) => this.tryReserveSpecialistSlot(parentId),
           releaseSlot: (parentId: string) => this.releaseSpecialistSlot(parentId),
           isWriterBusy: (parentId: string) => this.isSpecialistWriterBusy(parentId),
+          trySpendSpawnBudget: (parentId: string) => this.trySpendSpecialistSpawnBudget(parentId),
           spawn: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialist']>[1]) =>
             this.spawnSpecialist(parentId, spawnOpts),
         },

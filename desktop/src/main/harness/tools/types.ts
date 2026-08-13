@@ -40,6 +40,12 @@ export interface ToolServices {
      *  (spec §5): two concurrent write-capable children could race edits to
      *  the same files. Read-only specialists never need to check this. */
     isWriterBusy(parentId: string): boolean;
+    /** Task 12, item 3 — spend one unit of this parent's LIFETIME spawn
+     *  budget (SPECIALIST_SPAWN_BUDGET_PER_SESSION, specialists/limits.ts).
+     *  false = budget exhausted, the caller must not spawn. Unlike
+     *  tryReserveSlot, a spend is never released — it is a runaway-loop
+     *  backstop, not a concurrency gate. */
+    trySpendSpawnBudget(parentId: string): boolean;
     /** Mint + (eventually, Task 7) run the child, returning its final report. */
     spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
   };
