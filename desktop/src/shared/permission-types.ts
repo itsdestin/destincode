@@ -91,6 +91,10 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
     // Prompting here would add friction with no safety gained, and would train the
     // user to click through prompts that never matter (M3 item 1).
     { tool: 'Skill', action: 'allow' },
+    // Task 14: ModelSearch reads public catalog metadata only (no provider
+    // keys, no session state) and attaches only alongside Task — same
+    // "narrow read, never worth an ask" reasoning as Skill just above.
+    { tool: 'ModelSearch', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':

@@ -31,6 +31,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 // compaction suite's own scaffolding rather than hand-rolling a second way to
 // force the summarize branch.
 import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn } from './helpers/harness-fakes';
+import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
   const events: TranscriptEvent[] = [];
@@ -1232,5 +1233,55 @@ describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', ()
     await session.send('go');
 
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 14 — ModelSearch attaches/detaches under the IDENTICAL gate as Task
+// (syncTaskTool in harness-session.ts runs both add-or-withhold decisions
+// together): profile.canDelegate AND !isSpecialistChild. It never attaches
+// alone — a session that cannot delegate has nothing for it to name a model
+// FOR. Mirrors skill-tool-gating.test.ts's Task ON/OFF pattern.
+// ---------------------------------------------------------------------------
+describe('ModelSearch attachment mirrors Task\'s gate (Task 14)', () => {
+  const toolNames = (s: HarnessSession) => Object.keys((s as any).buildAiTools());
+
+  it('canDelegate: true attaches BOTH Task and ModelSearch', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).toContain('Task');
+    expect(toolNames(s)).toContain('ModelSearch');
+  });
+
+  it('canDelegate: false withholds BOTH', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: false } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).not.toContain('Task');
+    expect(toolNames(s)).not.toContain('ModelSearch');
+  });
+
+  it('canDelegate: true but isSpecialistChild: true STILL withholds both (depth-1 guard)', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true }, isSpecialistChild: true }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).not.toContain('Task');
+    expect(toolNames(s)).not.toContain('ModelSearch');
+  });
+
+  it('a model swap re-gates ModelSearch exactly like Task', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).toContain('ModelSearch');
+    s.setBinding({ providerId: 'local', modelId: 'tiny' }, 8_192, { ...CLOUD_DEFAULT, canDelegate: false });
+    expect(toolNames(s)).not.toContain('ModelSearch');
+    s.setBinding({ providerId: 'openrouter', modelId: 'big' }, 200_000, { ...CLOUD_DEFAULT, canDelegate: true });
+    expect(toolNames(s)).toContain('ModelSearch');
   });
 });

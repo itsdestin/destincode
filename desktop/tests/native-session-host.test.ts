@@ -1340,6 +1340,37 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    // Task 14: opts.binding, when tools/task.ts already resolved an override
+    // (a designated tier or a validated specific id), is what the CHILD
+    // actually launches on — not the parent's own binding. Every field that
+    // reads `binding` downstream (the header, retainModel's ref-count, the
+    // child's own HarnessSession) must agree on the OVERRIDE, not silently
+    // fall back to the parent's.
+    it('createChild launches on opts.binding when one is given, not the parent\'s own model', async () => {
+      const { store, h } = await withParent();
+      const override = { providerId: 'anthropic', modelId: 'claude-opus-5' };
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        binding: override,
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual(override);                 // NOT the parent's { providerId: 'openrouter', modelId: 'm' }
+      expect(h.modelForSession(childId)).toBe('claude-opus-5');   // retainModel ref-counted the RESOLVED model
+      expect(h.sessionsForModel('claude-opus-5')).toEqual([childId]);
+      expect(h.sessionsForModel('m')).toEqual(['root-1']);        // the parent's own ref is untouched
+      await h.destroyAll();
+    });
+
+    it('createChild falls back to the parent\'s binding when opts.binding is omitted (pre-Task-14 default, unchanged)', async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });
+      await h.destroyAll();
+    });
+
     it('createChild rejects a workDir outside the parent cwd', async () => {
       const { h } = await withParent();
       await expect(h.createChild('root-1', {

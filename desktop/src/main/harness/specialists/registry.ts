@@ -12,7 +12,14 @@ export interface SpecialistDefinition {
   systemPrompt: string;             // definition body
   allowedTools: string[];           // native tool names; NEVER includes 'Task' (depth-by-omission)
   charter: 'read-only' | 'read-write';  // renders on the launch card; drives permission cap
-  modelPreference?: 'parent' | 'cheap' | 'strongest';  // resolution in plan 1b; 1a always uses 'parent'
+  // Task 14: 'budget'/'frontier' name the user-designated tiers (Settings, 1c
+  // ships the UI) — renamed from the earlier 'cheap'/'strongest' vocabulary,
+  // which implied the app itself judged price/strength; it never has. The
+  // field stays declared-but-never-read here (every BUILTIN_SPECIALISTS entry
+  // omits it — see builtins.ts), so the rename is free: nothing on master
+  // reads this field yet. delegated-models.ts's resolveRequestedModel (called
+  // from tools/task.ts) is the first reader.
+  modelPreference?: 'parent' | 'budget' | 'frontier';
   stepCap: number;                  // wired to the child's harness.limits.maxSteps (Task 5)
   reportBudgetTokens: number;       // static half of the headroom-aware cap (Task 7)
 }
