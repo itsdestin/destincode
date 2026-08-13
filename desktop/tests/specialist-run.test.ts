@@ -1001,4 +1001,58 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
 
     expect((host as any).inMemoryFallback.has('child-late')).toBe(false);
   });
+
+  it('Fix pass 5: a background report is never delivered twice when runNotice succeeds but the follow-up confirmDelivered write fails', async () => {
+    // Two on-disk states look identical (delivered: false, claimedBy cleared
+    // or self) but mean opposite things: the claim landed but runNotice() was
+    // never called — safe to retry, the exact scenario fix pass 4's
+    // self-reclaim exists for — vs runNotice() already ran (the report is
+    // already in the parent's conversation) and only the follow-up
+    // confirmDelivered write failed — retrying calls runNotice() a SECOND
+    // time, showing the model and the user the same report twice. Before fix
+    // pass 5, nothing on disk told these two states apart. This proves the
+    // second case is never retried, even though releaseClaimSafely's own
+    // real releaseClaim call (not mocked here) succeeds and clears claimedBy
+    // — which is exactly the condition that used to make this record look
+    // like "never claimed" again.
+    const model = scriptedModel([stream(...textChunks('t', 'REPORT: done once'), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    vi.spyOn(ledger, 'confirmDelivered').mockRejectedValue(new Error('simulated ledger write failure'));
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const firstInjection = events.filter((e) => e.data?.injected === 'specialist-report');
+    expect(firstInjection[0].data.text).toContain('REPORT: done once');
+
+    // The ledger record: injection was durably marked attempted, but never
+    // confirmed delivered (the mocked write failed), and the lease WAS
+    // cleared for real.
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.claimedBy).toBeUndefined();
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.injectionAttempted).toBe(true);
+    expect(rec.delivered).toBe(false);
+
+    // A second delivery pass must NOT re-inject.
+    (host as any).queueDelivery('root-1');
+    await (host as any).live.get('root-1').running;
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+  });
 });

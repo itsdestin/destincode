@@ -1831,6 +1831,25 @@ export class NativeSessionHost extends EventEmitter {
             await this.releaseClaimSafely(entry.cwd, sessionId, rec.childId);
             break;
           }
+          // Fix pass 5: stamp the durable "about to inject" marker strictly
+          // BEFORE calling runNotice() — never after. HarnessSession.beginTurn
+          // (harness-session.ts) emits the transcript event SYNCHRONOUSLY,
+          // before its own first await, so by the time runNotice()'s
+          // returned promise has even begun its async work the injection has
+          // either already happened or (only its re-entrancy guard, which
+          // cannot fire here — this loop only calls runNotice() at an idle
+          // boundary) never will. This is what lets claimUndelivered tell a
+          // claim that never reached runNotice() apart from one that did.
+          //
+          // If THIS write itself throws, we can't learn afterward whether it
+          // committed (see markInjectionAttempted's own comment for the full
+          // reasoning) — logged, and deliberately NOT treated as a reason to
+          // abandon this delivery attempt: proceeding to runNotice() anyway.
+          try {
+            await this.ledger.markInjectionAttempted(entry.cwd, sessionId, rec.childId);
+          } catch (err) {
+            log('WARN', 'NativeSessionHost', 'markInjectionAttempted failed — proceeding with delivery anyway; see markInjectionAttempted\'s own comment for the residual duplicate risk this can leave', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
+          }
           try {
             await entry.session.runNotice(this.formatDelivery(sessionId, rec, concurrentReporters));
             // Recheck AGAIN: destroy() can land during the runNotice() await
@@ -1864,23 +1883,16 @@ export class NativeSessionHost extends EventEmitter {
         // to reach the parent THIS session (see inMemoryFallback's own WHY
         // for what that guarantees and what it genuinely does not).
         //
-        // Fix (Task 4 fix pass 4, Finding 5): guarded for the same logging
-        // reason as the concurrentReporters computation above, even though
-        // takeInMemoryFallback is plain Map bookkeeping and has no realistic
-        // throw path today — this file's own discipline is that every
-        // delivery-loop step logs its own failure rather than relying on an
-        // outer catch-all, and this was the one step left unguarded. On a
-        // throw here `fallback` stays undefined WITHOUT going through the
-        // "nothing left" branch below, so the pending flag is deliberately
-        // NOT cleared — an unexplained throw is a reason to retry next pass,
-        // not to treat this parent as fully drained.
-        let fallback: { childId: string; rec: DelegationRecord } | undefined;
-        try {
-          fallback = this.takeInMemoryFallback(sessionId);
-        } catch (err) {
-          log('WARN', 'NativeSessionHost', 'takeInMemoryFallback failed unexpectedly — will retry at the next idle boundary', { sessionId, error: String((err as any)?.message ?? err) });
-          break;
-        }
+        // Unlike claimUndelivered/confirmDelivered/releaseClaim above,
+        // takeInMemoryFallback does no I/O — it's a synchronous for..of over
+        // a plain in-memory Map plus a .delete(). Nothing here can throw
+        // (short of an engine-level OOM, which no try/catch in this file
+        // handles either), so it isn't wrapped like the disk-backed calls
+        // are — a try/catch here would guard a path that cannot fire, not
+        // add resilience (fix pass 5, replacing an earlier version of this
+        // comment that argued for the guard on file-wide-consistency grounds
+        // alone while admitting the same thing).
+        const fallback = this.takeInMemoryFallback(sessionId);
         if (!fallback) { this.pendingDeliveryParents.delete(sessionId); break; }
         // Same destroy()-race guard as the ledger path above.
         if (this.live.get(sessionId) !== entry) {
