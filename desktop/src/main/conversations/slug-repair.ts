@@ -102,16 +102,38 @@ export class Quarantine {
     return dest;
   }
   /** MOVE out of the live tree (reversible). Returns false (and only logs) if
-   *  the rename fails (e.g. EXDEV) — never falls back to copy+delete. */
+   *  the rename fails (e.g. EXDEV) — never falls back to copy+delete for
+   *  anything that might hold real content. */
   move(absPath: string, why: string): boolean {
     try {
       fs.renameSync(absPath, this.destFor(absPath));
       this.log(`MOVE ${absPath} (${why})`);
       return true;
     } catch (e) {
+      // Adaptation (Task 17, disclosed — real defect found via TDD, not in
+      // the brief): retiring an EMPTIED directory whose files were quarantined
+      // one at a time moments earlier collides here. Each of those file-moves
+      // already created a directory at this exact home-relative path under
+      // quarantine, so renaming the now-empty source dir onto it throws
+      // ENOTEMPTY even though the source holds nothing of value anymore — the
+      // quarantine tree already has everything that was ever inside it.
+      // Verified-empty directories are the ONLY case this falls back to a
+      // plain rmdir for; anything with real content (a file, or a directory
+      // that still has entries) always hits the fail-closed SKIP-MOVE path.
+      if (this.isEmptyDir(absPath)) {
+        try {
+          fs.rmdirSync(absPath);
+          this.log(`RETIRE-EMPTY-DIR ${absPath} (${why}) — contents already quarantined individually`);
+          return true;
+        } catch { /* fall through to the SKIP-MOVE log below */ }
+      }
       this.log(`SKIP-MOVE ${absPath} (${why}) — rename failed: ${String(e)}`);
       return false;
     }
+  }
+  private isEmptyDir(p: string): boolean {
+    try { return fs.statSync(p).isDirectory() && fs.readdirSync(p).length === 0; }
+    catch { return false; }
   }
   /** COPY a snapshot — for case C, where the live tree stays untouched. */
   snapshot(absPath: string, why: string): void {
@@ -423,4 +445,130 @@ export async function repairRecordsAndSpace(
     } catch { /* already gone */ }
   }
   return findings;
+}
+
+/** §6.3 — retire the ORPHAN-rule (`nativeStoreSlug`) project dirs the old bug
+ *  left behind, now that a project P has both an orphan dir and the CC-rule
+ *  (`ccProjectSlug`) correct dir. Only pairs where the two rules actually
+ *  DISAGREE and BOTH dirs exist are in scope — an orphan dir with no correct
+ *  sibling is not this function's problem (nothing to reconcile against), and
+ *  a P where the two rules agree can't have a separate orphan dir at all.
+ *  Per-session classification against the CC-dir copy reuses the exact same
+ *  case discipline as §6.1 (identical/subset quarantine, superset promotion,
+ *  fork snapshot-and-surface, live defer) — only the source dir differs. */
+export function repairOrphanDirs(opts: RepairOpts): RepairFinding[] {
+  const { projectsDir, knownFolders, quarantine: q } = opts;
+  const liveMs = opts.liveMs ?? LIVE_MTIME_MS;
+  const now = opts.now ?? Date.now;
+  const findings: RepairFinding[] = [];
+  for (const P of knownFolders) {
+    const orphanSlug = nativeStoreSlug(P);
+    const ccSlug = ccProjectSlug(P);
+    if (orphanSlug === ccSlug) continue;                     // rules agree — no orphan possible
+    const orphanDir = path.join(projectsDir, orphanSlug);
+    const correctDir = path.join(projectsDir, ccSlug);
+    if (!fs.existsSync(orphanDir) || !fs.existsSync(correctDir)) continue;
+    for (const file of topLevelJsonl(orphanDir)) {
+      const sessionId = path.basename(file, '.jsonl');
+      if (isLive(file, liveMs, now)) { findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file] }); continue; }
+      const correct = path.join(correctDir, path.basename(file));
+      if (!fs.existsSync(correct)) {
+        fs.renameSync(file, correct);                        // session exists ONLY in the orphan — preserve it
+        q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (orphan-only)`);
+        findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [correct] });
+        continue;
+      }
+      switch (classifyPair(file, correct)) {
+        case 'identical': case 'wrong-is-subset':
+          if (q.move(file, `6.3 ${sessionId}: orphan copy ⊆ correct`)) findings.push({ sessionId, homeFolder: P, kind: 'quarantined', paths: [file] });
+          break;
+        case 'wrong-is-superset':
+          if (q.move(correct, `6.3 ${sessionId}: correct superseded by orphan copy`)) {
+            fs.renameSync(file, correct);
+            findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+          }
+          break;
+        case 'fork':
+          q.snapshot(file, `6.3 FORK ${sessionId} (orphan)`); q.snapshot(correct, `6.3 FORK ${sessionId} (correct)`);
+          q.log(`ATTENTION fork ${sessionId}: ${file} vs ${correct}`);
+          findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: [file, correct] });
+          break;
+      }
+    }
+    try {
+      if (fs.readdirSync(orphanDir).length === 0) q.move(orphanDir, '6.3 emptied orphan dir');
+    } catch { /* gone */ }
+  }
+  return findings;
+}
+
+const MAX_DEFERRALS = 3;
+
+/** The single startup entry point (spec §6.0/§6.5) — safe to call every
+ *  launch. Runs 6.1 -> 6.2 -> 6.3 in that STRICT order (6.2's record repair
+ *  depends on 6.1 having settled $HOME copies first; 6.3's orphan retirement
+ *  must run LAST because 6.2 can relocate a space copy that originated FROM
+ *  an orphan-dir file — retiring the orphan before 6.2 runs would remove the
+ *  only surviving source for that relocation). Bounds live-session deferral
+ *  so a session that never goes quiet doesn't get silently retried forever —
+ *  after MAX_DEFERRALS consecutive live findings it's surfaced via a WARN log
+ *  and a quarantine ATTENTION line instead. A surfaced fork gets a one-time
+ *  store note, and ONLY when the record's existing note is empty — repair
+ *  must never clobber a user's own note. */
+export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
+  store?: import('./conversation-store').ConversationStore | null;
+  spaceRoot?: string;
+  stateFile?: string;
+}): Promise<void> {
+  const homeDir = overrides?.homeDir ?? os.homedir();
+  const store = overrides?.store !== undefined ? overrides.store : getConversationStore();
+  if (!store) return;                                        // store not up — next launch retries
+  const spaceRoot = overrides?.spaceRoot ?? store.root();
+  const projectsDir = overrides?.projectsDir ?? path.join(homeDir, '.claude', 'projects');
+  let knownFolders = overrides?.knownFolders;
+  if (!knownFolders) {
+    try { knownFolders = readFolders().map(f => f.path); } catch { knownFolders = []; }
+  }
+  if (knownFolders.length === 0) return;
+  const quarantine = overrides?.quarantine ?? new Quarantine(homeDir);
+  const opts: RepairOpts = { projectsDir, homeDir, knownFolders, quarantine,
+    liveMs: overrides?.liveMs, now: overrides?.now };
+
+  // ORDER IS LOAD-BEARING (spec §6.0): space repair (6.2) BEFORE orphan
+  // retirement (6.3) — the truncation bucket was populated FROM the orphan.
+  const all: RepairFinding[] = [];
+  all.push(...repairHomeForks(opts));                                   // 6.1
+  all.push(...await repairRecordsAndSpace({ ...opts, store, spaceRoot })); // 6.2
+  all.push(...repairOrphanDirs(opts));                                  // 6.3
+
+  // Bounded deferral (spec §6.5): live sessions retry next launch, at most
+  // MAX_DEFERRALS times, then surface instead of looping silently.
+  const stateFile = overrides?.stateFile ?? path.join(homeDir, '.youcoded', 'slug-repair-state.json');
+  let state: { v: 1; deferred: Record<string, number> } = { v: 1, deferred: {} };
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
+  for (const f of all) {
+    if (f.kind === 'deferred-live') {
+      const n = (state.deferred[f.sessionId] ?? 0) + 1;
+      state.deferred[f.sessionId] = n;
+      if (n >= MAX_DEFERRALS) {
+        log('WARN', 'SlugRepair', 'session still live after repeated deferrals — needs manual quiescence', { sessionId: f.sessionId, deferrals: n });
+        quarantine.log(`ATTENTION deferred ${f.sessionId} ${n}x — repair it manually while the app is closed`);
+      }
+    } else {
+      delete state.deferred[f.sessionId];
+    }
+    if (f.kind === 'fork-surfaced') {
+      log('WARN', 'SlugRepair', 'true fork left on disk — user decision required', { sessionId: f.sessionId, paths: f.paths });
+      const rec = await store.get('claude', f.sessionId);
+      if (rec && !rec.note) {
+        await store.setNote('claude', f.sessionId,
+          `Repair notice: this conversation has two diverged copies on disk (see ~/.youcoded/repair-quarantine). Both were preserved.`);
+      }
+    }
+  }
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+  } catch (e) { log('WARN', 'SlugRepair', 'state write failed', { error: String(e) }); }
+  if (all.length) log('INFO', 'SlugRepair', 'repair pass complete', { findings: all.map(f => ({ id: f.sessionId, kind: f.kind })) });
 }

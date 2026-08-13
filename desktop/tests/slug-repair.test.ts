@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs'; import os from 'os'; import path from 'path';
-import { classifyPair, uuidSet, Quarantine, repairHomeForks, repairRecordsAndSpace } from '../src/main/conversations/slug-repair';
-import { ccProjectSlug } from '../src/main/slug-encoding';
+import { classifyPair, uuidSet, Quarantine, repairHomeForks, repairRecordsAndSpace, repairOrphanDirs, runSlugRepair } from '../src/main/conversations/slug-repair';
+import { ccProjectSlug, nativeStoreSlug } from '../src/main/slug-encoding';
 import { createConversationStore } from '../src/main/conversations/conversation-store';
 
 const L = (uuid: string) => JSON.stringify({ type: 'user', uuid, message: {} }) + '\n';
@@ -206,26 +206,31 @@ describe('repairHomeForks (spec §6.1)', () => {
   });
 });
 
-describe('repairRecordsAndSpace (spec §6.2)', () => {
-  const F = (uuid: string, cwd: string) => JSON.stringify({ type: 'user', uuid, cwd }) + '\n';
-  const old = new Date(Date.now() - 60 * 60 * 1000);
-  const age = (p: string) => fs.utimesSync(p, old, old);
+// Hoisted to file scope (Task 17): shared by repairRecordsAndSpace (§6.2) and
+// runSlugRepair (§6.0/§6.5) test blocks.
+const F62 = (uuid: string, cwd: string) => JSON.stringify({ type: 'user', uuid, cwd }) + '\n';
+const old62 = new Date(Date.now() - 60 * 60 * 1000);
+const age62 = (p: string) => fs.utimesSync(p, old62, old62);
 
-  function makeWorld() {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'r62-'));
-    const P = path.join(home, 'PAF Proj, & Co');
-    fs.mkdirSync(P, { recursive: true });
-    const projectsDir = path.join(home, '.claude', 'projects');
-    const correctDir = path.join(projectsDir, ccProjectSlug(P));
-    fs.mkdirSync(correctDir, { recursive: true });
-    const spaceRoot = path.join(home, 'Conversations');
-    const lane = path.join(spaceRoot, 'claude', 'transcripts');
-    fs.mkdirSync(lane, { recursive: true });
-    const store = createConversationStore(spaceRoot);
-    const quarantine = new Quarantine(home);
-    const opts = { projectsDir, homeDir: home, knownFolders: [P], quarantine, store, spaceRoot };
-    return { home, P, correctDir, lane, store, quarantine, opts, bucket: path.basename(P) };
-  }
+function makeWorld() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'r62-'));
+  const P = path.join(home, 'PAF Proj, & Co');
+  fs.mkdirSync(P, { recursive: true });
+  const projectsDir = path.join(home, '.claude', 'projects');
+  const correctDir = path.join(projectsDir, ccProjectSlug(P));
+  fs.mkdirSync(correctDir, { recursive: true });
+  const spaceRoot = path.join(home, 'Conversations');
+  const lane = path.join(spaceRoot, 'claude', 'transcripts');
+  fs.mkdirSync(lane, { recursive: true });
+  const store = createConversationStore(spaceRoot);
+  const quarantine = new Quarantine(home);
+  const opts = { projectsDir, homeDir: home, knownFolders: [P], quarantine, store, spaceRoot };
+  return { home, P, correctDir, lane, store, quarantine, opts, bucket: path.basename(P) };
+}
+
+describe('repairRecordsAndSpace (spec §6.2)', () => {
+  const F = F62;
+  const age = age62;
 
   it('repairs a record that enshrines $HOME for an R2-owned project session', async () => {
     const w = makeWorld();
@@ -370,5 +375,190 @@ describe('repairRecordsAndSpace (spec §6.2)', () => {
     await repairRecordsAndSpace(w.opts);
     expect(fs.existsSync(path.join(w.lane, w.bucket, 's6.jsonl'))).toBe(true); // moved to the correct bucket
     expect(fs.existsSync(path.join(w.lane, homeBucket))).toBe(true);          // $HOME bucket itself survives, empty
+  });
+});
+
+describe('repairOrphanDirs (spec §6.3)', () => {
+  const F = (uuid: string, cwd: string) => JSON.stringify({ type: 'user', uuid, cwd }) + '\n';
+  const old = new Date(Date.now() - 60 * 60 * 1000);            // 1h ago — not live
+  const age = (p: string) => fs.utimesSync(p, old, old);
+
+  // Task 15 makeHome pattern, extended with the orphan-rule dir (nativeStoreSlug)
+  // alongside the CC-rule correct dir — §6.3 only fires when BOTH exist.
+  function makeHome() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'r63-'));
+    const P = path.join(home, 'My Proj, & Stuff');
+    fs.mkdirSync(P, { recursive: true });
+    const projectsDir = path.join(home, '.claude', 'projects');
+    const correctDir = path.join(projectsDir, ccProjectSlug(P));
+    const orphanDir = path.join(projectsDir, nativeStoreSlug(P));
+    fs.mkdirSync(correctDir, { recursive: true });
+    fs.mkdirSync(orphanDir, { recursive: true });
+    const quarantine = new Quarantine(home);
+    const opts = { projectsDir, homeDir: home, knownFolders: [P], quarantine };
+    return { home, P, projectsDir, correctDir, orphanDir, quarantine, opts };
+  }
+
+  it('orphan-rule dir with NO matching correct-dir file: session is MOVED to the correct dir', () => {
+    const h = makeHome();
+    const f = path.join(h.orphanDir, 's1.jsonl');
+    fs.writeFileSync(f, F('u1', h.P)); age(f);
+    const out = repairOrphanDirs(h.opts);
+    const dest = path.join(h.correctDir, 's1.jsonl');
+    expect(out).toEqual([{ sessionId: 's1', homeFolder: h.P, kind: 'moved', paths: [dest] }]);
+    expect(fs.existsSync(f)).toBe(false);
+    expect(fs.existsSync(dest)).toBe(true);
+  });
+
+  it('identical copy in the orphan-rule dir is quarantined; correct copy untouched', () => {
+    const h = makeHome();
+    const wrong = path.join(h.orphanDir, 's2.jsonl');
+    const correct = path.join(h.correctDir, 's2.jsonl');
+    fs.writeFileSync(wrong, F('u1', h.P)); fs.writeFileSync(correct, F('u1', h.P));
+    age(wrong); age(correct);
+    const out = repairOrphanDirs(h.opts);
+    expect(out).toEqual([{ sessionId: 's2', homeFolder: h.P, kind: 'quarantined', paths: [wrong] }]);
+    expect(fs.existsSync(wrong)).toBe(false);
+    expect(fs.existsSync(correct)).toBe(true);
+    expect(fs.existsSync(path.join(h.quarantine.dir, path.relative(h.home, wrong)))).toBe(true);
+  });
+
+  it('fork: NOTHING moves — both copies snapshotted, disk byte-identical', () => {
+    const h = makeHome();
+    const wrong = path.join(h.orphanDir, 's3.jsonl');
+    const correct = path.join(h.correctDir, 's3.jsonl');
+    fs.writeFileSync(wrong, F('u1', h.P) + F('uA', h.home));    // diverges one way
+    fs.writeFileSync(correct, F('u1', h.P) + F('uB', h.P));     // …and the other
+    age(wrong); age(correct);
+    const before = [fs.readFileSync(wrong, 'utf8'), fs.readFileSync(correct, 'utf8')];
+    const out = repairOrphanDirs(h.opts);
+    expect(out).toEqual([{ sessionId: 's3', homeFolder: h.P, kind: 'fork-surfaced', paths: [wrong, correct] }]);
+    expect(fs.readFileSync(wrong, 'utf8')).toBe(before[0]);
+    expect(fs.readFileSync(correct, 'utf8')).toBe(before[1]);
+    expect(fs.readFileSync(path.join(h.quarantine.dir, 'decisions.log'), 'utf8')).toContain('ATTENTION fork s3');
+    // fork leaves both originals in place — the orphan dir is NOT emptied.
+    expect(fs.existsSync(h.orphanDir)).toBe(true);
+    expect(fs.existsSync(wrong)).toBe(true);
+  });
+
+  it('correct-dir copy is a strict subset of the orphan copy: quarantine it, promote the superset', () => {
+    const h = makeHome();
+    const wrong = path.join(h.orphanDir, 's4.jsonl');
+    const correct = path.join(h.correctDir, 's4.jsonl');
+    const supersetBytes = F('u1', h.P) + F('u2', h.P);
+    const subsetBytes = F('u1', h.P);
+    fs.writeFileSync(wrong, supersetBytes);
+    fs.writeFileSync(correct, subsetBytes);
+    age(wrong); age(correct);
+    const out = repairOrphanDirs(h.opts);
+    expect(out).toEqual([{ sessionId: 's4', homeFolder: h.P, kind: 'replaced-with-superset', paths: [correct] }]);
+    expect(fs.existsSync(wrong)).toBe(false);
+    expect(fs.readFileSync(correct, 'utf8')).toBe(supersetBytes);
+    const quarantinedCorrect = path.join(h.quarantine.dir, path.relative(h.home, correct));
+    expect(fs.readFileSync(quarantinedCorrect, 'utf8')).toBe(subsetBytes);
+  });
+
+  it('an orphan-rule dir emptied by repair is itself quarantined (never left as a dangling empty dir)', () => {
+    const h = makeHome();
+    const f = path.join(h.orphanDir, 's5.jsonl');
+    fs.writeFileSync(f, F('u1', h.P)); age(f); // only file → quarantined case empties the dir
+    const correct = path.join(h.correctDir, 's5.jsonl');
+    fs.writeFileSync(correct, F('u1', h.P)); age(correct);
+    repairOrphanDirs(h.opts);
+    expect(fs.existsSync(h.orphanDir)).toBe(false);
+    expect(fs.existsSync(path.join(h.quarantine.dir, path.relative(h.home, h.orphanDir)))).toBe(true);
+    expect(fs.readFileSync(path.join(h.quarantine.dir, 'decisions.log'), 'utf8')).toContain('emptied orphan dir');
+  });
+
+  it('when nativeStoreSlug and ccProjectSlug agree for P, the folder is skipped entirely (no orphan possible)', () => {
+    const h = makeHome();
+    // A plain path with no special chars: both slug rules produce the same
+    // dir name, so there is no separate orphan dir to even look at.
+    const plain = path.join(h.home, 'PlainProj');
+    fs.mkdirSync(plain, { recursive: true });
+    const sameDir = path.join(h.projectsDir, ccProjectSlug(plain));
+    fs.mkdirSync(sameDir, { recursive: true });
+    fs.writeFileSync(path.join(sameDir, 'sX.jsonl'), F('u1', plain));
+    const out = repairOrphanDirs({ ...h.opts, knownFolders: [plain] });
+    expect(out).toEqual([]);
+    expect(fs.existsSync(path.join(sameDir, 'sX.jsonl'))).toBe(true);
+  });
+
+  it('when only the orphan-rule dir exists (no correct dir) it is left alone — not an orphan pair', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'r63b-'));
+    const P = path.join(home, 'Only, Orphan');
+    fs.mkdirSync(P, { recursive: true });
+    const projectsDir = path.join(home, '.claude', 'projects');
+    const orphanDir = path.join(projectsDir, nativeStoreSlug(P));
+    fs.mkdirSync(orphanDir, { recursive: true });
+    // NOTE: correctDir deliberately NOT created.
+    const f = path.join(orphanDir, 's9.jsonl');
+    fs.writeFileSync(f, F('u1', P));
+    const quarantine = new Quarantine(home);
+    const opts = { projectsDir, homeDir: home, knownFolders: [P], quarantine };
+    const out = repairOrphanDirs(opts);
+    expect(out).toEqual([]);
+    expect(fs.existsSync(f)).toBe(true);
+  });
+});
+
+describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', () => {
+  const F = (uuid: string, cwd: string) => JSON.stringify({ type: 'user', uuid, cwd }) + '\n';
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  const age = (p: string) => fs.utimesSync(p, old, old);
+
+  it('runs 6.2 (space) BEFORE 6.3 (orphan retirement) — the bucket was fed FROM the orphan', async () => {
+    // Arrange a world where the ONLY space copy sits in a truncation bucket
+    // and equals the orphan's copy: if 6.3 ran first, the orphan (its origin)
+    // would be gone before 6.2 relocated the space copy. Assert both outcomes
+    // hold at the end AND that the orphan file is in quarantine, not deleted.
+    const w = /* makeWorld() from the 6.2 block, plus: */ (() => {
+      const base = makeWorld();
+      const orphanDir = path.join(base.opts.projectsDir, nativeStoreSlug(base.P));
+      fs.mkdirSync(orphanDir, { recursive: true });
+      return { ...base, orphanDir };
+    })();
+    const content = F('u1', w.P);
+    const correct = path.join(w.correctDir, 's6.jsonl');
+    const orphanCopy = path.join(w.orphanDir, 's6.jsonl');
+    fs.writeFileSync(correct, content + F('u2', w.P));       // correct is the superset
+    fs.writeFileSync(orphanCopy, content);
+    fs.mkdirSync(path.join(w.lane, 'Change'), { recursive: true });
+    const spaceCopy = path.join(w.lane, 'Change', 's6.jsonl');
+    fs.writeFileSync(spaceCopy, content);
+    [correct, orphanCopy, spaceCopy].forEach(age);
+    await runSlugRepair({ ...w.opts, stateFile: path.join(w.home, '.youcoded', 'state.json') });
+    expect(fs.existsSync(path.join(w.lane, w.bucket, 's6.jsonl'))).toBe(true); // 6.2 relocated it
+    expect(fs.existsSync(w.orphanDir)).toBe(false);                            // 6.3 then retired the orphan
+    expect(fs.existsSync(orphanCopy)).toBe(false);
+    expect(fs.existsSync(path.join(w.quarantine.dir, path.relative(w.home, orphanCopy)))).toBe(true);
+  });
+
+  it('bounded deferral: 3rd consecutive live deferral writes WARN + ATTENTION', async () => {
+    const w = makeWorld();
+    const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+    fs.mkdirSync(homeSlugDir, { recursive: true });
+    fs.writeFileSync(path.join(homeSlugDir, 'live1.jsonl'), F('u1', w.P)); // fresh mtime — live
+    const stateFile = path.join(w.home, '.youcoded', 'state.json');
+    await runSlugRepair({ ...w.opts, stateFile });
+    await runSlugRepair({ ...w.opts, stateFile });
+    await runSlugRepair({ ...w.opts, stateFile });
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    expect(state.deferred['live1']).toBe(3);
+    expect(fs.readFileSync(path.join(w.quarantine.dir, 'decisions.log'), 'utf8')).toContain('ATTENTION deferred live1');
+  });
+
+  it('a surfaced fork gets a store note when the record note is empty', async () => {
+    const w = makeWorld();
+    const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+    fs.mkdirSync(homeSlugDir, { recursive: true });
+    const wrong = path.join(homeSlugDir, 'sF.jsonl');
+    const correct = path.join(w.correctDir, 'sF.jsonl');
+    fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+    fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+    age(wrong); age(correct);
+    await w.store.upsert({ id: 'sF', provider: 'claude', projectName: w.bucket, originalPath: w.P, transcriptRef: `claude/transcripts/${w.bucket}/sF.jsonl` });
+    await runSlugRepair({ ...w.opts, stateFile: path.join(w.home, '.youcoded', 'state.json') });
+    expect((await w.store.get('claude', 'sF'))?.note).toContain('two diverged copies');
   });
 });

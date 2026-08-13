@@ -54,6 +54,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { runSlugRepair } from './conversations/slug-repair';
 import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
@@ -1946,7 +1947,9 @@ void app.whenReady().then(async () => {
   // populated (its synchronous prologue creates the roots before its first
   // await, so the roots exist by the time this line runs). startConversationStore
   // resolves fast — the first-run reconcile inside is detached (may mirror GBs).
-  startConversationStore().catch(e => log('ERROR', 'Main', 'ConversationStore start failed', { error: String(e) }));
+  startConversationStore()
+    .then(() => runSlugRepair())   // idempotent; must run AFTER the store is up (spec §6)
+    .catch(e => log('ERROR', 'Main', 'ConversationStore start / slug repair failed', { error: String(e) }));
 
   // One-time symlink sweep (Plan 2c): the legacy SyncService.aggregateConversations()/
   // rewriteProjectSlugs() (deleted this release) left ~hundreds of symlinks/junctions
