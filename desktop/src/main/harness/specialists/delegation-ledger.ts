@@ -145,7 +145,23 @@ export class DelegationLedger {
     });
   }
 
-  async update(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>): Promise<void> {
+  /**
+   * `appendSteers` (fix pass 2 — external review: the split-write gap):
+   * folded into the SAME mutateJson call as `patch`, not a second one. The
+   * previous shape had runDelegation's completion/failure writers call
+   * `update()`/`updateIfRunning()` for status, then AWAIT a separate
+   * `appendMissedSteers()` call. Two independent lock acquisitions means two
+   * independent failure points: if the first landed and the second then
+   * threw, the record was durably 'completed'/'failed' while that run's own
+   * drained steers were silently dropped — log-only, never retried. A single
+   * mutateJson call means both halves commit together or (on throw) neither
+   * does, restoring the "a ledger failure leaves nothing written" property
+   * the pre-split single write had. Read `d.missedSteers` and append HERE,
+   * inside the callback, for the same reason appendMissedSteers itself does
+   * (see that method's own WHY) — so this still commutes with a concurrent
+   * steerSpecialist miss-write racing the same record.
+   */
+  async update(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>, appendSteers: string[] = []): Promise<void> {
     // Cap rawReport HERE, not at recordStart — completion is the only place a
     // full report body ever arrives (recordStart runs before the child has
     // said anything). See RAW_REPORT_CAP_CHARS above for why the cap exists.
@@ -157,7 +173,11 @@ export class DelegationLedger {
       const data = this.coerce(cur);
       return {
         v: FILE_VERSION,
-        delegations: data.delegations.map((d) => (d.childId === childId ? { ...d, ...cappedPatch } : d)),
+        delegations: data.delegations.map((d) => {
+          if (d.childId !== childId) return d;
+          const merged = { ...d, ...cappedPatch };
+          return appendSteers.length > 0 ? { ...merged, missedSteers: [...d.missedSteers, ...appendSteers] } : merged;
+        }),
       };
     });
   }
@@ -184,13 +204,28 @@ export class DelegationLedger {
    * outcome no matter the arrival order: if 'interrupted' lands first, this
    * write finds status !== 'running' and no-ops; if it lands second, it
    * unconditionally overwrites whatever the failure write left behind.
+   *
+   * `appendSteers` (fix pass 2 — same split-write fix as update() above,
+   * applied to the failure path's compare-and-set write): folded into this
+   * SAME mutateJson call rather than a second `appendMissedSteers()` await
+   * after it, closing the identical lost-steer-on-second-write-throw gap.
+   * Deliberately NOT gated behind the `status === 'running'` check the
+   * `patch` half uses — a steer drained from the child's live queue in the
+   * failure catch is real information worth keeping even when 'interrupted'
+   * already won the status race and the patch itself no-ops (see
+   * appendMissedSteers' own WHY for why there is no "X wins" arbitration for
+   * this field the way there is for `status`).
    */
-  async updateIfRunning(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>): Promise<void> {
+  async updateIfRunning(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>, appendSteers: string[] = []): Promise<void> {
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
       const data = this.coerce(cur);
       return {
         v: FILE_VERSION,
-        delegations: data.delegations.map((d) => (d.childId === childId && d.status === 'running' ? { ...d, ...patch } : d)),
+        delegations: data.delegations.map((d) => {
+          if (d.childId !== childId) return d;
+          const patched = d.status === 'running' ? { ...d, ...patch } : d;
+          return appendSteers.length > 0 ? { ...patched, missedSteers: [...d.missedSteers, ...appendSteers] } : patched;
+        }),
       };
     });
   }
@@ -223,6 +258,44 @@ export class DelegationLedger {
         delegations: data.delegations.map((d) => (d.childId === childId ? { ...d, missedSteers: [...d.missedSteers, ...steers] } : d)),
       };
     });
+  }
+
+  /**
+   * Atomically read-and-clear `missedSteers`, returning exactly what was on
+   * disk at the moment this call won the lock — the resume-time counterpart
+   * to appendMissedSteers' commutative append.
+   *
+   * WHY (fix pass 2 — external review: the resume-clear race the reviewer
+   * flagged but couldn't see in the diff). resumeSpecialist used to read
+   * `record.missedSteers` from a snapshot `locateOwnChild` took OUTSIDE any
+   * lock (well before wireChildLive makes the child live again), then MUCH
+   * LATER fire a plain `update(..., { missedSteers: [] })` to clear it — two
+   * independent operations with an unlocked gap in between. Anything
+   * appended into that gap (e.g. a task_id steer call landing the instant
+   * the resumed child goes live, before this clear-write lands) would be
+   * silently wiped by the blind `[]` overwrite — the exact clobber shape the
+   * appendMissedSteers fix closed for the completion-write race, just
+   * between a different pair of writers, and this time the loss would be of
+   * a steer the user just gave. Folding the read and the clear into ONE
+   * mutateJson call removes the gap entirely: whatever is on disk when this
+   * call wins the lock is exactly what gets returned AND cleared, so nothing
+   * landing before or after this call can be dropped or (since it's cleared
+   * here, not just read) replayed twice by a later resume.
+   */
+  async takeMissedSteers(parentCwd: string, parentId: string, childId: string): Promise<string[]> {
+    let taken: string[] = [];
+    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
+      const data = this.coerce(cur);
+      return {
+        v: FILE_VERSION,
+        delegations: data.delegations.map((d) => {
+          if (d.childId !== childId) return d;
+          taken = d.missedSteers;
+          return { ...d, missedSteers: [] };
+        }),
+      };
+    });
+    return taken;
   }
 
   async claimUndelivered(parentCwd: string, parentId: string): Promise<DelegationRecord | null> {

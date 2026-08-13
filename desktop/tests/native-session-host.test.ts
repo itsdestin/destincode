@@ -10,7 +10,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
-import { OWNER } from '../src/main/harness/specialists/delegation-ledger';
+import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
 
@@ -2329,6 +2329,167 @@ describe('NativeSessionHost', () => {
       // The proof: the completion write (which landed second) must not have
       // erased the steer the miss-write (which landed first) recorded.
       expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding (fix pass 2): the fix above closed
+    // the clobber race by making the end-of-run ledger write into TWO
+    // separate awaited calls — `update()`/`updateIfRunning()` for status,
+    // then a SEPARATE `appendMissedSteers()` call. That is itself two
+    // independent lock acquisitions: if the first (status) landed and the
+    // second (steers) then threw, the record was durably 'completed' while
+    // this run's own drained steers were silently dropped — log-only, never
+    // retried. This test reproduces exactly that: it lets the FIRST
+    // mutateJson call for this record's completion write succeed, then
+    // forces the SECOND one to throw. Against the two-call shape this is the
+    // real bug (status commits, steers vanish); against a genuinely single
+    // atomic write there is no second call for this to ever hit, so the
+    // whole write lands together or not at all.
+    it('a completion write that fails partway must not durably commit status while silently dropping that run\'s own missed steers (regression — the split-write gap)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // Simulate a steer that got queued into the child's own LIVE
+      // pendingSteers queue but never applied before the run ends — the
+      // exact source runDelegation's completion write drains
+      // (drainUnappliedSteers' own doc comment: "posted during a turn's
+      // FINAL step, after the last iteration-boundary check already ran").
+      // Stubbing drainUnappliedSteers() directly, rather than pushing into
+      // the private pendingSteers queue before the run starts — pushing
+      // early would let the turn loop's own iteration-boundary check drain
+      // and genuinely APPLY it as a normal steer (harness-session.ts's own
+      // per-iteration drain), leaving nothing "missed" for runDelegation to
+      // find afterward. This test is about the LEDGER WRITE split, not
+      // about racing the turn loop, so it isolates that half directly.
+      const liveSession = (h as any).live.get(childId).session;
+      vi.spyOn(liveSession, 'drainUnappliedSteers').mockReturnValue(['focus on auth.ts instead']);
+
+      // Force the ledger's underlying NativeHome.mutateJson to fail on the
+      // SECOND call that touches THIS record after this point — reproducing
+      // the exact shape the split-write bug needs: one call for the status
+      // patch, a separate one right after for the steer append. Scoped to
+      // this record's own file so an unrelated write (e.g. a different
+      // parent/child's ledger row) can't accidentally consume the count.
+      const ledgerHome = (h as any).ledger.home as NativeHome;
+      const originalMutateJson = ledgerHome.mutateJson.bind(ledgerHome);
+      let call = 0;
+      const spy = vi.spyOn(ledgerHome, 'mutateJson').mockImplementation(async (...args: any[]) => {
+        const rel = args[0];
+        if (typeof rel === 'string' && rel.includes('root-1.delegations.json')) {
+          call++;
+          if (call === 2) throw new Error('simulated ledger write failure');
+        }
+        return originalMutateJson(...(args as [any, any, any?]));
+      });
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      await (h as any).runDelegation('root-1', childId, title, {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      }, reservation.token);
+
+      spy.mockRestore();
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      // The forbidden state: status durably flipped to 'completed' while the
+      // steer this run genuinely drained is nowhere on the record — the
+      // exact inconsistent split a two-call write can produce and a
+      // one-call write cannot (either both land, or the record stays
+      // 'running' with nothing appended — log-only failure, same contract
+      // this ledger has always had for a bookkeeping write that fails).
+      if (recAfter.status === 'completed') {
+        expect(recAfter.missedSteers).toContain('focus on auth.ts instead');
+      } else {
+        expect(recAfter.status).toBe('running');
+        expect(recAfter.missedSteers).toEqual([]);
+      }
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding (fix pass 2) — the reviewer's other
+    // ask: verify the resume-time CLEAR of missedSteers, which wasn't in the
+    // reviewed diff. resumeSpecialist used to read `record.missedSteers`
+    // from a snapshot taken well before wireChildLive() made the child live
+    // again, then LATER fire a blind `missedSteers: []` clear — two
+    // independent operations with an unlocked gap between them. A steer
+    // landing in that gap is silently wiped, never delivered to the resumed
+    // brief and never left on the ledger for a later resume either — genuine
+    // loss, of a steer the user just gave.
+    //
+    // Deterministic sequencing (not a real Promise.all race, same reason the
+    // clobber-race test above avoids one): this hooks the ONE ledger.update()
+    // call resumeSpecialist makes to flip the record back to 'running' —
+    // present, same call, in both the pre-fix and fixed shapes — and injects
+    // a genuinely-landed (fully awaited) concurrent append immediately
+    // before letting that write proceed. "Concurrent" here means "landed in
+    // the real gap", not "maybe won a race".
+    it('a steer appended concurrently with a resume-time clear is neither lost nor delivered twice (regression — the resume-clear race)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+      // Not live, own ledger record — resumeSpecialist's own eligibility bar
+      // (same pattern the sibling tests in this describe block use).
+      await h.destroy(childId);
+
+      const originalUpdate = DelegationLedger.prototype.update;
+      let injected = false;
+      const spy = vi.spyOn(DelegationLedger.prototype, 'update').mockImplementation(
+        async function (this: DelegationLedger, ...args: Parameters<DelegationLedger['update']>) {
+          const [pCwd, pId, cId, patch] = args;
+          if (!injected && cId === childId && (patch as any)?.status === 'running') {
+            injected = true;
+            await this.appendMissedSteers(pCwd, pId, cId, ['a fresh steer landing mid-resume']);
+          }
+          return originalUpdate.apply(this, args);
+        },
+      );
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const result = await h.resumeSpecialist('root-1', {
+        childId, prompt: 'continue the investigation', background: false,
+        parentToolCallId: 'tc-2', reservation: reservation.token,
+      });
+      expect(result.status).toBe('ok');
+      spy.mockRestore();
+
+      const events = store.readEvents(childId, root);
+      const userMessages = events.filter((e: any) => e.type === 'user-message');
+      const resumedMsg = userMessages[userMessages.length - 1] as any;
+      const inPrompt = resumedMsg.data.text.includes('a fresh steer landing mid-resume') ? 1 : 0;
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      const inLedger = (recAfter.missedSteers ?? []).filter((s: string) => s === 'a fresh steer landing mid-resume').length;
+
+      // Exactly once — never 0 (lost) and never 2 (delivered to this
+      // resume's brief AND left behind to be delivered again next time).
+      expect(inPrompt + inLedger).toBe(1);
 
       await h.destroyAll();
     });

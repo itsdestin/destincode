@@ -674,6 +674,30 @@ export class NativeSessionHost extends EventEmitter {
     // format postSteer itself uses — the child reads a course-correction it
     // missed identically whether it arrives live or at resume.
     //
+    // Fix pass 2 (external review — the resume-clear race the reviewer
+    // flagged as unreviewed, not as a confirmed bug): this used to read
+    // `record.missedSteers` from the SNAPSHOT `locateOwnChild` took above,
+    // well before wireChildLive() just made this child live again, then
+    // LATER fire a plain `missedSteers: []` clear through the ledger.update()
+    // patch below — two independent operations with an unlocked gap between
+    // them. A steer landing in that gap (e.g. a task_id steer call arriving
+    // the instant this child goes live, before the clear-write runs) would
+    // be silently wiped by the blind `[]` overwrite — the same clobber shape
+    // the completion-write fix closed, just between a different pair of
+    // writers, and this time of a steer the user just gave. takeMissedSteers
+    // folds the read and the clear into ONE lock-guarded mutateJson call
+    // (see its own WHY), so whatever is on disk at the moment it runs is
+    // exactly what gets used here AND cleared — nothing appended before or
+    // after this call can be dropped or replayed by a later resume. Read
+    // AFTER wireChildLive (rather than before, alongside the earlier
+    // snapshot) so a steer that manages to land in the moments before this
+    // call still gets folded into THIS resumed brief instead of only the
+    // next one. Best-effort fallback to the pre-lock snapshot when no ledger
+    // is wired, matching every other "no ledger" fallback in this file.
+    const missedSteers = this.ledger && parent.cwd
+      ? await this.ledger.takeMissedSteers(parent.cwd, parentId, opts.childId)
+      : (record.missedSteers ?? []);
+
     // childApprovedAsks (Task 8's forward-looking storage — this is its FIRST
     // consumer): an approval that landed on a routed ask AFTER this child had
     // already ended is otherwise invisible to the resumed run, which would
@@ -682,7 +706,7 @@ export class NativeSessionHost extends EventEmitter {
     const approvals = this.childApprovedAsks.get(opts.childId) ?? [];
     this.childApprovedAsks.delete(opts.childId);
     const steerLines = [
-      ...(record.missedSteers ?? []).map((s) => `<steer>\n${s}\n</steer>`),
+      ...missedSteers.map((s) => `<steer>\n${s}\n</steer>`),
       ...approvals.map((a) => `<steer>\nThe user has now approved your earlier blocked request (${a.tool}) — you may do it now.\n</steer>`),
     ];
     const prompt = steerLines.length > 0 ? `${steerLines.join('\n')}\n\n${opts.prompt}` : opts.prompt;
@@ -694,9 +718,13 @@ export class NativeSessionHost extends EventEmitter {
 
     if (this.ledger && parent.cwd) {
       try {
+        // `missedSteers` is deliberately NOT part of this patch — takeMissedSteers
+        // above already cleared it atomically. Setting it here again would risk
+        // clobbering anything appended in the (much shorter) window between that
+        // take and this write, reintroducing the exact race this fix removes.
         await this.ledger.update(parent.cwd, parentId, opts.childId, {
           status: 'running', startedAt: Date.now(), endedAt: undefined, failureText: undefined,
-          delivered: false, background: !!opts.background, missedSteers: [],
+          delivered: false, background: !!opts.background,
         });
       } catch (err) {
         // Mirrors recordDelegationStart's own leak guard: if this write
@@ -843,14 +871,25 @@ export class NativeSessionHost extends EventEmitter {
         // landed after, `missedSteers: []` here would erase it. append (not
         // overwrite) so this write can only ADD what it genuinely drained,
         // never discard what another writer already recorded.
+        //
+        // Fix pass 2 (external review — the split-write gap): `update()` and
+        // the append USED to be two separate awaited calls, i.e. two
+        // independent lock acquisitions. If the first (status) landed and
+        // the second (append) then threw, the record was durably 'completed'
+        // while this run's own drained steers were silently dropped —
+        // log-only below, never retried: a NEW steer-loss mode introduced by
+        // the very fix meant to stop steer loss. Passing `missedSteers` as
+        // `update()`'s own `appendSteers` argument folds both into ONE
+        // mutateJson call (see update()'s own WHY) — they now commit
+        // together or, on a lock failure, neither commits, same as before
+        // this field existed.
         try {
           await this.ledger.update(parentCwd, parentId, childId, {
             status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report,
             ...(reportPath ? { reportPath } : {}),
-          });
-          await this.ledger.appendMissedSteers(parentCwd, parentId, childId, missedSteers);
+          }, missedSteers);
         } catch (ledgerErr) {
-          log('ERROR', 'NativeSessionHost', 'failed to record specialist completion in the ledger — the report is still returned to the caller', { childId, parentId, error: String(ledgerErr) });
+          log('ERROR', 'NativeSessionHost', 'failed to record specialist completion (including any steers missed during this run) in the ledger — the report is still returned to the caller', { childId, parentId, error: String(ledgerErr) });
         }
       }
       return run;
@@ -864,19 +903,24 @@ export class NativeSessionHost extends EventEmitter {
         // that cause's symptom, so it must not clobber a record that already
         // reached a terminal status. Own try/catch: a failure here must not
         // replace the real error `err` this catch has to rethrow.
+        // Fix pass 2 (external review — the split-write gap), same fix as
+        // the success path above: `missedSteers` used to ride a SEPARATE
+        // awaited `appendMissedSteers()` call after this one — two lock
+        // acquisitions, so a throw on the second silently dropped a steer
+        // this run's own catch had just drained, even though the status
+        // write right before it had already landed. Passed as
+        // `updateIfRunning`'s own `appendSteers` argument, both are now one
+        // mutateJson call: they commit together or, on failure, neither
+        // does (see updateIfRunning's own WHY for why the append half still
+        // isn't gated on `status === 'running'` the way the patch half is).
         try {
           await this.ledger.updateIfRunning(parentCwd, parentId, childId, {
             // Specific and accurate (error-message-standards.md): the real
             // thrown message, never a guessed cause.
             status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
-          });
-          // Append (not overwrite) — same clobber-race fix as the success
-          // path above: this `missedSteers` is drained from the child's live
-          // queue, independent of anything steerSpecialist may have already
-          // recorded to the ledger for this same childId.
-          await this.ledger.appendMissedSteers(parentCwd, parentId, childId, missedSteers);
+          }, missedSteers);
         } catch (ledgerErr) {
-          log('ERROR', 'NativeSessionHost', 'failed to record specialist failure in the ledger', { childId, parentId, error: String(ledgerErr) });
+          log('ERROR', 'NativeSessionHost', 'failed to record specialist failure (including any steers missed during this run) in the ledger', { childId, parentId, error: String(ledgerErr) });
         }
       }
       throw err;
