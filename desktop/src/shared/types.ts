@@ -198,6 +198,17 @@ export interface TranscriptEvent {
      * the parent Agent tool_use that this subagent's work threads into.
      */
     parentAgentToolUseId?: string;
+    /**
+     * Task 4 (native specialists, background execution) — marks a `user-message`
+     * event as a SYNTHETIC turn the host injected (a background specialist's
+     * finished report, or its typed failure notice), not something the user
+     * actually typed. Data-field extension, not a new TranscriptEventType — the
+     * frozen emit surface stays frozen; a renderer that doesn't know this field
+     * yet still renders the event as a plain message. Only value today is
+     * 'specialist-report'; a plain `string` (not a union) so a future injected
+     * kind never needs a TranscriptEvent schema change either.
+     */
+    injected?: string;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */

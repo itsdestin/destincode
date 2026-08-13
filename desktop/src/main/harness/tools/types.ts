@@ -18,6 +18,13 @@ export interface SpecialistSpawnOpts {
   // NativeSessionHost.bindReservation); the tool is what releases it, in its
   // own `finally`, once the spawn settles either way.
   token: SpecialistReservation;
+  // Task 4 (plan 1b) — the Task tool's own per-call `description` argument
+  // (a short label, e.g. "Find the auth bug"), threaded through so the ledger
+  // record's `description` is the parent's real brief rather than the
+  // specialist's static registered blurb — which is all spawnSpecialist could
+  // fall back to before this field existed, and is useless in a background
+  // completion's preamble ("the task you delegated (\"...\")").
+  description: string;
 }
 
 /** Task 1 (plan 1b) — the receipt reserveSpecialist() hands back. Opaque to the
@@ -58,6 +65,17 @@ export interface ToolServices {
     release(token: SpecialistReservation): void;
     /** Mint + (eventually, Task 7) run the child, returning its final report. */
     spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
+    /** Task 4 — background execution. Resolves at LAUNCH (createChild + the
+     *  ledger's 'running' row), not at completion: the run continues detached,
+     *  and its eventual report (or typed failure) is injected into the
+     *  parent's OWN conversation as a synthetic user-role turn at the next
+     *  idle boundary (harness-session.ts's runNotice, driven from
+     *  NativeSessionHost.runTurns) — never returned through this promise.
+     *  Reservation-release ownership transfers to that detached chain the
+     *  moment this call returns; ONLY a thrown launch (the promise rejects)
+     *  means ownership never transferred, and the caller (tools/task.ts)
+     *  still has to release. */
+    spawnBackground(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; title: string }>;
   };
 }
 

@@ -189,13 +189,16 @@ export class DelegationLedger {
     let claimed: DelegationRecord | null = null;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
       const data = this.coerce(cur);
-      // Eligible: completed, not yet delivered, and either never claimed or
-      // claimed by an owner that isn't around anymore (a crash between claim
-      // and the injected turn reaching the parent — see the module comment:
-      // a claim is a LEASE, not a delivery, so a dead owner's claim must not
-      // block redelivery forever).
+      // Eligible: completed OR failed (Task 4 — a background run that dies
+      // still owes the parent a typed failure notice, not silence; this
+      // filter originally covered 'completed' only, written before the
+      // background failure-delivery path existed), not yet delivered, and
+      // either never claimed or claimed by an owner that isn't around anymore
+      // (a crash between claim and the injected turn reaching the parent —
+      // see the module comment: a claim is a LEASE, not a delivery, so a dead
+      // owner's claim must not block redelivery forever).
       const eligible = data.delegations.filter(
-        (d) => d.status === 'completed' && !d.delivered && (!d.claimedBy || !isOwnerAlive(d.claimedBy))
+        (d) => (d.status === 'completed' || d.status === 'failed') && !d.delivered && (!d.claimedBy || !isOwnerAlive(d.claimedBy))
       );
       if (eligible.length === 0) return data;
       const target = eligible.reduce((oldest, d) => (d.startedAt < oldest.startedAt ? d : oldest));

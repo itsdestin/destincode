@@ -134,6 +134,59 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     });
   });
 
+  // ---- Task 4: background: true dispatches through spawnBackground, not
+  // spawn, and the reservation's release ownership moves off this call site
+  // (the detached delivery chain releases it once the run settles) — the ONE
+  // exception is a THROWN launch, where ownership never transferred anywhere.
+  describe('background: true (Task 4)', () => {
+    it('calls spawnBackground (not spawn) and returns the launch ack without releasing the reservation', async () => {
+      const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+      const spawnBackground = vi.fn(async () => ({ childId: 'child-9', title: 'Rusty the Explorer' }));
+      const release = vi.fn();
+      const tool = createTaskTool();
+      const token = { parentId: 'parent-1', writer: false };
+      const ctx: ToolContext = {
+        sessionId: 'parent-1', cwd: '/work', signal: new AbortController().signal,
+        readRegistry: new Map(), todos: [],
+        services: { specialists: { reserve: () => ({ ok: true, token }), release, spawn, spawnBackground } },
+      };
+      const r = await tool.execute(
+        { description: 'find the bug', prompt: 'a'.repeat(60), agent: 'explorer', work_dir: '.', background: true } as any,
+        ctx,
+      );
+      expect(spawn).not.toHaveBeenCalled();
+      expect(spawnBackground).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+        description: 'find the bug', workDir: '.', token,
+        specialist: expect.objectContaining({ id: 'explorer' }),
+      }));
+      expect(r.isError).toBeFalsy();
+      expect(r.text).toMatch(/working in the background/);
+      expect(r.text).toMatch(/task_id: child-9/);
+      // Ownership transferred: this call site does NOT release on the
+      // successful-launch path — the detached chain does, once it settles.
+      expect(release).not.toHaveBeenCalled();
+    });
+
+    it('a thrown background launch still releases the reservation — ownership never transferred', async () => {
+      const spawnBackground = vi.fn(async () => { throw new Error('createChild blew up'); });
+      const release = vi.fn();
+      const tool = createTaskTool();
+      const token = { parentId: 'parent-1', writer: false };
+      const ctx: ToolContext = {
+        sessionId: 'parent-1', cwd: '/work', signal: new AbortController().signal,
+        readRegistry: new Map(), todos: [],
+        services: { specialists: { reserve: () => ({ ok: true, token }), release, spawn: vi.fn(), spawnBackground } },
+      };
+      const r = await tool.execute(
+        { description: 'x', prompt: 'a'.repeat(60), agent: 'explorer', work_dir: '.', background: true } as any,
+        ctx,
+      );
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/createChild blew up/); // the real thrown reason, never a guess
+      expect(release).toHaveBeenCalledWith(token);
+    });
+  });
+
   it('releases the reservation even when spawn throws', async () => {
     const release = vi.fn();
     const tool = createTaskTool();

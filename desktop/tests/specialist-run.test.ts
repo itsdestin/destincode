@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { OWNER, RAW_REPORT_CAP_CHARS } from '../src/main/harness/specialists/delegation-ledger';
+import { computeReportBudget } from '../src/main/harness/specialists/report-budget';
+import { APPROX_CHARS_PER_TOKEN } from '../src/main/harness/message-size';
 
 // ---- Task 7: the FOREGROUND specialist run ----------------------------------
 // spawnSpecialist mints a child (Task 5), delivers the brief as its first turn,
@@ -406,5 +410,262 @@ describe('specialist foreground run (Task 7)', () => {
       await host.destroy('root-1');
       expect(released).toEqual(['m']); // the child's model ref did not leak either
     });
+  });
+});
+
+// ---- Task 4: BACKGROUND specialist execution + idle-boundary delivery ------
+// spawnSpecialistBackground resolves at LAUNCH (createChild + a 'running'
+// ledger row) and hands the rest of the run to an un-awaited chain
+// (runDelegation). The chain's eventual report (or typed failure) is injected
+// into the parent's OWN conversation as a synthetic user-role turn — but ONLY
+// once the parent reaches an idle boundary (queueDelivery / runTurns' tail),
+// never spliced into a turn the parent is still running. All of these tests
+// need a REAL ledger (a NativeHome pointed at the test's tmp root), since the
+// delivery loop reads/writes it directly — same `home` pattern the "ledger
+// write failure" describe block above uses.
+describe('background execution + idle-boundary delivery (Task 4)', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  function collect(): any[] {
+    const seen: any[] = [];
+    host.on('transcript-event', (e) => seen.push(e));
+    return seen;
+  }
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-bg-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('background Task resolves immediately with a task_id while the child is still running', async () => {
+    // No gating needed: send()'s dispatch is deferred one macrotask
+    // (setImmediate), and spawnSpecialistBackground returns BEFORE its
+    // un-awaited runDelegation chain ever reaches that dispatch — so by
+    // construction the child cannot have started running yet at the moment
+    // this call resolves. Asserting `inFlight` on the child's own live entry
+    // (rather than just "the call resolved fast") is what actually pins
+    // "still running", not just "hasn't finished".
+    const model = scriptedModel([
+      stream(...textChunks('t', 'REPORT: done'), finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const { childId, title } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    expect(childId).toBeTruthy();
+    expect(title).toBeTruthy();
+    // The parent itself was never touched — background delegation must not
+    // block or busy the delegating session.
+    expect(host.isIdle('root-1')).toBe(true);
+    // The child, on the other hand, is genuinely mid-run: send() already set
+    // inFlight synchronously, before this call ever returned.
+    expect((host as any).live.get(childId)?.inFlight).toBe(true);
+
+    // Let the child's run actually finish so afterEach's destroyAll() doesn't
+    // race a live turn.
+    await vi.waitFor(() => {
+      const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+  });
+
+  it('a background completion is injected as a user-role turn when the parent goes idle — never mid-turn', async () => {
+    // The PARENT's own turn is gated (manually resolved) so it stays
+    // in-flight for as long as the test needs — long enough for an
+    // independently-triggered background child to run to completion while
+    // the parent is still busy. The child gets a SEPARATE scripted model
+    // instance; modelFactory routes the FIRST call (guaranteed to be the
+    // parent's own turn, confirmed via `parentEntered` before the child is
+    // ever spawned) to it and everything after to the child's model.
+    let parentEntered = false;
+    let releaseParent: () => void = () => {};
+    const parentGate = new Promise<void>((res) => { releaseParent = res; });
+    const parentModel = new MockLanguageModelV4({
+      doStream: async () => {
+        parentEntered = true;
+        await parentGate;
+        return { stream: simulateReadableStream({ chunks: stream(...textChunks('t', 'parent turn done'), finishChunk('stop')) }) };
+      },
+    });
+    const childModel = scriptedModel([
+      stream(...textChunks('t', 'REPORT: child done'), finishChunk('stop')),
+    ]);
+    let calls = 0;
+    const factory = async () => (calls++ === 0 ? parentModel : childModel) as any;
+
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, factory, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const sendResult = host.send('root-1', 'go');
+    expect(sendResult.status).toBe('sent');
+    await vi.waitFor(() => expect(parentEntered).toBe(true));
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+
+    // The child finished, but the PARENT is still mid-turn — nothing may be
+    // injected yet.
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toEqual([]);
+    expect(host.isIdle('root-1')).toBe(false);
+
+    releaseParent();
+    await (host as any).live.get('root-1').running;
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.type).toBe('user-message');
+    expect(injected.data.text).toContain('## Report from');
+
+    // Ordering: the parent's own turn-complete happened strictly BEFORE the
+    // injected notice — never spliced mid-turn.
+    const turnCompleteIdx = events.findIndex((e) => e.type === 'turn-complete' && !e.data?.agentId);
+    const injectedIdx = events.indexOf(injected);
+    expect(turnCompleteIdx).toBeGreaterThanOrEqual(0);
+    expect(injectedIdx).toBeGreaterThan(turnCompleteIdx);
+  });
+
+  it('the injected report is formatted at DELIVERY time with concurrentReporters = number of pending deliveries', async () => {
+    // Seed the ledger directly with TWO already-completed, undelivered
+    // records (rather than racing two real specialist children to finish at
+    // exactly the same moment) — the delivery loop only ever reads the
+    // ledger, so this exercises the exact same code path deterministically.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    // A real (non-Infinity) remaining window is required — computeReportBudget
+    // degrades to the static per-specialist cap when remaining is Infinity,
+    // which would hide any difference concurrentReporters makes.
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => 3500, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    // Force a KNOWN occupancy so `remaining` is deterministic instead of
+    // whatever the chars/4 estimate of the assembled system prompt happens to
+    // be — same private-field test seam this suite already uses for `live`.
+    ((host as any).live.get('root-1').session as any)._contextUsedTokens = 500;
+
+    const ledger = (host as any).ledger;
+    const huge = 'x'.repeat(60_000);
+    for (const childId of ['child-a', 'child-b']) {
+      await ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc', agentType: EXPLORER.id, title: `Test ${childId}`, workDir: root,
+        description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await ledger.update(root, 'root-1', childId, { status: 'completed', endedAt: Date.now(), steps: 3, rawReport: huge });
+    }
+
+    const events = collect();
+    (host as any).queueDelivery('root-1');
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(2);
+    });
+
+    // remaining = window(3500) - used(500) = 3000. Same formula the code uses.
+    const remaining = 3000;
+    const budgetSolo = computeReportBudget({ staticCapTokens: EXPLORER.reportBudgetTokens, parentRemainingTokens: remaining, concurrentReporters: 1 });
+    const budgetShared = computeReportBudget({ staticCapTokens: EXPLORER.reportBudgetTokens, parentRemainingTokens: remaining, concurrentReporters: 2 });
+    expect(budgetShared).toBeLessThan(budgetSolo); // sanity: the split genuinely differs
+
+    const injected = events.filter((e) => e.data?.injected === 'specialist-report');
+    expect(injected).toHaveLength(2);
+    for (const e of injected) {
+      const len = (e.data.text as string).length;
+      // Definitively NOT the single-reporter budget (which would be ~2x bigger)...
+      expect(len).toBeLessThan(budgetSolo * APPROX_CHARS_PER_TOKEN);
+      // ...and roughly consistent with the 2-way split, not near-zero.
+      expect(len).toBeGreaterThan(budgetShared * APPROX_CHARS_PER_TOKEN * 0.5);
+    }
+  });
+
+  it('a background child that dies mid-run delivers a typed failure notice, not silence', async () => {
+    const model = scriptedModel([
+      stream({ type: 'error', error: new Error('llama-server dropped the connection') }),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toMatch(/failed/i);
+    expect(injected.data.text).toContain(childId);
+
+    // The failure is durable, not just relayed once: the ledger record itself
+    // reads 'failed', and (Task 2's invariant) with the real thrown reason.
+    const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.status).toBe('failed');
+    expect(rec.failureText).toMatch(/llama-server dropped the connection/);
+  });
+
+  it('a background completion whose report exceeds the ledger cap spills the full body to a file', async () => {
+    // External review (2026-08-12): the ledger caps rawReport at
+    // RAW_REPORT_CAP_CHARS on every write — for a background run, nothing
+    // ELSE ever sees the uncapped body again (the child is torn down right
+    // after), so the completion handler must spill the full text to disk
+    // BEFORE that cap silently discards it.
+    const huge = 'y'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => null, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    const ledger = (host as any).ledger;
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.rawReport.length).toBe(RAW_REPORT_CAP_CHARS); // capped copy in the ledger
+    expect(rec.reportPath).toBeTruthy();
+    const spilled = fs.readFileSync(rec.reportPath, 'utf8');
+    expect(spilled.length).toBe(huge.length); // the FULL, uncapped body
+    expect(spilled.startsWith(huge.slice(0, 200))).toBe(true);
   });
 });

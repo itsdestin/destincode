@@ -221,6 +221,29 @@ export class NativeHome {
     return out;
   }
 
+  /**
+   * Overwrite-write a plain-text artifact at sessions/<slug>/<name> and return
+   * its absolute path. Added ahead of its nominal owner (plan 1b Task 10,
+   * "report overflow spills to a file") because Task 4's background-completion
+   * handler needs it NOW: DelegationLedger.update() caps `rawReport` at
+   * RAW_REPORT_CAP_CHARS on every write, and for a background run nothing else
+   * ever sees the uncapped body again (the child is torn down right after) —
+   * so the full text has to be spilled to disk BEFORE that cap silently
+   * discards it, not later when Task 10 teaches formatSpecialistReport to read
+   * it back. Signature matches what Task 10's plan already specifies, so it
+   * can consume this rather than re-adding it.
+   *
+   * WHY no lock: same reasoning as appendSessionLine — exactly one process
+   * ever writes a given child's spill file, exactly once (the completion
+   * handler that owns that child's run), so a plain overwrite is correct.
+   */
+  writeSessionArtifact(slug: string, name: string, text: string): string {
+    const p = path.join(this.dir, 'sessions', slug, name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text, 'utf8');
+    return p;
+  }
+
   /** Enumerate every sessions/<slug>/<id>.jsonl with stat info (for browse/resume UIs). */
   listSessionFiles(): SessionFileInfo[] {
     const base = path.join(this.dir, 'sessions');

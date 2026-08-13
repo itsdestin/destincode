@@ -35,6 +35,12 @@ const schema = z.object({
     'The directory the specialist works in — usually the project root you are working in. '
     + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit).',
   ),
+  // Task 4 (plan 1b) — background execution. Optional so every existing 1a
+  // call (which always blocks until the report comes back) keeps working
+  // unchanged; only setting this true opts into the detached-run path.
+  background: z.boolean().optional().describe(
+    'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes.',
+  ),
 });
 
 type TaskArgs = z.infer<typeof schema>;
@@ -131,12 +137,46 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         };
       }
 
+      // Task 4 (plan 1b) — background: the reservation's release ownership
+      // moves off THIS call site the moment spawnBackground actually returns:
+      // the detached delivery chain (native-session-host.ts's
+      // spawnSpecialistBackground) releases it once the run settles, however
+      // long that takes. Its OWN try/catch, separate from the foreground path
+      // below, because the two paths must NOT share one `finally` — a shared
+      // finally would release on the happy path too, undoing the ownership
+      // transfer the whole background design depends on. Only a THROWN launch
+      // (the promise rejects — the child never came into existence, or its
+      // ledger row never got recorded) means ownership never transferred
+      // anywhere, so this catch is the one place background still releases.
+      if (args.background) {
+        try {
+          const { childId, title } = await services.spawnBackground(parentId, {
+            specialist,
+            prompt: args.prompt,
+            workDir: args.work_dir,
+            parentToolCallId: ctx.toolCallId ?? '',
+            description: args.description,
+            token: reservation.token,
+          });
+          return {
+            text: `${title} (${args.agent}) is now working in the background (task_id: ${childId}). Their report will be delivered to you automatically when they finish — do not wait or poll. Keep working; a status block at the start of your turns tracks running specialists.`,
+          };
+        } catch (err: any) {
+          services.release(reservation.token);
+          // Specific and accurate (error-message-standards.md): the real
+          // thrown message, never a guessed cause — same relay discipline as
+          // the foreground catch below.
+          return { text: `The ${specialist.displayName} specialist failed to start in the background: ${err?.message ?? String(err)}`, isError: true };
+        }
+      }
+
       try {
         const { report } = await services.spawn(parentId, {
           specialist,
           prompt: args.prompt,
           workDir: args.work_dir,
           parentToolCallId: ctx.toolCallId ?? '',
+          description: args.description,
           token: reservation.token,
         });
         return { text: report };
