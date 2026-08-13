@@ -588,12 +588,24 @@ export class NativeSessionHost extends EventEmitter {
   constructor(
     private store: SessionStore,
     private modelFactory: ModelFactory,
-    private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
+    // Fix pass 2 (Task 13): ONE closure now answers both the context window
+    // AND the engine's real parallel-slot count, from ONE call. Before this,
+    // contextLengthFor and a separate slotCountFor closure shared one /props
+    // reading through a variable scoped at the ipc-handlers.ts wiring site
+    // (`lastLocalSlotReading`) — correct only if every caller awaited the two
+    // closures back-to-back for the SAME binding with nothing else able to
+    // run in between. Two local-engine sessions starting concurrently (or a
+    // cloud binding's resolution landing between the two awaits, which resets
+    // the shared variable to null) could silently read each other's slot
+    // count, or read null instead of a real number — with no throw, just a
+    // wrong cap. Collapsing to one return value removes the shared state
+    // entirely: there is no ordering left to get wrong.
+    private contextAndSlotsFor: (binding: ModelBinding) => Promise<{ contextLength: number | null; totalSlots: number | null }>,
     // Resolves a binding's provider TYPE (local-engine / openrouter / anthropic /
     // …) so the host can pick the right CapabilityProfile (Task 5). A binding
     // whose provider is unknown returns null → resolveContextAndProfile falls back
-    // to a cloud-safe default. Positioned right after contextLengthFor because the
-    // two are resolved together for every create/resume/swap.
+    // to a cloud-safe default. Positioned right after contextAndSlotsFor because
+    // the two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Per-model vision fact read from the provider catalog's declared input
     // modalities (Task 6c). Today only OpenRouter's catalog can actually
@@ -605,31 +617,18 @@ export class NativeSessionHost extends EventEmitter {
     // behavior (DiscoveredModel.supportsVision left undefined) — it is never
     // allowed to throw. It is also never allowed to block a NON-OpenRouter
     // session start; for a live OpenRouter binding it does await the same
-    // bounded (AbortSignal.timeout-guarded) catalog fetch contextLengthFor
+    // bounded (AbortSignal.timeout-guarded) catalog fetch contextAndSlotsFor
     // already pays for that binding, so it is not fully non-blocking there —
     // see the ipc-handlers.ts construction site for the short-circuit that
     // makes this true. Positioned right after providerTypeFor for the same
-    // reason that one sits after contextLengthFor: all three are resolved
+    // reason that one sits after contextAndSlotsFor: all three are resolved
     // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
-    // Task 13 fix pass — the engine's REAL measured parallel-slot count
-    // (llama-server's n_slots), read from the SAME /props call
-    // contextLengthFor already pays for on a local-engine binding (see
-    // engine-manager.ts's effectiveContextWindow and the ipc-handlers.ts
-    // wiring comment for how the two closures share one HTTP round trip
-    // instead of each fetching it separately). null means "not local-engine,
-    // or the engine hasn't reported a real count" — resolveProfile's
-    // known-model overlay then floors the concurrency cap to 1 rather than
-    // guessing (capability-profile.ts's localSlotCap). Defaults to a no-op
-    // (like permissionStore below) so pre-existing 5-arg test constructions
-    // still compile; a construction that cares about the local concurrency
-    // cap must supply this explicitly, same as visionSupportFor/contextLengthFor.
-    private slotCountFor: (binding: ModelBinding) => Promise<number | null> = async () => null,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 5-arg test constructions (store, modelFactory,
-    // contextLengthFor, providerTypeFor, visionSupportFor — the first four params
-    // plus Task 6c's new closure have no defaults) still compile; the real
-    // wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
+    // contextAndSlotsFor, providerTypeFor, visionSupportFor — these five have no
+    // defaults) still compile; the real wiring (ipc-handlers) injects a
+    // PermissionStore over ~/.youcoded/.
     private permissionStore: RememberedRuleStore = NOOP_REMEMBERED_STORE,
     // Injected because electron's `app` is not importable in tests (mirrors the
     // other injected functions/values above). Feeds the <env> block of the
@@ -804,14 +803,14 @@ export class NativeSessionHost extends EventEmitter {
    *  provider type + model id + that clamped context. An unknown provider type
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
   private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
-    const raw = await this.contextLengthFor(binding);
-    // Task 13 fix pass: resolved immediately after contextLengthFor, not
-    // later — the local-engine wiring's slot reading rides that SAME call's
-    // /props response (see the slotCountFor constructor param's comment and
-    // the ipc-handlers.ts wiring site), so reading it here, right after the
-    // call that populated it, is what keeps this a single HTTP round trip
-    // rather than an incidental ordering that happens to work today.
-    const discoveredSlots = (await this.slotCountFor(binding)) ?? undefined;
+    // Fix pass 2 (Task 13): ONE call gets both the context window and the
+    // engine's real slot count — see the contextAndSlotsFor constructor
+    // param's comment for why this replaces two separately-injected closures
+    // that used to share one /props reading through a variable at the
+    // ipc-handlers.ts wiring site. There is nothing left to order: this is
+    // the single await that produces both values for this binding.
+    const { contextLength: raw, totalSlots } = await this.contextAndSlotsFor(binding);
+    const discoveredSlots = totalSlots ?? undefined;
     const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
     // The registry ceiling (effectiveContextForModel) is a LOCAL-model concern: it
     // caps a small GGUF loaded at a too-large -c to its real trained window. But
@@ -822,17 +821,17 @@ export class NativeSessionHost extends EventEmitter {
     // cloud/hosted bindings pass their real window through unchanged.
     const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
     // null (no source could answer — the closure's convention, matching
-    // contextLengthFor/providerTypeFor above) becomes undefined on the
+    // contextAndSlotsFor/providerTypeFor above) becomes undefined on the
     // DiscoveredModel, which is visionFor()'s OWN "not discovered" sentinel —
     // it then falls through to the registry/provider-type default exactly as
     // it did before this closure existed.
     const discoveredVision = (await this.visionSupportFor(binding)) ?? undefined;
     const profile = resolveProfile({
       providerType: type, modelId: binding.modelId, contextLength, supportsVision: discoveredVision,
-      // Task 13 fix pass: threads the engine's real slot reading into the
-      // known-model overlay's concurrency clamp (capability-profile.ts's
-      // localSlotCap). undefined for every non-local-engine binding — the
-      // ipc-handlers wiring never queries the engine for those.
+      // Threads the engine's real slot reading into the known-model overlay's
+      // concurrency clamp (capability-profile.ts's localSlotCap). undefined
+      // for every non-local-engine binding — the ipc-handlers wiring never
+      // queries the engine for those.
       totalSlots: discoveredSlots,
     });
     return { contextLength, profile };

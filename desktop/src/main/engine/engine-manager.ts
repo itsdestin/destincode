@@ -311,13 +311,13 @@ export class EngineManager extends EventEmitter {
    *  conservative default clampContextWindow uses.
    *
    *  Task 13 fix pass: also returns `totalSlots` (llama-server's n_slots) —
-   *  the ipc-handlers.ts wiring's local concurrency cap needs this, and it
-   *  lives in the exact same /props response this function already fetches.
-   *  Folding it into this return value (rather than a second method with its
-   *  own fetch) is WHY the two never cost a second HTTP round trip: whichever
-   *  caller reads contextLength first captures totalSlots for free, and the
-   *  ipc-handlers wiring hands that captured value to the separate
-   *  slotCountFor closure instead of querying the engine again. */
+   *  the local concurrency cap needs this, and it lives in the exact same
+   *  /props response this function already fetches. Folding it into this one
+   *  return value (rather than a second method with its own fetch) is WHY
+   *  reading both costs exactly one HTTP round trip: fix pass 2 threads this
+   *  whole object straight through ipc-handlers.ts's single contextAndSlotsFor
+   *  closure into NativeSessionHost — there is no separate slot-count call and
+   *  no variable sharing one reading between two closures. */
   async effectiveContextWindow(modelId: string): Promise<{ contextLength: number; totalSlots: number | null }> {
     try {
       const inst = this.currentInstall();

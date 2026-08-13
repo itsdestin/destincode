@@ -34,8 +34,8 @@ describe('NativeSessionHost — MCP acquire/release leak guard (fix pass 1, Find
     const h = new NativeSessionHost(
       new SessionStore(new NativeHome(root)),
       (async () => { throw new Error('modelFactory unused in this test'); }) as any,
-      async () => null, async () => null, async () => null,
-      undefined, undefined, undefined, undefined, undefined,
+      async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined,
       { destroyAll: async () => {}, acquire },
     );
 

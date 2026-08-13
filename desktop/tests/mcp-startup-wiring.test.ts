@@ -154,7 +154,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     createConnectionMock.mockClear();
   });
 
-  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 10th positional arg', async () => {
+  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 9th positional arg', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'mcp.json'),
@@ -174,18 +174,20 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 11 args (Task 6c added
+    // Positional shape pinned by the brief: 10 args (Task 6c added
     // visionSupportFor as the 5th positional parameter — the 3rd injected
     // closure, after contextLengthFor and providerTypeFor — shifting
     // everything after providerTypeFor down by one; the Task 13 fix pass then
-    // added slotCountFor as the 6th positional parameter — the 4th injected
-    // closure, right after visionSupportFor — shifting everything after it
-    // down by one more), skillCatalog (index 9) explicitly undefined so
-    // mcpManager (index 10) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(11);
-    expect(capturedCtorArgs![9]).toBeUndefined();
+    // added a 4th closure, slotCountFor, right after visionSupportFor — fix
+    // pass 2 folded that BACK into contextLengthFor as one combined
+    // contextAndSlotsFor closure, since the two were only ever split apart by
+    // a shared-state race — so the total count returns to 10), skillCatalog
+    // (index 8) explicitly undefined so mcpManager (index 9) lands in the
+    // right slot.
+    expect(capturedCtorArgs!.length).toBe(10);
+    expect(capturedCtorArgs![8]).toBeUndefined();
 
-    const mcpManager = capturedCtorArgs![10] as {
+    const mcpManager = capturedCtorArgs![9] as {
       acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
@@ -229,7 +231,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![10] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const mcpManager = capturedCtorArgs![9] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
     const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
@@ -303,14 +305,25 @@ describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', 
   });
 });
 
-// Task 13 fix pass: proves the actual GAP the review found — before this fix,
-// DiscoveredModel.totalSlots was built and tested at the capability-profile.ts
-// layer, but no production code ever WROTE it, so every local session
-// silently got the conservative floor of 1. This spies on EngineManager's
-// effectiveContextWindow (the one place that reads /props) to prove
-// ipc-handlers.ts's contextLengthFor and slotCountFor closures both resolve
-// through it for the SAME local-engine binding, and that doing so costs
-// exactly ONE call — never a second engine query for the slot count.
+// Task 13: proves the actual GAP the original review found — before the
+// first fix, DiscoveredModel.totalSlots was built and tested at the
+// capability-profile.ts layer, but no production code ever WROTE it, so
+// every local session silently got the conservative floor of 1. This spies
+// on EngineManager's effectiveContextWindow (the one place that reads
+// /props) to prove ipc-handlers.ts's context/slots closure resolves through
+// it for local-engine bindings, and that doing so costs exactly ONE call.
+//
+// Fix pass 2: the first fix answered this with TWO separately-injected
+// closures (contextLengthFor, slotCountFor) sharing one /props reading
+// through a module-scoped `lastLocalSlotReading` variable — correct only if
+// every caller awaited them back-to-back for the same binding with nothing
+// else able to run in between. That did NOT hold: an unrelated cloud
+// binding's resolution landing between the two awaits reset the shared
+// variable, silently flooring an unrelated local session's cap to 1 (proven
+// against the pre-fix-pass-2 wiring by the git history of this file — see
+// the fix pass 2 report). This describe block now tests the collapsed
+// design: ONE closure (contextAndSlotsFor, the 3rd positional constructor
+// arg) returns both values, so there is no shared state left to race.
 const effectiveContextWindowSpy = vi.fn(async () => ({ contextLength: 999, totalSlots: 3 }));
 vi.mock('../src/main/engine/engine-manager', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/main/engine/engine-manager')>();
@@ -320,14 +333,14 @@ vi.mock('../src/main/engine/engine-manager', async (importOriginal) => {
   return { ...actual, EngineManager: SpyEngineManager };
 });
 
-describe('slotCountFor wiring (Task 13 fix pass)', () => {
+describe('contextAndSlotsFor wiring (Task 13, collapsed by fix pass 2)', () => {
   beforeEach(() => {
     testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-slotcount-wiring-'));
     capturedCtorArgs = undefined;
     effectiveContextWindowSpy.mockClear();
   });
 
-  it('resolves null for a non-local-engine binding without ever touching the engine', async () => {
+  it('resolves totalSlots: null for a non-local-engine binding without ever touching the engine', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'providers.json'),
@@ -342,13 +355,13 @@ describe('slotCountFor wiring (Task 13 fix pass)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    const slotCountFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
-    const result = await slotCountFor({ providerId: 'anthropic-test', modelId: 'claude-opus-5' });
-    expect(result).toBeNull();
+    const contextAndSlotsFor = capturedCtorArgs![2] as (binding: { providerId: string; modelId: string }) => Promise<{ contextLength: number | null; totalSlots: number | null }>;
+    const result = await contextAndSlotsFor({ providerId: 'anthropic-test', modelId: 'claude-opus-5' });
+    expect(result.totalSlots).toBeNull();
     expect(effectiveContextWindowSpy).not.toHaveBeenCalled();
   });
 
-  it('for a local-engine binding, contextLengthFor and slotCountFor both surface the SAME engine reading from ONE call', async () => {
+  it('for a local-engine binding, contextLength and totalSlots both surface the SAME engine reading from ONE call', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'providers.json'),
@@ -363,13 +376,52 @@ describe('slotCountFor wiring (Task 13 fix pass)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    const contextLengthFor = capturedCtorArgs![2] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
-    const slotCountFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<number | null>;
+    const contextAndSlotsFor = capturedCtorArgs![2] as (binding: { providerId: string; modelId: string }) => Promise<{ contextLength: number | null; totalSlots: number | null }>;
     const binding = { providerId: 'local', modelId: 'some-gguf' };
 
-    // resolveContextAndProfile's real call order: contextLengthFor first.
-    expect(await contextLengthFor(binding)).toBe(999);
-    expect(await slotCountFor(binding)).toBe(3);
+    const result = await contextAndSlotsFor(binding);
+    expect(result).toEqual({ contextLength: 999, totalSlots: 3 });
     expect(effectiveContextWindowSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix pass 2 concurrency regression, at the wiring layer: two DIFFERENT
+  // local bindings resolved through the SAME contextAndSlotsFor closure,
+  // back to back, must each get their OWN engine reading — there is no
+  // variable in ipc-handlers.ts left for one binding's call to stomp another's,
+  // because each call is now a single self-contained round trip with nothing
+  // stashed between calls. (The interleaved-in-flight version of this same
+  // proof — two overlapping NativeSessionHost.create() calls actually racing
+  // — lives in native-session-host.test.ts, "no cross-talk"; this is the
+  // equivalent proof one layer down, at the exact closure ipc-handlers.ts
+  // constructs.)
+  it('back-to-back calls for two different local bindings never share state', async () => {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true }] }),
+    );
+    effectiveContextWindowSpy.mockImplementation(async (modelId: string) => (
+      modelId === 'model-a' ? { contextLength: 8192, totalSlots: 2 } : { contextLength: 4096, totalSlots: 4 }
+    ));
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    expect(capturedCtorArgs).toBeDefined();
+    const contextAndSlotsFor = capturedCtorArgs![2] as (binding: { providerId: string; modelId: string }) => Promise<{ contextLength: number | null; totalSlots: number | null }>;
+
+    const a = await contextAndSlotsFor({ providerId: 'local', modelId: 'model-a' });
+    const b = await contextAndSlotsFor({ providerId: 'local', modelId: 'model-b' });
+    // Re-reading model-a AFTER model-b resolved must still answer model-a's
+    // own reading — the exact case the old shared variable got wrong.
+    const aAgain = await contextAndSlotsFor({ providerId: 'local', modelId: 'model-a' });
+
+    expect(a).toEqual({ contextLength: 8192, totalSlots: 2 });
+    expect(b).toEqual({ contextLength: 4096, totalSlots: 4 });
+    expect(aAgain).toEqual({ contextLength: 8192, totalSlots: 2 });
   });
 });

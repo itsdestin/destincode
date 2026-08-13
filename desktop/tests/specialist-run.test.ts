@@ -33,7 +33,7 @@ describe('specialist foreground run (Task 7)', () => {
   function boot(scripts: any[][]) {
     const model = scriptedModel(scripts);
     store = new SessionStore(new NativeHome(root));
-    host = new NativeSessionHost(store, async () => model as any, async () => null, async () => null, async () => null);
+    host = new NativeSessionHost(store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null);
     return model;
   }
   async function withParent(scripts: any[][]) {
@@ -389,7 +389,7 @@ describe('compaction-finalize steer (Task 12, item 4)', () => {
       },
     });
     store = new SessionStore(new NativeHome(root));
-    host = new NativeSessionHost(store, async () => model as any, async () => null, async () => null, async () => null);
+    host = new NativeSessionHost(store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null);
     return () => postSteerSpy!;
   }
 
@@ -471,7 +471,7 @@ describe('compaction-finalize steer (Task 12, item 4)', () => {
       },
     });
     store = new SessionStore(new NativeHome(root));
-    host = new NativeSessionHost(store, async () => model as any, async () => null, async () => null, async () => null);
+    host = new NativeSessionHost(store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null);
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
 
     await host.spawnSpecialist('root-1', {

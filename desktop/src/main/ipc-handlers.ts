@@ -2272,35 +2272,31 @@ export function registerIpcHandlers(
   // line — the normal case for almost every install.
   const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
   const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
-  // Task 13 fix pass: the engine's measured parallel-slot count (n_slots),
-  // captured here so the slotCountFor closure below can hand it to
-  // NativeSessionHost without a second /props round trip. Only
-  // contextLengthFor's local-engine branch ever writes this — it is the ONE
-  // closure that actually calls engineManager for a given binding.
-  // native-session-host.ts's resolveContextAndProfile always awaits
-  // contextLengthFor before slotCountFor for the SAME binding, so this is
-  // never stale by the time it's read; reset to null on every non-local
-  // binding so a later local read can never accidentally see a PREVIOUS
-  // binding's leftover count.
-  let lastLocalSlotReading: number | null = null;
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
     (binding, opts) => providerRegistry.languageModel(binding, opts),
-    // Context-window sizing. For LOCAL models, prefer the engine's REAL loaded
-    // window (min of llama-server /props and the GGUF-trained max) over the
-    // catalog's configured -c — the catalog value is a guess that overflows small
-    // models. Remote/API models keep the catalog number.
+    // Context-window sizing AND the engine's real parallel-slot count, from
+    // ONE closure. Fix pass 2 (Task 13): the first fix threaded contextLength
+    // and totalSlots through two SEPARATE closures that shared one /props
+    // reading via a module-scoped `lastLocalSlotReading` variable — correct
+    // only if native-session-host.ts always awaited them back-to-back for the
+    // same binding with nothing else able to run in between. It doesn't hold:
+    // two local-engine sessions starting concurrently, or a cloud binding's
+    // resolution landing between the two awaits (which reset the shared
+    // variable to null), could read another binding's slot count or a wrong
+    // null — silently, with no throw. Returning both values from this single
+    // call removes the shared state entirely, so there is no ordering left to
+    // break. For LOCAL models this still costs exactly ONE /props round trip
+    // (effectiveContextWindow reads context AND slots from the same response);
+    // remote/API models keep the catalog's context number and report
+    // totalSlots: null (hosted concurrency is a flat constant, not
+    // engine-measured — see capability-profile.ts's CLOUD_DEFAULT).
     async (binding) => {
       const providers = await providerRegistry.list();
       const p = providers.find((x) => x.id === binding.providerId);
-      if (p?.type === 'local-engine') {
-        const { contextLength, totalSlots } = await engineManager.effectiveContextWindow(binding.modelId);
-        lastLocalSlotReading = totalSlots;
-        return contextLength;
-      }
-      lastLocalSlotReading = null;
-      return modelCatalog.contextLengthFor(binding, providers);
+      if (p?.type === 'local-engine') return engineManager.effectiveContextWindow(binding.modelId);
+      return { contextLength: await modelCatalog.contextLengthFor(binding, providers), totalSlots: null };
     },
     // Provider TYPE resolver (Task 5): the host picks a CapabilityProfile from
     // this. Unknown provider → null, so the host falls back to a cloud-safe
@@ -2313,17 +2309,18 @@ export function registerIpcHandlers(
     // per-model modality data (architecture.input_modalities, parsed in
     // model-catalog.ts's openrouterModels()) — every other provider type has no
     // such signal, so this returns null for them and lets resolveProfile fall
-    // back to the registry/provider-type default, same as today. Mirrors
-    // contextLengthFor's short-circuit above (same `providers`/`p` lookup,
-    // just gated on a different provider type): every non-openrouter binding
-    // — INCLUDING local-engine — returns before modelCatalog is ever touched,
-    // so this closure adds no fetch/readFileSync/JSON.parse/engine-query cost
-    // to a session start it doesn't apply to. Only a live OpenRouter binding
-    // pays modelCatalog.get()'s cost, same as contextLengthFor already pays
-    // modelCatalog.contextLengthFor()'s for that same binding. modelCatalog.get()
-    // never throws (its own contract — a dead network degrades to stale cache or
-    // an empty list), so there is nothing to catch here; a cache miss or unknown
-    // model just falls through the `?.supportsVision` chain to null.
+    // back to the registry/provider-type default, same as today. Mirrors the
+    // context/slots closure's short-circuit above (same `providers`/`p`
+    // lookup, just gated on a different provider type): every non-openrouter
+    // binding — INCLUDING local-engine — returns before modelCatalog is ever
+    // touched, so this closure adds no fetch/readFileSync/JSON.parse/engine-query
+    // cost to a session start it doesn't apply to. Only a live OpenRouter
+    // binding pays modelCatalog.get()'s cost, same as the context/slots closure
+    // already pays modelCatalog.contextLengthFor()'s for that same binding.
+    // modelCatalog.get() never throws (its own contract — a dead network
+    // degrades to stale cache or an empty list), so there is nothing to catch
+    // here; a cache miss or unknown model just falls through the
+    // `?.supportsVision` chain to null.
     async (binding) => {
       const providers = await providerRegistry.list();
       const p = providers.find((x) => x.id === binding.providerId);
@@ -2332,15 +2329,6 @@ export function registerIpcHandlers(
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
     },
-    // Task 13 fix pass — the fourth wiring: the engine's REAL parallel-slot
-    // count, threaded into CapabilityProfile's local concurrency cap
-    // (capability-profile.ts's known-model overlay / localSlotCap). Reads the
-    // value contextLengthFor's local-engine branch above already captured —
-    // see `lastLocalSlotReading`'s comment for why this never triggers a
-    // second engine query. Ignores its own `binding` argument on purpose:
-    // the shared variable already reflects THIS binding, because
-    // resolveContextAndProfile always resolves contextLengthFor first.
-    async (_binding) => lastLocalSlotReading,
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
@@ -2349,16 +2337,15 @@ export function registerIpcHandlers(
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
     { search: searchService },
-    // skillCatalog (10th param — shifted from 9th by the Task 13 fix pass's
-    // new slotCountFor closure above, itself shifted from 8th by Task 6c's
-    // visionSupportFor): NOT wired yet — a different task's scope (see
-    // task-7b-brief.md "Explicitly NOT in scope"). Passed explicitly so
-    // mcpManager lands in the 11th positional slot instead of silently
-    // taking skillCatalog's place.
+    // skillCatalog (9th param, shifted from 10th by fix pass 2 collapsing the
+    // context and slot-count closures back into one): NOT wired yet — a
+    // different task's scope (see task-7b-brief.md "Explicitly NOT in
+    // scope"). Passed explicitly so mcpManager lands in the 10th positional
+    // slot instead of silently taking skillCatalog's place.
     undefined,
-    // mcpManager (11th param, Task 7b — shifted from 10th by the Task 13 fix
-    // pass's new slotCountFor closure): makes the whole native-MCP stack
-    // reachable — see the construction comment above.
+    // mcpManager (10th param, Task 7b — shifted from 11th by the same
+    // collapse): makes the whole native-MCP stack reachable — see the
+    // construction comment above.
     mcpManager,
   );
 
