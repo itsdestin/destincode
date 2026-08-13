@@ -195,6 +195,36 @@ export class DelegationLedger {
     });
   }
 
+  /**
+   * Append to `missedSteers` FROM INSIDE the lock-guarded read-modify-write,
+   * rather than a caller computing `[...existing, ...new]` from a snapshot it
+   * read before taking the lock (that was the bug — see below). Sibling to
+   * updateIfRunning's compare-and-set for `status`: this record has multiple
+   * independent writers that can race the SAME childId — steerSpecialist's
+   * between-turn miss and runDelegation's end-of-run drain — and unlike
+   * `status` there is no "X wins" arbitration for a plain array: every
+   * writer's steer is real and none of them should ever silently vanish
+   * because it lost a race. Reading `d.missedSteers` HERE, inside `mutate`,
+   * is what makes two concurrent appends commute: whichever caller's
+   * mutateFileUnderLock call wins the lock first, the other one's own read
+   * (once it acquires the lock in turn) sees the first one's entry already on
+   * disk and appends onto it — so the LAST writer only ever ADDS to the
+   * record, never replaces it wholesale. A caller with nothing to add (e.g.
+   * runDelegation's own drain came back empty) may still call this with `[]`
+   * — a no-op merge, not a clobber, unlike passing `missedSteers: []` through
+   * update()'s patch used to be.
+   */
+  async appendMissedSteers(parentCwd: string, parentId: string, childId: string, steers: string[]): Promise<void> {
+    if (steers.length === 0) return;
+    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
+      const data = this.coerce(cur);
+      return {
+        v: FILE_VERSION,
+        delegations: data.delegations.map((d) => (d.childId === childId ? { ...d, missedSteers: [...d.missedSteers, ...steers] } : d)),
+      };
+    });
+  }
+
   async claimUndelivered(parentCwd: string, parentId: string): Promise<DelegationRecord | null> {
     let claimed: DelegationRecord | null = null;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {

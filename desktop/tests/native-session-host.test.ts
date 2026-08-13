@@ -2261,6 +2261,77 @@ describe('NativeSessionHost', () => {
 
       await h.destroyAll();
     });
+
+    // External review, Important finding: steerSpecialist's miss-write used
+    // to compute its patch (`[...record.missedSteers, text]`) from a ledger
+    // snapshot read OUTSIDE the lock, then fire a fixed-array update(). If the
+    // child's run completed in the same narrow window, runDelegation's own
+    // completion write — its `missedSteers` drained from the CHILD's live
+    // pendingSteers queue, a source the miss above never touched — could land
+    // AFTER and silently overwrite the just-recorded steer with `[]`. This
+    // test forces exactly that ordering (steer write observed landed FIRST,
+    // then the completion write runs), which is the case the finding names:
+    // "If the child's run completes in that narrow window, the completion
+    // write's missedSteers: [] ... can land after and silently erase the
+    // steer just recorded." A test that only fires both writes concurrently
+    // via Promise.all would be flaky (real mkdir-lock scheduling decides the
+    // winner); sequencing it explicitly is what makes this deterministic
+    // while still reproducing the true bug (the completion write's patch is
+    // computed independently of the ledger, so ordering — not concurrency
+    // per se — is what causes the loss).
+    it('a completion write landing after a recorded miss must not clobber it (regression — the clobber race)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // Miss the steer's window exactly like the sibling test above — the
+      // child is live but has never taken a turn, so postSteer's in-flight
+      // check is false and the miss is recorded to the ledger instead. Poll
+      // for the fire-and-forget write to actually land before moving on, so
+      // the ordering below is real, not assumed.
+      const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
+      expect(steerResult.status).toBe('ok');
+      let recBefore: any;
+      for (let i = 0; i < 50; i++) {
+        recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (recBefore?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(recBefore.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      // NOW run the child's delegation to completion directly through
+      // runDelegation (the same private method spawnSpecialist/
+      // resumeSpecialist call) — the "child's run completes in that narrow
+      // window" half of the race. Its own `missedSteers` drains the child's
+      // pendingSteers queue, which the miss above never touched (postSteer
+      // returned false, so nothing was ever pushed to it) — so this is
+      // genuinely a [] from an unrelated source landing after a real steer.
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      await (h as any).runDelegation('root-1', childId, title, {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      }, reservation.token);
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfter.status).toBe('completed');
+      // The proof: the completion write (which landed second) must not have
+      // erased the steer the miss-write (which landed first) recorded.
+      expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      await h.destroyAll();
+    });
   });
 
   // Task 5 (plan 1b): the per-turn specialist status block. wire() attaches

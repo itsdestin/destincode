@@ -551,7 +551,19 @@ export class NativeSessionHost extends EventEmitter {
    *  by design; this one is a real between-turns miss). Best-effort when no
    *  ledger is wired: the steer attempt itself (postSteer) still happens
    *  either way, only the "record the miss so it isn't lost forever" half
-   *  needs the ledger. */
+   *  needs the ledger.
+   *
+   *  Fix (external review — the clobber race): this used to read `record`
+   *  (a snapshot `locateOwnChild` took OUTSIDE any lock) and compute
+   *  `[...record.missedSteers, text]` itself, then fire that fixed array off
+   *  as an update() patch. If the child's run completed in the same narrow
+   *  window, runDelegation's own completion write (its `missedSteers` drained
+   *  from a completely different source — the session's live pendingSteers
+   *  queue) could land AFTER this one and silently overwrite it back to
+   *  whatever it drained, erasing the steer this method just recorded.
+   *  appendMissedSteers reads-and-appends from INSIDE the ledger's own lock,
+   *  so two concurrent writers to the same record's `missedSteers` commute
+   *  instead of one clobbering the other — see its own WHY. */
   steerSpecialist(parentId: string, childId: string, text: string): SpecialistManageOutcome {
     const loc = this.locateOwnChild(parentId, childId);
     if (!loc) return { status: 'not-yours' };
@@ -561,8 +573,7 @@ export class NativeSessionHost extends EventEmitter {
     if (!delivered) {
       const parentCwd = this.live.get(parentId)?.cwd;
       if (this.ledger && parentCwd) {
-        const missedSteers = [...(record?.missedSteers ?? []), text];
-        void this.ledger.update(parentCwd, parentId, childId, { missedSteers }).catch((err) => {
+        void this.ledger.appendMissedSteers(parentCwd, parentId, childId, [text]).catch((err) => {
           log('ERROR', 'NativeSessionHost', 'failed to record a missed steer in the ledger', { childId, parentId, error: String(err) });
         });
       }
@@ -822,11 +833,22 @@ export class NativeSessionHost extends EventEmitter {
         // Fix (review round 2, Finding 1), preserved: its own try/catch,
         // log-only, never fatal — a bookkeeping failure on the way out must
         // never discard the report or relabel this run a failure.
+        //
+        // Fix (external review — the clobber race): `missedSteers` used to
+        // ride inside this SAME patch as a blind overwrite — but this run's
+        // `missedSteers` is drained from the CHILD's own live pendingSteers
+        // queue (see the WHY above), a source that never saw a steer
+        // steerSpecialist recorded to the ledger directly while this child
+        // was between turns. If that recording landed first and this write
+        // landed after, `missedSteers: []` here would erase it. append (not
+        // overwrite) so this write can only ADD what it genuinely drained,
+        // never discard what another writer already recorded.
         try {
           await this.ledger.update(parentCwd, parentId, childId, {
-            status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report, missedSteers,
+            status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report,
             ...(reportPath ? { reportPath } : {}),
           });
+          await this.ledger.appendMissedSteers(parentCwd, parentId, childId, missedSteers);
         } catch (ledgerErr) {
           log('ERROR', 'NativeSessionHost', 'failed to record specialist completion in the ledger — the report is still returned to the caller', { childId, parentId, error: String(ledgerErr) });
         }
@@ -846,8 +868,13 @@ export class NativeSessionHost extends EventEmitter {
           await this.ledger.updateIfRunning(parentCwd, parentId, childId, {
             // Specific and accurate (error-message-standards.md): the real
             // thrown message, never a guessed cause.
-            status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err), missedSteers,
+            status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
           });
+          // Append (not overwrite) — same clobber-race fix as the success
+          // path above: this `missedSteers` is drained from the child's live
+          // queue, independent of anything steerSpecialist may have already
+          // recorded to the ledger for this same childId.
+          await this.ledger.appendMissedSteers(parentCwd, parentId, childId, missedSteers);
         } catch (ledgerErr) {
           log('ERROR', 'NativeSessionHost', 'failed to record specialist failure in the ledger', { childId, parentId, error: String(ledgerErr) });
         }
