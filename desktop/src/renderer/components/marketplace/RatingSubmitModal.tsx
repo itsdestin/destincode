@@ -191,6 +191,7 @@ export default function RatingSubmitModal({
     if (!stars || installing) return;
     setInstalling(true);
     setError(null);
+    setIsOfflineError(false); // mirror handleSubmit — don't carry a stale offline flag into this attempt
 
     try {
       const installRes = await window.claude.marketplaceApi.install(pluginId);
@@ -220,7 +221,17 @@ export default function RatingSubmitModal({
     } catch (err) {
       if (cancelledRef.current) return;
       setInstallGate(false);
-      setError('Network error — try again.');
+      // Fix: this used to discard `err` and report a hardcoded 'Network error'
+      // — a guessed cause the error standards forbid. Mirror handleSubmit's
+      // catch: distinguish offline (TypeError = fetch failure) from the rest.
+      console.error('[RatingSubmitModal] network error:', err);
+      const isOffline = err instanceof TypeError;
+      if (isOffline) {
+        setIsOfflineError(true);
+        setError("Offline — your rating wasn't submitted. Try again when you're back online.");
+      } else {
+        setError('Network error — try again.');
+      }
     } finally {
       if (!cancelledRef.current) setInstalling(false);
     }

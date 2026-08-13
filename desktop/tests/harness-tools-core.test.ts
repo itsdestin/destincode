@@ -294,7 +294,10 @@ describe('Edit', () => {
     fs.utimesSync(p, future, future);
     const r = await EditTool.execute({ file_path: 'a.txt', old_string: 'hello', new_string: 'bye' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/changed since you read it/i);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
   });
 
   it('non-unique old_string message includes the count', async () => {
@@ -437,7 +440,10 @@ describe('Write', () => {
     fs.utimesSync(p, future, future);
     const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/changed since you read it/i);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
     // The file on disk must be untouched by the rejected write.
     expect(fs.readFileSync(p, 'utf8')).toBe('old\n');
   });
@@ -462,6 +468,37 @@ describe('Write', () => {
     const r = await EditTool.execute({ file_path: 'w.txt', old_string: 'v1', new_string: 'v2' }, ctx);
     expect(r.isError).toBeFalsy();
     expect(fs.readFileSync(path.join(dir, 'w.txt'), 'utf8')).toBe('v2\n');
+  });
+});
+
+// 2026-08-11 review round 8: the read-before-edit gate was correct in every
+// transcript, and four of six models still misdiagnosed it — as broken, as
+// Grep-transparent, as "inconsistent, priority fix". The gate's STATE is
+// invisible: nothing tells a model which paths are registered or with what
+// stamp. These pin the in-band signals that make it predictable. They assert on
+// message CONTENT deliberately — the content IS the fix here, not incidental.
+describe('the read gate explains itself (2026-08-11 review round 8)', () => {
+  it('the refusal names both tools that satisfy the gate, and says a shell view does not', async () => {
+    fs.writeFileSync(path.join(dir, 'ungated.txt'), 'hello\n');
+    const r = await EditTool.execute({ file_path: 'ungated.txt', old_string: 'hello', new_string: 'bye' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Read or Written/);
+    expect(r.text).toMatch(/cat.*grep|grep.*cat/);
+    // The mechanism, not just the rule — this is what Opus 5 alone worked out.
+    expect(r.text).toMatch(/modification time/);
+  });
+
+  it('a successful Write says out loud that it counts as a Read', async () => {
+    const r = await WriteTool.execute({ file_path: 'fresh.txt', content: 'v1\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/counts as having Read it/);
+  });
+
+  it('both tools describe the same gate in the same terms', () => {
+    for (const d of [EditTool.description, WriteTool.description]) {
+      expect(d).toMatch(/Read or Written/);
+      expect(d).toMatch(/modification time/);
+    }
   });
 });
 
@@ -732,6 +769,22 @@ describe('Bash', () => {
       expect(canon(cmdOutput(after.text))).toBe(canon(dir));
     });
 
+    // 2026-08-11 review round 8: the notice used to trail the output, so a model
+    // reading top-down acted on results from a directory it no longer sat in
+    // before reaching the line saying so. It must LEAD.
+    it('the reset notice comes before the command output, not after it', async () => {
+      const c = trackingCtx(dir);
+      const r = await BashTool.execute(
+        { command: `cd ${JSON.stringify(os.tmpdir())} && echo MARKER_AFTER_THE_CD` },
+        c,
+      );
+      const noticeAt = r.text.indexOf('Shell cwd was reset to');
+      const outputAt = r.text.indexOf('MARKER_AFTER_THE_CD');
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(outputAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(outputAt);
+    });
+
     it('the probe preserves the command exit code', async () => {
       const r = await BashTool.execute({ command: 'exit 3' }, trackingCtx(dir));
       expect(r.isError).toBe(true);
@@ -995,6 +1048,48 @@ describe('Bash', () => {
       expect(r.outputPath).toBeUndefined();
       expect(r.bounds).toBeUndefined();
     });
+
+    // 2026-08-11 review round 8: truncation trips on chars OR lines, but the
+    // metadata only ever quoted chars — a short, line-capped result announced
+    // "900 chars output, showing 900" and read as complete.
+    // The description is the ONLY place a model learns what "truncated" means
+    // before it sees one. It named the char cap and not the line cap, which is
+    // the one that usually fires first.
+    it('the description names BOTH truncation triggers', () => {
+      const d = BashTool.description;
+      expect(d).toContain('4,000 chars');
+      expect(d).toContain('100 lines');
+    });
+
+    it('a line-capped result reports the line dimension, not just chars', async () => {
+      // 120 short lines: ~700 chars total, nowhere near the 4,000-char cap, so
+      // LINES are the only reason this is truncated.
+      const r = await BashTool.execute(
+        { command: `node -e "for(let i=1;i<=120;i++)console.log('L'+i)"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      // Exactly 120 — not 121 (trailing-newline overcount) and not 123 (probe sentinel).
+      // The LINE count is pinned exactly (that is the fix); the char count is
+      // not, because it is platform-sensitive and pinning it would put this
+      // suite back on the Windows-red list it has been on twice this month.
+      expect(r.text).toMatch(/\d+ chars \/ 120 lines output, showing \d+ chars \/ 100 lines/);
+      // …and the elision hint must agree with it: 120 total - 100 shown.
+      expect(r.bounds?.moreHint).toContain('20 lines elided');
+    }, 30_000);
+
+    it('a single-huge-line result stays in chars and never claims "0 lines shown"', async () => {
+      // One 60,000-char line trips only the char cap; head/tail each take a
+      // partial line, so a line count here would read as "showing 0 lines"
+      // beside 4,000 visible chars.
+      const r = await BashTool.execute(
+        { command: `node -e "process.stdout.write('x'.repeat(60000))"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      expect(r.text).toContain('chars output, showing');
+      expect(r.text).not.toMatch(/showing \d+ chars \/ 0 lines/);
+    }, 30_000);
 
     it('the notice names the elided line count, the total, and a next action', async () => {
       const r = await BashTool.execute({ command: seqCmd }, ctx);

@@ -20,6 +20,9 @@ export const FIXTURE_MANIFEST: Array<{ rel: string; why: string }> = [
   { rel: 'config/settings.toml', why: 'TOML read' },
   { rel: 'assets/logo.png', why: 'binary-read refusal' },
   { rel: 'notes/duplicates.md', why: 'ambiguous-Edit guard (duplicate string)' },
+  // Reserved for battery area 4's "edit a file you haven't Read" step, and for
+  // nothing else — see the WHY in seedFixtureWorkspace().
+  { rel: 'notes/pristine.md', why: "read-gate negative test — the one file no other battery area reads" },
   { rel: 'a dir with spaces/a file with spaces.txt', why: 'paths with spaces' },
   // Deliberately contradicts config/settings.toml on `port` — see the WHY comment
   // in seedFixtureWorkspace(). This is the seeded ambiguity that battery area 7
@@ -86,6 +89,20 @@ export function seedFixtureWorkspace(): string {
   // A real NUL byte is what Read's binary sniff looks for in the first 8KB.
   write('assets/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
   write('notes/duplicates.md', `# Notes\n\nduplicate phrase hello\nsomething else\nduplicate phrase hello\n`);
+  // WHY a file reserved for one battery step (2026-08-11 review round 8): area 4
+  // asks the model to "try to edit a file you haven't Read", but area 2 has
+  // already had it Read README.md — and a Read (even a partial one) satisfies the
+  // gate for the rest of the session. Whichever file a model reached for in area
+  // 4 was usually one it had already touched, so the Edit SUCCEEDED and the
+  // negative test silently became a positive one. GPT 5.6 Luna filed that as
+  // "read-gate enforcement is inconsistent — biggest issue, priority fix"; the
+  // gate was right and the fixture was wrong.
+  //
+  // This file is named in BATTERY_PROMPT area 4 and nowhere else, so the step no
+  // longer depends on which file the model happens to pick or what it read
+  // earlier. Keep it out of every other area: the moment something else reads it,
+  // the negative test is gone again.
+  write('notes/pristine.md', '# Pristine\n\nReserved for the read-before-edit test. Nothing else in the battery reads this file.\n');
   write('a dir with spaces/a file with spaces.txt', 'content in a path with spaces\n');
   return root;
 }

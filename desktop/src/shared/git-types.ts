@@ -20,6 +20,10 @@ export interface GitFileStatusResult {
   hasHistory: boolean;
   /** true when this file has staged (index) changes. */
   staged: boolean;
+  /** true when the file is unmerged (mid-merge conflict). WHY: `u` porcelain
+   *  lines used to be dropped by the parser, so a conflicted file read as
+   *  CLEAN in the footer — the mirror must surface an honest Conflict label. */
+  conflicted: boolean;
 }
 
 export interface GitLogEntry {
@@ -55,6 +59,11 @@ export interface GitUncommitted {
    *  repo with no commits yet) — discard then trashes instead of restoring. */
   inHead: boolean;
   binary: boolean;
+  /** true when the file is unmerged (mid-merge conflict) — the review card
+   *  shows a Conflict badge; the diff itself (worktree vs HEAD, conflict
+   *  markers included) renders like any modified file. Viewing only: conflict
+   *  RESOLUTION stays in the editor/terminal, not this surface. */
+  conflicted: boolean;
 }
 
 /** Answer to git:file-review — one payload renders the whole review view. */

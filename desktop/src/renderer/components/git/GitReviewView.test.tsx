@@ -14,7 +14,7 @@ const review: GitFileReviewResult = {
   ok: true, isRepo: true, branch: 'master',
   uncommitted: {
     hunks: [{ oldStart: 142, oldLines: 1, newStart: 142, newLines: 2, lines: ['-old line', '+new line', '+added line'] }],
-    counts: { added: 2, removed: 1 }, staged: false, untracked: false, inHead: true, binary: false,
+    counts: { added: 2, removed: 1 }, staged: false, untracked: false, inHead: true, binary: false, conflicted: false,
   },
   log: [
     // pathAtCommit deliberately differs from relPath ('src/f.ts') so the
@@ -173,7 +173,7 @@ describe('GitReviewView', () => {
     const git = mountWith({
       uncommitted: {
         hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+new file'] }],
-        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false,
+        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false, conflicted: false,
       },
     });
     await waitFor(() => screen.getByText('Uncommitted changes'));
@@ -214,7 +214,7 @@ describe('GitReviewView', () => {
     mountWith({
       uncommitted: {
         hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+new file'] }],
-        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false,
+        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false, conflicted: false,
       },
     }, { onRequestDiscard });
     const btn = await waitFor(() => screen.getByRole('button', { name: 'Revert Changes…' }));
@@ -267,6 +267,101 @@ describe('GitReviewView', () => {
     expect(onExternalErrorClear).toHaveBeenCalledTimes(1);
     resolveStage({ ok: true });
     await waitFor(() => expect(git.stage).toHaveBeenCalledTimes(1));
+  });
+
+  // 2026-07-22 bug: the parser dropped unmerged files entirely, so a mid-merge
+  // file had no review card at all. Now it renders like a modified file plus
+  // an honest Conflict badge (viewing only — no resolution UI).
+  it('shows a Conflict badge on the uncommitted card for a conflicted file, and none otherwise', async () => {
+    mountWith({ uncommitted: { ...review.uncommitted!, conflicted: true } });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    expect(screen.getByText('Conflict')).toBeInTheDocument();
+    // The rest of the card is unchanged: diff visible, revert intact, and the
+    // checkbox present (but disabled — pinned separately below).
+    expect(screen.getByText('old line')).toBeInTheDocument();
+    expect(screen.getByText('Include in commit')).toBeInTheDocument();
+
+    cleanup();
+    mountWith();
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    expect(screen.queryByText('Conflict')).not.toBeInTheDocument();
+  });
+
+  // PR #304 review advisory: `git add` on an unmerged file marks the conflict
+  // resolved with the <<<<<<< markers STAGED as content — a non-technical user
+  // could then commit the markers, and unstaging cannot restore the unmerged
+  // state. So the include-in-commit checkbox must be disabled (with a plain-
+  // language hint) while the file is conflicted, and clicking it must not
+  // reach git.stage.
+  it('disables Include in commit for a conflicted file and never calls stage', async () => {
+    const git = mountWith({ uncommitted: { ...review.uncommitted!, conflicted: true } });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    const checkbox = screen.getByText('Include in commit').closest('button')!;
+    expect(checkbox).toBeDisabled();
+    expect(checkbox).toHaveAttribute('title', 'Resolve the conflict before committing this file');
+    fireEvent.click(checkbox);
+    expect(git.stage).not.toHaveBeenCalled();
+    expect(git.unstage).not.toHaveBeenCalled();
+    // Non-conflicted control: same click path stays enabled and stages.
+    cleanup();
+    const git2 = mountWith();
+    await waitFor(() => screen.getByText('Include in commit'));
+    const enabled = screen.getByText('Include in commit').closest('button')!;
+    expect(enabled).toBeEnabled();
+    expect(enabled).not.toHaveAttribute('title');
+    fireEvent.click(enabled);
+    await waitFor(() => expect(git2.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
+  });
+
+  // 2026-07-22 bug: refresh() (rides every git:changed) refetches only page
+  // one while extraLog keeps the "Show more" pages — an overlapping page one
+  // then rendered the same commit twice (duplicate React key), and the next
+  // Show more's raw-length skip jumped past unseen commits. Dedupe-by-sha was
+  // chosen over clearing extraLog so a refresh (e.g. the user ticking
+  // "Include in commit") never collapses history they already scrolled open.
+  it('a git:changed refresh after Show more neither duplicates commits nor overcounts the next skip', async () => {
+    const entry = (ch: string, subject: string) => ({
+      sha: ch.repeat(40), shortSha: ch.repeat(7), subject,
+      authorDate: '2026-07-22T10:00:00Z', pathAtCommit: 'src/f.ts', counts: null,
+    });
+    const [a, b, c, d] = [entry('a', 'fix: A'), entry('b', 'fix: B'), entry('c', 'fix: C'), entry('d', 'fix: D')];
+    let changed: () => void = () => {};
+    const fileReview = vi.fn()
+      .mockResolvedValueOnce({ ...review, uncommitted: null, log: [a, b], hasMore: true }) // initial
+      .mockResolvedValueOnce({ ...review, uncommitted: null, log: [c, d], hasMore: true }) // Show more
+      // refresh after history shifted (A gone): page one now overlaps extraLog's C
+      .mockResolvedValueOnce({ ...review, uncommitted: null, log: [b, c], hasMore: true })
+      .mockResolvedValue({ ...review, uncommitted: null, log: [], hasMore: false }); // final Show more
+    (window as any).claude = {
+      git: {
+        fileReview,
+        commitFileDiff: vi.fn(async () => ({ ok: true, hunks: [], binary: false })),
+        onChanged: vi.fn((cb: () => void) => { changed = cb; return () => {}; }),
+      },
+    };
+    render(
+      <GitReviewView
+        projectRoot="/proj" relPath="src/f.ts" fileName="f.ts"
+        onBack={() => {}} onRequestDiscard={() => {}}
+      />,
+    );
+    await waitFor(() => screen.getByText('fix: A'));
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    await waitFor(() => screen.getByText('fix: D'));
+    expect(fileReview).toHaveBeenLastCalledWith('/proj', 'src/f.ts', { logSkip: 2 });
+
+    changed(); // git:changed -> refresh() refetches page one only
+    await waitFor(() => expect(screen.queryByText('fix: A')).not.toBeInTheDocument());
+    // C sits in BOTH the refreshed page one and extraLog — must render once.
+    expect(screen.getAllByText('fix: C')).toHaveLength(1);
+    // Already-shown history is NOT yanked away (the dedupe-vs-clear choice).
+    expect(screen.getByText('fix: B')).toBeInTheDocument();
+    expect(screen.getByText('fix: D')).toBeInTheDocument();
+
+    // Next skip counts the deduped visible list (3), not the raw sum (4).
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    await waitFor(() =>
+      expect(fileReview).toHaveBeenLastCalledWith('/proj', 'src/f.ts', { logSkip: 3 }));
   });
 
   it('serializes overlapping stage/unstage clicks through run()', async () => {

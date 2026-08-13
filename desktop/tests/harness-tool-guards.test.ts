@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { checkPathGuard, canonicalize, toPosix } from '../src/main/harness/tools/guards';
+import { spillDirFor, spillRoot } from '../src/main/harness/tools/spill-paths';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -39,6 +40,33 @@ describe('checkPathGuard — threat model table', () => {
       expect(checkPathGuard(c.raw, CWD).kind).toBe(c.want);
     });
   }
+
+  // 2026-08-11 review round 8: Bash tells the model to Read its spill file, and
+  // the guard used to force an approval ask for it — advice the harness itself
+  // then blocked. These pin the exemption AND its limits.
+  describe('Bash spill files', () => {
+    it('a spill file is readable without an external_directory ask', () => {
+      const spill = path.join(spillDirFor('session-1'), 'bash-123-abc.txt');
+      expect(checkPathGuard(spill, CWD).kind).toBe('ok');
+    });
+
+    it('the exemption is the spill root, not all of tmpdir', () => {
+      // A sibling directory under the same tmpdir must still ask — otherwise the
+      // exemption would quietly open every temp file on the machine.
+      const sibling = path.join(os.tmpdir(), 'not-our-spill', 'x.txt');
+      expect(checkPathGuard(sibling, CWD).kind).toBe('external');
+    });
+
+    it('cannot be used to reach a credential file by climbing out of the spill root', () => {
+      // The credential denies run BEFORE the exemption, so a path carrying a
+      // `.ssh` segment is denied even though it is spelled as a spill path.
+      // This is the ordering the exemption's placement depends on. Built from
+      // segments rather than from HOME so the drive layout can't change the
+      // result on Windows.
+      const escape = path.join(spillRoot(), '..', 'somewhere', '.ssh', 'id_rsa');
+      expect(checkPathGuard(escape, CWD).kind).toBe('deny');
+    });
+  });
 
   it('absolute path with `..` cannot escape the cwd jail (external, not ok)', () => {
     // Lexically "inside" CWD but climbs two levels out — must be normalized,

@@ -34,8 +34,21 @@ function preserveFormat(original: string, edited: string): string {
 
 export const EditTool = defineTool({
   name: 'Edit',
+  // WHY the gate is spelled out rather than stated as a rule (2026-08-11 review
+  // round 8): four of six reviewing models misdiagnosed this gate, and each
+  // blamed something different — "Edit doesn't enforce read-first" (it had
+  // Written the file, which counts), "the gate is Grep-transparent" (it had Read
+  // the file earlier), "enforcement is inconsistent — priority fix" (it had Read
+  // a slice, which counts). The gate was correct every time; its STATE is
+  // invisible, so a model cannot predict whether an Edit will be accepted and
+  // guesses at why one was refused. Naming what satisfies it — and that a
+  // `cat` does not, because the stamp is an mtime and only the tools record one
+  // — is the whole fix.
   description:
-    'Replace an exact string in a file. old_string must match exactly once (or pass replace_all). You must Read the file first.',
+    'Replace an exact string in a file. old_string must match exactly once (or pass replace_all). '
+    + 'This file must have been Read or Written by you in this session first, and not have changed on '
+    + 'disk since — those tools record the file\'s modification time, which is what detects a stale edit. '
+    + 'Viewing the file another way (cat, grep) does not count: it records no timestamp.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Replace an exact string in a file with new text.',
   inputSchema: z.object({
@@ -51,11 +64,21 @@ export const EditTool = defineTool({
     // Read-before-edit gate (spec §2.3): the single rule that prevents blind overwrites.
     const readMtime = ctx.readRegistry.get(canonical);
     if (readMtime === undefined) {
-      return { text: `Edit rejected: read ${args.file_path} with the Read tool first, then retry.`, isError: true };
+      // Says WHICH tools satisfy the gate and why a shell view doesn't — the
+      // old message named only Read, and a model that had `cat`'d the file read
+      // the refusal as arbitrary. See the WHY above the description.
+      return {
+        text: `Edit rejected: ${args.file_path} has not been Read or Written by you in this session. `
+          + 'Read it first (a cat/grep does not count — the Read tool records the file\'s modification '
+          + 'time, which is what detects a later change), then retry.',
+        isError: true,
+      };
     }
     if (fs.statSync(abs).mtimeMs !== readMtime) {
       return {
-        text: `Edit rejected: ${args.file_path} changed since you read it. Read it again, then retry.`,
+        text: `Edit rejected: ${args.file_path} changed on disk since you last Read or Wrote it `
+          + '(its modification time no longer matches), so your old_string may be stale. '
+          + 'Read it again, then retry.',
         isError: true,
       };
     }

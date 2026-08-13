@@ -593,11 +593,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       const content = ARTIFACT_CONTENT[artifactId];
       if (content === undefined) {
         // Honest miss rather than a fabricated body: the reader renders its
-        // own empty state, which is a state worth being able to see.
-        return { ok: true, content: null, binary: false, tooLarge: false, sizeBytes: 0 };
+        // own missing-file state, which is a state worth being able to see.
+        // orphan:true matches the real handler's not-found shape — without it
+        // the tri-state read lifecycle would classify this as a resolved read
+        // with no content (blank pane) instead of "no longer on disk".
+        return { ok: true, content: null, orphan: true, binary: false, tooLarge: false, sizeBytes: 0 };
       }
       return {
-        ok: true, content, binary: false, tooLarge: false, sizeBytes: content.length,
+        ok: true, content, orphan: false, binary: false, tooLarge: false, sizeBytes: content.length,
       };
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.

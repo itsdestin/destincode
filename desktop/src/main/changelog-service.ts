@@ -47,7 +47,8 @@ function writeCache(data: CacheFile): void {
     const finalPath = cachePath();
     const dir = path.dirname(finalPath);
     fs.mkdirSync(dir, { recursive: true });
-    const tmp = finalPath + '.tmp';
+    // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+    const tmp = `${finalPath}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
     fs.renameSync(tmp, finalPath);
   } catch (err) {

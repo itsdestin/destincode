@@ -101,6 +101,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
@@ -818,15 +819,28 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // File picker dialog
+  // File picker dialog (attachment paperclip)
   ipcMain.handle(IPC.DIALOG_OPEN_FILE, async () => {
+    // NO `filters` on purpose — do NOT re-add a filter list here. Destin's ask
+    // is "default to all files, on all platforms", and Electron's dialog API
+    // cannot deliver an All-Files DEFAULT alongside a category dropdown:
+    //   - Linux: a live D-Bus capture of org.freedesktop.portal.FileChooser.OpenFile
+    //     (KDE Plasma, 2026-08-12) showed Electron strips the wildcard filter
+    //     (file_dialog_linux.cc GetFilterInfo() keeps only include_all_files,
+    //     hardcodes file_type_index=0), Chromium re-appends "*.*" LAST and emits
+    //     no current_filter key — so the portal selects the first listed filter
+    //     (Images), and app-side ordering can never win. electron#43491, closed
+    //     not-planned. A lone All-Files filter is no fix either: '*' serializes
+    //     as the glob '*.*', which excludes extensionless files like Makefile.
+    //   - Windows: same rule by design — the dialog "picks the first filter as
+    //     default, except the All Files one". electron#19492, closed not-planned.
+    //   - macOS: filters are a selection allowlist, not a dropdown default, so
+    //     a list adds nothing once All Files is present.
+    // If a category dropdown is ever wanted, that means an upstream Electron
+    // patch or an in-app picker — not a filters array. Pinned by
+    // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        // All Files first so the picker opens in unrestricted mode by default
-        { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
-      ],
     });
     return result.canceled ? [] : result.filePaths;
   });
@@ -926,7 +940,8 @@ export function registerIpcHandlers(
     try {
       const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
       const resolved = path.resolve(transcriptPath);
-      if (!resolved.startsWith(claudeProjects)) return null;
+      // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+      if (!resolved.startsWith(claudeProjects + path.sep)) return null;
       return await readTranscriptMeta(transcriptPath);
     } catch {
       return null;
@@ -3713,9 +3728,22 @@ export function registerIpcHandlers(
 
     // Suppress the watcher echo of our own write (spec §8.4), then atomic
     // write: .tmp + rename so the original is never half-written.
+    // pid+time-suffixed temp name: two processes (dev + built app) writing the
+    // same file must not race the same .tmp — the loser's rename would ENOENT.
+    // These tmp files land in the USER'S project tree, so sweep crash orphans
+    // for this file first and unlink our own tmp on failure — a pid+time name
+    // is never overwritten by the next write, so a strand would linger forever
+    // (git status noise, visible in the Files UI).
     noteOwnWrite(realPath);
-    await fs.promises.writeFile(realPath + '.tmp', newContent, 'utf8');
-    await fs.promises.rename(realPath + '.tmp', realPath);
+    await sweepStaleTmp(path.dirname(realPath), path.basename(realPath));
+    const tmpPath = `${realPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, newContent, 'utf8');
+      await fs.promises.rename(tmpPath, realPath);
+    } catch (e) {
+      try { await fs.promises.unlink(tmpPath); } catch { /* already gone */ }
+      throw e;
+    }
     const st = await fs.promises.stat(realPath).catch(() => null);
 
     if (artifact) {
@@ -3798,7 +3826,7 @@ export function registerIpcHandlers(
   initGitWatchers((evt) => broadcastGitChanged(evt.repoRoot));
 
   ipcMain.handle(GIT_IPC.FILE_STATUS, (_e, projectRoot: string, relPath: string) =>
-    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false },
+    gitGate(projectRoot, { ok: false, error: 'unknown-project-root', isRepo: false, branch: null, counts: null, hasHistory: false, staged: false, conflicted: false },
       () => gitFileStatus(projectRoot, relPath)));
 
   ipcMain.handle(GIT_IPC.FILE_REVIEW, (_e, projectRoot: string, relPath: string, opts?: { logSkip?: number }) =>

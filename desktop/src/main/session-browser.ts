@@ -87,7 +87,10 @@ export function extractStoreMeta(rec: { flags: Record<string, { value: boolean }
   return { flags, tags, ...(rec.note ? { note: rec.note } : {}) };
 }
 
-const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+// Exported so remote-server.ts can validate client-supplied session ids with
+// the SAME guard loadHistory enforces below — a second hand-copied regex
+// could silently drift.
+export const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 /** Retry an async operation up to `attempts` times with a short delay between tries. */
 async function withRetry<T>(fn: () => Promise<T>, attempts: number = 3, delayMs: number = 100): Promise<T> {

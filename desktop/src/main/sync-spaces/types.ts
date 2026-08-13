@@ -30,6 +30,26 @@ export interface PullResult {
 
 export interface SpaceVersion { commit: string; date: string; message: string; }
 
+/** What one repair() run actually did — the post-hoc debugging trace for the
+ *  two-tier corruption repair (PR #276 review: repair() used to discard the
+ *  deleteZeroByteObjects count and leave no record of which tier ran, so a
+ *  later "why did this space re-init?" had no evidence to read). Returned by
+ *  repair() AND logged by the transport; callers may ignore it (the engine
+ *  does — the interface stays Promise-compatible with a void-returning fake). */
+export interface RepairOutcome {
+  /** Which tier actually healed the repo: 1 = surgical in-place reset,
+   *  2 = repo moved aside as a .broken-* backup and re-inited. */
+  tier: 1 | 2;
+  /** Zero-byte poison objects deleted by Tier 1's sweep (0 when Tier 1 was
+   *  skipped entirely because the repo had no HEAD). */
+  zeroByteObjectsDeleted: number;
+  /** Tier 2 only: why Tier 1 couldn't heal (which check failed / was skipped). */
+  tier1Failure?: string;
+  /** Tier 2 only: absolute path the broken repo was preserved at, or absent
+   *  when there was no repo dir to back up. */
+  backupPath?: string;
+}
+
 /** Spec §5: push/pull/subscribe/history. subscribe() is Plan 1b (SyncHub) —
  *  1a polls instead, so the interface ships without it and 1b adds it. */
 export interface SyncTransport {
@@ -54,8 +74,10 @@ export interface SyncTransport {
    *  local origin/main; Tier 2 moves the whole repo aside as a .broken-<date>
    *  backup and re-inits (the engine's normal provisioning + pull re-adopt the
    *  remote). NEVER touches the user's files — only <root>/.youcoded/.
-   *  Optional like maybeGc — a non-git transport omits it. */
-  repair?(space: SyncSpace): Promise<void>;
+   *  Optional like maybeGc — a non-git transport omits it. Resolves with a
+   *  RepairOutcome trace (tier + counts); `| void` keeps existing fakes and
+   *  future transports free to not bother. */
+  repair?(space: SyncSpace): Promise<RepairOutcome | void>;
 }
 
 // `at` is stamped by service.broadcast() at emit time (ms epoch). Optional so

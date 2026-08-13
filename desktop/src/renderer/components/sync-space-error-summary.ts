@@ -42,6 +42,38 @@ export function summarizeSpaceSyncError(raw: string | null | undefined, errorCod
   if (errorCode === 'github-auth' && raw) {
     return { interrupted: false, summary: raw };
   }
+  // Corruption-family codes (two-tier repair, 2026-07-30 spec). Matched on the
+  // machine-readable code like 'github-auth' above — never the prose. WHY
+  // explicit mappings (PR #276 review): the generic fallback below promises
+  // sync "will keep retrying automatically", which is actively WRONG here —
+  // the engine attempts corruption repair exactly ONCE per app launch
+  // (engine.ts healedSpaces guard), so the honest next step is a restart, not
+  // waiting. Both messages stay within what the code guarantees
+  // (docs/error-message-standards.md: never guess): the damage is confined to
+  // sync's own hidden records (repair() writes only under .youcoded/, never
+  // the user's files), the corruption signatures matched are crash/power-loss
+  // truncation fatals (sync-error-classifier.ts CORRUPTION_PATTERNS), and a
+  // restart re-runs the repair because the once-per-launch guard resets.
+  if (errorCode === 'repo-corrupt') {
+    return {
+      interrupted: false,
+      summary:
+        'Sync’s internal records got damaged — usually from a crash or power loss. ' +
+        'Your files are safe. Restart the app and sync will repair itself automatically.',
+    };
+  }
+  if (errorCode === 'repo-repair-failed') {
+    // The repair already ran and failed this launch — never claim retrying
+    // will fix it. Restarting is the accurate remedy (repair re-arms), with
+    // the standard report path if it still fails.
+    return {
+      interrupted: false,
+      summary:
+        'Sync’s internal records got damaged, and the automatic repair couldn’t finish. ' +
+        'Your files are safe. Restarting the app will try the repair again; if it keeps ' +
+        'failing, report it from Settings → Development.',
+    };
+  }
   const text = (raw ?? '').toLowerCase();
   const interrupted = INTERRUPTED_MARKERS.some((m) => text.includes(m));
 

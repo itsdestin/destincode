@@ -15,7 +15,7 @@ import { nextGcCounter } from './gc-policy';
 import { GITHUB_AUTH_ERROR_CODE } from '../github-client';
 import { matchGitCorruption, isNetworkFailureStderr, stderrTail, REPO_CORRUPT_ERROR_CODE } from '../sync-error-classifier';
 import { deleteZeroByteObjects, brokenBackupName, pruneBrokenBackups } from './repair';
-import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
+import type { PullResult, PushResult, RepairOutcome, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -162,9 +162,14 @@ export class GitTransport implements SyncTransport {
   private gcInterval: number;
   private lockStaleMs: number;
   private getAuthToken?: () => Promise<string | null>;
+  private log: (m: string) => void;
 
-  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number; lockStaleMs?: number; getAuthToken?: () => Promise<string | null> }) {
+  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number; lockStaleMs?: number; getAuthToken?: () => Promise<string | null>; log?: (m: string) => void }) {
     this.deviceName = opts.deviceName;
+    // Injected logger (service.ts threads its logFn through makeTransport), the
+    // subsystem's existing pattern — default console.log mirrors service.ts's
+    // own logFn default so an unwired construction still leaves a trace.
+    this.log = opts.log ?? console.log;
     // App-token provider (github-client via service.ts). Optional + failure-
     // tolerant: null/throw simply means "no app token", and the invocation
     // falls back to the system credential helper unchanged.
@@ -631,9 +636,20 @@ export class GitTransport implements SyncTransport {
   /** Two-tier corruption repair (2026-07-30 spec §2). Resolves when healed;
    *  throws when even Tier 2 failed. NEVER touches the user's files — every
    *  write is under <root>/.youcoded/. The engine gates calls to once per
-   *  space per launch. */
-  async repair(space: SyncSpace): Promise<void> {
+   *  space per launch.
+   *
+   *  Returns + logs a RepairOutcome trace (PR #276 review: this method used to
+   *  discard the deleteZeroByteObjects count and log nothing, so post-hoc
+   *  debugging couldn't tell whether a space healed surgically or was re-inited
+   *  — and a .broken-* backup's origin was unexplainable). Logging only, no
+   *  behavior change: the git/fs sequence below is byte-identical to before. */
+  async repair(space: SyncSpace): Promise<RepairOutcome> {
     const gd = this.gitDir(space);
+    // Trace fields, filled in as the tiers run. tier1Failure records WHY the
+    // repair fell through to Tier 2 — the one fact the .broken-* backup alone
+    // can never tell you.
+    let zeroByteObjectsDeleted = 0;
+    let tier1Failure: string | undefined;
     // ---- Tier 1: surgical, offline-capable ----
     if (fs.existsSync(path.join(gd, 'HEAD'))) {
       // Reap first: assertLocalOk's own comment above notes that a power-loss
@@ -645,7 +661,7 @@ export class GitTransport implements SyncTransport {
       // dead lock (reapStaleLocks only removes locks older than lockStaleMs)
       // sends a Tier-1-fixable repo down the more destructive Tier 2 path.
       this.reapStaleLocks(space);
-      deleteZeroByteObjects(gd);
+      zeroByteObjectsDeleted = deleteZeroByteObjects(gd);
       const tip = await this.git(space, ['rev-parse', '--verify', '--quiet', 'origin/main']);
       if (tip.code === 0) {
         const sha = tip.stdout.trim();
@@ -664,9 +680,20 @@ export class GitTransport implements SyncTransport {
           // add -A rebuilds it from the worktree — files are the source of truth.
           try { fs.rmSync(path.join(gd, 'index'), { force: true }); } catch { /* rebuilt anyway */ }
           const probe = await this.git(space, ['rev-parse', '--verify', 'HEAD']);
-          if (upd.code === 0 && probe.code === 0) return; // healed — local changes re-commit on the next cycle
+          if (upd.code === 0 && probe.code === 0) {
+            // Healed — local changes re-commit on the next cycle.
+            this.log(`sync-spaces: repair(${space.id}) tier=1 healed — main reset to origin/main ${sha.slice(0, 8)}, ${zeroByteObjectsDeleted} zero-byte object(s) deleted`);
+            return { tier: 1, zeroByteObjectsDeleted };
+          }
+          tier1Failure = `update-ref/HEAD probe failed (update-ref exit ${upd.code}, probe exit ${probe.code})`;
+        } else {
+          tier1Failure = commitOk ? 'origin/main root tree unreadable' : 'origin/main commit unreadable';
         }
+      } else {
+        tier1Failure = 'origin/main unresolvable';
       }
+    } else {
+      tier1Failure = 'no HEAD — repo missing or hollow';
     }
     // ---- Tier 2: move the repo aside, start fresh ----
     // The worktree files and the GitHub remote are the two real sources of
@@ -675,11 +702,19 @@ export class GitTransport implements SyncTransport {
     // setRemote: provisionGithubRemote treats an existing repo as SUCCESS) and
     // pull() adopts origin/main via its unborn-branch checkout — real ancestry,
     // so NO conflict-copy explosion (spec §2).
+    let backupPath: string | undefined;
     if (fs.existsSync(gd)) {
-      fs.renameSync(gd, brokenBackupName(gd, new Date()));
+      backupPath = brokenBackupName(gd, new Date());
+      fs.renameSync(gd, backupPath);
       pruneBrokenBackups(gd);
     }
     await this.init(space);
+    this.log(
+      `sync-spaces: repair(${space.id}) tier=2 re-init — Tier 1 fell through (${tier1Failure}), ` +
+      `${zeroByteObjectsDeleted} zero-byte object(s) deleted, ` +
+      `${backupPath ? `broken repo kept at ${path.basename(backupPath)}` : 'no repo dir to back up'}`,
+    );
+    return { tier: 2, zeroByteObjectsDeleted, tier1Failure, backupPath };
   }
 
   /** Recursive byte size of <root>/.youcoded/sync.git — feeds the engine's

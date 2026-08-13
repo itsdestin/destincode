@@ -69,7 +69,10 @@ export const SearchFilterPill = React.forwardRef<HTMLDivElement, SearchFilterPil
     const filterLabel = activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort';
     return (
       <div ref={ref} className={`relative ${className}`.trim()}>
-        <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full focus-within:border-edge-dim">
+        {/* Fix: focus used to render `border-edge-dim` — LESS contrast than the
+            resting `border-edge`, i.e. an invisible focus state. `border-accent`
+            is the design system's focus token (see InputGroup.tsx / field.ts). */}
+        <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full focus-within:border-accent">
           <span className="text-fg-muted shrink-0"><SearchGlyph /></span>
           <input
             type="text"

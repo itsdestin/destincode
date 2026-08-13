@@ -1,7 +1,14 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
-import { RENDERER } from './helpers/guard-scope';
+import {
+  RENDERER,
+  readStripped,
+  relPath,
+  lineAt,
+  assertScopeIsPopulated,
+  assertPatternMatches,
+} from './helpers/guard-scope';
 
 // Guards for tranche 4 (changes 26 + 30): Overlay.tsx is the ONLY place a layer
 // number is decided (design rule 11).
@@ -17,9 +24,12 @@ import { RENDERER } from './helpers/guard-scope';
 // The first draft of this test grepped raw source and failed on its own WHY
 // comments, which name the values they replaced. The invariant is about what
 // ships in the class list, not about what the prose is allowed to mention.
+function appliedClassNames(src: string): string[] {
+  return src.match(/className=(?:"[^"]*"|\{`[^`]*`\})/g) ?? [];
+}
+
 function appliedZIndexes(src: string): string[] {
-  const classNames = src.match(/className=(?:"[^"]*"|\{`[^`]*`\})/g) ?? [];
-  return classNames.flatMap((c) => c.match(/\bz-\[\d+\]/g) ?? []);
+  return appliedClassNames(src).flatMap((c) => c.match(/\bz-\[\d+\]/g) ?? []);
 }
 
 function walk(dir: string): string[] {
@@ -63,6 +73,42 @@ describe('overlay layer authority', () => {
         `${file} must not hardcode a 9000-band z-index`,
       ).toEqual([]);
     }
+  });
+
+  it('no renderer component hand-rolls a scrim (bg-black/N in a className)', () => {
+    // Repo-wide closure of the class the named-file checks above kept missing:
+    // UnsavedChangesDialog's `fixed inset-0 z-50 ... bg-black/40` shipped
+    // uncaught (PR #298 review) precisely because this suite only scanned
+    // specific files. Scrims come from <Scrim layer={N}> — theme-tinted
+    // var(--scrim), never cold bg-black (react-renderer rule / renderer-chrome
+    // doc). Scan every renderer source file so the NEXT hand-rolled scrim
+    // fails here instead of in review.
+    const files = walk(RENDERER);
+    assertScopeIsPopulated(files);
+
+    const SCRIM_TINT = /\bbg-black\/\d+\b/g;
+    assertPatternMatches(
+      SCRIM_TINT,
+      'className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"',
+      'a hand-rolled fixed-overlay scrim',
+    );
+
+    const offenders = files.flatMap((file) => {
+      // readStripped: WHY comments in already-migrated files quote the exact
+      // idiom they replaced (DiscardConfirmDialog names bg-black/40) — the
+      // guard must read what ships, not the prose about it.
+      const src = readStripped(file);
+      return appliedClassNames(src).flatMap((c) => {
+        const hits = c.match(SCRIM_TINT) ?? [];
+        return hits.map((h) => `${relPath(file)}:${lineAt(src, src.indexOf(c))} ${h}`);
+      });
+    });
+
+    expect(
+      offenders,
+      'Hand-rolled scrim tint. Use <Scrim layer={1|2|3|4}> from components/overlays/Overlay.tsx '
+        + '(+ <OverlayPanel> for the panel) — see DiscardConfirmDialog.tsx for the pattern.',
+    ).toEqual([]);
   });
 
   it('SettingsPanel has no hand-rolled overlay z-index', () => {
