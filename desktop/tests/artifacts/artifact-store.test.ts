@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration, renameArtifact } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
+import { SIDECAR_SCHEMA_VERSION } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
 
 // The 60-iteration concurrency loop below does real fs work (mkdtemp, fsync,
@@ -235,5 +236,222 @@ describe('removeArtifactRecord', () => {
     });
     const res = await removeArtifactRecord(projectRoot, 'nope');
     expect(res).toEqual({ ok: false, error: 'artifact-not-found' });
+  });
+});
+
+describe('runSidecarMigration', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-migrate-'));
+    mkdirSync(join(projectRoot, '.youcoded'), { recursive: true });
+  });
+  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const legacy = () => ({
+    $schema: SIDECAR_SCHEMA_VERSION, projectId: 'p', name: 'proj',
+    createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z',
+    artifacts: [{
+      id: 'art_A', path: 'play.html', kind: 'external' as const,
+      absolutePath: 'flappy-bird/play.html',
+      lastModified: '2026-08-13T00:00:00.000Z', status: 'active' as const,
+      versions: [], comments: [], tags: [],
+    }],
+    manualExcludes: [], manualIncludes: [],
+  });
+
+  it('repairs relative externals and is a no-op on the second call', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+
+    const first = await runSidecarMigration(projectRoot);
+    expect(first).toMatchObject({ migrated: true, reclassified: 1, merged: 0 });
+
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(after.artifacts[0]).toMatchObject({
+      path: 'flappy-bird/play.html', kind: 'internal', absolutePath: null,
+    });
+
+    // Both calls share this test's projectRoot AND this test's module instance,
+    // so the first call's `migrationChecked.add(projectRoot)` is still warm here
+    // — this second call short-circuits on the MEMO, before readSidecar ever
+    // runs. That's cheap and worth pinning (repeat calls in one process should
+    // not re-scan), but it proves nothing about the production run-once gate
+    // (`reclassified === 0` from the pure migration). See the next test for that.
+    const second = await runSidecarMigration(projectRoot);
+    expect(second).toMatchObject({ migrated: false, reclassified: 0 });
+    const unchanged = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(unchanged.updatedAt).toBe(after.updatedAt);   // it did not rewrite
+  });
+
+  // The test above cannot reach the real gate: same process + same projectRoot
+  // means the memo is always warm on the second call. This test forces a COLD
+  // memo — via vi.resetModules() + a dynamic re-import, which re-evaluates
+  // artifact-store.ts and so constructs a brand new, empty `migrationChecked`
+  // Set — and re-runs the migration against the already-repaired sidecar on
+  // disk. If this ever regresses to relying on the memo, a peer device that
+  // wrote a fresh relative-external record after this process's memo was
+  // populated would never get it repaired; if it regresses to re-writing
+  // unconditionally, every LIST_SESSION call would rewrite the sidecar.
+  it('declines to rewrite an already-repaired sidecar even with a cold memo', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    await runSidecarMigration(projectRoot);
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+
+    vi.resetModules();
+    const fresh = await import('../../src/main/artifacts/artifact-store');
+    const second = await fresh.runSidecarMigration(projectRoot);
+    expect(second).toEqual({ migrated: false, reclassified: 0, merged: 0 });
+
+    const unchanged = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(unchanged.updatedAt).toBe(after.updatedAt);   // genuinely declined to rewrite
+  });
+
+  it('does not write, or back up, a sidecar with nothing to repair', async () => {
+    const clean = legacy();
+    clean.artifacts[0] = { ...clean.artifacts[0], kind: 'internal' as any, absolutePath: null };
+    await writeSidecar(projectRoot, null, clean as any);
+
+    const res = await runSidecarMigration(projectRoot);
+    expect(res.migrated).toBe(false);
+    expect(readdirSync(join(projectRoot, '.youcoded')).filter((f) => f.includes('.bak'))).toHaveLength(0);
+  });
+
+  // Pins the FIXED backup name (not one file per attempt). The second
+  // migration call in the old version of this test was a memo short-circuit —
+  // it never reached the copyFile/EEXIST branch a second time — so it proved
+  // nothing beyond what one call already does; calling once is honest about
+  // what's being checked.
+  //
+  // This test also pins the backup's CONTENT, not just its name. The backup
+  // exists so a maintainer can recover a sidecar if the repair turns out
+  // wrong for a record nobody anticipated — a file merely existing at the
+  // right name proves nothing about whether it's actually restorable. So we
+  // capture the sidecar's raw bytes BEFORE migration runs, then assert the
+  // backup holds exactly those pre-migration bytes (byte for byte — if the
+  // copy read from the wrong source, ran too late, or wrote empty/truncated
+  // output, this catches it). We also assert the live sidecar's bytes CHANGED
+  // from that snapshot; without that check, a migration that silently did
+  // nothing at all would still make the backup content match trivially
+  // (backup == pre-migration == post-migration, all identical), so the
+  // byte-equality assertion above would pass for the wrong reason.
+  it('backs the sidecar up under a fixed name before rewriting it', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    const sidecarPath = join(projectRoot, '.youcoded/artifacts.json');
+    const preMigrationBytes = readFileSync(sidecarPath, 'utf8');
+
+    await runSidecarMigration(projectRoot);
+
+    const backups = readdirSync(join(projectRoot, '.youcoded'))
+      .filter((f) => f.startsWith('artifacts.json.pre-migration'));
+    expect(backups).toEqual(['artifacts.json.pre-migration.bak']);
+
+    const backupPath = join(projectRoot, '.youcoded/artifacts.json.pre-migration.bak');
+    expect(readFileSync(backupPath, 'utf8')).toBe(preMigrationBytes);
+    expect(readFileSync(sidecarPath, 'utf8')).not.toBe(preMigrationBytes);
+  });
+
+  // The backup is the only way back from a bad migration, so it must protect
+  // the OLDEST copy — a retry (or a second window racing the same repair)
+  // must never clobber it with already-half-migrated state. Pre-creating the
+  // backup file with a sentinel and asserting the sentinel survives is what
+  // actually exercises the COPYFILE_EXCL + swallowed-EEXIST branch; without
+  // COPYFILE_EXCL (a plain copyFile) this test fails because the sentinel
+  // gets overwritten.
+  it('never overwrites an existing backup', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+    const backupPath = join(projectRoot, '.youcoded/artifacts.json.pre-migration.bak');
+    writeFileSync(backupPath, 'SENTINEL-PRE-EXISTING-BACKUP');
+
+    const res = await runSidecarMigration(projectRoot);
+    expect(res.migrated).toBe(true);   // migration itself still proceeds
+    expect(readFileSync(backupPath, 'utf8')).toBe('SENTINEL-PRE-EXISTING-BACKUP');
+  });
+
+  // Finding 1 (final review): runSidecarMigration is called from THREE
+  // handlers that were read-only before this branch (LIST_SESSION,
+  // LIST_PROJECT, LIST_ALL_FILES). fs.copyFile's EEXIST-only swallow and
+  // writeSidecar's CAS write can both throw unexpected errors (ENOSPC, EROFS,
+  // EACCES, Windows EPERM from AV). Before the fix, that rejection propagated
+  // straight out of this function into those handlers; FilesTab.tsx's
+  // `listAllFiles(...).then(...)` has no `.catch`, so the Files tab's loading
+  // state would never clear. This pins the fail-closed contract: never throw,
+  // report NOTHING migrated, and don't retry the doomed work on every
+  // subsequent call in this process.
+  it('resolves to the NOTHING result — never throws — when the backup copy fails unexpectedly', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+
+    const copySpy = vi.spyOn(fsPromises, 'copyFile').mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+
+    await expect(runSidecarMigration(projectRoot)).resolves.toEqual({
+      migrated: false, reclassified: 0, merged: 0,
+    });
+
+    // The failed repair must not have committed a half-done rewrite.
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(after.artifacts[0].kind).toBe('external');
+
+    // Memoized on failure too: a second call must not retry the same doomed
+    // copyFile — it should short-circuit on the memo before reaching it.
+    await runSidecarMigration(projectRoot);
+    expect(copySpy).toHaveBeenCalledTimes(1);
+
+    copySpy.mockRestore();
+  });
+});
+
+describe('renameArtifact — guards against a relative absolutePath (finding 2)', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-rename-guard-'));
+  });
+  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  // This is the same escape write-authorization's four sites already close,
+  // now closed at the fifth: a RELATIVE absolutePath (the pre-fix classifier
+  // bug, or a record deliberately left external because its real path escapes
+  // the project root with `..`) must never reach fs.access/fs.rename, which
+  // would resolve it against the PROCESS cwd — a real filesystem mutation
+  // outside the project, not just a stale read.
+  it('refuses to rename an external record whose absolutePath is a relative string', async () => {
+    const { artifactId } = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'play.html', kind: 'external', absolutePath: 'flappy-bird/play.html',
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+
+    const accessSpy = vi.spyOn(fsPromises, 'access');
+    const renameSpy = vi.spyOn(fsPromises, 'rename');
+
+    const result = await renameArtifact(projectRoot, artifactId!, 'renamed');
+
+    expect(result).toEqual({ ok: false, error: 'no-path' });
+    // Neither the collision check nor the actual rename may touch the
+    // filesystem with a path built from the unguarded relative string.
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(renameSpy).not.toHaveBeenCalled();
+
+    // The record itself must be untouched.
+    const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(sidecar.artifacts[0].absolutePath).toBe('flappy-bird/play.html');
+
+    accessSpy.mockRestore();
+    renameSpy.mockRestore();
+  });
+
+  // Sanity check that the guard doesn't over-fire: a genuinely absolute
+  // external path still renames normally.
+  it('still renames an external record with a genuinely absolute absolutePath', async () => {
+    const filePath = join(projectRoot, 'outside.txt');
+    writeFileSync(filePath, 'hello');
+    const { artifactId } = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'outside.txt', kind: 'external', absolutePath: filePath,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+
+    const result = await renameArtifact(projectRoot, artifactId!, 'renamed-outside');
+    expect(result.ok).toBe(true);
+
+    const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(sidecar.artifacts[0].absolutePath).toBe(join(projectRoot, 'renamed-outside.txt').replace(/\\/g, '/'));
   });
 });

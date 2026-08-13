@@ -21,7 +21,7 @@ import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import { runGuardedDiscard } from './git/discard-guard';
-import type { ArtifactRecord } from '../../shared/artifacts/types';
+import type { ArtifactRecord, VersionEvent } from '../../shared/artifacts/types';
 import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
@@ -41,6 +41,12 @@ function renameErrorCopy(code: unknown): string {
     case 'invalid-name': return 'That name has characters that aren’t allowed.';
     case 'file-missing': return 'The original file is no longer on disk.';
     case 'artifact-not-found': return 'This file is no longer tracked.';
+    // Fix: the default copy below tells the user to "try a different name",
+    // which cannot work here — 'no-path' means the record's saved location
+    // itself is invalid, not that the new name was rejected. Renaming can't
+    // fix a bad stored path, so this needs its own message (error-message
+    // standards: accurate, not a guess that sends the user down a dead end).
+    case 'no-path': return 'This file’s saved location is invalid, so it can’t be renamed.';
     default: return 'Couldn’t rename the file. Try a different name.';
   }
 }
@@ -328,10 +334,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       : artifacts.slice();
     arr.sort((a, b) => {
       if (sortBy === 'name') return fileNameOf(a).localeCompare(fileNameOf(b));
-      return (b.lastModified || '').localeCompare(a.lastModified || ''); // recent first
+      // "Recent first" must agree with what the rows actually display — the
+      // row shows THIS session's latest version, so sort on that same value
+      // (not the record-global lastModified) or the order and the dates
+      // shown can visibly disagree.
+      return (
+        (lastModifiedInSession(b, sessionId) || '').localeCompare(lastModifiedInSession(a, sessionId) || '')
+      ); // recent first
     });
     return arr;
-  }, [artifacts, searchQuery, sortBy]);
+  }, [artifacts, searchQuery, sortBy, sessionId]);
 
   // Collapse the list once the user actually engages the previewed artifact:
   // a click into the content pane or a scroll within it. Scroll is captured
@@ -511,6 +523,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               artifact={a}
               isActive={activeArtifactId === a.id}
               isDeleted={a.status === 'deleted' || orphanIds.has(a.id)}
+              sessionId={sessionId}
               onSelect={() => {
                 // Preview-on-click: set the active artifact but KEEP the list open
                 // so the user can click across artifacts to preview them. The list
@@ -596,7 +609,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return <aside ref={asideRef} className={asideClass}>{resizeHandle}{listInner}</aside>;
   }
 
-  const statusWord = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id));
+  // Same session-scoped fix as ArtifactListItem: the footer describes what
+  // THIS session did with the open file, not its whole history.
+  const statusWord = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id), sessionId);
   const fileName = active.path.split('/').pop() ?? active.path;
 
   return (
@@ -777,7 +792,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
                 <span>{statusWord}</span>
                 <span className="text-fg-faint">·</span>
-                <span>{formatRelativeTime(active.lastModified)}</span>
+                <span>{formatRelativeTime(lastModifiedInSession(active, sessionId))}</span>
                 {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
                 <div className="flex-1" />
                 <GitFooterEntry
@@ -843,15 +858,18 @@ interface ListItemProps {
   artifact: ArtifactRecord;
   isActive: boolean;
   isDeleted: boolean;
+  // WHY: the row's word/timestamp describe what THIS session did to the file,
+  // not the record's whole history — see statusInfo/lastModifiedInSession.
+  sessionId: string;
   onSelect: () => void;
   // Remove the tracking RECORD (never the file). Clears accidental pill-click
   // tracks and dead deleted rows; Claude editing the file again re-adds it.
   onRemove?: () => void;
 }
 
-function ArtifactListItem({ artifact, isActive, isDeleted, onSelect, onRemove }: ListItemProps) {
-  const statusWord = statusInfo(artifact, isDeleted);
-  const relTime = formatRelativeTime(artifact.lastModified);
+function ArtifactListItem({ artifact, isActive, isDeleted, sessionId, onSelect, onRemove }: ListItemProps) {
+  const statusWord = statusInfo(artifact, isDeleted, sessionId);
+  const relTime = formatRelativeTime(lastModifiedInSession(artifact, sessionId));
   const fileName = artifact.path.split('/').pop() ?? artifact.path;
 
   return (
@@ -887,17 +905,41 @@ function ArtifactListItem({ artifact, isActive, isDeleted, onSelect, onRemove }:
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// Status word: deleted, viewed (read-only — only 'read' versions),
-// edited (>1 modifying version), created/unmodified. 'read' versions are
-// excluded from the edit count so a viewed-only doc doesn't look edited.
-// WHY: returns the word only — the ●◐○ glyph form was dropped (user-disliked,
-// see dislikes-status-glyphs memory).
-function statusInfo(artifact: ArtifactRecord, isDeleted: boolean): string {
+// WHY: the drawer is a per-session activity log, but every row/footer label
+// used RECORD-GLOBAL data (all versions across every session that ever
+// touched the file). A file edited weeks ago in another session and merely
+// read in THIS session showed "edited · <that other session's old date>" —
+// neither the word nor the date described what this session actually did.
+// This helper scopes version lookups to `sessionId` so callers can compute
+// both the status word and the timestamp from only this session's events.
+function versionsInSession(artifact: ArtifactRecord, sessionId: string): VersionEvent[] {
+  return artifact.versions.filter((v) => v.sessionId === sessionId);
+}
+
+// Session-scoped status word: deleted (unchanged short-circuit), viewed (this
+// session's versions are all 'read'), edited (>1 modifying version THIS
+// session), created (exactly one). Falls back to the record-global count only
+// if this session somehow has zero version events for the artifact — that
+// shouldn't happen (the artifact wouldn't be in this session's list at all),
+// but an empty label would be worse than the old (still-wrong) global word.
+function statusInfo(artifact: ArtifactRecord, isDeleted: boolean, sessionId: string): string {
   if (isDeleted) return 'deleted';
-  const modifying = artifact.versions.filter((v) => v.type !== 'read').length;
+  const sessionVersions = versionsInSession(artifact, sessionId);
+  const versions = sessionVersions.length > 0 ? sessionVersions : artifact.versions;
+  const modifying = versions.filter((v) => v.type !== 'read').length;
   if (modifying === 0) return 'viewed';
   if (modifying > 1) return 'edited';
   return 'created';
+}
+
+// Session-scoped row timestamp: the latest version THIS session logged for
+// the artifact, not the record's global lastModified cache (which can be
+// weeks stale relative to what this session did). Falls back to the global
+// cache for the same no-events-this-session edge case as statusInfo above.
+function lastModifiedInSession(artifact: ArtifactRecord, sessionId: string): string {
+  const sessionVersions = versionsInSession(artifact, sessionId);
+  if (sessionVersions.length === 0) return artifact.lastModified;
+  return sessionVersions.reduce((latest, v) => (v.ts > latest ? v.ts : latest), sessionVersions[0].ts);
 }
 
 function fileNameOf(a: ArtifactRecord): string {
