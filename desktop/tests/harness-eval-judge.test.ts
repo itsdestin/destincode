@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { MockLanguageModelV4 } from 'ai/test';
 import {
-  judgeRun, MIN_QUOTE_CHARS, JUDGE_SCALE_MAX,
+  judgeRun, MIN_QUOTE_CHARS, MAX_QUOTE_SEGMENTS, JUDGE_SCALE_MAX,
   type Grade, type JudgeResult,
 } from '../src/main/harness/eval/judge';
 import type { CaseRun, CheckResult, RubricItem } from '../src/main/harness/eval/case-types';
@@ -83,6 +83,18 @@ function fakeJudge(payload: unknown, modelId = 'vendor/judge-model', seen?: any[
 /** A judge whose factory rejects — the "provider is down / 402" path. */
 function throwingJudge(err: unknown = new Error('OpenRouter 402: insufficient credits')) {
   return { modelId: 'vendor/judge-model', factory: async () => { throw err; } };
+}
+
+/** The prompt text the fake judge was actually sent. WHY not `JSON.stringify`
+ *  like the older assertions below: a tool-call line contains double quotes,
+ *  which JSON-escapes to `\"` and would make a `toContain` check silently
+ *  impossible to satisfy. */
+function promptOf(seen: any[]): string {
+  return seen
+    .flatMap((p: any) => (Array.isArray(p) ? p : [p]))
+    .flatMap((m: any) => (Array.isArray(m?.content) ? m.content : [m]))
+    .map((c: any) => (typeof c === 'string' ? c : c?.text ?? ''))
+    .join('\n');
 }
 
 const g = (over: Partial<Grade> & Record<string, unknown> = {}) =>
@@ -171,19 +183,144 @@ describe('judgeRun quote enforcement', () => {
     const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([g()]), []);
     expect(r.warnings.join()).toMatch(/searched/);
   });
+
+  it('caps how many fragments one quote may be stitched from', async () => {
+    // Four pieces, each verbatim and in order — the assembly loophole: every
+    // fragment checks out and the sentence they add up to is invented.
+    const pieces = [
+      'I read the config loader',
+      'shows up when two loaders race',
+      'serializes every startup',
+      'I went with the lock',
+    ];
+    for (const piece of pieces) expect(ANSWER).toContain(piece);
+    expect(pieces.length).toBeGreaterThan(MAX_QUOTE_SEGMENTS);
+
+    const over = await judgeRun(makeRun(), RUBRIC, fakeJudge([g({ quote: pieces.join(' ... ') })]), []);
+    expect(over.grades).toHaveLength(0);
+    expect(over.warnings.join()).toMatch(/fragments/i);
+
+    // Control: the same quote at the cap is still accepted, so the cap is a cap
+    // and not a ban on elision.
+    const atCap = await judgeRun(makeRun(), RUBRIC, fakeJudge([g({ quote: pieces.slice(0, MAX_QUOTE_SEGMENTS).join(' ... ') })]), []);
+    expect(atCap.grades).toHaveLength(1);
+  });
+
+  it('says SEGMENTS, not "the quote", when the answer’s own text contains an ellipsis', async () => {
+    // A 24-character verbatim quote that splits into two short halves because
+    // the "…" is the ANSWER's, not the judge's. It is still dropped — but the
+    // message must not claim a 24-character quote is under 12 characters.
+    const review = 'Wait for it… then retry the whole thing.';
+    const quote = 'Wait for it… then retry';
+    expect(review).toContain(quote);
+    expect(quote.length).toBeGreaterThan(MIN_QUOTE_CHARS);
+
+    const r = await judgeRun(makeRun({ review }), RUBRIC, fakeJudge([g({ quote })]), []);
+    expect(r.grades).toHaveLength(0);
+    const warning = r.warnings.find((w) => w.includes('tradeoffs')) ?? '';
+    expect(warning).toMatch(/2 segments/);
+    expect(warning).toMatch(/answer's own text/);
+  });
+
+  // The haystack is the ANSWER and nothing else. Both strings below are in the
+  // prompt the judge was shown, so a judge could copy either one back verbatim;
+  // both must be rejected. Nothing but the `run.review` argument enforces that
+  // today, which is exactly why it needs pinning.
+  it.each([
+    ['the rubric question', 'Does the answer lay out the trade-offs?'],
+    ['the tool-call list', 'Read {"file_path":"config.ts"}'],
+  ])('rejects a quote copied from %s rather than the answer', async (_label, quote) => {
+    const seen: any[] = [];
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([g({ quote })], 'vendor/judge-model', seen), []);
+    // The string really was available to copy — otherwise this proves nothing.
+    expect(promptOf(seen)).toContain(quote);
+    expect(ANSWER).not.toContain(quote);
+    expect(r.grades).toHaveLength(0);
+    expect(r.warnings.join()).toMatch(/not found|verbatim/i);
+  });
+
+  it('does not let a malformed grade steal the id from a valid one', async () => {
+    // The judge grades "tradeoffs" twice: first with a junk score, then
+    // correctly. The second must survive — dropping it as a duplicate would
+    // name the wrong problem AND lose a usable grade.
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      g({ score: 'excellent' }),
+      g({ score: 4 }),
+    ]), []);
+    expect(r.grades).toEqual([expect.objectContaining({ id: 'tradeoffs', score: 4 })]);
+    expect(r.warnings.join()).not.toMatch(/graded it twice/i);
+
+    // Control: two genuinely valid grades for one id still trip the duplicate rule.
+    const dupes = await judgeRun(makeRun(), RUBRIC, fakeJudge([g({ score: 4 }), g({ score: 1 })]), []);
+    expect(dupes.grades).toHaveLength(1);
+    expect(dupes.warnings.join()).toMatch(/graded it twice/i);
+  });
+});
+
+// --- did anything survive? (attempted / kept) --------------------------------
+
+describe('judgeRun discard accounting', () => {
+  const badQuote = 'the judge made this sentence up entirely';
+
+  it('says the run is UNGRADED when every grade is discarded', async () => {
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      g({ id: 'tradeoffs', quote: badQuote }),
+      g({ id: 'searched', quote: badQuote }),
+    ]), []);
+    expect(r.grades).toEqual([]);
+    expect(r.unavailable).toBeUndefined();   // the judge answered; nothing survived
+    expect(r.attempted).toBe(2);
+    expect(r.kept).toBe(0);
+    // Leading, so a report renders it as a header rather than burying it under
+    // the per-grade lines.
+    expect(r.warnings[0]).toMatch(/ungraded/i);
+    expect(r.warnings[0]).toContain('2');
+  });
+
+  it('does NOT say that when a grade survived and one item was skipped', async () => {
+    // The discriminating case: this run also returns `unavailable: undefined`
+    // and also carries per-item warnings, and is a completely different result.
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([g()]), []);
+    expect(r.attempted).toBe(1);
+    expect(r.kept).toBe(1);
+    expect(r.warnings.join()).not.toMatch(/ungraded/i);
+    expect(r.warnings.join()).toMatch(/No usable grade for "searched"/);
+  });
+
+  it('counts attempted and kept separately when some grades are discarded', async () => {
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      g({ id: 'tradeoffs' }),
+      g({ id: 'searched', quote: badQuote }),
+    ]), []);
+    expect(r.attempted).toBe(2);
+    expect(r.kept).toBe(1);
+    expect(r.warnings.join()).not.toMatch(/ungraded/i);
+  });
+
+  it('reports zero attempted when the judge never produced grades', async () => {
+    const r = await judgeRun(makeRun(), RUBRIC, throwingJudge(), []);
+    expect(r.attempted).toBe(0);
+    expect(r.kept).toBe(0);
+    expect(r.warnings.join()).not.toMatch(/ungraded/i);   // `unavailable` already says so
+  });
 });
 
 // --- contradicting a mechanical check ---------------------------------------
 
 describe('judgeRun vs the mechanical checks', () => {
-  const passedGrep: CheckResult[] = [{ id: 'calledTool:Grep', state: 'passed', detail: 'Grep' }];
+  // The id shape assertions.ts's `calledTool(name)` actually emits. Tool
+  // evidence is read from the ID ONLY, so the detail here is realistic prose
+  // (it is what that check really writes) and must contribute nothing.
+  const passedGrep: CheckResult[] = [
+    { id: 'called-tool:Grep', state: 'passed', detail: 'Grep was called. Tools attempted: Grep, Read.' },
+  ];
 
   it('warns when the judge contradicts a passing check instead of averaging it in', async () => {
     const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
       { id: 'searched', score: 0, quote: '...', reason: 'It never searched the code.' },
     ]), passedGrep);
     expect(r.warnings.join()).toMatch(/contradict/i);
-    expect(r.warnings.join()).toMatch(/calledTool:Grep/);
+    expect(r.warnings.join()).toMatch(/called-tool:Grep/);
   });
 
   it('leaves the score alone when it warns', async () => {
@@ -199,7 +336,7 @@ describe('judgeRun vs the mechanical checks', () => {
   it('does not warn when no check backs the denial', async () => {
     const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
       { id: 'searched', score: 0, quote: 'I read the config loader before changing anything', reason: 'It never searched the code.' },
-    ]), [{ id: 'calledTool:Grep', state: 'failed', detail: 'Grep' }]);
+    ]), [{ id: 'called-tool:Grep', state: 'failed', detail: 'No Grep call. Tools attempted: Read.' }]);
     expect(r.warnings.join()).not.toMatch(/contradict/i);
   });
 
@@ -219,6 +356,65 @@ describe('judgeRun vs the mechanical checks', () => {
     ]), passedGrep);
     expect(r.grades).toHaveLength(1);
     expect(r.warnings.join()).not.toMatch(/contradict/i);
+  });
+
+  // --- tool evidence comes from the check ID, never its detail ---------------
+
+  it('does not treat a passing ABSENCE check as proof the tool was used', async () => {
+    // The inverted-warning bug: a check asserting the model made no Write/Edit
+    // calls PASSES, its detail names both tools, and a judge agreeing with it
+    // ("it never wrote any code") would be warned about for contradicting a
+    // check that says exactly the same thing.
+    const noWrites: CheckResult[] = [
+      { id: 'no-source-edits', state: 'passed', detail: 'The model made no Write or Edit calls.' },
+    ];
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      { id: 'searched', score: 3, quote: 'I read the config loader before changing anything', reason: 'It never wrote any code.' },
+    ]), noWrites);
+    expect(r.warnings.join()).not.toMatch(/contradict/i);
+  });
+
+  it('does not let one check’s detail prove the other tools it happens to list', async () => {
+    // `called-tool:Grep`'s passing detail lists every tool attempted, so a
+    // detail scan would prove Read off a check that only measured Grep.
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      { id: 'searched', score: 2, quote: 'I read the config loader before changing anything', reason: 'It never read the file it was changing.' },
+    ]), passedGrep);
+    expect(r.warnings.join()).not.toMatch(/contradict/i);
+  });
+
+  // --- the denial must be about the tool, not merely near it -----------------
+
+  const passedRead: CheckResult[] = [
+    { id: 'called-tool:Read', state: 'passed', detail: 'Read was called. Tools attempted: Grep, Read.' },
+  ];
+  const passedBash: CheckResult[] = [
+    { id: 'called-tool:Bash', state: 'passed', detail: 'Bash was called. Tools attempted: Bash.' },
+  ];
+
+  it.each([
+    // Comma-joined: the denial is about the reasoning, the tool word is in a
+    // different fragment and is not being denied at all.
+    ['It never explains its reasoning, though it did read the config loader', passedRead],
+    // "read like" is a comparison, not the Read tool.
+    ['It does not read like someone who understood the code', passedRead],
+    // "ran into" is a phrasal verb, not the Bash tool.
+    ['It never ran into the real problem', passedBash],
+  ])('does not warn on %s', async (reason, checks) => {
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      { id: 'searched', score: 2, quote: 'I read the config loader before changing anything', reason },
+    ]), checks);
+    expect(r.warnings.join()).not.toMatch(/contradict/i);
+  });
+
+  it('still warns when the denial and the tool share a fragment', async () => {
+    // POSITIVE CONTROL for the three above: narrowing the match must not have
+    // turned the whole scan off.
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      { id: 'searched', score: 0, quote: 'I read the config loader before changing anything', reason: 'It explains itself well, but it never read the config loader.' },
+    ]), passedRead);
+    expect(r.warnings.join()).toMatch(/contradict/i);
+    expect(r.warnings.join()).toMatch(/called-tool:Read/);
   });
 });
 
@@ -244,6 +440,18 @@ describe('judgeRun failure handling', () => {
     const r = await judgeRun(makeRun(), RUBRIC, throwingJudge({ error: { code: 402, message: 'Insufficient credits' } }), []);
     expect(r.unavailable).not.toContain('[object Object]');
     expect(r.unavailable).toContain('Insufficient credits');
+  });
+
+  it('blames this file, not the provider, when the prompt cannot be built', async () => {
+    // A malformed run makes OUR prompt builder throw. That must not be reported
+    // as "The judge model failed" — accurate about the text, wrong about the
+    // actor, and it would send a reader to the provider's status page.
+    const r = await judgeRun(makeRun({ review: undefined as unknown as string }), RUBRIC, fakeJudge([g()]), []);
+    expectNoGrades(r);
+    expect(r.unavailable).not.toMatch(/judge model failed/i);
+    expect(r.unavailable).toMatch(/prompt/i);
+    // Still the real error, never a guessed cause.
+    expect(r.unavailable).toMatch(/length/);
   });
 
   it('survives malformed JSON and says what came back', async () => {
@@ -273,12 +481,12 @@ describe('judgeRun failure handling', () => {
 
   it('is a clean no-op when there is no judge', async () => {
     const r = await judgeRun(makeRun(), RUBRIC, null, []);
-    expect(r).toEqual({ grades: [], warnings: [] });
+    expect(r).toEqual({ grades: [], warnings: [], attempted: 0, kept: 0 });
   });
 
   it('is a clean no-op when the case has no rubric', async () => {
     const r = await judgeRun(makeRun(), [], fakeJudge([g()]), []);
-    expect(r).toEqual({ grades: [], warnings: [] });
+    expect(r).toEqual({ grades: [], warnings: [], attempted: 0, kept: 0 });
   });
 });
 
@@ -301,8 +509,28 @@ describe('judgeRun self-grading', () => {
     expect(r.grades).toHaveLength(1);
   });
 
+  it('flags an OpenRouter variant suffix as the same model', async () => {
+    // `:free` / `:beta` / `:nitro` pick a serving tier, not different weights —
+    // exact string equality would let a model grade its own output unflagged.
+    const r = await judgeRun(
+      makeRun({ modelId: 'anthropic/claude-opus-5' }), RUBRIC,
+      fakeJudge([g()], 'anthropic/claude-opus-5:beta'), [],
+    );
+    expect(r.warnings.join()).toMatch(/self-grad/i);
+  });
+
   it('does not flag a different judge model', async () => {
     const r = await judgeRun(makeRun({ modelId: 'anthropic/claude-opus-5' }), RUBRIC, fakeJudge([g()]), []);
+    expect(r.warnings.join()).not.toMatch(/self-grad/i);
+  });
+
+  it('does not flag a different model that merely shares a suffix', async () => {
+    // Control for the strip above: dropping everything after ":" must not
+    // collapse two genuinely different models into one.
+    const r = await judgeRun(
+      makeRun({ modelId: 'anthropic/claude-opus-5:free' }), RUBRIC,
+      fakeJudge([g()], 'openai/gpt-6:free'), [],
+    );
     expect(r.warnings.join()).not.toMatch(/self-grad/i);
   });
 });
