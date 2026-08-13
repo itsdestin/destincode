@@ -110,3 +110,34 @@ free-form prose review to
 the evaluator does not do. It now imports its runner logic from the evaluator's
 code, but **it still takes its key from the environment and therefore leaks it
 to the models it runs** (ROADMAP → Bugs). Prefer `harness-eval.mjs`.
+
+## conversation-triage.mjs — failure screening over past conversations (2026-08-11)
+
+Two-stage triage for the super-agent roadmap's error-analysis step
+(`docs/active/plans/2026-08-11-super-agent-roadmap.md`, step 1). Ranks stored
+sessions (native store + Claude transcript lane) by failure signals so the
+human taxonomy pass reads the right sessions first. No build step needed — it
+parses session files directly, no `dist/` import.
+
+- `node test-engine/conversation-triage.mjs scan` — **free, no key.** Deterministic
+  lexical + structural signals (apologies, user redirects/interrupts, tool errors,
+  doom-loop/max-steps gates, compaction-then-correction). Writes a ranked
+  `scan-report.md` + `scan.jsonl`.
+- `node test-engine/conversation-triage.mjs triage --top 40 --dry-run` — prints the
+  call plan and token estimate, spends nothing, needs no key.
+- `OPENROUTER_API_KEY=sk-... node test-engine/conversation-triage.mjs triage --top 40` —
+  **paid.** Sends flagged excerpt windows to a cheap model (default
+  `deepseek/deepseek-v4-flash-0731`; verify current pricing first) to classify
+  candidate failure categories as strict JSON. Capped by `--top`/`--max-calls`.
+
+Stage 2 runs two passes: per-session incident reviews (category, upstream cause,
+harness-fix idea, wasted-turn estimate, verbatim quote), then a **synthesis call**
+(`--synth-model` to use a stronger model for just that step) that consolidates
+all incidents into a draft taxonomy — definitions, counts, exemplar quotes, a
+suggested eval assertion per category, and a recommended eval-build order.
+
+Outputs land in `docs/active/investigations/conversation-triage-runs/<date>/`
+(git-ignored — reports contain conversation excerpts). The drafted taxonomy is
+built for **skim-and-veto** review: every entry carries verbatim quotes with
+session basenames so claims can be checked against the source session — same
+falsifiability discipline as the review battery above.
