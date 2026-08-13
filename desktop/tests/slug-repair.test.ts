@@ -458,6 +458,38 @@ describe('repairOrphanDirs (spec §6.3)', () => {
     expect(fs.readFileSync(quarantinedCorrect, 'utf8')).toBe(subsetBytes);
   });
 
+  // Parity fix (disclosed adaptation): §6.1 gained a live-guard on the
+  // correct-dir copy before its superset/fork branches (CRITICAL review fix —
+  // quarantining/snapshotting a copy CC is actively appending to risks
+  // stealing the inode out from under an open fd, or capturing a torn write).
+  // §6.3's `correct` is the SAME CC-tracked file, so it needs the same guard.
+  it('correct-dir copy is superset-eligible but currently live: pair is deferred, nothing moves', () => {
+    const h = makeHome();
+    const wrong = path.join(h.orphanDir, 's6.jsonl');
+    const correct = path.join(h.correctDir, 's6.jsonl');
+    const supersetBytes = F('u1', h.P) + F('u2', h.P);
+    const subsetBytes = F('u1', h.P);
+    fs.writeFileSync(wrong, supersetBytes); age(wrong);
+    fs.writeFileSync(correct, subsetBytes);                    // fresh mtime = live; NOT aged
+    const out = repairOrphanDirs(h.opts);
+    expect(out).toEqual([{ sessionId: 's6', homeFolder: h.P, kind: 'deferred-live', paths: [wrong, correct] }]);
+    expect(fs.existsSync(wrong)).toBe(true);
+    expect(fs.readFileSync(wrong, 'utf8')).toBe(supersetBytes);
+    expect(fs.existsSync(correct)).toBe(true);
+    expect(fs.readFileSync(correct, 'utf8')).toBe(subsetBytes);
+  });
+
+  it('fork pair where the correct-dir copy is currently live: pair is deferred, nothing snapshotted', () => {
+    const h = makeHome();
+    const wrong = path.join(h.orphanDir, 's7.jsonl');
+    const correct = path.join(h.correctDir, 's7.jsonl');
+    fs.writeFileSync(wrong, F('u1', h.P) + F('uA', h.home)); age(wrong); // diverges one way
+    fs.writeFileSync(correct, F('u1', h.P) + F('uB', h.P));              // …and the other; fresh mtime = live
+    const out = repairOrphanDirs(h.opts);
+    expect(out).toEqual([{ sessionId: 's7', homeFolder: h.P, kind: 'deferred-live', paths: [wrong, correct] }]);
+    expect(fs.existsSync(h.quarantine.dir)).toBe(false); // nothing snapshotted yet
+  });
+
   it('an orphan-rule dir emptied by repair is itself quarantined (never left as a dangling empty dir)', () => {
     const h = makeHome();
     const f = path.join(h.orphanDir, 's5.jsonl');

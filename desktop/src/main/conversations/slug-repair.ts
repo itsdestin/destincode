@@ -473,7 +473,17 @@ export function repairOrphanDirs(opts: RepairOpts): RepairFinding[] {
       if (isLive(file, liveMs, now)) { findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file] }); continue; }
       const correct = path.join(correctDir, path.basename(file));
       if (!fs.existsSync(correct)) {
-        fs.renameSync(file, correct);                        // session exists ONLY in the orphan — preserve it
+        // Adaptation (disclosed): §6.1's promotion rename is fail-closed
+        // (review fix) — this is the same shape (rename an orphan copy into
+        // the spot where nothing currently lives), so it gets the same
+        // discipline. On failure `file` never left, so nothing is lost.
+        try {
+          fs.renameSync(file, correct);                      // session exists ONLY in the orphan — preserve it
+        } catch (e) {
+          q.log(`ERROR ${sessionId}: move-to-correct rename failed — orphan copy still at ${file}: ${String(e)}`);
+          findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: [file] });
+          continue;
+        }
         q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (orphan-only)`);
         findings.push({ sessionId, homeFolder: P, kind: 'moved', paths: [correct] });
         continue;
@@ -483,12 +493,33 @@ export function repairOrphanDirs(opts: RepairOpts): RepairFinding[] {
           if (q.move(file, `6.3 ${sessionId}: orphan copy ⊆ correct`)) findings.push({ sessionId, homeFolder: P, kind: 'quarantined', paths: [file] });
           break;
         case 'wrong-is-superset':
+          // Adaptation (disclosed): mirrors §6.1's CRITICAL review fix —
+          // `correct` is the CC-tracked file here too; quarantining it while
+          // CC actively appends would steal the inode out from under an open
+          // fd. Defer the whole pair instead of racing it.
+          if (isLive(correct, liveMs, now)) {
+            findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file, correct] });
+            break;
+          }
           if (q.move(correct, `6.3 ${sessionId}: correct superseded by orphan copy`)) {
-            fs.renameSync(file, correct);
-            findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+            try {
+              fs.renameSync(file, correct);
+              q.log(`MOVE-TO-CORRECT ${file} -> ${correct} (superset)`);
+              findings.push({ sessionId, homeFolder: P, kind: 'replaced-with-superset', paths: [correct] });
+            } catch (e) {
+              const quarantinedAt = path.join(q.dir, path.relative(q.homeRoot, correct));
+              q.log(`ERROR ${sessionId}: promotion rename failed after quarantine — superseded copy at ${quarantinedAt}, orphan copy still at ${file}: ${String(e)}`);
+              findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: [file, quarantinedAt] });
+            }
           }
           break;
         case 'fork':
+          // Same live-guard as the superset branch above — snapshotting
+          // `correct` mid-append risks capturing a torn write.
+          if (isLive(correct, liveMs, now)) {
+            findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file, correct] });
+            break;
+          }
           q.snapshot(file, `6.3 FORK ${sessionId} (orphan)`); q.snapshot(correct, `6.3 FORK ${sessionId} (correct)`);
           q.log(`ATTENTION fork ${sessionId}: ${file} vs ${correct}`);
           findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: [file, correct] });
