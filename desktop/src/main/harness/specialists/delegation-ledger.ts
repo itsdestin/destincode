@@ -156,6 +156,35 @@ export class DelegationLedger {
     return this.coerce(this.home.readJson(this.relPath(parentCwd, parentId))).delegations;
   }
 
+  /**
+   * Same as update(), but the patch is only applied while the record's
+   * status is still 'running' — a conditional/compare-and-set write.
+   *
+   * WHY (review round 2, Finding 4): "interrupted" wins. When a parent is
+   * torn down while a child is still running, two independent writers can
+   * race the SAME record: destroyChildrenOf's fire-and-forget
+   * `{ status: 'interrupted' }` and spawnSpecialist's catch-driven
+   * `{ status: 'failed' }` (the child's abort error surfacing once the
+   * interrupt propagates up through runSpecialist). Both writes are
+   * individually true, but a parent teardown is the TRUE cause and the
+   * child's abort error is only its SYMPTOM, so 'interrupted' must win
+   * regardless of which write reaches disk last. Making ONLY the failure
+   * write conditional (skip if the record is no longer 'running') while the
+   * interrupted write stays a plain, unconditional update() gets that
+   * outcome no matter the arrival order: if 'interrupted' lands first, this
+   * write finds status !== 'running' and no-ops; if it lands second, it
+   * unconditionally overwrites whatever the failure write left behind.
+   */
+  async updateIfRunning(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>): Promise<void> {
+    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
+      const data = this.coerce(cur);
+      return {
+        v: FILE_VERSION,
+        delegations: data.delegations.map((d) => (d.childId === childId && d.status === 'running' ? { ...d, ...patch } : d)),
+      };
+    });
+  }
+
   async claimUndelivered(parentCwd: string, parentId: string): Promise<DelegationRecord | null> {
     let claimed: DelegationRecord | null = null;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {

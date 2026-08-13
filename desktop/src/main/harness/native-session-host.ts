@@ -338,32 +338,39 @@ export class NativeSessionHost extends EventEmitter {
     // re-read that a concurrent teardown could already have cleared by the
     // time the catch block runs.
     const parentCwd = this.live.get(parentId)?.cwd;
-    if (this.ledger && parentCwd) {
-      // Stamp the delegation into the durable ledger the moment the child
-      // exists (childId + title known). A crash right after this line still
-      // leaves a 'running' row a later pass can see — never silently losing
-      // track of a delegation that genuinely started.
-      await this.ledger.recordStart(parentCwd, parentId, {
-        childId,
-        parentToolCallId: opts.parentToolCallId,
-        agentType: opts.specialist.id,
-        title,
-        workDir: opts.workDir,
-        // No per-call short label (the Task tool's own `description` arg)
-        // reaches this method today — threading it through
-        // SpecialistSpawnOpts touches tools/task.ts, out of this task's
-        // scope. The specialist's own registered one-liner is a real,
-        // accurate description rather than a guessed one, so it stands in.
-        description: opts.specialist.description,
-        background: false, // Task 2 covers the FOREGROUND flow only.
-        status: 'running',
-        startedAt: Date.now(),
-        delivered: false,
-        owner: OWNER,
-        missedSteers: [],
-      });
-    }
+    // Fix (review round 2, Finding 2): recordStart now runs INSIDE the try
+    // block below instead of before it. It used to run between createChild
+    // (which mints the live child, its on-disk header, and a retainModel()
+    // ref) and the try whose finally is the LEAK GUARD — so a throw from
+    // recordStart (mutateJson can throw on lock exhaustion) skipped that
+    // finally entirely and leaked the just-minted child. Every path after
+    // createChild now routes through the same teardown guard.
     try {
+      if (this.ledger && parentCwd) {
+        // Stamp the delegation into the durable ledger the moment the child
+        // exists (childId + title known). A crash right after this line still
+        // leaves a 'running' row a later pass can see — never silently losing
+        // track of a delegation that genuinely started.
+        await this.ledger.recordStart(parentCwd, parentId, {
+          childId,
+          parentToolCallId: opts.parentToolCallId,
+          agentType: opts.specialist.id,
+          title,
+          workDir: opts.workDir,
+          // No per-call short label (the Task tool's own `description` arg)
+          // reaches this method today — threading it through
+          // SpecialistSpawnOpts touches tools/task.ts, out of this task's
+          // scope. The specialist's own registered one-liner is a real,
+          // accurate description rather than a guessed one, so it stands in.
+          description: opts.specialist.description,
+          background: false, // Task 2 covers the FOREGROUND flow only.
+          status: 'running',
+          startedAt: Date.now(),
+          delivered: false,
+          owner: OWNER,
+          missedSteers: [],
+        });
+      }
       // PRODUCE THE REPORT FIRST, tear down after (Task 6 review handoff note
       // 1). Both statements below are pure/local once the run has finished, so
       // by the time the finally block runs the report is already a value this
@@ -372,21 +379,46 @@ export class NativeSessionHost extends EventEmitter {
       const run = await this.runSpecialist(childId, opts.prompt);
       const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
       if (this.ledger && parentCwd) {
-        // Foreground delivery IS the tool result returned right here — there
-        // is no separate "inject into the parent" step to wait for, so this
-        // is the one path allowed to be born delivered: true.
-        await this.ledger.update(parentCwd, parentId, childId, {
-          status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report, delivered: true,
-        });
+        // Fix (review round 2, Finding 1): this write used to sit INSIDE the
+        // same try the child run does, with no catch of its own — so a throw
+        // here (mutateJson can throw on lock exhaustion) fell into the catch
+        // below, which recorded 'failed' and rethrew, discarding a report the
+        // child genuinely produced. Foreground delivery IS the tool result
+        // returned right below — a bookkeeping failure on the way out must
+        // never discard it or relabel the run a failure, so this write is now
+        // its own try/catch: log-only, never fatal, never changes what this
+        // method returns.
+        try {
+          await this.ledger.update(parentCwd, parentId, childId, {
+            status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report, delivered: true,
+          });
+        } catch (ledgerErr) {
+          log('ERROR', 'NativeSessionHost', 'failed to record specialist completion in the ledger — the report is still returned to the caller', { childId, parentId, error: String(ledgerErr) });
+        }
       }
       return { childId, report };
     } catch (err: any) {
       if (this.ledger && parentCwd) {
-        // Specific and accurate (error-message-standards.md): the real
-        // thrown message, never a guessed cause.
-        await this.ledger.update(parentCwd, parentId, childId, {
-          status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
-        });
+        // Fix (review round 2, Finding 4): updateIfRunning (not update) — a
+        // teardown-driven 'interrupted' write (destroyChildrenOf) may already
+        // have landed on this record by the time this catch runs (the child's
+        // abort error is what surfaces here once the interrupt propagates).
+        // 'interrupted' names the true cause (a parent teardown); this catch's
+        // 'failed' is only that cause's symptom, so it must not clobber a
+        // record that already reached a terminal status — see
+        // updateIfRunning's own WHY comment for the full ordering argument.
+        // Wrapped in its own try/catch for the same reason as the completion
+        // write above: a failure HERE must not replace the real error `err`
+        // that error-message-standards.md requires this catch to rethrow.
+        try {
+          await this.ledger.updateIfRunning(parentCwd, parentId, childId, {
+            // Specific and accurate (error-message-standards.md): the real
+            // thrown message, never a guessed cause.
+            status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
+          });
+        } catch (ledgerErr) {
+          log('ERROR', 'NativeSessionHost', 'failed to record specialist failure in the ledger', { childId, parentId, error: String(ledgerErr) });
+        }
       }
       throw err;
     } finally {
@@ -1462,10 +1494,14 @@ export class NativeSessionHost extends EventEmitter {
     // "delete the session". The child is torn down with its parent (destroy /
     // quiesce below, both async) or by the Task tool's own finalizer.
     const parentCwd = this.live.get(sessionId)?.cwd;
+    // Fix (review round 2, Finding 3): hoisted OUT of the loop below. This
+    // used to call listFor() — a synchronous file read + JSON parse of the
+    // WHOLE sidecar — once PER CHILD, so a parent with N children did N
+    // redundant reads of the identical file on every Stop press. One read,
+    // shared by every iteration below via a childId lookup.
+    const records = this.ledger && parentCwd ? this.ledger.listFor(parentCwd, sessionId) : [];
     for (const childId of this.childrenOf.get(sessionId) ?? []) {
-      const rec = this.ledger && parentCwd
-        ? this.ledger.listFor(parentCwd, sessionId).find((r) => r.childId === childId)
-        : undefined;
+      const rec = records.find((r) => r.childId === childId);
       if (rec?.background) continue; // still working — the Stop button doesn't touch it
       this.interrupt(childId);
     }

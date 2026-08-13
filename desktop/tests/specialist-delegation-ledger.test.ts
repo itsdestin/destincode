@@ -149,4 +149,37 @@ describe('DelegationLedger', () => {
     expect(isOwnerAlive(OWNER)).toBe(true);
     expect(isOwnerAlive({ pid: 999_999, instanceId: 'nonexistent-owner' })).toBe(false);
   });
+
+  // ---- Review round 2, Finding 4: "interrupted" always wins a teardown/
+  // failure race. When a parent is torn down while a child is still running,
+  // two writers can race the SAME record: destroyChildrenOf's unconditional
+  // `update(..., { status: 'interrupted' })` and spawnSpecialist's catch-
+  // driven `updateIfRunning(..., { status: 'failed' })`. Both orderings must
+  // land on 'interrupted' — a parent teardown is the true cause, the child's
+  // abort error is only its symptom.
+  describe('updateIfRunning — the conditional write behind the "interrupted wins" rule', () => {
+    it('applies the patch when the record is still running (the normal case)', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'running' }));
+      await ledger.updateIfRunning(CWD, 'p1', 'c1', { status: 'failed', endedAt: 1, failureText: 'boom' });
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec).toMatchObject({ status: 'failed', endedAt: 1, failureText: 'boom' });
+    });
+
+    it('teardown-first ordering: an interrupted write followed by the failure write — interrupted still wins', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'running' }));
+      await ledger.update(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 1 }); // teardown lands first
+      await ledger.updateIfRunning(CWD, 'p1', 'c1', { status: 'failed', endedAt: 2, failureText: 'aborted' }); // catch's write arrives after — must no-op
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.status).toBe('interrupted');
+      expect(rec?.failureText).toBeUndefined(); // the no-op write never touched the record
+    });
+
+    it('failure-first ordering: the failure write followed by the interrupted write — interrupted still wins', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'running' }));
+      await ledger.updateIfRunning(CWD, 'p1', 'c1', { status: 'failed', endedAt: 1, failureText: 'aborted' }); // catch's write lands first
+      await ledger.update(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 2 }); // teardown's unconditional write always applies, even over a terminal status
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.status).toBe('interrupted');
+    });
+  });
 });

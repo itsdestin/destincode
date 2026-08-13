@@ -330,4 +330,81 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report.length).toBeLessThan(huge.length / 2);     // ...but the bulk did not
     expect(report).toMatch(/truncated/i);                    // and the cut is stated, never silent
   });
+
+  // ---- Review round 2, Findings 1 & 2: a ledger write can throw (mutateJson
+  // is lock-guarded — NativeHome.mutateJson throws on lock exhaustion) at two
+  // points in spawnSpecialist, and neither may corrupt what a real run does.
+  // These tests boot a host WITH a real ledger wired in (the plain `boot`/
+  // `withParent` helpers above never pass a nativeHome, so `host.ledger` is
+  // undefined there and none of this file's other tests exercise these
+  // paths) and monkeypatch the ledger's methods to throw, the same fault-
+  // injection shape `throwOnceFactory` uses elsewhere in this suite for the
+  // model factory.
+  describe('a ledger write failure never corrupts a real run (review round 2)', () => {
+    async function withLedgerParent(scripts: any[][]) {
+      const model = scriptedModel(scripts);
+      const home = new NativeHome(root);
+      store = new SessionStore(new NativeHome(root));
+      host = new NativeSessionHost(
+        store, async () => model as any, async () => null, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    }
+
+    it('Finding 1: a completion-write failure does not discard the report or relabel a successful run "failed"', async () => {
+      await withLedgerParent(TWO_TOOLS_THEN_REPORT);
+      const ledger = (host as any).ledger;
+      const realUpdate = ledger.update.bind(ledger);
+      let sawCompletedWrite = false;
+      // Fail ONLY the completion write (status: 'completed') — recordStart
+      // (before the run) still works, so the record genuinely exists.
+      ledger.update = async (...args: any[]) => {
+        if (args[3]?.status === 'completed') {
+          sawCompletedWrite = true;
+          throw new Error('simulated lock exhaustion');
+        }
+        return realUpdate(...args);
+      };
+
+      const { childId, report } = await host.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      expect(sawCompletedWrite).toBe(true); // sanity: the throwing write path actually ran
+      // The report the child genuinely produced is still returned...
+      expect(report).toContain('REPORT: found it at src/x.ts');
+      expect(childId).toBeTruthy();
+      // ...and the run is not relabeled a failure on disk because the
+      // completion write blew up on the way out.
+      const rec = ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec?.status).not.toBe('failed');
+    });
+
+    it('Finding 2: a recordStart failure still tears the child down — no leaked live entry, childrenOf, or model ref', async () => {
+      await withLedgerParent(TWO_TOOLS_THEN_REPORT);
+      const ledger = (host as any).ledger;
+      ledger.recordStart = async () => { throw new Error('simulated lock exhaustion'); };
+
+      const released: string[] = [];
+      host.setModelReleasedHandler((id) => released.push(id));
+
+      await expect(host.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      })).rejects.toThrow(/simulated lock exhaustion/);
+
+      // The child that createChild minted before recordStart ever ran must
+      // still be torn down — the LEAK GUARD (spawnSpecialist's finally) has
+      // to cover this path too.
+      const childRow = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1');
+      expect(childRow).toBeDefined();
+      expect((host as any).live.has(childRow!.sessionId)).toBe(false);
+      expect((host as any).childrenOf.get('root-1')?.has(childRow!.sessionId)).toBeFalsy();
+      expect((host as any).activeWriterChild.has('root-1')).toBe(false);
+      await host.destroy('root-1');
+      expect(released).toEqual(['m']); // the child's model ref did not leak either
+    });
+  });
 });
