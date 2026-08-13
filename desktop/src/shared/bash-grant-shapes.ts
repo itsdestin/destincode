@@ -20,7 +20,20 @@ export interface GrantOption {
    *  in the confirm and in Settings, on a screen written for people who have
    *  never seen a glob. */
   label: string;
+  /** What this grant will NOT cover, in the user's words, shown under the choice.
+   *
+   *  LOAD-BEARING, not decoration: the item deliberately does not explain a
+   *  re-ask after the fact (spec A5), so this sentence is the only warning the
+   *  user gets about the two cases that will ask again anyway — a chained
+   *  command, and a flag that changes what the command does. Settled in compare
+   *  round 2 (candidate C); do not trim it for space. */
+  limits: string;
 }
+
+// The default limits sentence. A shape may override it with one that names the
+// thing it actually scoped to.
+const GENERIC_LIMITS =
+  "This won't cover the command chained onto another one, or run with options that change what it does.";
 
 // Commands a wide rung must never admit. One entry per destructive deny-list
 // FAMILY, pinned by a test that fails if a family is added without one.
@@ -78,10 +91,16 @@ interface CommandShape {
    *  grant, and refusing it means a repeated command that can never be answered
    *  permanently. */
   rememberable(tokens: string[]): boolean;
+  /** Why nothing may be remembered, in the user's words — shown on the card in
+   *  place of the missing "Always allow" button. Shape-specific ON PURPOSE: it
+   *  describes a push because `git push` is the only shape that can refuse, and
+   *  a future shape that refuses must say its own reason rather than inherit a
+   *  sentence about branches. */
+  noGrantNote: string;
   /** The scoped wide rung, or null for "exact only". Never falls back to the
    *  generic rung: a shape exists precisely because the generic one is too wide
    *  for this command, so falling back would grant MORE, not less. */
-  scope(tokens: string[]): { pattern: string; label: string } | null;
+  scope(tokens: string[]): { pattern: string; label: string; limits: string } | null;
 }
 
 /** Positional arguments to `git push` — the remote and the refspecs, with flags
@@ -112,6 +131,8 @@ function namesItsTarget(refspec: string): boolean {
 const COMMAND_SHAPES: CommandShape[] = [
   {
     key: 'git push',
+    noGrantNote:
+      "There's nothing to remember here: this sends whichever branch is checked out when it runs, so next time it could be a different one.",
     // A bare `git push` pushes whatever branch is checked out AT RUN TIME, and
     // that branch changes underneath the grant — approve it on a feature branch
     // and next week it silently pushes master. Nothing here can name the target,
@@ -151,6 +172,10 @@ const COMMAND_SHAPES: CommandShape[] = [
       return {
         pattern: `git push*${remote} ${refspec}`,
         label: `Always allow pushing to ${refDestination(refspec)}`,
+        // Names what safety rule 2 keeps out of THIS grant specifically. The
+        // generic sentence ("options that change what it does") would be true but
+        // would not tell a user that deleting the branch is the thing excluded.
+        limits: "This won't cover deleting or force-pushing the branch, or this command chained onto another one.",
       };
     },
   },
@@ -187,7 +212,9 @@ function deriveWide(command: string, tokens: string[]): GrantOption | null {
   const shape = COMMAND_SHAPES.find((s) => s.key === key);
   if (shape) {
     const scoped = shape.scope(tokens);
-    return scoped ? { scope: 'wide', rule: wideRule(scoped.pattern), label: scoped.label } : null;
+    return scoped
+      ? { scope: 'wide', rule: wideRule(scoped.pattern), label: scoped.label, limits: scoped.limits }
+      : null;
   }
 
   // A deny-listed family with no shape row gets no widening: for rm / sudo /
@@ -196,7 +223,17 @@ function deriveWide(command: string, tokens: string[]): GrantOption | null {
   // push refspec, so it cannot be bounded to a single target.
   if (isDenyListed(command)) return null;
 
-  return { scope: 'wide', rule: wideRule(`${key}*`), label: `Any ${key} command` };
+  return { scope: 'wide', rule: wideRule(`${key}*`), label: `Any ${key} command`, limits: GENERIC_LIMITS };
+}
+
+/** Why this command may not be remembered at any width, in the user's words —
+ *  or null if it can be. The card shows this in place of the missing button, so
+ *  a vanished "Always allow" reads as a decision rather than a bug. */
+export function bashNoGrantNote(command: string): string | null {
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return null;
+  const shape = COMMAND_SHAPES.find((s) => s.key === shapeKey(tokens));
+  return shape && !shape.rememberable(tokens) ? shape.noGrantNote : null;
 }
 
 /** Grant options for a Bash command, narrowest first.
@@ -214,7 +251,12 @@ export function bashGrantOptions(command: string): GrantOption[] {
   // engine args.command unchanged, so a trimmed pattern would differ from the
   // subject by a character the user cannot see and would never match again.
   const options: GrantOption[] = [
-    { scope: 'exact', rule: { tool: 'Bash', pattern: command, action: 'allow', match: 'exact' }, label: command },
+    {
+      scope: 'exact',
+      rule: { tool: 'Bash', pattern: command, action: 'allow', match: 'exact' },
+      label: command,
+      limits: GENERIC_LIMITS,
+    },
   ];
   const wide = deriveWide(command, tokens);
   if (wide) options.push(wide);

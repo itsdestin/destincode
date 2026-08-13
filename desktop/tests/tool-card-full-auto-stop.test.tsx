@@ -82,8 +82,12 @@ describe('full-auto safety stop', () => {
     renderCard(stopTool());
     fireEvent.click(screen.getByRole('button', { name: 'Always Allow' }));
     expect(respondToPermission).not.toHaveBeenCalled();
-    expect(screen.getByText(/Always allow this exact command/)).toBeTruthy();
+    // M5 2c: the heading names what is actually granted. This command's only
+    // option is the branch grant, so "this exact command" would be false —
+    // approving it also covers `git push -u origin master`.
+    expect(screen.getByText(/Always allow pushing to master/)).toBeTruthy();
     expect(screen.getByText('git push origin master')).toBeTruthy();
+    expect(screen.getByText(/deleting or force-pushing the branch/)).toBeTruthy();
     expect(
       screen.getByText("It may delete files or change published code, and you won't be asked again during future sessions in this project."),
     ).toBeTruthy();
