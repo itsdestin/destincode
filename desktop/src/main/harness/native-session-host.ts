@@ -1090,12 +1090,54 @@ export class NativeSessionHost extends EventEmitter {
     }
   }
 
+  /** Task 5 (plan 1b): one line per NON-DELIVERED delegation for `sessionId`
+   *  (its parent), or null when there's nothing to report — the zero-cost case
+   *  for a session that never delegates. A record with `delivered: true` never
+   *  appears: its report already rode into the parent's history, so restating
+   *  it here would be stale noise, not a status.
+   *
+   *  `steps` is read straight off the ledger record, which Task 2's write path
+   *  only ever sets AT COMPLETION (see spawnSpecialist's `update(...steps:
+   *  run.steps...)`) — there is no live, per-child step counter surfaced
+   *  anywhere a status line could read from without reaching into
+   *  spawnSpecialist/createChild's own bookkeeping (out of this task's scope,
+   *  and a different in-flight lane owns those methods). So a still-running
+   *  child legitimately shows `step 0` until its next status-changing write;
+   *  that is what the ledger actually knows, not a guessed number.
+   *
+   *  `stale` likewise only ever surfaces the ledger's own boolean (Task 7 sets
+   *  it) — this method never re-derives staleness. The one exception is the
+   *  "no activity for {m}m" minute count: the ledger stores no last-activity
+   *  TIMESTAMP, only the boolean, so there is no exact duration to surface.
+   *  What IS true by construction (native-session-host.ts's setStale) is that
+   *  `stale` never flips true before SPECIALIST_IDLE_STALE_MS has elapsed with
+   *  no activity — so that constant is reported as a floor ("at least this
+   *  long"), not a measurement, and is never overstated. */
+  private buildSpecialistStatus(sessionId: string, cwd: string): string | null {
+    if (!this.ledger) return null;
+    const lines = this.ledger.listFor(cwd, sessionId)
+      .filter((r) => !r.delivered)
+      .map((r) => {
+        if (r.status === 'running') {
+          const elapsedS = Math.max(0, Math.round((Date.now() - r.startedAt) / 1000));
+          const staleNote = r.stale ? `, may be stuck — no activity for ${Math.round(SPECIALIST_IDLE_STALE_MS / 60_000)}m` : '';
+          return `${r.title} (${r.agentType}): running — step ${r.steps ?? 0}, ${elapsedS}s${staleNote}`;
+        }
+        return `${r.title} (${r.agentType}): finished — report delivery pending`;
+      });
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
     const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false, mcpLease };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
+    // Task 5 (plan 1b): wired for ROOT sessions only — wire() is never called
+    // for a specialist child (createChild has its own inline live.set, see its
+    // "NOT wire()" comment), so a child never grows its own status block.
+    session.setSpecialistStatus(() => this.buildSpecialistStatus(sessionId, cwd));
     // Persist "Always allow" decisions for THIS session's project. The session
     // emits 'remember-rule' {tool, pattern?, action} — a plain EventEmitter
     // event, NOT a transcript event (the frozen transcript surface is untouched)

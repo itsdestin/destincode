@@ -1742,4 +1742,63 @@ describe('NativeSessionHost', () => {
       expect((h as any).live.has(childId)).toBe(false);
     });
   });
+
+  // Task 5 (plan 1b): the per-turn specialist status block. wire() attaches
+  // opts.specialistStatus to every ROOT session; this suite pins what that
+  // callback reports given a stamped ledger, reaching the private ledger
+  // directly (same pattern the Task 2 tests above use) rather than driving a
+  // real specialist run end-to-end.
+  describe('specialist status block (Task 5, plan 1b)', () => {
+    it('the host status block lists running and undelivered-finished specialists and omits delivered ones', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-running', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-finished', parentToolCallId: 'tc-2', agentType: 'researcher', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-delivered', parentToolCallId: 'tc-3', agentType: 'writer', title: 'Priya',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: true, owner: OWNER, missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toBeTruthy();
+      expect(status).toContain('Nadia');
+      expect(status).toContain('running');
+      expect(status).toContain('Otis');
+      expect(status).toContain('report delivery pending');
+      // Delivered specialist never appears.
+      expect(status).not.toContain('Priya');
+
+      await h.destroyAll();
+    });
+
+    it('returns null (and wires nothing to inject) when the session has no delegations at all', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      expect(rootSession.opts.specialistStatus?.()).toBeNull();
+
+      await h.destroyAll();
+    });
+  });
 });

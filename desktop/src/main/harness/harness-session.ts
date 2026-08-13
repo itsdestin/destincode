@@ -116,6 +116,15 @@ export interface HarnessSessionOpts {
    *  either check alone still cannot let a specialist spawn its own
    *  specialists. Absent/false for every ordinary (non-child) session. */
   isSpecialistChild?: boolean;
+  /** Per-turn specialist status block (Task 5, MOIM pattern). Evaluated at the
+   *  START of every turn; a non-null return is injected as a `<specialists-
+   *  status>` history message so the model can see which delegated children
+   *  are running or finished-and-unread WITHOUT ever polling for them. Wired
+   *  by NativeSessionHost.wire() — root sessions only, since wire() is never
+   *  called for a specialist child (see createChild's own "NOT wire()" note).
+   *  Absent → no injection, which is exactly the pre-Task-5 behavior every
+   *  existing test relies on (zero cost for a session that never delegates). */
+  specialistStatus?: () => string | null;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -546,6 +555,14 @@ export class HarnessSession extends EventEmitter {
     this.binding = binding;
     if (contextLength !== undefined) this.opts.contextLength = contextLength;
     if (profile) this.profile = profile;
+  }
+
+  /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
+   *  session right after construction — opts is already built by then, so this
+   *  is the same late-bind-onto-opts shape setBinding uses above, not a new
+   *  pattern. Never called for a specialist child (wire() isn't). */
+  setSpecialistStatus(fn: () => string | null): void {
+    this.opts.specialistStatus = fn;
   }
 
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
@@ -1133,13 +1150,20 @@ export class HarnessSession extends EventEmitter {
    *  Detected by content shape rather than a flag: injectPathTriggers (above)
    *  pushes them as `<project-rule source="...">...`, and that's the only
    *  thing this method has to go on — synthetic wire messages never enter
-   *  history at all, so they were already immune by construction. */
+   *  history at all, so they were already immune by construction.
+   *
+   *  Task 5's `<specialists-status>` block gets the SAME exclusion for the
+   *  same reason: it is also role:'user', also synthetic, and — unlike the
+   *  one-shot rule injections above — it rides EVERY turn while a specialist
+   *  is live, so miscounting it would shrink the protected window on every
+   *  single turn of a long delegated run, not just an occasional one. */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];
     this.history.forEach((m, i) => {
       const c = (m as any).content;
-      const isInjectedRule = typeof c === 'string' && c.startsWith('<project-rule ');
-      if ((m as any).role === 'user' && !isInjectedRule) userIdx.push(i);
+      const isSyntheticInjection = typeof c === 'string'
+        && (c.startsWith('<project-rule ') || c.startsWith('<specialists-status>'));
+      if ((m as any).role === 'user' && !isSyntheticInjection) userIdx.push(i);
     });
     return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
   }
@@ -1335,6 +1359,19 @@ export class HarnessSession extends EventEmitter {
     }
     this.interrupted = false;
     emit();
+    // WHY (spec §3, MOIM pattern): the model never polls and never forgets a child
+    // exists — a compact status block rides every turn while specialists are live.
+    // History-only (no transcript event), so replay and the emit surface are untouched.
+    // Exactly ONE block lives in history: the previous turn's is removed first
+    // (external review 2026-08-12 — appending accumulates stale, contradictory
+    // blocks over a long child run). Accepted cost: removing a mid-history message
+    // invalidates local KV prefix cache from that point while specialists run.
+    const statusIdx = this.history.findIndex(
+      (m) => typeof m.content === 'string' && m.content.startsWith('<specialists-status>'),
+    );
+    if (statusIdx >= 0) this.history.splice(statusIdx, 1);
+    const status = this.opts.specialistStatus?.();
+    if (status) this.history.push({ role: 'user', content: `<specialists-status>\n${status}\n</specialists-status>` });
     // A plain string when there are no image parts — that is the byte-identical
     // shape every existing test and rebuildHistory() already assert on, so the
     // no-attachment path must not become a one-element parts array.

@@ -1132,3 +1132,56 @@ describe('HarnessSession — postSteer', () => {
     expect(session.drainUnappliedSteers()).toEqual([]);
   });
 });
+
+describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', () => {
+  it('a non-null specialistStatus is injected before the user message, and a null one REMOVES the stale block', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    // Turn 1: a specialist is running. Turn 2: nothing left to report.
+    const statuses = ['Nadia (researcher): running — step 3, 12s', null];
+    let call = 0;
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => statuses[call++] }),
+      async () => model as any,
+    );
+    await session.send('go');
+    await session.send('again');
+
+    // Turn 1's request carries the status block, positioned BEFORE the typed
+    // user text — the model reads "here's what's running" before "here's what
+    // you asked".
+    const p1 = JSON.stringify(seen[0]);
+    expect(p1).toContain('<specialists-status>');
+    expect(p1.indexOf('<specialists-status>')).toBeLessThan(p1.indexOf('go'));
+
+    // Turn 2's specialistStatus returned null — the block from turn 1 must be
+    // GONE, not merely un-added-to.
+    const p2 = JSON.stringify(seen[1]);
+    expect(p2).not.toContain('<specialists-status>');
+  });
+
+  it('exactly ONE status block ever lives in history — turn N replaces turn N-1', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const statuses = ['Nadia (researcher): running — step 1, 5s', 'Nadia (researcher): running — step 3, 40s'];
+    let call = 0;
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => statuses[call++] }),
+      async () => model as any,
+    );
+    await session.send('go');
+    await session.send('again');
+
+    const p2 = JSON.stringify(seen[1]);
+    const blockCount = (p2.match(/<specialists-status>/g) ?? []).length;
+    expect(blockCount).toBe(1);
+    expect(p2).toContain('step 3');
+    expect(p2).not.toContain('step 1');
+  });
+});
