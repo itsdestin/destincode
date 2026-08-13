@@ -882,6 +882,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             // "Always allow" button on it, so losing it here would re-offer a
             // grant the engine can never honor.
             external: synTool.external,
+            // Carried so the full-auto safety-stop footer survives the
+            // synthetic→real tool-id handover (spec 2026-08-12, M5 2b).
+            permissionMode: synTool.permissionMode,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -1246,6 +1249,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
           external: action.external,
+          permissionMode: action.permissionMode,
         });
         found = true;
       }
@@ -1272,6 +1276,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
           external: action.external,
+          permissionMode: action.permissionMode,
         });
 
         const groupId = nextGroupId();
