@@ -295,6 +295,11 @@ const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 // STALL_WARNING_MS, then act after a further STALL_RETRY_COUNTDOWN_MS grace.
 const STALL_WARNING_MS = 60_000;          // silence tolerated before we warn
 const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acting
+/** Min gap between argument-progress emits, PER tool call. The preparing card
+ *  only has to prove the stream is alive; a per-chunk emit would spam desktop
+ *  IPC, the remote WebSocket, and the Android bridge for no extra information.
+ *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
+const TOOL_PREPARING_EMIT_MS = 300;
 // consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
 // so the step can be safely re-run once (re-running after content streamed would
 // duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
@@ -1707,6 +1712,11 @@ export class HarnessSession extends EventEmitter {
     }
     armWatchdog();
 
+    // Argument-generation progress, keyed by the provider's tool call id. Per
+    // STEP, not per session: a retry re-enters this function with a fresh map.
+    // Display-only — the card the renderer draws from this never reaches disk.
+    const preparing = new Map<string, { toolName: string; chars: number; lastEmitAt: number }>();
+
     try {
       while (true) {
         const nextPromise = iterator.next();
@@ -1730,7 +1740,17 @@ export class HarnessSession extends EventEmitter {
           iterator.return?.().catch(() => {});
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
-          if (!emittedAny && isFirstAttempt) return STALL_RETRY;
+          if (!emittedAny && isFirstAttempt) {
+            // The step re-runs INSIDE the same turn, so endTurn's reaping never
+            // fires. Withdraw any preparing card explicitly or it spins for the
+            // rest of the turn while the retry mints a second card beside it.
+            for (const [prepId, entry] of preparing) {
+              this.emitEvent('assistant-thinking', {
+                toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+              });
+            }
+            return STALL_RETRY;
+          }
           // Name the phase honestly: a model that never STARTED (prefill) has not
           // "stopped responding", and telling the user it did sends them chasing a
           // provider fault that isn't there.
@@ -1784,6 +1804,49 @@ export class HarnessSession extends EventEmitter {
             // assistant-thinking WITH data.text → the reducer's reasoning path;
             // payload-less would stay a heartbeat.
             this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
+            break;
+          }
+          case 'tool-input-start': {
+            // The model has begun COMPOSING a tool call — nothing has executed.
+            // Emitted unthrottled on purpose: this is the event that makes the
+            // card appear, and every ms of delay here is visible generic-spinner
+            // time, which is the entire problem this exists to fix.
+            //
+            // NOTE the field names: on fullStream this part is
+            // { id, toolName } (TextStreamToolInputStartPart) — NOT the
+            // { toolCallId, ... } UIMessageChunk variant of the same name.
+            // `id` is the same string the completed 'tool-call' below carries as
+            // toolCallId, which is what lets the card transition IN PLACE.
+            const prepId = typeof part.id === 'string' ? part.id : '';
+            const prepName = typeof part.toolName === 'string' ? part.toolName : '';
+            if (!prepId || !prepName) break;
+            preparing.set(prepId, { toolName: prepName, chars: 0, lastEmitAt: Date.now() });
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: prepName, chars: 0 },
+            });
+            break;
+          }
+          case 'tool-input-delta': {
+            // Argument fragments. Counted for the card's liveness counter and
+            // otherwise DISCARDED — the completed 'tool-call' part carries the
+            // real parsed input, and buffering a second copy of a whole file
+            // here would double the turn's peak memory for no gain.
+            //
+            // Deliberately does NOT set emittedAny: that flag gates whether a
+            // stall may auto-retry, and flipping it here would disable the retry
+            // for every turn whose stall lands mid-arguments. Nothing has
+            // executed at that point, so re-running the step is exactly the safe
+            // case the retry exists for.
+            const deltaId = typeof part.id === 'string' ? part.id : '';
+            const entry = preparing.get(deltaId);
+            if (!entry) break;
+            entry.chars += typeof part.delta === 'string' ? part.delta.length : 0;
+            const nowMs = Date.now();
+            if (nowMs - entry.lastEmitAt < TOOL_PREPARING_EMIT_MS) break;
+            entry.lastEmitAt = nowMs;
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: deltaId, toolName: entry.toolName, chars: entry.chars },
+            });
             break;
           }
           case 'tool-call':

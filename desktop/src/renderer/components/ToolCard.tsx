@@ -39,6 +39,18 @@ function truncate(s: string, max: number): string {
 // to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
 
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
+  // The model is still GENERATING this call's arguments, so `input` is empty and
+  // every per-tool detail line below would render blank. Show the argument
+  // character count instead: it is the only thing on a preparing card that
+  // CHANGES, and for Read/Write/Edit the preparing state is effectively the
+  // card's whole visible life (execution is a synchronous fs call), so a static
+  // card would sit unchanged for minutes and read as stuck.
+  if (tool.preparing) {
+    return {
+      label: tool.toolName,
+      detail: `preparing… ${(tool.preparingChars ?? 0).toLocaleString()} chars`,
+    };
+  }
   const { toolName, input } = tool;
 
   switch (toolName) {
