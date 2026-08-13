@@ -7,20 +7,22 @@
 // makeSession already accepts a `tools` override; we pass the REAL CORE_TOOLS set
 // (10 tools incl. WebSearch) so the assertions run against production tools, not
 // the fake Glob+Read default. CLOUD_DEFAULT.canDelegate is true (Task 6), so
-// buildAiTools() also attaches the conditional Task tool here — 11, not 10.
+// buildAiTools() also attaches the conditional Task tool here — 11, not 10 — and
+// (Task 14) ModelSearch rides the identical gate as Task, so it's 12.
 import { describe, it, expect } from 'vitest';
 import { makeSession } from './helpers/harness-fakes';
 import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
 import { CORE_TOOLS } from '../src/main/harness/tools';
 
-const CORE_PLUS_CONDITIONAL_TASK = CORE_TOOLS.length + 1;
+const CORE_PLUS_CONDITIONAL_TASK = CORE_TOOLS.length + 2; // Task + ModelSearch (Task 14)
 
 describe('simplified tool presentation', () => {
   // WHY the title says "ten CORE tools (plus the conditional Task tool)"
   // rather than a single count: this session attaches Task (CLOUD_DEFAULT.
-  // canDelegate is true and it's not a specialist child), so the assertion
-  // below checks CORE_PLUS_CONDITIONAL_TASK (11), not CORE_TOOLS.length (10).
-  // A title claiming "ten" while asserting eleven silently drifts true the
+  // canDelegate is true and it's not a specialist child) AND ModelSearch
+  // (Task 14, same gate), so the assertion below checks
+  // CORE_PLUS_CONDITIONAL_TASK (12), not CORE_TOOLS.length (10).
+  // A title claiming "ten" while asserting twelve silently drifts true the
   // moment someone reads only the title.
   it('simplified profile hands the model compact descriptions; all ten CORE tools (plus the conditional Task tool) stay present', () => {
     const simplified = (makeSession({ tools: CORE_TOOLS, profile: { ...CLOUD_DEFAULT, maxToolPresentation: 'simplified' } }) as any).buildAiTools();

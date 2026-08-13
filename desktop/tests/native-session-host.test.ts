@@ -11,6 +11,8 @@ import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from '.
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 import { OWNER } from '../src/main/harness/specialists/delegation-ledger';
+import { ModelSearchTool } from '../src/main/harness/tools/model-search';
+import type { CatalogModel } from '../src/shared/provider-types';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -1364,6 +1366,37 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    // Task 14: opts.binding, when tools/task.ts already resolved an override
+    // (a designated tier or a validated specific id), is what the CHILD
+    // actually launches on — not the parent's own binding. Every field that
+    // reads `binding` downstream (the header, retainModel's ref-count, the
+    // child's own HarnessSession) must agree on the OVERRIDE, not silently
+    // fall back to the parent's.
+    it('createChild launches on opts.binding when one is given, not the parent\'s own model', async () => {
+      const { store, h } = await withParent();
+      const override = { providerId: 'anthropic', modelId: 'claude-opus-5' };
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        binding: override,
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual(override);                 // NOT the parent's { providerId: 'openrouter', modelId: 'm' }
+      expect(h.modelForSession(childId)).toBe('claude-opus-5');   // retainModel ref-counted the RESOLVED model
+      expect(h.sessionsForModel('claude-opus-5')).toEqual([childId]);
+      expect(h.sessionsForModel('m')).toEqual(['root-1']);        // the parent's own ref is untouched
+      await h.destroyAll();
+    });
+
+    it('createChild falls back to the parent\'s binding when opts.binding is omitted (pre-Task-14 default, unchanged)', async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });
+      await h.destroyAll();
+    });
+
     it('createChild rejects a workDir outside the parent cwd', async () => {
       const { h } = await withParent();
       await expect(h.createChild('root-1', {
@@ -2076,6 +2109,73 @@ describe('NativeSessionHost', () => {
       expect(interruptedLine).toBe('Greg (writer): interrupted — no report will arrive');
       expect(interruptedLine).not.toContain('delivery pending');
 
+      await h.destroyAll();
+    });
+  });
+
+  // Fix pass, Finding 1: toolWiring() used to hardcode `catalog: async () =>
+  // null` unconditionally, so ModelSearch and a per-hire specific-model-id
+  // override could NEVER see a real catalog even when one was available —
+  // every specific id was refused regardless of whether it existed. This
+  // proves the fix: when the constructor's `toolServices` param carries a
+  // `modelCatalog` closure (exactly how ipc-handlers.ts wires it — see its
+  // own construction site), the session's assembled services.models.catalog()
+  // resolves to REAL rows, and ModelSearch reports actual matches instead of
+  // the "catalog not loaded" fallback.
+  describe('a real catalog reaches services.models.catalog() (Task 14 fix pass, Finding 1)', () => {
+    const CATALOG: CatalogModel[] = [
+      { id: 'anthropic/claude-opus-5', providerId: 'openrouter', label: 'Claude Opus 5', pricing: { in: 15, out: 75 }, contextLength: 200_000 },
+    ];
+
+    it('services.models.catalog() resolves to the injected modelCatalog closure\'s rows, not null', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const catalog = await session.opts.toolServices.models.catalog();
+      expect(catalog).toEqual(CATALOG);
+      await h.destroyAll();
+    });
+
+    it('ModelSearch, run through the real wiring, returns actual matches instead of the "catalog not loaded" refusal', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const ctx = {
+        sessionId: 'root-1', cwd: root, signal: new AbortController().signal,
+        readRegistry: new Map(), todos: [] as any[], services: session.opts.toolServices,
+      };
+      const result = await ModelSearchTool.execute({ query: 'claude' } as any, ctx as any);
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain('anthropic/claude-opus-5');
+      expect(result.text).not.toContain('Model list is unavailable right now (catalog not loaded)');
+      await h.destroyAll();
+    });
+
+    it('without a modelCatalog closure, the catalog stays null (unchanged pre-fix-pass default — no behavior change)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const catalog = await session.opts.toolServices.models.catalog();
+      expect(catalog).toBeNull();
       await h.destroyAll();
     });
   });
