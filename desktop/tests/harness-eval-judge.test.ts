@@ -13,6 +13,7 @@ import {
   judgeRun, MIN_QUOTE_CHARS, MAX_QUOTE_SEGMENTS, JUDGE_SCALE_MAX,
   type Grade, type JudgeResult,
 } from '../src/main/harness/eval/judge';
+import { calledTool } from '../src/main/harness/eval/assertions';
 import type { CaseRun, CheckResult, RubricItem } from '../src/main/harness/eval/case-types';
 import type { TranscriptEvent } from '../src/shared/types';
 
@@ -321,6 +322,32 @@ describe('judgeRun vs the mechanical checks', () => {
     ]), passedGrep);
     expect(r.warnings.join()).toMatch(/contradict/i);
     expect(r.warnings.join()).toMatch(/called-tool:Grep/);
+  });
+
+  // PINS A CROSS-MODULE COUPLING THAT NOTHING ELSE HOLDS.
+  //
+  // judge.ts reads tool evidence by regex-matching the check ID against
+  // `called-tool:` — deliberately, because the previous version scanned the
+  // free-text `detail` and could print a factually INVERTED warning (a check
+  // that passed by proving a tool was never used registered that tool as
+  // proven). The id is a controlled vocabulary; prose is not.
+  //
+  // But the two halves live in different modules and were built in separate
+  // worktrees. Every other test here hand-writes the string 'called-tool:Grep',
+  // so if assertions.ts ever renames its prefix, the regex silently matches
+  // nothing, contradiction detection goes quiet, and NOT ONE TEST FAILS. This
+  // test is the only thing that would notice: it takes the id from the real
+  // factory rather than retyping it.
+  it('reads the id shape assertions.ts actually emits, not a hand-written copy', async () => {
+    const realResult = calledTool('Grep').run(makeRun());
+    expect(realResult.state).toBe('passed'); // the run above really does call Grep
+
+    const r = await judgeRun(makeRun(), RUBRIC, fakeJudge([
+      { id: 'searched', score: 0, quote: '...', reason: 'It never searched the code.' },
+    ]), [realResult]);
+
+    expect(r.warnings.join()).toMatch(/contradict/i);
+    expect(r.warnings.join()).toContain(realResult.id);
   });
 
   it('leaves the score alone when it warns', async () => {
