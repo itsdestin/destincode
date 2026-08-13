@@ -417,7 +417,7 @@ export class NativeSessionHost extends EventEmitter {
       // by the time the finally block runs the report is already a value this
       // method owns — a teardown failure can no longer discard work the child
       // genuinely produced.
-      const run = await this.runSpecialist(childId, opts.prompt, parentId, parentCwd);
+      const run = await this.runSpecialist(childId, opts.prompt);
       const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
       if (this.ledger && parentCwd) {
         // Fix (review round 2, Finding 1): this write used to sit INSIDE the
@@ -495,9 +495,20 @@ export class NativeSessionHost extends EventEmitter {
    *
    *  Throws (typed, with the child id) on every no-report outcome; the Task
    *  tool renders that as an isError result for the parent model to read. */
-  private async runSpecialist(childId: string, prompt: string, parentId: string, parentCwd: string | undefined): Promise<SpecialistRunResult> {
+  private async runSpecialist(childId: string, prompt: string): Promise<SpecialistRunResult> {
     const entry = this.live.get(childId);
     if (!entry) throw new Error(`the specialist session ${childId} was gone before its work could start.`);
+
+    // Fix (review): parentId and parentCwd used to be passed in as two extra
+    // parameters from spawnSpecialist, duplicating data createChild already
+    // stamped onto this child's own live entry — a future second call site
+    // could pass either out of sync with what's actually on `entry`. Both are
+    // derived here instead: parentSessionId is set unconditionally by
+    // createChild for every specialist child, and parentCwd is the one-hop
+    // lookup spawnSpecialist itself does (this.live.get(parentId)?.cwd) — NOT
+    // entry.cwd, which is this CHILD's own workDir, not its parent's.
+    const parentId = entry.parentSessionId;
+    const parentCwd = parentId ? this.live.get(parentId)?.cwd : undefined;
 
     // ---- Task 7 (plan 1b, spec §3): heartbeat staleness, flags-never-kills --
     // Liveness is heartbeat-based, not wall-clock: a slow local model doing a
@@ -513,12 +524,16 @@ export class NativeSessionHost extends EventEmitter {
     const setStale = (next: boolean) => {
       if (isStale === next) return;           // write ONLY on transitions — not every poll tick
       isStale = next;
-      if (this.ledger && parentCwd) {
+      if (this.ledger && parentCwd && parentId) {
         // Fire-and-forget, same log-only/never-fatal contract every other
         // ledger write in this method follows: a bookkeeping failure must
         // never disturb a run that is otherwise healthy. updateIfRunning (not
         // update) so a flag can't resurrect/overwrite a record that already
         // reached a terminal status (interrupted/failed/completed) elsewhere.
+        // parentId's `&&` check here is belt-and-suspenders for the type
+        // checker (entry.parentSessionId is optional on LiveEntry) — createChild
+        // always sets it for a specialist child, so this method is only ever
+        // reached with both defined.
         this.ledger.updateIfRunning(parentCwd, parentId, childId, { stale: next }).catch((err) => {
           log('ERROR', 'NativeSessionHost', 'failed to record specialist staleness in the ledger', { childId, parentId, error: String(err) });
         });
