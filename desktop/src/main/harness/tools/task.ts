@@ -116,7 +116,10 @@ export function createTaskTool(): NativeTool<TaskArgs> {
 
       if (!services.tryReserveSlot(parentId)) {
         return {
-          text: `Refused: this session is at capacity (max ${HOSTED_MAX_CONCURRENT_SPECIALISTS}) concurrent specialists. `
+          // Fix: the parenthetical was closing before "concurrent specialists",
+          // reading as "(max 3) concurrent specialists" instead of qualifying
+          // the whole noun phrase — "at capacity (max 3 concurrent specialists)".
+          text: `Refused: this session is at capacity (max ${HOSTED_MAX_CONCURRENT_SPECIALISTS} concurrent specialists). `
             + 'Wait for one of the running specialists to finish before starting another.',
           isError: true,
         };

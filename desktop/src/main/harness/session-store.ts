@@ -207,6 +207,11 @@ export class SessionStore {
 
   /**
    * Every persisted session with header metadata, newest first (Resume Browser).
+   * `options.includeChildren` (default false) controls whether specialist
+   * child sessions are included: by default they're hidden from the Resume
+   * Browser (a child is a normal session file marked by parentage, spec
+   * 2026-08-11 §1), so callers must opt in with `{ includeChildren: true }`
+   * to see them.
    * WHY bounded head-read (mirrors CC's Resume Browser, 256KB head): we need
    * only the header (line 1) and the first user-message (near the top), so a
    * full read is wasteful — and worse, a file exceeding Node's string cap

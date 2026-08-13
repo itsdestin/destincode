@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeRule } from '../src/renderer/components/permissions/describe-rule';
+import { describeRule, ruleKind } from '../src/renderer/components/permissions/describe-rule';
 
 describe('describeRule', () => {
   it('renders a Bash grant as the command it runs', () => {
@@ -40,5 +40,37 @@ describe('describeRule', () => {
   it('falls back to the tool name for an unknown tool', () => {
     expect(describeRule({ tool: 'SomeFutureTool', pattern: 'x', action: 'allow' }))
       .toEqual({ verb: 'Use SomeFutureTool', subject: 'x', broad: false });
+  });
+
+  // Fix 1 — remembered Task grants must read as plain language, never the raw
+  // `${charter}:${work_dir}` envelope key task.ts's permissionSubject mints,
+  // and never say "Task" out loud (model-facing vocabulary; the spec's word
+  // for the user is "specialist").
+  describe('Task grants (plain-language specialist copy)', () => {
+    it('renders a read-only charter subject', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-only:/home/x/proj', action: 'allow' }))
+        .toEqual({ verb: 'Let a read-only specialist work in', subject: '/home/x/proj', broad: false });
+    });
+
+    it('renders a read-write charter subject', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-write:/home/x/proj', action: 'allow' }))
+        .toEqual({ verb: 'Let a specialist edit files in', subject: '/home/x/proj', broad: false });
+    });
+
+    // The unknown-agent fallback in task.ts's permissionSubject — no charter
+    // prefix, just the bare work_dir.
+    it('renders a bare-path pattern (unknown-agent fallback) without a charter prefix', () => {
+      expect(describeRule({ tool: 'Task', pattern: '/home/x/proj', action: 'allow' }))
+        .toEqual({ verb: 'Let a specialist work in', subject: '/home/x/proj', broad: false });
+    });
+
+    it('renders a pattern-less Task grant as broad, in plain language', () => {
+      expect(describeRule({ tool: 'Task', action: 'allow' }))
+        .toEqual({ verb: 'Let specialists work anywhere in this project', broad: true });
+    });
+
+    it('groups under "commands", not the "other" catch-all', () => {
+      expect(ruleKind({ tool: 'Task', pattern: 'read-only:/home/x/proj', action: 'allow' })).toBe('commands');
+    });
   });
 });

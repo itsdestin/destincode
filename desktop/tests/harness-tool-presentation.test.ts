@@ -16,7 +16,13 @@ import { CORE_TOOLS } from '../src/main/harness/tools';
 const CORE_PLUS_CONDITIONAL_TASK = CORE_TOOLS.length + 1;
 
 describe('simplified tool presentation', () => {
-  it('simplified profile hands the model compact descriptions; all ten tools stay present', () => {
+  // WHY the title says "ten CORE tools (plus the conditional Task tool)"
+  // rather than a single count: this session attaches Task (CLOUD_DEFAULT.
+  // canDelegate is true and it's not a specialist child), so the assertion
+  // below checks CORE_PLUS_CONDITIONAL_TASK (11), not CORE_TOOLS.length (10).
+  // A title claiming "ten" while asserting eleven silently drifts true the
+  // moment someone reads only the title.
+  it('simplified profile hands the model compact descriptions; all ten CORE tools (plus the conditional Task tool) stay present', () => {
     const simplified = (makeSession({ tools: CORE_TOOLS, profile: { ...CLOUD_DEFAULT, maxToolPresentation: 'simplified' } }) as any).buildAiTools();
     const full = (makeSession({ tools: CORE_TOOLS, profile: CLOUD_DEFAULT }) as any).buildAiTools();
     // All ten CORE tools survive the simplified presentation — we compact

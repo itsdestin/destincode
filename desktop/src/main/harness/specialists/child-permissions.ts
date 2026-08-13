@@ -99,10 +99,13 @@ export function buildChildDecide(i: ChildPermissionInputs): ChildPermissionInput
       };
     }
     // 6/7. Parent ask. The launch approval already covered this work, so inside
-    //      a granted envelope it becomes an allow. denyListed is carried through
-    //      so the decision still records that a destructive-list rule is what
-    //      would have prompted. Without an envelope the ask passes through
-    //      untouched — this function never escalates on its own.
-    return i.envelopeGranted ? { action: 'allow', denyListed: parent.denyListed } : parent;
+    //      a granted envelope it becomes an allow. denyListed is hardcoded
+    //      false here (not `parent.denyListed`): step 5 above already
+    //      intercepted every deny-listed ask before this line, so
+    //      `parent.denyListed` is provably always false by the time we get
+    //      here — a deny-listed ask can never reach this branch. Without an
+    //      envelope the ask passes through untouched — this function never
+    //      escalates on its own.
+    return i.envelopeGranted ? { action: 'allow', denyListed: false } : parent;
   };
 }
