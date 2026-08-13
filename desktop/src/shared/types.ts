@@ -355,6 +355,24 @@ export interface ToolCallState {
    *  'full-auto' + denyListed swaps the generic button row for the safety-stop
    *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
   permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /**
+   * Native runtime only. The model is still GENERATING this call's arguments —
+   * nothing has executed, and `input` is an empty object until the real
+   * tool-use event supersedes this entry in place.
+   *
+   * A FLAG on a 'running' entry rather than a fifth ToolCallStatus, so every
+   * existing status consumer (endTurn, ChatView's hasRunningTools, ToolCard's
+   * spinner, AssistantTurnBubble's awaiting-approval hiding) keeps working
+   * untouched. Exactly two places opt in: ToolCard's body and reaping.
+   *
+   * Display-only and NEVER persisted — a preparing entry is DELETED on turn
+   * end, never failed and never given a result, so the tool-call/result pairing
+   * invariant is not involved.
+   */
+  preparing?: boolean;
+  /** Argument characters generated so far — the preparing card's liveness
+   *  counter. Meaningless once `preparing` is gone. */
+  preparingChars?: number;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
