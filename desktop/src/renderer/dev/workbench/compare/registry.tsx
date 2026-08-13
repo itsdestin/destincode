@@ -2116,15 +2116,23 @@ function GrantAskShell({ row, children }: {
 }
 
 /** The consequence confirm, verbatim from the shipped card — every candidate
- *  reuses it so only the CHOICE differs between panes. */
-function GrantConfirmShell({ command, children }: { command: string; children: React.ReactNode }) {
+ *  reuses it so only the CHOICE differs between panes.
+ *
+ *  `heading` is what R2 varies. The consequence sentence is gated on denyListed
+ *  exactly as ToolCard gates it today: an ordinary command never showed a "may
+ *  delete files" warning and must not start. */
+function GrantConfirmShell({ command, heading, denyListed, children }: {
+  command: string; heading: string; denyListed: boolean; children: React.ReactNode;
+}) {
   return (
     <>
-      <p className="text-xs font-medium text-fg-2">Always allow this exact command in youcoded?</p>
+      <p className="text-xs font-medium text-fg-2">{heading}</p>
       <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">{command}</p>
-      <p className="text-2xs text-fg-dim leading-relaxed">
-        It may delete files or change published code, and you won't be asked again during future sessions in this project.
-      </p>
+      {denyListed && (
+        <p className="text-2xs text-fg-dim leading-relaxed">
+          It may delete files or change published code, and you won't be asked again during future sessions in this project.
+        </p>
+      )}
       {children}
     </>
   );
@@ -2149,16 +2157,54 @@ function GrantCandidateButtons({ row }: { row: (typeof GRANT_ROWS)[number] }) {
   );
 }
 
+/** R2's axis: how much the confirm EXPLAINS. The shape is settled (R1 · B) —
+ *  one Always Allow button on the card, the choice inside the confirm behind it.
+ *  Every string below is a candidate, not a decision. */
+type GrantCopy = 'minimal' | 'options' | 'spelled';
+
 /** B — one Always Allow button as today; the CHOICE happens in the confirm, as a
- *  two-row radio with the exact option preselected. */
-function GrantCandidateRadio({ row }: { row: (typeof GRANT_ROWS)[number] }) {
+ *  two-row radio with the exact option preselected. `copy` selects R2's variant. */
+function GrantCandidateRadio({ row, copy = 'minimal' }: {
+  row: (typeof GRANT_ROWS)[number]; copy?: GrantCopy;
+}) {
   const options = bashGrantOptions(row.command);
+  const only = options.length === 1 ? options[0] : undefined;
   const [confirming, setConfirming] = React.useState(false);
   const [pick, setPick] = React.useState<string>('exact');
+
+  // The heading. R1 left the shipped string in place, which is false the moment
+  // the thing being granted is a branch rather than a command — this is the
+  // question R2 exists to settle.
+  const heading = copy === 'options'
+    ? 'Remember this for youcoded?'
+    : only?.scope === 'wide'
+      ? `${only.label} in youcoded?`
+      : only
+        ? 'Always allow this exact command in youcoded?'
+        : 'Always allow this in youcoded?';
+
+  // Per-option sub-lines: 'options' folds the caveat into the row it belongs to.
+  const sub = (scope: string) => copy !== 'options' ? null
+    : scope === 'exact'
+      ? 'Anything else — even one changed word — asks again.'
+      : 'Run on its own. A command chained onto another one still asks.';
+
+  // 'spelled' says the limits once, under the choice, in full.
+  const limits = copy !== 'spelled' ? null
+    : only?.scope === 'wide'
+      ? "This won't cover deleting or force-pushing the branch, or this command chained onto another one."
+      : "This won't cover the command chained onto another one, or run with options that change what it does.";
+
+  // What the card says when there is nothing to remember at all.
+  const noGrantNote = copy === 'minimal' ? null
+    : copy === 'options'
+      ? "Can't be remembered — this pushes whichever branch you're on at the time."
+      : "There's nothing to remember here: this sends whichever branch is checked out when it runs, so next time it could be a different one.";
+
   return (
     <GrantAskShell row={row}>
       {confirming ? (
-        <GrantConfirmShell command={row.command}>
+        <GrantConfirmShell command={row.command} heading={heading} denyListed={row.denyListed}>
           {options.length > 1 && (
             <RadioGroup
               options={options.map((o) => o.scope)}
@@ -2175,34 +2221,43 @@ function GrantCandidateRadio({ row }: { row: (typeof GRANT_ROWS)[number] }) {
                   className="flex items-start gap-2 text-left"
                 >
                   <Radio checked={pick === o.scope} onChange={() => setPick(o.scope)} className="mt-0.5" />
-                  <span className="text-2xs text-fg-2 break-all">
-                    {o.scope === 'exact' ? 'Only this exact command' : o.label}
+                  <span className="min-w-0">
+                    <span className="block text-2xs text-fg-2 break-all">
+                      {o.scope === 'exact' ? 'Only this exact command' : o.label}
+                    </span>
+                    {sub(o.scope) && <span className="block text-3xs text-fg-muted leading-relaxed">{sub(o.scope)}</span>}
                   </span>
                 </button>
               ))}
             </RadioGroup>
           )}
+          {limits && <p className="text-3xs text-fg-muted leading-relaxed">{limits}</p>}
           <div className="flex items-center gap-2">
             <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
             <button className={ASK_RED}>Always allow</button>
           </div>
         </GrantConfirmShell>
       ) : (
-        <div className="flex items-center gap-2">
-          <button className={ASK_GREEN}>{row.fullAuto ? 'Run it' : 'Yes'}</button>
-          {options.length > 0 && (
-            <>
-              {row.fullAuto && <span className="text-fg-faint text-xs select-none">|</span>}
-              <button
-                className={row.fullAuto ? ASK_ORANGE : ASK_BLUE}
-                onClick={() => setConfirming(true)}
-              >
-                Always Allow
-              </button>
-            </>
+        <>
+          <div className="flex items-center gap-2">
+            <button className={ASK_GREEN}>{row.fullAuto ? 'Run it' : 'Yes'}</button>
+            {options.length > 0 && (
+              <>
+                {row.fullAuto && <span className="text-fg-faint text-xs select-none">|</span>}
+                <button
+                  className={row.fullAuto ? ASK_ORANGE : ASK_BLUE}
+                  onClick={() => setConfirming(true)}
+                >
+                  Always Allow
+                </button>
+              </>
+            )}
+            <button className={ASK_RED}>{row.fullAuto ? 'Skip it' : 'No'}</button>
+          </div>
+          {options.length === 0 && noGrantNote && (
+            <p className="text-3xs text-fg-muted leading-relaxed">{noGrantNote}</p>
           )}
-          <button className={ASK_RED}>{row.fullAuto ? 'Skip it' : 'No'}</button>
-        </div>
+        </>
       )}
     </GrantAskShell>
   );
@@ -2224,7 +2279,13 @@ function GrantCandidateInline({ row }: { row: (typeof GRANT_ROWS)[number] }) {
   return (
     <GrantAskShell row={row}>
       {confirming && primary ? (
-        <GrantConfirmShell command={row.command}>
+        <GrantConfirmShell
+          command={row.command}
+          denyListed={row.denyListed}
+          heading={primary.scope === 'exact'
+            ? 'Always allow this exact command in youcoded?'
+            : `${primary.label} in youcoded?`}
+        >
           <div className="flex items-center gap-2">
             <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
             <button className={ASK_RED}>
@@ -2261,16 +2322,17 @@ function GrantCandidateInline({ row }: { row: (typeof GRANT_ROWS)[number] }) {
 /** One pane: all seven scenarios in the same candidate shape, each captioned
  *  with what it is meant to prove. Comparing one command across three shapes
  *  hides the cases where the shapes diverge — a row with one option, or none. */
-function GrantWidthPane({ variant }: { variant: 'buttons' | 'radio' | 'inline' }) {
-  const Candidate = variant === 'buttons' ? GrantCandidateButtons
-    : variant === 'radio' ? GrantCandidateRadio
-      : GrantCandidateInline;
+function GrantWidthPane({ variant, copy }: {
+  variant: 'buttons' | 'radio' | 'inline'; copy?: GrantCopy;
+}) {
   return (
     <div className="flex flex-col gap-4">
       {GRANT_ROWS.map((row) => (
         <div key={row.command} className="flex flex-col gap-1">
           <p className="text-3xs text-fg-muted leading-relaxed">{row.why}</p>
-          <Candidate row={row} />
+          {variant === 'buttons' ? <GrantCandidateButtons row={row} />
+            : variant === 'inline' ? <GrantCandidateInline row={row} />
+              : <GrantCandidateRadio row={row} copy={copy} />}
         </div>
       ))}
     </div>
@@ -2743,6 +2805,31 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'C · Widening is the second action',
             note: 'The confirm stays a yes/no about THIS command, and the widening sits under it as a quieter line. Preserves today\'s flow almost exactly and makes the narrow answer the obvious one. Cost: the least discoverable of the three, and an underlined text action is what R2 of the safety-stop round already rejected once.',
             render: () => <GrantWidthPane variant="inline" />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis:
+          'R1 · B (choose inside the confirm) — the SHAPE is settled: one Always Allow button on the card, the choice behind it. Two corrections landed with the pick. (1) Every git push row now offers ONE option, not two: the owner saw the two-option push card and said they were "just offering the same thing", which they were — a named grant and its exact rung differ only by options whose effect is invisible. (2) The consequence sentence is now gated on deny-listed, as ToolCard already gates it; R1 showed "may delete files" over `npm run build`, which the shipped card never would. R2 varies only HOW MUCH THE CONFIRM EXPLAINS, which is where the five open copy questions live: the heading (the shipped one says "this exact command", false for a branch grant), the option wording, whether the limits are stated before the grant is made rather than after it surprises someone, and what the bare `git push` card says when there is nothing to offer.',
+        candidates: [
+          {
+            id: 'minimal',
+            label: 'A · Say the least',
+            note: 'The heading names whatever is being granted and nothing else changes. No limits stated anywhere, and the bare `git push` card just quietly has no Always Allow button. Smallest reading load, and the closest to today. Cost: the two places this design knowingly re-asks — a chained command, a force-push — arrive with no warning, and the missing button on row 3 looks like a bug.',
+            render: () => <GrantWidthPane variant="radio" copy="minimal" />,
+          },
+          {
+            id: 'options',
+            label: 'B · Let the options explain themselves',
+            note: 'One neutral heading ("Remember this for youcoded?"), and each choice carries its own one-line consequence underneath — including the chained-command limit, which sits on the wide option because that is the only option it applies to. Row 3 gets one quiet line saying why nothing can be remembered. Cost: the tallest confirm, and a heading that no longer names the thing being granted.',
+            render: () => <GrantWidthPane variant="radio" copy="options" />,
+          },
+          {
+            id: 'spelled',
+            label: 'C · State the limits once, in full',
+            note: 'Heading names the grant as in A, and one sentence under the choice says what it will NOT cover — for a branch, that it excludes deleting and force-pushing. Everything the user is not getting is in one place instead of split across two rows. Cost: the sentence has to cover both options at once, so it is the vaguest of the three, and it reads as fine print.',
+            render: () => <GrantWidthPane variant="radio" copy="spelled" />,
           },
         ],
       },
