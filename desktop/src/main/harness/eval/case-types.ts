@@ -2,16 +2,12 @@
 // items a case can carry. `HARNESS_BATTERY` (cases/harness-battery.ts) is the
 // first EvalCase; the registry (cases/index.ts) is how a runner looks one up
 // by id.
-import type { BatteryRun } from './run-case';
-
-// WHY an alias rather than a fresh type: the plan (docs/active/plans/
-// 2026-08-12-harness-evaluator.md, Task 2 note) renames BatteryRun -> CaseRun
-// once run-case.ts itself becomes case-agnostic, but that rename touches
-// run-case.ts/run-facts.ts, which are outside this task's file list (and
-// potentially live in a sibling worktree's hands right now). Aliasing keeps
-// `Check.run` typed against the real finished-run shape today without
-// duplicating it or racing the rename.
-export type CaseRun = BatteryRun;
+// Imported AND re-exported: `Check.run` below needs CaseRun in local scope,
+// while report.ts, judge.ts, assertions.ts, and their tests all import
+// CaseRun from here rather than from run-case.ts directly — this file is the
+// case-layer's type surface.
+import type { CaseRun } from './run-case';
+export type { CaseRun };
 
 export type CheckState = 'passed' | 'failed' | 'never-ran';
 

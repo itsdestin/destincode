@@ -57,7 +57,7 @@ export interface RosterEntry {
    *  fetched at run time so a paid run never depends on a live catalog call —
    *  the cost is that it can drift, so re-check it when adding a model.
    *
-   *  Omitting it is safe: runBattery falls back to a conservative default and
+   *  Omitting it is safe: runCase falls back to a conservative default and
    *  caps whatever it gets. Getting it WRONG-HIGH is the dangerous direction —
    *  the run would overflow the model and 400 mid-battery. */
   contextLength?: number;

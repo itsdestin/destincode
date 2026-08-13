@@ -17,9 +17,9 @@ import type { SkillCatalog } from '../skills/skill-catalog';
 import type { ToolServices, NativeTool } from '../tools/types';
 import { ddgBackend } from '../search/backends/ddg';
 
-export type BatteryOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
+export type CaseOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
 
-export interface BatteryMetrics {
+export interface CaseMetrics {
   wallClockMs: number;
   toolCalls: number;
   asks: number;
@@ -45,7 +45,7 @@ export interface BatteryMetrics {
   repeats: { key: string; count: number }[];
 }
 
-export interface BatteryRun {
+export interface CaseRun {
   label: string;
   modelId: string;
   review: string;
@@ -72,7 +72,7 @@ export interface BatteryRun {
    *  `error`. 'complete' — the (single) testing turn finished on its own with
    *  a non-empty review. 'no-review' — the testing turn finished with empty
    *  final text and nothing else went wrong. */
-  outcome: BatteryOutcome;
+  outcome: CaseOutcome;
   /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
    *  testing turn ended on its own. 'budget' and 'timeout' fire on the testing
    *  turn's own outcome (max_steps exhaustion, wall clock); 'stopped-early'
@@ -82,7 +82,7 @@ export interface BatteryRun {
   wrapUpReason?: 'budget' | 'timeout' | 'stopped-early';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
-  metrics: BatteryMetrics;
+  metrics: CaseMetrics;
 }
 
 // Root-cause fix (2026-08-09): the first full-roster live run denied EVERY
@@ -200,7 +200,7 @@ export const BATTERY_TIMEOUT_MS = 1_200_000;
 //
 // fitToContext (harness-session.ts) sizes history as
 //     ctx (opts.contextLength ?? 32_768) - limits.maxTokens - 1024
-// and runBattery passed no contextLength, so the sum was
+// and runCase passed no contextLength, so the sum was
 //     32_768 - 32_000 - 1_024 = -256
 // — a NEGATIVE history budget, measured, on every request. With a non-positive
 // budget the size loop keeps exactly one message (its own comment: "history
@@ -358,7 +358,7 @@ const EMPTY_SKILL_CATALOG: SkillCatalog = {
   },
 };
 
-// Defect 2 fix: runBattery previously never passed `toolServices` at all, so
+// Defect 2 fix: runCase previously never passed `toolServices` at all, so
 // WebSearchTool's `if (!ctx.services?.search)` guard always tripped and every
 // live run reported "Web search is not wired for this session" — a false
 // finding, not a real harness limitation, and it left battery area 6 (Web)
@@ -398,7 +398,7 @@ export function makeReviewSearchServices(fetchImpl?: typeof fetch): ToolServices
   };
 }
 
-export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
+export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
   // Resolved and CHECKED before the fixture is seeded or a single token is
   // spent — a misconfigured window is a config error, not a run to salvage.
   const contextLength = Math.min(
@@ -408,7 +408,7 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
   assertHistoryBudget(contextLength);
   // Defaults preserve battery behavior exactly (see the WHY comments on
   // RunCaseOpts.prompt/wrapUpPrompt above) — every pre-evaluator caller omits
-  // these and gets the same prompt/wrap-up text runBattery always sent.
+  // these and gets the same prompt/wrap-up text runCase always sent.
   const prompt = opts.prompt ?? BATTERY_PROMPT;
   const wrapUpPrompt = opts.wrapUpPrompt ?? WRAP_UP_PROMPT;
 
@@ -434,7 +434,7 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
   // at all. WHY a second turn instead of a bigger budget: see WRAP_UP_PROMPT's
   // WHY comment above.
   let wrappingUp = false;
-  let wrapUpReason: BatteryRun['wrapUpReason'];
+  let wrapUpReason: CaseRun['wrapUpReason'];
   // Keyed on tool name + exact input. Reporting only — see REPEAT_REPORT_FLOOR.
   const repeatCounts = new Map<string, number>();
 
@@ -611,7 +611,7 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
     // Fix pass 1, Finding 2: HarnessSession emits 'tool-use' for a step BEFORE
     // execution and BEFORE decide() is consulted, so a call denied during
     // wrap-up would otherwise still land here. That matters because
-    // BatteryMetrics.toolsUsed is documented as "the evidence a review's
+    // CaseMetrics.toolsUsed is documented as "the evidence a review's
     // claims are checked against" (run-facts.ts consumes it that way — it
     // flags a review that names a tool absent from toolsUsed) — a denied
     // wrap-up attempt injecting a tool name into toolsUsed would silently
@@ -880,7 +880,7 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
     // secondary fact that the wrap-up attempt also failed. Otherwise an error
     // takes priority over a review the model may have partially produced
     // before failing.
-    const outcome: BatteryOutcome =
+    const outcome: CaseOutcome =
       wrapUpReason ? 'wrapped-up'
       : error ? 'error'
       : review ? 'complete'
@@ -912,18 +912,3 @@ export async function runCase(opts: RunCaseOpts): Promise<BatteryRun> {
     if (!opts.keepFixture) fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 }
-
-/** WHY a delegating function rather than a rename-everywhere: Task 1 proved
- *  the move was behavior-preserving by keeping the ~35 `runBattery` call
- *  sites in tests/harness-review-runner.test.ts untouched — that
- *  untouchedness IS the evidence the refactor preserved behavior, so
- *  renaming their entry point in the same change would forfeit it.
- *  WHY a function and not `export const runBattery = runCase` (the original,
- *  simpler shape): the const-alias form binds two exported names to the same
- *  value, which `npm run knip`'s "duplicates" check (gated in CI,
- *  desktop/knip.jsonc) flags as `Duplicate exports: runCase|runBattery` and
- *  fails the build — confirmed empirically (Fix pass 1, Finding 2): the
- *  const alias makes knip exit 1, this delegating function makes it exit 0,
- *  and `tsc --noEmit` stays clean either way. Temporary: Task 13 removes this
- *  once callers migrate to `runCase` directly. */
-export async function runBattery(opts: RunCaseOpts): Promise<BatteryRun> { return runCase(opts); }

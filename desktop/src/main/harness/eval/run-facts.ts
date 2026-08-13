@@ -7,10 +7,10 @@
 // was already on disk, written thirty lines earlier by the CLI, and nothing
 // consulted it.
 //
-// WHY pure: it takes a finished BatteryRun and returns strings, so the check is
+// WHY pure: it takes a finished CaseRun and returns strings, so the check is
 // unit-testable without a session or a paid run.
 import { CORE_TOOLS } from '../tools';
-import type { BatteryRun, BatteryMetrics, BatteryOutcome } from './run-case';
+import type { CaseRun, CaseMetrics, CaseOutcome } from './run-case';
 
 // Below this, a run did not exercise ten tools across seven areas, whatever its
 // text claims. Round 5's Qwen 3.6 27B stopped after two calls.
@@ -22,13 +22,13 @@ export const MIN_TOOL_CALLS = 10;
 const TOOL_NAMES = CORE_TOOLS.map((t) => t.name);
 
 export interface RunFacts {
-  metrics: BatteryMetrics;
-  outcome: BatteryOutcome;
+  metrics: CaseMetrics;
+  outcome: CaseOutcome;
   // Derived, never re-typed: this WAS a hand-copied literal union and it went
   // stale the moment a fourth trigger ('stopped-early') was added — tsc caught
   // it, but only because the assignment happened to be checked. Same reasoning
   // as TOOL_NAMES above.
-  wrapUpReason?: BatteryRun['wrapUpReason'];
+  wrapUpReason?: CaseRun['wrapUpReason'];
   error?: string;
   /** Tools the review names that never appear in metrics.toolsUsed. */
   unbackedClaims: string[];
@@ -60,7 +60,7 @@ export function claimedTools(reviewText: string): string[] {
 /** WHY a parameter: MIN_TOOL_CALLS is "what it takes to walk the battery" and
  *  is nonsense for a task like "explain this file", where two calls is a
  *  complete answer. The default keeps every existing caller identical. */
-export function collectRunFacts(run: BatteryRun, minToolCalls: number = MIN_TOOL_CALLS): RunFacts {
+export function collectRunFacts(run: CaseRun, minToolCalls: number = MIN_TOOL_CALLS): RunFacts {
   const used = new Set(run.metrics.toolsUsed);
   return {
     metrics: run.metrics,
