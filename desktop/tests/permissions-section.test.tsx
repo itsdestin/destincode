@@ -295,6 +295,33 @@ describe('PermissionsSection — behavioural contracts', () => {
     expect(screen.getByText(/every file/i)).toBeTruthy();
   });
 
+  // M5 2c: a scoped grant HAS a pattern but is narrow by construction. Putting
+  // the breadth note on it would teach the user to ignore the note on the
+  // tool-wide grants where it is true.
+  it('renders a scoped push grant as a branch sentence, with no breadth note', async () => {
+    list.mockResolvedValue([
+      { slug: '-p', cwd: '/p', rules: [
+        { tool: 'Bash', pattern: 'git push*origin master', action: 'allow', match: 'glob' },
+      ] },
+    ]);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    expect(screen.getByText(/Pushing to master/)).toBeTruthy();
+    expect(screen.queryByText(/every command/i)).toBeNull();
+    // And never the raw pattern, on a screen written for people who have never
+    // seen a glob.
+    expect(screen.queryByText(/git push\*/)).toBeNull();
+  });
+
+  it('still shows the breadth note on a genuinely tool-wide Bash grant', async () => {
+    list.mockResolvedValue([
+      { slug: '-p', cwd: '/p', rules: [{ tool: 'Bash', action: 'allow' }] },
+    ]);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    expect(screen.getByText(/every command/i)).toBeTruthy();
+  });
+
   // The confirm is the guard against a mis-click revoking something the user
   // wanted. A single-click revoke would be a regression, not a simplification.
   it('requires a confirm before removing, then calls remove with the SLUG', async () => {

@@ -727,10 +727,12 @@ function RuleRow({
 
   const described = describeRule(rule);
   const name = plainName(rule);
-  // Plain words under the title, never a status glyph or a badge. describeRule
-  // already reports MCP grants as not-broad, so the breadth note never fires on
-  // one — it marks the genuinely pattern-less grants, which cover every use.
-  const detail = [described.broad ? broadNote(rule.tool) : null, grantedLabel(rule.grantedAt)]
+  // Plain words under the title, never a status glyph or a badge. Only a
+  // genuinely TOOL-WIDE grant gets the note: describeRule already reports MCP
+  // grants as exact, and a scoped Bash grant ("Pushing to master") is narrow by
+  // construction and says what it covers in its own sentence — putting the scary
+  // note on it would teach the user to ignore it where it is true.
+  const detail = [described.width === 'tool-wide' ? broadNote(rule.tool) : null, grantedLabel(rule.grantedAt)]
     .filter(Boolean)
     .join(' · ');
 

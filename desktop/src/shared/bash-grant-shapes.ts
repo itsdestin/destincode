@@ -50,6 +50,23 @@ export const HOSTILE_CORPUS: readonly string[] = [
   'format c:',
 ];
 
+/** Turn a stored Bash pattern back into the sentence the confirm showed.
+ *
+ *  WHY it lives beside bashGrantOptions rather than in describe-rule.ts: the two
+ *  directions must agree, and keeping them in one module that changes together is
+ *  half of that. The other half is the round-trip test — proximity is a habit,
+ *  the test is the guarantee.
+ *
+ *  Returns null when the pattern is not one this module produces; the caller
+ *  falls back to its generic rendering rather than inventing a sentence. */
+export function describeBashPattern(pattern: string): string | null {
+  const push = /^git push\*(\S+) (.+)$/.exec(pattern);
+  if (push) return `Pushing to ${refDestination(push[2])}`;
+  const generic = /^([^*?]+?)\*$/.exec(pattern);
+  if (generic) return `Any ${generic[1].trim()} command`;
+  return null;
+}
+
 interface CommandShape {
   /** Matched against `${program} ${subcommand}`. */
   key: string;

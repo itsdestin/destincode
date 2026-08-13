@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bashGrantOptions, HOSTILE_CORPUS } from '../src/shared/bash-grant-shapes';
+import { bashGrantOptions, describeBashPattern, HOSTILE_CORPUS } from '../src/shared/bash-grant-shapes';
 import { ruleMatches } from '../src/shared/subject-glob';
 import { DESTRUCTIVE_DENY_LIST } from '../src/shared/permission-types';
 
@@ -196,6 +196,44 @@ describe('bashGrantOptions — git push scopes to one branch', () => {
       expect(exactOf(cmd)!.rule, `exact for ${cmd}`).toEqual({
         tool: 'Bash', pattern: cmd, action: 'allow', match: 'exact',
       });
+    }
+  });
+});
+
+describe('describeBashPattern — the reverse direction', () => {
+  it('reads a scoped push pattern back as the sentence the confirm showed', () => {
+    expect(describeBashPattern('git push*origin feat/x')).toBe('Pushing to feat/x');
+    expect(describeBashPattern('git push*origin master')).toBe('Pushing to master');
+    expect(describeBashPattern('git push*origin HEAD:feat/x')).toBe('Pushing to feat/x');
+  });
+
+  it('reads a generic wide pattern back', () => {
+    expect(describeBashPattern('npm run*')).toBe('Any npm run command');
+    expect(describeBashPattern('curl*')).toBe('Any curl command');
+  });
+
+  it('returns null for anything it cannot phrase', () => {
+    expect(describeBashPattern('rm -rf build')).toBeNull();
+  });
+
+  it('never emits rule syntax', () => {
+    for (const p of ['git push*origin feat/x', 'npm run*', 'curl*']) {
+      expect(describeBashPattern(p)).not.toMatch(/[*?]/);
+    }
+  });
+
+  it('round-trips every wide rung this module can produce', () => {
+    // The two directions MUST agree. Living in one file is not a guarantee —
+    // this is. A new command shape whose pattern this cannot phrase fails here
+    // rather than showing a raw glob in Settings.
+    const commands = [
+      'git push origin feat/x', 'git push origin master', 'git push origin HEAD:feat/x',
+      'npm run build', 'cargo test --release', 'ls -la /tmp', 'node scripts/x.mjs',
+    ];
+    for (const cmd of commands) {
+      const wide = bashGrantOptions(cmd).find((o) => o.scope === 'wide');
+      if (!wide) continue;
+      expect(describeBashPattern(wide.rule.pattern!), `no phrase for ${wide.rule.pattern}`).not.toBeNull();
     }
   });
 });
