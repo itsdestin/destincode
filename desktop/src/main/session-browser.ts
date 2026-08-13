@@ -409,6 +409,14 @@ export async function listPastSessions(
       continue;
     }
 
+    // Fix (final review, IMPORTANT 3): resolve once per slug DIRECTORY, not
+    // once per file inside it. resolveSlugToPath can fall through to R1's
+    // tier-2 whole-file scan (transcript-cwd.ts), which reads every
+    // top-level transcript in the dir — invoking it per-file inside
+    // files.map turned that into an N×N full-file-read multiplier on
+    // foreign-heavy directories, on the Resume Browser's hot path.
+    const projectPath = resolveSlugToPath(slug);
+
     const sessionPromises = files.map(async (file) => {
       const sessionId = file.replace('.jsonl', '');
       if (activeSessionIds?.has(sessionId)) return null;
@@ -439,7 +447,7 @@ export async function listPastSessions(
           sessionId,
           name,
           projectSlug: slug,
-          projectPath: resolveSlugToPath(slug),
+          projectPath,
           lastModified: meta.lastTimestampMs ?? stat.mtimeMs,
           size: stat.size,
           ...(joinedFlags ? { flags: joinedFlags } : {}),
