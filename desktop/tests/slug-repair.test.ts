@@ -376,6 +376,41 @@ describe('repairRecordsAndSpace (spec §6.2)', () => {
     expect(fs.existsSync(path.join(w.lane, w.bucket, 's6.jsonl'))).toBe(true); // moved to the correct bucket
     expect(fs.existsSync(path.join(w.lane, homeBucket))).toBe(true);          // $HOME bucket itself survives, empty
   });
+
+  // --- Final review: scope §6.2 to R2-owned sessions; converge to zero findings ---
+
+  it('healthy session (record ok, single copy already at target bucket) is a zero-finding no-op, and STAYS zero on re-run (CRITICAL 1+2)', async () => {
+    const w = makeWorld();
+    const t = path.join(w.correctDir, 's10.jsonl');
+    fs.writeFileSync(t, F('u1', w.P)); age(t);
+    fs.mkdirSync(path.join(w.lane, w.bucket), { recursive: true });
+    const spaceCopy = path.join(w.lane, w.bucket, 's10.jsonl');
+    fs.writeFileSync(spaceCopy, F('u1', w.P)); age(spaceCopy);
+    await w.store.upsert({ id: 's10', provider: 'claude', projectName: w.bucket,
+      originalPath: w.P, transcriptRef: `claude/transcripts/${w.bucket}/s10.jsonl` });
+    const recBefore = await w.store.get('claude', 's10');
+
+    const out1 = await repairRecordsAndSpace(w.opts);
+    expect(out1).toEqual([]); // ZERO findings — healthy session, nothing to do
+    expect(await w.store.get('claude', 's10')).toEqual(recBefore); // record untouched
+
+    const out2 = await repairRecordsAndSpace(w.opts); // second run — convergence
+    expect(out2).toEqual([]);
+  });
+
+  it('a transcript whose firstCwd is foreign, sitting in a known folder\'s correct CC dir, is never entered into the repair set (CRITICAL 1)', async () => {
+    const w = makeWorld();
+    const peerCwd = 'C:\\Users\\peer\\proj';
+    const t = path.join(w.correctDir, 's11.jsonl');
+    fs.writeFileSync(t, F('u1', peerCwd)); age(t); // materialized here, but ORIGINATES on a peer device
+    await w.store.upsert({ id: 's11', provider: 'claude', projectName: 'peer-project',
+      originalPath: peerCwd, transcriptRef: 'claude/transcripts/peer-project/s11.jsonl' });
+    const recBefore = await w.store.get('claude', 's11');
+
+    const out = await repairRecordsAndSpace({ ...w.opts, platform: 'linux' });
+    expect(out).toEqual([]); // no findings for this session
+    expect(await w.store.get('claude', 's11')).toEqual(recBefore); // originalPath (the peer's own path) untouched
+  });
 });
 
 describe('repairOrphanDirs (spec §6.3)', () => {

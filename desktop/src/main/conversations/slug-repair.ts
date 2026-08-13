@@ -189,6 +189,11 @@ function isLive(file: string, liveMs: number, now: () => number): boolean {
   try { return now() - fs.statSync(file).mtimeMs < liveMs; } catch { return true; } // unstat-able → treat as live (safe)
 }
 
+// MINOR fold (final review): path.resolve normalizes '.'/'..' and separators
+// but does NOT realpath — a saved folder reached through a symlink compares
+// unequal to its target here, so the repair silently no-ops for it rather
+// than misfiling anything. Safe direction; deliberate non-realpath (mirrors
+// spec §5.1's symlink discussion for ccProjectSlug itself).
 const sameDir = (a: string, b: string) => path.resolve(a) === path.resolve(b);
 
 export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
@@ -213,12 +218,16 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
     const correctDir = path.join(projectsDir, ccProjectSlug(P));
     const correct = path.join(correctDir, path.basename(file));
     if (!fs.existsSync(correct)) {
-      fs.mkdirSync(correctDir, { recursive: true });
-      // Review fix (Important 1): every other mutation in this module is
-      // guarded; this promotion rename wasn't. Fail closed — `file` never
-      // left, so a failure here loses nothing, but an unguarded throw would
-      // still abort the whole run and drop every finding already collected.
+      // Review fix (Important 1) + MINOR fold (final review): every other
+      // mutation in this module is guarded; this promotion (mkdir + rename)
+      // wasn't. Fail closed — `file` never left until renameSync succeeds,
+      // so a failure at either step loses nothing, but an unguarded throw
+      // would still abort the whole run and drop every finding already
+      // collected. Cover BOTH the mkdir and the rename in one try, not just
+      // the rename — an ENOSPC/EACCES on directory creation is the same
+      // hazard.
       try {
+        fs.mkdirSync(correctDir, { recursive: true });
         fs.renameSync(file, correct);
       } catch (e) {
         q.log(`ERROR ${sessionId}: move-to-correct rename failed — $HOME copy still at ${file}: ${String(e)}`);
@@ -322,9 +331,20 @@ export async function repairRecordsAndSpace(
   // bucket with two mis-filed sessions — bucket-scoped repair would either
   // miss them or destroy ~58 correct records).
   const repairSet = new Map<string, string>(); // sessionId -> project folder P
-  // (a) every top-level transcript in a known folder's correct CC dir
+  // (a) every top-level transcript in a known folder's correct CC dir —
+  // GATED to R2-owned sessions only (final review, CRITICAL 1). Spec §6.2's
+  // own set definition is "R2 home is a known folder P" — it is NOT "every
+  // file sitting in P's directory". Without this gate, a foreign-cwd
+  // transcript materialized here by sync (majority of some dirs, §1) got
+  // added unconditionally, and its record's originalPath — which describes
+  // the ORIGIN device, store-core.ts:26 — was silently overwritten with
+  // THIS device's path and pushed to the store (and from there synced to
+  // peers), with no log line anywhere. Mirrors repairHomeForks' R2 gate above.
   for (const P of knownFolders) {
-    for (const f of topLevelJsonl(path.join(projectsDir, ccProjectSlug(P)))) {
+    const correctDir = path.join(projectsDir, ccProjectSlug(P));
+    for (const f of topLevelJsonl(correctDir)) {
+      const cwd = firstCwd(f, platform);
+      if (!cwd || isForeignCwd(cwd, platform) || !sameDir(cwd, P)) continue;
       repairSet.set(path.basename(f, '.jsonl'), P);
     }
   }
@@ -351,7 +371,20 @@ export async function repairRecordsAndSpace(
     const copies = buckets
       .map(b => path.join(lane, b, `${sessionId}.jsonl`))
       .filter(p => fs.existsSync(p));
-    if (copies.length === 0 && recordOk) continue; // nothing to do — idempotent re-run
+    // Fix (final review, CRITICAL 2): convergence must be a true fixed point,
+    // not just "zero copies anywhere". The old skip only fired when there
+    // were literally no space copies at all, so a HEALTHY session — record
+    // already correct, its single copy already sitting in the right bucket —
+    // fell through to the live-guard/keeper-selection logic below every
+    // single launch: re-evaluated, re-found as a 'record-repaired' finding
+    // forever, and a recently-mirrored copy could trip the live guard into a
+    // false 'deferred-live' → false ATTENTION surfacing after MAX_DEFERRALS.
+    // copiesElsewhere excludes copies already filed under the correct
+    // bucket, so "record correct AND nothing left to relocate" is
+    // recognized and skipped BEFORE any live-guard check runs against a
+    // copy that was never going anywhere.
+    const copiesElsewhere = copies.filter(c => !sameDir(path.dirname(c), path.dirname(target)));
+    if (recordOk && copiesElsewhere.length === 0) continue; // converged — zero findings
 
     let moved = false; // did an actual file rename happen for this session?
     if (copies.length > 0) {
@@ -421,6 +454,11 @@ export async function repairRecordsAndSpace(
     // Record repair — THE step that stops the $HOME fork recurring (spec §4):
     // metadata-only upsert (no lastActive); projectName/originalPath/
     // transcriptRef are local truth and always land (conversation-store.ts).
+    // Fix (final review, CRITICAL 1+2 item 3): every record repair is a
+    // materially consequential mutation — spec §6.0 requires every decision
+    // logged, and this is the write that stops the $HOME fork recurring, so
+    // it must be reconstructable from the decisions log alone.
+    q.log(`RECORD-REPAIR ${sessionId}: projectName '${rec?.projectName ?? ''}' -> '${bucketName}', originalPath '${rec?.originalPath ?? ''}' -> '${P}', transcriptRef '${rec?.transcriptRef ?? ''}' -> 'claude/transcripts/${bucketName}/${sessionId}.jsonl'`);
     await store.upsert({
       id: sessionId, provider: 'claude',
       projectName: bucketName, originalPath: P,
@@ -570,6 +608,13 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   const all: RepairFinding[] = [];
   all.push(...repairHomeForks(opts));                                   // 6.1
   all.push(...await repairRecordsAndSpace({ ...opts, store, spaceRoot })); // 6.2
+  // WHY (final review, IMPORTANT 5): 6.3 runs AFTER 6.2 in this same pass, so
+  // a session 6.3 promotes into the correct CC dir THIS run was already past
+  // 6.2's scan and does not get its record repaired until the NEXT launch's
+  // 6.2 pass picks up the newly-present file. One-launch lag, known and
+  // self-correcting (the runner runs every startup) — do not read a
+  // surviving wrong record right after a supervised run as a failure; check
+  // again after one more launch.
   all.push(...repairOrphanDirs(opts));                                  // 6.3
 
   // Bounded deferral (spec §6.5): live sessions retry next launch, at most
