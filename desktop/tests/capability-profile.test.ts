@@ -98,6 +98,40 @@ describe('nativeImageToolResults (Task 6b)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Task 6 — canDelegate gates whether the model-invoked Task tool is attached
+// at all (spec decision 4: a weak/unverified orchestrator serial-collapses
+// delegated work rather than parallelizing it, so the gate is on the TOOL,
+// never on NativeSessionHost.createChild directly).
+// ---------------------------------------------------------------------------
+describe('canDelegate (Task 6, spec decision 4)', () => {
+  it('frontier/cloud providers default to true', () => {
+    expect(CLOUD_DEFAULT.canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 }).canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'openai', modelId: 'x', contextLength: 128_000 }).canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'openrouter', modelId: 'x', contextLength: 128_000 }).canDelegate).toBe(true);
+  });
+
+  it('the conservative fallback for an UNKNOWN local model cannot delegate, even at a large window', () => {
+    expect(resolveProfile(local('mystery-3b', 8_192)).canDelegate).toBe(false);
+    expect(resolveProfile(local('mystery-120b', 131_072)).canDelegate).toBe(false);
+  });
+
+  it('a known local model tuned to simplified presentation cannot delegate', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.5.*9b', label: 'Qwen 3.5 9B', maxToolPresentation: 'simplified', doomLoopThreshold: 2, supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.5-9b-q4', 32_768), registry).canDelegate).toBe(false);
+  });
+
+  it('a known local model tuned to full presentation CAN delegate', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', doomLoopThreshold: 3, supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).canDelegate).toBe(true);
+  });
+});
+
 describe('capability profile — injection sizing (M3 item 5)', () => {
   it('a large local window gets the skill catalog and a generous budget', () => {
     const p = resolveProfile(local('qwen3.6-122b', 128_000));

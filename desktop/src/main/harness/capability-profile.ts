@@ -42,6 +42,15 @@ export interface CapabilityProfile {
    *  blocks). Everything else gets the wire-adapter split. Provider-type fact,
    *  not a model fact — the registry never overrides it. */
   nativeImageToolResults: boolean;
+  /** May the model-invoked Task tool (Task 6, spec decision 4) be attached, to
+   *  spawn a specialist subagent? Spec decision 4: a weak/unverified
+   *  orchestrator does not actually parallelize delegated work — it
+   *  serial-collapses back into doing the specialist's job itself turn by
+   *  turn, paying the child's system-prompt overhead for nothing. So THIS
+   *  gates whether the tool is attached at all; it never gates
+   *  NativeSessionHost.createChild directly — a session that cannot delegate
+   *  simply never sees the option on its tool schema. */
+  canDelegate: boolean;
 }
 
 export type ProfileProviderType =
@@ -68,6 +77,9 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   constrainToolArgs: false, supportsTools: true,
   exposeSkillCatalog: true, injectionBudgetTokens: 20_000,
   mcpToolBudgetTokens: 20_000,
+  // Frontier/cloud models default true (spec decision 4) — they're the
+  // verified-capable orchestrator case the Task tool exists for.
+  canDelegate: true,
   // Conservative placeholder only: resolveProfile ALWAYS spreads the real
   // visionFor() result over this. It is false rather than true so a direct use
   // of CLOUD_DEFAULT (tests, future call sites) cannot accidentally claim a
@@ -206,6 +218,15 @@ function localFallback(ctx: number | null): BehavioralProfile {
     // Anthropic can carry an image inside a tool result), never a model fact, so
     // there is no local model, known or unknown, for which this could be true.
     nativeImageToolResults: false,
+    // Conservative default (spec decision 4): an UNKNOWN local model has not
+    // been vetted as a capable orchestrator, however large its window — a weak
+    // model handed the Task tool serial-collapses back into doing the
+    // specialist's own job itself instead of actually delegating. Unlike
+    // maxToolPresentation/promptVariant/doomLoopThreshold above, this is NOT
+    // tiered by context window: only a FRONTIER/cloud default, or a registry
+    // entry the maintainers explicitly reviewed and tuned to 'full' (see
+    // resolveProfile's known-model branch below), earns delegation.
+    canDelegate: false,
   };
 }
 
@@ -270,6 +291,15 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     supportsParallelToolCalls: known.supportsParallelToolCalls ?? base.supportsParallelToolCalls,
     constrainToolArgs: base.constrainToolArgs,           // always true for local
     supportsTools: known.supportsTools ?? base.supportsTools,
+    // A KNOWN local model earns delegation only when it resolves to FULL
+    // presentation — the same signal injectionSizing's `capable` check reuses
+    // (maxToolPresentation is already "this model can be trusted with a full
+    // schema and autonomous choices"; delegating IS one of those choices).
+    // `base.maxToolPresentation` (never base.canDelegate, which is always
+    // false) is the fallback so an entry that overlays maxToolPresentation
+    // without opining on canDelegate still reads its OWN presentation tier,
+    // not the conservative fallback's blanket false.
+    canDelegate: (known.maxToolPresentation ?? base.maxToolPresentation) === 'full',
     ...sizing,
     mcpToolBudgetTokens,
     supportsVision,

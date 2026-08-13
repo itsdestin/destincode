@@ -37,6 +37,13 @@ export interface PermissionDecision {
   /** True when the winning rule came from the destructive deny-list — drives
    *  the consequence-gated "Always allow" warning (spec §2.4 precedence ruling). */
   denyListed: boolean;
+  /** Optional model-facing refusal detail. When absent, harness-session renders
+   *  its generic "blocked by a permission rule" copy — which is what every
+   *  existing caller (decidePermission) still gets. Added for specialists
+   *  (plan 1a): a child refused a tool needs to know WHY ("not available to this
+   *  specialist") or a weak model will just retry the same call until its step
+   *  budget runs out. Model-facing text, not user-facing error copy. */
+  message?: string;
 }
 
 // The destructive deny-list: CONFIGURATION, not a tool-layer guard. Ships in
@@ -90,7 +97,17 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
       return [{ tool: '*', action: 'ask' }, ...alwaysAllowed];
     case 'auto-edit':
       return [{ tool: '*', action: 'ask' }, ...alwaysAllowed,
-        { tool: 'Edit', action: 'allow' }, { tool: 'Write', action: 'allow' }];
+        { tool: 'Edit', action: 'allow' }, { tool: 'Write', action: 'allow' },
+        // Task (Task 6, spec §5 walk-away autonomy — a PINNED decision, not an
+        // accident): delegating to a specialist grants that specialist nothing
+        // beyond what THIS mode already grants the parent directly. auto-edit
+        // already lets the parent Edit/Write itself with no ask, so spawning a
+        // write-capable specialist to do the same work needs no extra ask
+        // either. Deliberately absent from `alwaysAllowed` (the 'ask' baseline
+        // below): under 'ask' mode, the Task call itself IS the one moment the
+        // user consents to the whole delegated envelope — see permissionSubject
+        // in tools/task.ts.
+        { tool: 'Task', action: 'allow' }];
     case 'full-auto':
       return [{ tool: '*', action: 'allow' }];
   }

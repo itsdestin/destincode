@@ -295,7 +295,17 @@ export interface StructuredPatchHunk {
  * don't have user-typed messages).
  */
 export type SubagentSegment =
-  | { type: 'text'; id: string; content: string }
+  | {
+      type: 'text';
+      id: string;
+      content: string;
+      // Native runtime: per-token delta id, mirrors the main-timeline text
+      // segment's partId (chat-types.ts TRANSCRIPT_ASSISTANT_TEXT). Lets the
+      // reducer coalesce same-partId deltas into one segment instead of one
+      // per delta — see chat-reducer.ts applySubagentEvent. CC events never
+      // set this, so its absence preserves today's one-segment-per-event.
+      partId?: string;
+    }
   | {
       type: 'tool';
       id: string;

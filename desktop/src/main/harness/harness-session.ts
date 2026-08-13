@@ -34,7 +34,17 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // Skill the wrong treatment the moment it was added (found in the 2026-07-28
 // branch review). Naming the set means the next non-path-subject tool has one
 // place to declare itself instead of inheriting file-tool behavior by default.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
+//
+// Fix 4 (review round 1): Task's subject is a CHARTER-SCOPED CONSENT KEY
+// (`${charter}:${work_dir}`, tools/task.ts's permissionSubject), not a bare
+// path — the charter prefix exists precisely so a remembered "Always allow"
+// for a read-only specialist can't silently cover a future read-write one at
+// the same path (spec §5: the charter is the unit of envelope consent).
+// Running that string through checkPathGuard/injectPathTriggers would try to
+// canonicalize "read-only:/home/x/proj" AS a path, which is a category error
+// exactly like Bash's command string or Skill's id above — workDir containment
+// itself is already enforced inside NativeSessionHost.createChild.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
@@ -43,6 +53,7 @@ import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, coun
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
+import { createTaskTool } from './tools/task';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -97,6 +108,14 @@ export interface HarnessSessionOpts {
    *  NativeSessionHost from the process-level McpManager at create/resume.
    *  Absent/[] → no MCP tools attached, exactly the pre-Task-6 behavior. */
   mcpServers?: ReadyServer[];
+  /** Set ONLY by NativeSessionHost.createChild (Task 6) — true for a
+   *  specialist child session. Belt-and-suspenders against depth-2
+   *  delegation: createChild already never puts 'Task' in a child's filtered
+   *  tool set (no SpecialistDefinition.allowedTools lists it), so this is a
+   *  SECOND, independent gate on syncTaskTool, not the only one — a bug in
+   *  either check alone still cannot let a specialist spawn its own
+   *  specialists. Absent/false for every ordinary (non-child) session. */
+  isSpecialistChild?: boolean;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -433,6 +452,40 @@ export class HarnessSession extends EventEmitter {
    *  from what this session actually runs with (setBinding can have changed it). */
   get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
+  // How full this session's context window is right now, in tokens — the SAME
+  // number the turn-complete usage payload reports (see the emit site near the
+  // end of send()), kept on the instance so a caller can read it BETWEEN turns.
+  //
+  // WHY this exists (Task 7, specialists): sizing a specialist's report against
+  // the parent's remaining headroom needs the parent's occupancy, and main has
+  // no per-session usage cache — the old one was deliberately deleted
+  // (ipc-handlers.ts, near the noteModelUsed wiring) and the StatusBar's own
+  // context gauge is renderer-side, computed from the event it receives.
+  //
+  // WHY NOT usage.inputTokens: that field SUMS every step of the turn, so it
+  // re-counts the whole history once per step (a 5-step turn reports ~5x the
+  // real occupancy — Destin, 2026-07-28). The last step's prompt already
+  // contains everything, so lastIn + lastOut is the honest "how full".
+  private _contextUsedTokens: number | null = null;
+  /** Tokens occupying this session's window after its last COMPLETED step. Mid-
+   *  turn it is stale by at most one step, which is fine for a budget heuristic
+   *  — the alternative is a per-step event nobody else needs.
+   *
+   *  Fix (Task 7 review): this used to return raw `_contextUsedTokens`, which
+   *  stays null forever for a usage-silent provider (local models that don't
+   *  report token counts) — that made the headroom report cap silently never
+   *  fire for exactly the models that need it most. The turn-complete emit
+   *  site (near :1528, in send()) already falls back to estimateContextTokens()
+   *  in that case; mirror it here so this accessor and that payload never
+   *  disagree. Only returns null if the estimate itself were ever unavailable
+   *  (it isn't today — chars/4 always produces a number). */
+  get contextUsedTokens(): number | null { return this._contextUsedTokens ?? this.estimateContextTokens(); }
+  /** This session's resolved context window in tokens (null when no source
+   *  could answer). Paired with contextUsedTokens: "remaining" needs both, and
+   *  the session is the only place that tracks the CURRENT one — setBinding
+   *  re-resolves it on a mid-session model swap. */
+  get contextWindowTokens(): number | null { return this.opts.contextLength ?? null; }
+
   // Ids of MCP servers left off the LAST buildAiTools() pass for budget reasons
   // (Task 6) — recomputed every call, so a UI reading this after buildAiTools
   // always sees the CURRENT reason, not a stale one from a prior model/binding.
@@ -577,6 +630,29 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
+  /** Add or remove the Task tool to match the CURRENT profile + session kind
+   *  (Task 6, spec decision 4).
+   *
+   *  Two independent gates, BOTH required:
+   *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
+   *     delegated work instead of actually parallelizing it — see
+   *     capability-profile.ts's own WHY comment on the field.
+   *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
+   *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  Run per buildAiTools (not once in the constructor), same reason
+   *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
+   *  so Task must come back OFF when a session swaps down to a weak local
+   *  model and back ON when it swaps back up. The has()/delete() pair keeps
+   *  both directions idempotent.
+   */
+  private syncTaskTool(): void {
+    const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
+    if (!wanted) { this.toolByName.delete('Task'); return; }
+    if (this.toolByName.has('Task')) return;
+    this.toolByName.set('Task', createTaskTool());
+  }
+
   /** Add or remove MCP server tools to match the CURRENT profile's budget
    *  (Task 6, spec §6).
    *
@@ -664,6 +740,7 @@ export class HarnessSession extends EventEmitter {
     // old list around would misreport why MCP servers are unavailable.
     if (!this.profile.supportsTools) { this._droppedMcpServers = []; return {}; }
     this.syncSkillTool();
+    this.syncTaskTool();
     this.syncMcpTools();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
@@ -1326,6 +1403,13 @@ export class HarnessSession extends EventEmitter {
 
         lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
         lastOutputTokens = step.usage.outputTokens;
+        // Publish the same how-full number the turn-complete payload below
+        // reports, one step at a time, so `contextUsedTokens` is readable
+        // between turns (and mid-turn, stale by one step) instead of only
+        // existing inside this closure. Guarded on inputTokens > 0 for the same
+        // reason the emit site is: a provider that reports nothing must not
+        // overwrite a real reading with a zero.
+        if (lastInputTokens > 0) this._contextUsedTokens = lastInputTokens + lastOutputTokens;
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
@@ -1837,7 +1921,13 @@ export class HarnessSession extends EventEmitter {
     const decision: PermissionDecision = externalAsk
       ? { action: 'ask', denyListed: false }
       : await (this.opts.decide?.(call.toolName, subject) ?? Promise.resolve<PermissionDecision>({ action: 'ask', denyListed: false }));
-    if (decision.action === 'deny') return { text: `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
+    // A deny may carry its own model-facing reason (PermissionDecision.message):
+    // the specialist caps (child-permissions.ts) refuse with "not available to
+    // this specialist" / "read-only charter", which tells the model what to do
+    // instead. Without the reason a refused child reads the generic copy and
+    // retries the identical call until its step budget is gone. The generic
+    // sentence stays the default for every decide() that supplies no message.
+    if (decision.action === 'deny') return { text: decision.message ?? `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
     if (decision.action === 'ask') {
       // An ABSENT handler is a WIRING gap, not a user cancel — surface it as a
       // decline RESULT (the model can't proceed) instead of the 'interrupted'
@@ -1864,6 +1954,10 @@ export class HarnessSession extends EventEmitter {
       sessionId: this.opts.sessionId,
       cwd: this.opts.cwd,
       signal: this.abort!.signal,
+      // Task 6/7: the Task tool's own call id, threaded through as
+      // createChild's future parentToolCallId so the host can stamp the
+      // child's display events with the launch card they belong under.
+      toolCallId: call.toolCallId,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {

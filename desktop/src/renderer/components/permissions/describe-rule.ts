@@ -49,6 +49,31 @@ export function describeRule(rule: PermissionRule): RuleDescription {
     return { verb: `Use the ${mcp[2]} tool from the ${mcp[1]} connection`, broad: false };
   }
 
+  // WHY Task gets its own branch instead of falling into VERBS+pattern below:
+  // its pattern is not a literal path or command — task.ts's permissionSubject
+  // mints a charter-scoped envelope key (`${charter}:${work_dir}`, e.g.
+  // "read-only:/home/x/proj"). Rendering that raw ("Use Task —
+  // read-only:/home/x/proj") would both leak internal rule syntax onto a
+  // screen built for non-developers and say "Task" out loud, which is
+  // model-facing vocabulary — the spec calls this "specialists" everywhere a
+  // user reads it. Strip the charter prefix and speak the user's word instead.
+  if (rule.tool === 'Task') {
+    if (rule.pattern === undefined) {
+      return { verb: 'Let specialists work anywhere in this project', broad: true };
+    }
+    if (rule.pattern.startsWith('read-only:')) {
+      return { verb: 'Let a read-only specialist work in', subject: rule.pattern.slice('read-only:'.length), broad: false };
+    }
+    if (rule.pattern.startsWith('read-write:')) {
+      return { verb: 'Let a specialist edit files in', subject: rule.pattern.slice('read-write:'.length), broad: false };
+    }
+    // No charter prefix: task.ts's permissionSubject only produces this for an
+    // unresolvable agent name, which execute() already refuses before ever
+    // spawning — so this is an ask that's about to be declined, never a real
+    // standing grant. Still render something sane rather than raw syntax.
+    return { verb: 'Let a specialist work in', subject: rule.pattern, broad: false };
+  }
+
   const base = VERBS[rule.tool] ?? `Use ${rule.tool}`;
   // Nothing writes a deny rule today, but PermissionRule permits one — render it
   // as a block rather than silently as a grant.
@@ -92,6 +117,12 @@ const KIND_BY_TOOL: Record<string, RuleKind> = {
   NotebookEdit: 'files',
   WebFetch: 'connections',
   WebSearch: 'connections',
+  // A specialist can do everything its charter allows, up to and including
+  // running commands and editing files (a read-write charter gets Write/Edit/
+  // Bash — see child-permissions.ts's WRITE_TOOLS) — strictly broader than any
+  // single file-changing tool, so it sits at the same "runs on the machine"
+  // tier as Bash rather than under `files` or the `other` catch-all.
+  Task: 'commands',
   // Read / Glob / Grep / Skill / TodoWrite fall through to `other` on purpose:
   // they never change anything, and rulesForMode already allows them at every
   // baseline, so a remembered rule for one is a rarity rather than a category.

@@ -76,4 +76,40 @@ describe('decidePermission', () => {
     expect(d.action).toBe('allow');
     expect(d.denyListed).toBe(false);
   });
+
+  // Task 6 — the Task tool's mode-baseline decision, PINNED (not an accident,
+  // per rulesForMode's own comment): under 'ask', the Task call itself is the
+  // one moment the user consents to the whole delegated envelope, so it must
+  // NOT be in the always-allow baseline. Under auto-edit/full-auto, delegating
+  // grants a specialist nothing beyond what those modes already grant the
+  // parent directly, so Task is allowed with no extra ask.
+  it('Task asks under ask mode (the ask IS the envelope-consent moment)', () => {
+    expect(decidePermission('Task', 'src', layers('ask')).action).toBe('ask');
+  });
+  it('Task is auto-allowed under auto-edit and full-auto (spec §5 walk-away autonomy)', () => {
+    expect(decidePermission('Task', 'src', layers('auto-edit')).action).toBe('allow');
+    expect(decidePermission('Task', 'src', layers('full-auto')).action).toBe('allow');
+  });
+
+  // Task 6 review fix 4: the Task tool's consent key is now CHARTER-SCOPED
+  // (`${charter}:${work_dir}`, tools/task.ts's permissionSubject) precisely so
+  // a remembered "Always allow" earned by a read-only specialist can never
+  // silently cover a read-write one at the same path — the charter is the
+  // unit of envelope consent (spec §5). subjectMatches does exact/glob text
+  // matching with no charter-awareness of its own, so this is a property of
+  // the SUBJECT SHAPE, not of decidePermission's logic — proving it here
+  // (rather than only where the subject is built) pins that the two stay in
+  // sync: if a future change made the two charters share a prefix or dropped
+  // the charter from one side, this is what would catch it.
+  it("a remembered rule scoped to 'read-only:/proj' does NOT match a 'read-write:/proj' subject — a standing grant never crosses charters", () => {
+    const d = decidePermission('Task', 'read-write:/proj',
+      layers('ask', [{ tool: 'Task', pattern: 'read-only:/proj', action: 'allow' }]));
+    expect(d.action).toBe('ask');   // falls through to the safe default — no match, never silent-allow
+  });
+
+  it('…but the SAME charter at the same path does match (sanity check the pattern above isn\'t just never matching)', () => {
+    const d = decidePermission('Task', 'read-write:/proj',
+      layers('ask', [{ tool: 'Task', pattern: 'read-write:/proj', action: 'allow' }]));
+    expect(d.action).toBe('allow');
+  });
 });

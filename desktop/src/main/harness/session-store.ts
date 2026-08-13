@@ -26,6 +26,11 @@ export interface NativeSessionHeader {
   cwd: string;
   createdAt: number;
   title?: string;
+  // Specialists (spec 2026-08-11 §1): children are ordinary sessions marked
+  // by parentage; additive so v1 files need no migration.
+  parentSessionId?: string;
+  sessionKind?: 'root' | 'specialist';
+  agentType?: string;
 }
 
 export interface NativeSessionListEntry extends NativeSessionHeader {
@@ -202,6 +207,11 @@ export class SessionStore {
 
   /**
    * Every persisted session with header metadata, newest first (Resume Browser).
+   * `options.includeChildren` (default false) controls whether specialist
+   * child sessions are included: by default they're hidden from the Resume
+   * Browser (a child is a normal session file marked by parentage, spec
+   * 2026-08-11 §1), so callers must opt in with `{ includeChildren: true }`
+   * to see them.
    * WHY bounded head-read (mirrors CC's Resume Browser, 256KB head): we need
    * only the header (line 1) and the first user-message (near the top), so a
    * full read is wasteful — and worse, a file exceeding Node's string cap
@@ -211,12 +221,17 @@ export class SessionStore {
    * session does. readEvents (replay) still reads all lines — it genuinely
    * needs them.
    */
-  list(): NativeSessionListEntry[] {
+  list(options?: { includeChildren?: boolean }): NativeSessionListEntry[] {
+    const includeChildren = options?.includeChildren ?? false;
     const out: NativeSessionListEntry[] = [];
     for (const file of this.home.listSessionFiles()) {
       const lines = this.home.readSessionHead(file.slug, file.sessionId);
       const header = this.validateHeader(lines[0], file.sessionId);
       if (!header) continue; // torn/foreign file — not a native session we can resume
+      // Specialists (spec 2026-08-11 §1): a specialist child is a normal
+      // session file, hidden from the default list unless asked for. Guard on
+      // BOTH fields — a future writer setting only one must not leak a child.
+      if (!includeChildren && (header.sessionKind === 'specialist' || header.parentSessionId)) continue;
       // Title precedence (spec §2.6): explicit header title, else derive from
       // the FIRST user-message event — native sessions have no CC auto-title
       // hook, so the opening prompt is the best available label.

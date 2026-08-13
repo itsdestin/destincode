@@ -138,6 +138,31 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);       // loop continued to completion
   });
 
+  // Specialists (plan 1a, Task 5): a deny MAY carry its own model-facing reason.
+  // When it does, that reason replaces the generic copy in the tool result —
+  // otherwise a child refused a tool ("not available to this specialist") would
+  // read a generic "blocked by a permission rule" and simply retry the same call.
+  it('decide() deny WITH a message surfaces that message verbatim instead of the generic copy', async () => {
+    const write = fakeTool('Write');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [write], decide: async () => ({ action: 'deny', denyListed: false, message: 'The Write tool is not available to this specialist.' }) }),
+      async () => model as any,
+    );
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toBe('The Write tool is not available to this specialist.');
+    expect(res.data.toolResult).not.toMatch(/blocked by a permission rule/);
+    expect(JSON.stringify(seen[1])).toMatch(/not available to this specialist/); // model receives the REASON
+    expect((write as any).calls).toHaveLength(0);
+  });
+
   it('decide() ask → askUser; allow executes, deny returns "user declined" and does NOT execute', async () => {
     // Scenario A: ask → allow → executes.
     {
@@ -338,6 +363,33 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(askUser.mock.calls[0][0].toolName).toBe('Write');
     expect(decide).not.toHaveBeenCalled();               // external short-circuits configured decision
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
+  });
+
+  // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
+  // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
+  // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
+  // alongside that change, or checkPathGuard would try to canonicalize the
+  // charter prefix AS a path. Pinned indirectly (the set itself isn't
+  // exported): a subject shaped like a charter-scoped key that ALSO happens to
+  // look like a path outside cwd would force the 'external directory' ask
+  // above if Task were still running through the path guard — this proves it
+  // isn't, mirroring the sibling test one case up.
+  it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => 'read-write:/etc/x', schema: z.object({ agent: z.string() }) });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { agent: 'worker' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [task], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
+    // never ran checkPathGuard against "read-write:/etc/x" as though it were
+    // an absolute path outside C:/x.
+    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(askUser).not.toHaveBeenCalled();
   });
 
   // Phase 3 of the permissions-management plan (spec 2026-08-11, finding 3).

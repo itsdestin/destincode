@@ -19,6 +19,19 @@ export function textChunks(id: string, text: string) {
   ];
 }
 
+/** Multi-delta variant of textChunks: emits ONE text-delta part per string in
+ *  `texts`, all sharing `id`. Used to script a child that streams a report
+ *  across multiple chunks — regression coverage for the reducer's
+ *  same-partId coalescing (chat-reducer.ts applySubagentEvent), which
+ *  textChunks' single-delta framing can't exercise. */
+export function multiDeltaTextChunks(id: string, ...texts: string[]) {
+  return [
+    { type: 'text-start', id },
+    ...texts.map((delta) => ({ type: 'text-delta', id, delta })),
+    { type: 'text-end', id },
+  ];
+}
+
 /** One tool-call part. `input` is serialized to a JSON string (the raw shape);
  *  streamText parses it back to an object before the driver sees it. */
 export function toolCallChunk(toolCallId: string, toolName: string, input: unknown) {

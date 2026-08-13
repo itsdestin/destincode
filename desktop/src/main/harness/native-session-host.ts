@@ -29,7 +29,17 @@ import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
-import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
+import { createSkillCatalog, SkillNotFound, type SkillCatalog } from './skills/skill-catalog';
+import { canonicalize, resolveP } from './tools/guards';
+import { isUnderRoot } from '../artifacts/read-binary-access';
+import type { SpecialistDefinition } from './specialists/registry';
+import { buildChildDecide } from './specialists/child-permissions';
+import { childAskPolicy } from './specialists/child-ask-policy';
+import { assignSpecialistName } from './specialists/names';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
+import { computeReportBudget } from './specialists/report-budget';
+import { truncateOutput, composeNotice } from './tools/truncate';
+import { APPROX_CHARS_PER_TOKEN } from './message-size';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
@@ -77,6 +87,39 @@ type SendUnit = { text: string; attachments: string[] };
 
 const SEND_QUEUE_LIMIT = 10;
 
+// Specialists (Task 7) — the ONLY child transcript event types that are
+// re-emitted as stamped DISPLAY copies under the parent's session id.
+//
+// WHY exactly these three and nothing else: they are precisely what the
+// renderer's applySubagentEvent consumes (chat-reducer.ts) to fill the subagent
+// card's segments. Every OTHER type is persisted to the child's own file and
+// stops there, because a display copy is an event that LOOKS like the parent's
+// own — a stamped `turn-complete` would reach the conversation-record IPC
+// listener (noteModelUsed) and the conversation-title feeder under the PARENT's
+// id, ending the parent's turn in the reducer and attributing the child's model
+// usage to the parent. A stamped `session-error` would render the parent's
+// session as failed when only the child failed. `user-message` would put the
+// child's brief in the parent's timeline as if the user had typed it.
+const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+
+// The ONE reminder a silent specialist gets before its run is called a failure
+// (retry budget 1, spec §3). Deliberately a single short sentence: it is sent
+// as an ordinary user turn, so anything longer competes with the brief for the
+// child's attention.
+const EMPTY_REPORT_NUDGE = 'Your final message is your report — reply with your findings now.';
+
+/** What one specialist run produced. `usage` is summed across the run's turns
+ *  (the brief turn plus a nudge turn, if one was needed). */
+export interface SpecialistRunResult {
+  report: string;
+  /** Tool calls the child made, plus its final answering step. The transcript
+   *  has no per-step event, so this is counted from `tool-use` events rather
+   *  than read off the driver — good enough for a progress/telemetry number,
+   *  and it over-counts a step that emitted parallel tool calls. */
+  steps: number;
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
+}
+
 interface LiveEntry {
   session: HarnessSession;
   cwd: string;
@@ -122,6 +165,10 @@ interface LiveEntry {
   // quiesce()/teardown await this to know the in-flight turn has actually settled
   // — the host has no other awaitable handle on the fire-and-forget runTurns.
   running?: Promise<void>;
+  // Specialists (plan 1a): set ONLY on a child minted by createChild. It is the
+  // back-pointer that lets destroy() de-register this child from its parent's
+  // childrenOf set without re-reading the header off disk (see childrenOf).
+  parentSessionId?: string;
 }
 
 export class NativeSessionHost extends EventEmitter {
@@ -153,6 +200,287 @@ export class NativeSessionHost extends EventEmitter {
   // decide(), so an Always-allow always sticks for the rest of this session.
   // Disk remains the cross-session record; this is per-run and dropped on destroy.
   private rememberedFor = new Map<string, PermissionRule[]>();
+
+  // Specialists (plan 1a): parent session id → its live specialist children.
+  // Maintained by createChild() and by destroy() (which de-registers a child as
+  // it tears it down). WHY a map rather than re-reading headers at teardown:
+  // destroy()/interrupt()/quiesce() must find a session's children WITHOUT disk
+  // I/O — interrupt() is synchronous and cannot read files at all, and a
+  // teardown that depended on a readable header would silently leak a running
+  // child if the read failed.
+  private childrenOf = new Map<string, Set<string>>();
+
+  // Task 8 — the naming easter egg's per-parent draw-without-replacement
+  // state: parent session id → first names already handed out to ITS
+  // children. Scoped per parent (not global) for the same reason childrenOf
+  // is: an unrelated conversation's specialists must not shrink this one's
+  // name pool. Cleared alongside childrenOf in destroyChildrenOf() — a fresh
+  // delegation under a torn-down-and-reused parent id (there isn't one in
+  // practice, but nothing should assume it) would otherwise start with a
+  // phantom set of "already used" names.
+  private takenNamesOf = new Map<string, Set<string>>();
+
+  // Task 6 — the Task tool's per-parent state (spec §5 Global Constraints
+  // scope decision: PER-PARENT, never host-global — one session's specialist
+  // fan-out must not be capped, or blocked, by an UNRELATED session's
+  // children). Both are keyed by PARENT session id, never by child id.
+  //   specialistSlots: how many children this parent currently has running,
+  //     against HOSTED_MAX_CONCURRENT_SPECIALISTS (specialists/limits.ts).
+  //   activeWriterChild: the single write-capable (charter: 'read-write')
+  //     child currently running under this parent, if any — the single-writer
+  //     invariant (two concurrent write-capable children could race edits to
+  //     the same files). Absent = no writer active.
+  private specialistSlots = new Map<string, number>();
+  private activeWriterChild = new Map<string, string>();
+
+  /** Reserve one of this parent's concurrent-specialist slots. false = at
+   *  capacity; the caller (tools/task.ts) must not spawn. A successful
+   *  reservation MUST be paired with exactly one releaseSpecialistSlot() call. */
+  tryReserveSpecialistSlot(parentId: string): boolean {
+    const current = this.specialistSlots.get(parentId) ?? 0;
+    if (current >= HOSTED_MAX_CONCURRENT_SPECIALISTS) return false;
+    this.specialistSlots.set(parentId, current + 1);
+    return true;
+  }
+
+  /** Release a slot reserved by tryReserveSpecialistSlot. Deletes the map
+   *  entry at zero rather than leaving a 0 around forever, so a parent that
+   *  never delegates again doesn't linger in the map. */
+  releaseSpecialistSlot(parentId: string): void {
+    const current = this.specialistSlots.get(parentId) ?? 0;
+    if (current <= 1) this.specialistSlots.delete(parentId);
+    else this.specialistSlots.set(parentId, current - 1);
+  }
+
+  /** True when a write-capable specialist is already running under this
+   *  parent (the single-writer invariant). Read-only; tools/task.ts calls
+   *  this BEFORE spawning a read-write-charter specialist, never after. */
+  isSpecialistWriterBusy(parentId: string): boolean {
+    return this.activeWriterChild.has(parentId);
+  }
+
+  /** Mint a specialist child, run it to completion, and return its report
+   *  (Task 6's gate + bookkeeping, Task 7's run loop).
+   *
+   *  The whole foreground delegation flow lives here: createChild mints the
+   *  cold-started child (Task 5), runSpecialist delivers `opts.prompt` as its
+   *  first user turn and returns its last message, and this method wraps that
+   *  message with a header + transcript pointer after capping it against the
+   *  parent's remaining headroom. The Task tool (tools/task.ts) is what the
+   *  MODEL calls; it has already resolved the specialist and reserved the slot
+   *  before reaching here, and it renders a throw from this method as an
+   *  `isError` tool result rather than a dangling call. */
+  async spawnSpecialist(parentId: string, opts: {
+    specialist: SpecialistDefinition;
+    prompt: string;
+    workDir: string;
+    parentToolCallId: string;
+  }): Promise<{ childId: string; report: string }> {
+    const { childId, title } = await this.createChild(parentId, opts);
+    // WRITER LOCK (Task 6 review handoff note 2): this is a check-then-set
+    // across an await — tools/task.ts checks isWriterBusy(), then we set the
+    // lock after createChild's awaits. That is safe under 1a's SERIAL tool
+    // execution (the driver runs one tool at a time, so no second Task call
+    // can interleave between the check and this line) and is deliberately left
+    // as-is. Plan 1b's parallel delegation breaks that assumption and must move
+    // the check and the set into one synchronous reserve-or-refuse step.
+    if (opts.specialist.charter === 'read-write') this.activeWriterChild.set(parentId, childId);
+    try {
+      // PRODUCE THE REPORT FIRST, tear down after (Task 6 review handoff note
+      // 1). Both statements below are pure/local once the run has finished, so
+      // by the time the finally block runs the report is already a value this
+      // method owns — a teardown failure can no longer discard work the child
+      // genuinely produced.
+      const run = await this.runSpecialist(childId, opts.prompt);
+      const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
+      return { childId, report };
+    } finally {
+      // Fix 5 (review round 1): OWNER-CHECKED release. An unconditional delete
+      // would clear whichever child currently holds parentId's writer lock,
+      // including one minted by a LATER/concurrent Task call under the same
+      // parent once 1b adds parallel delegation — this finally block must only
+      // ever release the lock IT set, never someone else's.
+      if (this.activeWriterChild.get(parentId) === childId) this.activeWriterChild.delete(parentId);
+      // Fix 1 (review round 1): LEAK GUARD. Without this, a Task call would
+      // strand the child createChild() just minted — a live `this.live` entry,
+      // its on-disk header, a retainModel() ref (so its model could never fully
+      // unload), and its `childrenOf` registration. The child is a one-shot
+      // worker: its report is the only thing that outlives it (its transcript
+      // stays on disk), so it is torn down on EVERY exit path, success or not.
+      //
+      // SWALLOW-AND-LOG, never rethrow (handoff note 1): a throw out of a
+      // `finally` REPLACES whatever the try block was returning or throwing. So
+      // a teardown failure here would either discard a report the child already
+      // produced, or bury the real failure reason under a teardown error. Both
+      // are strictly worse than a logged teardown error plus the true outcome.
+      try {
+        await this.destroy(childId);
+      } catch (err) {
+        log('ERROR', 'NativeSessionHost', 'specialist teardown failed after the run finished', { childId, parentId, error: String(err) });
+      }
+    }
+  }
+
+  /** Drive ONE specialist child to completion and return its last message.
+   *
+   *  Failure detection is EVENT-based, not promise-based: the child's turn
+   *  drain (`entry.running`) never rejects — runTurns try/catches its send()
+   *  (see send()) — so awaiting it only tells us the turn SETTLED, never
+   *  whether it succeeded. The transcript stream is what says which: a
+   *  `session-error` means the provider/stream failed, `user-interrupt` means
+   *  the user (or a parent teardown) stopped it, and `turn-complete`'s
+   *  stopReason distinguishes a natural finish from the step cap.
+   *
+   *  Throws (typed, with the child id) on every no-report outcome; the Task
+   *  tool renders that as an isError result for the parent model to read. */
+  private async runSpecialist(childId: string, prompt: string): Promise<SpecialistRunResult> {
+    const entry = this.live.get(childId);
+    if (!entry) throw new Error(`the specialist session ${childId} was gone before its work could start.`);
+
+    // ---- Observation state, written by the listener below ----
+    let errorText: string | null = null;      // a session-error ended a turn
+    let interrupted = false;                  // Stop / parent teardown reached the child
+    let stopReason: string | undefined;       // the LAST turn's stopReason
+    // Assistant text since the last tool-use. Text emitted BEFORE a tool call
+    // is narration ("let me check X"), not the report — the report is whatever
+    // the child says after its final tool call, so a tool-use resets this.
+    let sinceLastTool = '';
+    // The most recent non-empty block, kept for the step-cap case: a child cut
+    // off mid-plan never gets to write a final message, and its last narration
+    // beats returning nothing at all.
+    let lastNonEmpty = '';
+    let steps = 0;
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+
+    const onEvent = (event: TranscriptEvent) => {
+      switch (event.type) {
+        case 'assistant-text':
+          sinceLastTool += String(event.data.text ?? '');
+          if (sinceLastTool.trim()) lastNonEmpty = sinceLastTool;
+          break;
+        case 'tool-use':
+          steps += 1;
+          sinceLastTool = '';
+          break;
+        case 'turn-complete': {
+          stopReason = event.data.stopReason;
+          const u = event.data.usage;
+          if (u) {
+            usage.inputTokens += u.inputTokens; usage.outputTokens += u.outputTokens;
+            usage.cacheReadTokens += u.cacheReadTokens; usage.cacheCreationTokens += u.cacheCreationTokens;
+          }
+          break;
+        }
+        case 'session-error':
+          errorText = String(event.data.text ?? '').trim() || null;
+          break;
+        case 'user-interrupt':
+          interrupted = true;
+          break;
+        default:
+          break;   // every other type is persistence-only for this purpose
+      }
+    };
+    entry.session.on('transcript-event', onEvent);
+
+    /** Run one turn and wait for its whole drain to settle. */
+    const runTurn = async (text: string): Promise<void> => {
+      stopReason = undefined;
+      sinceLastTool = '';
+      const res = this.send(childId, text);
+      // send() only refuses for reasons that cannot apply to a freshly-minted,
+      // idle child (not live / queue full) — so this is a wiring bug, not a
+      // model outcome, and it says exactly which refusal happened.
+      if (res.status !== 'sent') throw new Error(`the specialist session ${childId} refused its turn (${res.status}${'reason' in res && res.reason ? `: ${res.reason}` : ''}).`);
+      await entry.running;
+    };
+
+    /** The report this turn produced, or null when the child said nothing. */
+    const reportSoFar = (): string | null => {
+      const capped = stopReason === 'max_steps';
+      const text = (sinceLastTool.trim() || (capped ? lastNonEmpty.trim() : '')) || '';
+      if (!text) return null;
+      // A step-capped child DID work and DID say something — the parent needs
+      // both the partial finding and the fact that it is partial.
+      return capped ? `${text}\n\n(stopped at its step limit)` : text;
+    };
+
+    /** Turn the run's terminal conditions into a typed throw. Checked after
+     *  EVERY turn, because the nudge turn can fail the same ways the first one
+     *  can. */
+    const throwIfEnded = (): void => {
+      if (errorText) throw new Error(`${errorText} (specialist session ${childId})`);
+      if (interrupted) throw new Error(`the specialist was stopped before it could report (specialist session ${childId}).`);
+      // The parent was destroyed / quiesced mid-run, which cascade-destroys its
+      // children — there is no session left to nudge or read from.
+      if (!this.live.has(childId)) throw new Error(`the specialist session ${childId} was torn down before it could report.`);
+    };
+
+    try {
+      await runTurn(prompt);
+      throwIfEnded();
+
+      let report = reportSoFar();
+      if (report === null) {
+        // ONE nudge, then accept or fail (retry budget 1, spec §3). NOT when
+        // the step cap is what ended the turn: that child has no steps left, so
+        // another turn would burn the same cap again and still say nothing.
+        if (stopReason === 'max_steps') {
+          throw new Error(`the specialist hit its step limit without producing a report (specialist session ${childId}).`);
+        }
+        await runTurn(EMPTY_REPORT_NUDGE);
+        throwIfEnded();
+        report = reportSoFar();
+      }
+      if (report === null) {
+        throw new Error(`the specialist finished without producing a report — no final message, even after one reminder (specialist session ${childId}).`);
+      }
+      // +1 for the step that produced the final message (see SpecialistRunResult).
+      return { report, steps: steps + 1, usage };
+    } finally {
+      // Detach BEFORE the caller tears the session down, so this listener can
+      // never observe teardown-time events (and so a run that throws does not
+      // leave a listener attached to a session the caller may keep alive).
+      entry.session.off('transcript-event', onEvent);
+    }
+  }
+
+  /** Wrap a child's last message as the tool result the parent model reads.
+   *
+   *  Three jobs: say WHO reported (the parent asked for a specialist, not for
+   *  an anonymous blob of text), cap the body against what the parent can still
+   *  afford, and point at the child's own transcript for anything that got cut.
+   *  Text-only truncation in 1a — spilling the overflow to a file is 1b, which
+   *  is why the pointer names the session rather than a path. */
+  private formatSpecialistReport(i: { parentId: string; childId: string; specialist: SpecialistDefinition; title: string; body: string }): string {
+    const parent = this.live.get(i.parentId)?.session;
+    const window = parent?.contextWindowTokens ?? null;
+    const used = parent?.contextUsedTokens ?? null;
+    // Infinity = "we cannot measure the parent's occupancy" (a parent that has
+    // not completed a step, or a provider that reports no usage). That degrades
+    // to the definition's static cap — see computeReportBudget.
+    const remaining = window != null && used != null ? window - used : Infinity;
+    const budgetTokens = computeReportBudget({
+      staticCapTokens: i.specialist.reportBudgetTokens,
+      parentRemainingTokens: remaining,
+      concurrentReporters: 1,   // 1a is FOREGROUND: the parent is blocked on exactly one child
+    });
+    const cut = truncateOutput(i.body, { maxChars: budgetTokens * APPROX_CHARS_PER_TOKEN });
+    // Same notice vocabulary every other capped tool result uses, so a cut
+    // report reads like a cut Bash/Grep result rather than a new dialect. The
+    // hint has to be in the PARENT's vocabulary — it cannot re-read this child
+    // (the session is torn down), so the advice is about the next delegation.
+    const notice = cut.truncated
+      ? composeNotice(undefined, { shown: cut.text.length, total: cut.totalChars },
+        'delegate a narrower piece of work, or ask for a shorter report')
+      : '';
+    // Task 8: the header uses the child's assigned (fun) title, not the bare
+    // displayName — the role id stays alongside it either way, so the parent
+    // can always tell WHICH kind of specialist answered even though the name
+    // is per-run.
+    return `## Report from ${i.title} (${i.specialist.id})\n\n${cut.text}${notice}\n\n`
+      + `[full transcript: specialist session ${i.childId}]`;
+  }
 
   // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
   // header resolves to 'assistant' here). Drives the renderer's preset chip and
@@ -413,10 +741,24 @@ export class NativeSessionHost extends EventEmitter {
       ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
-      // Thread injected runtime services (WebSearch's SearchService) into the
-      // HarnessSession opts — only when present, so a host built without them
-      // leaves toolServices undefined (tools handle the absence as a config error).
-      ...(this.toolServices ? { toolServices: this.toolServices } : {}),
+      // Thread injected runtime services (WebSearch's SearchService, Task 6's
+      // specialists collaborators) into the HarnessSession opts. `specialists`
+      // is ALWAYS present (unlike `search`, which depends on an optional
+      // constructor arg) — syncTaskTool's own profile.canDelegate /
+      // isSpecialistChild gate is what actually decides whether the Task tool
+      // is ever attached to see it, so there is no "host built without
+      // specialist support" case to leave unset the way `toolServices` itself
+      // conditionally omits `search`.
+      toolServices: {
+        ...(this.toolServices ?? {}),
+        specialists: {
+          tryReserveSlot: (parentId: string) => this.tryReserveSpecialistSlot(parentId),
+          releaseSlot: (parentId: string) => this.releaseSpecialistSlot(parentId),
+          isWriterBusy: (parentId: string) => this.isSpecialistWriterBusy(parentId),
+          spawn: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialist']>[1]) =>
+            this.spawnSpecialist(parentId, spawnOpts),
+        },
+      },
       // WHY assembleSystemPrompt is called synchronously here: it shells out to
       // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
       // per session create/resume — NEVER on the per-turn send() path — so the
@@ -551,6 +893,189 @@ export class NativeSessionHost extends EventEmitter {
     }
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
     this.wire(opts.sessionId, opts.cwd, session, mcpLease);
+  }
+
+  /** Mint a SPECIALIST CHILD of a live session (plan 1a, spec §1/§5).
+   *
+   *  A specialist is an ordinary HarnessSession, not a new kind of object: same
+   *  driver, same transcript events, its own JSONL. What makes it a child is
+   *  (a) the header's parentage fields, (b) a COLD start — its system prompt is
+   *  the specialist definition plus the <env> block for its work directory, and
+   *  nothing at all from the parent conversation, and (c) a capability surface
+   *  that can only ever be narrower than the parent's.
+   *
+   *  `prompt` and `parentToolCallId` are accepted here but deliberately not
+   *  consumed yet: this call mints the child IDLE. Task 7's runSpecialist()
+   *  delivers the prompt as the child's first user turn and stamps display
+   *  copies of its events with parentToolCallId. They sit in the signature now
+   *  so the Task tool (Task 6), which is written against this contract, has one
+   *  call site rather than two.
+   *
+   *  Returns the child's id; throws (never returns a half-built child) when the
+   *  parent isn't live or the work directory escapes the parent's. */
+  async createChild(parentId: string, opts: {
+    specialist: SpecialistDefinition;
+    prompt: string;
+    workDir: string;
+    parentToolCallId: string;
+  }): Promise<{ childId: string; title: string }> {
+    const parent = this.live.get(parentId);
+    // A child with no live parent has nobody to report to and nobody to tear it
+    // down — refuse loudly rather than orphan a session.
+    if (!parent) throw new Error(`Cannot start a specialist: parent session ${parentId} is not live.`);
+
+    // Containment: the child may work in the parent's directory or a
+    // subdirectory of it, never outside. Canonicalized through the SAME helper
+    // the tool-layer guards use (forward slashes, `..` resolved, case-folded on
+    // win32) so this check and checkPathGuard agree on what a path is; a raw
+    // path.sep/startsWith comparison would disagree with the guards on Windows
+    // and on any input containing `..`.
+    const workDir = resolveP(opts.workDir, parent.cwd);
+    if (!isUnderRoot(canonicalize(workDir, parent.cwd), canonicalize(parent.cwd, parent.cwd))) {
+      throw new Error(`A specialist's work directory must be inside the parent session's directory (${parent.cwd}); got ${opts.workDir}.`);
+    }
+
+    const childId = randomUUID();
+    // The child inherits the parent's preset (permission posture + manifest) and
+    // its model — 1a always runs the child on the parent's binding.
+    const preset = resolvePreset(this.presetIdFor.get(parentId));
+    const binding = parent.session.binding;
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+
+    // Build the session BEFORE writing the header: everything below is fallible
+    // synchronous work (assembleSystemPrompt shells out to git, buildTriggerIndex
+    // walks the tree), and a throw after the header write would leave a session
+    // file on disk for a child that never existed.
+    const allowed = new Set(opts.specialist.allowedTools);
+    const session = new HarnessSession(
+      {
+        sessionId: childId, cwd: workDir, binding, contextLength, profile,
+        // STEP CAP: the definition's own budget, not the model-tier default.
+        // harness-session reads opts.harness.limits?.maxSteps and falls back to
+        // stepBudgetFor(modelId) — without this line stepCap would be decorative.
+        harness: { ...preset.manifest, limits: { ...preset.manifest.limits, maxSteps: opts.specialist.stepCap } },
+        // TOOLS: the definition's allowlist, filtered out of the same CORE_TOOLS
+        // set every session is built from. The Task tool is structurally absent
+        // because no definition lists it — that omission IS the depth-1 rule.
+        tools: CORE_TOOLS.filter((t) => allowed.has(t.name)),
+        // COLD START (spec §1): the specialist body replaces the preset body, and
+        // the <env> block describes the CHILD's work directory. Nothing from the
+        // parent's conversation crosses over — the brief in the first user turn
+        // is the entire context the child gets.
+        systemPrompt: assembleSystemPrompt({
+          presetBody: opts.specialist.systemPrompt, cwd: workDir, appVersion: this.appVersion,
+          promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
+          instructionBudgetTokens: profile.injectionBudgetTokens,
+        }),
+        // Project rules / nested instructions for the CHILD's directory. Project
+        // state, not conversation state, so it does not violate the cold start —
+        // and a Worker that edits files under rules the parent would have obeyed
+        // must obey them too.
+        triggers: buildTriggerIndex(workDir),
+        // SKILL SUPPRESSION (cold-start contract): an explicit EMPTY catalog, not
+        // an omission. syncSkillTool falls back to createSkillCatalog() — the full
+        // installed catalog — whenever opts.skillCatalog is undefined, and it
+        // re-syncs on every turn, so leaving this out would silently hand every
+        // child the user's whole skill library.
+        skillCatalog: { list: () => [], load: (id: string) => { throw new SkillNotFound(id, []); } },
+        // MCP SUPPRESSION: create()/resume() call acquireMcp() at this point;
+        // createChild deliberately never does, and passes no mcpServers — so no
+        // MCP tools attach, and there is no lease for destroy() to release.
+        // PERMISSIONS: the parent's full configured stack, capped by the
+        // definition. Built against the PARENT's id AND the PARENT's cwd, never
+        // workDir — buildDecide keys the session's live permission mode by id and
+        // remembered "Always allow" rules by cwd, and those grants follow the
+        // project, not a subtree of it.
+        decide: buildChildDecide({
+          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules),
+          charter: opts.specialist.charter,
+          allowedTools: opts.specialist.allowedTools,
+          envelopeGranted: true,   // 1a foreground flow: the Task-tool ask was the consent
+        }),
+        // ASKS: a policy, NEVER the parent's broker. The broker would emit under
+        // the CHILD's sessionId, which no window owns; the reducer drops asks for
+        // unknown sessions and broker.ask()'s promise would never resolve, so the
+        // child would hang silently until teardown (see child-ask-policy.ts).
+        askUser: childAskPolicy(),
+        ...(this.toolServices ? { toolServices: this.toolServices } : {}),
+        // BELT-AND-SUSPENDERS (Task 6): syncTaskTool's SECOND, independent
+        // gate against depth-2 delegation. allowedTools filtering above
+        // already keeps 'Task' out of a child's tool set structurally (no
+        // SpecialistDefinition lists it) — this flag means a bug in that
+        // filtering alone still cannot let a specialist spawn its own
+        // specialists.
+        isSpecialistChild: true,
+      },
+      this.modelFactory,
+    );
+
+    // Task 8: draw this child's fun name from the PARENT's taken-set (never
+    // global — see takenNamesOf's comment) and stamp it into the header's
+    // existing `title` field. The transcript header/list machinery already
+    // reads `title` for free (session-store.ts's list() title precedence),
+    // so this needs no new plumbing beyond the header write below.
+    let takenNames = this.takenNamesOf.get(parentId);
+    if (!takenNames) { takenNames = new Set(); this.takenNamesOf.set(parentId, takenNames); }
+    const { name, title } = assignSpecialistName(opts.specialist.id, takenNames);
+    takenNames.add(name);
+
+    await this.store.create({
+      v: 1,
+      sessionId: childId,
+      harnessId: preset.manifest.id,
+      binding,
+      cwd: workDir,
+      createdAt: Date.now(),
+      title,
+      parentSessionId: parentId,
+      sessionKind: 'specialist',
+      agentType: opts.specialist.id,
+    });
+
+    // NOT wire(). wire() re-emits the session's own events on the host emitter,
+    // where ipc-handlers mints a conversation record and feeds the title feeder —
+    // a child would surface as a conversation the user never started. The child
+    // gets the persistence half only; the display half (stamped COPIES of the
+    // three subagent event types, emitted under the PARENT's id) is Task 7.
+    const entry: LiveEntry = {
+      session, cwd: workDir, appendChain: Promise.resolve(), queue: [], inFlight: false,
+      parentSessionId: parentId,
+    };
+    this.live.set(childId, entry);
+    this.retainModel(childId, binding.modelId);
+    let siblings = this.childrenOf.get(parentId);
+    if (!siblings) { siblings = new Set(); this.childrenOf.set(parentId, siblings); }
+    siblings.add(childId);
+    session.on('transcript-event', (event: TranscriptEvent) => {
+      // (1) PERSISTENCE — on the child's OWN chain, to the child's own JSONL,
+      // with the ORIGINAL event (child sessionId) untouched. Same serialization
+      // contract as wire()'s append, same swallow-and-log so one failed append
+      // cannot wedge the chain. EVERY type lands here, including the ones that
+      // are never re-emitted below: the child's file is the complete record the
+      // report's "[full transcript: …]" pointer refers to.
+      entry.appendChain = entry.appendChain
+        .then(() => this.store.append(workDir, event))
+        .catch((err) => {
+          log('ERROR', 'NativeSessionHost', 'child append failed', {
+            sessionId: childId, type: event.type, error: String(err),
+          });
+        });
+      // (2) DISPLAY (Task 7) — a stamped COPY, for the three types the
+      // renderer's subagent card consumes and NOTHING else (see
+      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break).
+      // The copy rides under the PARENT's session id, because that is the
+      // session a window actually owns; `parentAgentToolUseId` threads it into
+      // the parent's Task tool card and `agentId` identifies which child spoke.
+      // The original is never mutated — the persisted event above and this copy
+      // are two different objects on purpose.
+      if (!SUBAGENT_DISPLAY_TYPES.has(event.type)) return;
+      this.emit('transcript-event', {
+        ...event,
+        sessionId: parentId,
+        data: { ...event.data, parentAgentToolUseId: opts.parentToolCallId, agentId: childId },
+      } satisfies TranscriptEvent);
+    });
+    return { childId, title };
   }
 
   /** Rebuild a live session from its stored header + events. Returns false when
@@ -819,6 +1344,15 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   interrupt(sessionId: string): boolean {
+    // Cascade to this session's specialist children FIRST: a child's turn is
+    // work the parent is BLOCKED on (the Task tool awaits it), so Stop has to
+    // reach it or the parent keeps waiting on a run the user just cancelled.
+    // Interrupt only — NOT destroy: this method is synchronous (destroy() is
+    // async, and a floating destroy promise in the main process is exactly the
+    // bug class `npm run lint` gates on), and Stop means "abort the work", not
+    // "delete the session". The child is torn down with its parent (destroy /
+    // quiesce below, both async) or by the Task tool's own finalizer.
+    for (const childId of this.childrenOf.get(sessionId) ?? []) this.interrupt(childId);
     const entry = this.live.get(sessionId);
     // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a
     // permission await unwinds cleanly before the stream is aborted underneath
@@ -860,6 +1394,12 @@ export class NativeSessionHost extends EventEmitter {
     const entry = this.live.get(sessionId);
     if (!entry) return;
     entry.queue.length = 0;                        // (1) no post-flush turn can start
+    // (1b) Tear down specialist children before quiescing this session: a
+    // running child keeps appending to ITS file and keeps the parent's Task call
+    // pending, both of which contradict what quiesce promises the caller (no
+    // further work for this session once it resolves). Safe to await here —
+    // the queue is already cleared, so nothing can start a new parent turn.
+    await this.destroyChildrenOf(sessionId);
     await new Promise((r) => setImmediate(r));      // (2) let a same-tick send dispatch
     this.broker.cancelSession(sessionId);           // (3) unwind a paused permission ask
     entry.session.interrupt();                      //     abort the in-flight turn
@@ -922,6 +1462,26 @@ export class NativeSessionHost extends EventEmitter {
     return this.store.list().map((r) => ({ ...r, provider: 'native' as const }));
   }
 
+  /** Cascade-cancel: interrupt then destroy every live specialist child of this
+   *  session. Called from destroy() and quiesce(). Reads the in-memory
+   *  childrenOf map only — teardown never does disk I/O to find its children.
+   *  Interrupt-then-destroy (rather than destroy alone) so a child paused
+   *  mid-turn unwinds its loop before its stream is torn out from under it —
+   *  the same order interrupt() and destroy() already use for one session. */
+  private async destroyChildrenOf(sessionId: string): Promise<void> {
+    const children = this.childrenOf.get(sessionId);
+    if (!children) return;
+    this.childrenOf.delete(sessionId);
+    // Task 8: this parent's name-draw state dies with its children set — a
+    // reused/new set of children under this parent id (there isn't one in
+    // practice, but nothing here should assume it) starts the pool fresh.
+    this.takenNamesOf.delete(sessionId);
+    for (const childId of [...children]) {
+      this.interrupt(childId);
+      await this.destroy(childId);
+    }
+  }
+
   /** Graceful teardown of one session. No-op for unknown ids (so the
    *  SESSION_DESTROY handler can call it for every session id blindly).
    *
@@ -934,8 +1494,20 @@ export class NativeSessionHost extends EventEmitter {
    *   3. store.dispose() — flush the buffered open streaming part.
    *   4. drop the map entry. */
   async destroy(sessionId: string): Promise<void> {
+    // Capture the entry SYNCHRONOUSLY, before the child cascade below awaits —
+    // the MCP release at the bottom of this method depends on tearing down the
+    // generation this call captured (see the comment there), and that property
+    // must survive the new await, not just the ones that were already here.
     const entry = this.live.get(sessionId);
+    // Specialist children go next, and unconditionally — before the not-live
+    // early return, because a child must never outlive its parent even if the
+    // parent's own entry is already gone (a double destroy, or a teardown
+    // racing one).
+    await this.destroyChildrenOf(sessionId);
     if (!entry) return;
+    // De-register from the parent's child set (this session IS a child when
+    // parentSessionId is set) so a destroyed child isn't chased again later.
+    if (entry.parentSessionId) this.childrenOf.get(entry.parentSessionId)?.delete(sessionId);
     // Resolve any pending asks for this session ('canceled') + expire their
     // cards BEFORE tearing down the stream — same rationale as interrupt(); a
     // loop paused on a permission await must unwind, and the promise must not
@@ -953,6 +1525,12 @@ export class NativeSessionHost extends EventEmitter {
     this.modeFor.delete(sessionId);
     this.rememberedFor.delete(sessionId);
     this.presetIdFor.delete(sessionId);
+    // Task 6 — drop this parent's specialist bookkeeping too, so a slot/writer
+    // reservation can never outlive the session that made it (destroyChildrenOf
+    // above already tore down any children BEFORE we get here, but a slot could
+    // still be reserved from an in-flight Task call this destroy() interrupted).
+    this.specialistSlots.delete(sessionId);
+    this.activeWriterChild.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
     // Release THIS generation's MCP lease (Task 6), LAST — orthogonal to the
     // transcript/live-map teardown above (releasing never touches either), so
