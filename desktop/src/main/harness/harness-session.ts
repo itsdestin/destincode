@@ -467,12 +467,19 @@ export class HarnessSession extends EventEmitter {
   // real occupancy — Destin, 2026-07-28). The last step's prompt already
   // contains everything, so lastIn + lastOut is the honest "how full".
   private _contextUsedTokens: number | null = null;
-  /** Tokens occupying this session's window after its last COMPLETED step, or
-   *  null when no step has ever reported usage (a session that has not run a
-   *  turn, or a provider that reports nothing). Mid-turn it is stale by at most
-   *  one step, which is fine for a budget heuristic — the alternative is a
-   *  per-step event nobody else needs. */
-  get contextUsedTokens(): number | null { return this._contextUsedTokens; }
+  /** Tokens occupying this session's window after its last COMPLETED step. Mid-
+   *  turn it is stale by at most one step, which is fine for a budget heuristic
+   *  — the alternative is a per-step event nobody else needs.
+   *
+   *  Fix (Task 7 review): this used to return raw `_contextUsedTokens`, which
+   *  stays null forever for a usage-silent provider (local models that don't
+   *  report token counts) — that made the headroom report cap silently never
+   *  fire for exactly the models that need it most. The turn-complete emit
+   *  site (near :1528, in send()) already falls back to estimateContextTokens()
+   *  in that case; mirror it here so this accessor and that payload never
+   *  disagree. Only returns null if the estimate itself were ever unavailable
+   *  (it isn't today — chars/4 always produces a number). */
+  get contextUsedTokens(): number | null { return this._contextUsedTokens ?? this.estimateContextTokens(); }
   /** This session's resolved context window in tokens (null when no source
    *  could answer). Paired with contextUsedTokens: "remaining" needs both, and
    *  the session is the only place that tracks the CURRENT one — setBinding

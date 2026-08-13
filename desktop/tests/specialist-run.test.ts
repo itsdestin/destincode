@@ -3,7 +3,7 @@ import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os'
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
-import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
+import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 
 // ---- Task 7: the FOREGROUND specialist run ----------------------------------
@@ -111,6 +111,32 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report).toContain(`[full transcript: specialist session ${childId}]`);
   });
 
+  // Fix: harness-session.ts:1769 emits one assistant-text event per STREAM
+  // DELTA for native models, not per whole message — the reducer's
+  // applySubagentEvent (chat-reducer.ts) coalesces same-partId deltas back
+  // into one segment, but that only works if the display re-stamping this
+  // host does (spawnSpecialist's re-emit under the parent's sessionId)
+  // actually carries the child's partId through. Pin that here at the host
+  // level rather than only in the reducer unit tests.
+  it('re-stamped assistant-text display events carry the partId the reducer needs to coalesce', async () => {
+    await withParent([
+      stream(...multiDeltaTextChunks('t', 'REPORT: found it ', 'at src/x.ts'), finishChunk('stop')),
+    ]);
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+    });
+
+    const textEvents = events.filter((e) => e.data?.agentId === childId && e.type === 'assistant-text');
+    expect(textEvents.length).toBeGreaterThanOrEqual(2);
+    // Every delta for this text block shares the SAME partId ('t', from the
+    // script) — the exact signal the reducer keys its merge on.
+    const partIds = new Set(textEvents.map((e) => e.data.partId));
+    expect(partIds.size).toBe(1);
+    expect([...partIds][0]).toBeTruthy();
+  });
+
   it('tears the child down after a successful run (no live entry, no model ref, no writer lock)', async () => {
     await withParent(TWO_TOOLS_THEN_REPORT);
     const released: string[] = [];
@@ -140,6 +166,14 @@ describe('specialist foreground run (Task 7)', () => {
       stream({ type: 'error', error: new Error('llama-server dropped the connection') }),
     ]);
     const events = collect();
+    // Fix (Task 7 review, restoring Task 6 coverage lost in the foreground-run
+    // rewrite): the success-path leak guard (native-session-host.test.ts "a
+    // completed spawnSpecialist run does not leak the minted child") pins
+    // childrenOf de-registration AND model-ref release; the failure path needs
+    // the identical two assertions so a mid-run throw can't leave the child
+    // wired into the parent's children set or holding a phantom model ref.
+    const released: string[] = [];
+    host.setModelReleasedHandler((id) => released.push(id));
 
     await expect(host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
@@ -154,6 +188,13 @@ describe('specialist foreground run (Task 7)', () => {
     expect(childRow).toBeDefined();
     expect((host as any).live.has(childRow!.sessionId)).toBe(false);
     expect(host.isSpecialistWriterBusy('root-1')).toBe(false);
+    // De-registered from the parent's live children set (mirrors the
+    // success-path leak guard) — a leaked child would still show up here.
+    expect((host as any).childrenOf.get('root-1')?.has(childRow!.sessionId)).toBeFalsy();
+    // The child's model ref did not leak either: destroying the parent (its
+    // only remaining user of 'm') fully releases it exactly once.
+    await host.destroy('root-1');
+    expect(released).toEqual(['m']);
   });
 
   it('nudges EXACTLY once when the child ends with no report, and accepts the second answer', async () => {
