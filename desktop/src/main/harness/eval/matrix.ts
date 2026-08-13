@@ -209,12 +209,48 @@ export function cellFilename(cell: Cell): string {
 }
 
 /** Lowercase, collapse every run of non-alphanumeric characters to a single
- *  '-', then cap to `MAX_FIELD_CHARS`. Mirrors
- *  `test-engine/review-harness.mjs`'s roster-label slug exactly for the
- *  first two steps, applied per-field here instead of to a whole label; the
- *  cap is new in Fix pass 2 to keep the Windows path budget. */
+ *  '-', then cap to `maxChars`. Mirrors `test-engine/review-harness.mjs`'s
+ *  roster-label slug exactly for the first two steps.
+ *
+ *  WHY this is factored out of `slugPart` (harness-eval report/summary
+ *  filename collision fix, 2026-08-13): the orchestrator's `report.md` and
+ *  `run-summary.json` had no plan identifier at all, so a second plan run on
+ *  the same day silently overwrote the first plan's only durable record (the
+ *  per-cell result files are git-ignored; the report was not). The fix reuses
+ *  THIS sanitizing step for the plan name too, via `planFilenameSlug` below,
+ *  instead of writing a second, subtly different sanitizer. */
+function slugify(value: string, maxChars: number): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, maxChars);
+}
+
 function slugPart(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, MAX_FIELD_CHARS);
+  return slugify(value, MAX_FIELD_CHARS);
+}
+
+// WHY a plan name gets a much larger budget than MAX_FIELD_CHARS (20): that
+// cap is sized for FIVE fields sharing one Windows path budget in
+// cellFilename. A plan name is the ONLY field in `report-<plan>.md` /
+// `run-summary-<plan>.json`, so it does not need to share that budget — and
+// reusing MAX_FIELD_CHARS as-is would reintroduce the exact bug this fix is
+// for: two of this project's own real plan files, "claude-md-guidance-v2"
+// and "claude-md-guidance-v3", already produce the IDENTICAL slug at a
+// 20-character cap (both truncate to "claude-md-guidance-v"), which would
+// silently clobber one plan's report with the other's again. 100 characters
+// comfortably covers a hand-chosen plan name (the longest on disk today is
+// 31 characters) while still bounding a pathological one.
+const PLAN_NAME_MAX_CHARS = 100;
+
+/** Filesystem-safe slug for a plan's `name`, used to give `report.md` and
+ *  `run-summary.json` a plan-specific filename so two plans run on the same
+ *  day no longer overwrite each other. Same sanitizing step as `cellFilename`
+ *  (see `slugify` above); no hash suffix, unlike `cellFilename` — two DIFFERENT
+ *  plan names slugging to the same string is a much rarer authoring accident
+ *  than the per-field collisions `cellFilename` guards against (it folds five
+ *  machine-generated fields together; this folds one human-chosen name), and
+ *  `expandPlan` has no way to check plan-name uniqueness across separate CLI
+ *  invocations the way `assertUniqueFilenames` checks cells within one run. */
+export function planFilenameSlug(name: string): string {
+  return slugify(name, PLAN_NAME_MAX_CHARS);
 }
 
 /** Fix pass 2 (2026-08-12 review): the three duplicate-detection call sites

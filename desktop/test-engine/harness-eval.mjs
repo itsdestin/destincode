@@ -137,6 +137,10 @@ async function importGraders() {
     validatePlan: matrix.validatePlan,
     expandPlan: matrix.expandPlan,
     cellFilename: matrix.cellFilename,
+    // Defect 1 fix: shares matrix.ts's sanitizing step (see planFilenameSlug's
+    // own comment) so report.md/run-summary.json can be named after the plan
+    // without a second, subtly different sanitizer living here.
+    planFilenameSlug: matrix.planFilenameSlug,
     allCaseIds: cases.allCaseIds,
     getCase: cases.getCase,
     roster: battery.loadRoster(ROSTER_FILE),
@@ -1619,7 +1623,17 @@ async function main(argv) {
   /** Graded cells, in the order they finished. Filled by onResult below. */
   const graded = [];
 
-  const reportFile = path.join(runs.dir, 'report.md');
+  // Defect 1 fix (2026-08-13): report.md and run-summary.json used to have no
+  // plan identifier at all, so every plan run on the same day landed in the
+  // same runs.dir and a second experiment silently overwrote the first one's
+  // report — the per-cell result files survive this because they are named
+  // per-cell, but they're git-ignored, so the report was the durable record.
+  // planFilenameSlug is matrix.ts's own sanitizer (the same one cellFilename
+  // uses), reused here rather than re-implemented so the two never drift.
+  const { planFilenameSlug } = await loadGraders();
+  const planSlug = planFilenameSlug(plan.name);
+
+  const reportFile = path.join(runs.dir, `report-${planSlug}.md`);
   /** Render and write the human-readable report.
    *
    *  Hoisted for the same reason writeSummary is: EVERY exit path that has
@@ -1640,7 +1654,7 @@ async function main(argv) {
     }
   };
 
-  const summaryFile = path.join(runs.dir, 'run-summary.json');
+  const summaryFile = path.join(runs.dir, `run-summary-${planSlug}.json`);
   const writeSummary = ({ stopReason, results, skipped }) => {
     fs.writeFileSync(summaryFile, JSON.stringify({
       plan: plan.name,

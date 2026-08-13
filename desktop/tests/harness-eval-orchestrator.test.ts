@@ -269,6 +269,14 @@ const BASE_PLAN = {
   models: ['Claude Opus 5'],
 };
 
+// Defect 1 fix: report.md/run-summary.json are now named after the plan (see
+// matrix.ts's planFilenameSlug), so the real CLI writes `report-<slug>.md` and
+// `run-summary-<slug>.json` instead of the bare names. Every real-CLI test
+// below builds its plan from BASE_PLAN and none of them overrides `name`, so
+// the slug is this one constant string throughout the whole file.
+const REPORT_FILENAME = 'report-unit-test-plan.md';
+const SUMMARY_FILENAME = 'run-summary-unit-test-plan.json';
+
 describe('plan validation goes through matrix.ts validatePlan', () => {
   beforeAll(ensureBuiltGraders, BUILD_TIMEOUT_MS);
 
@@ -1373,30 +1381,88 @@ globalThis.fetch = async (url) => {
    * The CLI writes into the workspace's `docs/active/investigations/...` by
    * design (resolveRunsDir), which is a REAL directory on a developer's machine
    * — so remember what was there and put it back. Anything the run created is
-   * removed; anything that was already there is left alone.
+   * removed; anything that was already there is restored to what it was,
+   * content and all.
+   *
+   * WHY content, not just presence (Defect 3, found by the coordinator running
+   * this suite against the real workspace): `report.md` and `run-summary.json`
+   * used to have no plan identifier, so a bare-bones "remove anything new"
+   * guard was wrong by construction the moment the CLI under test wrote into
+   * an entry that ALREADY EXISTED — it deleted only additions, so an in-place
+   * overwrite of a real, committed experiment report sailed through
+   * untouched. Defect 1's per-plan filenames make an accidental name collision
+   * far less likely going forward, but this guard's whole job is protecting a
+   * developer's real data from this test suite, so it has to hold even if a
+   * future plan happens to share a name with a real one — the directory is
+   * restored to its true prior state, not to "whatever names existed before".
+   *
+   * Snapshotting is eager (read now, not lazily) and shallow (top-level FILES
+   * only, no recursion into subdirectories): every entry this directory has
+   * ever held — report*.md, run-summary*.json, and per-cell
+   * *.json/*.grades.json — is a flat file directly inside it, never a nested
+   * tree, so there is nothing to recurse into. That keeps this cheap even
+   * though individual transcripts can run several hundred KB: it is at most
+   * one read per pre-existing file, once, before the run starts.
    */
-  function runsDirGuard(dir: string): () => void {
+  function runsDirGuard(dir: string): { restore: () => void; createdEntries: () => string[] } {
     const existed = fs.existsSync(dir);
-    const before = existed ? new Set(fs.readdirSync(dir)) : new Set<string>();
+    const beforeNames = existed ? fs.readdirSync(dir) : [];
+    const before = new Set(beforeNames);
+    const beforeContent = new Map<string, Buffer>();
+    for (const name of beforeNames) {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isFile()) beforeContent.set(name, fs.readFileSync(full));
+    }
     // The CLI mkdirs RECURSIVELY, so a first run creates the `harness-eval-runs`
     // parent as well as the dated child. Remember whether that existed too, or
     // the tests leave an empty directory behind in the workspace every time.
     const parent = path.dirname(dir);
     const parentExisted = fs.existsSync(parent);
-    return () => {
+    // Every test in this file that needs to know "what did THIS run write"
+    // must go through this instead of `fs.readdirSync(dir)` directly — a raw
+    // listing includes whatever the developer's real workspace already had in
+    // it (see Defect 2: two tests hit exactly this before they were fixed).
+    const createdEntries = (): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((e) => !before.has(e)) : []);
+    // Writes `name` back to its snapshotted bytes ONLY if it is currently
+    // missing or different. Measured while building this fix: writing back
+    // unconditionally put the right BYTES back but still bumped mtime/ctime on
+    // every pre-existing file on every guarded run, including the ~40+ real,
+    // untouched multi-hundred-KB transcripts already in a developer's real
+    // `harness-eval-runs` directory — needless I/O and a false "recently
+    // modified" signal on files this run never went near. A real file this
+    // test suite corrupted through repeated dry-fire cycles, caught and
+    // described in the final report rather than silently re-corrupted further.
+    const restoreFile = (name: string, content: Buffer) => {
+      const full = path.join(dir, name);
+      const current = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.readFileSync(full) : null;
+      if (current === null || !current.equals(content)) fs.writeFileSync(full, content);
+    };
+    const restore = () => {
       if (fs.existsSync(dir)) {
         if (existed) {
           for (const entry of fs.readdirSync(dir)) {
             if (!before.has(entry)) fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
           }
+          // Put back every pre-existing file's ORIGINAL bytes. A file the run
+          // never touched round-trips to itself and restoreFile skips the
+          // write entirely in that case (see its own comment for why that
+          // matters, not just why it's allowed).
+          for (const [name, content] of beforeContent) restoreFile(name, content);
         } else {
           fs.rmSync(dir, { recursive: true, force: true });
         }
+      } else if (existed) {
+        // The run deleted the directory outright. Recreate it and restore
+        // every pre-existing file, not just leave an empty directory where a
+        // developer's real data used to be.
+        fs.mkdirSync(dir, { recursive: true });
+        for (const [name, content] of beforeContent) restoreFile(name, content);
       }
       if (!parentExisted && fs.existsSync(parent) && fs.readdirSync(parent).length === 0) {
         fs.rmdirSync(parent);
       }
     };
+    return { restore, createdEntries };
   }
 
   /** Ask the CLI itself where it would write, so the test never re-implements
@@ -1442,7 +1508,7 @@ globalThis.fetch = async (url) => {
       builds: [{ id: 'fake', dist: fastDist() }],
     }, { 'guide.md': '# Guidance\n\nBe brief.\n' });
     const runsDir = runsDirOf(stub, plan);
-    const restore = runsDirGuard(runsDir);
+    const { restore } = runsDirGuard(runsDir);
     try {
       const { status, stdout, stderr } = runCliStubbed(
         stub,
@@ -1463,7 +1529,7 @@ globalThis.fetch = async (url) => {
       expect(stderr).toContain('harness-battery|guided|Claude Opus 5|fake|0');
 
       // 5. And the summary exists, with the same facts in machine-readable form.
-      const summaryFile = path.join(runsDir, 'run-summary.json');
+      const summaryFile = path.join(runsDir, SUMMARY_FILENAME);
       expect(fs.existsSync(summaryFile)).toBe(true);
       const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
       expect(summary.stoppedEarly).toBe(true);
@@ -1490,7 +1556,7 @@ globalThis.fetch = async (url) => {
       repeats: 2,
     });
     const runsDir = runsDirOf(stub, plan);
-    const restore = runsDirGuard(runsDir);
+    const { restore } = runsDirGuard(runsDir);
     try {
       const { status, stdout, stderr } = runCliStubbed(
         stub,
@@ -1507,7 +1573,7 @@ globalThis.fetch = async (url) => {
       expect(stdout).not.toContain('[2/2]');
       expect(stderr).toContain('harness-battery|baseline|Claude Opus 5|fake|1');
 
-      const summary = JSON.parse(fs.readFileSync(path.join(runsDir, 'run-summary.json'), 'utf8'));
+      const summary = JSON.parse(fs.readFileSync(path.join(runsDir, SUMMARY_FILENAME), 'utf8'));
       expect(summary.completed).toEqual(['harness-battery|baseline|Claude Opus 5|fake|0']);
       expect(summary.neverRan).toEqual(['harness-battery|baseline|Claude Opus 5|fake|1']);
     } finally {
@@ -1533,15 +1599,19 @@ globalThis.fetch = async (url) => {
       'tightened.md': '# Tightened\n\nALWAYS_SAY_KUMQUAT.\n',
     });
     const runsDir = runsDirOf(stub, plan);
-    const restore = runsDirGuard(runsDir);
+    const { restore, createdEntries } = runsDirGuard(runsDir);
     try {
       const { status, stderr } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
       expect(stderr).toBe('');
       expect(status).toBe(0);
 
       const seen = new Map<string, string | null>();
-      for (const name of fs.readdirSync(runsDir)) {
-        if (name === 'run-summary.json' || !name.endsWith('.json')) continue;
+      // Defect 2 fix: scoped to entries THIS run created, not the whole real
+      // directory listing — a developer's real runs dir can hold results whose
+      // shape differs (no `.run.instructionsSeen`), which threw a TypeError here
+      // before this was scoped.
+      for (const name of createdEntries()) {
+        if (name === SUMMARY_FILENAME || !name.endsWith('.json')) continue;
         const result = JSON.parse(fs.readFileSync(path.join(runsDir, name), 'utf8'));
         seen.set(result.cellId, result.run.instructionsSeen);
       }
@@ -1588,13 +1658,13 @@ export const runCase = async (c) => ({
     const stub = fetchStub([0]);
     const plan = writePlan({ ...BASE_PLAN, builds: [{ id: 'fake', dist: gradableDist() }] });
     const runsDir = runsDirOf(stub, plan);
-    const restore = runsDirGuard(runsDir);
+    const { restore } = runsDirGuard(runsDir);
     try {
       const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
       expect(status).toBe(0);
       expect(stdout).toContain('Report: ');
 
-      const report = fs.readFileSync(path.join(runsDir, 'report.md'), 'utf8');
+      const report = fs.readFileSync(path.join(runsDir, REPORT_FILENAME), 'utf8');
       expect(report).toContain('# Harness eval — unit-test-plan');
       // All three states, spelled differently — the invariant a green-vs-red
       // report would silently lose.
@@ -1638,7 +1708,7 @@ export const runCase = async (c) => ({
     const stub = fetchStub([0]);
     const plan = writePlan({ ...BASE_PLAN, builds: [{ id: 'fake', dist: fastDist() }], repeats: 2 });
     const runsDir = runsDirOf(stub, plan);
-    const restore = runsDirGuard(runsDir);
+    const { restore, createdEntries } = runsDirGuard(runsDir);
     try {
       const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
       expect(status).toBe(0);
@@ -1654,13 +1724,16 @@ export const runCase = async (c) => ({
       expect(stdout).toContain('2 of 2 cells ran');
 
       // The conversations survived...
-      const transcripts = fs.readdirSync(runsDir).filter((f) => f.endsWith('.json') && f !== 'run-summary.json');
+      // Defect 2 fix: scoped to entries THIS run created — the raw directory
+      // listing picked up 46 pre-existing real-run transcripts instead of the
+      // 2 this test actually produced.
+      const transcripts = createdEntries().filter((f) => f.endsWith('.json') && f !== SUMMARY_FILENAME);
       expect(transcripts).toHaveLength(2);
       // ...and the report carries the grading failure in the words of whatever
       // actually threw, not a hardcoded guess.
       const realError = stdout.slice(gradeFailedAt + 'not graded: '.length).split('\n')[0].trim();
       expect(realError.length).toBeGreaterThan(10);
-      const report = fs.readFileSync(path.join(runsDir, 'report.md'), 'utf8');
+      const report = fs.readFileSync(path.join(runsDir, REPORT_FILENAME), 'utf8');
       expect(report).toContain(realError);
 
       // Fix pass 1 (2026-08-12 review, IMPORTANT 4). collectRunFacts throws on
@@ -1758,6 +1831,65 @@ export const runCase = async (c) => ({
     const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--dry-run']);
     expect(status).toBe(0);
     expect(stdout).toContain('(dry run: nothing was spawned and nothing was spent)');
+  }, 60_000);
+
+  it('restores a pre-existing file the run OVERWRITES, not just entries it created', () => {
+    // Defect 3 (coordinator-flagged, 2026-08-13): running this suite against
+    // the REAL workspace replaced a real, committed experiment report —
+    // docs/active/investigations/harness-eval-runs/2026-08-13/report.md — with
+    // this test file's own unit-test-plan output. Root cause: the old guard
+    // snapshotted only which NAMES existed before the run, and on restore
+    // deleted whatever wasn't in that set. A name that existed before AND
+    // got overwritten in place round-tripped through that check untouched —
+    // it was never new, so nothing flagged it for cleanup, and its new
+    // (wrong) content just stayed.
+    //
+    // Reproduced directly, without depending on any other test's plan name:
+    // plant a sentinel at the EXACT path this run's own report will land on
+    // (BASE_PLAN's name is fixed across this file — see REPORT_FILENAME),
+    // with content the CLI could not possibly produce, run the real CLI
+    // against it, and check restore() puts the sentinel back byte-for-byte —
+    // not just that the path still exists.
+    const stub = fetchStub([0]);
+    const plan = writePlan({ ...BASE_PLAN, builds: [{ id: 'fake', dist: gradableDist() }] });
+    const runsDir = runsDirOf(stub, plan);
+    fs.mkdirSync(runsDir, { recursive: true });
+    const sentinelPath = path.join(runsDir, REPORT_FILENAME);
+    const sentinelContent = 'SENTINEL — a real developer report that must survive this test run\n';
+    // Remember what was ACTUALLY there before this test plants its sentinel —
+    // this test is itself a guest in the real workspace, exactly like the CLI
+    // run it is testing. Restoring only to "the sentinel" and stopping there
+    // would leave the sentinel behind as a permanent fixture at this path,
+    // which every LATER run of this very test (and every other test that
+    // writes REPORT_FILENAME) would then treat as legitimately pre-existing —
+    // this test would quietly start protecting its own leftover instead of a
+    // developer's real file.
+    const trulyExisted = fs.existsSync(sentinelPath);
+    const trulyOriginal = trulyExisted ? fs.readFileSync(sentinelPath) : null;
+    fs.writeFileSync(sentinelPath, sentinelContent);
+    const { restore } = runsDirGuard(runsDir);
+    try {
+      try {
+        const { status } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+        expect(status).toBe(0);
+        // Prove the reproduction is real: the CLI genuinely overwrote the
+        // sentinel (this is the clobber Defect 3 is about), so restoring it is
+        // not a no-op that would pass even with no restore logic at all.
+        expect(fs.readFileSync(sentinelPath, 'utf8')).not.toBe(sentinelContent);
+      } finally {
+        restore();
+      }
+      // The sentinel is back, byte for byte — checked AFTER restore(), and
+      // outside the inner try/finally so a failure here is not masked by
+      // `finally` having already run.
+      expect(fs.readFileSync(sentinelPath, 'utf8')).toBe(sentinelContent);
+    } finally {
+      // Put the real workspace back exactly as this test found it, regardless
+      // of whether any assertion above passed — this outer `finally` runs no
+      // matter which expect() (if any) threw.
+      if (trulyExisted) fs.writeFileSync(sentinelPath, trulyOriginal!);
+      else fs.rmSync(sentinelPath, { force: true });
+    }
   }, 60_000);
 });
 
