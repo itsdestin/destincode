@@ -8,6 +8,7 @@ import {
   judgeCostLines,
   MEASURED_OUTPUT_TOKENS,
   MEASURED_INPUT_TOKENS,
+  MEASURED_CASE_TOKENS,
   FALLBACK_INPUT_TOKENS,
   FALLBACK_OUTPUT_TOKENS,
   MEASURED_ROSTER_SPEND_USD,
@@ -19,11 +20,14 @@ import {
 
 const DESKTOP = path.resolve(__dirname, '..');
 
-/** A cell in the shape `estimateCells` actually consumes — `id`, the field
- *  matrix.ts's Cell really has. (The plan sketch called it `cellId`; that is
- *  the OUTPUT field name, and using it as an input would have silently priced
- *  a row whose id was `undefined`.) */
-const cell = (id: string, model: string) => ({ id, model });
+/** A cell in the shape `estimateCells` actually consumes — `id`, `caseId`, and
+ *  `model`, the fields matrix.ts's Cell really has. (The plan sketch called the
+ *  first one `cellId`; that is the OUTPUT field name, and using it as an input
+ *  would have silently priced a row whose id was `undefined`.) `caseId`
+ *  defaults to a case with no entry in MEASURED_CASE_TOKENS, so every existing
+ *  test that doesn't care about the case tier keeps exercising the battery/
+ *  fallback tiers exactly as before. */
+const cell = (id: string, model: string, caseId = 'generic-unmeasured-case') => ({ id, caseId, model });
 
 describe('estimateCells', () => {
   const M1: Price = { inputPerM: 1, outputPerM: 10 };
@@ -106,11 +110,84 @@ describe('estimateCells', () => {
 
   it('refuses a mis-shaped cell rather than pricing a row called undefined', () => {
     expect(() => estimateCells([{ model: 'Grok 4.5' } as never], {})).toThrow(/needs a non-empty string "id"/);
-    expect(() => estimateCells([{ id: 'c1' } as never], {})).toThrow(/cell "c1" has no "model"/);
+    expect(() => estimateCells([{ id: 'c1', caseId: 'x' } as never], {})).toThrow(/cell "c1" has no "model"/);
+    // caseId is the new field (2026-08-13): a cell missing it would silently key
+    // into MEASURED_CASE_TOKENS[undefined], which is just `undefined` — a quiet
+    // fall-through to the battery tier rather than a loud error.
+    expect(() => estimateCells([{ id: 'c1', model: 'Grok 4.5' } as never], {})).toThrow(/cell "c1" has no "caseId"/);
   });
 
   it('is empty-safe', () => {
-    expect(estimateCells([], {})).toEqual({ perCell: [], totalUsd: 0, unpriced: [], unmeasured: [] });
+    expect(estimateCells([], {})).toEqual({ perCell: [], totalUsd: 0, unpriced: [], unmeasured: [], batteryPriced: [] });
+  });
+});
+
+// --- the case-token tier: the fix for the 8x-high estimate (2026-08-13) -----
+
+describe('estimateCells, MEASURED_CASE_TOKENS tier', () => {
+  const M1: Price = { inputPerM: 1, outputPerM: 10 };
+
+  it('prices a cell whose case+model IS in the table from it, not from the battery table', () => {
+    // The discriminating assertion: if the lookup order were ever flipped (or a
+    // dead branch left the battery table reachable first), this would still pass
+    // as long as SOME number came out — so it must compare against what the
+    // WRONG number would have been and prove they differ.
+    const sample = MEASURED_CASE_TOKENS['config-investigation']['Claude Opus 5'];
+    const out = estimateCells([cell('c1', 'Claude Opus 5', 'config-investigation')], { 'Claude Opus 5': M1 });
+    const fromCaseTable = (sample.inputTokens / 1e6) * 1 + (sample.outputTokens / 1e6) * 10;
+    const fromBatteryTable =
+      (MEASURED_INPUT_TOKENS['Claude Opus 5'] / 1e6) * 1 + (MEASURED_OUTPUT_TOKENS['Claude Opus 5'] / 1e6) * 10;
+    expect(out.perCell[0].usd).toBeCloseTo(fromCaseTable, 12);
+    expect(out.perCell[0].usd).not.toBeCloseTo(fromBatteryTable, 2);
+    // Priced from an exact measurement of this task — neither caveat list fires.
+    expect(out.unmeasured).toEqual([]);
+    expect(out.batteryPriced).toEqual([]);
+  });
+
+  it('falls through to the battery table, and is REPORTED as battery-priced, when the case is known but the model is not', () => {
+    // 'config-investigation' is in MEASURED_CASE_TOKENS; 'Grok 4.5' is not one of
+    // its two measured models. That must fall to tier 2 (the battery table), NOT
+    // tier 3 (the fallback) — Grok 4.5 has its own battery measurement.
+    expect(MEASURED_CASE_TOKENS['config-investigation']['Grok 4.5']).toBeUndefined();
+    const out = estimateCells([cell('c1', 'Grok 4.5', 'config-investigation')], { 'Grok 4.5': M1 });
+    const expected = (MEASURED_INPUT_TOKENS['Grok 4.5'] / 1e6) * 1 + (MEASURED_OUTPUT_TOKENS['Grok 4.5'] / 1e6) * 10;
+    expect(out.perCell[0].usd).toBeCloseTo(expected, 12);
+    expect(out.batteryPriced).toEqual(['config-investigation / Grok 4.5']);
+    // Battery-priced is a DIFFERENT claim than "no measurement at all" — a model
+    // with its own battery row is not "unmeasured", it is measured for the wrong task.
+    expect(out.unmeasured).toEqual([]);
+  });
+
+  it('falls through correctly, and is reported, for a case with no entry in the table at all', () => {
+    expect(MEASURED_CASE_TOKENS['totally-unknown-case']).toBeUndefined();
+    const out = estimateCells([cell('c1', 'Grok 4.5', 'totally-unknown-case')], { 'Grok 4.5': M1 });
+    const expected = (MEASURED_INPUT_TOKENS['Grok 4.5'] / 1e6) * 1 + (MEASURED_OUTPUT_TOKENS['Grok 4.5'] / 1e6) * 10;
+    expect(out.perCell[0].usd).toBeCloseTo(expected, 12);
+    expect(out.batteryPriced).toEqual(['totally-unknown-case / Grok 4.5']);
+  });
+
+  it('does NOT flag the harness-battery case as battery-priced — the battery table IS a measurement of it', () => {
+    // harness-battery has no entry in MEASURED_CASE_TOKENS (it does not need
+    // one: the whole-battery tables already measure exactly this case), so it
+    // falls to tier 2 like any other unlisted case. The one thing that must NOT
+    // happen is `batteryPriced` calling that an over-estimate — it isn't one.
+    expect(MEASURED_CASE_TOKENS['harness-battery']).toBeUndefined();
+    const out = estimateCells([cell('c1', 'Claude Opus 5', 'harness-battery')], { 'Claude Opus 5': M1 });
+    const expected =
+      (MEASURED_INPUT_TOKENS['Claude Opus 5'] / 1e6) * 1 + (MEASURED_OUTPUT_TOKENS['Claude Opus 5'] / 1e6) * 10;
+    expect(out.perCell[0].usd).toBeCloseTo(expected, 12);
+    expect(out.batteryPriced).toEqual([]);
+    expect(out.unmeasured).toEqual([]);
+  });
+
+  it('takes the MAX of the samples per the doctrine, not the mean recorded in the comment', () => {
+    // Qwen 3.8 Max / config-investigation is the case with the widest recorded
+    // spread: max 342,207 input against a mean of 189,087 on the same case. If
+    // this table were ever accidentally filled with means instead of maxes, this
+    // is the row that would catch it.
+    const sample = MEASURED_CASE_TOKENS['config-investigation']['Qwen 3.8 Max'];
+    expect(sample.inputTokens).toBe(342_207);
+    expect(sample.inputTokens).toBeGreaterThan(189_087); // the mean — max must exceed it
   });
 });
 

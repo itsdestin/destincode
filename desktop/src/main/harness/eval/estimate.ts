@@ -20,9 +20,14 @@ export interface Price {
 
 /** The only fields of a `Cell` (matrix.ts) an estimate needs. Structural on
  *  purpose: the estimator must not drag matrix.ts's whole shape into its tests,
- *  and a caller with a real Cell satisfies this without a cast. */
+ *  and a caller with a real Cell satisfies this without a cast.
+ *
+ *  `caseId` was added (2026-08-13) so a cell can be priced from a measurement of
+ *  the exact TASK it runs, not just the model — see MEASURED_CASE_TOKENS below
+ *  for why that distinction is an 8x swing, not a rounding error. */
 export interface EstimatableCell {
   id: string;
+  caseId: string; // matrix.ts's Cell.caseId — which eval case this cell runs
   model: string; // a ROSTER LABEL (matrix.ts's `models` are labels, not model ids)
 }
 
@@ -69,6 +74,71 @@ export interface EstimatableCell {
 // estimate read LOW for exactly the plans that lean on them, which is the one
 // direction this module exists to prevent.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// MEASURED CASE TOKENS — the fix for the 8x-high estimate (2026-08-13).
+//
+// Everything above this line prices a cell as "whatever this MODEL costs on
+// the whole battery" — 40-63 tool calls, ~20 minutes. The evaluator now also
+// runs short PROSE cases (config-investigation, options-proposal, port-bump):
+// 9-19 tool calls, a few minutes. Pricing one of those from the battery table
+// is not a conservative estimate, it is a WRONG TASK: measured 2026-08-13, six
+// cells of the calibration plan (config-investigation, both models, three
+// instruction arms) priced at $12.42 from the battery table and actually
+// billed $1.52 — the estimate was ~8x high. An estimate that is 8x high is not
+// a safe default; it is a real harm, because it teaches the operator that a
+// pocket-change eval costs more than it does and stops him from running it.
+//
+// So this table holds MEASURED TOKENS FOR THE ACTUAL CASE, keyed by caseId and
+// then by roster label, read from `run.metrics` in the 22 saved transcripts of
+// the 2026-08-13 short-case runs. Per the doctrine at the top of this file —
+// "where evidence disagrees, take the LARGER, because under-predicting spends
+// money the operator did not agree to" — each cell below is the MAX across its
+// samples, not the mean. The mean is recorded in the trailing comment on each
+// line so a reader can see the spread; it is not used in the maths.
+//
+// THE SPREAD IS REAL AND LARGE: Qwen 3.8 Max on config-investigation ran as
+// high as 342,207 input tokens against a 189,087 mean on the SAME case — a
+// single agentic run's cost is not a stable number, it wanders with the path
+// the model happens to take. Taking the max is a deliberate choice to price
+// the expensive tail, not an accident of which sample got typed in first.
+//
+// Samples (n = number of transcripts averaged/maxed per row):
+//   config-investigation / Claude Opus 5 : n=3  input max 57,320   (mean 51,247)   output max 3,961  (mean 3,685)
+//   config-investigation / Qwen 3.8 Max  : n=3  input max 342,207  (mean 189,087)  output max 4,415  (mean 3,239)
+//   options-proposal     / Claude Opus 5 : n=5  input max 124,425  (mean 106,729)  output max 7,386  (mean 5,447)
+//   options-proposal     / Qwen 3.8 Max  : n=5  input max 319,077  (mean 111,592)  output max 6,099  (mean 3,914)
+//   port-bump            / Claude Opus 5 : n=3  input max 70,908   (mean 64,578)   output max 3,032  (mean 2,280)
+//   port-bump            / Qwen 3.8 Max  : n=3  input max 62,640   (mean 58,885)   output max 1,751  (mean 1,472)
+//
+// A case/model pair with no entry here (a case not yet measured, or a roster
+// model not in these runs) falls through to the battery table below — which is
+// a DIFFERENT KIND OF GUESS, a short-task cell priced from a whole-battery
+// number, the exact over-estimate this table exists to fix. `estimateCells`
+// reports that fall-through separately (`batteryPriced`) so a caller can never
+// mistake a battery-priced row for a measurement of the case it is actually
+// pricing. The one exception is the `harness-battery` case itself: that case
+// IS the battery, so the battery table is a correct measurement of it, not an
+// over-estimate — `estimateCells` does not flag it.
+// ---------------------------------------------------------------------------
+
+/** Measured token counts for a specific (case, model) pair — see the block
+ *  above for provenance, the max-over-mean rule, and why the spread matters.
+ *  Checked BEFORE the whole-battery tables below. */
+export const MEASURED_CASE_TOKENS: Record<string, Record<string, { inputTokens: number; outputTokens: number }>> = {
+  'config-investigation': {
+    'Claude Opus 5': { inputTokens: 57_320, outputTokens: 3_961 }, // n=3  mean input 51,247  mean output 3,685
+    'Qwen 3.8 Max': { inputTokens: 342_207, outputTokens: 4_415 }, // n=3  mean input 189,087  mean output 3,239 — wide spread, see note above
+  },
+  'options-proposal': {
+    'Claude Opus 5': { inputTokens: 124_425, outputTokens: 7_386 }, // n=5  mean input 106,729  mean output 5,447
+    'Qwen 3.8 Max': { inputTokens: 319_077, outputTokens: 6_099 }, // n=5  mean input 111,592  mean output 3,914
+  },
+  'port-bump': {
+    'Claude Opus 5': { inputTokens: 70_908, outputTokens: 3_032 }, // n=3  mean input 64,578  mean output 2,280
+    'Qwen 3.8 Max': { inputTokens: 62_640, outputTokens: 1_751 }, // n=3  mean input 58,885  mean output 1,472
+  },
+};
 
 /** Measured whole-run OUTPUT tokens, per roster label. See the block above for
  *  provenance; values are max(2026-08-10 figure where one exists, 2026-08-11).
@@ -194,6 +264,15 @@ export interface MatrixEstimate {
   /** Roster labels with no entry in the measured-token tables, which were
    *  estimated from FALLBACK_*_TOKENS instead. Deduplicated and sorted. */
   unmeasured: string[];
+  /** `"<caseId> / <model>"` pairs priced from the whole-BATTERY tables
+   *  (MEASURED_OUTPUT_TOKENS / MEASURED_INPUT_TOKENS) because MEASURED_CASE_TOKENS
+   *  had no entry for that exact case+model. That is a short task priced from a
+   *  40-63-tool-call run — the ~8x over-estimate MEASURED_CASE_TOKENS exists to
+   *  fix — so these rows are NOT a measurement of the case they price and must
+   *  never be presented as one. The `harness-battery` case is excluded: for that
+   *  case the battery table IS a measurement, not an over-estimate.
+   *  Deduplicated and sorted. */
+  batteryPriced: string[];
 }
 
 /**
@@ -207,6 +286,14 @@ export interface MatrixEstimate {
  * with `usd: null`; it is never counted as free. A price of exactly 0 is a real
  * answer (OpenRouter genuinely lists free models) and is NOT treated as missing
  * — the distinction is "is there an entry", not "is the number truthy".
+ *
+ * Token counts are looked up in THREE tiers, most specific first: (1)
+ * MEASURED_CASE_TOKENS[caseId][model] — a real measurement of this exact task
+ * on this exact model; (2) MEASURED_OUTPUT_TOKENS/MEASURED_INPUT_TOKENS — a
+ * whole-BATTERY measurement of the model, which is a correct price only for
+ * the `harness-battery` case and an over-estimate for every shorter case,
+ * flagged in `batteryPriced` so it is never mistaken for tier 1; (3)
+ * FALLBACK_*_TOKENS — no measurement at all, flagged in `unmeasured`.
  */
 export function estimateCells(
   cells: EstimatableCell[],
@@ -214,6 +301,7 @@ export function estimateCells(
 ): MatrixEstimate {
   const unpriced = new Set<string>();
   const unmeasured = new Set<string>();
+  const batteryPriced = new Set<string>();
   const perCell: CellEstimate[] = [];
   let totalUsd = 0;
 
@@ -223,12 +311,22 @@ export function estimateCells(
     if (!cell || typeof cell.id !== 'string' || !cell.id) {
       throw new Error('estimateCells: every cell needs a non-empty string "id" (matrix.ts\'s Cell.id).');
     }
+    if (typeof cell.caseId !== 'string' || !cell.caseId) {
+      throw new Error(`estimateCells: cell "${cell.id}" has no "caseId" (matrix.ts's Cell.caseId).`);
+    }
     if (typeof cell.model !== 'string' || !cell.model) {
       throw new Error(`estimateCells: cell "${cell.id}" has no "model" (a roster label).`);
     }
 
-    const outputTokens = MEASURED_OUTPUT_TOKENS[cell.model];
-    const inputTokens = MEASURED_INPUT_TOKENS[cell.model];
+    // Tier 1: a measurement of THIS EXACT case on THIS EXACT model. Preferred
+    // over everything below because it is the only tier that measured the task
+    // actually being priced, not a proxy for it.
+    const caseSample = MEASURED_CASE_TOKENS[cell.caseId]?.[cell.model];
+    // Tier 2: the whole-battery tables. Correct for the `harness-battery` case
+    // (that case IS the battery), an over-estimate for every other case (a short
+    // task priced from a 40-63-tool-call run) — flagged below via `batteryPriced`.
+    const batteryOutputTokens = MEASURED_OUTPUT_TOKENS[cell.model];
+    const batteryInputTokens = MEASURED_INPUT_TOKENS[cell.model];
 
     // Fix pass 1 (2026-08-12 review, MINOR): the `unmeasured` add used to happen
     // HERE, before the price check below. A model that is both unpriced and
@@ -243,7 +341,21 @@ export function estimateCells(
       perCell.push({ cellId: cell.id, model: cell.model, usd: null });
       continue;
     }
-    if (outputTokens === undefined || inputTokens === undefined) unmeasured.add(cell.model);
+
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    if (caseSample) {
+      inputTokens = caseSample.inputTokens;
+      outputTokens = caseSample.outputTokens;
+    } else if (batteryInputTokens !== undefined && batteryOutputTokens !== undefined) {
+      inputTokens = batteryInputTokens;
+      outputTokens = batteryOutputTokens;
+      // Not an over-estimate for the battery case itself — see MEASURED_CASE_TOKENS's
+      // header comment for why that one caseId is excluded from the flag.
+      if (cell.caseId !== 'harness-battery') batteryPriced.add(`${cell.caseId} / ${cell.model}`);
+    } else {
+      unmeasured.add(cell.model);
+    }
 
     const usd =
       ((inputTokens ?? FALLBACK_INPUT_TOKENS) / 1_000_000) * price.inputPerM
@@ -257,6 +369,7 @@ export function estimateCells(
     totalUsd,
     unpriced: [...unpriced].sort(),
     unmeasured: [...unmeasured].sort(),
+    batteryPriced: [...batteryPriced].sort(),
   };
 }
 
