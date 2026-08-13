@@ -160,3 +160,21 @@ fun rebuildIndex(claudeDir: String) {
         }
     }
 }
+
+/**
+ * True when [p] is an absolute path we can safely hand to File().
+ *
+ * WHY: an external artifact's absolutePath is contractually absolute, but
+ * records written before the 2026-08-12 resolveTrackedPath fix hold relative
+ * strings ("flappy-bird/play.html"). File("flappy-bird/play.html") resolves
+ * against the app PROCESS cwd ("/" on Android), so the file reads as missing
+ * even though it sits in the project — the "no longer on disk" false positive.
+ *
+ * Android is always POSIX, so this is a bare leading-slash test. A synced
+ * Windows record ("C:/Users/...") is not addressable here and is refused as an
+ * orphan — the same result File("C:/Users/...").exists() already gives.
+ *
+ * Mirrors desktop/src/main/artifacts/write-authorization.ts::isAbsoluteRecorded
+ * (which uses path.isAbsolute, platform-correct on both OSes).
+ */
+fun isAbsoluteRecorded(p: String): Boolean = p.startsWith("/")
