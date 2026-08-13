@@ -749,8 +749,19 @@ export class NativeSessionHost extends EventEmitter {
     }
 
     const run = await this.runDelegation(parentId, opts.childId, title, spawnOptsLike, opts.reservation);
-    const report = this.formatSpecialistReport({ parentId, childId: opts.childId, specialist, title, body: run.report });
+    // Merge note (Tasks 6 + 10): formatSpecialistReport returns { text, reportPath }
+    // since Task 10 — a truncated report spills its full body to a file. The
+    // resumed-child path records that path the same way the fresh-spawn path
+    // does, so a resumed run's footer points at a file the ledger knows about.
+    const { text: report, reportPath } = this.formatSpecialistReport({ parentId, childId: opts.childId, specialist, title, body: run.report });
     if (this.ledger && parent.cwd) {
+      if (reportPath) {
+        try {
+          await this.ledger.update(parent.cwd, parentId, opts.childId, { reportPath });
+        } catch (ledgerErr) {
+          log('ERROR', 'NativeSessionHost', 'failed to record a truncation-time spill path for a resumed specialist — the report is still returned to the caller', { childId: opts.childId, parentId, error: String(ledgerErr) });
+        }
+      }
       try {
         await this.ledger.confirmDelivered(parent.cwd, parentId, opts.childId);
       } catch (ledgerErr) {
