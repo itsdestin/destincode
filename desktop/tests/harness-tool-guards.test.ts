@@ -68,6 +68,39 @@ describe('checkPathGuard — threat model table', () => {
     });
   });
 
+  // Task 10 (plan 1b): a specialist report too big for the parent's headroom
+  // is spilled to sessions/<slug>/<childId>.report.md, and the footer tells
+  // the model to Read it. That advice is only honest if the guard actually
+  // lets the READ through — the parent's own internalReadRoots (wired by
+  // NativeSessionHost, per-session) is the mechanism, mirroring the spillRoot
+  // exemption above but scoped to whatever roots the CALLER passes in rather
+  // than one hardcoded global root.
+  describe('internalReadRoots (per-session spill dir exemption)', () => {
+    const internalRoot = path.join(os.tmpdir(), 'yc-internal-root', 'proj-slug');
+
+    it('a path under an internal root is readable without an external_directory ask', () => {
+      const p = path.join(internalRoot, 'child-1.report.md');
+      expect(checkPathGuard(p, CWD, [internalRoot]).kind).toBe('ok');
+    });
+
+    it('a sibling directory next to the internal root still asks — the exemption does not widen', () => {
+      const sibling = path.join(os.tmpdir(), 'yc-internal-root', 'not-our-slug', 'x.txt');
+      expect(checkPathGuard(sibling, CWD, [internalRoot]).kind).toBe('external');
+    });
+
+    it('with no internalReadRoots passed, the same path just asks like any other external path', () => {
+      const p = path.join(internalRoot, 'child-1.report.md');
+      expect(checkPathGuard(p, CWD).kind).toBe('external');
+    });
+
+    it('cannot be used to reach a credential file by climbing out of an internal root', () => {
+      // Same ordering guarantee as the spillRoot exemption: credential denies
+      // run BEFORE internalReadRoots is ever consulted.
+      const escape = path.join(internalRoot, '..', '..', '.ssh', 'id_rsa');
+      expect(checkPathGuard(escape, CWD, [internalRoot]).kind).toBe('deny');
+    });
+  });
+
   it('absolute path with `..` cannot escape the cwd jail (external, not ok)', () => {
     // Lexically "inside" CWD but climbs two levels out — must be normalized,
     // classified external, and NOT silently allowed.

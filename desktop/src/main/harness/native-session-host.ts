@@ -15,6 +15,7 @@
 // crash losing an unpersisted event is acceptable; a stuttering UI is not.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
@@ -683,9 +684,28 @@ export class NativeSessionHost extends EventEmitter {
     this.bindReservation(opts.token, childId);
     await this.recordDelegationStart(parentId, childId, title, opts, false);
     const run = await this.runDelegation(parentId, childId, title, opts, opts.token);
-    const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
+    // Minor (external review 2026-08-13): deliberately NOT plumbing
+    // runDelegation's own reportPath (if it already spilled run.report for
+    // exceeding RAW_REPORT_CAP_CHARS, a few lines up its own call stack) in
+    // here — when that AND the specialist's much smaller report budget both
+    // trip, this writes the identical full body to the identical path a
+    // second time. Harmless (deterministic overwrite, same bytes) and the
+    // rare case, so left as an accepted inefficiency rather than threading an
+    // extra return value through runDelegation for it.
+    const { text: report, reportPath } = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
     const parentCwd = this.live.get(parentId)?.cwd;
     if (this.ledger && parentCwd) {
+      // Task 10: the ledger's reportPath should reflect a truncation-time
+      // spill the same way it already reflects runDelegation's own
+      // completion-time one — best-effort, log-only: a bookkeeping failure
+      // here must never discard the report already produced above.
+      if (reportPath) {
+        try {
+          await this.ledger.update(parentCwd, parentId, childId, { reportPath });
+        } catch (ledgerErr) {
+          log('ERROR', 'NativeSessionHost', 'failed to record a truncation-time spill path in the ledger — the report is still returned to the caller', { childId, parentId, error: String(ledgerErr) });
+        }
+      }
       // Foreground delivery IS the tool result returned right below — confirm
       // it through the SAME ledger call the background delivery loop uses
       // (confirmDelivered), rather than leaving a 'completed' row that reads
@@ -952,10 +972,12 @@ export class NativeSessionHost extends EventEmitter {
    *  computed ONCE by the caller for the whole delivery pass (see runTurns),
    *  not per-record, because every report drained in the SAME pass is
    *  competing for the same slice of the parent's headroom regardless of
-   *  delivery order within the pass. */
-  private formatDelivery(sessionId: string, rec: DelegationRecord, concurrentReporters: number): string {
+   *  delivery order within the pass. Returns `reportPath` alongside the text
+   *  (Task 10) so the caller can persist a NEWLY-created truncation-time spill
+   *  to the ledger — a failed/missing-specialist body has none to give. */
+  private formatDelivery(sessionId: string, rec: DelegationRecord, concurrentReporters: number): { text: string; reportPath?: string } {
     if (rec.status === 'failed') {
-      return `[Background specialist failed] ${rec.title} (${rec.agentType}): ${rec.failureText ?? 'unknown error'}. Partial transcript: specialist session ${rec.childId}.`;
+      return { text: `[Background specialist failed] ${rec.title} (${rec.agentType}): ${rec.failureText ?? 'unknown error'}. Partial transcript: specialist session ${rec.childId}.` };
     }
     const minutesAgo = Math.max(0, Math.round((Date.now() - rec.startedAt) / 60000));
     const preamble = `[Background specialist finished] ${rec.title} (${rec.agentType}) completed the task you delegated ("${rec.description}", started ${minutesAgo}m ago, ${rec.steps ?? 0} steps).\n\n`;
@@ -969,13 +991,43 @@ export class NativeSessionHost extends EventEmitter {
     // that notice's totals are accurate; fall back to the capped ledger copy
     // only if the spill file itself can't be read (e.g. deleted out from
     // under us) — a missing spill file must never fail delivery outright.
-    const rawBody = (rec.reportPath && this.nativeHome?.readSessionArtifact(rec.reportPath)) ?? rec.rawReport ?? '';
-    const body = specialist
-      ? this.formatSpecialistReport({
-          parentId: sessionId, childId: rec.childId, specialist, title: rec.title, body: rawBody, concurrentReporters,
-        })
-      : rawBody;
-    return preamble + body;
+    const spilledBody = rec.reportPath ? this.nativeHome?.readSessionArtifact(rec.reportPath) : undefined;
+    const readSucceeded = typeof spilledBody === 'string';
+    const rawBody = readSucceeded ? spilledBody : (rec.rawReport ?? '');
+    if (!specialist) return { text: preamble + rawBody };
+    // Critical fix pass 1 (external review 2026-08-13): reportPath is reused
+    // ONLY when the read two lines up actually just proved the file is still
+    // there — passing rec.reportPath through unconditionally (as before pass
+    // 1) made formatSpecialistReport treat it as truthy and skip its own
+    // write-guard, so a spill file deleted out from under us still got named
+    // in the footer as "Full report saved to: <path>".
+    //
+    // Critical fix pass 2 (2026-08-13): pass 1 stopped there, but its OWN fix
+    // still lied — when the read fails, `rawBody` above falls back to
+    // `rec.rawReport`, the ledger's copy that DelegationLedger.update() caps
+    // at RAW_REPORT_CAP_CHARS on every write. That capped copy is not the
+    // full report. Passing it as `body` with `reportPath: undefined` sent it
+    // into formatSpecialistReport's ordinary "no path yet, please spill"
+    // branch, which dutifully wrote the CAPPED copy to the exact filename
+    // the real full body might still legitimately live at — clobbering a
+    // possibly-recoverable file with a strictly worse one, and then naming
+    // that same path as "Full report saved to" once the overwrite succeeded.
+    // `bodyIsFull` tells formatSpecialistReport the truth about what `body`
+    // actually is: full (`readSucceeded`, real disk content) or, when there
+    // was never a completion-time spill at all (`!rec.reportPath`), the
+    // ledger copy that in that case genuinely IS the whole report because it
+    // was never capped in the first place. Any other case (read failed AND a
+    // spill path exists in the ledger) is neither — reportPath stays
+    // undefined AND bodyIsFull stays false, so formatSpecialistReport must
+    // neither reuse a path it can't prove is current NOR write a lesser body
+    // over one that might still be.
+    const bodyIsFull = readSucceeded || !rec.reportPath;
+    const spilled = this.formatSpecialistReport({
+      parentId: sessionId, childId: rec.childId, specialist, title: rec.title, body: rawBody, concurrentReporters,
+      reportPath: readSucceeded ? rec.reportPath : undefined,
+      bodyIsFull,
+    });
+    return { text: preamble + spilled.text, reportPath: spilled.reportPath };
   }
 
   /** Drive ONE specialist child to completion and return its last message.
@@ -1198,9 +1250,23 @@ export class NativeSessionHost extends EventEmitter {
    *
    *  Three jobs: say WHO reported (the parent asked for a specialist, not for
    *  an anonymous blob of text), cap the body against what the parent can still
-   *  afford, and point at the child's own transcript for anything that got cut.
-   *  Text-only truncation in 1a — spilling the overflow to a file is 1b, which
-   *  is why the pointer names the session rather than a path. */
+   *  afford, and point somewhere real for anything that got cut. 1a's footer
+   *  named the child's own session id — nothing in this harness can Read a
+   *  transcript by session id, so a model told to "read" it hit a dead end.
+   *  Task 10 (plan 1b) fixes that: when the cap truncates the body, the FULL
+   *  text is spilled to sessions/<slug>/<childId>.report.md
+   *  (NativeHome.writeSessionArtifact) and the footer names that real,
+   *  Readable path instead (internalReadRoots, wired by toolWiring below, is
+   *  what lets the parent actually open it without an external_directory
+   *  ask). The untruncated case still needs SOME pointer for 1c's card
+   *  linking, so it keeps a short `[specialist session <id>]` tag.
+   *
+   *  Critical fix pass 2 (2026-08-13): `body` is not always the full report —
+   *  formatDelivery can hand this a ledger's CAPPED copy when the real spill
+   *  file can no longer be read (see `bodyIsFull` below). This method must
+   *  never write that lesser copy to the spill path (it could overwrite a
+   *  still-good full file there) and must never claim in the footer that a
+   *  path holds the full report when it does not know that to be true. */
   private formatSpecialistReport(i: {
     parentId: string; childId: string; specialist: SpecialistDefinition; title: string; body: string;
     // Task 4: how many reports are landing in this parent TOGETHER — defaults
@@ -1209,7 +1275,28 @@ export class NativeSessionHost extends EventEmitter {
     // pending count so simultaneous reports split the parent's headroom
     // instead of each claiming the full single-reporter share.
     concurrentReporters?: number;
-  }): string {
+    // Task 10: a spill path the CALLER already knows is READABLE right now —
+    // formatDelivery passes rec.reportPath only when it just confirmed (via
+    // readSessionArtifact) that Task 4's completion-time spill is still on
+    // disk. Reusing it means this method never writes the identical bytes to
+    // the identical path a second time. Absent for the foreground path, for
+    // any background report the completion handler never had to spill, AND
+    // for a background report whose spill file WAS written but is gone by
+    // delivery time — in that case the caller deliberately omits it so this
+    // method does not blindly name a path it just failed to read.
+    reportPath?: string;
+    // Critical fix pass 2 (2026-08-13): is `body` actually the WHOLE report,
+    // or a lesser stand-in (the ledger's RAW_REPORT_CAP_CHARS-capped copy,
+    // substituted by formatDelivery when the real spill file couldn't be
+    // read)? Defaults to true — every OTHER caller (the foreground path, and
+    // background delivery whenever no completion-time spill ever happened)
+    // really does hand over the complete body. When false, this method must
+    // neither write `body` to the spill path (it would overwrite a
+    // possibly-still-good full file with a worse copy) nor claim in the
+    // footer that any path holds the full report — see the honest-shortfall
+    // branch below.
+    bodyIsFull?: boolean;
+  }): { text: string; reportPath?: string } {
     const parent = this.live.get(i.parentId)?.session;
     const window = parent?.contextWindowTokens ?? null;
     const used = parent?.contextUsedTokens ?? null;
@@ -1231,12 +1318,58 @@ export class NativeSessionHost extends EventEmitter {
       ? composeNotice(undefined, { shown: cut.text.length, total: cut.totalChars },
         'delegate a narrower piece of work, or ask for a shorter report')
       : '';
+    let reportPath = i.reportPath;
+    let footer: string;
+    // Critical fix pass 2 (2026-08-13): only attempt a spill when `body` is
+    // actually the full report. Writing a lesser (capped) body to the spill
+    // path would silently downgrade whatever was already there — the exact
+    // data-loss bug this pass fixes (see the class doc comment above and
+    // formatDelivery's caller comment).
+    const bodyIsFull = i.bodyIsFull ?? true;
+    if (cut.truncated) {
+      if (!reportPath && bodyIsFull) {
+        const parentCwd = this.live.get(i.parentId)?.cwd;
+        if (this.nativeHome && parentCwd) {
+          try {
+            reportPath = this.nativeHome.writeSessionArtifact(cwdToProjectSlug(parentCwd), `${i.childId}.report.md`, i.body);
+          } catch (err) {
+            // Fix: a spill failure must degrade gracefully — the parent still
+            // gets the truncated text above, and the footer below must NEVER
+            // claim a file exists that isn't actually there
+            // (error-message-standards.md: no misleading claims).
+            log('ERROR', 'NativeSessionHost', 'failed to spill a truncated specialist report to disk — the footer will not name a file', { childId: i.childId, parentId: i.parentId, error: String(err) });
+          }
+        }
+      }
+      if (reportPath) {
+        footer = `[Truncated to fit. Full report saved to: ${reportPath} — Read it if you need the rest.]`;
+      } else if (!bodyIsFull) {
+        // Honest-shortfall branch (critical fix pass 2): the true full body
+        // is gone (a completion-time spill existed but couldn't be read back)
+        // and `body` here is only the ledger's capped copy. No write was
+        // attempted — see the `bodyIsFull` guard above — so there is no path
+        // to name. General-but-non-committal per error-message-standards.md:
+        // say plainly that the rest is unrecoverable, without naming a file
+        // or guessing why the read failed.
+        footer = '[Truncated to fit. The full report is no longer available; this is a shortened copy and the rest cannot be retrieved.]';
+      } else {
+        footer = '[Truncated to fit. The full report could not be saved to disk.]';
+      }
+    } else {
+      // 1c's card linking reads this short tag for the child's session id —
+      // deliberately NOT "full transcript:" wording, since nothing here can
+      // actually open a transcript by session id (that phrasing is now
+      // reserved for the truncated branch's real, Readable path above).
+      footer = `[specialist session ${i.childId}]`;
+    }
     // Task 8: the header uses the child's assigned (fun) title, not the bare
     // displayName — the role id stays alongside it either way, so the parent
     // can always tell WHICH kind of specialist answered even though the name
     // is per-run.
-    return `## Report from ${i.title} (${i.specialist.id})\n\n${cut.text}${notice}\n\n`
-      + `[full transcript: specialist session ${i.childId}]`;
+    return {
+      text: `## Report from ${i.title} (${i.specialist.id})\n\n${cut.text}${notice}\n\n${footer}`,
+      reportPath,
+    };
   }
 
   // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
@@ -1552,7 +1685,7 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots'> {
     return {
       tools: CORE_TOOLS,
       // Project rules + nested project instructions, indexed ONCE per session
@@ -1560,6 +1693,17 @@ export class NativeSessionHost extends EventEmitter {
       // filesystem state scoped to the session's cwd, and re-statting the tree
       // per tool call would be a real cost on a large repo.
       triggers: buildTriggerIndex(cwd),
+      // Task 10 (plan 1b): the ONE root a ROOT session is allowed to Read
+      // without an external_directory ask — this PROJECT's sessions/<slug>/
+      // artifact directory, the exact place writeSessionArtifact spills an
+      // oversized specialist report to. Not exclusive to this one session
+      // (every session sharing this cwd writes into the same slug directory,
+      // same as the ledger sidecar and every session JSONL already do) — it
+      // is scoped to "this project's own harness storage", not to secrets or
+      // anything outside ~/.youcoded/sessions/<slug>/. Only create()/resume()
+      // call toolWiring; createChild (specialist children) builds its opts by
+      // hand and never does, so a child never inherits this.
+      ...(this.nativeHome ? { internalReadRoots: [path.join(this.nativeHome.root, 'sessions', cwdToProjectSlug(cwd))] } : {}),
       // Skill is NOT in CORE_TOOLS — it is attached per session by
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
@@ -2465,7 +2609,20 @@ export class NativeSessionHost extends EventEmitter {
             log('WARN', 'NativeSessionHost', 'markInjectionAttempted failed — proceeding with delivery anyway; see markInjectionAttempted\'s own comment for the residual duplicate risk this can leave', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
           }
           try {
-            await entry.session.runNotice(this.formatDelivery(sessionId, rec, concurrentReporters));
+            const delivery = this.formatDelivery(sessionId, rec, concurrentReporters);
+            // Task 10: a NEWLY-created truncation-time spill (delivery.reportPath
+            // absent from the claimed record) gets recorded in the ledger too —
+            // own try/catch, log-only: a bookkeeping failure here must never
+            // block the delivery itself, which already has the right path in
+            // hand for THIS injection either way.
+            if (delivery.reportPath && delivery.reportPath !== rec.reportPath) {
+              try {
+                await this.ledger.update(entry.cwd, sessionId, rec.childId, { reportPath: delivery.reportPath });
+              } catch (err) {
+                log('WARN', 'NativeSessionHost', 'failed to record a truncation-time spill path in the ledger', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
+              }
+            }
+            await entry.session.runNotice(delivery.text);
             // Recheck AGAIN: destroy() can land during the runNotice() await
             // itself (no throw, per the WHY above), so confirmDelivered must
             // never be reached on a session that stopped being live while the
@@ -2514,7 +2671,12 @@ export class NativeSessionHost extends EventEmitter {
           break;
         }
         try {
-          await entry.session.runNotice(this.formatDelivery(sessionId, fallback.rec, concurrentReporters));
+          // Task 10: no ledger persistence attempt here for a newly-spilled
+          // reportPath — unlike the claimed-record path above, `fallback.rec`
+          // has no live ledger row in a deliverable state to attach it to (see
+          // this lane's own WHY, right above); the correct path is still what
+          // lands in THIS injection's footer either way.
+          await entry.session.runNotice(this.formatDelivery(sessionId, fallback.rec, concurrentReporters).text);
           if (this.live.get(sessionId) !== entry) {
             // destroy() landed mid-notice: runNotice on a torn-down session
             // resolves normally without showing the report to anyone (same
