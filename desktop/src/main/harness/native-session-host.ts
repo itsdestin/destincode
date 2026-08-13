@@ -21,7 +21,7 @@ import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './ha
 import { rebuildHistory } from './history-rebuild';
 import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
-import { PermissionBroker, type AskDecision } from './permission-broker';
+import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
 import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
@@ -34,9 +34,9 @@ import { canonicalize, resolveP } from './tools/guards';
 import { isUnderRoot } from '../artifacts/read-binary-access';
 import { resolveSpecialist, type SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
-import { childAskPolicy } from './specialists/child-ask-policy';
+import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-router';
 import { assignSpecialistName } from './specialists/names';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from './specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS } from './specialists/limits';
 import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, type DelegationRecord } from './specialists/delegation-ledger';
 import { DelegatedModels } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
@@ -349,6 +349,29 @@ export class NativeSessionHost extends EventEmitter {
   // in THIS session, at the very next idle boundary, same as a normal
   // ledger-backed delivery — see the delivery loop in runTurns below.
   private inMemoryFallback = new Map<string, { parentId: string; rec: DelegationRecord }>();
+
+  // Plan 1b Task 8 — plain-text notices for a parent that are NOT a specialist
+  // RUN outcome (a DelegationRecord): today the only producer is a late answer
+  // to a routed permission ask that arrived after the child that raised it had
+  // already ended (onLateResponse below). Kept as its own, much simpler lane
+  // rather than shoehorned into DelegationRecord's completed/failed status
+  // machine — a late answer isn't a run the ledger models, it's a one-line
+  // follow-up. It still lands through the SAME idle-boundary injection
+  // mechanism Task 4 built for background completions (kickIdleDeliveryPass +
+  // drainDeliveries' runNotice call) rather than a second delivery path.
+  // Purely in-memory, like inMemoryFallback above: an app restart losing an
+  // unread late-answer notice is an accepted loss, not a durability promise
+  // this lane makes.
+  private pendingHostNotices = new Map<string, string[]>();
+
+  // Plan 1b Task 8 — a routed ask's late APPROVE, recorded once the child that
+  // raised it has already ended, keyed by childId. WHY it exists but nothing
+  // in this file reads it back yet: there is no wired path today that resumes
+  // a specific specialist child by its task_id (resume() rebuilds an ordinary
+  // session's decide(), never buildChildDecide) — recording the grant here is
+  // forward-looking storage for that future resume path, honestly inert until
+  // one exists. It is NOT a promise that a resume will skip the ask today.
+  private childApprovedAsks = new Map<string, { tool: string }[]>();
 
   /** Pop (remove) the first in-memory fallback report belonging to `parentId`,
    *  if any — the delivery loop's second-choice lane, tried only after the
@@ -807,12 +830,118 @@ export class NativeSessionHost extends EventEmitter {
    *  real turn reaches too) is what actually injects the report(s). */
   private queueDelivery(parentId: string): void {
     this.pendingDeliveryParents.add(parentId);
+    this.kickIdleDeliveryPass(parentId);
+  }
+
+  /** Shared by queueDelivery (the ledger lane) and queueHostNotice (Task 8's
+   *  plain-notice lane, below): if the parent is ALREADY idle, nothing else
+   *  is going to reach runTurns' own post-drain tail on its own, so dispatch
+   *  a no-op "first" turn just to get INTO runTurns from an idle start —
+   *  drainDeliveries (runTurns' own tail) is what actually injects whatever
+   *  is now pending, and drains BOTH lanes in one pass regardless of which
+   *  one triggered the kick. */
+  private kickIdleDeliveryPass(parentId: string): void {
     const entry = this.live.get(parentId);
     if (!entry || !this.isIdle(parentId)) return;
     entry.inFlight = true;
     entry.running = new Promise<void>((resolve) => {
       setImmediate(() => { void this.runTurns(parentId, entry, async () => {}).then(resolve, resolve); });
     });
+  }
+
+  /** Plan 1b Task 8 — queue a plain-text notice for `parentId`, delivered the
+   *  same way a background completion is (see pendingHostNotices' own WHY).
+   *  Guarded on parent liveness the same way stashFallbackIfParentAlive is:
+   *  a torn-down parent can never come back to read this, so there is
+   *  nothing to gain by holding it in memory forever — log it as
+   *  undeliverable instead of silently leaking. */
+  private queueHostNotice(parentId: string, text: string): void {
+    if (!this.live.has(parentId)) {
+      log('WARN', 'NativeSessionHost', 'a late permission answer arrived after its parent session was already destroyed — the notice has nowhere left to be delivered', { parentId });
+      return;
+    }
+    const arr = this.pendingHostNotices.get(parentId) ?? [];
+    arr.push(text);
+    this.pendingHostNotices.set(parentId, arr);
+    this.kickIdleDeliveryPass(parentId);
+  }
+
+  /** Plan 1b Task 8 — the ONE handler for a real response that arrives after
+   *  its routed ask already timed out (wired to the broker in the
+   *  constructor). Two cases, both honest about what "the entry stays
+   *  answerable" actually delivers:
+   *   - the child that raised the ask is STILL LIVE (it took the redirect and
+   *     kept working, hasn't finished yet) → course-correct it directly with
+   *     postSteer, naming the tool and the real decision. A `false` return
+   *     (no turn in flight right this instant) is fine to ignore, same
+   *     reasoning as the compaction steer above: the next turn-loop iteration
+   *     boundary drains it, and if there never is one the child is about to
+   *     end anyway with nothing left for a steer to change.
+   *   - the child has ALREADY ended (destroy() already ran — runDelegation's
+   *     finally tears every child down on every exit path) → there is no
+   *     session left to steer, so the answer reaches the PARENT instead, via
+   *     the same idle-boundary delivery path Task 4 built for background
+   *     completions (queueHostNotice). On an approval, the decision is also
+   *     recorded into childApprovedAsks — see that field's own WHY for what
+   *     this does and does not wire up yet. */
+  private onLateResponse(entry: LateResponseEntry, decision: AskDecision): void {
+    const allowed = decision.behavior === 'allow';
+    const childId = entry.raisedBy;
+
+    // Task 11 fix pass (Finding 2): a LATE "Always allow" used to silently
+    // drop the "and remember this" half — this handler only ever steered the
+    // still-live child or notified the parent, never persisted anything,
+    // even though decision.always rides the same AskDecision the in-time path
+    // (child-ask-router.ts) reads. This handler is reached ONLY for a routed
+    // (specialist) ask: a root session's own askUser is wired straight to
+    // `this.broker.ask(req)` with no `opts.timeoutMs` (see the `askUser:
+    // (req) => this.broker.ask(req)` root wiring below), so a root ask's
+    // PendingAsk.timedOut never flips true and it never reaches
+    // lateResponseHandler at all — only createChild's childAskRouter wiring
+    // passes a timeout. So `entry.specialist` is always set here in
+    // production; the `undefined` guard below is belt-and-suspenders for a
+    // hand-built test entry, not a real production path. Persisted against
+    // `entry.sessionId`, which childAskRouter already rewrote to the PARENT's
+    // id before ever calling broker.ask() (see AskRequest.raisedBy's own
+    // comment) — the same session/cwd pair the in-time path writes against.
+    // Budget asks (max_steps/doom_loop) never support "Always allow" even for
+    // a root session (child-ask-router.ts's BUDGET_ASK_TOOL_NAMES) — excluded
+    // here for the same reason the in-time path excludes them.
+    if (allowed && decision.always && entry.specialist && !BUDGET_ASK_TOOL_NAMES.has(entry.toolName)) {
+      const parent = this.live.get(entry.sessionId);
+      if (parent) {
+        this.rememberRule(entry.sessionId, parent.cwd, {
+          tool: entry.toolName,
+          ...(entry.subject !== undefined ? { pattern: entry.subject } : {}),
+          action: 'allow',
+          specialist: entry.specialist.agentType,
+        });
+      } else {
+        // The parent session was torn down before the late answer arrived —
+        // there is no live cwd left to persist against (the store is keyed by
+        // project, not sessionId). Same accepted loss as queueHostNotice's own
+        // WARN below: nothing durable was ever promised once the parent is gone.
+        log('WARN', 'NativeSessionHost', 'a late "Always allow" arrived after its parent session was already destroyed — the rule could not be persisted', { sessionId: entry.sessionId, toolName: entry.toolName });
+      }
+    }
+
+    if (childId && this.live.has(childId)) {
+      this.live.get(childId)!.session.postSteer(
+        `The user has now responded to your earlier blocked request (${entry.toolName}): ${allowed ? 'APPROVED — you may do it now.' : 'DENIED — do not attempt it.'}`,
+      );
+      return;
+    }
+    const title = entry.specialist?.title ?? entry.toolName;
+    const idForNotice = entry.specialist?.childId ?? childId ?? 'unknown';
+    this.queueHostNotice(
+      entry.sessionId,
+      `[Specialist follow-up] The user ${allowed ? 'approved' : 'denied'} ${title}'s blocked ${entry.toolName} request after the specialist finished. Use task_id ${idForNotice} to continue that work if needed.`,
+    );
+    if (allowed && childId) {
+      const grants = this.childApprovedAsks.get(childId) ?? [];
+      grants.push({ tool: entry.toolName });
+      this.childApprovedAsks.set(childId, grants);
+    }
   }
 
   /** Task 4 — format one claimed ledger record into the text runNotice()
@@ -1201,11 +1330,23 @@ export class NativeSessionHost extends EventEmitter {
     // recording, not a NativeHome pointed at a real home dir by accident);
     // the real wiring (ipc-handlers.ts) always passes the shared nativeHome.
     nativeHome?: NativeHome,
+    // Plan 1b Task 8: how long a routed specialist ask waits on the parent's
+    // screen before the redirect fires. Optional + LAST, same reasoning as
+    // every other trailing param here — defaults to the real 5-minute
+    // production value (specialists/limits.ts) so every existing construction
+    // is unaffected; tests that need the timeout to actually fire in a
+    // reasonable wall-clock time override it with a small number instead of
+    // fighting this file's setImmediate-heavy async machinery with fake timers.
+    private specialistAskHoldMs: number = SPECIALIST_ASK_HOLD_MS,
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
     // renderer + remote clients (see the 'hook-event' listener there).
     this.broker.on('hook-event', (event) => this.emit('hook-event', event));
+    // Plan 1b Task 8: the ONE handler for a real answer that arrives after its
+    // ask already timed out — see onLateResponse's own comment for the
+    // live-child-vs-ended-child split.
+    this.broker.setLateResponseHandler((entry, decision) => this.onLateResponse(entry, decision));
     this.ledger = nativeHome ? new DelegationLedger(nativeHome) : undefined;
     this.nativeHome = nativeHome;
     this.delegatedModels = nativeHome ? new DelegatedModels(nativeHome) : undefined;
@@ -1293,9 +1434,13 @@ export class NativeSessionHost extends EventEmitter {
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
    *
-   *  The in-memory filter compares the (tool, pattern, action) TRIPLE, not whole
-   *  objects: a rule read back off disk carries a `grantedAt` key the in-memory
-   *  copy never had, so an equality check would silently stop matching. */
+   *  The in-memory filter compares the (tool, pattern, action, specialist)
+   *  QUAD (Task 11 added `specialist`, the same axis the store's dedupe/remove
+   *  and the UI's key use), not whole objects: a rule read back off disk
+   *  carries a `grantedAt` key the in-memory copy never had, so an equality
+   *  check would silently stop matching. Without `specialist` in the compare,
+   *  revoking a root grant would also drop a same-triple SPECIALIST-keyed
+   *  grant (or vice versa) still held by a live session. */
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
@@ -1303,7 +1448,7 @@ export class NativeSessionHost extends EventEmitter {
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
       this.rememberedFor.set(sessionId, mem.filter(
-        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action),
+        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist),
       ));
     }
     return hit;
@@ -1325,8 +1470,21 @@ export class NativeSessionHost extends EventEmitter {
   /** The per-session permission decision closure passed into each HarnessSession.
    *  Re-reads the session's current mode + remembered rules on EVERY call, so a
    *  mid-session mode flip (setPermissionMode) — and any newly-remembered rule —
-   *  takes effect on the NEXT gated tool. */
-  private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[]) {
+   *  takes effect on the NEXT gated tool.
+   *
+   *  `opts.specialistScope` (Task 11): a child's parentDecide passes its own
+   *  agentType here. A specialist-keyed remembered rule must never widen the
+   *  ROOT session's own permissions, and must never apply to a DIFFERENT
+   *  specialist type — that is the whole reason rule identity grew a fourth
+   *  axis (PermissionRule.specialist, shared/permission-types.ts). `scope ===
+   *  undefined` (every root-session call site) sees ONLY unscoped rules; a
+   *  child's scope additionally sees rules tagged for that SAME agentType,
+   *  never another's. */
+  private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[], opts?: { specialistScope?: string }) {
+    const scope = opts?.specialistScope;
+    const inScope = (r: PermissionRule) => (
+      scope === undefined ? r.specialist === undefined : (r.specialist === undefined || r.specialist === scope)
+    );
     return async (tool: string, subject: string | undefined) => decidePermission(tool, subject, {
       presetRules,                           // preset manifests contribute here — lowest layer, mode/deny/remembered all override
       modeRules: rulesForMode(this.modeFor.get(sessionId) ?? 'ask'),
@@ -1336,10 +1494,12 @@ export class NativeSessionHost extends EventEmitter {
       // wins in the engine, but the two are identical allow rules so the tie is
       // harmless. In-memory is what guarantees an Always-allow sticks even if the
       // async disk persist failed or hasn't landed yet (see rememberedFor above).
+      // Filtered by scope LAST, after the union, so a rule freshly written by
+      // EITHER source (disk or memory) is scoped identically.
       rememberedRules: [
         ...await this.permissionStore.rulesFor(cwd),
         ...(this.rememberedFor.get(sessionId) ?? []),
-      ],
+      ].filter(inScope),
     });
   }
 
@@ -1552,6 +1712,41 @@ export class NativeSessionHost extends EventEmitter {
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
+  /** Record ONE remembered "Always allow" under `sessionId`'s in-memory bucket
+   *  (synchronously, deduping on the full identity quad) and fire-and-forget
+   *  persist it to disk. Shared by two callers (Task 11):
+   *   - wire()'s 'remember-rule' listener, for a ROOT session's own grant
+   *     (`rule.specialist` absent — HarnessSession has no concept of being a
+   *     child, it just emits {tool, pattern?, action}).
+   *   - createChild's childAskRouter wiring, for a routed CHILD ask's
+   *     "Always allow" — `rule.specialist` is the child's agentType, and
+   *     `sessionId`/`cwd` are deliberately the PARENT's: a specialist child is
+   *     never wire()'d (see createChild's own "NOT wire()" comment), so
+   *     nothing would ever persist a child's grant if the router didn't call
+   *     this directly. buildDecide's scope filter is what then keeps that
+   *     grant from leaking to the root session or a different specialist type
+   *     — this method only WRITES the rule, it doesn't decide who can see it.
+   *
+   *  Dedup compares the quad (tool, pattern, action, specialist) — the same
+   *  identity axis the store, the revoke matcher, and the UI's key use. A
+   *  triple-only compare would silently merge a specialist-keyed grant into
+   *  an existing same-triple root grant (or vice versa), discarding one. */
+  private rememberRule(sessionId: string, cwd: string, rule: PermissionRule): void {
+    // (1) Record in-memory SYNCHRONOUSLY first — this is what makes the
+    // Always-allow stick for the rest of the session regardless of whether the
+    // disk write below succeeds or wins the race with the next tool call.
+    const mem = this.rememberedFor.get(sessionId) ?? [];
+    if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist)) {
+      mem.push(rule);
+      this.rememberedFor.set(sessionId, mem);
+    }
+    // (2) Then persist the cross-session record. Fire-and-forget: a failed
+    // persist must not break the turn, and (1) already covers this session.
+    void this.permissionStore.remember(cwd, rule).catch((err) => {
+      log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
+    });
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
@@ -1568,22 +1763,7 @@ export class NativeSessionHost extends EventEmitter {
     // — whenever the user picks Always-allow. The host owns the cwd → project
     // slug scoping via PermissionStore. Fire-and-forget: a failed persist must
     // not break the turn (the rule is a convenience, re-asked next time).
-    session.on('remember-rule', (rule: PermissionRule) => {
-      // (1) Record in-memory SYNCHRONOUSLY first, deduping exact repeats — this is
-      // what makes the Always-allow stick for the rest of the session regardless
-      // of whether the disk write below succeeds or wins the race with the next
-      // tool call.
-      const mem = this.rememberedFor.get(sessionId) ?? [];
-      if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action)) {
-        mem.push(rule);
-        this.rememberedFor.set(sessionId, mem);
-      }
-      // (2) Then persist the cross-session record. Fire-and-forget: a failed
-      // persist must not break the turn, and (1) already covers this session.
-      void this.permissionStore.remember(cwd, rule).catch((err) => {
-        log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
-      });
-    });
+    session.on('remember-rule', (rule: PermissionRule) => this.rememberRule(sessionId, cwd, rule));
     session.on('transcript-event', (event: TranscriptEvent) => {
       // (1) Forward NOW — not gated on the disk write (see module header).
       this.emit('transcript-event', event);
@@ -1705,6 +1885,17 @@ export class NativeSessionHost extends EventEmitter {
     const binding = opts.binding ?? parent.session.binding;
     const { contextLength, profile } = await this.resolveContextAndProfile(binding);
 
+    // Task 8 (1a naming easter egg): drawn HERE, before the session is built,
+    // rather than after as plan 1a originally had it — plan 1b's Task 8
+    // (child asks route to the parent) needs `title` already in hand to wire
+    // childAskRouter below, since the routed ask's card labels the specialist
+    // by this same title. Purely in-memory (takenNamesOf), so moving it earlier
+    // costs nothing and changes no observable behavior of the draw itself.
+    let takenNames = this.takenNamesOf.get(parentId);
+    if (!takenNames) { takenNames = new Set(); this.takenNamesOf.set(parentId, takenNames); }
+    const { name, title } = assignSpecialistName(opts.specialist.id, takenNames);
+    takenNames.add(name);
+
     // Build the session BEFORE writing the header: everything below is fallible
     // synchronous work (assembleSystemPrompt shells out to git, buildTriggerIndex
     // walks the tree), and a throw after the header write would leave a session
@@ -1748,18 +1939,36 @@ export class NativeSessionHost extends EventEmitter {
         // definition. Built against the PARENT's id AND the PARENT's cwd, never
         // workDir — buildDecide keys the session's live permission mode by id and
         // remembered "Always allow" rules by cwd, and those grants follow the
-        // project, not a subtree of it.
+        // project, not a subtree of it. `specialistScope` (Task 11) is this
+        // child's OWN agentType — see buildDecide's own comment for why a
+        // specialist-keyed rule must be scoped to this exact value.
         decide: buildChildDecide({
-          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules),
+          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules, { specialistScope: opts.specialist.id }),
           charter: opts.specialist.charter,
           allowedTools: opts.specialist.allowedTools,
           envelopeGranted: true,   // 1a foreground flow: the Task-tool ask was the consent
         }),
-        // ASKS: a policy, NEVER the parent's broker. The broker would emit under
-        // the CHILD's sessionId, which no window owns; the reducer drops asks for
-        // unknown sessions and broker.ask()'s promise would never resolve, so the
-        // child would hang silently until teardown (see child-ask-policy.ts).
-        askUser: childAskPolicy(),
+        // ASKS (plan 1b Task 8): routed through the PARENT's broker under the
+        // PARENT's sessionId — never the child's own (no window owns a raw
+        // child id, so an ask emitted under it would never resolve; see
+        // child-ask-router.ts). Held up to specialistAskHoldMs before the
+        // child is unblocked with a scripted redirect; a later real answer
+        // still reaches it (postSteer) or the parent (onLateResponse) either way.
+        //
+        // `remember` (Task 11, closes a review finding): a routed ask's own
+        // "Always allow" makes HarnessSession emit 'remember-rule' on ITSELF,
+        // exactly like a root session — but a specialist child is deliberately
+        // never wire()'d (see this method's own "NOT wire()" comment below),
+        // so that event has no listener and the decision silently vanished.
+        // The router persists it directly instead, through the SAME
+        // rememberRule() helper wire()'s listener uses, against the PARENT's
+        // id/cwd (never the child's own — buildDecide only ever reads
+        // rememberedFor by the id it was BUILT with, which is parentId here).
+        askUser: childAskRouter({
+          broker: this.broker, parentId, childId, agentType: opts.specialist.id, title,
+          timeoutMs: this.specialistAskHoldMs,
+          remember: (rule) => this.rememberRule(parentId, parent.cwd, rule),
+        }),
         ...(this.toolServices ? { toolServices: this.toolServices } : {}),
         // BELT-AND-SUSPENDERS (Task 6): syncTaskTool's SECOND, independent
         // gate against depth-2 delegation. allowedTools filtering above
@@ -1772,16 +1981,12 @@ export class NativeSessionHost extends EventEmitter {
       this.modelFactory,
     );
 
-    // Task 8: draw this child's fun name from the PARENT's taken-set (never
-    // global — see takenNamesOf's comment) and stamp it into the header's
-    // existing `title` field. The transcript header/list machinery already
-    // reads `title` for free (session-store.ts's list() title precedence),
-    // so this needs no new plumbing beyond the header write below.
-    let takenNames = this.takenNamesOf.get(parentId);
-    if (!takenNames) { takenNames = new Set(); this.takenNamesOf.set(parentId, takenNames); }
-    const { name, title } = assignSpecialistName(opts.specialist.id, takenNames);
-    takenNames.add(name);
-
+    // `title` was drawn earlier (before this session was built — see that
+    // comment above) from the PARENT's taken-set (never global — see
+    // takenNamesOf's own comment) and stamps into the header's existing
+    // `title` field below. The transcript header/list machinery already reads
+    // `title` for free (session-store.ts's list() title precedence), so this
+    // needs no new plumbing beyond the header write below.
     await this.store.create({
       v: 1,
       sessionId: childId,
@@ -2125,6 +2330,28 @@ export class NativeSessionHost extends EventEmitter {
    *  the outer finally is what protects against a throw from anywhere this
    *  function didn't anticipate. */
   private async drainDeliveries(sessionId: string, entry: LiveEntry): Promise<void> {
+    // Plan 1b Task 8: plain-text host notices drain FIRST, unconditionally —
+    // no `this.ledger` gate, since this lane exists whether or not a
+    // NativeHome/ledger was ever wired (see pendingHostNotices' own WHY).
+    // Same destroy()-race shape as the ledger loop below: recheck liveness
+    // before AND after the injecting await, and leave the text in place
+    // (don't shift it off) on either a destroy race or a genuine runNotice
+    // failure, so the next idle boundary retries it.
+    const notices = this.pendingHostNotices.get(sessionId);
+    if (notices) {
+      while (notices.length > 0) {
+        if (this.live.get(sessionId) !== entry) break;
+        try {
+          await entry.session.runNotice(notices[0]);
+        } catch (err) {
+          log('WARN', 'NativeSessionHost', 'host notice delivery failed — will retry at the next idle boundary', { sessionId, error: String((err as any)?.message ?? err) });
+          break;
+        }
+        if (this.live.get(sessionId) !== entry) break; // destroy raced the notice itself
+        notices.shift();
+      }
+      if (notices.length === 0) this.pendingHostNotices.delete(sessionId);
+    }
     // WHY (spec §3, Task 4): background completions inject as a synthetic
     // user-role turn at an idle boundary — never spliced mid-turn (role
     // alternation + local prompt cache). A claim is a LEASE: delivered flips
@@ -2678,6 +2905,10 @@ export class NativeSessionHost extends EventEmitter {
     for (const [childId, fb] of this.inMemoryFallback) {
       if (fb.parentId === sessionId) this.inMemoryFallback.delete(childId);
     }
+    // Plan 1b Task 8: same reasoning as inMemoryFallback above — a host notice
+    // is keyed directly by the PARENT id it's queued for, so if THIS destroy()
+    // is tearing down that parent, nothing is ever coming back to read it.
+    this.pendingHostNotices.delete(sessionId);
     // Drop per-session runtime state so it can't leak and so a destroy→resume of
     // the SAME sessionId within one app run starts clean: mode resets to the
     // default 'ask', and the in-memory remembered rules fall back to the disk

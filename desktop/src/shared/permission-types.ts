@@ -12,6 +12,18 @@ export interface PermissionRule {
   /** Glob over the SUBJECT (Bash: command string; file tools: relative path). Absent = matches any. */
   pattern?: string;
   action: PermissionAction;
+  /** Task 11: the specialist agentType (e.g. 'worker') this rule is scoped to.
+   *  Absent means the rule is the ROOT session's own grant — a plain
+   *  PermissionRule from before specialists existed, or a preset/deny-list/
+   *  mode-baseline entry, none of which are ever specialist-scoped. Rule
+   *  IDENTITY is the quad (tool, pattern, action, specialist) everywhere a
+   *  remembered rule is deduped, removed, matched, or displayed — declared
+   *  here on the base type (not only on StoredRule below) because the
+   *  scope filter that keeps a specialist-keyed grant from leaking to the
+   *  root session or a different specialist type (native-session-host.ts's
+   *  buildDecide) has to read it off the SAME rule objects decidePermission
+   *  consumes, not a separate UI-only shape. */
+  specialist?: string;
 }
 
 /** A remembered rule as STORED — the engine's PermissionRule plus provenance

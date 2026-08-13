@@ -125,4 +125,62 @@ describe('PermissionStore', () => {
   it('removeProject reports false for a slug that was never granted', async () => {
     await expect(store.removeProject('-never-granted')).resolves.toBe(false);
   });
+
+  // ── Task 11: specialist-keyed identity (the quad, not the triple) ──────────
+
+  it('does NOT dedupe a specialist-keyed rule against the root session\'s identical rule', async () => {
+    // Same (tool, pattern, action) as the root grant below, but scoped to the
+    // 'worker' specialist — the FOURTH axis of identity. If dedupe only
+    // compared the triple, this would silently vanish into the root grant,
+    // which is exactly the widening this task exists to prevent.
+    await store.remember('/p', { tool: 'Bash', pattern: 'npm test*', action: 'allow' });
+    await store.remember('/p', { tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' });
+    const rules = await store.rulesFor('/p');
+    expect(rules).toHaveLength(2);
+    expect(rules.find((r) => r.specialist === 'worker')).toMatchObject({ tool: 'Bash', pattern: 'npm test*', action: 'allow' });
+    expect(rules.find((r) => r.specialist === undefined)).toMatchObject({ tool: 'Bash', pattern: 'npm test*', action: 'allow' });
+  });
+
+  it('dedupes two specialist-keyed rules for the SAME specialist', async () => {
+    await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow', specialist: 'worker' });
+    await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow', specialist: 'worker' });
+    expect((await store.rulesFor('/p')).length).toBe(1);
+  });
+
+  it('removes only the specialist-keyed rule, leaving the root rule with the same triple intact', async () => {
+    await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow' });
+    await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow', specialist: 'worker' });
+    const [p] = await store.list();
+    await expect(store.remove(p.slug, { tool: 'Bash', pattern: 'ls', action: 'allow', specialist: 'worker' })).resolves.toBe(true);
+    const remaining = (await store.list())[0].rules;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].specialist).toBeUndefined();
+  });
+
+  // ── Task 11: file version — the reader accepts v1, every write emits v2 ────
+
+  it('reads rules from a v1 file (no version bump on a pure read)', async () => {
+    await home.writeJson('permissions.json', { v: 1, projects: { '-p': { cwd: '/p', rules: [{ tool: 'Bash', pattern: 'ls', action: 'allow' }] } } });
+    expect(await store.rulesFor('/p')).toMatchObject([{ tool: 'Bash', pattern: 'ls', action: 'allow' }]);
+  });
+
+  it('a v1 file on disk round-trips unchanged except the version stamp', async () => {
+    const ycDir = path.join(dir, '.youcoded');
+    fs.mkdirSync(ycDir, { recursive: true });
+    const before = { v: 1, projects: { '-p': { cwd: '/p', rules: [{ tool: 'Bash', pattern: 'ls', action: 'allow' as const }] } } };
+    fs.writeFileSync(path.join(ycDir, 'permissions.json'), JSON.stringify(before), 'utf8');
+    // A write that matches NOTHING — the "nothing to remove" branch still goes
+    // through mutateJson (every write emits v:2), but must not otherwise touch
+    // the existing project/rule data.
+    await expect(store.remove('-p', { tool: 'Bash', pattern: 'nope', action: 'allow' })).resolves.toBe(false);
+    const after = JSON.parse(fs.readFileSync(path.join(ycDir, 'permissions.json'), 'utf8'));
+    expect(after.v).toBe(2);
+    expect(after.projects).toEqual(before.projects);
+  });
+
+  it('every write stamps v:2, even starting from a missing file', async () => {
+    await store.remember('/p', { tool: 'Bash', pattern: 'ls', action: 'allow' });
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, '.youcoded', 'permissions.json'), 'utf8'));
+    expect(raw.v).toBe(2);
+  });
 });

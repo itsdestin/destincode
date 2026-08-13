@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
+import { resolveP, toPosix } from './guards';
 import { resolveSpecialist, listSpecialists } from '../specialists/registry';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 import {
@@ -80,9 +81,10 @@ function describeSpecialists(): string {
     .join('\n');
 }
 
-// Codex's orchestration-doctrine line: a specialist cannot ask a follow-up
-// question (child-ask-policy.ts answers every ask as a decline), so the
-// caller must front-load everything into one brief.
+// Codex's orchestration-doctrine line: a specialist cannot ask a conversational
+// follow-up question (child-ask-router.ts denies AskUserQuestion instantly —
+// it routes permission GATES to the parent's card, not interactive questions),
+// so the caller must front-load everything into one brief.
 const DOCTRINE = 'Specialists work independently and report back once; give each specialist a complete, self-contained brief — they cannot ask you a follow-up question.';
 
 export function createTaskTool(): NativeTool<TaskArgs> {
@@ -107,9 +109,33 @@ export function createTaskTool(): NativeTool<TaskArgs> {
     // name falls back to the bare work_dir: execute() above already refuses an
     // unknown specialist before ever spawning, so this text is only ever shown
     // on an ask that is about to be declined anyway, never a real standing grant.
+    // Task 11 (ROADMAP fold-in): resolve work_dir before it becomes part of
+    // the remembered-rule key. Before this, '.', './x', and the absolute form
+    // of the SAME directory each minted a DIFFERENT envelope pattern, so
+    // approving one left the other two spellings still asking every time.
+    //
+    // Fix pass (Finding 1): this used to call guards.ts's `canonicalize()`,
+    // which — per that function's own doc comment — case-folds the WHOLE path
+    // on win32. That was right for the sensitive-path comparison sets it was
+    // built for, but wrong here: this string becomes the rule's stored
+    // `pattern`, which describe-rule.ts slices straight into what the
+    // permissions screen renders, so a real path like "C:/Users/Destin/Proj"
+    // was showing up lowercased to the user. Switched to `resolveP` + toPosix
+    // — guards.ts's own display-safe pair, documented there as the one to use
+    // for "anything a user or model reads back" — which still resolves
+    // `.`/`./x`/absolute forms to ONE key (same `path.resolve` guards.ts's
+    // canonicalize uses internally) without folding case. Matching an
+    // existing grant still works: subject-glob.ts's subjectMatches always
+    // matches case-insensitively (the 'i' regex flag), so a rule written
+    // under the OLD lowercased pattern still matches a NEW real-cased ask
+    // subject computed here — no grant is lost by this change.
+    // permissionSubject has no session cwd to resolve a relative work_dir
+    // against (the NativeTool contract passes only the raw args), so it
+    // resolves against the process's own cwd, same as canonicalize did.
     permissionSubject: (a) => {
       const specialist = resolveSpecialist(a.agent);
-      return specialist ? `${specialist.charter}:${a.work_dir}` : a.work_dir;
+      const workDir = toPosix(resolveP(a.work_dir, process.cwd()));
+      return specialist ? `${specialist.charter}:${workDir}` : workDir;
     },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {

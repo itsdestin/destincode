@@ -279,20 +279,27 @@ function grantedLabel(grantedAt?: string): string | null {
   return `Approved ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 }
 
-/** React list key. remember() dedupes exact repeats, so (tool, pattern, action)
- *  is unique within a project — the same triple the removal API matches on. */
+/** React list key. remember() dedupes exact repeats, so (tool, pattern, action,
+ *  specialist) is unique within a project — the same quad the removal API
+ *  matches on (Task 11 added `specialist` as the fourth axis: a root grant and
+ *  a specialist-keyed grant can share the same tool/pattern/action and must
+ *  still render as two distinct rows, not collide on one React key). */
 function ruleKey(rule: PermissionRule): string {
-  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}`;
+  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}::${rule.specialist ?? ''}`;
 }
 
 /** Hand the backend a bare PermissionRule, not the StoredRule the list returned:
  *  grantedAt is provenance the matcher never reads, and sending it invites a
- *  future exact-shape comparison to silently stop matching. */
+ *  future exact-shape comparison to silently stop matching. `specialist` DOES
+ *  ride along (Task 11) — the remove matcher needs it to tell a specialist-
+ *  keyed grant apart from a same-triple root grant; dropping it here would
+ *  revoke the wrong one (or both, or neither) the first time the two coexist. */
 function toPermissionRule(rule: StoredRule): PermissionRule {
   return {
     tool: rule.tool,
     ...(rule.pattern !== undefined ? { pattern: rule.pattern } : {}),
     action: rule.action,
+    ...(rule.specialist !== undefined ? { specialist: rule.specialist } : {}),
   };
 }
 

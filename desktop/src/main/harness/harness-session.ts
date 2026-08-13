@@ -2054,9 +2054,18 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
       // `external` tells the renderer this ask was forced by the path guard, so
       // ToolCard hides "Always allow" (see the guarded emit below for why).
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk });
+      // `subject` (Task 11) is the SAME value the remember-rule emit below uses
+      // as `pattern` — threaded through so a routed CHILD ask (child-ask-
+      // router.ts, which has no other way to reach it) can persist the exact
+      // same rule a root session's own remember-rule listener would.
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk, subject });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
+      // Task 8: d.message carries specific copy for a deny that ISN'T a real
+      // user decline — e.g. a routed specialist ask that timed out with no
+      // answer (ASK_REDIRECT_MESSAGE), which must not read as "the user said
+      // no" when no user ever answered. Falls back to the real-decline copy
+      // (still accurate for an actual respond({behavior:'deny'})).
+      if (d.behavior !== 'allow') return { text: d.message ?? 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
       // surface is untouched.

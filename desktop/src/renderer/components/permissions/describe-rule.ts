@@ -32,7 +32,46 @@ const VERBS: Record<string, string> = {
   '*': 'Do anything',
 };
 
+// Human-facing specialist label — mirrors SpecialistDefinition.displayName in
+// src/main/harness/specialists/registry.ts, which this renderer file cannot
+// import at runtime (main-process code; the Node/browser boundary — see
+// desktop/CLAUDE.md — means only type-only imports cross that line). Same
+// tradeoff specialists/names.ts already accepts for its own ROLE_LABELS table
+// (its own comment explains why): agentType strings are the only thing the
+// two need to agree on, and the registry's own test suite pins those.
+//
+// Fix (Finding 3): every other user-facing site names a specialist by its
+// displayName ("Worker" — see tools/task.ts's error copy), never the raw
+// internal agentType id ("worker"). This table was missing here, so a
+// specialist-keyed rule rendered the bare id instead.
+const SPECIALIST_DISPLAY_NAMES: Record<string, string> = {
+  explorer: 'Explorer',
+  researcher: 'Researcher',
+  reviewer: 'Reviewer',
+  worker: 'Worker',
+};
+
+/** Falls back to capitalizing the raw id rather than throwing/blanking, so a
+ *  future specialist added to the registry but not yet mirrored here still
+ *  reads as a name instead of breaking the permissions screen. */
+function specialistDisplayName(agentType: string): string {
+  return SPECIALIST_DISPLAY_NAMES[agentType] ?? agentType.charAt(0).toUpperCase() + agentType.slice(1);
+}
+
 export function describeRule(rule: PermissionRule): RuleDescription {
+  const described = describeRuleBody(rule);
+  // Task 11: a specialist-keyed rule is a grant a SPECIALIST holds while
+  // working, never the assistant itself — the screen must say so in plain
+  // language (project constraint), not bury it in a badge or omit it. Reuses
+  // the ordinary tool verb rather than inventing specialist-specific copy, so
+  // this stays a thin wrapper instead of a second vocabulary to keep in sync
+  // with VERBS above.
+  if (rule.specialist === undefined) return described;
+  const lowered = described.verb.charAt(0).toLowerCase() + described.verb.slice(1);
+  return { ...described, verb: `Let the ${specialistDisplayName(rule.specialist)} specialist ${lowered}` };
+}
+
+function describeRuleBody(rule: PermissionRule): RuleDescription {
   const broad = rule.pattern === undefined;
 
   // MCP grants are per-tool and namespaced `mcp__{server}__{tool}`. Split on the
