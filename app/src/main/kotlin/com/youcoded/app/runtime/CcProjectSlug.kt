@@ -9,6 +9,15 @@ package com.youcoded.app.runtime
  * youcoded-dev/docs/active/specs/2026-08-11-project-slug-encoding-repair.md §5.3.
  */
 object CcProjectSlug {
+    // WHY caveat (final review, MINOR fold): Kotlin's Regex.replace iterates
+    // per Unicode CODE POINT; JS's String.replace(/[^a-zA-Z0-9]/g, ...) (the
+    // mirror this class mirrors) iterates per UTF-16 CODE UNIT. For any
+    // non-BMP character (e.g. emoji) that's two different answers — JS emits
+    // TWO replacement dashes (one per surrogate half), Kotlin emits ONE. This
+    // is currently UNREACHABLE: the only input this object ever receives is
+    // Android's canonicalHome, which is ASCII. Do NOT "fix" this to force
+    // agreement without a real non-ASCII cwd forcing the question — see
+    // slug-encoding.ts's own version note for the sibling mirror's anchor.
     private const val MAX = 200
     private val NON_ALNUM = Regex("[^a-zA-Z0-9]")
 

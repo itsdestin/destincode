@@ -2804,8 +2804,15 @@ export function registerIpcHandlers(
         // fields of its hook schema). payload.cwd is post-realpath/post-chdir —
         // the exact string CC slugged — so prefer it over our sessionInfo.cwd,
         // which can differ through a symlink. sessionInfo.cwd is the fallback only.
-        const ccCwd = (event.payload?.cwd as string | undefined) || sessionInfo.cwd;
-        const ccTranscriptPath = event.payload?.transcript_path as string | undefined;
+        // Hardened casts (final review, MINOR fold): a raw `as string | undefined`
+        // trusts the hook payload's shape blindly — if CC ever sent a non-string
+        // for either field, the cast would silently pass it through instead of
+        // falling back. typeof-narrow so an unexpected shape degrades to the
+        // documented fallback (sessionInfo.cwd / slug derivation) instead of
+        // handing a non-string downstream.
+        const payloadCwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : undefined;
+        const ccCwd = payloadCwd || sessionInfo.cwd;
+        const ccTranscriptPath = typeof event.payload?.transcript_path === 'string' ? event.payload.transcript_path : undefined;
         transcriptWatcher.startWatching(desktopId, claudeId, ccCwd, ccTranscriptPath);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).

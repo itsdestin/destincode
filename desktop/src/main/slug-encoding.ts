@@ -15,6 +15,11 @@
 // docs/active/specs/2026-08-11-project-slug-encoding-repair.md.
 // Guard: tests/slug-encoding.test.ts — anchored to directories a real CC
 // created (tests/fixtures/cc-slug-pairs.json), never to this file's output.
+//
+// Version note (final review, MINOR fold): the rule below was recovered from
+// the shipped CC 2.1.228 binary; tests/fixtures/cc-slug-pairs.json was
+// independently regenerated against 2.1.229 — behavior is identical across
+// both versions, so no divergence to reconcile.
 // ---------------------------------------------------------------------------
 
 export const CC_SLUG_MAX = 200;
