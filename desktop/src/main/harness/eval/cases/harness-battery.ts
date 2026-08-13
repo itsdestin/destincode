@@ -23,6 +23,10 @@ export const HARNESS_BATTERY: EvalCase = {
   //     substitutes `Bash grep` and then reviews a tool it never called.
   // Any of the three can report `never-ran` (assertions.ts), which is how a run
   // that never reached the precondition is told apart from one that failed it.
+  // KNOWN LIMIT of `calledTool('Grep')`: it grades ATTEMPTS and has no
+  // result-based counterpart here, so a run whose every Grep was rejected by
+  // input validation still certifies "the battery reached Grep" — pair it with
+  // a tool-result-based check if that distinction ever matters for this case.
   expect: [stayedInsideTestFolder(), endedWithAnAnswer(), calledTool('Grep')],
   rubric: [],
 };
