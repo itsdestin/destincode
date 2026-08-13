@@ -28,7 +28,7 @@ import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type Pe
 import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
-import type { ToolServices } from './tools/types';
+import type { ToolServices, SpecialistReservation } from './tools/types';
 import { createSkillCatalog, SkillNotFound, type SkillCatalog } from './skills/skill-catalog';
 import { canonicalize, resolveP } from './tools/guards';
 import { isUnderRoot } from '../artifacts/read-binary-access';
@@ -107,6 +107,13 @@ const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'to
 // as an ordinary user turn, so anything longer competes with the brief for the
 // child's attention.
 const EMPTY_REPORT_NUDGE = 'Your final message is your report — reply with your findings now.';
+
+// Task 1 (plan 1b) — the placeholder value activeWriterChild holds for a
+// writer reservation between reserveSpecialist() (which must set the lock
+// SYNCHRONOUSLY, before the real child exists) and bindReservation() (which
+// swaps it for the real childId once createChild mints one, a few awaits
+// later in spawnSpecialist). Never a valid session id, so it can't collide.
+const RESERVED_WRITER = '__reserved__';
 
 /** What one specialist run produced. `usage` is summed across the run's turns
  *  (the brief turn plus a nudge turn, if one was needed). */
@@ -233,30 +240,58 @@ export class NativeSessionHost extends EventEmitter {
   private specialistSlots = new Map<string, number>();
   private activeWriterChild = new Map<string, string>();
 
-  /** Reserve one of this parent's concurrent-specialist slots. false = at
-   *  capacity; the caller (tools/task.ts) must not spawn. A successful
-   *  reservation MUST be paired with exactly one releaseSpecialistSlot() call. */
-  tryReserveSpecialistSlot(parentId: string): boolean {
+  /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
+   *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
+  private maxSpecialistsFor(_parentId: string): number {
+    return HOSTED_MAX_CONCURRENT_SPECIALISTS;
+  }
+
+  // WHY: 1a checked writer-busy in task.ts and set the lock after an await in
+  // spawnSpecialist — a check-then-set race the 1a comment explicitly deferred to
+  // this plan. Reserve slot AND writer in one synchronous step; the token is the
+  // only way to release, so a throw between reserve and spawn can't leak either.
+  reserveSpecialist(parentId: string, opts: { writer: boolean }):
+    { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' } {
+    if (opts.writer && this.activeWriterChild.has(parentId)) return { ok: false, reason: 'writer-busy' };
     const current = this.specialistSlots.get(parentId) ?? 0;
-    if (current >= HOSTED_MAX_CONCURRENT_SPECIALISTS) return false;
+    if (current >= this.maxSpecialistsFor(parentId)) return { ok: false, reason: 'at-capacity' };
     this.specialistSlots.set(parentId, current + 1);
-    return true;
+    const token: SpecialistReservation = { parentId, writer: opts.writer };
+    if (opts.writer) this.activeWriterChild.set(parentId, RESERVED_WRITER); // placeholder until a childId binds
+    return { ok: true, token };
   }
 
-  /** Release a slot reserved by tryReserveSpecialistSlot. Deletes the map
-   *  entry at zero rather than leaving a 0 around forever, so a parent that
-   *  never delegates again doesn't linger in the map. */
-  releaseSpecialistSlot(parentId: string): void {
-    const current = this.specialistSlots.get(parentId) ?? 0;
-    if (current <= 1) this.specialistSlots.delete(parentId);
-    else this.specialistSlots.set(parentId, current - 1);
+  /** Swap the RESERVED_WRITER placeholder for the real childId once
+   *  createChild mints one (spawnSpecialist calls this right after createChild
+   *  resolves, before the run starts) — a no-op for a reader reservation,
+   *  which never touched activeWriterChild. Mutates `token.childId` too, so
+   *  releaseReservation's owner check below can tell whether it's clearing
+   *  THIS reservation's entry or a later one under the same parent. */
+  bindReservation(token: SpecialistReservation, childId: string): void {
+    token.childId = childId;
+    if (token.writer && this.activeWriterChild.get(token.parentId) === RESERVED_WRITER) {
+      this.activeWriterChild.set(token.parentId, childId);
+    }
   }
 
-  /** True when a write-capable specialist is already running under this
-   *  parent (the single-writer invariant). Read-only; tools/task.ts calls
-   *  this BEFORE spawning a read-write-charter specialist, never after. */
-  isSpecialistWriterBusy(parentId: string): boolean {
-    return this.activeWriterChild.has(parentId);
+  /** Release a reservation made by reserveSpecialist. Decrements the slot
+   *  (deleting the map entry at zero, same as 1a's releaseSpecialistSlot, so a
+   *  parent that never delegates again doesn't linger in the map) and, for a
+   *  writer reservation, clears the writer lock — but ONLY if it still points
+   *  at THIS token's identity (the bound childId, or the RESERVED_WRITER
+   *  placeholder if release() runs before bindReservation ever did, e.g. a
+   *  spawn that threw before createChild resolved). Fix 5's owner-check (1a
+   *  review) carried forward: an unconditional delete would clear whichever
+   *  child currently holds parentId's writer lock, including one a LATER
+   *  parallel Task call under the same parent reserved after this one. */
+  releaseReservation(token: SpecialistReservation): void {
+    const current = this.specialistSlots.get(token.parentId) ?? 0;
+    if (current <= 1) this.specialistSlots.delete(token.parentId);
+    else this.specialistSlots.set(token.parentId, current - 1);
+    if (token.writer) {
+      const holder = token.childId ?? RESERVED_WRITER;
+      if (this.activeWriterChild.get(token.parentId) === holder) this.activeWriterChild.delete(token.parentId);
+    }
   }
 
   /** Mint a specialist child, run it to completion, and return its report
@@ -268,6 +303,8 @@ export class NativeSessionHost extends EventEmitter {
    *  message with a header + transcript pointer after capping it against the
    *  parent's remaining headroom. The Task tool (tools/task.ts) is what the
    *  MODEL calls; it has already resolved the specialist and reserved the slot
+   *  (Task 1, plan 1b: via reserveSpecialist — this method BINDS that
+   *  reservation to the real childId once one exists, it does not make one)
    *  before reaching here, and it renders a throw from this method as an
    *  `isError` tool result rather than a dangling call. */
   async spawnSpecialist(parentId: string, opts: {
@@ -275,16 +312,17 @@ export class NativeSessionHost extends EventEmitter {
     prompt: string;
     workDir: string;
     parentToolCallId: string;
+    token: SpecialistReservation;
   }): Promise<{ childId: string; report: string }> {
     const { childId, title } = await this.createChild(parentId, opts);
-    // WRITER LOCK (Task 6 review handoff note 2): this is a check-then-set
-    // across an await — tools/task.ts checks isWriterBusy(), then we set the
-    // lock after createChild's awaits. That is safe under 1a's SERIAL tool
-    // execution (the driver runs one tool at a time, so no second Task call
-    // can interleave between the check and this line) and is deliberately left
-    // as-is. Plan 1b's parallel delegation breaks that assumption and must move
-    // the check and the set into one synchronous reserve-or-refuse step.
-    if (opts.specialist.charter === 'read-write') this.activeWriterChild.set(parentId, childId);
+    // Task 1 (plan 1b): the writer lock (if this reservation asked for one)
+    // was already SET synchronously by reserveSpecialist, before tools/task.ts
+    // ever awaited this call — this just swaps the RESERVED_WRITER placeholder
+    // for the real childId now that one exists. Ownership of the RELEASE moved
+    // to tools/task.ts's `finally` (services.release(token)); this method no
+    // longer sets OR clears the lock itself, only binds it (single owner: the
+    // tool reserves, this binds, the tool releases).
+    this.bindReservation(opts.token, childId);
     try {
       // PRODUCE THE REPORT FIRST, tear down after (Task 6 review handoff note
       // 1). Both statements below are pure/local once the run has finished, so
@@ -295,12 +333,6 @@ export class NativeSessionHost extends EventEmitter {
       const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
       return { childId, report };
     } finally {
-      // Fix 5 (review round 1): OWNER-CHECKED release. An unconditional delete
-      // would clear whichever child currently holds parentId's writer lock,
-      // including one minted by a LATER/concurrent Task call under the same
-      // parent once 1b adds parallel delegation — this finally block must only
-      // ever release the lock IT set, never someone else's.
-      if (this.activeWriterChild.get(parentId) === childId) this.activeWriterChild.delete(parentId);
       // Fix 1 (review round 1): LEAK GUARD. Without this, a Task call would
       // strand the child createChild() just minted — a live `this.live` entry,
       // its on-disk header, a retainModel() ref (so its model could never fully
@@ -752,9 +784,8 @@ export class NativeSessionHost extends EventEmitter {
       toolServices: {
         ...(this.toolServices ?? {}),
         specialists: {
-          tryReserveSlot: (parentId: string) => this.tryReserveSpecialistSlot(parentId),
-          releaseSlot: (parentId: string) => this.releaseSpecialistSlot(parentId),
-          isWriterBusy: (parentId: string) => this.isSpecialistWriterBusy(parentId),
+          reserve: (parentId: string, reserveOpts: { writer: boolean }) => this.reserveSpecialist(parentId, reserveOpts),
+          release: (token: SpecialistReservation) => this.releaseReservation(token),
           spawn: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialist']>[1]) =>
             this.spawnSpecialist(parentId, spawnOpts),
         },

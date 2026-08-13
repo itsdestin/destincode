@@ -104,17 +104,23 @@ export function createTaskTool(): NativeTool<TaskArgs> {
 
       const parentId = ctx.sessionId;
 
-      // Single-writer check FIRST (no side effects) — only a read-write
-      // charter can conflict, so read-only specialists skip it entirely.
-      if (specialist.charter === 'read-write' && services.isWriterBusy(parentId)) {
-        return {
-          text: 'Refused: another specialist with write access is running under this session. '
-            + 'Wait for it to finish, or delegate to a read-only specialist (e.g. explorer, researcher, reviewer) instead.',
-          isError: true,
-        };
-      }
-
-      if (!services.tryReserveSlot(parentId)) {
+      // Task 1 (plan 1b): ONE synchronous reserve-or-refuse call, folding the
+      // single-writer check and the slot check into the same step (host-side:
+      // reserveSpecialist). 1a's split — check isWriterBusy() here, then set
+      // the lock after an await deep inside spawnSpecialist — was safe only
+      // under serial tool execution; two Task calls issued in one parallel
+      // tool-call step could both pass the check before either set the lock.
+      // The refusal copy below is unchanged from 1a (verbatim, per
+      // error-message-standards.md) — only WHEN it fires moved.
+      const reservation = services.reserve(parentId, { writer: specialist.charter === 'read-write' });
+      if (!reservation.ok) {
+        if (reservation.reason === 'writer-busy') {
+          return {
+            text: 'Refused: another specialist with write access is running under this session. '
+              + 'Wait for it to finish, or delegate to a read-only specialist (e.g. explorer, researcher, reviewer) instead.',
+            isError: true,
+          };
+        }
         return {
           // Fix: the parenthetical was closing before "concurrent specialists",
           // reading as "(max 3) concurrent specialists" instead of qualifying
@@ -131,6 +137,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
           prompt: args.prompt,
           workDir: args.work_dir,
           parentToolCallId: ctx.toolCallId ?? '',
+          token: reservation.token,
         });
         return { text: report };
       } catch (err: any) {
@@ -140,7 +147,10 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         // way), so this stays a plain relay rather than a second guess at cause.
         return { text: `The ${specialist.displayName} specialist failed: ${err?.message ?? String(err)}`, isError: true };
       } finally {
-        services.releaseSlot(parentId);
+        // Sole owner of the release, whether spawn succeeded, threw, or never
+        // ran (this finally covers both): the tool reserves, spawnSpecialist
+        // only BINDS the reservation to the real childId, this releases it.
+        services.release(reservation.token);
       }
     },
   });
