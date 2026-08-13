@@ -222,6 +222,24 @@ export interface TranscriptEvent {
      */
     promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
     /**
+     * Native runtime only. The model is GENERATING a tool call's arguments —
+     * nothing has executed yet. This is what makes a "preparing" ToolCard
+     * appear instead of minutes of bare thinking spinner on a big Write.
+     *
+     * Rides `assistant-thinking` with NO text and NO partId so
+     * SessionStore.append drops it (session-store.ts): partial arguments must
+     * never reach the JSONL, or a resume would replay a half-written file.
+     *
+     * `toolCallId` is the provider's REAL id — identical to the one the
+     * completed `tool-call` stream part carries — which is what lets the card
+     * transition in place instead of being swapped.
+     *
+     * `cleared: true` means "remove this preparing card": the stall auto-retry
+     * re-runs a step WITHOUT ending the turn, so its cards must be withdrawn
+     * explicitly (every other death path ends the turn, where endTurn reaps).
+     */
+    toolPreparing?: { toolCallId: string; toolName: string; chars: number; cleared?: boolean };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
