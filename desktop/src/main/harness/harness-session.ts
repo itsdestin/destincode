@@ -54,6 +54,7 @@ import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
 import { createTaskTool } from './tools/task';
+import { ModelSearchTool } from './tools/model-search';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -654,8 +655,8 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
-  /** Add or remove the Task tool to match the CURRENT profile + session kind
-   *  (Task 6, spec decision 4).
+  /** Add or remove the Task tool — and, since Task 14, ModelSearch alongside
+   *  it — to match the CURRENT profile + session kind (Task 6, spec decision 4).
    *
    *  Two independent gates, BOTH required:
    *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
@@ -663,6 +664,10 @@ export class HarnessSession extends EventEmitter {
    *     capability-profile.ts's own WHY comment on the field.
    *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
    *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  ModelSearch rides the IDENTICAL gate and never attaches alone: it exists
+   *  to name a specific model for a Task delegation, so a session that
+   *  cannot delegate has nothing for it to do (Task 14).
    *
    *  Run per buildAiTools (not once in the constructor), same reason
    *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
@@ -672,9 +677,9 @@ export class HarnessSession extends EventEmitter {
    */
   private syncTaskTool(): void {
     const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
-    if (!wanted) { this.toolByName.delete('Task'); return; }
-    if (this.toolByName.has('Task')) return;
-    this.toolByName.set('Task', createTaskTool());
+    if (!wanted) { this.toolByName.delete('Task'); this.toolByName.delete('ModelSearch'); return; }
+    if (!this.toolByName.has('Task')) this.toolByName.set('Task', createTaskTool());
+    if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }
 
   /** Add or remove MCP server tools to match the CURRENT profile's budget
@@ -2072,6 +2077,12 @@ export class HarnessSession extends EventEmitter {
       // createChild's future parentToolCallId so the host can stamp the
       // child's display events with the launch card they belong under.
       toolCallId: call.toolCallId,
+      // Task 14: this session's CURRENT binding — the `parent` fallback
+      // resolveDelegatedBinding needs for a tier that isn't set (or a bare
+      // "run on this conversation's model" request). Reads this.binding, not
+      // opts.binding, so a mid-session setBinding() swap is reflected on the
+      // very next tool call, same as every other live-state field here.
+      binding: this.binding,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {

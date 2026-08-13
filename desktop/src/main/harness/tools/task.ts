@@ -17,6 +17,10 @@ import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 import { resolveSpecialist, listSpecialists } from '../specialists/registry';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
+import {
+  resolveDelegatedBinding, resolveRequestedModel, DelegatedModelRefused, type DelegatedTier,
+} from '../specialists/delegated-models';
+import type { CatalogModel, ModelBinding } from '../../../shared/provider-types';
 
 // Minimal weak-model hardening (plan 1a): a specialist has NO access to the
 // parent conversation, so a one-line prompt like "do the thing" leaves it to
@@ -53,6 +57,15 @@ const schema = z.object({
   // unchanged; only setting this true opts into the detached-run path.
   background: z.boolean().optional().describe(
     'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes.',
+  ),
+  // Task 14: verbatim per the spec ruling — the only two named tiers, plus an
+  // escape hatch for a user-directed specific id. Omitting this (the default
+  // for every existing call and every built-in specialist) is unchanged
+  // behavior: run on the parent's own model.
+  model: z.string().optional().describe(
+    'Optional: "budget" or "frontier" to use the models the user designated in Settings, or a specific '
+    + 'model id — only name a specific model when the user asked for it. Omit to run the specialist on '
+    + "this conversation's model.",
   ),
 });
 
@@ -128,6 +141,49 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         // A configuration gap (Task attached but its host callbacks were not
         // wired), never a model mistake — say so plainly rather than guessing.
         return { text: 'Task failed: no specialist services are wired for this session (configuration error).', isError: true };
+      }
+
+      // Task 14: resolve what model this child runs on. 'parent' — no
+      // args.model AND no specialist.modelPreference, the default for every
+      // existing call and every built-in specialist — needs nothing beyond
+      // ctx.binding, so a session that never touches this feature never
+      // needs ToolServices.models wired at all. Only a tier or a specific id
+      // reaches resolveDelegatedBinding.
+      const requestedModel = resolveRequestedModel(args.model, specialist.modelPreference);
+      let resolvedBinding: ModelBinding | undefined;
+      let fallbackNote = '';
+      if (requestedModel !== 'parent') {
+        if (!ctx.binding) {
+          return { text: 'Task failed: no model binding is wired for this session (configuration error).', isError: true };
+        }
+        const models = ctx.services?.models;
+        if (!models) {
+          return { text: 'Task failed: no model catalog is wired for this session (configuration error).', isError: true };
+        }
+        // Catalog is fetched ONLY for a specific-id request — a tier lookup
+        // never needs it (DelegatedModels.get is the whole answer), so the
+        // common tier path pays no catalog-fetch cost.
+        const catalog: CatalogModel[] | null = typeof requestedModel === 'object'
+          ? (await models.catalog()) ?? null
+          : null;
+        let resolution;
+        try {
+          resolution = resolveDelegatedBinding({
+            requested: requestedModel, parent: ctx.binding, designated: models.designated, catalog,
+          });
+        } catch (err) {
+          // A user-directed specific model id that couldn't be confirmed —
+          // never silently substituted (spec ruling). Rethrow anything else:
+          // an unexpected throw here is a bug, not a refusal to render.
+          if (err instanceof DelegatedModelRefused) return { text: err.message, isError: true };
+          throw err;
+        }
+        resolvedBinding = resolution.binding;
+        if (resolution.fellBack) {
+          // requestedModel is a DelegatedTier here — the { modelId } branch
+          // above either resolves or throws, it never falls back.
+          fallbackNote = `\n\n(No ${requestedModel as DelegatedTier} model is set in Settings — using this conversation's model.)`;
+        }
       }
 
       const parentId = ctx.sessionId;
@@ -218,8 +274,11 @@ export function createTaskTool(): NativeTool<TaskArgs> {
           parentToolCallId: ctx.toolCallId ?? '',
           description: args.description,
           token: reservation.token,
+          ...(resolvedBinding ? { binding: resolvedBinding } : {}),
         });
-        return { text: report };
+        // Task 14: the one honest line a tier fallback earns — appended to the
+        // report, never folded into it, so the child's own words stay intact.
+        return { text: fallbackNote ? `${report}${fallbackNote}` : report };
       } catch (err: any) {
         // Every failure path must resolve a tool result — never a dangling
         // call. err.message is expected to already name the child id when one

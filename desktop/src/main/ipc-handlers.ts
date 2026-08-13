@@ -2336,7 +2336,17 @@ export function registerIpcHandlers(
     app.getVersion(),
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
-    { search: searchService },
+    {
+      search: searchService,
+      // Task 14 fix pass: same shape as the context/slots (~2295) and
+      // vision-support (~2324) closures above — providers first, then the
+      // catalog rows for those providers. NativeSessionHost.toolWiring()
+      // recombines this with its own host-internal DelegatedModels store into
+      // services.models, so ModelSearch and a per-hire specific-model-id
+      // override can actually confirm a real id instead of always seeing
+      // "catalog not loaded" (the null default this closure replaces).
+      modelCatalog: async () => modelCatalog.get(await providerRegistry.list()),
+    },
     // skillCatalog (9th param, shifted from 10th by fix pass 2 collapsing the
     // context and slot-count closures back into one): NOT wired yet — a
     // different task's scope (see task-7b-brief.md "Explicitly NOT in

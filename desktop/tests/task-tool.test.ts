@@ -17,6 +17,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { createTaskTool } from '../src/main/harness/tools/task';
 import type { ToolContext } from '../src/main/harness/tools/types';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION, HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
+import { DelegatedModels } from '../src/main/harness/specialists/delegated-models';
+import { NativeHome } from '../src/main/native-home';
+import type { CatalogModel, ModelBinding } from '../src/shared/provider-types';
+import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path';
 
 interface RunOpts {
   slotFree?: boolean;
@@ -28,6 +32,14 @@ interface RunOpts {
   // so every existing test in this file, which never cares about the budget,
   // keeps passing unmodified.
   budgetOk?: boolean;
+  // Task 14 — both undefined by default so every pre-Task-14 test in this
+  // file (which never touches model resolution: no args.model, and every
+  // built-in specialist's modelPreference is unset) keeps compiling and
+  // passing with the exact same behavior as before this task: task.ts only
+  // reaches for ctx.binding / ctx.services.models when a tier or specific id
+  // was actually requested.
+  binding?: ModelBinding;
+  models?: { designated: DelegatedModels; catalog: () => Promise<CatalogModel[] | null> };
 }
 
 function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
@@ -40,6 +52,7 @@ function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
     signal: new AbortController().signal,
     readRegistry: new Map(),
     todos: [],
+    ...(opts.binding ? { binding: opts.binding } : {}),
     services: {
       specialists: {
         reserve: (parentId: string, reserveOpts: { writer: boolean }) => {
@@ -55,6 +68,7 @@ function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
         trySpendSpawnBudget: () => opts.budgetOk !== false,
         spawn,
       },
+      ...(opts.models ? { models: opts.models } : {}),
     },
   };
   return tool.execute(
@@ -275,5 +289,95 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     };
     await tool.execute({ description: 'x', prompt: 'a'.repeat(50), agent: 'explorer', work_dir: '.' } as any, ctx);
     expect(release).toHaveBeenCalledWith(token);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 14 — the `model` input's resolution. Every test in this block sets
+// opts.binding + opts.models explicitly; every test ABOVE this block
+// deliberately does not, and stays green unmodified, because 'parent' (the
+// default when no args.model and no specialist.modelPreference) never
+// touches either.
+// ---------------------------------------------------------------------------
+describe('Task tool — model resolution (Task 14)', () => {
+  const PARENT_BINDING: ModelBinding = { providerId: 'openrouter', modelId: 'parent-model' };
+
+  async function designatedWith(entries: Partial<Record<'budget' | 'frontier', ModelBinding>>) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-tool-designated-'));
+    const home = new NativeHome(dir);
+    const designated = new DelegatedModels(home);
+    if (entries.budget) await designated.set('budget', entries.budget);
+    if (entries.frontier) await designated.set('frontier', entries.frontier);
+    return designated;
+  }
+
+  it('model: "budget" spawns using the designated binding', async () => {
+    const budgetBinding: ModelBinding = { providerId: 'openrouter', modelId: 'cheap-model' };
+    const designated = await designatedWith({ budget: budgetBinding });
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool(
+      { agent: 'explorer', model: 'budget' },
+      { spawn, binding: PARENT_BINDING, models: { designated, catalog: async () => null } },
+    );
+    expect(r.isError).toBeFalsy();
+    expect(spawn).toHaveBeenCalledWith('parent-1', expect.objectContaining({ binding: budgetBinding }));
+    // No fallback note — the tier WAS configured.
+    expect(r.text).toBe('done');
+  });
+
+  it('model: "frontier" with no tier configured falls back to the parent binding AND appends the honest note', async () => {
+    const designated = await designatedWith({});
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool(
+      { agent: 'explorer', model: 'frontier' },
+      { spawn, binding: PARENT_BINDING, models: { designated, catalog: async () => null } },
+    );
+    expect(r.isError).toBeFalsy();
+    // Falls back to the PARENT's own binding — resolveDelegatedBinding
+    // returns it explicitly (fellBack: true), so task.ts passes it through
+    // like any other resolved binding; createChild would have landed on the
+    // exact same value via its own opts.binding ?? parent.session.binding
+    // default even without this.
+    expect(spawn).toHaveBeenCalledWith('parent-1', expect.objectContaining({ binding: PARENT_BINDING }));
+    expect(r.text).toBe('done\n\n(No frontier model is set in Settings — using this conversation\'s model.)');
+  });
+
+  it('a specific model id that IS in the live catalog resolves and spawns on it', async () => {
+    const designated = await designatedWith({});
+    const catalog: CatalogModel[] = [{ id: 'gpt-5', providerId: 'openai', label: 'GPT-5' }];
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool(
+      { agent: 'explorer', model: 'gpt-5' },
+      { spawn, binding: PARENT_BINDING, models: { designated, catalog: async () => catalog } },
+    );
+    expect(r.isError).toBeFalsy();
+    expect(spawn).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      binding: { providerId: 'openai', modelId: 'gpt-5' },
+    }));
+    expect(r.text).toBe('done'); // no fallback note — this path never falls back
+  });
+
+  it('a specific model id NOT in the live catalog REFUSES the call — never spawns', async () => {
+    const designated = await designatedWith({});
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool(
+      { agent: 'explorer', model: 'totally-made-up-model' },
+      { spawn, binding: PARENT_BINDING, models: { designated, catalog: async () => [] } },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe(
+      'Refused: "totally-made-up-model" is not an available model. Use ModelSearch to find the exact id, or use "budget"/"frontier".',
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('omitting model (and an unset specialist.modelPreference) never touches ctx.binding or ctx.services.models', async () => {
+    // No `binding`, no `models` in opts — if task.ts reached for either when
+    // it shouldn't, this would throw a "configuration error" result instead
+    // of spawning normally, which is exactly what this test pins against.
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const r = await runTaskTool({ agent: 'explorer' }, { spawn });
+    expect(r.isError).toBeFalsy();
+    expect(spawn).toHaveBeenCalledWith('parent-1', expect.not.objectContaining({ binding: expect.anything() }));
   });
 });

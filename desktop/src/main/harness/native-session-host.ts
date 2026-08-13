@@ -38,6 +38,7 @@ import { childAskPolicy } from './specialists/child-ask-policy';
 import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from './specialists/limits';
 import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, type DelegationRecord } from './specialists/delegation-ledger';
+import { DelegatedModels } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
@@ -341,6 +342,13 @@ export class NativeSessionHost extends EventEmitter {
     this.inMemoryFallback.set(childId, { parentId, rec });
   }
 
+  // Task 14 — the on-disk budget/frontier tiers (delegated-models.ts). Same
+  // "undefined whenever no NativeHome was injected" contract as `ledger`
+  // above: existing test constructions get no delegated-tier resolution
+  // (their sessions never see ToolServices.models), and ipc-handlers.ts
+  // always injects the shared nativeHome in production.
+  private delegatedModels?: DelegatedModels;
+
   /** Task 13 — the parent's own resolved CapabilityProfile now carries its
    *  concurrency ceiling (maxConcurrentSpecialists): the spec's flat hosted
    *  constant for a cloud/hosted session, an engine-measured (clamped 1-4)
@@ -587,6 +595,8 @@ export class NativeSessionHost extends EventEmitter {
    *  reservation to the real childId once one exists, it does not make one)
    *  before reaching here, and it renders a throw from this method as an
    *  `isError` tool result rather than a dangling call. */
+  // Task 14: opts.binding (part of the shared SpecialistSpawnOpts type, see
+  // tools/types.ts) is passed straight through to createChild below.
   async spawnSpecialist(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }> {
     const { childId, title } = await this.createChild(parentId, opts);
     // Task 1 (plan 1b): the writer lock (if this reservation asked for one)
@@ -1147,6 +1157,7 @@ export class NativeSessionHost extends EventEmitter {
     this.broker.on('hook-event', (event) => this.emit('hook-event', event));
     this.ledger = nativeHome ? new DelegationLedger(nativeHome) : undefined;
     this.nativeHome = nativeHome;
+    this.delegatedModels = nativeHome ? new DelegatedModels(nativeHome) : undefined;
   }
 
   /** Route a renderer/remote permission response to the broker. Returns false
@@ -1365,6 +1376,21 @@ export class NativeSessionHost extends EventEmitter {
           spawnBackground: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialistBackground']>[1]) =>
             this.spawnSpecialistBackground(parentId, spawnOpts),
         },
+        // Task 14 fix pass: `designated` is real (backed by NativeHome) whenever
+        // this host was constructed with one — the same condition `this.ledger`
+        // already depends on. `catalog` now threads through the `modelCatalog`
+        // closure ipc-handlers.ts wires into `toolServices` at construction
+        // (same precedent as the context/slots and vision-support closures it
+        // builds the same way, a few params up from here). When no closure was
+        // supplied — a test host, or any construction that skips it — this
+        // still falls back to a `null` catalog, the same SAFE "not loaded"
+        // default as before: task.ts and ModelSearch both treat a null catalog
+        // as "cannot confirm this id", never a guess. Tier resolution
+        // (budget/frontier/parent) never touches the catalog at all, so it
+        // worked fully even before this fix pass.
+        ...(this.delegatedModels
+          ? { models: { designated: this.delegatedModels, catalog: this.toolServices?.modelCatalog ?? (async () => null) } }
+          : {}),
       },
       // WHY assembleSystemPrompt is called synchronously here: it shells out to
       // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
@@ -1590,6 +1616,11 @@ export class NativeSessionHost extends EventEmitter {
     prompt: string;
     workDir: string;
     parentToolCallId: string;
+    // Task 14: the RESOLVED binding tools/task.ts already ran through
+    // resolveDelegatedBinding, when a tier or specific model id was
+    // requested. Absent (the pre-Task-14 default) means no override was
+    // requested — falls back to the parent's own binding below, unchanged.
+    binding?: ModelBinding;
   }): Promise<{ childId: string; title: string }> {
     const parent = this.live.get(parentId);
     // A child with no live parent has nobody to report to and nobody to tear it
@@ -1608,10 +1639,12 @@ export class NativeSessionHost extends EventEmitter {
     }
 
     const childId = randomUUID();
-    // The child inherits the parent's preset (permission posture + manifest) and
-    // its model — 1a always runs the child on the parent's binding.
+    // The child inherits the parent's preset (permission posture + manifest).
+    // Its MODEL, since Task 14, is opts.binding when tools/task.ts resolved an
+    // override (a designated tier, or a validated specific id) — falling back
+    // to the parent's own binding exactly as every pre-Task-14 child did.
     const preset = resolvePreset(this.presetIdFor.get(parentId));
-    const binding = parent.session.binding;
+    const binding = opts.binding ?? parent.session.binding;
     const { contextLength, profile } = await this.resolveContextAndProfile(binding);
 
     // Build the session BEFORE writing the header: everything below is fallible

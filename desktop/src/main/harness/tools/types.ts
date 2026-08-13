@@ -3,13 +3,21 @@
 // gating, and defineTool() (registry.ts) wraps execute with truncation + errors.
 import type { z } from 'zod';
 import type { StructuredPatchHunk } from '../../../shared/types';
+import type { CatalogModel, ModelBinding } from '../../../shared/provider-types';
 import type { SpecialistDefinition } from '../specialists/registry';
+import type { DelegatedModels } from '../specialists/delegated-models';
 
 /** Task 6 — what the Task tool's execute() hands the host to actually run a
  *  specialist. Structural, mirroring the rest of ToolServices: the tool never
  *  imports NativeSessionHost, it only calls the callback the host injected. */
 export interface SpecialistSpawnOpts {
   specialist: SpecialistDefinition;
+  // Task 14 — the RESOLVED binding (already run through resolveDelegatedBinding
+  // by tools/task.ts) to launch the child on. Absent means "no override was
+  // requested" — createChild falls back to the parent's own binding, exactly
+  // the pre-Task-14 behavior, so every caller that never resolves a model
+  // keeps working unchanged.
+  binding?: ModelBinding;
   prompt: string;
   workDir: string;
   parentToolCallId: string;
@@ -95,12 +103,46 @@ export interface ToolServices {
      *  still has to release. */
     spawnBackground(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; title: string }>;
   };
+  /** Task 14 fix pass — the raw catalog-fetch closure ipc-handlers.ts injects
+   *  at construction (same shape as the context/slots and vision-support
+   *  closures already threaded into NativeSessionHost there: `providerRegistry
+   *  .list()` then `modelCatalog.get(providers)`). This lives as its OWN
+   *  top-level field, separate from `models` below, because `models.designated`
+   *  is built host-internally from NativeHome (mirrors `this.ledger`) while
+   *  this needs the live ModelCatalog/ProviderRegistry that only
+   *  ipc-handlers.ts holds — NativeSessionHost.toolWiring() recombines the two
+   *  into `services.models`. Tools never read this field directly; they read
+   *  `services.models.catalog()`. Absent → toolWiring() falls back to a
+   *  `null`-returning catalog, the same safe "not loaded" default as before
+   *  this fix pass. */
+  modelCatalog?(): Promise<CatalogModel[] | null>;
+  /** Task 14 — delegated model tiers + user-directed per-hire override.
+   *  `designated` is the on-disk budget/frontier bindings (the Settings UI,
+   *  1c, is the only writer); `catalog` returns the live model catalog for
+   *  validating a specific model id, or null when it isn't loaded —
+   *  resolveDelegatedBinding treats a null catalog the same as "id not
+   *  found" (never trust an override it can't confirm). Read by both
+   *  tools/task.ts (the `model` input's resolution) and ModelSearch. Absent
+   *  is a real, expected state (task.ts only reaches for it when a tier or
+   *  specific id was actually requested — see resolveRequestedModel) unlike
+   *  `specialists` above, which every production session wires unconditionally. */
+  models?: {
+    designated: DelegatedModels;
+    catalog(): Promise<CatalogModel[] | null>;
+  };
 }
 
 export interface ToolContext {
   sessionId: string;
   cwd: string;
   signal: AbortSignal;
+  /** Task 14 — this session's CURRENT model binding, needed as the `parent`
+   *  fallback for resolveDelegatedBinding (a tier that isn't set, or a bare
+   *  "run on this conversation's model" request, both resolve to this).
+   *  Optional so pre-existing test/one-off ToolContext constructions that
+   *  never touch model resolution keep compiling; the real driver
+   *  (harness-session.ts) always sets it from the session's own binding. */
+  binding?: ModelBinding;
   /** The Task-tool call's own toolCallId (Task 6/7), when the driver knows
    *  one — used as createChild's parentToolCallId so the host can later stamp
    *  the child's display events with the launch card they belong under.
