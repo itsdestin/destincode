@@ -63,6 +63,12 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { childId, report } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     // (a) display re-stamping: child events arrive under the PARENT's sessionId
@@ -128,6 +134,12 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { childId } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     const textEvents = events.filter((e) => e.data?.agentId === childId && e.type === 'assistant-text');
@@ -146,6 +158,12 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { childId } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     expect((host as any).live.has(childId)).toBe(false);
@@ -168,6 +186,12 @@ describe('specialist foreground run (Task 7)', () => {
     await withParent(TWO_TOOLS_THEN_REPORT);
     const { childId } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     // The child file genuinely exists on disk (persistence happened)...
@@ -202,6 +226,7 @@ describe('specialist foreground run (Task 7)', () => {
 
     await expect(host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
     })).rejects.toThrow(/llama-server dropped the connection/);
 
     // The failure reason is RELAYED, never replaced by a guess
@@ -230,6 +255,12 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { childId, report } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     expect(report).toContain('REPORT: after the nudge');
@@ -247,6 +278,7 @@ describe('specialist foreground run (Task 7)', () => {
 
     await expect(host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
     })).rejects.toThrow(/no final message|without producing a report/i);
   });
 
@@ -260,6 +292,7 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { childId, report } = await host.spawnSpecialist('root-1', {
       specialist: CAPPED, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
     });
 
     expect(report).toContain('Found half of it in src/a.ts');
@@ -279,6 +312,12 @@ describe('specialist foreground run (Task 7)', () => {
 
     const { report } = await host.spawnSpecialist('root-1', {
       specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      // Task 1 (plan 1b): spawnSpecialist now BINDS a reservation rather than
+      // making one itself (tools/task.ts's execute() does that via
+      // reserveSpecialist before ever calling spawn) — these tests exercise
+      // the run loop directly, below the Task tool, so they hand it a plain
+      // reader token rather than going through reserveSpecialist/task.ts.
+      token: { parentId: 'root-1', writer: false },
     });
 
     expect(report).toContain('REPORT: found it');            // the head survives

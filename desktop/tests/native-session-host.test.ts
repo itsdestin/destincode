@@ -451,55 +451,95 @@ describe('NativeSessionHost', () => {
   // ---- Task 6 review fix 2: the per-parent slot/writer bookkeeping had zero
   // host-level tests before this — everything exercising it went through
   // tools/task.ts's fakes (task-tool.test.ts), which never touch the REAL host
-  // methods. Drives tryReserveSpecialistSlot/releaseSpecialistSlot/
-  // isSpecialistWriterBusy directly, keyed by an arbitrary parent id (no live
-  // session needed — these three are pure bookkeeping over host-owned Maps,
-  // enforced independently of whether a parent session actually exists). ----
+  // methods. Drives reserveSpecialist/releaseReservation directly, keyed by an
+  // arbitrary parent id (no live session needed — these are pure bookkeeping
+  // over host-owned Maps, enforced independently of whether a parent session
+  // actually exists).
+  //
+  // Task 1 (plan 1b): tryReserveSpecialistSlot/releaseSpecialistSlot are gone
+  // — reserveSpecialist folds the slot check AND the writer-busy check into
+  // ONE synchronous call, so a throw or an await between "checked" and "set"
+  // can no longer let two parallel Task calls both win the same reservation.
+  // ----
   describe('specialist slot + writer-lock bookkeeping (Task 6)', () => {
     it('ceiling: HOSTED_MAX_CONCURRENT_SPECIALISTS reserves succeed for one parent, the next is refused', () => {
       for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
-        expect(host.tryReserveSpecialistSlot('A')).toBe(true);
+        expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(true);
       }
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
     });
 
     it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);   // A is full
-      expect(host.tryReserveSpecialistSlot('B')).toBe(true);    // B's own ceiling is untouched
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.reserveSpecialist('A', { writer: false });
+      expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(false);   // A is full
+      expect(host.reserveSpecialist('B', { writer: false }).ok).toBe(true);    // B's own ceiling is untouched
     });
 
     it('release: freeing one slot lets A reserve again; releasing to zero drops the map entry', () => {
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
-      host.releaseSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(true);    // one freed → one more fits
+      const tokens: any[] = [];
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        const r = host.reserveSpecialist('A', { writer: false });
+        if (r.ok) tokens.push(r.token);
+      }
+      expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(false);
+      host.releaseReservation(tokens.pop());
+      const refilled = host.reserveSpecialist('A', { writer: false });    // one freed → one more fits
+      expect(refilled.ok).toBe(true);
+      if (refilled.ok) tokens.push(refilled.token);
       // Release every reservation currently held (back at the ceiling after the
       // line above) down to zero — the map entry must not linger at 0 forever
-      // (releaseSpecialistSlot's own header: "so a parent that never delegates
+      // (releaseReservation's own header: "so a parent that never delegates
       // again doesn't linger in the map").
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.releaseSpecialistSlot('A');
+      for (const t of tokens) host.releaseReservation(t);
       expect((host as any).specialistSlots.has('A')).toBe(false);
     });
 
-    it('releasing a parent with no reservation is a harmless no-op', () => {
-      expect(() => host.releaseSpecialistSlot('never-reserved')).not.toThrow();
+    it('releasing a token for a parent with no live reservation is a harmless no-op', () => {
+      expect(() => host.releaseReservation({ parentId: 'never-reserved', writer: false })).not.toThrow();
       expect((host as any).specialistSlots.has('never-reserved')).toBe(false);
     });
 
     it('writer lock: busy only for the parent that holds it, never an unrelated parent; clearing it frees the parent up', () => {
       expect(host.isSpecialistWriterBusy('A')).toBe(false);
-      // No public setter exists — spawnSpecialist is the only production writer
-      // (native-session-host.ts ~:220), and it always tears the lock back down
-      // in the SAME call (Fix 5 below) before ever returning. Reaching the Map
-      // directly is how tools/task.ts's own isWriterBusy() gate — read while a
-      // sibling Task call is still IN FLIGHT — actually gets pinned at the host
-      // level rather than only through task-tool.test.ts's fakes.
+      // No public setter exists — spawnSpecialist/bindReservation is the only
+      // production writer (native-session-host.ts's reserveSpecialist /
+      // bindReservation), and it always tears the lock back down before ever
+      // returning. Reaching the Map directly is how a sibling Task call's
+      // in-flight writer lock — read while it is still IN FLIGHT — actually
+      // gets pinned at the host level rather than only through
+      // task-tool.test.ts's fakes.
       (host as any).activeWriterChild.set('A', 'child-x');
       expect(host.isSpecialistWriterBusy('A')).toBe(true);
       expect(host.isSpecialistWriterBusy('B')).toBe(false);     // per-parent isolation
       (host as any).activeWriterChild.delete('A');
       expect(host.isSpecialistWriterBusy('A')).toBe(false);
+    });
+
+    // ---- Task 1 (plan 1b): the actual fix. 1a's writer-lock gate was a
+    // check-then-set split across an await (tools/task.ts checked
+    // isWriterBusy(), native-session-host.ts's spawnSpecialist set the lock
+    // AFTER await createChild(...)) — safe only because the driver ran one
+    // tool at a time. Two Task calls issued in the SAME parallel tool-call
+    // step interleave at that await, and both could see "not busy" before
+    // either set the lock. reserveSpecialist closes that window by doing the
+    // check AND the set in one synchronous call. ----
+    it('reserves slot and writer atomically — two synchronous writer reservations, second refused', () => {
+      const a = host.reserveSpecialist('parent-1', { writer: true });
+      const b = host.reserveSpecialist('parent-1', { writer: true });
+      expect(a.ok).toBe(true);
+      expect(b).toEqual({ ok: false, reason: 'writer-busy' });
+    });
+
+    it('a released writer reservation frees the writer lock even when no child was ever bound', () => {
+      const a = host.reserveSpecialist('parent-1', { writer: true });
+      if (!a.ok) throw new Error('unexpected');
+      host.releaseReservation(a.token);
+      expect(host.reserveSpecialist('parent-1', { writer: true }).ok).toBe(true);
+    });
+
+    it('readers do not consume the writer lock and cap at the profile max', () => {
+      for (let i = 0; i < 4; i++) expect(host.reserveSpecialist('parent-1', { writer: false }).ok).toBe(true);
+      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity' });
     });
   });
 
@@ -1484,6 +1524,11 @@ describe('NativeSessionHost', () => {
       // piece and is torn down.
       const { childId, report } = await h.spawnSpecialist('root-1', {
         specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        // Task 1 (plan 1b): spawnSpecialist now binds a caller-supplied
+        // reservation rather than reserving one itself — this test drives the
+        // run loop directly (below tools/task.ts), so it hands a plain reader
+        // token rather than going through reserveSpecialist.
+        token: { parentId: 'root-1', writer: false },
       });
       expect(report).toContain('Hi there');
 

@@ -13,6 +13,21 @@ export interface SpecialistSpawnOpts {
   prompt: string;
   workDir: string;
   parentToolCallId: string;
+  // Task 1 (plan 1b) — the reservation this spawn is spending. spawnSpecialist
+  // binds it to the real childId once createChild mints one (see
+  // NativeSessionHost.bindReservation); the tool is what releases it, in its
+  // own `finally`, once the spawn settles either way.
+  token: SpecialistReservation;
+}
+
+/** Task 1 (plan 1b) — the receipt reserveSpecialist() hands back. Opaque to the
+ *  tool beyond passing it to spawn() and release(): `childId` starts unset and
+ *  is filled in by bindReservation() once the child exists, so a reservation
+ *  that never reaches spawn (an early refusal) still releases cleanly. */
+export interface SpecialistReservation {
+  parentId: string;
+  writer: boolean;
+  childId?: string;
 }
 
 // Runtime services injected into tools that need process-level collaborators
@@ -29,17 +44,18 @@ export interface ToolServices {
    *  be attached (e.g. a specialist child); present whenever profile.canDelegate
    *  gates the tool on (harness-session.ts's syncTaskTool). */
   specialists?: {
-    /** Reserve one of this parent's concurrent-specialist slots
-     *  (HOSTED_MAX_CONCURRENT_SPECIALISTS, per-parent). false = at capacity;
-     *  the caller must not spawn. A successful reservation MUST be paired
-     *  with exactly one releaseSlot() call, however the spawn turns out. */
-    tryReserveSlot(parentId: string): boolean;
-    releaseSlot(parentId: string): void;
-    /** True when a WRITE-capable specialist (charter: 'read-write') is
-     *  already running under this parent — the single-writer invariant
-     *  (spec §5): two concurrent write-capable children could race edits to
-     *  the same files. Read-only specialists never need to check this. */
-    isWriterBusy(parentId: string): boolean;
+    /** Task 1 (plan 1b) — reserve one of this parent's concurrent-specialist
+     *  slots (HOSTED_MAX_CONCURRENT_SPECIALISTS, per-parent) AND, for a
+     *  writer request, the single-writer lock (spec §5: two concurrent
+     *  write-capable children could race edits to the same files) — both in
+     *  ONE synchronous call. Replaces 1a's tryReserveSlot/isWriterBusy pair:
+     *  that split let a caller check isWriterBusy, then set the lock after an
+     *  await elsewhere, which two parallel Task calls could both slip through.
+     *  `ok: false` never spawns; a successful reservation MUST be paired with
+     *  exactly one release() call, however the spawn turns out. */
+    reserve(parentId: string, opts: { writer: boolean }):
+      { ok: true; token: SpecialistReservation } | { ok: false; reason: 'at-capacity' | 'writer-busy' };
+    release(token: SpecialistReservation): void;
     /** Mint + (eventually, Task 7) run the child, returning its final report. */
     spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
   };

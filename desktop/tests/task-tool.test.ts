@@ -4,6 +4,15 @@
 // the actual spawn (Task 7's runSpecialist) is stubbed per-test via the fake
 // ToolServices.specialists.spawn, since none of these tests are meant to
 // reach it (each refuses before ever calling spawn).
+//
+// Task 1 (plan 1b): the fake reserve()/release() below stand in for the host's
+// real reserveSpecialist()/releaseReservation() (native-session-host.ts) — the
+// pair that folds the slot AND writer-busy checks into one synchronous
+// reserve-or-refuse step. These fakes intentionally do NOT re-implement that
+// atomicity (there is nothing to race against in a single synchronous test
+// call); they only need to hand execute() the same shaped answers the real
+// host would, so task.ts's reason-mapping and release-in-finally logic is what
+// gets exercised.
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskTool } from '../src/main/harness/tools/task';
 import type { ToolContext } from '../src/main/harness/tools/types';
@@ -12,11 +21,13 @@ interface RunOpts {
   slotFree?: boolean;
   writerBusy?: boolean;
   spawn?: ReturnType<typeof vi.fn>;
+  release?: ReturnType<typeof vi.fn>;
 }
 
 function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
   const tool = createTaskTool();
   const spawn = opts.spawn ?? vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+  const release = opts.release ?? vi.fn();
   const ctx: ToolContext = {
     sessionId: 'parent-1',
     cwd: '/work',
@@ -25,9 +36,12 @@ function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
     todos: [],
     services: {
       specialists: {
-        tryReserveSlot: () => opts.slotFree !== false,
-        releaseSlot: () => {},
-        isWriterBusy: () => !!opts.writerBusy,
+        reserve: (parentId: string, reserveOpts: { writer: boolean }) => {
+          if (reserveOpts.writer && opts.writerBusy) return { ok: false, reason: 'writer-busy' } as const;
+          if (opts.slotFree === false) return { ok: false, reason: 'at-capacity' } as const;
+          return { ok: true, token: { parentId, writer: reserveOpts.writer } } as const;
+        },
+        release,
         spawn,
       },
     },
@@ -76,7 +90,7 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('happy path: resolves, reserves a slot, spawns, releases the slot, and returns the report', async () => {
+  it('happy path: resolves, reserves a slot, spawns, releases the reservation, and returns the report', async () => {
     const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'the report' }));
     const r = await runTaskTool({ agent: 'worker', prompt: 'a'.repeat(60), work_dir: 'src' }, { spawn });
     expect(r.isError).toBeFalsy();
@@ -84,6 +98,7 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     expect(spawn).toHaveBeenCalledWith('parent-1', expect.objectContaining({
       workDir: 'src',
       specialist: expect.objectContaining({ id: 'worker' }),
+      token: expect.objectContaining({ parentId: 'parent-1', writer: true }),
     }));
   });
 
@@ -119,9 +134,10 @@ describe('Task tool — typed refusals (plan 1a)', () => {
     });
   });
 
-  it('releases the reserved slot even when spawn throws', async () => {
+  it('releases the reservation even when spawn throws', async () => {
     const release = vi.fn();
     const tool = createTaskTool();
+    const token = { parentId: 'parent-1', writer: false };
     const ctx: ToolContext = {
       sessionId: 'parent-1',
       cwd: '/work',
@@ -130,14 +146,13 @@ describe('Task tool — typed refusals (plan 1a)', () => {
       todos: [],
       services: {
         specialists: {
-          tryReserveSlot: () => true,
-          releaseSlot: release,
-          isWriterBusy: () => false,
+          reserve: () => ({ ok: true, token }),
+          release,
           spawn: async () => { throw new Error('boom'); },
         },
       },
     };
     await tool.execute({ description: 'x', prompt: 'a'.repeat(50), agent: 'explorer', work_dir: '.' } as any, ctx);
-    expect(release).toHaveBeenCalledWith('parent-1');
+    expect(release).toHaveBeenCalledWith(token);
   });
 });
