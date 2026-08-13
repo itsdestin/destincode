@@ -57,14 +57,22 @@ export class DelegatedModels {
  *  directive, expressed in the tool call itself) wins over the specialist
  *  definition's own modelPreference (an author-time default), which wins
  *  over 'parent' (the ultimate fallback — run on this conversation's own
- *  model). A raw string that isn't literally "budget"/"frontier" is treated
- *  as a user-directed specific model id, never guessed at or normalized —
- *  resolveDelegatedBinding is what validates it against the live catalog. */
+ *  model). A raw string that isn't literally "budget"/"frontier"/"parent" is
+ *  treated as a user-directed specific model id, never guessed at or
+ *  normalized — resolveDelegatedBinding is what validates it against the
+ *  live catalog. */
 export function resolveRequestedModel(
   argModel: string | undefined,
   specialistPreference: 'parent' | DelegatedTier | undefined,
 ): 'parent' | DelegatedTier | { modelId: string } {
-  if (argModel === 'budget' || argModel === 'frontier') return argModel;
+  // Fix pass (Finding 2): this function's own return type documents 'parent'
+  // as reachable from EITHER input channel — the specialistPreference branch
+  // below already honored it, but an explicit `model: "parent"` ARGUMENT was
+  // falling through to the specific-id branch and getting looked up as a
+  // model literally named "parent" (always refused). Handling it here, next
+  // to the tier check, keeps every literal the arg channel recognizes in one
+  // place instead of splitting "parent" off into its own branch below.
+  if (argModel === 'budget' || argModel === 'frontier' || argModel === 'parent') return argModel;
   if (argModel) return { modelId: argModel };
   if (specialistPreference === 'budget' || specialistPreference === 'frontier') return specialistPreference;
   return 'parent';

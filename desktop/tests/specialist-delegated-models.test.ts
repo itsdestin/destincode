@@ -134,4 +134,17 @@ describe('resolveRequestedModel — priority ordering', () => {
     expect(resolveRequestedModel('gpt-5', 'budget')).toEqual({ modelId: 'gpt-5' });
     expect(resolveRequestedModel('gpt-5', undefined)).toEqual({ modelId: 'gpt-5' });
   });
+
+  // Fix pass, Finding 2: an explicit `model: "parent"` ARGUMENT (not just an
+  // unset arg falling through to the definition's preference) must resolve
+  // to the literal 'parent' passthrough, same as the specialistPreference
+  // channel already does above — never fall into the specific-id branch and
+  // get looked up as a model literally named "parent" (which would always
+  // refuse: "parent" is not an available model).
+  it('an explicit model: "parent" ARGUMENT resolves to \'parent\', not a specific-id lookup', () => {
+    expect(resolveRequestedModel('parent', undefined)).toBe('parent');
+    // The arg still wins over a configured definition preference, exactly
+    // like the budget/frontier arg-wins-over-preference case above.
+    expect(resolveRequestedModel('parent', 'budget')).toBe('parent');
+  });
 });

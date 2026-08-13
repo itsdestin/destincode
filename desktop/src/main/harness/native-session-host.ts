@@ -1059,18 +1059,20 @@ export class NativeSessionHost extends EventEmitter {
           spawn: (parentId: string, spawnOpts: Parameters<NativeSessionHost['spawnSpecialist']>[1]) =>
             this.spawnSpecialist(parentId, spawnOpts),
         },
-        // Task 14: `designated` is real (backed by NativeHome) whenever this
-        // host was constructed with one — the same condition `this.ledger`
-        // already depends on. `catalog` has no live source wired into this
-        // host today (nothing here holds a ModelCatalog/ProviderRegistry
-        // reference); it resolves to null until a later task threads one in.
-        // A null catalog is a SAFE default, not a broken one — task.ts and
-        // ModelSearch both treat "catalog not loaded" as "cannot confirm this
-        // id", which is exactly the refuse-don't-guess posture a missing
-        // catalog should get. Tier resolution (budget/frontier/parent) never
-        // touches the catalog at all, so it works fully today.
+        // Task 14 fix pass: `designated` is real (backed by NativeHome) whenever
+        // this host was constructed with one — the same condition `this.ledger`
+        // already depends on. `catalog` now threads through the `modelCatalog`
+        // closure ipc-handlers.ts wires into `toolServices` at construction
+        // (same precedent as the context/slots and vision-support closures it
+        // builds the same way, a few params up from here). When no closure was
+        // supplied — a test host, or any construction that skips it — this
+        // still falls back to a `null` catalog, the same SAFE "not loaded"
+        // default as before: task.ts and ModelSearch both treat a null catalog
+        // as "cannot confirm this id", never a guess. Tier resolution
+        // (budget/frontier/parent) never touches the catalog at all, so it
+        // worked fully even before this fix pass.
         ...(this.delegatedModels
-          ? { models: { designated: this.delegatedModels, catalog: async () => null } }
+          ? { models: { designated: this.delegatedModels, catalog: this.toolServices?.modelCatalog ?? (async () => null) } }
           : {}),
       },
       // WHY assembleSystemPrompt is called synchronously here: it shells out to

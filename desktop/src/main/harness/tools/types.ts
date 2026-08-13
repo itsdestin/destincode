@@ -85,6 +85,19 @@ export interface ToolServices {
     /** Mint + (eventually, Task 7) run the child, returning its final report. */
     spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
   };
+  /** Task 14 fix pass — the raw catalog-fetch closure ipc-handlers.ts injects
+   *  at construction (same shape as the context/slots and vision-support
+   *  closures already threaded into NativeSessionHost there: `providerRegistry
+   *  .list()` then `modelCatalog.get(providers)`). This lives as its OWN
+   *  top-level field, separate from `models` below, because `models.designated`
+   *  is built host-internally from NativeHome (mirrors `this.ledger`) while
+   *  this needs the live ModelCatalog/ProviderRegistry that only
+   *  ipc-handlers.ts holds — NativeSessionHost.toolWiring() recombines the two
+   *  into `services.models`. Tools never read this field directly; they read
+   *  `services.models.catalog()`. Absent → toolWiring() falls back to a
+   *  `null`-returning catalog, the same safe "not loaded" default as before
+   *  this fix pass. */
+  modelCatalog?(): Promise<CatalogModel[] | null>;
   /** Task 14 — delegated model tiers + user-directed per-hire override.
    *  `designated` is the on-disk budget/frontier bindings (the Settings UI,
    *  1c, is the only writer); `catalog` returns the live model catalog for
