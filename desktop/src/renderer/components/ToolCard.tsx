@@ -10,6 +10,10 @@ import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { asString } from '../utils/tool-input';
+// Full-auto safety stop (spec 2026-08-12, M5 2b): per-family copy + the
+// status-bar chip colors, so the footer band can never drift from the chip.
+import { fullAutoStopCopy } from './permissions/deny-list-copy';
+import { PERMISSION_DISPLAY } from './StatusBar';
 
 // --- Helpers for friendly display ---
 
@@ -282,7 +286,7 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, onResponded, onFailed }: {
+function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
@@ -301,6 +305,11 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
    *  Also set for an external-directory ask, where a remembered rule could
    *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
+  /** The session's mode when the ask fired (native broker only). 'full-auto'
+   *  + denyListed renders the safety-stop footer instead of the generic row —
+   *  Full auto's only rule-based ask IS the destructive-command stop, and a
+   *  generic "may I?" there reads as noise (spec 2026-08-12, M5 2b). */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
@@ -312,11 +321,17 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   const isNative = requestId.startsWith('native-');
   const hasSuggestions = !!(suggestions?.length);
   const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow;
+  // Full-auto's only rule-based ask is a deny-list stop — swap the generic row
+  // for the safety-stop footer the compare view settled (workbench surface
+  // 'full-auto-ask', R1–R4). Every other combination keeps the row as-is.
+  const fullAutoStop = permissionMode === 'full-auto' && !!denyListed;
   // Consequence-gated confirm strip (deny-listed asks) — mirrors the delete-model
   // confirm in LocalModelsSection: replace the button row with a plain-language
   // warning + Cancel / confirm.
   const [confirmingAlways, setConfirmingAlways] = useState(false);
-  const [focusIdx, setFocusIdx] = useState(canAlwaysAllow ? 1 : 0);
+  // Safety-stop default is Run it (the primary verb, index 0); the generic
+  // row keeps its shipped default (Always Allow when present).
+  const [focusIdx, setFocusIdx] = useState(fullAutoStop ? 0 : canAlwaysAllow ? 1 : 0);
   const buttonsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
   const handleRespond = useCallback(async (decision: object) => {
@@ -350,13 +365,22 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     handleRespond(alwaysAllowDecision());
   }, [denyListed, handleRespond, hasSuggestions, suggestions]);
 
-  // Build actions list so keyboard handler can index into it
+  // Build actions list so keyboard handler can index into it. The array MUST
+  // match the VISUAL order so Arrow Left/Right walk the row: the safety stop
+  // puts deny in the MIDDLE (Run it / Skip it | Always Allow) — red mid-row is
+  // owner-approved (compare R2) even though every other row ends on red.
   const actions = useRef<(() => void)[]>([]);
-  actions.current = [
-    () => handleRespond({ decision: { behavior: 'allow' } }),
-    ...(canAlwaysAllow ? [onAlwaysAllow] : []),
-    () => handleRespond({ decision: { behavior: 'deny' } }),
-  ];
+  actions.current = fullAutoStop
+    ? [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+        onAlwaysAllow,
+      ]
+    : [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        ...(canAlwaysAllow ? [onAlwaysAllow] : []),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+      ];
   const count = actions.current.length;
 
   // Global keyboard navigation: arrows cycle, Enter activates. Suspended while
@@ -403,7 +427,10 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           </p>
         )}
         <p className="text-2xs text-fg-dim leading-relaxed">
-          It can delete files or change published code, and you won't be asked again.
+          {/* Owner-set copy (2026-08-12), shared by every mode's confirm. The
+              rule also applies to the REST OF THIS SESSION — the "future
+              sessions" understatement was accepted knowingly. */}
+          It may delete files or change published code, and you won't be asked again during future sessions in this project.
         </p>
         <div className="flex items-center gap-2">
           {/* "Allow once" IS the plain-allow decision, so it wears the same green
@@ -430,6 +457,56 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
             className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50`}
           >
             Always allow
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // The full-auto safety stop (compare surface 'full-auto-ask', settled R4).
+  // Same §11/change-61 carve-out as the rows below: green/red/orange are STATUS
+  // colors; the band wears the chip's own colors so it reads as the MODE
+  // stopping itself, not a generic permission question.
+  if (fullAutoStop) {
+    const fa = PERMISSION_DISPLAY['full-auto'];
+    const stop = fullAutoStopCopy(command);
+    return (
+      <div className="px-3 py-2 space-y-2 border-t" style={{ background: fa.bg, borderColor: fa.border }}>
+        {/* Header + subheader as ONE tight block; the footer's only real gap
+            sits before the buttons (owner spacing direction, compare R3). */}
+        <div className="space-y-0.5">
+          <p className="text-xs font-medium" style={{ color: fa.color }}>{stop.header}</p>
+          <p className="text-2xs text-fg-dim leading-relaxed">{stop.subline}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            ref={el => { buttonsRef.current[0] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50 ${focusIdx === 0 ? ring : ''}`}
+          >
+            Run it
+          </button>
+          <button
+            ref={el => { buttonsRef.current[1] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'deny' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
+          >
+            Skip it
+          </button>
+          <span className="text-fg-faint text-xs select-none">|</span>
+          {/* Orange, not the generic row's blue: a fourth member of the status
+              button set, distinct from the amber band behind it (compare R2·A).
+              fullAutoStop implies a native deny-listed ask, so onAlwaysAllow
+              always routes through the consequence confirm above. */}
+          <button
+            ref={el => { buttonsRef.current[2] = el; }}
+            disabled={responding}
+            onClick={onAlwaysAllow}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-orange-600/60 hover:bg-orange-600/80 text-orange-100 transition-colors disabled:opacity-50 ${focusIdx === 2 ? ring : ''}`}
+          >
+            Always Allow
           </button>
         </div>
       </div>
@@ -886,6 +963,7 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
             denyListed={tool.denyListed}
+            permissionMode={tool.permissionMode}
             command={typeof (tool.input as any)?.command === 'string' ? (tool.input as any).command : undefined}
             folderName={sessionCwd ? basename(sessionCwd) : undefined}
             // Budget gates are a plain Yes/No "Continue?" — no "Always Allow".
