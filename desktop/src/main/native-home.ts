@@ -239,6 +239,12 @@ export class NativeHome {
         continue; // stray file (not a dir) or deleted mid-scan — skip
       }
       for (const f of files) {
+        // The .jsonl suffix is also what keeps DelegationLedger's per-parent
+        // sidecar (sessions/<slug>/<parentId>.delegations.json — plan 1b Task
+        // 2) OUT of this listing: it lives in the same slug directory as real
+        // session files, and this listing feeds both the Resume Browser and
+        // pruneNativePhantomRecords, either of which would show a sidecar as
+        // a broken, unopenable "session" if it weren't filtered out here.
         if (!f.endsWith('.jsonl')) continue;
         const full = path.join(base, slug, f);
         try {

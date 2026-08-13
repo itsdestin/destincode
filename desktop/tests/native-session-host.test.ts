@@ -10,6 +10,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
+import { OWNER } from '../src/main/harness/specialists/delegation-ledger';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -1573,6 +1574,51 @@ describe('NativeSessionHost', () => {
       expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
       expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
       await h.destroyAll();
+    });
+
+    // Task 2 (plan 1b), Step 4: interrupt(parentId) — the Stop button — must
+    // NOT cascade to a BACKGROUND child (deliberate 1b change from the test
+    // above, which pins the FOREGROUND case). spawnSpecialist itself only
+    // ever records background: false (Task 2's own scope is the foreground
+    // flow; a real background-spawn path is a later task), so this test
+    // reaches the private ledger directly to stamp a background: true record
+    // — same pattern this suite already uses for other private state
+    // ((host as any).live, .childrenOf, etc).
+    it('interrupt(parentId) does NOT cascade to a BACKGROUND specialist child — it keeps working', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, delayedFactory, async () => null, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Bg the Explorer',
+        workDir: root, description: EXPLORER.description, background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn
+
+      await new Promise((r) => setTimeout(r, 20));
+      h.interrupt('root-1'); // Stop button — must NOT reach the background child
+
+      // The child was never told to stop, and it's still live.
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);
+      expect((h as any).live.has(childId)).toBe(true);
+      await turn; // let its turn settle naturally, undisturbed
+
+      const rec = (h as any).ledger.listFor(root, 'root-1');
+      expect(rec.find((r: any) => r.childId === childId)?.status).toBe('running');
+
+      // Teardown is still stronger than interrupt — destroy takes it down
+      // regardless of foreground/background (spec §1 cascade-cancel).
+      await h.destroyAll();
+      expect((h as any).live.has(childId)).toBe(false);
     });
   });
 });

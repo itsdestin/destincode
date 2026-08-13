@@ -154,7 +154,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     createConnectionMock.mockClear();
   });
 
-  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 10th positional arg', async () => {
+  it('threads a REAL, config-driven McpManager into NativeSessionHost as the 10th positional arg (of 11)', async () => {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'mcp.json'),
@@ -174,12 +174,14 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 10 args (Task 6c added
+    // Positional shape pinned by the brief: 11 args (Task 6c added
     // visionSupportFor as the 5th positional parameter — the 3rd injected
     // closure, after contextLengthFor and providerTypeFor — shifting
-    // everything after providerTypeFor down by one), skillCatalog (index 8)
-    // explicitly undefined so mcpManager (index 9) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(10);
+    // everything after providerTypeFor down by one; plan 1b Task 2 then added
+    // nativeHome as an 11th, trailing param for the DelegationLedger the host
+    // constructs internally), skillCatalog (index 8) explicitly undefined so
+    // mcpManager (index 9) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(11);
     expect(capturedCtorArgs![8]).toBeUndefined();
 
     const mcpManager = capturedCtorArgs![9] as {

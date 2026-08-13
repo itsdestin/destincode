@@ -37,6 +37,8 @@ import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
 import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
+import { DelegationLedger, OWNER } from './specialists/delegation-ledger';
+import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
 import { APPROX_CHARS_PER_TOKEN } from './message-size';
@@ -240,6 +242,14 @@ export class NativeSessionHost extends EventEmitter {
   private specialistSlots = new Map<string, number>();
   private activeWriterChild = new Map<string, string>();
 
+  // Task 2 (plan 1b) — the durable delegation-ledger sidecar
+  // (delegation-ledger.ts). undefined whenever no NativeHome was injected
+  // (most existing test constructions, which have no reason to touch disk for
+  // this) — every call site below guards on `this.ledger` and no-ops in that
+  // case, so recording is best-effort in tests but MANDATORY in production
+  // (ipc-handlers.ts always injects the shared nativeHome).
+  private ledger?: DelegationLedger;
+
   /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
    *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
   private maxSpecialistsFor(_parentId: string): number {
@@ -323,6 +333,36 @@ export class NativeSessionHost extends EventEmitter {
     // longer sets OR clears the lock itself, only binds it (single owner: the
     // tool reserves, this binds, the tool releases).
     this.bindReservation(opts.token, childId);
+    // Task 2 (plan 1b): captured ONCE — every ledger call below (start,
+    // completion, failure) must key off the SAME parent cwd, not a live map
+    // re-read that a concurrent teardown could already have cleared by the
+    // time the catch block runs.
+    const parentCwd = this.live.get(parentId)?.cwd;
+    if (this.ledger && parentCwd) {
+      // Stamp the delegation into the durable ledger the moment the child
+      // exists (childId + title known). A crash right after this line still
+      // leaves a 'running' row a later pass can see — never silently losing
+      // track of a delegation that genuinely started.
+      await this.ledger.recordStart(parentCwd, parentId, {
+        childId,
+        parentToolCallId: opts.parentToolCallId,
+        agentType: opts.specialist.id,
+        title,
+        workDir: opts.workDir,
+        // No per-call short label (the Task tool's own `description` arg)
+        // reaches this method today — threading it through
+        // SpecialistSpawnOpts touches tools/task.ts, out of this task's
+        // scope. The specialist's own registered one-liner is a real,
+        // accurate description rather than a guessed one, so it stands in.
+        description: opts.specialist.description,
+        background: false, // Task 2 covers the FOREGROUND flow only.
+        status: 'running',
+        startedAt: Date.now(),
+        delivered: false,
+        owner: OWNER,
+        missedSteers: [],
+      });
+    }
     try {
       // PRODUCE THE REPORT FIRST, tear down after (Task 6 review handoff note
       // 1). Both statements below are pure/local once the run has finished, so
@@ -331,7 +371,24 @@ export class NativeSessionHost extends EventEmitter {
       // genuinely produced.
       const run = await this.runSpecialist(childId, opts.prompt);
       const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
+      if (this.ledger && parentCwd) {
+        // Foreground delivery IS the tool result returned right here — there
+        // is no separate "inject into the parent" step to wait for, so this
+        // is the one path allowed to be born delivered: true.
+        await this.ledger.update(parentCwd, parentId, childId, {
+          status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report, delivered: true,
+        });
+      }
       return { childId, report };
+    } catch (err: any) {
+      if (this.ledger && parentCwd) {
+        // Specific and accurate (error-message-standards.md): the real
+        // thrown message, never a guessed cause.
+        await this.ledger.update(parentCwd, parentId, childId, {
+          status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
+        });
+      }
+      throw err;
     } finally {
       // Fix 1 (review round 1): LEAK GUARD. Without this, a Task call would
       // strand the child createChild() just minted — a live `this.live` entry,
@@ -584,11 +641,21 @@ export class NativeSessionHost extends EventEmitter {
     // generations of one RESUMED session (same id, different lease) from
     // releasing each other's connections. See McpLease in mcp-manager.ts.
     private mcpManager?: { destroyAll(): Promise<void>; acquire(sessionId: string): Promise<McpLease> },
+    // Task 2 (plan 1b) — backs the DelegationLedger this constructor builds
+    // below. Takes a NativeHome rather than a pre-built DelegationLedger so
+    // this file doesn't need to know delegation-ledger.ts's own construction
+    // details beyond "give it a home". Optional + LAST, same reasoning as
+    // toolServices/skillCatalog/mcpManager above: undefined here is what
+    // every pre-existing 5..10-arg test construction gets for free (no
+    // recording, not a NativeHome pointed at a real home dir by accident);
+    // the real wiring (ipc-handlers.ts) always passes the shared nativeHome.
+    nativeHome?: NativeHome,
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
     // renderer + remote clients (see the 'hook-event' listener there).
     this.broker.on('hook-event', (event) => this.emit('hook-event', event));
+    this.ledger = nativeHome ? new DelegationLedger(nativeHome) : undefined;
   }
 
   /** Route a renderer/remote permission response to the broker. Returns false
@@ -1375,15 +1442,33 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   interrupt(sessionId: string): boolean {
-    // Cascade to this session's specialist children FIRST: a child's turn is
-    // work the parent is BLOCKED on (the Task tool awaits it), so Stop has to
-    // reach it or the parent keeps waiting on a run the user just cancelled.
+    // Cascade to this session's FOREGROUND specialist children only (plan 1b,
+    // external review 2026-08-12 — deliberate change from 1a's unconditional
+    // cascade): a foreground child's turn is work the parent is BLOCKED on
+    // (the Task tool awaits it), so Stop has to reach it or the parent keeps
+    // waiting on a run the user just cancelled. A BACKGROUND child is not
+    // blocking anything — the Task call already returned — so stopping the
+    // parent's TURN must not fire a researcher that is still working;
+    // background survives the Stop button (destroy()/quiesce() teardown below
+    // still takes every child down, foreground or background). Foreground/
+    // background is read synchronously off the ledger (interrupt() cannot do
+    // disk I/O — see childrenOf's own comment above); no record for a child
+    // (an untracked child, or a test host with no ledger injected) defaults
+    // to cascading, matching every child's behavior before this change.
+    //
     // Interrupt only — NOT destroy: this method is synchronous (destroy() is
     // async, and a floating destroy promise in the main process is exactly the
     // bug class `npm run lint` gates on), and Stop means "abort the work", not
     // "delete the session". The child is torn down with its parent (destroy /
     // quiesce below, both async) or by the Task tool's own finalizer.
-    for (const childId of this.childrenOf.get(sessionId) ?? []) this.interrupt(childId);
+    const parentCwd = this.live.get(sessionId)?.cwd;
+    for (const childId of this.childrenOf.get(sessionId) ?? []) {
+      const rec = this.ledger && parentCwd
+        ? this.ledger.listFor(parentCwd, sessionId).find((r) => r.childId === childId)
+        : undefined;
+      if (rec?.background) continue; // still working — the Stop button doesn't touch it
+      this.interrupt(childId);
+    }
     const entry = this.live.get(sessionId);
     // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a
     // permission await unwinds cleanly before the stream is aborted underneath
@@ -1507,8 +1592,24 @@ export class NativeSessionHost extends EventEmitter {
     // reused/new set of children under this parent id (there isn't one in
     // practice, but nothing here should assume it) starts the pool fresh.
     this.takenNamesOf.delete(sessionId);
+    // Task 2 (plan 1b): captured before the loop below — `sessionId`'s live
+    // entry is still present here (this is called from destroy()/quiesce()
+    // BEFORE either drops the parent's own live entry).
+    const parentCwd = this.live.get(sessionId)?.cwd;
     for (const childId of [...children]) {
       this.interrupt(childId);
+      // Any child still in this set is, by construction, still 'running' in
+      // the ledger — a completed/failed foreground child already tore itself
+      // down (and de-registered from childrenOf) in spawnSpecialist's own
+      // finally. FIRE-AND-FORGET (not awaited): destroy()/quiesce() (this
+      // method's only callers) can themselves be invoked without an await
+      // from a sync caller, and a lock-contended ledger write must never make
+      // an unrelated caller's teardown appear to hang. .catch(log) turns a
+      // failed write into a log line instead of an unhandled rejection.
+      if (this.ledger && parentCwd) {
+        this.ledger.update(parentCwd, sessionId, childId, { status: 'interrupted', endedAt: Date.now() })
+          .catch((e) => log('ERROR', 'NativeSessionHost', 'failed to record an interrupted delegation', { childId, parentId: sessionId, error: String(e) }));
+      }
       await this.destroy(childId);
     }
   }
