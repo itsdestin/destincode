@@ -993,6 +993,10 @@ describe('NativeSessionHost', () => {
       expect(header?.agentType).toBe('explorer');
       expect(header?.cwd).toBe(root);
       expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });   // inherits the parent's model
+      // Task 8: the child's assigned fun name lands in the header's existing
+      // `title` field — the transcript header/list machinery renders it for
+      // free, no new plumbing needed beyond this write.
+      expect(header?.title).toMatch(/^\w+ the \w+ (Explorer|Researcher|Reviewer|Worker)$/);
       // Exactly the definition's allowlist — no Write/Edit/Bash/TodoWrite/AskUserQuestion.
       expect(toolNames(h, childId).sort()).toEqual([...EXPLORER.allowedTools].sort());
       await h.destroyAll();

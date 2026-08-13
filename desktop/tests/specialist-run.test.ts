@@ -106,8 +106,10 @@ describe('specialist foreground run (Task 7)', () => {
     expect(store.readEvents('root-1', root).filter((e) => e.data?.agentId)).toHaveLength(0);
 
     // (e) the report comes back, wrapped with a header and a transcript pointer
+    // — Task 8: the header carries the child's assigned fun title, not the
+    // bare displayName, so match the title shape rather than a fixed string.
     expect(report).toContain('REPORT: found it');
-    expect(report).toContain(`## Report from ${EXPLORER.displayName} (${EXPLORER.id})`);
+    expect(report).toMatch(new RegExp(`## Report from \\w+ the \\w+ Explorer \\(${EXPLORER.id}\\)`));
     expect(report).toContain(`[full transcript: specialist session ${childId}]`);
   });
 
@@ -153,6 +155,29 @@ describe('specialist foreground run (Task 7)', () => {
     expect(host.sessionsForModel('m')).toEqual(['root-1']);
     await host.destroy('root-1');
     expect(released).toEqual(['m']);
+  });
+
+  // Exclusion sweep pin (Task 8): the child's JSONL IS on disk after a
+  // completed run (persistence is real — see the persistence-separation
+  // assertion above), but SessionStore.list()'s default (includeChildren
+  // false) must still hide it from every default listing surface. This is
+  // the one behavior every list()-based consumer (Resume Browser via
+  // NativeSessionHost.list(), NATIVE_SESSIONS_LIST) inherits for free — see
+  // task-8-report.md for the full per-surface sweep this pin backs.
+  it('a completed run leaves only the root visible to store.list()', async () => {
+    await withParent(TWO_TOOLS_THEN_REPORT);
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+    });
+
+    // The child file genuinely exists on disk (persistence happened)...
+    expect(store.readEvents(childId, root).length).toBeGreaterThan(0);
+    // ...but the default (hidden-children) listing shows only the root.
+    const visible = store.list();
+    expect(visible.map((r) => r.sessionId)).toEqual(['root-1']);
+    // Asking explicitly for children still finds it — this is a default, not
+    // a deletion.
+    expect(store.list({ includeChildren: true }).some((r) => r.sessionId === childId)).toBe(true);
   });
 
   it('a mid-run provider failure rejects with the real reason and still tears the child down', async () => {

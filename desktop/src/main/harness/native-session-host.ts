@@ -35,6 +35,7 @@ import { isUnderRoot } from '../artifacts/read-binary-access';
 import type { SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
+import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
@@ -196,6 +197,16 @@ export class NativeSessionHost extends EventEmitter {
   // child if the read failed.
   private childrenOf = new Map<string, Set<string>>();
 
+  // Task 8 — the naming easter egg's per-parent draw-without-replacement
+  // state: parent session id → first names already handed out to ITS
+  // children. Scoped per parent (not global) for the same reason childrenOf
+  // is: an unrelated conversation's specialists must not shrink this one's
+  // name pool. Cleared alongside childrenOf in destroyChildrenOf() — a fresh
+  // delegation under a torn-down-and-reused parent id (there isn't one in
+  // practice, but nothing should assume it) would otherwise start with a
+  // phantom set of "already used" names.
+  private takenNamesOf = new Map<string, Set<string>>();
+
   // Task 6 — the Task tool's per-parent state (spec §5 Global Constraints
   // scope decision: PER-PARENT, never host-global — one session's specialist
   // fan-out must not be capped, or blocked, by an UNRELATED session's
@@ -252,7 +263,7 @@ export class NativeSessionHost extends EventEmitter {
     workDir: string;
     parentToolCallId: string;
   }): Promise<{ childId: string; report: string }> {
-    const { childId } = await this.createChild(parentId, opts);
+    const { childId, title } = await this.createChild(parentId, opts);
     // WRITER LOCK (Task 6 review handoff note 2): this is a check-then-set
     // across an await — tools/task.ts checks isWriterBusy(), then we set the
     // lock after createChild's awaits. That is safe under 1a's SERIAL tool
@@ -268,7 +279,7 @@ export class NativeSessionHost extends EventEmitter {
       // method owns — a teardown failure can no longer discard work the child
       // genuinely produced.
       const run = await this.runSpecialist(childId, opts.prompt);
-      const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, body: run.report });
+      const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
       return { childId, report };
     } finally {
       // Fix 5 (review round 1): OWNER-CHECKED release. An unconditional delete
@@ -428,7 +439,7 @@ export class NativeSessionHost extends EventEmitter {
    *  afford, and point at the child's own transcript for anything that got cut.
    *  Text-only truncation in 1a — spilling the overflow to a file is 1b, which
    *  is why the pointer names the session rather than a path. */
-  private formatSpecialistReport(i: { parentId: string; childId: string; specialist: SpecialistDefinition; body: string }): string {
+  private formatSpecialistReport(i: { parentId: string; childId: string; specialist: SpecialistDefinition; title: string; body: string }): string {
     const parent = this.live.get(i.parentId)?.session;
     const window = parent?.contextWindowTokens ?? null;
     const used = parent?.contextUsedTokens ?? null;
@@ -450,10 +461,11 @@ export class NativeSessionHost extends EventEmitter {
       ? composeNotice(undefined, { shown: cut.text.length, total: cut.totalChars },
         'delegate a narrower piece of work, or ask for a shorter report')
       : '';
-    // Task 8 replaces displayName with the child's assigned (fun) name; the
-    // role id stays alongside it either way, so the parent can always tell
-    // WHICH kind of specialist answered.
-    return `## Report from ${i.specialist.displayName} (${i.specialist.id})\n\n${cut.text}${notice}\n\n`
+    // Task 8: the header uses the child's assigned (fun) title, not the bare
+    // displayName — the role id stays alongside it either way, so the parent
+    // can always tell WHICH kind of specialist answered even though the name
+    // is per-run.
+    return `## Report from ${i.title} (${i.specialist.id})\n\n${cut.text}${notice}\n\n`
       + `[full transcript: specialist session ${i.childId}]`;
   }
 
@@ -846,7 +858,7 @@ export class NativeSessionHost extends EventEmitter {
     prompt: string;
     workDir: string;
     parentToolCallId: string;
-  }): Promise<{ childId: string }> {
+  }): Promise<{ childId: string; title: string }> {
     const parent = this.live.get(parentId);
     // A child with no live parent has nobody to report to and nobody to tear it
     // down — refuse loudly rather than orphan a session.
@@ -937,6 +949,16 @@ export class NativeSessionHost extends EventEmitter {
       this.modelFactory,
     );
 
+    // Task 8: draw this child's fun name from the PARENT's taken-set (never
+    // global — see takenNamesOf's comment) and stamp it into the header's
+    // existing `title` field. The transcript header/list machinery already
+    // reads `title` for free (session-store.ts's list() title precedence),
+    // so this needs no new plumbing beyond the header write below.
+    let takenNames = this.takenNamesOf.get(parentId);
+    if (!takenNames) { takenNames = new Set(); this.takenNamesOf.set(parentId, takenNames); }
+    const { name, title } = assignSpecialistName(opts.specialist.id, takenNames);
+    takenNames.add(name);
+
     await this.store.create({
       v: 1,
       sessionId: childId,
@@ -944,6 +966,7 @@ export class NativeSessionHost extends EventEmitter {
       binding,
       cwd: workDir,
       createdAt: Date.now(),
+      title,
       parentSessionId: parentId,
       sessionKind: 'specialist',
       agentType: opts.specialist.id,
@@ -992,7 +1015,7 @@ export class NativeSessionHost extends EventEmitter {
         data: { ...event.data, parentAgentToolUseId: opts.parentToolCallId, agentId: childId },
       } satisfies TranscriptEvent);
     });
-    return { childId };
+    return { childId, title };
   }
 
   /** Rebuild a live session from its stored header + events. Returns false when
@@ -1389,6 +1412,10 @@ export class NativeSessionHost extends EventEmitter {
     const children = this.childrenOf.get(sessionId);
     if (!children) return;
     this.childrenOf.delete(sessionId);
+    // Task 8: this parent's name-draw state dies with its children set — a
+    // reused/new set of children under this parent id (there isn't one in
+    // practice, but nothing here should assume it) starts the pool fresh.
+    this.takenNamesOf.delete(sessionId);
     for (const childId of [...children]) {
       this.interrupt(childId);
       await this.destroy(childId);
