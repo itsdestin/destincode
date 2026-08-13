@@ -705,15 +705,17 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(injected.data.text).not.toContain(`of ${RAW_REPORT_CAP_CHARS} chars`);
   });
 
-  it('Finding 2: a background completion-write failure does not strand the report — a retry recovers it and still delivers it to the parent', async () => {
-    // runDelegation's own completion write (ledger.update, inside its own
-    // try/catch) is deliberately log-only on failure. Before this fix,
-    // NOTHING downstream of runDelegation on the background path ever
-    // captured the resolved run — a failed write left the ledger record
-    // stuck at 'running' forever: never claimed (claimUndelivered only
-    // selects 'completed'/'failed'), never delivered, never even surfaced as
-    // a failure. This simulates exactly that write failing, then proves the
-    // report still reaches the parent.
+  it('Finding 2 (fix pass 2): a background completion whose ledger write ALWAYS fails still reaches the parent via the in-memory fallback lane, exactly once, and the ledger record is left honestly stranded', async () => {
+    // Fix pass 1 responded to this finding by firing a SECOND write
+    // (ledger.updateIfRunning) synchronously right after the first failed —
+    // re-review rejected that: it's the same write against the same store
+    // (both methods bottom out in NativeHome.mutateJson), so a systemic cause
+    // (disk full, permissions, corrupt file, lock exhaustion) reproduces on
+    // the retry identically. This test mocks ledger.update to throw on EVERY
+    // call matching the completion shape (no mockImplementationOnce, and any
+    // OTHER update() call is treated as a test bug via the else-throw) so a
+    // retry through the same method could not possibly have recovered here —
+    // proving delivery no longer depends on any ledger write landing at all.
     const model = scriptedModel([
       stream(...textChunks('t', 'REPORT: done via background'), finishChunk('stop')),
     ]);
@@ -727,19 +729,14 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const events = collect();
 
     const ledger = (host as any).ledger;
-    const realUpdate = ledger.update.bind(ledger);
-    let primaryWriteAttempts = 0;
-    // Fail ONLY the primary completion write (status: 'completed' with a
-    // report body) — every other ledger.update call (e.g. confirmDelivered's
-    // bare { delivered: true } patch) goes through untouched, so this pins
-    // the retry's recovery, not a coincidentally-broken ledger overall.
+    let completionWriteAttempts = 0;
     vi.spyOn(ledger, 'update').mockImplementation(async (...args: any[]) => {
-      const [parentCwd, parentId, childId, patch] = args as [string, string, string, any];
+      const [, , , patch] = args as [string, string, string, any];
       if (patch.status === 'completed' && patch.rawReport !== undefined) {
-        primaryWriteAttempts++;
+        completionWriteAttempts++;
         throw new Error('simulated disk failure while recording specialist completion');
       }
-      return realUpdate(parentCwd, parentId, childId, patch);
+      throw new Error(`unexpected ledger.update call in this test: ${JSON.stringify(patch)}`);
     });
 
     const { childId } = await host.spawnSpecialistBackground('root-1', {
@@ -747,20 +744,31 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
       parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
     });
 
-    // The parent still learns the truth: the report is injected once the
-    // retry recovers the record, delivered at the next idle boundary.
+    // The parent still learns the truth even though the ledger never landed
+    // the completion — delivered exactly once, via the in-memory fallback.
     await vi.waitFor(() => {
       expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
     });
     const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
     expect(injected.data.text).toContain('REPORT: done via background');
 
-    // The ledger record itself reflects the recovered completion — never a
-    // 'running' row stranded where nothing will ever claim it.
+    // The write failed exactly once — no retry against the same broken store.
+    expect(completionWriteAttempts).toBe(1);
+
+    // Honesty about what's lost: with the ledger unwritable, the record
+    // itself is genuinely stranded at 'running' forever — this run cannot
+    // survive a restart. The parent already has the report IN THIS SESSION,
+    // which is the only guarantee the fallback lane makes.
     const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
-    expect(rec.status).toBe('completed');
-    expect(rec.delivered).toBe(true);
-    expect(primaryWriteAttempts).toBeGreaterThan(0); // the primary write really did fail first
+    expect(rec.status).toBe('running');
+    expect(rec.delivered).toBe(false);
+
+    // No duplicate delivery: a later idle-boundary pass must not re-inject
+    // the same report — the fallback entry was consumed on delivery, not
+    // left behind for a second pass to find again.
+    (host as any).queueDelivery('root-1');
+    await new Promise((r) => setImmediate(r));
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
   });
 
   it('Finding 3: a destroy() racing the delivery loop leaves the report claimable again, never falsely confirmed', async () => {

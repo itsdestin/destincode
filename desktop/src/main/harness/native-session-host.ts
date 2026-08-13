@@ -263,6 +263,42 @@ export class NativeSessionHost extends EventEmitter {
   // real count from the ledger every time it runs.
   private pendingDeliveryParents = new Set<string>();
 
+  // Task 4 fix-pass 2 — in-memory fallback delivery lane. WHY this exists:
+  // runDelegation's own completion write is deliberately log-only on failure
+  // (a bookkeeping failure must never relabel a real run 'failed'), and fix
+  // pass 1's answer was a SECOND ledger write fired synchronously right after
+  // the first failed. Re-review rejected that: DelegationLedger.update() and
+  // .updateIfRunning() both bottom out in the SAME NativeHome.mutateJson call
+  // against the SAME sidecar file, so a systemic cause (disk full,
+  // permissions, corrupt file, lock exhaustion) reproduces on the retry
+  // identically — it raised the illusion of resilience, not the fact of it.
+  // This map is what replaces that retry: when the completion write is
+  // confirmed NOT to have landed (see the read-back in spawnSpecialistBackground's
+  // .then handlers), the report the child actually produced is held here,
+  // keyed by childId, until the delivery loop injects it. WHAT THIS DOES NOT
+  // GIVE YOU: durability. If the app restarts before the delivery loop drains
+  // this entry, the report is gone — nothing durable was ever written for it.
+  // That loss is accepted ONLY because the parent already receives the report
+  // in THIS session, at the very next idle boundary, same as a normal
+  // ledger-backed delivery — see the delivery loop in runTurns below.
+  private inMemoryFallback = new Map<string, { parentId: string; rec: DelegationRecord }>();
+
+  /** Pop (remove) the first in-memory fallback report belonging to `parentId`,
+   *  if any — the delivery loop's second-choice lane, tried only after the
+   *  ledger has nothing more claimable. Removing on read (not just on
+   *  successful delivery) would risk losing it to a runNotice failure with no
+   *  way to retry, so callers that fail to actually deliver must put it back;
+   *  see the delivery loop's own catch for that half. */
+  private takeInMemoryFallback(parentId: string): { childId: string; rec: DelegationRecord } | undefined {
+    for (const [childId, entry] of this.inMemoryFallback) {
+      if (entry.parentId === parentId) {
+        this.inMemoryFallback.delete(childId);
+        return { childId, rec: entry.rec };
+      }
+    }
+    return undefined;
+  }
+
   /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
    *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
   private maxSpecialistsFor(_parentId: string): number {
@@ -541,66 +577,72 @@ export class NativeSessionHost extends EventEmitter {
     // source for the cwd its ledger record lives under (Task 4 fix-pass,
     // finding 2).
     const parentCwd = this.live.get(parentId)?.cwd;
+    // The specialist's own static fields, captured HERE (not read back from
+    // the ledger later) — everything the eventual fallback record needs
+    // besides the run outcome itself is already in scope as plain local
+    // variables, so no extra read is needed to build one.
+    const startedAt = Date.now();
     void this.runDelegation(parentId, childId, title, opts, opts.token)
       .then(
         async (run) => {
-          // Fix (Task 4 fix-pass, finding 2): runDelegation's own completion
-          // write happens INSIDE its own try/catch and is log-only on
-          // failure — correct for the FOREGROUND caller (spawnSpecialist),
-          // which still has `run` in hand and returns it to its caller
-          // regardless of whether that write landed. The background path had
-          // no equivalent: before this fix, nothing downstream of
-          // runDelegation ever looked at its resolved value — `run` was
-          // simply discarded — so a failed completion write left the ledger
-          // record stuck at 'running' forever. claimUndelivered only selects
-          // 'completed'/'failed' rows, so a 'running' record is never
-          // claimed, never delivered, and never even surfaces as a failure:
-          // total, silent loss of a report the child genuinely produced.
+          // runDelegation's own completion write happens INSIDE its own
+          // try/catch and is log-only on failure — correct for the
+          // FOREGROUND caller (spawnSpecialist), which still has `run` in
+          // hand and returns it to its caller regardless of whether that
+          // write landed. The background path has no return value to fall
+          // back on, so it must independently learn whether the write
+          // actually landed.
           //
-          // `updateIfRunning` is a SECOND, independent attempt at the exact
-          // same write, using the `run` value THIS chain captured — a cheap
-          // no-op if runDelegation's own write already landed (the record's
-          // status is no longer 'running'), a genuine second chance if it
-          // didn't. `missedSteers` isn't re-included here: it was drained
-          // from the child's own session inside runDelegation, and by the
-          // time this handler runs the child has already been torn down
-          // (runDelegation's `finally`) — an acceptable loss of an
-          // informational field next to actually recovering the report.
+          // Fix pass 2 (re-review 2026-08-13): fix pass 1 answered this with
+          // a SECOND write (ledger.updateIfRunning) fired synchronously right
+          // after the first failed — rejected, because both methods bottom
+          // out in the same NativeHome.mutateJson call against the same
+          // file, so a systemic cause reproduces on the retry identically.
+          // Instead: READ BACK the record we just tried to write. If it's
+          // still 'running', the write never landed — no further attempt is
+          // made against the same broken store; the report the child
+          // actually produced is stashed in the in-memory fallback lane
+          // instead, so the delivery loop below can still get it to the
+          // parent THIS session (see the field's own WHY for what that
+          // does/doesn't guarantee).
           if (this.ledger && parentCwd) {
-            try {
-              await this.ledger.updateIfRunning(parentCwd, parentId, childId, {
-                status: 'completed', endedAt: Date.now(), steps: run.steps, rawReport: run.report,
-              });
-            } catch (retryErr) {
-              // Both the write inside runDelegation AND this retry failed —
-              // genuinely broken storage, not a one-off; there is no third
-              // ledger write left to try, since it would fail the same way.
-              // This is the last chance to avoid the report vanishing in
-              // total silence: log it in full — specific and accurate
-              // (error-message-standards.md), never a guessed cause — so a
-              // human reading the log can still recover it even though it
-              // never reached disk or the parent.
-              log('ERROR', 'NativeSessionHost', 'a background specialist finished but its report could not be recorded after two attempts — logging the report here so it is not lost entirely', {
-                childId, parentId, error: String((retryErr as any)?.message ?? retryErr), report: run.report,
+            const stillRunning = this.ledger.listFor(parentCwd, parentId)
+              .find((d) => d.childId === childId)?.status === 'running';
+            if (stillRunning) {
+              this.inMemoryFallback.set(childId, {
+                parentId,
+                rec: {
+                  childId, parentToolCallId: opts.parentToolCallId, agentType: opts.specialist.id, title,
+                  workDir: opts.workDir, description: opts.description, background: true,
+                  status: 'completed', startedAt, endedAt: Date.now(), steps: run.steps, rawReport: run.report,
+                  delivered: false, owner: OWNER, missedSteers: [],
+                },
               });
             }
           }
         },
         (err: any) => {
           // runDelegation's own catch already attempted a 'failed' write
-          // (also via updateIfRunning, log-only on failure — see the WHY on
-          // runDelegation's own catch block) before rethrowing this same
-          // error. Symmetric second attempt for the identical reason as the
-          // success branch above: a record stuck at 'running' is never
-          // claimed, so the parent would never even learn its specialist
-          // died — this is the failure-path half of finding 2's fix.
+          // (updateIfRunning, log-only on failure) before rethrowing this
+          // same error. Same read-back-then-fallback shape as the success
+          // branch above, for the identical reason: a record stuck at
+          // 'running' is never claimed, so the parent would never even learn
+          // its specialist died.
           log('ERROR', 'NativeSessionHost', 'background specialist run failed', { childId, parentId, error: String(err?.message ?? err) });
           if (this.ledger && parentCwd) {
-            this.ledger.updateIfRunning(parentCwd, parentId, childId, {
-              status: 'failed', endedAt: Date.now(), failureText: err?.message ?? String(err),
-            }).catch((retryErr: any) => {
-              log('ERROR', 'NativeSessionHost', 'a background specialist failed and its failure could not be recorded after two attempts', { childId, parentId, error: String(retryErr?.message ?? retryErr) });
-            });
+            const stillRunning = this.ledger.listFor(parentCwd, parentId)
+              .find((d) => d.childId === childId)?.status === 'running';
+            if (stillRunning) {
+              this.inMemoryFallback.set(childId, {
+                parentId,
+                rec: {
+                  childId, parentToolCallId: opts.parentToolCallId, agentType: opts.specialist.id, title,
+                  workDir: opts.workDir, description: opts.description, background: true,
+                  status: 'failed', startedAt, endedAt: Date.now(), failureText: err?.message ?? String(err),
+                  delivered: false, owner: OWNER, missedSteers: [],
+                },
+              });
+            }
           }
         },
       )
@@ -1662,44 +1704,95 @@ export class NativeSessionHost extends EventEmitter {
       // short, fixed string built straight from failureText in formatDelivery
       // — it never goes through formatSpecialistReport's budget math, so it
       // isn't a "reporter" competing for headroom in the sense this count means.
-      const concurrentReporters = Math.max(1, this.ledger.listFor(entry.cwd, sessionId)
+      // Includes the in-memory fallback lane's own 'completed' entries for
+      // this parent (Task 4 fix-pass 2) — those are just as much competing
+      // for the same headroom in this pass as a ledger-backed one is.
+      const fallbackCompletedForParent = [...this.inMemoryFallback.values()]
+        .filter((e) => e.parentId === sessionId && e.rec.status === 'completed').length;
+      const concurrentReporters = Math.max(1, fallbackCompletedForParent + this.ledger.listFor(entry.cwd, sessionId)
         .filter((d) => d.status === 'completed' && !d.delivered).length);
+      // ONE loop drains both lanes: the ledger (durable, tried first every
+      // iteration) and the in-memory fallback (Task 4 fix-pass 2 — tried only
+      // once the ledger has nothing left to claim). A single loop, rather
+      // than two sequential ones, is what keeps every `break` below reaching
+      // the SAME `entry.inFlight = false` at the bottom — an early `return`
+      // here would leave a session permanently stuck "in flight".
       while (this.pendingDeliveryParents.has(sessionId)) {
         const rec = await this.ledger.claimUndelivered(entry.cwd, sessionId);   // lease, not delivery
-        if (!rec) { this.pendingDeliveryParents.delete(sessionId); break; }
-        // Fix (Task 4 fix-pass, finding 3): destroy() (direct, or via
-        // destroyAll() at app shutdown, which has no in-flight gate) can land
-        // in the gap between any of this loop's awaits. destroy() sets no
-        // "destroyed" flag anything here checks — it aborts the stream and
-        // removeAllListeners()s the session (THAT is what actually stops
-        // transcript appends being persisted), then drops it from `this.live`.
-        // So `entry` can go on being a perfectly usable, callable object
-        // pointing at an orphaned session that no longer persists or emits
-        // anything — runNotice() on it would resolve normally, having shown
-        // the report to nobody. The sibling queue-drain loop above guards the
-        // exact same race with `this.live.get(sessionId) !== entry`; this
-        // recheck is that same guard, run before every remaining step so a
-        // destroy mid-delivery releases the claimed lease (leaving the record
-        // claimable again for the next real delivery pass) instead of either
-        // silently confirming a report nobody saw or losing the lease forever.
-        if (this.live.get(sessionId) !== entry) {
-          await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
-          break;
-        }
-        try {
-          await entry.session.runNotice(this.formatDelivery(sessionId, rec, concurrentReporters));
-          // Recheck AGAIN: destroy() can land during the runNotice() await
-          // itself (no throw, per the WHY above), so confirmDelivered must
-          // never be reached on a session that stopped being live while the
-          // notice was in flight.
+        if (rec) {
+          // Fix (Task 4 fix-pass, finding 3): destroy() (direct, or via
+          // destroyAll() at app shutdown, which has no in-flight gate) can
+          // land in the gap between any of this loop's awaits. destroy() sets
+          // no "destroyed" flag anything here checks — it aborts the stream
+          // and removeAllListeners()s the session (THAT is what actually
+          // stops transcript appends being persisted), then drops it from
+          // `this.live`. So `entry` can go on being a perfectly usable,
+          // callable object pointing at an orphaned session that no longer
+          // persists or emits anything — runNotice() on it would resolve
+          // normally, having shown the report to nobody. The sibling
+          // queue-drain loop above guards the exact same race with
+          // `this.live.get(sessionId) !== entry`; this recheck is that same
+          // guard, run before every remaining step so a destroy mid-delivery
+          // releases the claimed lease (leaving the record claimable again
+          // for the next real delivery pass) instead of either silently
+          // confirming a report nobody saw or losing the lease forever.
           if (this.live.get(sessionId) !== entry) {
             await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
             break;
           }
-          await this.ledger.confirmDelivered(entry.cwd, sessionId, rec.childId); // only now is it delivered
+          try {
+            await entry.session.runNotice(this.formatDelivery(sessionId, rec, concurrentReporters));
+            // Recheck AGAIN: destroy() can land during the runNotice() await
+            // itself (no throw, per the WHY above), so confirmDelivered must
+            // never be reached on a session that stopped being live while the
+            // notice was in flight.
+            if (this.live.get(sessionId) !== entry) {
+              await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+              break;
+            }
+            await this.ledger.confirmDelivered(entry.cwd, sessionId, rec.childId); // only now is it delivered
+            // A ledger write CAN still land after all — the in-memory
+            // fallback (Task 4 fix-pass 2) only exists for the window where
+            // it didn't; clean up any leftover entry for the same child so it
+            // can never be double-delivered by the fallback lane below.
+            this.inMemoryFallback.delete(rec.childId);
+            continue; // more ledger records may remain — try the ledger again before falling to the fallback lane
+          } catch (err) {
+            await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
+            log('WARN', 'NativeSessionHost', 'background specialist delivery failed — will retry at the next idle boundary', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
+            break;
+          }
+        }
+        // Ledger has nothing more claimable this pass — second-choice lane:
+        // a report whose completion write never landed on disk still needs
+        // to reach the parent THIS session (see inMemoryFallback's own WHY
+        // for what that guarantees and what it genuinely does not).
+        const fallback = this.takeInMemoryFallback(sessionId);
+        if (!fallback) { this.pendingDeliveryParents.delete(sessionId); break; }
+        // Same destroy()-race guard as the ledger path above.
+        if (this.live.get(sessionId) !== entry) {
+          this.inMemoryFallback.set(fallback.childId, { parentId: sessionId, rec: fallback.rec }); // put it back — never delivered, so never drop it
+          break;
+        }
+        try {
+          await entry.session.runNotice(this.formatDelivery(sessionId, fallback.rec, concurrentReporters));
+          if (this.live.get(sessionId) !== entry) {
+            // destroy() landed mid-notice: runNotice on a torn-down session
+            // resolves normally without showing the report to anyone (same
+            // "no throw" shape the ledger path's own recheck guards against)
+            // — put the entry back so a later pass can still try.
+            this.inMemoryFallback.set(fallback.childId, { parentId: sessionId, rec: fallback.rec });
+            break;
+          }
+          // Delivered — this was the ONLY copy (nothing durable backs it), so
+          // it is intentionally NOT put back. There is no confirmDelivered to
+          // call: there is no ledger record in a deliverable state for it.
         } catch (err) {
-          await this.ledger.releaseClaim(entry.cwd, sessionId, rec.childId);
-          log('WARN', 'NativeSessionHost', 'background specialist delivery failed — will retry at the next idle boundary', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
+          // Delivery genuinely failed (not a destroy race) — put it back so
+          // the next idle boundary retries it, same as the ledger path's
+          // releaseClaim.
+          this.inMemoryFallback.set(fallback.childId, { parentId: sessionId, rec: fallback.rec });
+          log('WARN', 'NativeSessionHost', 'in-memory fallback specialist delivery failed — will retry at the next idle boundary', { childId: fallback.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
           break;
         }
       }
