@@ -30,10 +30,12 @@ export const SHELL_OPERATORS: readonly string[] = ['&&', '||', ';', '|', '`', '$
  *  `git push origin feat/x` — the wildcard sits between them — and deletes the
  *  branch the grant is named after. `--prune` deletes every OTHER branch on the
  *  remote; `--all` and `--mirror` push refs the grant never mentioned; `--force`
- *  and `--hard` destroy history rather than adding to it. */
+ *  and `--hard` destroy history rather than adding to it; `--no-verify` skips the
+ *  checks the repo runs before a push, which is a behaviour change hiding inside
+ *  what otherwise looks like the same command with one more option. */
 export const BOUNDED_RUNG_VETO: readonly string[] = [
   '--delete', '-d', '--prune', '--mirror', '--all',
-  '--force', '-f', '--force-with-lease', '--hard',
+  '--force', '-f', '--force-with-lease', '--hard', '--no-verify',
 ];
 
 /** The ONE function that knows what a whole rule means. `subjectMatches` above is

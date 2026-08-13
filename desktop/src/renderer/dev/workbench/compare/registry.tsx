@@ -2046,11 +2046,11 @@ const GRANT_ROWS: ReadonlyArray<{
 }> = [
   {
     command: 'git push origin feat/login', title: 'Push local commits', denyListed: true, fullAuto: true,
-    why: 'Two options, in Full auto — so the choice has to live inside 2b’s settled safety-stop band.',
+    why: 'ONE option — the branch grant. Its exact rung would differ only by options you cannot see, so it is not offered. Full auto, so this sits in 2b’s settled safety-stop band.',
   },
   {
     command: 'git push origin master', title: 'Push local commits', denyListed: true,
-    why: 'Two options. master is an ordinary branch: it scopes exactly like any other, and gets its own revocable row.',
+    why: 'One option. master is an ordinary branch: it scopes exactly like any other, and gets its own revocable row.',
   },
   {
     command: 'git push', title: 'Push local commits', denyListed: true,
@@ -2058,7 +2058,7 @@ const GRANT_ROWS: ReadonlyArray<{
   },
   {
     command: 'npm run build', title: 'Build the project', denyListed: false,
-    why: 'Two options on an ordinary command — the path that has no confirm step at all today.',
+    why: 'TWO options — the only row where the choice is a real difference in trust ("just this" vs "any npm run command"). Also the path that has no confirm step at all today.',
   },
   {
     command: 'rm -rf build', title: 'Delete the build folder', denyListed: true,
@@ -2212,19 +2212,28 @@ function GrantCandidateRadio({ row }: { row: (typeof GRANT_ROWS)[number] }) {
  *  action and the widening as a quieter second one beneath it. */
 function GrantCandidateInline({ row }: { row: (typeof GRANT_ROWS)[number] }) {
   const options = bashGrantOptions(row.command);
+  const exact = options.find((o) => o.scope === 'exact');
   const wide = options.find((o) => o.scope === 'wide');
+  // The narrow option is the primary when there IS one. When the derivation
+  // offered only the named grant (every `git push` row), that named grant IS the
+  // primary — a secondary line offering the same thing twice is the confusion
+  // this round already found once.
+  const primary = exact ?? wide;
+  const secondary = exact ? wide : undefined;
   const [confirming, setConfirming] = React.useState(false);
   return (
     <GrantAskShell row={row}>
-      {confirming ? (
+      {confirming && primary ? (
         <GrantConfirmShell command={row.command}>
           <div className="flex items-center gap-2">
             <button className={ASK_GREEN} onClick={() => setConfirming(false)}>Nevermind, allow once</button>
-            <button className={ASK_RED}>Always allow this command</button>
+            <button className={ASK_RED}>
+              {primary.scope === 'exact' ? 'Always allow this command' : widenLabel(primary.label)}
+            </button>
           </div>
-          {wide && (
+          {secondary && (
             <button className="text-3xs text-fg-muted hover:text-fg underline underline-offset-2 transition-colors text-left">
-              Or {widenLabel(wide.label).replace(/^Always allow /, 'always allow ')}
+              Or {widenLabel(secondary.label).replace(/^Always allow /, 'always allow ')}
             </button>
           )}
         </GrantConfirmShell>

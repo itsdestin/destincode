@@ -136,6 +136,21 @@ describe('bashGrantOptions — git push scopes to one branch', () => {
     expect(ruleMatches(rule, 'git push --prune origin feat/x')).toBe(false);
     expect(ruleMatches(rule, 'git push --force origin feat/x')).toBe(false);
     expect(ruleMatches(rule, 'git push --all origin feat/x')).toBe(false);
+    // Skips the repo's own pre-push checks — a behaviour change wearing the
+    // clothes of "the same command with one more option".
+    expect(ruleMatches(rule, 'git push --no-verify origin feat/x')).toBe(false);
+  });
+
+  it('is the ONLY option offered — the exact rung would say the same thing', () => {
+    // The exact rung for a push differs from the branch rung only by options
+    // whose effect the user cannot see (-u, -q). Every difference that would
+    // matter is already excluded from both, so offering two would be asking the
+    // user to choose between two identical sentences — and would let one push be
+    // approved twice as two Settings rows that read the same.
+    expect(bashGrantOptions('git push origin feat/x').map((o) => o.scope)).toEqual(['wide']);
+    expect(exactOf('git push origin feat/x')).toBeUndefined();
+    // The GENERIC rung is not collapsed: this one is a real choice.
+    expect(bashGrantOptions('npm run build').map((o) => o.scope)).toEqual(['exact', 'wide']);
   });
 
   it('does NOT leak to another branch, a longer branch name, or a multi-ref push', () => {

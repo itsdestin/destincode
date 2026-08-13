@@ -202,7 +202,7 @@ export function bashGrantOptions(command: string): GrantOption[] {
   const wide = deriveWide(command, tokens);
   if (wide) options.push(wide);
 
-  return options.filter((o) => {
+  const offered = options.filter((o) => {
     // POSTCONDITION 1 — never offer a rung that cannot cover the command in front
     // of the user. Without it, `npm run build > log.txt` is offered "any npm run
     // command", a rule safety rule 1 immediately refuses, so the user saves a
@@ -214,4 +214,19 @@ export function bashGrantOptions(command: string): GrantOption[] {
     if (o.scope === 'exact') return true;
     return !HOSTILE_CORPUS.some((hostile) => ruleMatches(o.rule, hostile));
   });
+
+  // A SHAPED rung already says, in the user's own words, what the command does
+  // ("pushing to feat/login"). Its exact rung differs from it ONLY by options the
+  // user cannot see the effect of (-u, -q, --repo=…) — every difference that
+  // would matter is excluded from both by safety rule 2. Offering both would ask
+  // the user to choose between two sentences that mean the same thing, and would
+  // let one push be approved twice, as two Settings rows that read identically
+  // and cover different amounts.
+  //
+  // The GENERIC rung is not collapsed: "only this command" vs "any npm run
+  // command" is a real difference in how much trust is being handed over.
+  if (shape && offered.some((o) => o.scope === 'wide')) {
+    return offered.filter((o) => o.scope === 'wide');
+  }
+  return offered;
 }
