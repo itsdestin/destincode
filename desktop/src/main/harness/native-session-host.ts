@@ -24,7 +24,7 @@ import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
-import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
+import { rulesForMode, sameRule, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
@@ -641,18 +641,19 @@ export class NativeSessionHost extends EventEmitter {
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
    *
-   *  The in-memory filter compares the (tool, pattern, action) TRIPLE, not whole
-   *  objects: a rule read back off disk carries a `grantedAt` key the in-memory
-   *  copy never had, so an equality check would silently stop matching. */
+   *  The in-memory filter compares the (tool, pattern, action, match) QUAD via
+   *  sameRule, not whole objects: a rule read back off disk carries a `grantedAt`
+   *  key the in-memory copy never had, so an equality check would silently stop
+   *  matching. `match` joined the identity when Bash grants gained a scoped wide
+   *  shape — without it, "this exact command" and "any command of this kind"
+   *  collapse into one row and Settings revokes the wrong one. */
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
       if (cwdToProjectSlug(entry.cwd) !== slug) continue;
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
-      this.rememberedFor.set(sessionId, mem.filter(
-        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action),
-      ));
+      this.rememberedFor.set(sessionId, mem.filter((r) => !sameRule(r, rule)));
     }
     return hit;
   }
@@ -821,7 +822,9 @@ export class NativeSessionHost extends EventEmitter {
       // of whether the disk write below succeeds or wins the race with the next
       // tool call.
       const mem = this.rememberedFor.get(sessionId) ?? [];
-      if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action)) {
+      // Same QUAD identity the store dedupes on (sameRule) — two grants that
+      // differ only in `match` are different grants and must both be kept.
+      if (!mem.some((r) => sameRule(r, rule))) {
         mem.push(rule);
         this.rememberedFor.set(sessionId, mem);
       }

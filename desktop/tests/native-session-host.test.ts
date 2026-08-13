@@ -888,6 +888,28 @@ describe('NativeSessionHost', () => {
       await p.destroyAll();
     });
 
+    it('revokes only the matching QUAD from a live session', async () => {
+      // Two grants that differ ONLY in `match`. Under the old triple identity the
+      // in-memory filter dropped both, so revoking the wide one from Settings
+      // silently took the exact one with it.
+      const store = new PermissionStore(new NativeHome(root));
+      const exact = { tool: 'Write', pattern: 'note.txt', action: 'allow' as const, match: 'exact' as const };
+      const wide = { tool: 'Write', pattern: 'note.txt', action: 'allow' as const, match: 'glob' as const };
+      await store.remember(root, exact);
+      await store.remember(root, wide);
+
+      const p = revokeHost(store);
+      await p.create({ sessionId: 'quad', cwd: root, binding });
+      expect(await turnAsked(p, 'quad', 'write once')).toBe(false);   // granted by both
+
+      await expect(p.revokeRule(cwdToProjectSlug(root), wide)).resolves.toBe(true);
+
+      // The exact grant survives on disk AND in the still-running session.
+      expect(await store.rulesFor(root)).toMatchObject([{ pattern: 'note.txt', match: 'exact' }]);
+      expect(await turnAsked(p, 'quad', 'write again')).toBe(false);
+      await p.destroyAll();
+    });
+
     it('returns false when the store matched nothing', async () => {
       const p = revokeHost(new PermissionStore(new NativeHome(root)));
       await expect(

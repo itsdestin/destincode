@@ -11,6 +11,7 @@
 // same as session-store.ts does.
 import { cwdToProjectSlug } from '../transcript-watcher';
 import type { NativeHome } from '../native-home';
+import { normalizeRule, sameRule } from '../../shared/permission-types';
 import type { PermissionRule, StoredProject, StoredRule } from '../../shared/permission-types';
 
 const FILE = 'permissions.json';
@@ -40,7 +41,11 @@ export class PermissionStore {
     const data = (this.home.readJson(FILE) as PermFile | null) ?? EMPTY;
     // Optional-chain `.projects` too: a hand-edited {} / [] / {"projects":null}
     // passes the cast but has no usable projects map — treat it as "nothing here".
-    return data.projects?.[cwdToProjectSlug(cwd)]?.rules ?? [];
+    // normalizeRule: a rule written before this feature carries no `match` and
+    // would otherwise be evaluated as a glob, which is how "always allow this
+    // exact command" turned `rm *.log` into a wildcard grant. Reading it as
+    // exact restores the promise the user was actually shown.
+    return (data.projects?.[cwdToProjectSlug(cwd)]?.rules ?? []).map(normalizeRule);
   }
 
   /** Persist one remembered decision for `cwd`'s project, deduping exact repeats. */
@@ -53,12 +58,12 @@ export class PermissionStore {
       // instead of throwing. Spreading a missing/undefined projects below is safe
       // ({...undefined} === {}), so the write heals the shape on next persist.
       const rules = data.projects?.[slug]?.rules ?? [];
-      // Dedupe compares ONLY (tool, pattern, action) — deliberately not grantedAt.
-      // Re-approving something you already approved must not look like a fresh
-      // grant in the management UI, so the original date stays pinned.
-      const dup = rules.some(
-        (r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action
-      );
+      // Identity is the QUAD (tool, pattern, action, match) — see sameRule, which
+      // normalizes both sides so a legacy disk row compares in the semantics it
+      // is actually evaluated with. grantedAt stays excluded: re-approving
+      // something you already approved must not look like a fresh grant in the
+      // management UI, so the original date stays pinned.
+      const dup = rules.some((r) => sameRule(r, rule));
       if (!dup) rules.push({ ...rule, grantedAt: new Date().toISOString() });
       // Spread the existing entry, don't rebuild it: rebuilding as { rules }
       // silently drops the recorded cwd on the SECOND write to a project, and
@@ -81,7 +86,10 @@ export class PermissionStore {
       // "never recorded", which the UI states plainly instead of guessing a path
       // back out of the lossy slug.
       ...(entry?.cwd !== undefined ? { cwd: entry.cwd } : {}),
-      rules: entry?.rules ?? [],
+      // Normalized for the same reason rulesFor() normalizes: the screen must
+      // describe a legacy rule the way the engine now evaluates it, and the
+      // renderer round-trips these objects straight back into remove().
+      rules: (entry?.rules ?? []).map(normalizeRule),
     }));
   }
 
@@ -104,7 +112,11 @@ export class PermissionStore {
       // writes, so returning the healed shape beats writing back garbage.
       if (!entry || !Array.isArray(rules)) return data.projects ? data : EMPTY;
       const kept = rules.filter((r) => {
-        const match = r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action;
+        // sameRule normalizes both sides. The renderer round-trips what list()
+        // gave it (already normalized) against disk rows that are not, and an
+        // un-normalized comparison here would silently fail to remove every
+        // rule written before this feature existed.
+        const match = sameRule(r, rule);
         if (match) hit = true;
         return !match;
       });

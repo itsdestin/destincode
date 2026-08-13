@@ -442,8 +442,74 @@ describe('HarnessSession — multi-step turn driver', () => {
       session.on('remember-rule', (r) => remembered.push(r));
       collect(session);
       await session.send('go');
-      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow' }]);
+      // match:'exact' — a file path containing '*' was a wildcard grant on this
+      // exact code path until M5 2c.
+      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow', match: 'exact' }]);
       expect(askUser.mock.calls[0][0].external).toBe(false);
+    });
+  });
+
+  // M5 2c: the RENDERER never names a pattern — it sends a width selector and the
+  // session re-derives from the tool call it already holds. A renderer that could
+  // name its own pattern could grant itself anything, because remembered rules are
+  // the final precedence layer, above the destructive deny-list.
+  describe('"Always allow" derives the rule it stores', () => {
+    const bashTool = () => fakeTool('Bash', {
+      schema: z.object({ command: z.string() }),
+      permissionSubject: (a: any) => a.command,
+    });
+    const oneBash = (command: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Bash', { command }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    /** Drive one gated Bash call answered with "Always allow" at `grantScope`. */
+    async function rulesFor(command: string, grantScope?: 'exact' | 'wide'): Promise<unknown[]> {
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow', always: true, grantScope }));
+      const session = new HarnessSession(
+        makeOpts({
+          tools: [bashTool()],
+          decide: async () => ({ action: 'ask', denyListed: false }) as PermissionDecision,
+          askUser,
+        }),
+        async () => oneBash(command) as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      return remembered;
+    }
+
+    it('an exact grant stores the literal command with match:exact', async () => {
+      expect(await rulesFor('rm *.log', 'exact'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm *.log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a wide grant stores the DERIVED rule, not the raw command', async () => {
+      expect(await rulesFor('git push origin feat/x', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git push*origin feat/x', action: 'allow', match: 'glob' }]);
+    });
+
+    it('a renderer asking for "wide" on a command with no wide rung gets the narrow one', async () => {
+      expect(await rulesFor('rm -rf build', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm -rf build', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a renderer asking for "wide" on a WITHHELD rung gets the narrow one', async () => {
+      // 'Any git command' is withheld because it would cover pushes and resets.
+      expect(await rulesFor('git --no-pager log', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git --no-pager log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('nothing is remembered when the command offers no grant at all', async () => {
+      // Bare `git push` sends whatever branch is checked out AT RUN TIME.
+      expect(await rulesFor('git push', 'exact')).toEqual([]);
+    });
+
+    it('a missing selector is treated as the narrowest option', async () => {
+      expect(await rulesFor('npm run build', undefined))
+        .toEqual([{ tool: 'Bash', pattern: 'npm run build', action: 'allow', match: 'exact' }]);
     });
   });
 
