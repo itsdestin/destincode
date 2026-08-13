@@ -222,6 +222,31 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const parent = session.toolCalls.get(parentId);
   if (!parent) return state;
 
+  // Fix (external review, 2026-08-13): a subagent event used to skip the
+  // seenUuids dedup every other replay-fed entry point passes (see
+  // TRANSCRIPT_USER_MESSAGE and the main-timeline TRANSCRIPT_ASSISTANT_TEXT
+  // case, both above) — parentAgentToolUseId routed here BEFORE any uuid
+  // check ever ran. tool-use/tool-result are harmless regardless: they
+  // dedupe structurally by toolUseId below (Map/array overwrite), and CC's
+  // own subagent-JSONL replay (subagent-watcher.ts getHistory) can
+  // legitimately re-emit a repeat-uuid tool-use line to pick up a growing
+  // input as Claude Code rewrites the same line — gating those on uuid would
+  // freeze the segment at its first, possibly-partial input (mirrors
+  // TranscriptWatcher.getHistory's own assistant-text-only uuid skip, same
+  // reasoning). assistant-text has no such structural dedup — it merges by
+  // partId only — so a second delivery of the exact same delta (getHistory()
+  // card replay, Task 9, has no guard against being called twice against an
+  // already-populated reducer state: a live re-dock re-sends the same
+  // stamped events, not just a post-restart resume) appended the same
+  // specialist text again. Checked AFTER the parent-card-exists bail above,
+  // not before: a genuinely-missed live event (rare race — a child delta
+  // arriving before the parent's own Task tool-use is dispatched) must never
+  // be marked "seen" while it was in fact dropped, or a later delivery once
+  // the card exists could never apply it.
+  if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT' && session.seenUuids.has(action.uuid)) {
+    return state;
+  }
+
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
@@ -285,8 +310,13 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const toolCalls = new Map(session.toolCalls);
   const updated: ToolCallState = { ...parent, subagentSegments: segments };
   toolCalls.set(parentId, updated);
+  // Only assistant-text needs to grow seenUuids — see the dedup check above
+  // for why tool-use/tool-result deliberately don't participate.
+  const seenUuids = action.type === 'TRANSCRIPT_ASSISTANT_TEXT'
+    ? new Set(session.seenUuids).add(action.uuid)
+    : session.seenUuids;
   const next = new Map(state);
-  next.set(action.sessionId, { ...session, toolCalls });
+  next.set(action.sessionId, { ...session, toolCalls, seenUuids });
   return next;
 }
 

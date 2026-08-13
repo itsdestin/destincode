@@ -1485,10 +1485,17 @@ export class NativeSessionHost extends EventEmitter {
   }
 
   /** Task 5 (plan 1b): one line per NON-DELIVERED delegation for `sessionId`
-   *  (its parent), or null when there's nothing to report — the zero-cost case
-   *  for a session that never delegates. A record with `delivered: true` never
-   *  appears: its report already rode into the parent's history, so restating
-   *  it here would be stale noise, not a status.
+   *  (its parent), or null when there's nothing to report. "Zero cost" here
+   *  is about the MODEL's context window, not disk I/O: a null return injects
+   *  nothing, so a session that never delegates never pays a status line —
+   *  but reaching that null still costs one `listFor` read of the delegation
+   *  sidecar (native-home.ts readJson's fast ENOENT path) on every turn, same
+   *  as resume()'s reconcileDelegations and getHistory()'s card-replay merge
+   *  (Task 9) each pay one more such read per call for the identical reason:
+   *  correctness requires checking, and checking a missing sidecar is cheap
+   *  but not free. A record with `delivered: true` never appears: its report
+   *  already rode into the parent's history, so restating it here would be
+   *  stale noise, not a status.
    *
    *  Fix pass, Finding 1: NO step count on the running line. `steps` is only
    *  ever written by the ledger's write path AT COMPLETION (see
