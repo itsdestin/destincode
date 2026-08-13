@@ -42,32 +42,84 @@ const MIN_PROMPT_LENGTH = 40;
 // ~45-char real-sentence boundary test.
 const PLACEHOLDER_RE = /^(?:todo|tbd|task ?\d*|fixme|<[^>]*>|\{\{[^}]*\}\}|\.{3}|xxx+)[.!]?$/i;
 
+// Task 6 (spec §5, own-children-only) — verbatim per the plan, and reused
+// EVERYWHERE a task_id turns out not to be this parent's own child: a foreign
+// task_id and a nonexistent one must read identically, so the wording can
+// never be used to probe for another session's child ids.
+const REFUSED_NOT_OWN_CHILD = 'Refused: that task_id does not belong to a specialist of this session.';
+
+// Task 6 — the writer-busy / at-capacity refusal copy, unchanged verbatim
+// from plan 1a/1b, now shared by BOTH the new-spawn reservation (below) and
+// the task_id resume reservation (a resumed child re-takes a slot exactly
+// like a new spawn) — one function so the two paths cannot drift apart on
+// wording.
+function reservationRefusalText(reservation: { reason: 'writer-busy' } | { reason: 'at-capacity'; max: number }): string {
+  if (reservation.reason === 'writer-busy') {
+    return 'Refused: another specialist with write access is running under this session. '
+      + 'Wait for it to finish, or delegate to a read-only specialist (e.g. explorer, researcher, reviewer) instead.';
+  }
+  // Task 13: reservation.max is the RESOLVED ceiling reserveSpecialist
+  // actually enforced (a local session's engine-measured cap can be smaller
+  // than the hosted constant) — never a hardcoded constant, per
+  // error-message-standards.md ("must be specific and accurate").
+  return `Refused: this session is at capacity (max ${reservation.max} concurrent specialists). `
+    + 'Wait for one of the running specialists to finish before starting another.';
+}
+
 const schema = z.object({
-  description: z.string().describe('A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug").'),
-  prompt: z.string().describe(
-    'The complete, self-contained brief for the specialist. It has NO access to this conversation — '
-    + 'include everything it needs: what to do, relevant file paths, and what "done" looks like.',
+  // Task 6: these four were unconditionally required through plan 1a/1b —
+  // now optional because a task_id call (steer/resume/interrupt an EXISTING
+  // specialist) needs none of them; execute() enforces "required unless
+  // task_id is set" itself, below, with a typed refusal rather than a bare
+  // schema-validation failure.
+  description: z.string().optional().describe(
+    'A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug"). '
+    + 'Required when starting a new specialist; omit when managing one by task_id.',
   ),
-  agent: z.string().describe(`Which specialist to run. One of: ${listSpecialists().map((s) => s.id).join(', ')}.`),
-  work_dir: z.string().describe(
+  prompt: z.string().optional().describe(
+    'Starting a new specialist: the complete, self-contained brief — it has NO access to this conversation, '
+    + 'so include everything it needs: what to do, relevant file paths, and what "done" looks like. '
+    + 'Managing one by task_id: the steer message, or its next brief on resume. Omit only when interrupt is true.',
+  ),
+  agent: z.string().optional().describe(
+    `Which specialist to run. One of: ${listSpecialists().map((s) => s.id).join(', ')}. `
+    + 'Required when starting a new specialist; omit when managing one by task_id — the specialist type follows the task_id.',
+  ),
+  work_dir: z.string().optional().describe(
     'The directory the specialist works in — usually the project root you are working in. '
-    + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit).',
+    + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit). '
+    + 'Required when starting a new specialist; omit when managing one by task_id.',
   ),
   // Task 4 (plan 1b) — background execution. Optional so every existing 1a
   // call (which always blocks until the report comes back) keeps working
-  // unchanged; only setting this true opts into the detached-run path.
+  // unchanged; only setting this true opts into the detached-run path. Also
+  // read on a task_id RESUME (Task 6): same meaning, applied to the resumed
+  // run instead of a new one.
   background: z.boolean().optional().describe(
-    'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes.',
+    'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes. '
+    + 'On a task_id resume, applies to the resumed run.',
   ),
   // Task 14: verbatim per the spec ruling — the only two named tiers, plus an
   // escape hatch for a user-directed specific id. Omitting this (the default
   // for every existing call and every built-in specialist) is unchanged
-  // behavior: run on the parent's own model.
+  // behavior: run on the parent's own model. Not read on a task_id call — a
+  // steer/resume/interrupt keeps the child's own model.
   model: z.string().optional().describe(
     'Optional: "budget" or "frontier" to use the models the user designated in Settings, or a specific '
     + 'model id — only name a specific model when the user asked for it. Omit to run the specialist on '
-    + "this conversation's model.",
+    + "this conversation's model. Not used with task_id — a resumed specialist keeps its own model.",
   ),
+  // Task 6 — the task_id management surface. Semantics documented verbatim in
+  // the tool description below (TASK_ID_DOCTRINE).
+  task_id: z.string().optional().describe(
+    'The task_id from an earlier launch, to manage that specialist instead of starting a new one. If it is '
+    + 'still RUNNING, "prompt" is delivered as a steer at its next natural pause. If it has FINISHED or was '
+    + 'INTERRUPTED, it resumes — its state is rebuilt cold from its own transcript — with "prompt" as its next '
+    + 'brief, foreground or background per "background". Combine with interrupt: true to cancel it instead (no '
+    + '"prompt" needed). A task_id that is not one of THIS conversation\'s own specialists is refused, whether it '
+    + "belongs to a different conversation or never existed at all — you can only manage specialists you yourself started.",
+  ),
+  interrupt: z.boolean().optional().describe('With task_id: cancel that specialist instead of steering or resuming it.'),
 });
 
 type TaskArgs = z.infer<typeof schema>;
@@ -87,13 +139,26 @@ function describeSpecialists(): string {
 // so the caller must front-load everything into one brief.
 const DOCTRINE = 'Specialists work independently and report back once; give each specialist a complete, self-contained brief — they cannot ask you a follow-up question.';
 
+// Task 6 — the task_id management surface, documented VERBATIM in the tool
+// description (per the plan's own instruction) so a model reads these four
+// outcomes as part of learning the tool, not as a refusal it hits by
+// surprise later.
+const TASK_ID_DOCTRINE =
+  'To manage a specialist you already started, pass its task_id instead of agent/work_dir/description:\n'
+  + "- Still running: \"prompt\" is delivered as a steer at its next natural pause.\n"
+  + '- Finished or interrupted: it resumes — state rebuilt cold from its own transcript — with "prompt" as its '
+  + 'next brief, foreground or background per "background".\n'
+  + '- Add interrupt: true to cancel it instead (no "prompt" needed).\n'
+  + "- A task_id that isn't one of THIS conversation's own specialists is refused the same way whether it "
+  + 'belongs to another conversation or never existed — you can only manage specialists you yourself started.';
+
 export function createTaskTool(): NativeTool<TaskArgs> {
   return defineTool<TaskArgs>({
     name: 'Task',
     description:
       'Delegate one focused piece of work to a specialist subagent. The specialist works independently '
       + "and reports back when it's done. Available specialists:\n"
-      + describeSpecialists() + '\n\n' + DOCTRINE,
+      + describeSpecialists() + '\n\n' + DOCTRINE + '\n\n' + TASK_ID_DOCTRINE,
     // Simplified presentation (small local models): ids + charter only, no
     // per-role descriptions — mirrors skill.ts's shortDescription trim.
     shortDescription:
@@ -132,13 +197,153 @@ export function createTaskTool(): NativeTool<TaskArgs> {
     // permissionSubject has no session cwd to resolve a relative work_dir
     // against (the NativeTool contract passes only the raw args), so it
     // resolves against the process's own cwd, same as canonicalize did.
+    // Task 6: a task_id management call may omit work_dir entirely (it isn't
+    // starting anything new — see the schema's own comment) — undefined here
+    // means tool-name-only matching (NativeTool.permissionSubject's own
+    // documented contract), never a crash on a path that was never given.
     permissionSubject: (a) => {
-      const specialist = resolveSpecialist(a.agent);
+      if (!a.work_dir) return undefined;
+      const specialist = a.agent ? resolveSpecialist(a.agent) : undefined;
       const workDir = toPosix(resolveP(a.work_dir, process.cwd()));
       return specialist ? `${specialist.charter}:${workDir}` : workDir;
     },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {
+      const services = ctx.services?.specialists;
+      if (!services) {
+        // A configuration gap (Task attached but its host callbacks were not
+        // wired), never a model mistake — say so plainly rather than guessing.
+        // Checked FIRST (moved ahead of every args-shaped refusal below, Task
+        // 6): both the task_id branch and the new-spawn branch need it, and
+        // no existing test pins the OLD relative order against an unknown
+        // specialist / trivial prompt.
+        return { text: 'Task failed: no specialist services are wired for this session (configuration error).', isError: true };
+      }
+      const parentId = ctx.sessionId;
+
+      // ---- Task 6: task_id management surface — checked BEFORE the spawn
+      // path entirely (order per the plan): steer a running child, resume a
+      // finished/interrupted one, or interrupt one outright. Never reaches
+      // the unknown-specialist / prompt-floor / placeholder / budget checks
+      // below, which only make sense for STARTING something new. ----
+      if (args.task_id) {
+        const taskId = args.task_id;
+
+        // interrupt is checked before steer/resume (order per the plan).
+        if (args.interrupt) {
+          const result = services.interruptSpecialist(parentId, taskId);
+          if (result.status === 'not-yours') return { text: REFUSED_NOT_OWN_CHILD, isError: true };
+          if (result.status === 'not-running') {
+            return {
+              text: `task_id ${taskId} is not currently running — there is nothing to interrupt. `
+                + 'Call Task again with the same task_id and no "interrupt" to resume it instead.',
+              isError: true,
+            };
+          }
+          return { text: `Interrupted ${result.title}${result.description ? ` — it was: ${result.description}` : ''}.` };
+        }
+
+        // Steer and resume both need a prompt (the message, or the next
+        // brief) — interrupt above is the only task_id use that doesn't.
+        if (!args.prompt?.trim()) {
+          return {
+            text: 'Steering or resuming a specialist needs "prompt" — the message to deliver, or its next brief. '
+              + 'Omit "prompt" only when interrupt is true.',
+            isError: true,
+          };
+        }
+        const trimmedPrompt = args.prompt.trim();
+
+        const steerResult = services.steerSpecialist(parentId, taskId, trimmedPrompt);
+        if (steerResult.status === 'not-yours') return { text: REFUSED_NOT_OWN_CHILD, isError: true };
+        if (steerResult.status === 'ok') {
+          return { text: `Steer delivered to ${steerResult.title}.` };
+        }
+
+        // steerResult.status === 'not-running' — the child is this parent's
+        // own, but has finished or been interrupted: resume it. Its charter
+        // comes from the ledger's own recorded agentType (steerResult), NOT
+        // from args.agent — a resume never re-reads the model's own claim
+        // about which specialist this is, it re-reads the ORIGINAL one.
+        const specialist = resolveSpecialist(steerResult.agentType);
+        if (!specialist) {
+          return {
+            text: `Refused: the specialist type "${steerResult.agentType}" that ${taskId} was running is no longer `
+              + 'available — it may have been removed from the roster.',
+            isError: true,
+          };
+        }
+
+        // A resumed child re-takes a reservation exactly like a new spawn —
+        // including the writer lock if its charter is read-write (plan's own
+        // instruction: "a resumed Worker re-takes the writer lock").
+        const reservation = services.reserve(parentId, { writer: specialist.charter === 'read-write' });
+        if (!reservation.ok) return { text: reservationRefusalText(reservation), isError: true };
+
+        if (args.background) {
+          try {
+            const result = await services.resumeSpecialist(parentId, {
+              childId: taskId, prompt: trimmedPrompt, background: true,
+              parentToolCallId: ctx.toolCallId ?? '', reservation: reservation.token,
+            });
+            if (result.status === 'not-yours') {
+              services.release(reservation.token);
+              return { text: REFUSED_NOT_OWN_CHILD, isError: true };
+            }
+            if (result.status === 'still-running') {
+              services.release(reservation.token);
+              return { text: `${taskId} started running again before this resume could take effect — nothing to do.`, isError: true };
+            }
+            // result.status === 'ok-background' (the only remaining case,
+            // since this call requested background: true) — ownership of the
+            // reservation transferred to the detached chain, same as a fresh
+            // background spawn; this call site does NOT release it. The
+            // `status === 'ok'` guard below is belt-and-suspenders for the
+            // type checker (SpecialistResumeOutcome has two 'ok' shapes) —
+            // resumeSpecialist itself never returns the foreground shape here.
+            if (result.status === 'ok') throw new Error(`resumeSpecialist returned a foreground result for a background request (task_id ${taskId}) — this is a host bug, not a refusal.`);
+            return {
+              text: `${result.title} (${specialist.id}) is now working in the background (task_id: ${result.childId}). `
+                + 'Their report will be delivered to you automatically when they finish — do not wait or poll. '
+                + 'Keep working; a status block at the start of your turns tracks running specialists.',
+            };
+          } catch (err: any) {
+            services.release(reservation.token);
+            return { text: `The ${specialist.displayName} specialist failed to resume in the background: ${err?.message ?? String(err)}`, isError: true };
+          }
+        }
+
+        try {
+          const result = await services.resumeSpecialist(parentId, {
+            childId: taskId, prompt: trimmedPrompt, background: false,
+            parentToolCallId: ctx.toolCallId ?? '', reservation: reservation.token,
+          });
+          if (result.status === 'not-yours') return { text: REFUSED_NOT_OWN_CHILD, isError: true };
+          if (result.status === 'still-running') {
+            return { text: `${taskId} started running again before this resume could take effect — nothing to do.`, isError: true };
+          }
+          // result.status === 'ok' (the only remaining case, since this call
+          // requested background: false) — belt-and-suspenders throw for the
+          // type checker, mirroring the background branch above.
+          if (result.status === 'ok-background') throw new Error(`resumeSpecialist returned a background result for a foreground request (task_id ${taskId}) — this is a host bug, not a refusal.`);
+          return { text: result.report };
+        } catch (err: any) {
+          return { text: `The ${specialist.displayName} specialist failed to resume: ${err?.message ?? String(err)}`, isError: true };
+        } finally {
+          services.release(reservation.token);
+        }
+      }
+
+      // ---- Starting a NEW specialist (unchanged from plan 1a/1b, gated on
+      // the four fields task_id calls above deliberately omit). ----
+      if (!args.agent || !args.work_dir || !args.description || !args.prompt) {
+        return {
+          text: 'Starting a new specialist needs "agent", "work_dir", "description", and "prompt". '
+            + 'Omit all four and pass "task_id" instead to steer, resume, or interrupt a specialist you already started.',
+          isError: true,
+        };
+      }
+
       const specialist = resolveSpecialist(args.agent);
       if (!specialist) {
         const available = listSpecialists().map((s) => s.id).join(', ');
@@ -160,13 +365,6 @@ export function createTaskTool(): NativeTool<TaskArgs> {
             + 'what to do, relevant paths, what "done" looks like.',
           isError: true,
         };
-      }
-
-      const services = ctx.services?.specialists;
-      if (!services) {
-        // A configuration gap (Task attached but its host callbacks were not
-        // wired), never a model mistake — say so plainly rather than guessing.
-        return { text: 'Task failed: no specialist services are wired for this session (configuration error).', isError: true };
       }
 
       // Task 14: resolve what model this child runs on. 'parent' — no
@@ -212,8 +410,6 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         }
       }
 
-      const parentId = ctx.sessionId;
-
       // Per-conversation spawn budget (Task 12, item 3): a LIFETIME cap,
       // distinct from the concurrency slot below — checked BEFORE reserving a
       // slot so a budget refusal never needs to release one. A runaway-loop
@@ -236,28 +432,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
       // The refusal copy below is unchanged from 1a (verbatim, per
       // error-message-standards.md) — only WHEN it fires moved.
       const reservation = services.reserve(parentId, { writer: specialist.charter === 'read-write' });
-      if (!reservation.ok) {
-        if (reservation.reason === 'writer-busy') {
-          return {
-            text: 'Refused: another specialist with write access is running under this session. '
-              + 'Wait for it to finish, or delegate to a read-only specialist (e.g. explorer, researcher, reviewer) instead.',
-            isError: true,
-          };
-        }
-        return {
-          // Fix: the parenthetical was closing before "concurrent specialists",
-          // reading as "(max 3) concurrent specialists" instead of qualifying
-          // the whole noun phrase — "at capacity (max 3 concurrent specialists)".
-          //
-          // Task 13: reservation.max is the RESOLVED ceiling reserveSpecialist
-          // actually enforced (a local session's engine-measured cap can be
-          // smaller than the hosted constant) — never a hardcoded constant,
-          // per error-message-standards.md ("must be specific and accurate").
-          text: `Refused: this session is at capacity (max ${reservation.max} concurrent specialists). `
-            + 'Wait for one of the running specialists to finish before starting another.',
-          isError: true,
-        };
-      }
+      if (!reservation.ok) return { text: reservationRefusalText(reservation), isError: true };
 
       // Task 4 (plan 1b) — background: the reservation's release ownership
       // moves off THIS call site the moment spawnBackground actually returns:

@@ -45,6 +45,38 @@ export interface SpecialistReservation {
   childId?: string;
 }
 
+/** Task 6 — the outcome of steering or interrupting a specialist child by
+ *  task_id. 'not-yours' covers BOTH "belongs to a different parent" and
+ *  "doesn't exist at all" — deliberately indistinguishable to the caller, so
+ *  the refusal can never be used to probe for another session's child ids
+ *  (own-children-only, spec §5). `title`/`description` on 'ok' are the
+ *  ledger's own recorded fields for that child (or the persisted header's
+ *  title alone when no ledger is wired) — never invented, so the result can
+ *  always say WHO it acted on without guessing. `agentType` on 'not-running'
+ *  is what lets the caller (tools/task.ts) resolve the specialist's charter
+ *  and size a fresh reservation's writer flag BEFORE calling
+ *  resumeSpecialist — the same way a brand-new spawn sizes one from the
+ *  resolved specialist. */
+export type SpecialistManageOutcome =
+  | { status: 'ok'; title: string; description?: string }
+  | { status: 'not-yours' }
+  | { status: 'not-running'; agentType: string };
+
+/** Task 6 — the outcome of resuming a finished/interrupted specialist child
+ *  by task_id. Two 'ok' shapes (never both) mirror spawn/spawnBackground's
+ *  own split: 'ok' carries the report (the resumed run's tool result,
+ *  foreground), 'ok-background' carries only the launch ack (the run
+ *  continues detached, same as spawnBackground). 'not-yours'/'still-running'
+ *  are a defense-in-depth re-check — tools/task.ts already confirmed
+ *  ownership and non-live status via steerSpecialist before ever reaching
+ *  here, but two Task calls racing the SAME task_id in one model turn can
+ *  still hit either between that check and this one. */
+export type SpecialistResumeOutcome =
+  | { status: 'ok'; childId: string; report: string }
+  | { status: 'ok-background'; childId: string; title: string }
+  | { status: 'not-yours' }
+  | { status: 'still-running' };
+
 // Runtime services injected into tools that need process-level collaborators
 // (spec §3.2). WebSearch reads services.search — the chain-walking SearchService.
 // Structural (not the concrete class) so tests inject fakes and the tool never
@@ -102,6 +134,34 @@ export interface ToolServices {
      *  means ownership never transferred, and the caller (tools/task.ts)
      *  still has to release. */
     spawnBackground(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; title: string }>;
+    /** Task 6 — steer a RUNNING child: queues `text` as a <steer> history line
+     *  drained at its next turn-loop boundary (never mid-tool-call). A miss
+     *  (no turn in flight right now) still returns 'ok' — the host records it
+     *  to the delegation ledger's missedSteers instead of losing it, and a
+     *  later resumeSpecialist call prepends it to the next brief. */
+    steerSpecialist(parentId: string, childId: string, text: string): SpecialistManageOutcome;
+    /** Task 6 — cancel a RUNNING child outright: aborts its in-flight stream
+     *  via the same interrupt() path the Stop button uses, scoped to this ONE
+     *  child (its own foreground/background caller still owns releasing its
+     *  reservation once the aborted run unwinds — this does not release
+     *  anything itself). */
+    interruptSpecialist(parentId: string, childId: string): SpecialistManageOutcome;
+    /** Task 6 — resume a FINISHED or INTERRUPTED own child: its state is
+     *  rebuilt COLD from its own JSONL transcript (spec §2.5 — never carries
+     *  live in-memory state across), then `opts.prompt` is delivered as its
+     *  next brief exactly like a fresh spawn's first turn, foreground or
+     *  background per `opts.background`. `opts.reservation` MUST be a fresh
+     *  token from `reserve()` — a resumed child re-takes its concurrency slot
+     *  (and, for a read-write specialist, the writer lock) exactly like a
+     *  brand-new spawn; nothing about a resume is exempt from either
+     *  invariant. */
+    resumeSpecialist(parentId: string, opts: {
+      childId: string;
+      prompt: string;
+      background?: boolean;
+      parentToolCallId: string;
+      reservation: SpecialistReservation;
+    }): Promise<SpecialistResumeOutcome>;
   };
   /** Task 14 fix pass — the raw catalog-fetch closure ipc-handlers.ts injects
    *  at construction (same shape as the context/slots and vision-support
