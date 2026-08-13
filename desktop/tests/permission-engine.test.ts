@@ -113,3 +113,32 @@ describe('decidePermission', () => {
     expect(d.action).toBe('allow');
   });
 });
+
+describe('decidePermission with the matcher safety rules', () => {
+  const remembered = [{
+    tool: 'Bash', action: 'allow' as const, match: 'glob' as const,
+    pattern: 'git push*origin feat/x',
+  }];
+
+  it('the grant covers its own branch', () => {
+    expect(decidePermission('Bash', 'git push origin feat/x', layers('full-auto', remembered)))
+      .toEqual({ action: 'allow', denyListed: false });
+  });
+
+  it('another branch is not covered — the deny-list layer wins and it still asks', () => {
+    expect(decidePermission('Bash', 'git push origin master', layers('full-auto', remembered)))
+      .toEqual({ action: 'ask', denyListed: true });
+  });
+
+  it('a destructive flag on the granted branch still asks', () => {
+    expect(decidePermission('Bash', 'git push --delete origin feat/x', layers('full-auto', remembered)))
+      .toEqual({ action: 'ask', denyListed: true });
+  });
+
+  it('Full-auto still allows an ordinary chained command with no grant at all', () => {
+    // Safety rule 1 narrows GRANTS, not the '*' mode baseline — Full-auto has no
+    // pattern, so a chained command it never asked about is unaffected.
+    expect(decidePermission('Bash', 'ls -la && pwd', layers('full-auto', remembered)))
+      .toEqual({ action: 'allow', denyListed: false });
+  });
+});

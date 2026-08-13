@@ -1,13 +1,13 @@
 // Copy for the Full-auto safety-stop footer (spec 2026-08-12, M5 2b).
 // Classifies a deny-listed Bash command into the family that stopped it by
 // re-matching against the SAME shared list + matcher the engine decided with
-// (DESTRUCTIVE_DENY_LIST + subjectMatches) — so the card can never name a
+// (DESTRUCTIVE_DENY_LIST + ruleMatches) — so the card can never name a
 // different reason than the engine had. First match in list order wins:
 // the engine's last-match-wins is across LAYERS; within the deny-list layer
 // every entry has the same action, so order carries no meaning and the list's
 // own family grouping is safe to walk front-to-back.
 import { DESTRUCTIVE_DENY_LIST } from '../../../shared/permission-types';
-import { subjectMatches } from '../../../shared/subject-glob';
+import { ruleMatches } from '../../../shared/subject-glob';
 
 type DenyFamily = 'deleting' | 'pushing' | 'undoing' | 'admin' | 'formatting';
 
@@ -46,7 +46,10 @@ const SUBLINE_BASE = 'YouCoded limits this action, even in Full Auto';
 export function fullAutoStopCopy(command: string | undefined): { header: string; subline: string } {
   if (command) {
     for (const rule of DESTRUCTIVE_DENY_LIST) {
-      if (!subjectMatches(command, rule.pattern)) continue;
+      // ruleMatches, not subjectMatches: the engine decides through it, and its
+      // safety rules skip deny-list entries (they are 'ask'), so this classifies
+      // identically while staying impossible to drift from the decision path.
+      if (!ruleMatches(rule, command)) continue;
       const fam = FAMILY_TESTS.find((f) => f.match(rule.pattern ?? ''))?.family;
       if (fam) return { header: HEADERS[fam], subline: `${SUBLINE_BASE} — ${CLAUSES[fam]}` };
     }
