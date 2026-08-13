@@ -14,6 +14,8 @@ import * as path from 'path';
 import { CORE_TOOLS } from '../src/main/harness/tools';
 import { NATIVE_TOOL_NAMES, CONDITIONAL_TOOL_NAMES } from '../src/shared/harness-manifest';
 import { createSkillTool } from '../src/main/harness/tools/skill';
+import { createTaskTool } from '../src/main/harness/tools/task';
+import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import { GlobTool } from '../src/main/harness/tools/glob';
 import { ReadTool } from '../src/main/harness/tools/read';
 import { BashTool } from '../src/main/harness/tools/bash';
@@ -68,6 +70,27 @@ describe('conditional tools stay OUT of the advertised set', () => {
 
   it('every conditional name is genuinely absent from the advertised set', () => {
     for (const name of CONDITIONAL_TOOL_NAMES) expect(advertised).not.toContain(name);
+  });
+
+  // Task 15 pin (1a review, flagged unpinned): the guard above proves 'Task'
+  // is correctly OUT of NATIVE_TOOL_NAMES, but "conditional" must not be
+  // allowed to quietly mean "never built" either — syncTaskTool
+  // (harness-session.ts) attaches it via createTaskTool() only when
+  // profile.canDelegate is true, so nothing else in this file's static sweep
+  // (which only walks CORE_TOOLS) ever constructs or names it. Without this,
+  // a manifest entry for a tool nobody registered would read identically to
+  // one that's correctly gated — this asserts the registered half exists.
+  it('but Task IS implemented — conditional must not mean absent', () => {
+    const tool = createTaskTool();
+    expect(tool.name).toBe('Task');
+  });
+
+  // Same direction, Task 14's own addition — ModelSearch rides the identical
+  // canDelegate gate as Task (harness-session.ts's syncTaskTool attaches both
+  // together) and is exported as a ready-built const rather than a factory,
+  // so the "real implementation" check is even more direct here.
+  it('but ModelSearch IS implemented — conditional must not mean absent', () => {
+    expect(ModelSearchTool.name).toBe('ModelSearch');
   });
 });
 
