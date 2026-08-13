@@ -10,6 +10,7 @@
 // renderer clears the approval card.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import type { GrantScope } from '../../shared/bash-grant-shapes';
 
 export interface AskRequest {
   sessionId: string;
@@ -38,6 +39,12 @@ export interface AskDecision {
    *  (ToolCard's AskUserQuestionCard shape) — dropped for ordinary permission
    *  asks, load-bearing for interactive tools. */
   updatedInput?: Record<string, unknown>;
+  /** Which grant width the user picked, when they picked "Always allow".
+   *  A SELECTOR, never a pattern: the renderer must not be able to name the rule
+   *  it is granting itself — remembered rules are the top precedence layer, above
+   *  the destructive deny-list. Always populated on a resolved ask; defaults to
+   *  the narrow option. */
+  grantScope?: GrantScope;
 }
 
 export class PermissionBroker extends EventEmitter {
@@ -92,7 +99,11 @@ export class PermissionBroker extends EventEmitter {
     // updatedPermissions and must never influence `always`.
     const updatedInput = inner.updatedInput && typeof inner.updatedInput === 'object'
       ? (inner.updatedInput as Record<string, unknown>) : undefined;
-    entry.resolve({ behavior, always, ...(updatedInput ? { updatedInput } : {}) });
+    // Validate to the two literals and FAIL NARROW on anything else. This value
+    // is PERSISTED (unlike permissionMode, which is display-only), so it is
+    // checked here AND re-derived at the session rather than trusted.
+    const grantScope: GrantScope = decision.grantScope === 'wide' ? 'wide' : 'exact';
+    entry.resolve({ behavior, always, grantScope, ...(updatedInput ? { updatedInput } : {}) });
     return true;
   }
 

@@ -97,3 +97,32 @@ describe('PermissionBroker', () => {
     expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true); // clears the card
   });
 });
+
+describe('PermissionBroker — grantScope', () => {
+  /** ask() + the id it emitted, so each case reads as one call. */
+  const askOnce = (broker: PermissionBroker) => {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's', toolName: 'Bash', toolInput: { command: 'npm run build' }, denyListed: false });
+    return { p, id: emitted[0].payload._requestId as string };
+  };
+
+  it('passes a valid selector through', async () => {
+    const broker = new PermissionBroker();
+    const { p, id } = askOnce(broker);
+    broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: 'wide' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true, grantScope: 'wide' });
+  });
+
+  it('fails NARROW on anything that is not the literal "wide"', async () => {
+    // This value is persisted, so it is validated here AND re-derived at the
+    // session. A renderer that could widen its own grant by sending junk would
+    // be writing the top precedence layer.
+    for (const bad of [undefined, 'WIDE', 'tool-wide', 42, { scope: 'wide' }, null]) {
+      const broker = new PermissionBroker();
+      const { p, id } = askOnce(broker);
+      broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: bad });
+      await expect(p).resolves.toMatchObject({ grantScope: 'exact' });
+    }
+  });
+});

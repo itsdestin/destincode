@@ -19,7 +19,8 @@ import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type Model
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
-import type { PermissionDecision } from '../../shared/permission-types';
+import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
+import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
@@ -45,6 +46,36 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
 const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+
+/** The rule an "Always allow" persists.
+ *
+ *  The RENDERER never supplies a pattern — only a width selector — and this
+ *  re-derives from the tool call the session already holds. A renderer that could
+ *  name its own pattern could grant itself anything, because remembered rules are
+ *  the final precedence layer, above the destructive deny-list.
+ *
+ *  Returns null when nothing may be remembered for this call. */
+function rememberedRuleFor(
+  toolName: string,
+  subject: string | undefined,
+  scope: GrantScope | undefined,
+): PermissionRule | null {
+  if (toolName === 'Bash' && typeof subject === 'string') {
+    // The subject is passed through untouched — bashGrantOptions does not trim,
+    // so the exact rung is byte-identical to what the engine compares later.
+    const options = bashGrantOptions(subject);
+    // Empty means no grant of any width may be offered (a bare `git push`, whose
+    // target is not in the command and changes underneath the grant). Fail closed.
+    if (options.length === 0) return null;
+    // Fall back to the NARROWEST option when the requested width was not offered
+    // for this command — never widen past what bashGrantOptions produced.
+    return (options.find((o) => o.scope === (scope ?? 'exact')) ?? options[0]).rule;
+  }
+  if (subject === undefined) return { tool: toolName, action: 'allow' };
+  // Non-Bash subjects are literal paths / ids. match:'exact' makes them mean what
+  // the confirm always claimed — a path containing '*' was a wildcard grant.
+  return { tool: toolName, pattern: subject, action: 'allow', match: 'exact' };
+}
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
@@ -2009,7 +2040,13 @@ export class HarnessSession extends EventEmitter {
       // path forced this ask and SKIPS decide() on every future call, so a stored
       // rule can never fire — recording one promises the user something the
       // engine will not honor. See spec 2026-08-11, finding 3.
-      if (d.always && !externalAsk) this.emit('remember-rule', { tool: call.toolName, ...(subject !== undefined ? { pattern: subject } : {}), action: 'allow' });
+      if (d.always && !externalAsk) {
+        // The card sent a width, not a pattern — rememberedRuleFor derives the
+        // rule here, in main. null means this command may not be remembered at
+        // any width, so nothing is emitted.
+        const rule = rememberedRuleFor(call.toolName, subject, d.grantScope);
+        if (rule) this.emit('remember-rule', rule);
+      }
     }
 
     // 5. Execute (defineTool owns truncation + the actionable-error catch).
