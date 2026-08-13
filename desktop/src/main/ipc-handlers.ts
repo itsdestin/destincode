@@ -3587,13 +3587,18 @@ export function registerIpcHandlers(
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
     const projectRoot = p ? p.path : projectId;
-    // Same legacy-repair call as LIST_SESSION above — this is actual project
-    // open (Project View → Files). Memoized per project per process.
-    const migration = await runSidecarMigration(projectRoot);
-    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     if (isGatedRoot(projectRoot) && !opts?.force) {
       return { ok: true, files: [], truncated: false, gated: true };
     }
+    // Fix: this repair call used to run BEFORE the gated-root check above,
+    // so a gated root (home dir / drive root) could have its sidecar read
+    // and rewritten on a listing the user never confirmed via "Browse
+    // anyway?". Moved below the early return so the repair only touches a
+    // gated root once the user has actually agreed to browse it. Same
+    // legacy-repair call as LIST_SESSION above. Memoized per project per
+    // process.
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const r = await projectAllFiles(projectRoot);
     return { ok: true, files: r.files, truncated: r.truncated };
   });

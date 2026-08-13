@@ -41,6 +41,12 @@ function renameErrorCopy(code: unknown): string {
     case 'invalid-name': return 'That name has characters that aren’t allowed.';
     case 'file-missing': return 'The original file is no longer on disk.';
     case 'artifact-not-found': return 'This file is no longer tracked.';
+    // Fix: the default copy below tells the user to "try a different name",
+    // which cannot work here — 'no-path' means the record's saved location
+    // itself is invalid, not that the new name was rejected. Renaming can't
+    // fix a bad stored path, so this needs its own message (error-message
+    // standards: accurate, not a guess that sends the user down a dead end).
+    case 'no-path': return 'This file’s saved location is invalid, so it can’t be renamed.';
     default: return 'Couldn’t rename the file. Try a different name.';
   }
 }

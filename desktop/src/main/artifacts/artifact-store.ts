@@ -251,14 +251,16 @@ export async function runSidecarMigration(
   projectRoot: string
 ): Promise<{ migrated: boolean; reclassified: number; merged: number }> {
   const NOTHING = { migrated: false, reclassified: 0, merged: 0 };
-  // Fix: key the memo on the CANONICAL form, not the raw string. One IPC caller
-  // (APPEND_VERSION's sibling handlers) passes the renderer's projectRoot as
-  // typed/received, while two others (LIST_PROJECT, LIST_ALL_FILES) pass a path
-  // resolved from the project index — a case- or separator-differing pair for
-  // the SAME project would otherwise memo separately and re-run the migration a
-  // second time (finding nothing, since the first run already repaired it, but
-  // still paying the sidecar read + pure-pass cost). canonicalize() is already
-  // how every other cache in this layer (project-watcher.ts's sidecarIdCache,
+  // Fix: key the memo on the CANONICAL form, not the raw string. This function
+  // has exactly three callers, all in ipc-handlers.ts (verified via
+  // `rg -n "runSidecarMigration" desktop/src/`): LIST_SESSION passes the
+  // renderer's projectRoot straight through as typed/received, while
+  // LIST_PROJECT and LIST_ALL_FILES both resolve a path off the project index
+  // first — a case- or separator-differing pair for the SAME project would
+  // otherwise memo separately and re-run the migration a second time (finding
+  // nothing, since the first run already repaired it, but still paying the
+  // sidecar read + pure-pass cost). canonicalize() is already how every other
+  // cache in this layer (project-watcher.ts's sidecarIdCache,
   // project-file-discovery.ts's cache) keys on project root for this exact
   // reason.
   const key = canonicalize(projectRoot, null);
@@ -317,7 +319,14 @@ export async function runSidecarMigration(
       }
     }
     return NOTHING;   // three conflicts — do NOT memo; the next call retries
-  } catch {
+  } catch (err) {
+    // Fix: this used to fail silently — same return value as "nothing to
+    // repair", plus the memo above suppresses every retry for the rest of the
+    // process. That makes a failed repair indistinguishable from this fix
+    // never having shipped: both look like files "no longer on disk" that
+    // actually exist. Log so a developer (or Destin, via Diagnose with
+    // Claude) can tell the two apart instead of re-debugging the original bug.
+    console.error('[artifact-store] runSidecarMigration failed for', projectRoot, err);
     migrationChecked.add(key);   // see the WHY block above — fail closed, don't retry every call
     return NOTHING;
   }
