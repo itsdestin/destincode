@@ -33,6 +33,19 @@ const VERBS: Record<string, string> = {
 };
 
 export function describeRule(rule: PermissionRule): RuleDescription {
+  const described = describeRuleBody(rule);
+  // Task 11: a specialist-keyed rule is a grant a SPECIALIST holds while
+  // working, never the assistant itself — the screen must say so in plain
+  // language (project constraint), not bury it in a badge or omit it. Reuses
+  // the ordinary tool verb rather than inventing specialist-specific copy, so
+  // this stays a thin wrapper instead of a second vocabulary to keep in sync
+  // with VERBS above.
+  if (rule.specialist === undefined) return described;
+  const lowered = described.verb.charAt(0).toLowerCase() + described.verb.slice(1);
+  return { ...described, verb: `Let the ${rule.specialist} specialist ${lowered}` };
+}
+
+function describeRuleBody(rule: PermissionRule): RuleDescription {
   const broad = rule.pattern === undefined;
 
   // MCP grants are per-tool and namespaced `mcp__{server}__{tool}`. Split on the

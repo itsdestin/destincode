@@ -73,4 +73,24 @@ describe('describeRule', () => {
       expect(ruleKind({ tool: 'Task', pattern: 'read-only:/home/x/proj', action: 'allow' })).toBe('commands');
     });
   });
+
+  // Task 11: a specialist-keyed rule must read as what it actually is — the
+  // assistant itself never gets this permission, only a specialist working
+  // under it does. Plain language, no jargon (project constraint).
+  describe('specialist-keyed rules', () => {
+    it('names the specialist in the verb, reusing the ordinary tool verb', () => {
+      expect(describeRule({ tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' }))
+        .toEqual({ verb: 'Let the worker specialist run', subject: 'npm test*', broad: false });
+    });
+
+    it('still reports breadth correctly for a pattern-less specialist grant', () => {
+      expect(describeRule({ tool: 'Write', action: 'allow', specialist: 'worker' }))
+        .toEqual({ verb: 'Let the worker specialist create or overwrite', subject: undefined, broad: true });
+    });
+
+    it('an unscoped rule (no specialist) is unaffected', () => {
+      expect(describeRule({ tool: 'Bash', pattern: 'npm test*', action: 'allow' }))
+        .toEqual({ verb: 'Run', subject: 'npm test*', broad: false });
+    });
+  });
 });

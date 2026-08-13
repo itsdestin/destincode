@@ -40,6 +40,16 @@ export interface AskRequest {
    *  specialist raised the ask. Consuming this on the renderer side is a
    *  follow-up task — this one only threads the data through structurally. */
   specialist?: { childId: string; agentType: string; title: string };
+  /** Task 11: the exact permission-engine SUBJECT this ask is about (e.g. a
+   *  Bash command string) — harness-session.ts already computes this via
+   *  tool.permissionSubject(args) before calling askUser, but only THREADS it
+   *  through here for the ONE call site that gates on decide() (never for the
+   *  max_steps/doom_loop budget asks, which have no such concept). Not
+   *  forwarded to the renderer via the emitted hook-event payload — it is
+   *  read directly off this object by child-ask-router.ts, which needs the
+   *  exact pattern to persist a specialist-keyed "Always allow" as the right
+   *  rule rather than an overbroad one. */
+  subject?: string;
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny' | 'canceled';

@@ -1345,9 +1345,13 @@ export class NativeSessionHost extends EventEmitter {
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
    *
-   *  The in-memory filter compares the (tool, pattern, action) TRIPLE, not whole
-   *  objects: a rule read back off disk carries a `grantedAt` key the in-memory
-   *  copy never had, so an equality check would silently stop matching. */
+   *  The in-memory filter compares the (tool, pattern, action, specialist)
+   *  QUAD (Task 11 added `specialist`, the same axis the store's dedupe/remove
+   *  and the UI's key use), not whole objects: a rule read back off disk
+   *  carries a `grantedAt` key the in-memory copy never had, so an equality
+   *  check would silently stop matching. Without `specialist` in the compare,
+   *  revoking a root grant would also drop a same-triple SPECIALIST-keyed
+   *  grant (or vice versa) still held by a live session. */
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
@@ -1355,7 +1359,7 @@ export class NativeSessionHost extends EventEmitter {
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
       this.rememberedFor.set(sessionId, mem.filter(
-        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action),
+        (r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist),
       ));
     }
     return hit;
@@ -1377,8 +1381,21 @@ export class NativeSessionHost extends EventEmitter {
   /** The per-session permission decision closure passed into each HarnessSession.
    *  Re-reads the session's current mode + remembered rules on EVERY call, so a
    *  mid-session mode flip (setPermissionMode) — and any newly-remembered rule —
-   *  takes effect on the NEXT gated tool. */
-  private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[]) {
+   *  takes effect on the NEXT gated tool.
+   *
+   *  `opts.specialistScope` (Task 11): a child's parentDecide passes its own
+   *  agentType here. A specialist-keyed remembered rule must never widen the
+   *  ROOT session's own permissions, and must never apply to a DIFFERENT
+   *  specialist type — that is the whole reason rule identity grew a fourth
+   *  axis (PermissionRule.specialist, shared/permission-types.ts). `scope ===
+   *  undefined` (every root-session call site) sees ONLY unscoped rules; a
+   *  child's scope additionally sees rules tagged for that SAME agentType,
+   *  never another's. */
+  private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[], opts?: { specialistScope?: string }) {
+    const scope = opts?.specialistScope;
+    const inScope = (r: PermissionRule) => (
+      scope === undefined ? r.specialist === undefined : (r.specialist === undefined || r.specialist === scope)
+    );
     return async (tool: string, subject: string | undefined) => decidePermission(tool, subject, {
       presetRules,                           // preset manifests contribute here — lowest layer, mode/deny/remembered all override
       modeRules: rulesForMode(this.modeFor.get(sessionId) ?? 'ask'),
@@ -1388,10 +1405,12 @@ export class NativeSessionHost extends EventEmitter {
       // wins in the engine, but the two are identical allow rules so the tie is
       // harmless. In-memory is what guarantees an Always-allow sticks even if the
       // async disk persist failed or hasn't landed yet (see rememberedFor above).
+      // Filtered by scope LAST, after the union, so a rule freshly written by
+      // EITHER source (disk or memory) is scoped identically.
       rememberedRules: [
         ...await this.permissionStore.rulesFor(cwd),
         ...(this.rememberedFor.get(sessionId) ?? []),
-      ],
+      ].filter(inScope),
     });
   }
 
@@ -1597,6 +1616,41 @@ export class NativeSessionHost extends EventEmitter {
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
+  /** Record ONE remembered "Always allow" under `sessionId`'s in-memory bucket
+   *  (synchronously, deduping on the full identity quad) and fire-and-forget
+   *  persist it to disk. Shared by two callers (Task 11):
+   *   - wire()'s 'remember-rule' listener, for a ROOT session's own grant
+   *     (`rule.specialist` absent — HarnessSession has no concept of being a
+   *     child, it just emits {tool, pattern?, action}).
+   *   - createChild's childAskRouter wiring, for a routed CHILD ask's
+   *     "Always allow" — `rule.specialist` is the child's agentType, and
+   *     `sessionId`/`cwd` are deliberately the PARENT's: a specialist child is
+   *     never wire()'d (see createChild's own "NOT wire()" comment), so
+   *     nothing would ever persist a child's grant if the router didn't call
+   *     this directly. buildDecide's scope filter is what then keeps that
+   *     grant from leaking to the root session or a different specialist type
+   *     — this method only WRITES the rule, it doesn't decide who can see it.
+   *
+   *  Dedup compares the quad (tool, pattern, action, specialist) — the same
+   *  identity axis the store, the revoke matcher, and the UI's key use. A
+   *  triple-only compare would silently merge a specialist-keyed grant into
+   *  an existing same-triple root grant (or vice versa), discarding one. */
+  private rememberRule(sessionId: string, cwd: string, rule: PermissionRule): void {
+    // (1) Record in-memory SYNCHRONOUSLY first — this is what makes the
+    // Always-allow stick for the rest of the session regardless of whether the
+    // disk write below succeeds or wins the race with the next tool call.
+    const mem = this.rememberedFor.get(sessionId) ?? [];
+    if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist)) {
+      mem.push(rule);
+      this.rememberedFor.set(sessionId, mem);
+    }
+    // (2) Then persist the cross-session record. Fire-and-forget: a failed
+    // persist must not break the turn, and (1) already covers this session.
+    void this.permissionStore.remember(cwd, rule).catch((err) => {
+      log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
+    });
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
@@ -1613,22 +1667,7 @@ export class NativeSessionHost extends EventEmitter {
     // — whenever the user picks Always-allow. The host owns the cwd → project
     // slug scoping via PermissionStore. Fire-and-forget: a failed persist must
     // not break the turn (the rule is a convenience, re-asked next time).
-    session.on('remember-rule', (rule: PermissionRule) => {
-      // (1) Record in-memory SYNCHRONOUSLY first, deduping exact repeats — this is
-      // what makes the Always-allow stick for the rest of the session regardless
-      // of whether the disk write below succeeds or wins the race with the next
-      // tool call.
-      const mem = this.rememberedFor.get(sessionId) ?? [];
-      if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action)) {
-        mem.push(rule);
-        this.rememberedFor.set(sessionId, mem);
-      }
-      // (2) Then persist the cross-session record. Fire-and-forget: a failed
-      // persist must not break the turn, and (1) already covers this session.
-      void this.permissionStore.remember(cwd, rule).catch((err) => {
-        log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
-      });
-    });
+    session.on('remember-rule', (rule: PermissionRule) => this.rememberRule(sessionId, cwd, rule));
     session.on('transcript-event', (event: TranscriptEvent) => {
       // (1) Forward NOW — not gated on the disk write (see module header).
       this.emit('transcript-event', event);
@@ -1804,9 +1843,11 @@ export class NativeSessionHost extends EventEmitter {
         // definition. Built against the PARENT's id AND the PARENT's cwd, never
         // workDir — buildDecide keys the session's live permission mode by id and
         // remembered "Always allow" rules by cwd, and those grants follow the
-        // project, not a subtree of it.
+        // project, not a subtree of it. `specialistScope` (Task 11) is this
+        // child's OWN agentType — see buildDecide's own comment for why a
+        // specialist-keyed rule must be scoped to this exact value.
         decide: buildChildDecide({
-          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules),
+          parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules, { specialistScope: opts.specialist.id }),
           charter: opts.specialist.charter,
           allowedTools: opts.specialist.allowedTools,
           envelopeGranted: true,   // 1a foreground flow: the Task-tool ask was the consent
@@ -1817,9 +1858,20 @@ export class NativeSessionHost extends EventEmitter {
         // child-ask-router.ts). Held up to specialistAskHoldMs before the
         // child is unblocked with a scripted redirect; a later real answer
         // still reaches it (postSteer) or the parent (onLateResponse) either way.
+        //
+        // `remember` (Task 11, closes a review finding): a routed ask's own
+        // "Always allow" makes HarnessSession emit 'remember-rule' on ITSELF,
+        // exactly like a root session — but a specialist child is deliberately
+        // never wire()'d (see this method's own "NOT wire()" comment below),
+        // so that event has no listener and the decision silently vanished.
+        // The router persists it directly instead, through the SAME
+        // rememberRule() helper wire()'s listener uses, against the PARENT's
+        // id/cwd (never the child's own — buildDecide only ever reads
+        // rememberedFor by the id it was BUILT with, which is parentId here).
         askUser: childAskRouter({
           broker: this.broker, parentId, childId, agentType: opts.specialist.id, title,
           timeoutMs: this.specialistAskHoldMs,
+          remember: (rule) => this.rememberRule(parentId, parent.cwd, rule),
         }),
         ...(this.toolServices ? { toolServices: this.toolServices } : {}),
         // BELT-AND-SUSPENDERS (Task 6): syncTaskTool's SECOND, independent

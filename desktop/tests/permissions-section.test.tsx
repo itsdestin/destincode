@@ -295,6 +295,35 @@ describe('PermissionsSection — behavioural contracts', () => {
     expect(screen.getByText(/every file/i)).toBeTruthy();
   });
 
+  // Task 11: a specialist-keyed rule must read as what it actually is — a
+  // grant a SPECIALIST holds, not the assistant itself — and it must be a
+  // DISTINCT row from a root grant that happens to share the same tool/
+  // pattern/action (ruleKey's fourth axis; a React key collision would drop
+  // one of the two rows silently instead of failing loudly).
+  it('renders a specialist-keyed rule with its own row, distinct from the identical root grant', async () => {
+    list.mockResolvedValue([
+      { slug: '-p', cwd: '/p', rules: [
+        { tool: 'Bash', pattern: 'npm test*', action: 'allow' },
+        { tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' },
+      ] },
+    ]);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    expect(screen.getByRole('button', { name: /^Revoke permission: Run npm test\*$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Revoke permission: Let the worker specialist run npm test\*$/ })).toBeTruthy();
+  });
+
+  it('passes the specialist through to remove() so the revoke matches the right grant', async () => {
+    const rule = { tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' };
+    list.mockResolvedValue([{ slug: '-p', cwd: '/p', rules: [rule] }]);
+    remove.mockResolvedValue(true);
+    render(<PermissionsSection />);
+    await openFolder(/^p/);
+    fireEvent.click(screen.getByRole('button', { name: /^Revoke permission:/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm revoking permission:/ }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('-p', { tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' }));
+  });
+
   // The confirm is the guard against a mis-click revoking something the user
   // wanted. A single-click revoke would be a regression, not a simplification.
   it('requires a confirm before removing, then calls remove with the SLUG', async () => {

@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
+import { canonicalize } from './guards';
 import { resolveSpecialist, listSpecialists } from '../specialists/registry';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 import {
@@ -108,9 +109,21 @@ export function createTaskTool(): NativeTool<TaskArgs> {
     // name falls back to the bare work_dir: execute() above already refuses an
     // unknown specialist before ever spawning, so this text is only ever shown
     // on an ask that is about to be declined anyway, never a real standing grant.
+    // Task 11 (ROADMAP fold-in): canonicalize work_dir before it becomes part
+    // of the remembered-rule key. Before this, '.', './x', and the absolute
+    // form of the SAME directory each minted a DIFFERENT envelope pattern, so
+    // approving one left the other two spellings still asking every time.
+    // Mirrors createChild's own canonicalize (tools/guards.ts) — same
+    // separator normalization and `..` resolution — but permissionSubject has
+    // no session cwd to resolve a relative work_dir against (the NativeTool
+    // contract passes only the raw args), so it resolves against the
+    // process's own cwd: canonicalize(p, process.cwd()) reduces to exactly
+    // path.resolve(p) for a relative p, and ignores the base entirely for an
+    // absolute one — the same either way.
     permissionSubject: (a) => {
       const specialist = resolveSpecialist(a.agent);
-      return specialist ? `${specialist.charter}:${a.work_dir}` : a.work_dir;
+      const workDir = canonicalize(a.work_dir, process.cwd());
+      return specialist ? `${specialist.charter}:${workDir}` : workDir;
     },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {

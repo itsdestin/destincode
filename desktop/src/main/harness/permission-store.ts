@@ -11,17 +11,23 @@
 // same as session-store.ts does.
 import { cwdToProjectSlug } from '../transcript-watcher';
 import type { NativeHome } from '../native-home';
-import type { PermissionRule, StoredProject, StoredRule } from '../../shared/permission-types';
+import type { StoredProject, StoredRule } from '../../shared/permission-types';
 
 const FILE = 'permissions.json';
 // One project's slice on disk. `cwd` and each rule's `grantedAt` are PROVENANCE —
 // the permission engine never reads either; they exist so the management UI can
 // show which folder a grant belongs to and when it was given. Both are optional
-// because every rule written before the management UI existed has neither, and
-// the file stays at v: 1 (a reader that tolerates missing keys needs no bump).
+// because every rule written before the management UI existed has neither.
 type PermEntry = { cwd?: string; rules: StoredRule[] };
-type PermFile = { v: 1; projects: Record<string, PermEntry> };
-const EMPTY: PermFile = { v: 1, projects: {} };
+// Task 11: the file's first-ever version branch — v2 adds `specialist` onto
+// each StoredRule (identity's fourth axis). A v1 file is valid v2 AS-IS: every
+// rule on it simply has no `specialist` key, exactly like a rule with no
+// `grantedAt` — nothing here needs a migration step, only a version STAMP.
+// The reader accepts either; every WRITE (remember/remove/removeProject, all
+// funnelled through mutateJson below) stamps v:2 regardless of what it read,
+// so a file only ever moves forward.
+type PermFile = { v: 1 | 2; projects: Record<string, PermEntry> };
+const EMPTY: PermFile = { v: 2, projects: {} };
 
 // SLUG COLLISIONS: cwdToProjectSlug collapses ':', '\\', '/', and spaces all to
 // '-', so distinct paths can theoretically map to the same slug and share rules.
@@ -35,7 +41,7 @@ export class PermissionStore {
   constructor(private home: NativeHome) {}
 
   /** Remembered rules for the project owning `cwd`, or [] if none stored. */
-  async rulesFor(cwd: string): Promise<PermissionRule[]> {
+  async rulesFor(cwd: string): Promise<StoredRule[]> {
     // readJson is synchronous and untyped (unknown | null); cast + default.
     const data = (this.home.readJson(FILE) as PermFile | null) ?? EMPTY;
     // Optional-chain `.projects` too: a hand-edited {} / [] / {"projects":null}
@@ -44,7 +50,7 @@ export class PermissionStore {
   }
 
   /** Persist one remembered decision for `cwd`'s project, deduping exact repeats. */
-  async remember(cwd: string, rule: PermissionRule): Promise<void> {
+  async remember(cwd: string, rule: StoredRule): Promise<void> {
     const slug = cwdToProjectSlug(cwd);
     // Read-modify-write under the file lock — never a bare write.
     await this.home.mutateJson(FILE, (cur) => {
@@ -53,17 +59,24 @@ export class PermissionStore {
       // instead of throwing. Spreading a missing/undefined projects below is safe
       // ({...undefined} === {}), so the write heals the shape on next persist.
       const rules = data.projects?.[slug]?.rules ?? [];
-      // Dedupe compares ONLY (tool, pattern, action) — deliberately not grantedAt.
-      // Re-approving something you already approved must not look like a fresh
-      // grant in the management UI, so the original date stays pinned.
+      // Dedupe compares (tool, pattern, action, specialist) — deliberately not
+      // grantedAt. Re-approving something you already approved must not look
+      // like a fresh grant in the management UI, so the original date stays
+      // pinned. `specialist` joined the quad in Task 11: without it, a
+      // specialist-keyed grant for the same (tool, pattern, action) as an
+      // existing ROOT grant (or a different specialist's grant) would
+      // silently merge into one entry, discarding whichever grant lost the
+      // race — exactly the cross-scope leak this axis exists to prevent.
       const dup = rules.some(
-        (r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action
+        (r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist
       );
       if (!dup) rules.push({ ...rule, grantedAt: new Date().toISOString() });
       // Spread the existing entry, don't rebuild it: rebuilding as { rules }
       // silently drops the recorded cwd on the SECOND write to a project, and
-      // the cwd is NOT recoverable from the slug.
-      return { ...data, projects: { ...data.projects, [slug]: { ...(data.projects?.[slug] ?? {}), cwd, rules } } };
+      // the cwd is NOT recoverable from the slug. `v: 2` unconditionally: this
+      // file's first-ever version branch (Task 11) — every write moves a v1
+      // file forward, never backward.
+      return { ...data, v: 2, projects: { ...data.projects, [slug]: { ...(data.projects?.[slug] ?? {}), cwd, rules } } };
     });
   }
 
@@ -94,22 +107,26 @@ export class PermissionStore {
    * NOTE: this is DISK ONLY. A running session keeps its in-memory copy — callers
    * must go through NativeSessionHost.revokeRule, never here directly.
    */
-  async remove(slug: string, rule: PermissionRule): Promise<boolean> {
+  async remove(slug: string, rule: StoredRule): Promise<boolean> {
     let hit = false;
     await this.home.mutateJson(FILE, (cur) => {
       const data = (cur as PermFile | null) ?? EMPTY;
       const entry = data.projects?.[slug];
       const rules = entry?.rules;
-      // Nothing to remove: hand back a well-shaped file. mutateJson always
-      // writes, so returning the healed shape beats writing back garbage.
-      if (!entry || !Array.isArray(rules)) return data.projects ? data : EMPTY;
+      // Nothing to remove: hand back a well-shaped file, still stamped v:2 —
+      // mutateJson always writes, so returning the healed shape beats writing
+      // back garbage (and this IS a write, so the version stamp still moves).
+      if (!entry || !Array.isArray(rules)) return data.projects ? { ...data, v: 2 } : EMPTY;
+      // Same quad as remember()'s dedupe (Task 11) — a specialist-keyed rule
+      // and a same-triple root/other-specialist rule are DIFFERENT rules, so
+      // revoking one must never also remove the other.
       const kept = rules.filter((r) => {
-        const match = r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action;
+        const match = r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.specialist === rule.specialist;
         if (match) hit = true;
         return !match;
       });
       // Spread the entry so the recorded cwd survives a removal.
-      return { ...data, projects: { ...data.projects, [slug]: { ...entry, rules: kept } } };
+      return { ...data, v: 2, projects: { ...data.projects, [slug]: { ...entry, rules: kept } } };
     });
     return hit;
   }
@@ -121,14 +138,14 @@ export class PermissionStore {
       const data = (cur as PermFile | null) ?? EMPTY;
       const projects = data.projects;
       if (!projects || typeof projects !== 'object' || !(slug in projects)) {
-        return projects ? data : EMPTY;
+        return projects ? { ...data, v: 2 } : EMPTY;
       }
       hit = true;
       // Destructure-omit rather than `delete`: never mutate the value mutateJson
       // handed us — it re-serializes whatever we return, and an in-place delete
       // would also corrupt a retry's view of the file.
       const { [slug]: _dropped, ...rest } = projects;
-      return { ...data, projects: rest };
+      return { ...data, v: 2, projects: rest };
     });
     return hit;
   }

@@ -213,6 +213,24 @@ describe('Task tool — typed refusals (plan 1a)', () => {
       expect(tool.permissionSubject({ agent: 'wizard', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
         .toBe('/proj');
     });
+
+    // Task 11 (ROADMAP fold-in): '.', './x', and the absolute form of the SAME
+    // directory used to mint THREE different remembered-rule keys — approving
+    // one left the other two spellings still asking every time. permissionSubject
+    // has no session cwd to resolve a relative work_dir against (the NativeTool
+    // contract passes only the raw args), so it normalizes against the process's
+    // own cwd — the same base a bare path.resolve(p) would use.
+    it('canonicalizes work_dir so "." and process.cwd() mint the SAME consent key', () => {
+      const tool = createTaskTool();
+      expect(tool.permissionSubject({ agent: 'wizard', work_dir: '.', description: 'd', prompt: 'p' } as any))
+        .toBe(tool.permissionSubject({ agent: 'wizard', work_dir: process.cwd(), description: 'd', prompt: 'p' } as any));
+    });
+
+    it('canonicalizes work_dir for a resolved-agent (charter-prefixed) subject too', () => {
+      const tool = createTaskTool();
+      expect(tool.permissionSubject({ agent: 'explorer', work_dir: '.', description: 'd', prompt: 'p' } as any))
+        .toBe(tool.permissionSubject({ agent: 'explorer', work_dir: process.cwd(), description: 'd', prompt: 'p' } as any));
+    });
   });
 
   // ---- Task 4: background: true dispatches through spawnBackground, not

@@ -1667,6 +1667,141 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    // ---- Task 11: the dropped-decision finding (previous task's review) ----
+    // A routed child ask's "Always allow" used to vanish: HarnessSession emits
+    // 'remember-rule' on ITSELF regardless of root/child, but createChild
+    // deliberately never wire()s a child (see createChild's own "NOT wire()"
+    // comment) — so nothing was ever listening. The fix routes persistence
+    // through child-ask-router.ts instead, scoped to the specialist's
+    // agentType so the grant can never widen the root session's own
+    // permissions or leak to a different specialist type.
+    describe('"Always allow" on a routed child ask (Task 11 dropped-decision fix)', () => {
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+
+      it('persists a SPECIALIST-KEYED rule via the router, against the PARENT\'s cwd', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        const store = new PermissionStore(new NativeHome(root));
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+          store, '9.9.9',
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        const requestId = await askArrived;
+        // "Always allow", exactly the same payload shape a root-session card sends.
+        expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+        await sendPromise;
+
+        // Fire-and-forget disk persist (same contract as the root path) — poll.
+        let rules: any[] = [];
+        for (let i = 0; i < 50; i++) {
+          rules = await store.rulesFor(root);          // the PARENT's cwd, never the child's workDir
+          if (rules.some((r) => r.specialist === 'worker')) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(rules).toContainEqual(expect.objectContaining({
+          tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+        }));
+        await h.destroyAll();
+      });
+
+      it('sticks for the SAME child\'s next identical command (in-memory, not just disk)', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        // A FRESH scripted instance per factory call, same reasoning as
+        // writeFactory at the top of this file — each send() needs its own
+        // per-step counter.
+        const rmEachTime = async () => rmOnce();
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), rmEachTime, NO_CONTEXT, async () => null, async () => null,
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const asks: any[] = []; h.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        const requestId = await askArrived;
+        h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] });
+        await sendPromise;
+        expect(asks).toHaveLength(1);
+
+        // Same child, same command again — must NOT re-ask: the in-memory
+        // rememberedFor bucket (not just the fire-and-forget disk write) is what
+        // guarantees this sticks for the rest of THIS run, exactly as the root
+        // session's own "Always-allow sticks in-session" test proves.
+        await childSession(h, childId).send('go again');
+        await h.drain(childId);
+        expect(asks).toHaveLength(1);
+        await h.destroyAll();
+      });
+
+      it('never widens the ROOT session\'s own permissions', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        const store = new PermissionStore(new NativeHome(root));
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+          store, '9.9.9',
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        h.respondPermission(await askArrived, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] });
+        await sendPromise;
+        for (let i = 0; i < 50; i++) {
+          if ((await store.rulesFor(root)).some((r) => r.specialist === 'worker')) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+
+        // The ROOT session itself attempts the EXACT same command — must still ask.
+        const asks: any[] = []; h.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+        const rootAsk = firstAsk(h);
+        const rootSend = childSession(h, 'root-1').send('go');
+        const rootRequestId = await rootAsk;
+        h.respondPermission(rootRequestId, { decision: { behavior: 'deny' } });
+        await rootSend;
+        expect(asks.some((e) => e.type === 'PermissionRequest')).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('never leaks to a DIFFERENT specialist type (buildDecide scope filter, direct)', async () => {
+        // Drives the actual filtering logic buildDecide applies, independent of
+        // any one specialist's tool charter — the built-in roster has only ONE
+        // read-write specialist (worker), so a full end-to-end run with a
+        // second, differently-typed specialist attempting Bash isn't possible;
+        // this is the mechanism the end-to-end tests above rely on, isolated.
+        const store = {
+          rulesFor: async () => [{ tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker' }],
+          remember: async () => { /* no-op */ }, remove: async () => false, removeProject: async () => false,
+        };
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, store,
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+        const decideRoot = (h as any).buildDecide('root-1', root, []);
+        expect((await decideRoot('Bash', 'rm -rf marker.txt')).action).toBe('ask');       // invisible to root
+
+        const decideOtherSpecialist = (h as any).buildDecide('root-1', root, [], { specialistScope: 'reviewer' });
+        expect((await decideOtherSpecialist('Bash', 'rm -rf marker.txt')).action).toBe('ask'); // invisible to a different agentType
+
+        const decideSameSpecialist = (h as any).buildDecide('root-1', root, [], { specialistScope: 'worker' });
+        expect((await decideSameSpecialist('Bash', 'rm -rf marker.txt')).action).toBe('allow'); // visible to the SAME agentType
+
+        await h.destroyAll();
+      });
+    });
+
     it("an external-directory Read is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
       // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
       // askUser only through the max_steps gate, which short-circuits identically

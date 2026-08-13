@@ -2054,7 +2054,11 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
       // `external` tells the renderer this ask was forced by the path guard, so
       // ToolCard hides "Always allow" (see the guarded emit below for why).
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk });
+      // `subject` (Task 11) is the SAME value the remember-rule emit below uses
+      // as `pattern` — threaded through so a routed CHILD ask (child-ask-
+      // router.ts, which has no other way to reach it) can persist the exact
+      // same rule a root session's own remember-rule listener would.
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk, subject });
       if (d.behavior === 'canceled') return 'interrupted';
       // Task 8: d.message carries specific copy for a deny that ISN'T a real
       // user decline — e.g. a routed specialist ask that timed out with no
