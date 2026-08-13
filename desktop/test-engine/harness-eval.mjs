@@ -1161,8 +1161,11 @@ async function fetchPrices(roster, parsePriceCatalog, judgeModelId) {
  * Print the dollar figure a human is about to agree to.
  *
  * Everything that could make the number wrong is printed WITH it: unpriced
- * models, models with no measured token count, a failed catalog fetch, the fact
- * that the measured tokens come from whole-battery runs, and — since fix pass 1
+ * models, models with no measured token count, cells priced from the
+ * whole-battery table instead of a measurement of their own case (since
+ * 2026-08-13 — see `estimate.ts`'s MEASURED_CASE_TOKENS comment for why that
+ * distinction is an ~8x swing), a failed catalog fetch, the fact that the
+ * fallback tokens come from whole-battery runs, and — since fix pass 1
  * (2026-08-12 review, IMPORTANT 1) — the JUDGE, which is a second paid call per
  * graded cell and is not in the total at all. That contract was false the moment
  * grading was wired in, and the figure below is the only bound a run without
@@ -1196,6 +1199,16 @@ function printEstimate(estimate, cells, {
     console.log(`  ! No measured token count for: ${estimate.unmeasured.join(', ')} — priced from the worst measured run,`);
     console.log('    so those rows read HIGH rather than low.');
   }
+  // Fix (2026-08-13, eval-estimate-measured): a cell can now be priced from a
+  // measurement of the SPECIFIC CASE it runs, or fall through to a measurement
+  // of the whole 40-63-tool-call BATTERY — which was the ~8x-high estimate this
+  // fix exists for. Printed separately from `unmeasured` (that means "no
+  // measurement at all") so a battery-priced row is never mistaken for a
+  // measurement of the case it is actually pricing.
+  if (estimate.batteryPriced.length) {
+    console.log(`  ! Priced from the whole-BATTERY table, not from this case: ${estimate.batteryPriced.join(', ')}`);
+    console.log('    These are short cases costing a fraction of a 40-63-tool-call battery run — treat these rows as HIGH.');
+  }
   // The judge, ALWAYS — including the "this plan has no judge" line, because
   // "the figure covers everything" is itself information the reader needs, and a
   // caveat that only prints sometimes teaches nobody to look for it.
@@ -1203,8 +1216,14 @@ function printEstimate(estimate, cells, {
   for (const line of judgeCostLines({ modelId: judgeModelId ?? null, maxCalls: cells.length, price: judgePrice ?? null })) {
     console.log(`  ${line}`);
   }
-  console.log('\n  Basis: token counts measured from whole-BATTERY runs (40-63 tool calls, ~20 minutes each).');
-  console.log('  A short case costs a fraction of this; a model that loops costs more.');
+  // Fix (2026-08-13, eval-estimate-measured): this used to say EVERY row here
+  // comes from a whole-battery run, which stopped being true once
+  // MEASURED_CASE_TOKENS shipped — most rows above are now priced from a
+  // measurement of the exact case+model, not the battery. The blanket claim is
+  // replaced with the honest one: it depends on the row, and `batteryPriced`
+  // above names exactly which rows are still the battery-shaped guess.
+  console.log('\n  Basis: rows not listed above (as unpriced/unmeasured/battery-priced) are priced from a measurement of');
+  console.log('  that exact case on that exact model. A model that loops on a real run costs more than any of this.');
   // Fix pass 1 (2026-08-12 review, IMPORTANT 2): the caveat is printed HERE, next
   // to the number, not only in the comment where the constant is defined. The
   // line used to read "one whole roster of eight battery runs was actually billed

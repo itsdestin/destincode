@@ -130,11 +130,28 @@ had already been paid for.
 
 ## What the estimate is worth
 
-`estimate.ts` runs before anything is spent and the run is capped by `--max-spend`, which is
-re-checked against OpenRouter's own billing between cells. But its token tables were derived
-from whole-battery runs (40–63 tool calls) and the prose cases run 9–19, so it currently
-reads **~8× high** — measured 2026-08-13: six cells priced at **$12.42**, billed **$1.52**.
-Real rate **~$0.25 a cell** including its judge call, against $2.07 a cell estimated.
-Input dominates output roughly 44:1, because the whole conversation is resent every step.
+`estimate.ts` runs before anything is spent, and the run is capped by `--max-spend`, which
+is re-checked against OpenRouter's own billing between cells. Input dominates output
+roughly 44:1, because the whole conversation is resent every step.
 
-Feeding the measured rate back into the tables is an open follow-up.
+**It is biased high on purpose, and you need to know by how much.** A cell is priced from
+the **MAX** of that case's measured samples, never the mean: under-predicting spends money
+the operator did not agree to, and a single agentic run's cost is not stable — Qwen 3.8 Max
+used 342,207 input tokens on one `config-investigation` run against a 189,087 mean across
+three. That deliberate bias costs about **2.2×**: the six-cell calibration plan estimates
+$3.29 against a real bill of $1.52 (~$0.25 a cell including its judge call).
+
+It was **~8× high** until 2026-08-13, because the tables were keyed by model alone and every
+number in them came from whole-battery runs (40–63 tool calls) while the prose cases run
+9–19. `MEASURED_CASE_TOKENS` now keys on case *and* model.
+
+**A case with no measured row is still priced as a battery run.** That is the old ~8× error,
+scoped to the rows it applies to — so those rows are listed separately in the estimate output
+as battery-priced and labelled HIGH. `harness-battery` is exempt: for that case the battery
+figures *are* a measurement. Never let a battery-priced row read as a measurement of the
+case; a wrong number is survivable, a guess wearing a measurement's clothes is not.
+<!-- verify: {"path": "youcoded/desktop/src/main/harness/eval/estimate.ts", "contains": "MEASURED_CASE_TOKENS"} -->
+
+Adding measured rows means re-reading `run.metrics.inputTokens` / `.outputTokens` from the
+saved transcripts of a real run; those files are git-ignored, so the numbers are transcribed
+into the table rather than read at run time. That is the drift risk.
