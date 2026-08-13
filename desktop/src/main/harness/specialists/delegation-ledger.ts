@@ -54,6 +54,16 @@ export interface DelegationRecord {
   /** Flipped ONLY after the injected turn has actually run. See the module
    *  comment: a claim is a lease, not a delivery. */
   delivered: boolean;
+  /** Durable "we are about to inject this into the parent's conversation"
+   *  marker (fix pass 5) — stamped by markInjectionAttempted() strictly
+   *  BEFORE runNotice() is called, never after. Exists because `claimedBy` +
+   *  `delivered: false` alone can't tell apart a claim that never got as far
+   *  as calling runNotice() (safe to retry) from one where runNotice()
+   *  already ran and only the follow-up confirmDelivered write failed
+   *  (retrying would show the same report twice). See claimUndelivered's own
+   *  comment for how this gates reclaim, and markInjectionAttempted's for
+   *  what happens when writing this marker itself fails. */
+  injectionAttempted?: boolean;
   /** Delivery LEASE — present does not mean delivered, and does not even mean
    *  the leaseholder is still alive (see isOwnerAlive). */
   claimedBy?: OwnerStamp;
@@ -189,13 +199,61 @@ export class DelegationLedger {
     let claimed: DelegationRecord | null = null;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
       const data = this.coerce(cur);
-      // Eligible: completed, not yet delivered, and either never claimed or
-      // claimed by an owner that isn't around anymore (a crash between claim
-      // and the injected turn reaching the parent — see the module comment:
-      // a claim is a LEASE, not a delivery, so a dead owner's claim must not
-      // block redelivery forever).
+      // Eligible: completed OR failed (Task 4 — a background run that dies
+      // still owes the parent a typed failure notice, not silence; this
+      // filter originally covered 'completed' only, written before the
+      // background failure-delivery path existed), not yet delivered,
+      // injection never durably ATTEMPTED (fix pass 5 — see below), and the
+      // lease doesn't belong to someone else who's still around to finish
+      // using it. Three ways a lease clears that LAST bar:
+      //   1. never claimed (`!d.claimedBy`)
+      //   2. claimed by a DEAD owner — a crash between claim and the
+      //      injected turn reaching the parent (module comment: a claim is a
+      //      LEASE, not a delivery, so a dead owner's claim must not block
+      //      redelivery forever)
+      //   3. claimed by THIS EXACT process instance (fix pass 4, Finding 3)
+      //      — claimUndelivered's own write can commit to disk and then
+      //      still have the call that made it throw (e.g. mutateJson's lock
+      //      release failing in its own `finally`, after atomicWrite already
+      //      landed). The caller never learns which childId got the lease,
+      //      so it can't release() it either — the record is stuck bearing
+      //      OUR OWN owner stamp, which isOwnerAlive always reports as alive
+      //      (case 2 above can never fire for it). Only one delivery pass
+      //      per parent runs at a time (native-session-host.ts's
+      //      pendingDeliveryParents/entry.inFlight machinery), so if a LATER
+      //      pass sees a lease stamped by this same process, that can only
+      //      mean an EARLIER pass's claim outlived its own caller's ability
+      //      to act on it — reclaiming it here is what turns that stuck
+      //      state back into a normal delivery attempt instead of a report
+      //      stranded forever behind a lease its own owner can't release. A
+      //      lease held by a DIFFERENT live owner (case 2 does not apply,
+      //      case 3 does not apply) keeps its current meaning: not eligible.
+      //
+      // `!d.injectionAttempted` (fix pass 5) gates ALL THREE of the branches
+      // above, not just case 3. The three-case list explains when a LEASE is
+      // safe to reclaim; it says nothing about whether the report was ever
+      // actually SHOWN, and two disk states that look identical (some
+      // claimedBy or none, delivered: false) mean opposite things:
+      //   (a) the claim landed but runNotice() was never called — safe to
+      //       retry, exactly what cases 1-3 above are for.
+      //   (b) runNotice() already ran (the report is already in the parent's
+      //       conversation) and only the FOLLOW-UP write — confirmDelivered,
+      //       or the releaseClaim a failed confirmDelivered falls back to —
+      //       never committed. Reclaiming here means calling runNotice() a
+      //       SECOND time: the model and the user see the same report twice.
+      // Before this fix, case 3 turned every (b) into a guaranteed retry, and
+      // case 1 already could too whenever the catch-driven releaseClaim
+      // after a failed confirmDelivered happened to succeed (that gap
+      // predates fix pass 4 and was never covered by a test). injectionAttempted,
+      // stamped by markInjectionAttempted() strictly BEFORE runNotice() is
+      // ever called, is what tells (a) and (b) apart on disk: once it's
+      // true, none of the three lease branches fire again for this record,
+      // no matter what claimedBy or delivered read afterward — see
+      // markInjectionAttempted's own comment for the one ambiguity this
+      // can't close (its own write failing).
       const eligible = data.delegations.filter(
-        (d) => d.status === 'completed' && !d.delivered && (!d.claimedBy || !isOwnerAlive(d.claimedBy))
+        (d) => (d.status === 'completed' || d.status === 'failed') && !d.delivered && !d.injectionAttempted &&
+          (!d.claimedBy || d.claimedBy.instanceId === OWNER.instanceId || !isOwnerAlive(d.claimedBy))
       );
       if (eligible.length === 0) return data;
       const target = eligible.reduce((oldest, d) => (d.startedAt < oldest.startedAt ? d : oldest));
@@ -209,6 +267,32 @@ export class DelegationLedger {
       };
     });
     return claimed;
+  }
+
+  /** Stamp the durable "injection attempted" marker (fix pass 5). Callers
+   *  (native-session-host.ts's delivery loop) MUST call this strictly BEFORE
+   *  runNotice() — see the field's own comment on DelegationRecord and
+   *  claimUndelivered's for why the ordering matters. A plain, unconditional
+   *  update() like confirmDelivered/releaseClaim below.
+   *
+   *  WHAT HAPPENS IF THIS WRITE ITSELF THROWS: the caller cannot learn
+   *  afterward whether it committed — the same commit-then-throw-on-lock-
+   *  release shape fix pass 4 documented for claimUndelivered. The chosen
+   *  behavior (implemented in native-session-host.ts, not here) is to log
+   *  and proceed with runNotice() anyway, never to abandon the delivery
+   *  attempt on this failure alone: this machinery's standing preference is
+   *  that a silently LOST report is worse than a duplicated one, and per fix
+   *  pass 4's own finding, a mutateJson throw here usually still means the
+   *  write landed. The honest residual: in the narrower case where it truly
+   *  didn't land AND the confirmDelivered write afterward also fails, a
+   *  later claimUndelivered pass sees injectionAttempted still false,
+   *  correctly looks like case (a), and retries a report that was actually
+   *  already shown — one duplicate. This is real, not hypothetical, and is
+   *  documented rather than silently accepted; it is markedly narrower than
+   *  the exposure before this fix, where EVERY confirmDelivered failure
+   *  risked a duplicate, not just this one compounding failure. */
+  async markInjectionAttempted(parentCwd: string, parentId: string, childId: string): Promise<void> {
+    await this.update(parentCwd, parentId, childId, { injectionAttempted: true });
   }
 
   async confirmDelivered(parentCwd: string, parentId: string, childId: string): Promise<void> {

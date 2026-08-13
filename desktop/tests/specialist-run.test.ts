@@ -7,6 +7,9 @@ import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from '../src/main/harness/specialists/limits';
+import { OWNER, RAW_REPORT_CAP_CHARS } from '../src/main/harness/specialists/delegation-ledger';
+import { computeReportBudget } from '../src/main/harness/specialists/report-budget';
+import { APPROX_CHARS_PER_TOKEN } from '../src/main/harness/message-size';
 
 // ---- Task 7: the FOREGROUND specialist run ----------------------------------
 // spawnSpecialist mints a child (Task 5), delivers the brief as its first turn,
@@ -854,5 +857,649 @@ describe('heartbeat staleness (Task 7)', () => {
     expect(rec?.status).toBe('completed');
     // Torn down normally, same as every other successful run in this file.
     expect((host as any).live.has(childId)).toBe(false);
+  });
+});
+
+// ---- Task 4: BACKGROUND specialist execution + idle-boundary delivery ------
+// spawnSpecialistBackground resolves at LAUNCH (createChild + a 'running'
+// ledger row) and hands the rest of the run to an un-awaited chain
+// (runDelegation). The chain's eventual report (or typed failure) is injected
+// into the parent's OWN conversation as a synthetic user-role turn — but ONLY
+// once the parent reaches an idle boundary (queueDelivery / runTurns' tail),
+// never spliced into a turn the parent is still running. All of these tests
+// need a REAL ledger (a NativeHome pointed at the test's tmp root), since the
+// delivery loop reads/writes it directly — same `home` pattern the "ledger
+// write failure" describe block above uses.
+describe('background execution + idle-boundary delivery (Task 4)', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  function collect(): any[] {
+    const seen: any[] = [];
+    host.on('transcript-event', (e) => seen.push(e));
+    return seen;
+  }
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-bg-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('background Task resolves immediately with a task_id while the child is still running', async () => {
+    // No gating needed: send()'s dispatch is deferred one macrotask
+    // (setImmediate), and spawnSpecialistBackground returns BEFORE its
+    // un-awaited runDelegation chain ever reaches that dispatch — so by
+    // construction the child cannot have started running yet at the moment
+    // this call resolves. Asserting `inFlight` on the child's own live entry
+    // (rather than just "the call resolved fast") is what actually pins
+    // "still running", not just "hasn't finished".
+    const model = scriptedModel([
+      stream(...textChunks('t', 'REPORT: done'), finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const { childId, title } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    expect(childId).toBeTruthy();
+    expect(title).toBeTruthy();
+    // The parent itself was never touched — background delegation must not
+    // block or busy the delegating session.
+    expect(host.isIdle('root-1')).toBe(true);
+    // The child, on the other hand, is genuinely mid-run: send() already set
+    // inFlight synchronously, before this call ever returned.
+    expect((host as any).live.get(childId)?.inFlight).toBe(true);
+
+    // Let the child's run actually finish so afterEach's destroyAll() doesn't
+    // race a live turn.
+    await vi.waitFor(() => {
+      const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+  });
+
+  it('a background completion is injected as a user-role turn when the parent goes idle — never mid-turn', async () => {
+    // The PARENT's own turn is gated (manually resolved) so it stays
+    // in-flight for as long as the test needs — long enough for an
+    // independently-triggered background child to run to completion while
+    // the parent is still busy. The child gets a SEPARATE scripted model
+    // instance; modelFactory routes the FIRST call (guaranteed to be the
+    // parent's own turn, confirmed via `parentEntered` before the child is
+    // ever spawned) to it and everything after to the child's model.
+    let parentEntered = false;
+    let releaseParent: () => void = () => {};
+    const parentGate = new Promise<void>((res) => { releaseParent = res; });
+    const parentModel = new MockLanguageModelV4({
+      doStream: async () => {
+        parentEntered = true;
+        await parentGate;
+        return { stream: simulateReadableStream({ chunks: stream(...textChunks('t', 'parent turn done'), finishChunk('stop')) }) };
+      },
+    });
+    const childModel = scriptedModel([
+      stream(...textChunks('t', 'REPORT: child done'), finishChunk('stop')),
+    ]);
+    let calls = 0;
+    const factory = async () => (calls++ === 0 ? parentModel : childModel) as any;
+
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, factory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const sendResult = host.send('root-1', 'go');
+    expect(sendResult.status).toBe('sent');
+    await vi.waitFor(() => expect(parentEntered).toBe(true));
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+
+    // The child finished, but the PARENT is still mid-turn — nothing may be
+    // injected yet.
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toEqual([]);
+    expect(host.isIdle('root-1')).toBe(false);
+
+    releaseParent();
+    await (host as any).live.get('root-1').running;
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.type).toBe('user-message');
+    expect(injected.data.text).toContain('## Report from');
+
+    // Ordering: the parent's own turn-complete happened strictly BEFORE the
+    // injected notice — never spliced mid-turn.
+    const turnCompleteIdx = events.findIndex((e) => e.type === 'turn-complete' && !e.data?.agentId);
+    const injectedIdx = events.indexOf(injected);
+    expect(turnCompleteIdx).toBeGreaterThanOrEqual(0);
+    expect(injectedIdx).toBeGreaterThan(turnCompleteIdx);
+  });
+
+  it('the injected report is formatted at DELIVERY time with concurrentReporters = number of pending deliveries', async () => {
+    // Seed the ledger directly with TWO already-completed, undelivered
+    // records (rather than racing two real specialist children to finish at
+    // exactly the same moment) — the delivery loop only ever reads the
+    // ledger, so this exercises the exact same code path deterministically.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    // A real (non-Infinity) remaining window is required — computeReportBudget
+    // degrades to the static per-specialist cap when remaining is Infinity,
+    // which would hide any difference concurrentReporters makes.
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: 3500, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    // Force a KNOWN occupancy so `remaining` is deterministic instead of
+    // whatever the chars/4 estimate of the assembled system prompt happens to
+    // be — same private-field test seam this suite already uses for `live`.
+    ((host as any).live.get('root-1').session as any)._contextUsedTokens = 500;
+
+    const ledger = (host as any).ledger;
+    const huge = 'x'.repeat(60_000);
+    for (const childId of ['child-a', 'child-b']) {
+      await ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc', agentType: EXPLORER.id, title: `Test ${childId}`, workDir: root,
+        description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await ledger.update(root, 'root-1', childId, { status: 'completed', endedAt: Date.now(), steps: 3, rawReport: huge });
+    }
+
+    const events = collect();
+    (host as any).queueDelivery('root-1');
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(2);
+    });
+
+    // remaining = window(3500) - used(500) = 3000. Same formula the code uses.
+    const remaining = 3000;
+    const budgetSolo = computeReportBudget({ staticCapTokens: EXPLORER.reportBudgetTokens, parentRemainingTokens: remaining, concurrentReporters: 1 });
+    const budgetShared = computeReportBudget({ staticCapTokens: EXPLORER.reportBudgetTokens, parentRemainingTokens: remaining, concurrentReporters: 2 });
+    expect(budgetShared).toBeLessThan(budgetSolo); // sanity: the split genuinely differs
+
+    const injected = events.filter((e) => e.data?.injected === 'specialist-report');
+    expect(injected).toHaveLength(2);
+    for (const e of injected) {
+      const len = (e.data.text as string).length;
+      // Definitively NOT the single-reporter budget (which would be ~2x bigger)...
+      expect(len).toBeLessThan(budgetSolo * APPROX_CHARS_PER_TOKEN);
+      // ...and roughly consistent with the 2-way split, not near-zero.
+      expect(len).toBeGreaterThan(budgetShared * APPROX_CHARS_PER_TOKEN * 0.5);
+    }
+  });
+
+  it('a background child that dies mid-run delivers a typed failure notice, not silence', async () => {
+    const model = scriptedModel([
+      stream({ type: 'error', error: new Error('llama-server dropped the connection') }),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toMatch(/failed/i);
+    expect(injected.data.text).toContain(childId);
+
+    // The failure is durable, not just relayed once: the ledger record itself
+    // reads 'failed', and (Task 2's invariant) with the real thrown reason.
+    const rec = (host as any).ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.status).toBe('failed');
+    expect(rec.failureText).toMatch(/llama-server dropped the connection/);
+  });
+
+  it('a background completion whose report exceeds the ledger cap spills the full body to a file', async () => {
+    // External review (2026-08-12): the ledger caps rawReport at
+    // RAW_REPORT_CAP_CHARS on every write — for a background run, nothing
+    // ELSE ever sees the uncapped body again (the child is torn down right
+    // after), so the completion handler must spill the full text to disk
+    // BEFORE that cap silently discards it.
+    const huge = 'y'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    const ledger = (host as any).ledger;
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.status).toBe('completed');
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.rawReport.length).toBe(RAW_REPORT_CAP_CHARS); // capped copy in the ledger
+    expect(rec.reportPath).toBeTruthy();
+    const spilled = fs.readFileSync(rec.reportPath, 'utf8');
+    expect(spilled.length).toBe(huge.length); // the FULL, uncapped body
+    expect(spilled.startsWith(huge.slice(0, 200))).toBe(true);
+  });
+
+  // ---- Fix pass (external review, 2026-08-12): three follow-on gaps ----------
+
+  it('Finding 1: delivery of a spilled oversized report reads the FULL body back from disk, not the capped ledger copy', async () => {
+    // The ledger's own rawReport is capped at RAW_REPORT_CAP_CHARS on every
+    // write (delegation-ledger.ts's update()) — formatting delivery from
+    // THAT copy alone understates the report's true size in
+    // formatSpecialistReport's truncation notice for anything the completion
+    // handler had to spill to disk. Proof: the notice must cite the FULL
+    // body's length (bigger than the cap), not the capped copy's.
+    const huge = 'z'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+    const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    // The notice must cite the REAL total (the spilled file's length), not
+    // the ledger's capped copy — proof delivery read reportPath back rather
+    // than formatting from rec.rawReport alone.
+    expect(injected.data.text).toContain(`of ${huge.length} chars`);
+    expect(injected.data.text).not.toContain(`of ${RAW_REPORT_CAP_CHARS} chars`);
+  });
+
+  it('Finding 2 (fix pass 2): a background completion whose ledger write ALWAYS fails still reaches the parent via the in-memory fallback lane, exactly once, and the ledger record is left honestly stranded', async () => {
+    // Fix pass 1 responded to this finding by firing a SECOND write
+    // (ledger.updateIfRunning) synchronously right after the first failed —
+    // re-review rejected that: it's the same write against the same store
+    // (both methods bottom out in NativeHome.mutateJson), so a systemic cause
+    // (disk full, permissions, corrupt file, lock exhaustion) reproduces on
+    // the retry identically. This test mocks ledger.update to throw on EVERY
+    // call matching the completion shape (no mockImplementationOnce, and any
+    // OTHER update() call is treated as a test bug via the else-throw) so a
+    // retry through the same method could not possibly have recovered here —
+    // proving delivery no longer depends on any ledger write landing at all.
+    const model = scriptedModel([
+      stream(...textChunks('t', 'REPORT: done via background'), finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    let completionWriteAttempts = 0;
+    vi.spyOn(ledger, 'update').mockImplementation(async (...args: any[]) => {
+      const [, , , patch] = args as [string, string, string, any];
+      if (patch.status === 'completed' && patch.rawReport !== undefined) {
+        completionWriteAttempts++;
+        throw new Error('simulated disk failure while recording specialist completion');
+      }
+      throw new Error(`unexpected ledger.update call in this test: ${JSON.stringify(patch)}`);
+    });
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    // The parent still learns the truth even though the ledger never landed
+    // the completion — delivered exactly once, via the in-memory fallback.
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toContain('REPORT: done via background');
+
+    // The write failed exactly once — no retry against the same broken store.
+    expect(completionWriteAttempts).toBe(1);
+
+    // Honesty about what's lost: with the ledger unwritable, the record
+    // itself is genuinely stranded at 'running' forever — this run cannot
+    // survive a restart. The parent already has the report IN THIS SESSION,
+    // which is the only guarantee the fallback lane makes.
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.status).toBe('running');
+    expect(rec.delivered).toBe(false);
+
+    // No duplicate delivery: a later idle-boundary pass must not re-inject
+    // the same report — the fallback entry was consumed on delivery, not
+    // left behind for a second pass to find again.
+    (host as any).queueDelivery('root-1');
+    await new Promise((r) => setImmediate(r));
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+  });
+
+  it('Finding 3: a destroy() racing the delivery loop leaves the report claimable again, never falsely confirmed', async () => {
+    // The pre-existing queue-drain loop rechecks `this.live.get(sessionId)
+    // !== entry` after every turn because destroy() can land mid-turn. The
+    // delivery loop reused the same captured `entry` across three awaits
+    // with no equivalent recheck — HarnessSession.destroy() aborts and
+    // removeAllListeners()s (which is what actually stops appends being
+    // persisted) WITHOUT throwing and WITHOUT setting any flag runNotice
+    // checks, so an orphaned runNotice() call completes normally, having
+    // shown the report to nobody. Simulate that exact "resolves normally on
+    // a dead session" shape directly (rather than fighting HarnessSession's
+    // real abort timing) by overriding the live session's own runNotice with
+    // a manually-gated stub, destroying the parent while it's paused
+    // mid-call, then releasing it.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const ledger = (host as any).ledger;
+    await ledger.recordStart(root, 'root-1', {
+      childId: 'child-x', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-x', workDir: root,
+      description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+      delivered: false, owner: OWNER, missedSteers: [],
+    });
+    await ledger.update(root, 'root-1', 'child-x', { status: 'completed', endedAt: Date.now(), steps: 1, rawReport: 'REPORT: done' });
+
+    const entry = (host as any).live.get('root-1');
+    let enteredNotice = false;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((res) => { releaseGate = res; });
+    // Replace the live session's runNotice with a stub that pauses mid-call
+    // (mirrors runNotice being suspended on an in-flight provider stream) and
+    // then RESOLVES NORMALLY (no throw) once released — exactly the "no
+    // throw" shape the WHY comment on the fix names.
+    entry.session.runNotice = vi.fn(async () => { enteredNotice = true; await gate; });
+
+    (host as any).queueDelivery('root-1');
+    await vi.waitFor(() => expect(enteredNotice).toBe(true));
+
+    // destroy() lands WHILE the delivery loop is awaiting runNotice — the
+    // exact race the fix closes.
+    await host.destroy('root-1');
+    releaseGate();
+
+    // The record must come back CLAIMABLE (not confirmed delivered): status
+    // stays 'completed', delivered stays false, and the lease was released
+    // rather than left dangling.
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === 'child-x');
+      expect(rec?.claimedBy).toBeUndefined();
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === 'child-x');
+    expect(rec.status).toBe('completed');
+    expect(rec.delivered).toBe(false);
+  });
+
+  it('Fix pass 3: claimUndelivered throwing does not wedge the session, and an in-memory fallback report still delivers in the same pass', async () => {
+    // Pre-fix, `await this.ledger.claimUndelivered(...)` at the top of the
+    // delivery loop was unguarded. A throw there propagated straight out of
+    // runTurns (no try/finally existed), so the bare `entry.inFlight = false`
+    // at the tail was never reached — the session stayed "in flight" forever,
+    // and worse, a report already sitting safely in the in-memory fallback
+    // lane was never even attempted this pass (the ledger lane runs first,
+    // every iteration). This test proves both: the throw doesn't wedge the
+    // session, AND the fallback lane still gets its turn in the SAME pass.
+    const model = scriptedModel([
+      stream(...textChunks('t', 'still here')), stream(finishChunk('stop')),
+    ]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    vi.spyOn(ledger, 'claimUndelivered').mockRejectedValue(new Error('simulated ledger read failure'));
+
+    // Seed the fallback lane directly with a report the child genuinely
+    // produced — this is the exact state fix pass 2 leaves behind when the
+    // ledger's completion write didn't land. This test's job is to prove a
+    // THROWING ledger (not just an empty one) still lets this lane through.
+    (host as any).inMemoryFallback.set('child-fb', {
+      parentId: 'root-1',
+      rec: {
+        childId: 'child-fb', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-fb', workDir: root,
+        description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+        steps: 1, rawReport: 'REPORT: from the fallback lane', delivered: false, owner: OWNER, missedSteers: [],
+      },
+    });
+
+    (host as any).queueDelivery('root-1');
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+    expect(injected.data.text).toContain('REPORT: from the fallback lane');
+
+    // Not wedged: the entry the delivery pass ran on cleared inFlight, and
+    // the session accepts (not queues-behind-forever) a subsequent send.
+    await vi.waitFor(() => expect(host.isIdle('root-1')).toBe(true));
+    const result = host.send('root-1', 'are you still there?');
+    expect(result.status).toBe('sent');
+  });
+
+  it('Fix pass 4: a releaseClaim throw on a liveness-mismatch path is swallowed by releaseClaimSafely, not merely papered over by runTurns\' outer finally', async () => {
+    // This replaces an earlier "Fix pass 3" version of this test that only
+    // asserted `entry.inFlight` ends up `false`. That assertion does NOT
+    // discriminate: runTurns' own outer try/finally (fix pass 3, unrelated to
+    // releaseClaimSafely) clears `inFlight` on ANY throw escaping
+    // drainDeliveries, guard or no guard — so the old test would still pass
+    // even if releaseClaimSafely were reverted to a bare, unguarded
+    // `await this.ledger.releaseClaim(...)`. It re-proved the structural fix
+    // an earlier test ("claimUndelivered throwing does not wedge the
+    // session…") already covers, not anything specific to this guard.
+    //
+    // The one thing that's ONLY true when the per-call guard exists: the
+    // delivery pass itself completes WITHOUT throwing — releaseClaimSafely's
+    // whole job is to swallow the ledger's throw so drainDeliveries (and the
+    // runTurns call that awaits it) settle normally instead of rejecting.
+    // Calling runTurns directly and awaiting its own returned promise (rather
+    // than going through queueDelivery's `entry.running`, which is built with
+    // `.then(resolve, resolve)` and would swallow a rejection before this
+    // test could ever observe it) is what makes that difference observable.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    const ledger = (host as any).ledger;
+    await ledger.recordStart(root, 'root-1', {
+      childId: 'child-x', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-x', workDir: root,
+      description: 'a test brief', background: true, status: 'running', startedAt: Date.now(),
+      delivered: false, owner: OWNER, missedSteers: [],
+    });
+    await ledger.update(root, 'root-1', 'child-x', { status: 'completed', endedAt: Date.now(), steps: 1, rawReport: 'REPORT: done' });
+    vi.spyOn(ledger, 'releaseClaim').mockRejectedValue(new Error('simulated ledger write failure'));
+
+    const entry = (host as any).live.get('root-1');
+    let enteredNotice = false;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((res) => { releaseGate = res; });
+    entry.session.runNotice = vi.fn(async () => { enteredNotice = true; await gate; });
+
+    // Drive runTurns directly (not via queueDelivery) so its returned promise
+    // is the one this test awaits — the same delivery-loop code path, just
+    // without the fire-and-forget wrapper that would hide a rejection.
+    (host as any).pendingDeliveryParents.add('root-1');
+    const pass = (host as any).runTurns('root-1', entry, async () => {}) as Promise<void>;
+    await vi.waitFor(() => expect(enteredNotice).toBe(true));
+
+    // destroy() lands while runNotice is paused — the delivery loop's second
+    // liveness recheck (right after runNotice resolves) finds the entry
+    // stale and calls releaseClaimSafely, which is mocked here to fail.
+    await host.destroy('root-1');
+    releaseGate();
+
+    // Only true with the per-call guard in place: the pass resolves cleanly.
+    // Without it, this same mocked failure would make `pass` reject.
+    await expect(pass).resolves.toBeUndefined();
+  });
+
+  it('Fix pass 3: in-memory fallback entries for a parent are dropped once that parent session is destroyed', async () => {
+    // Pre-fix, `inMemoryFallback` was never swept on destroy() or
+    // destroyAll() — an entry for a parent torn down before its next idle
+    // boundary stayed in the map forever, holding a full specialist report
+    // in memory for a session that can never come back to read it.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    (host as any).inMemoryFallback.set('child-fb', {
+      parentId: 'root-1',
+      rec: {
+        childId: 'child-fb', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-fb', workDir: root,
+        description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+        steps: 1, rawReport: 'REPORT: never delivered', delivered: false, owner: OWNER, missedSteers: [],
+      },
+    });
+
+    await host.destroy('root-1');
+
+    const stillHeld = [...(host as any).inMemoryFallback.values()].some((e: any) => e.parentId === 'root-1');
+    expect(stillHeld).toBe(false);
+  });
+
+  it('Fix pass 4: a background completion landing AFTER a plain destroy() of its parent is not leaked into inMemoryFallback', async () => {
+    // The test above covers destroy()'s own sweep, which only removes
+    // entries present AT CALL TIME. This covers the gap that sweep can't
+    // reach: a background completion whose `.then` handler stashes a
+    // fallback entry AFTER that destroy() already dropped the parent from
+    // `this.live` — the same race destroyAll()'s own comment describes, but
+    // previously patched only there. Exercised directly against
+    // stashFallbackIfParentAlive (the guard spawnSpecialistBackground's
+    // `.then` handlers route every stash through) rather than trying to win
+    // a real async race, since the point under test is the guard itself.
+    const model = scriptedModel([stream(finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    await host.destroy('root-1'); // parent gone BEFORE the late completion arrives
+
+    (host as any).stashFallbackIfParentAlive('root-1', 'child-late', {
+      childId: 'child-late', parentToolCallId: 'tc', agentType: EXPLORER.id, title: 'Test child-late', workDir: root,
+      description: 'a test brief', background: true, status: 'completed', startedAt: Date.now(), endedAt: Date.now(),
+      steps: 1, rawReport: 'REPORT: arrived too late', delivered: false, owner: OWNER, missedSteers: [],
+    });
+
+    expect((host as any).inMemoryFallback.has('child-late')).toBe(false);
+  });
+
+  it('Fix pass 5: a background report is never delivered twice when runNotice succeeds but the follow-up confirmDelivered write fails', async () => {
+    // Two on-disk states look identical (delivered: false, claimedBy cleared
+    // or self) but mean opposite things: the claim landed but runNotice() was
+    // never called — safe to retry, the exact scenario fix pass 4's
+    // self-reclaim exists for — vs runNotice() already ran (the report is
+    // already in the parent's conversation) and only the follow-up
+    // confirmDelivered write failed — retrying calls runNotice() a SECOND
+    // time, showing the model and the user the same report twice. Before fix
+    // pass 5, nothing on disk told these two states apart. This proves the
+    // second case is never retried, even though releaseClaimSafely's own
+    // real releaseClaim call (not mocked here) succeeds and clears claimedBy
+    // — which is exactly the condition that used to make this record look
+    // like "never claimed" again.
+    const model = scriptedModel([stream(...textChunks('t', 'REPORT: done once'), finishChunk('stop'))]);
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const ledger = (host as any).ledger;
+    vi.spyOn(ledger, 'confirmDelivered').mockRejectedValue(new Error('simulated ledger write failure'));
+
+    const { childId } = await host.spawnSpecialistBackground('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root,
+      parentToolCallId: 'tc-1', description: 'find the config loader', token: { parentId: 'root-1', writer: false },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+    });
+    const firstInjection = events.filter((e) => e.data?.injected === 'specialist-report');
+    expect(firstInjection[0].data.text).toContain('REPORT: done once');
+
+    // The ledger record: injection was durably marked attempted, but never
+    // confirmed delivered (the mocked write failed), and the lease WAS
+    // cleared for real.
+    await vi.waitFor(() => {
+      const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+      expect(rec?.claimedBy).toBeUndefined();
+    });
+    const rec = ledger.listFor(root, 'root-1').find((d: any) => d.childId === childId);
+    expect(rec.injectionAttempted).toBe(true);
+    expect(rec.delivered).toBe(false);
+
+    // A second delivery pass must NOT re-inject.
+    (host as any).queueDelivery('root-1');
+    await (host as any).live.get('root-1').running;
+    expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
   });
 });

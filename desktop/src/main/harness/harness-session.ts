@@ -1262,6 +1262,25 @@ export class HarnessSession extends EventEmitter {
     return this.beginTurn(text, () => this.emitEvent('user-message', attachments.length ? { text, attachments } : { text }), attachments);
   }
 
+  /** Task 4 (native specialists, background execution) — inject a background
+   *  specialist's finished report (or typed failure) as a full, real turn.
+   *  Same turn machinery as send()/runSkill(), with ONE difference: the
+   *  `user-message` event carries `data.injected: 'specialist-report'` — a
+   *  data-field extension (shared/types.ts), never a new event type, so a
+   *  renderer that doesn't know the field yet still shows a plain message.
+   *
+   *  WHY a real turn and not a history-only splice: the model needs to
+   *  actually SEE and reason about the report on its next step, which means
+   *  it has to go through the model exactly like any other turn — this is
+   *  not a status update, it is new information the parent must act on.
+   *  Callers (NativeSessionHost.runTurns) are responsible for only calling
+   *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
+   *  if it were called mid-turn, by design (never splice into a running turn:
+   *  role alternation + the local prompt cache both depend on it). */
+  async runNotice(text: string): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', { text, injected: 'specialist-report' }));
+  }
+
   /** Image parts for a user message, or [] when the model cannot see images / none
    *  were attached. Unreadable or oversized files are SKIPPED rather than thrown:
    *  a turn must not die because one attachment went missing between the composer

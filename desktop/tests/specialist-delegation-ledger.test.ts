@@ -130,6 +130,32 @@ describe('DelegationLedger', () => {
     expect(rec?.claimedBy).toEqual(OWNER);
   });
 
+  // Fix pass 4, Finding 3: claimUndelivered's own write (inside mutateJson)
+  // can commit to disk and THEN have the surrounding call still throw — e.g.
+  // mutateFileUnderLock's lock-release (fs.rm on the .lock dir) fails in its
+  // `finally`, AFTER atomicWrite already landed the claimedBy stamp. The
+  // caller (native-session-host.ts's delivery loop) sees only the throw and
+  // never learns which childId got claimed, so it can't release it either —
+  // the record is left with a lease stamped by THIS process, which
+  // isOwnerAlive always reports as alive. Without this branch, nothing would
+  // ever reclaim it short of a restart, stranding the report forever in a
+  // live, running session. This test seeds that exact stuck state directly
+  // (no need to reproduce the lock-release race itself) and asserts the next
+  // claimUndelivered call reclaims it anyway.
+  it('a record leased by OUR OWN process instance is reclaimable — only one delivery pass per parent runs at a time, so seeing our own stale lease means our earlier attempt never finished', async () => {
+    await ledger.recordStart(CWD, 'p1', makeRecord({
+      childId: 'self-claimed-stale',
+      status: 'completed',
+      startedAt: 100,
+      delivered: false,
+      claimedBy: OWNER, // exactly this process's own stamp, not a stranger's
+      claimedAt: 1,
+    }));
+    const rec = await ledger.claimUndelivered(CWD, 'p1');
+    expect(rec?.childId).toBe('self-claimed-stale');
+    expect(rec?.claimedBy).toEqual(OWNER); // re-stamped, same owner either way
+  });
+
   it('a record leased by a LIVE owner (not us) is NOT claimable', async () => {
     await ledger.recordStart(CWD, 'p1', makeRecord({
       childId: 'someone-else-has-it',
@@ -180,6 +206,55 @@ describe('DelegationLedger', () => {
       await ledger.update(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 2 }); // teardown's unconditional write always applies, even over a terminal status
       const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
       expect(rec?.status).toBe('interrupted');
+    });
+  });
+
+  // ---- Fix pass 5 — distinguishing "claimed, never injected" from
+  // "injected, never confirmed". Two on-disk states look identical
+  // (claimedBy = some owner, delivered = false) but mean opposite things:
+  // (a) the claim landed but runNotice() was never called — safe to retry;
+  // (b) runNotice() already ran (the report reached the parent's
+  // conversation) and only the follow-up confirmDelivered write failed —
+  // retrying means showing the same report twice. injectionAttempted, set by
+  // markInjectionAttempted() strictly BEFORE runNotice() is ever called, is
+  // what tells them apart on disk.
+  describe('injectionAttempted (fix pass 5)', () => {
+    it('markInjectionAttempted durably stamps the marker', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'completed', startedAt: 100 }));
+      await ledger.markInjectionAttempted(CWD, 'p1', 'c1');
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.injectionAttempted).toBe(true);
+    });
+
+    it('case (a): a record whose injection was NEVER attempted is still reclaimable by its own process', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'never-injected', status: 'completed', startedAt: 100, delivered: false,
+        claimedBy: OWNER, claimedAt: 1, // injectionAttempted intentionally omitted — never set
+      }));
+      const rec = await ledger.claimUndelivered(CWD, 'p1');
+      expect(rec?.childId).toBe('never-injected');
+    });
+
+    it('case (b): a record whose injection WAS attempted is never reclaimed again by its own live process', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'already-injected', status: 'completed', startedAt: 100, delivered: false,
+        claimedBy: OWNER, claimedAt: 1, injectionAttempted: true,
+      }));
+      expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
+    });
+
+    it('case (b) also blocks the dead-owner and never-claimed lease branches — injectionAttempted gates all three, not just self-reclaim', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'dead-owner-already-injected', status: 'completed', startedAt: 100, delivered: false,
+        claimedBy: { pid: 999_999, instanceId: 'a-process-that-is-long-gone' }, claimedAt: 1, injectionAttempted: true,
+      }));
+      expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
+
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'released-already-injected', status: 'completed', startedAt: 200, delivered: false,
+        injectionAttempted: true, // claimedBy already cleared, e.g. by a releaseClaim after a failed confirmDelivered
+      }));
+      expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
     });
   });
 });
