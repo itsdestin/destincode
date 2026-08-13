@@ -28,4 +28,25 @@ describe('computeReportBudget', () => {
   // would render as an empty report with a notice — worse than a short answer).
   it('floors a negative headroom rather than returning zero', () =>
     expect(computeReportBudget({ staticCapTokens: 2000, parentRemainingTokens: -5_000, concurrentReporters: 1 })).toBe(200));
+
+  // Task 15 pin (deferred from the 1a review): every case above hands
+  // parentRemainingTokens in already-subtracted. The REAL caller —
+  // native-session-host.ts's formatSpecialistReport, at delivery — derives it
+  // as `window - used` (both read off the live parent session) and, since
+  // plan 1b's background delivery loop can inject several reports in one
+  // pass, calls this with concurrentReporters > 1 for real (1a's foreground
+  // flow only ever passed 1). This case pins that exact shape — a window/used
+  // pair fed through the same subtraction, split three ways — so a future
+  // edit to that call site (e.g. swapping the subtraction order, or dropping
+  // the per-reporter division) shows up here even though it lives in a
+  // different file. specialist-run.test.ts's own "formatted at DELIVERY time
+  // with concurrentReporters" test additionally exercises the real call site
+  // end-to-end; this is the unit-level companion the 1a review asked for.
+  it('the window-minus-used case with concurrentReporters > 1 — the real delivery-time call shape', () => {
+    const window = 32_000;
+    const used = 12_000;
+    const remaining = window - used; // 20,000 — exactly what formatSpecialistReport computes
+    const budget = computeReportBudget({ staticCapTokens: 4_000, parentRemainingTokens: remaining, concurrentReporters: 3 });
+    expect(budget).toBe(Math.floor((remaining * 0.5) / 3)); // 3,333 — headroom half, split three ways
+  });
 });

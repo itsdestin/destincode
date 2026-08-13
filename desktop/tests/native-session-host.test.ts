@@ -2224,6 +2224,55 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
       expect((h as any).live.has(childId)).toBe(false);
     });
+
+    // Task 15 pin (1a handoff, asked for explicitly): quiesce() is the
+    // takeover/teardown path (native-session-host.ts:3263) — deliberately
+    // STRONGER than interrupt(), and 1b reworked both teardown paths (Task 2
+    // made interrupt(parentId) skip background children on purpose — the
+    // test above). This pins that quiesce was NOT weakened the same way: it
+    // must still cascade-destroy every live specialist child (foreground or
+    // background) and leave an honest 'interrupted' ledger record behind,
+    // never a silently orphaned child or a ledger row still claiming 'running'.
+    it('quiesce(parentId) destroys running children and their ledger records read interrupted', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, delayedFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Stamp the ledger row a real spawnSpecialist would have (createChild
+      // alone doesn't) — same pattern the background-cascade test above uses.
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Q the Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn, genuinely still running
+      await new Promise((r) => setTimeout(r, 20));
+
+      await h.quiesce('root-1'); // NOT interrupt() — the takeover/teardown path this pin guards
+      await turn; // settles — quiesce's own cascade aborts it, never leaves it hanging
+
+      // Destroyed, not merely interrupted-in-place: a running child must not
+      // survive a whole-parent quiesce.
+      expect((h as any).live.has(childId)).toBe(false);
+      // The ledger write is fire-and-forget (destroyChildrenOf's own WHY —
+      // a lock-contended write must never make teardown appear to hang), so
+      // poll for it to land rather than assuming it's synchronous with quiesce.
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.status === 'interrupted') break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec?.status).toBe('interrupted');
+
+      await h.destroyAll();
+    });
   });
 
   // Task 6 — the task_id management surface's two host-level invariants the
