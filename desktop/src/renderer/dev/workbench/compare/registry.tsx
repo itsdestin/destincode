@@ -2833,6 +2833,19 @@ const ALL_SURFACES: CompareSurface[] = [
           },
         ],
       },
+      {
+        n: 3,
+        basis:
+          'R2 · C (state the limits once, in full). Nothing left to compare — this round IS the record of the settled confirm, and every string in it is what Task 8 implements. Settled: the heading names what is being granted (the command, or the branch); one limits sentence under the choice, worded per grant type; the bare `git push` card carries its own line explaining why nothing can be remembered. The limits sentence is this item\'s ONLY warning about the two cases that will re-ask anyway — the after-the-fact explanation was dropped by amendment A5 — so it is load-bearing, not decoration.',
+        candidates: [
+          {
+            id: 'settled',
+            label: 'Settled',
+            note: 'R1·B shape, R2·C copy. The card that goes to ToolCard.',
+            render: () => <GrantWidthPane variant="radio" copy="spelled" />,
+          },
+        ],
+      },
     ],
   },
 ];
