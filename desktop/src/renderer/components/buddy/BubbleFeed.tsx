@@ -194,6 +194,20 @@ export function BubbleFeed({ sessionId }: Props) {
               partId: event.data.partId,
             });
           } else {
+            // Preparing tool card — the buddy feed renders tool cards too, so
+            // omitting this would make it draw the card only once arguments
+            // finish while the main window draws it immediately. MUST mirror
+            // App.tsx or the two windows diverge.
+            if (event.data?.toolPreparing) {
+              batchDispatch({
+                type: 'NATIVE_TOOL_PREPARING',
+                sessionId: event.sessionId,
+                toolCallId: event.data.toolPreparing.toolCallId,
+                toolName: event.data.toolPreparing.toolName,
+                chars: event.data.toolPreparing.chars,
+                cleared: event.data.toolPreparing.cleared,
+              });
+            }
             batchDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
