@@ -2171,6 +2171,98 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // Task 6 — the task_id management surface's two host-level invariants the
+  // plan calls out explicitly: a specialist header can never re-enter through
+  // the ROOT resume() path, and a steer that misses its window is never
+  // silently lost. steerSpecialist/interruptSpecialist/resumeSpecialist's own
+  // dispatch logic (refusal wording, reservation sizing) is exercised through
+  // the Task tool instead — task-tool.test.ts — since that's the surface a
+  // model actually calls; these two are host-internal invariants.
+  describe('task_id management (Task 6)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    it('resume() refuses a specialist header — children re-enter only through resumeSpecialist', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Tear the child down first so resume()'s own single-writer guard
+      // (destroy-the-orphan-then-continue) isn't what this test is exercising
+      // — the header's sessionKind check below is.
+      await h.destroy(childId);
+      const ok = await h.resume(childId, root);
+      expect(ok).toBe(false);
+      expect((h as any).live.has(childId)).toBe(false); // never re-entered as a root session
+      await h.destroyAll();
+    });
+
+    it('a steer posted between child iterations lands in missedSteers and is prepended to the resumed brief', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Stamp the ledger row a real spawnSpecialist would have (createChild
+      // alone doesn't — same pattern the background-cascade test above uses).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // The child is live but has never been sent a turn — postSteer's own
+      // in-flight check (this.abort !== null) is false, so this IS the
+      // "between iterations" miss steerSpecialist is documented to record
+      // rather than lose.
+      const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
+      expect(steerResult.status).toBe('ok');
+      // The ledger write is fire-and-forget (steerSpecialist's own WHY —
+      // never blocks the caller on disk I/O), so poll for it to land rather
+      // than assuming it's synchronous.
+      let recBefore: any;
+      for (let i = 0; i < 50; i++) {
+        recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (recBefore?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(recBefore.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      // Tear the child down (without going through a normal completion —
+      // this test only needs "not live, own ledger record", exactly
+      // resumeSpecialist's own eligibility check) and resume it.
+      await h.destroy(childId);
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const result = await h.resumeSpecialist('root-1', {
+        childId, prompt: 'continue the investigation', background: false,
+        parentToolCallId: 'tc-2', reservation: reservation.token,
+      });
+      expect(result.status).toBe('ok');
+
+      // The resumed child's first turn is the REAL proof: read its own
+      // persisted transcript and confirm the missed steer was prepended,
+      // not silently dropped.
+      const events = store.readEvents(childId, root);
+      const userMessages = events.filter((e: any) => e.type === 'user-message');
+      const resumedMsg = userMessages[userMessages.length - 1] as any;
+      expect(resumedMsg.data.text).toContain('<steer>\nfocus on auth.ts instead\n</steer>');
+      expect(resumedMsg.data.text).toContain('continue the investigation');
+
+      // And the ledger's missedSteers is cleared once folded in — a second
+      // resume of the same child must not replay it again.
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfter.missedSteers).toEqual([]);
+
+      await h.destroyAll();
+    });
+  });
+
   // Task 5 (plan 1b): the per-turn specialist status block. wire() attaches
   // opts.specialistStatus to every ROOT session; this suite pins what that
   // callback reports given a stamped ledger, reaching the private ledger

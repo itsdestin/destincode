@@ -21,6 +21,14 @@ import { DelegatedModels } from '../src/main/harness/specialists/delegated-model
 import { NativeHome } from '../src/main/native-home';
 import type { CatalogModel, ModelBinding } from '../src/shared/provider-types';
 import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path';
+// Task 6 — the "belongs to a DIFFERENT parent" refusal is only a REAL test
+// against the real host: a fake that always answers 'not-yours' would prove
+// nothing about own-children-only actually holding. NativeSessionHost/
+// SessionStore drive that one test; every other Task 6 test below stays on
+// fakes, same as the rest of this file.
+import { NativeSessionHost } from '../src/main/harness/native-session-host';
+import { SessionStore } from '../src/main/harness/session-store';
+import { resolveSpecialist as resolveRealSpecialist } from '../src/main/harness/specialists/registry';
 
 interface RunOpts {
   slotFree?: boolean;
@@ -418,5 +426,178 @@ describe('Task tool — model resolution (Task 14)', () => {
     const r = await runTaskTool({ agent: 'explorer' }, { spawn });
     expect(r.isError).toBeFalsy();
     expect(spawn).toHaveBeenCalledWith('parent-1', expect.not.objectContaining({ binding: expect.anything() }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6 — the task_id management surface: steer a running child, resume a
+// finished/interrupted one, or interrupt one, all through the SAME Task tool
+// (task_id + interrupt, no new agent/work_dir/description/prompt needed).
+// Fakes throughout except the "different parent" test, which needs the REAL
+// host to prove own-children-only actually holds rather than assuming a fake
+// that always answers 'not-yours' is trustworthy.
+// ---------------------------------------------------------------------------
+describe('Task tool — task_id management surface (Task 6)', () => {
+  function manageCtx(overrides: Partial<{
+    steerSpecialist: any; interruptSpecialist: any; resumeSpecialist: any; reserve: any; release: any;
+  }> = {}): ToolContext {
+    return {
+      sessionId: 'parent-1',
+      cwd: '/work',
+      signal: new AbortController().signal,
+      readRegistry: new Map(),
+      todos: [],
+      toolCallId: 'tc-manage',
+      services: {
+        specialists: {
+          reserve: overrides.reserve ?? vi.fn(() => ({ ok: true, token: { parentId: 'parent-1', writer: false } })),
+          release: overrides.release ?? vi.fn(),
+          trySpendSpawnBudget: () => true,
+          spawn: vi.fn(),
+          spawnBackground: vi.fn(),
+          steerSpecialist: overrides.steerSpecialist ?? vi.fn(() => ({ status: 'not-yours' })),
+          interruptSpecialist: overrides.interruptSpecialist ?? vi.fn(() => ({ status: 'not-yours' })),
+          resumeSpecialist: overrides.resumeSpecialist ?? vi.fn(async () => ({ status: 'not-yours' })),
+        },
+      },
+    };
+  }
+
+  it('steers a RUNNING child and reports delivery, naming who received it', async () => {
+    const tool = createTaskTool();
+    const steerSpecialist = vi.fn(() => ({ status: 'ok', title: 'Rusty the Explorer' }));
+    const r = await tool.execute(
+      { task_id: 'child-1', prompt: 'focus on auth.ts instead' } as any,
+      manageCtx({ steerSpecialist }),
+    );
+    expect(steerSpecialist).toHaveBeenCalledWith('parent-1', 'child-1', 'focus on auth.ts instead');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toBe('Steer delivered to Rusty the Explorer.');
+  });
+
+  it('resumes a FINISHED child in the foreground — the resumed run\'s report IS the tool result', async () => {
+    const tool = createTaskTool();
+    const steerSpecialist = vi.fn(() => ({ status: 'not-running', agentType: 'explorer' }));
+    const reserve = vi.fn(() => ({ ok: true, token: { parentId: 'parent-1', writer: false } }));
+    const release = vi.fn();
+    const resumeSpecialist = vi.fn(async () => ({ status: 'ok', childId: 'child-1', report: 'the resumed report' }));
+    const r = await tool.execute(
+      { task_id: 'child-1', prompt: 'continue from where you left off' } as any,
+      manageCtx({ steerSpecialist, reserve, release, resumeSpecialist }),
+    );
+    // explorer is read-only (specialists/builtins.ts) — the reservation must
+    // size its writer flag from the specialist steerSpecialist named, not a
+    // default.
+    expect(reserve).toHaveBeenCalledWith('parent-1', { writer: false });
+    expect(resumeSpecialist).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      childId: 'child-1', prompt: 'continue from where you left off', background: false,
+    }));
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toBe('the resumed report');
+    expect(release).toHaveBeenCalled(); // foreground: this call site releases once the run settles
+  });
+
+  it('resumes an INTERRUPTED child in the background — the launch ack names the task_id, and the reservation is NOT released here', async () => {
+    const tool = createTaskTool();
+    const steerSpecialist = vi.fn(() => ({ status: 'not-running', agentType: 'worker' })); // worker is read-write
+    const reserve = vi.fn(() => ({ ok: true, token: { parentId: 'parent-1', writer: true } }));
+    const release = vi.fn();
+    const resumeSpecialist = vi.fn(async () => ({ status: 'ok-background', childId: 'child-1', title: 'Wren the Worker' }));
+    const r = await tool.execute(
+      { task_id: 'child-1', prompt: 'pick up the refactor', background: true } as any,
+      manageCtx({ steerSpecialist, reserve, release, resumeSpecialist }),
+    );
+    expect(reserve).toHaveBeenCalledWith('parent-1', { writer: true }); // worker is read-write
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/Wren the Worker \(worker\) is now working in the background/);
+    expect(r.text).toMatch(/task_id: child-1/);
+    expect(release).not.toHaveBeenCalled(); // ownership transferred to the detached chain, same as a fresh background spawn
+  });
+
+  it('interrupt: true cancels a RUNNING child with a typed result naming what it was doing', async () => {
+    const tool = createTaskTool();
+    const interruptSpecialist = vi.fn(() => ({ status: 'ok', title: 'Rusty the Explorer', description: 'Find the auth bug' }));
+    const r = await tool.execute({ task_id: 'child-1', interrupt: true } as any, manageCtx({ interruptSpecialist }));
+    expect(interruptSpecialist).toHaveBeenCalledWith('parent-1', 'child-1');
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toBe('Interrupted Rusty the Explorer — it was: Find the auth bug.');
+  });
+
+  it('interrupt: true on a child that already finished says there is nothing to interrupt', async () => {
+    const tool = createTaskTool();
+    const interruptSpecialist = vi.fn(() => ({ status: 'not-running', agentType: 'explorer' }));
+    const r = await tool.execute({ task_id: 'child-1', interrupt: true } as any, manageCtx({ interruptSpecialist }));
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/is not currently running/);
+    expect(r.text).toMatch(/nothing to interrupt/);
+  });
+
+  it('refuses a task_id that never existed', async () => {
+    const tool = createTaskTool();
+    const steerSpecialist = vi.fn(() => ({ status: 'not-yours' }));
+    const r = await tool.execute({ task_id: 'ghost-child', prompt: 'hello' } as any, manageCtx({ steerSpecialist }));
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Refused: that task_id does not belong to a specialist of this session.');
+  });
+
+  // The only test in this describe block against the REAL host: proves a
+  // task_id belonging to a DIFFERENT parent is refused the SAME way as one
+  // that never existed at all (spec §5 own-children-only) — a fake that
+  // always answers 'not-yours' would only prove task.ts's OWN wiring, not
+  // that the host actually enforces the boundary.
+  it('refuses a task_id belonging to a DIFFERENT parent, identically to a nonexistent one', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'task-tool-manage-'));
+    const home = new NativeHome(root);
+    const store = new SessionStore(home);
+    // The model factory is never called: createChild only constructs and
+    // wires the child session, it never dispatches a turn.
+    const neverCalledFactory = async () => { throw new Error('model factory should never be called in this test — no turn ever runs'); };
+    const host = new NativeSessionHost(
+      store, neverCalledFactory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    try {
+      await host.create({ sessionId: 'parent-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      await host.create({ sessionId: 'parent-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const EXPLORER = resolveRealSpecialist('explorer')!;
+      const { childId } = await host.createChild('parent-1', {
+        specialist: EXPLORER, prompt: 'find the bug', workDir: root, parentToolCallId: 'tc-1',
+      });
+
+      const tool = createTaskTool();
+      const ctxFor = (parentId: string): ToolContext => ({
+        sessionId: parentId, cwd: root, signal: new AbortController().signal, readRegistry: new Map(), todos: [],
+        services: {
+          specialists: {
+            reserve: (pid: string, opts: { writer: boolean }) => host.reserveSpecialist(pid, opts),
+            release: (token: any) => host.releaseReservation(token),
+            trySpendSpawnBudget: (pid: string) => host.trySpendSpecialistSpawnBudget(pid),
+            spawn: (pid: string, opts: any) => host.spawnSpecialist(pid, opts),
+            spawnBackground: (pid: string, opts: any) => host.spawnSpecialistBackground(pid, opts),
+            steerSpecialist: (pid: string, cid: string, text: string) => host.steerSpecialist(pid, cid, text),
+            interruptSpecialist: (pid: string, cid: string) => host.interruptSpecialist(pid, cid),
+            resumeSpecialist: (pid: string, opts: any) => host.resumeSpecialist(pid, opts),
+          },
+        },
+      });
+
+      // parent-2 does not own this child — real cross-parent refusal.
+      const foreign = await tool.execute({ task_id: childId, prompt: 'do something' } as any, ctxFor('parent-2'));
+      // A task_id that never existed anywhere — same host, same parent-2.
+      const nonexistent = await tool.execute({ task_id: 'totally-made-up-id', prompt: 'do something' } as any, ctxFor('parent-2'));
+
+      expect(foreign.isError).toBe(true);
+      expect(foreign.text).toBe('Refused: that task_id does not belong to a specialist of this session.');
+      expect(nonexistent.isError).toBe(true);
+      expect(nonexistent.text).toBe(foreign.text); // indistinguishable — own-children-only can't be probed
+
+      // And parent-1 — the REAL owner — can manage it normally.
+      const owned = await tool.execute({ task_id: childId, interrupt: true } as any, ctxFor('parent-1'));
+      expect(owned.isError).toBeFalsy();
+      expect(owned.text).toMatch(/^Interrupted/);
+    } finally {
+      await host.destroyAll();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
