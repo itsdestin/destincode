@@ -39,7 +39,8 @@ export type WriteResolution =
  *
  * EXPORTED because write-authorization is not the only site that builds a path
  * from a record: artifacts:check-existence (ipc-handlers.ts) and countArtifacts
- * (projects-index.ts) call fs.access on the raw string. All four sites share
+ * (projects-index.ts) call fs.access on the raw string, and renameArtifact
+ * (artifact-store.ts) calls fs.access/fs.rename on it. All five sites share
  * this one definition.
  *
  * path.isAbsolute is deliberately used bare. It is already platform-correct: on

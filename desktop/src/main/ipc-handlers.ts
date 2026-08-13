@@ -3473,7 +3473,16 @@ export function registerIpcHandlers(
     // Drawer is the only surface where an unpinned external is visible, so this
     // is where the false "no longer on disk" actually renders. Memoized per
     // project per process — this handler also fires after every tracked write.
-    await runSidecarMigration(projectRoot);
+    const migration = await runSidecarMigration(projectRoot);
+    // Fix: every other sidecar writer here calls invalidateSidecarIdCache after
+    // committing (see APPEND_VERSION/RENAME/REMOVE_RECORD above) so the
+    // watcher's path-to-id map doesn't go stale. runSidecarMigration writes too
+    // (it rewrites reclassified records' path/kind) but had no caller doing
+    // this. Wiring it from artifact-store.ts would import project-watcher.ts,
+    // which already imports artifact-store.ts's readSidecar — a cycle — so it's
+    // done here at each of the three call sites instead, and only when a write
+    // actually happened.
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot);
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
@@ -3543,7 +3552,8 @@ export function registerIpcHandlers(
     // Same legacy-repair call as LIST_SESSION above (filepath pills + the
     // hero/switcher count also read through this handler) — memoized per
     // project per process, so this costs one Set lookup after the first call.
-    await runSidecarMigration(projectRoot);
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const sidecar = await readSidecar(projectRoot);
 
     let tracked: any[] = [];
@@ -3579,7 +3589,8 @@ export function registerIpcHandlers(
     const projectRoot = p ? p.path : projectId;
     // Same legacy-repair call as LIST_SESSION above — this is actual project
     // open (Project View → Files). Memoized per project per process.
-    await runSidecarMigration(projectRoot);
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     if (isGatedRoot(projectRoot) && !opts?.force) {
       return { ok: true, files: [], truncated: false, gated: true };
     }

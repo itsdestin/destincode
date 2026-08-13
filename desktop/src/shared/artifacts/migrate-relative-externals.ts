@@ -95,7 +95,16 @@ export function migrateRelativeExternals(
       const drop = keep === existing ? a : existing;
       const mergedRec = mergeRecords({ ...keep, path: resolved.path }, drop);
       const idx = out.indexOf(existing);
-      out.splice(idx, 1, mergedRec);
+      // Fix: `idx` is unreachable as -1 today — `existing` always came from
+      // `byPath`, which is only ever populated from records already pushed
+      // into `out` (the internal-record loop above), so indexOf must find it.
+      // Guarded anyway because this rewrites irreplaceable artifact history:
+      // splice(-1, 1, x) would silently REPLACE the last element instead of
+      // inserting, which for this data means quietly discarding an unrelated
+      // artifact's record — a much worse failure than an append in the wrong
+      // spot would be.
+      if (idx === -1) out.push(mergedRec);
+      else out.splice(idx, 1, mergedRec);
       byPath.set(resolved.path, mergedRec);
       merged++;
     } else {

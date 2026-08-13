@@ -5,6 +5,8 @@ import { newArtifactId, newVersionId } from '../../shared/artifacts/ulid';
 import { SIDECAR_SCHEMA_VERSION } from '../../shared/artifacts/types';
 import { casWrite } from './cas-write';
 import { migrateRelativeExternals } from '../../shared/artifacts/migrate-relative-externals';
+import { canonicalize } from '../../shared/artifacts/canonicalize';
+import { isAbsoluteRecorded } from './write-authorization';
 
 const SIDECAR_RELATIVE = '.youcoded/artifacts.json';
 
@@ -219,10 +221,15 @@ function sleep(ms: number) {
 // pure pass over a 2,800-record array is cheap — but it is not free, and there
 // is no reason to redo it every call.
 //
-// Process-lifetime, deliberately: a peer device on a pre-fix build can keep
-// writing new relative-external records into a synced sidecar, and clearing the
-// memo on app launch is what lets us repair those. That is the trade for having
-// no persistent "already migrated" marker — see the plan's design decision 2.
+// Process-lifetime, deliberately: the sidecar (.youcoded/artifacts.json) is
+// per-device and NEVER synced — DEFAULT_IGNORES (sync-spaces/guards.ts) excludes
+// .youcoded/ from the sync repo, and project-manager.ts separately adds it to
+// the project's own .gitignore — so there is no cross-device write to catch up
+// on. What the process-lifetime memo actually buys: a repair skipped by a
+// transient failure (see the catch below) is retried automatically the next
+// time this app launches, rather than being permanently missed by a persistent
+// "already migrated" marker. That is the trade for having no such marker on
+// disk — see the plan's design decision 2.
 const migrationChecked = new Set<string>();
 
 /**
@@ -230,10 +237,11 @@ const migrationChecked = new Set<string>();
  * shared/artifacts/migrate-relative-externals.ts).
  *
  * The run-once gate is `reclassified === 0`, NOT a $schema bump. appendVersion
- * round-trips $schema from disk, so a schema marker would say "repaired" while
- * a stale peer build kept producing new damage that this would then never fix.
- * The pure function already tells us whether anything changed; nothing is
- * written when it hasn't.
+ * round-trips $schema from disk, so a schema marker would say "repaired"
+ * permanently once written, with no way to notice if a later bug (or a
+ * hand-edited sidecar) reintroduced a relative-external record. The pure
+ * function already tells us whether anything changed; nothing is written when
+ * it hasn't.
  *
  * WHY here and not inside readSidecar: readSidecar is a hot path (every get,
  * save, and list call). A function that writes from inside a read is both
@@ -243,46 +251,76 @@ export async function runSidecarMigration(
   projectRoot: string
 ): Promise<{ migrated: boolean; reclassified: number; merged: number }> {
   const NOTHING = { migrated: false, reclassified: 0, merged: 0 };
-  if (migrationChecked.has(projectRoot)) return NOTHING;
+  // Fix: key the memo on the CANONICAL form, not the raw string. One IPC caller
+  // (APPEND_VERSION's sibling handlers) passes the renderer's projectRoot as
+  // typed/received, while two others (LIST_PROJECT, LIST_ALL_FILES) pass a path
+  // resolved from the project index — a case- or separator-differing pair for
+  // the SAME project would otherwise memo separately and re-run the migration a
+  // second time (finding nothing, since the first run already repaired it, but
+  // still paying the sidecar read + pure-pass cost). canonicalize() is already
+  // how every other cache in this layer (project-watcher.ts's sidecarIdCache,
+  // project-file-discovery.ts's cache) keys on project root for this exact
+  // reason.
+  const key = canonicalize(projectRoot, null);
+  if (migrationChecked.has(key)) return NOTHING;
 
-  // The sidecar is written continuously by the running app, so a CAS conflict is
-  // a real (if rare) outcome. Mirror appendVersion: re-read and retry rather
-  // than deferring to "some later project open", which for the busiest project
-  // is the least likely to win.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const current = await readSidecar(projectRoot);
-    if (current === null || 'corrupted' in current) {
-      migrationChecked.add(projectRoot);
-      return NOTHING;
-    }
+  // Fix: this best-effort repair runs INSIDE three handlers that were
+  // read-only before this branch (LIST_SESSION, LIST_PROJECT, LIST_ALL_FILES)
+  // and must fail closed rather than break the listing it precedes. The
+  // fs.copyFile backup below only swallows EEXIST and rethrows everything
+  // else, and writeSidecar's CAS write (casWrite -> atomicWrite) can throw
+  // ENOSPC, EROFS, EACCES, or (on Windows, when antivirus holds the file)
+  // EPERM. An uncaught rejection here propagates out of those IPC handlers;
+  // FilesTab.tsx's `listAllFiles(...).then(...)` has no `.catch`, so an
+  // unhandled rejection would leave its loading spinner stuck forever. Report
+  // "nothing happened" instead, and memoize so a PERSISTENT failure (e.g. a
+  // read-only filesystem) does not retry this same expensive, doomed work on
+  // every subsequent list call in this process — the next app launch gets a
+  // fresh memo and another attempt.
+  try {
+    // The sidecar is written continuously by the running app, so a CAS conflict
+    // is a real (if rare) outcome. Mirror appendVersion: re-read and retry
+    // rather than deferring to "some later project open", which for the
+    // busiest project is the least likely to win.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await readSidecar(projectRoot);
+      if (current === null || 'corrupted' in current) {
+        migrationChecked.add(key);
+        return NOTHING;
+      }
 
-    const result = migrateRelativeExternals(current, projectRoot);
-    if (result.reclassified === 0) {
-      migrationChecked.add(projectRoot);   // nothing to do — don't re-scan this process
-      return NOTHING;
-    }
+      const result = migrateRelativeExternals(current, projectRoot);
+      if (result.reclassified === 0) {
+        migrationChecked.add(key);   // nothing to do — don't re-scan this process
+        return NOTHING;
+      }
 
-    // Back up before the first rewrite. This edits weeks of artifact history in
-    // place; a copy is the only way back if the merge rule turns out wrong for a
-    // record we did not anticipate. FIXED name, written only if absent: a
-    // timestamped name would accumulate one file per retry and per relapse.
-    const sidecarPath = join(projectRoot, SIDECAR_RELATIVE);
-    try {
-      await fs.copyFile(sidecarPath, `${sidecarPath}.pre-migration.bak`, fsConstants.COPYFILE_EXCL);
-    } catch (e: any) {
-      if (e.code !== 'EEXIST') throw e;   // a backup already exists — keep the oldest
-    }
+      // Back up before the first rewrite. This edits weeks of artifact history
+      // in place; a copy is the only way back if the merge rule turns out wrong
+      // for a record we did not anticipate. FIXED name, written only if
+      // absent: a timestamped name would accumulate one file per retry and per
+      // relapse.
+      const sidecarPath = join(projectRoot, SIDECAR_RELATIVE);
+      try {
+        await fs.copyFile(sidecarPath, `${sidecarPath}.pre-migration.bak`, fsConstants.COPYFILE_EXCL);
+      } catch (e: any) {
+        if (e.code !== 'EEXIST') throw e;   // a backup already exists — keep the oldest
+      }
 
-    // CAS on the value we read: if another window wrote in between, re-read and
-    // recompute rather than clobber.
-    const next: ProjectSidecar = result.sidecar;
-    const { committed } = await writeSidecar(projectRoot, current.updatedAt, next);
-    if (committed) {
-      migrationChecked.add(projectRoot);
-      return { migrated: true, reclassified: result.reclassified, merged: result.merged };
+      // CAS on the value we read: if another window wrote in between, re-read
+      // and recompute rather than clobber.
+      const next: ProjectSidecar = result.sidecar;
+      const { committed } = await writeSidecar(projectRoot, current.updatedAt, next);
+      if (committed) {
+        migrationChecked.add(key);
+        return { migrated: true, reclassified: result.reclassified, merged: result.merged };
+      }
     }
+    return NOTHING;   // three conflicts — do NOT memo; the next call retries
+  } catch {
+    migrationChecked.add(key);   // see the WHY block above — fail closed, don't retry every call
+    return NOTHING;
   }
-  return NOTHING;   // three conflicts — do NOT memo; the next call retries
 }
 
 export interface RenameResult {
@@ -316,6 +354,17 @@ export async function renameArtifact(
   if (!a0) return { ok: false, error: 'artifact-not-found' };
 
   const oldAbs = a0.kind === 'internal' ? join(projectRoot, a0.path) : (a0.absolutePath ?? '');
+  // Fix: guard against a relative `absolutePath` here too — this is the FIFTH
+  // site that builds a path from a record (write-authorization.ts's two
+  // functions, artifacts:check-existence, and countArtifacts are the other
+  // four). Unguarded, `oldAbs` resolves against the PROCESS cwd for the
+  // fs.access/fs.rename calls below, so this could rename (or silently clobber)
+  // a file OUTSIDE the project — a real filesystem mutation, not just a stale
+  // read. Reachable permanently, not only in the pre-repair window: records
+  // whose real path escapes the project root with `..` are deliberately left
+  // external with a relative absolutePath by design, and the Session Drawer's
+  // click-to-rename has no filter on record kind.
+  if (a0.kind === 'external' && !isAbsoluteRecorded(oldAbs)) return { ok: false, error: 'no-path' };
   if (!oldAbs) return { ok: false, error: 'no-path' };
   const dir = dirname(oldAbs);
   const ext = extname(a0.path); // keep the original extension

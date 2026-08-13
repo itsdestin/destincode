@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration, renameArtifact } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import { SIDECAR_SCHEMA_VERSION } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
@@ -364,5 +364,94 @@ describe('runSidecarMigration', () => {
     const res = await runSidecarMigration(projectRoot);
     expect(res.migrated).toBe(true);   // migration itself still proceeds
     expect(readFileSync(backupPath, 'utf8')).toBe('SENTINEL-PRE-EXISTING-BACKUP');
+  });
+
+  // Finding 1 (final review): runSidecarMigration is called from THREE
+  // handlers that were read-only before this branch (LIST_SESSION,
+  // LIST_PROJECT, LIST_ALL_FILES). fs.copyFile's EEXIST-only swallow and
+  // writeSidecar's CAS write can both throw unexpected errors (ENOSPC, EROFS,
+  // EACCES, Windows EPERM from AV). Before the fix, that rejection propagated
+  // straight out of this function into those handlers; FilesTab.tsx's
+  // `listAllFiles(...).then(...)` has no `.catch`, so the Files tab's loading
+  // state would never clear. This pins the fail-closed contract: never throw,
+  // report NOTHING migrated, and don't retry the doomed work on every
+  // subsequent call in this process.
+  it('resolves to the NOTHING result — never throws — when the backup copy fails unexpectedly', async () => {
+    await writeSidecar(projectRoot, null, legacy() as any);
+
+    const copySpy = vi.spyOn(fsPromises, 'copyFile').mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+
+    await expect(runSidecarMigration(projectRoot)).resolves.toEqual({
+      migrated: false, reclassified: 0, merged: 0,
+    });
+
+    // The failed repair must not have committed a half-done rewrite.
+    const after = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(after.artifacts[0].kind).toBe('external');
+
+    // Memoized on failure too: a second call must not retry the same doomed
+    // copyFile — it should short-circuit on the memo before reaching it.
+    await runSidecarMigration(projectRoot);
+    expect(copySpy).toHaveBeenCalledTimes(1);
+
+    copySpy.mockRestore();
+  });
+});
+
+describe('renameArtifact — guards against a relative absolutePath (finding 2)', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-rename-guard-'));
+  });
+  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  // This is the same escape write-authorization's four sites already close,
+  // now closed at the fifth: a RELATIVE absolutePath (the pre-fix classifier
+  // bug, or a record deliberately left external because its real path escapes
+  // the project root with `..`) must never reach fs.access/fs.rename, which
+  // would resolve it against the PROCESS cwd — a real filesystem mutation
+  // outside the project, not just a stale read.
+  it('refuses to rename an external record whose absolutePath is a relative string', async () => {
+    const { artifactId } = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'play.html', kind: 'external', absolutePath: 'flappy-bird/play.html',
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+
+    const accessSpy = vi.spyOn(fsPromises, 'access');
+    const renameSpy = vi.spyOn(fsPromises, 'rename');
+
+    const result = await renameArtifact(projectRoot, artifactId!, 'renamed');
+
+    expect(result).toEqual({ ok: false, error: 'no-path' });
+    // Neither the collision check nor the actual rename may touch the
+    // filesystem with a path built from the unguarded relative string.
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(renameSpy).not.toHaveBeenCalled();
+
+    // The record itself must be untouched.
+    const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(sidecar.artifacts[0].absolutePath).toBe('flappy-bird/play.html');
+
+    accessSpy.mockRestore();
+    renameSpy.mockRestore();
+  });
+
+  // Sanity check that the guard doesn't over-fire: a genuinely absolute
+  // external path still renames normally.
+  it('still renames an external record with a genuinely absolute absolutePath', async () => {
+    const filePath = join(projectRoot, 'outside.txt');
+    writeFileSync(filePath, 'hello');
+    const { artifactId } = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'outside.txt', kind: 'external', absolutePath: filePath,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+
+    const result = await renameArtifact(projectRoot, artifactId!, 'renamed-outside');
+    expect(result.ok).toBe(true);
+
+    const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(sidecar.artifacts[0].absolutePath).toBe(join(projectRoot, 'renamed-outside.txt').replace(/\\/g, '/'));
   });
 });

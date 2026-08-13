@@ -40,11 +40,18 @@ export async function countArtifacts(projectRoot: string): Promise<number> {
   // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
   // Delete tool, so this is the common case). fs.access in parallel is cheap.
   const alive = await Promise.all(visible.map(async (a: any) => {
-    const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath!;
-    // Same corrupt-record guard as artifacts:check-existence — never let
-    // fs.access resolve a relative record against the process cwd and count a
-    // coincidentally-named file as this artifact.
-    if (a.kind !== 'internal' && !isAbsoluteRecorded(full)) return false;
+    const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath;
+    // Fix: a null `absolutePath` (a malformed/legacy external record) must be
+    // treated as not-alive BEFORE isAbsoluteRecorded runs — that guard calls
+    // path.isAbsolute(), which throws a TypeError on null/undefined rather than
+    // returning false. The old `fs.access(null)` call threw INSIDE the try
+    // below and was swallowed to `false`; this guard sits OUTSIDE that try, so
+    // an unguarded null would throw out of countArtifacts instead of quietly
+    // not counting the record. Same corrupt-record guard as
+    // artifacts:check-existence otherwise — never let fs.access resolve a
+    // relative record against the process cwd and count a coincidentally-named
+    // file as this artifact.
+    if (a.kind !== 'internal' && (full == null || !isAbsoluteRecorded(full))) return false;
     try { await fs.promises.access(full); return true; } catch { return false; }
   }));
   return alive.filter(Boolean).length;
