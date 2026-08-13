@@ -6,6 +6,7 @@ import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from '../src/main/harness/specialists/limits';
 
 // ---- Task 7: the FOREGROUND specialist run ----------------------------------
 // spawnSpecialist mints a child (Task 5), delivers the brief as its first turn,
@@ -560,5 +561,298 @@ describe('compaction-finalize steer (Task 12, item 4)', () => {
     });
 
     expect(postSteerSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Task 7: heartbeat staleness — flags, never kills -----------------------
+// Liveness is heartbeat-based, never wall-clock (spec §3): runSpecialist's
+// listener tracks lastActivityAt + an open-tool-call set and polls them on an
+// interval that only ever flips a `stale` flag on the ledger record (read by
+// Task 5's status block) — it never aborts, interrupts, or fails the child.
+// These tests use vitest fake timers and a model whose FIRST doStream call
+// hangs until the test calls `release()`, so a synthetic event can be fired
+// directly on the child's OWN session emitter (same technique the
+// compaction-finalize suite above uses) at controlled fake-timer offsets,
+// with no live model turn racing the assertions. `release()` always lets that
+// turn finish normally, so every test proves the child actually completes.
+describe('heartbeat staleness (Task 7)', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-stale-')); });
+  afterEach(async () => {
+    vi.useRealTimers();
+    await host?.destroyAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const REPORT_CHUNKS = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+
+  // Scoped fake-timer allowlist (never the bare `vi.useFakeTimers()`): the
+  // host's send() intentionally defers the actual turn by one setImmediate
+  // macrotask (native-session-host.ts:1430-1431, "let a same-tick send
+  // dispatch" elsewhere in this same file), and `ai`'s simulateReadableStream
+  // used below skips its own real/fake setTimeout(0) pacing via explicit null
+  // delays — so setImmediate never needs to be faked here. Faking it anyway
+  // would wedge every turn before its first doStream call ever runs (verified
+  // empirically while writing these tests).
+  const fakeStaleTimers = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+
+  /** Boots a host with a REAL ledger wired in (the plain `boot`/`withParent`
+   *  helpers elsewhere in this file never pass a NativeHome) and a model
+   *  whose first doStream call locates the freshly-minted child, then hangs
+   *  on `releasePromise` until the test calls `release()`. */
+  function bootHangingChild() {
+    let childId: string | undefined;
+    let childEntry: { session: any } | undefined;
+    let startedResolve: () => void;
+    const startedPromise = new Promise<void>((r) => { startedResolve = r; });
+    let releaseResolve: () => void;
+    const releasePromise = new Promise<void>((r) => { releaseResolve = r; });
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        if (call === 0) {
+          const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+          if (entry) { childId = entry[0] as string; childEntry = entry[1] as { session: any }; }
+          startedResolve();
+          await releasePromise;
+        }
+        call += 1;
+        return { stream: simulateReadableStream({ chunks: REPORT_CHUNKS, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    return {
+      release: () => releaseResolve(),
+      started: startedPromise,
+      getChildId: () => childId!,
+      getEntry: () => childEntry!,
+    };
+  }
+
+  /** Boots the SAME kind of host, but hangs REAL TOOL EXECUTION rather than
+   *  doStream. Tests 3/4 need to sit silent for 300s+ of (fake) time — long
+   *  enough to cross the harness session's OWN per-step prefill watchdog
+   *  (harness-session.ts's armWatchdog, ~240s+ by default), which would fire
+   *  its own heartbeat and reset OUR clock too if a doStream call were still
+   *  open (that overlap is real and correct — see the "open model request is
+   *  never stale" test above). The genuinely realistic shape of "an
+   *  unresolved tool call" is the model having ALREADY gotten its tool-call
+   *  chunk back (the step's stream is fully drained, so the per-step watchdog
+   *  is torn down — harness-session.ts:1840-1845 clears it in every step's
+   *  `finally`) and the REAL tool execution just taking a long time — so this
+   *  helper patches the child's real Glob tool to hang on `releasePromise`
+   *  instead, letting the REST of the driver (permissions, the real tool-use
+   *  event, doom-loop bookkeeping) run unmodified. */
+  function bootHangingTool() {
+    let childId: string | undefined;
+    let toolStartedResolve: () => void;
+    const toolStartedPromise = new Promise<void>((r) => { toolStartedResolve = r; });
+    let releaseResolve: () => void;
+    const releasePromise = new Promise<void>((r) => { releaseResolve = r; });
+    const TOOL_CALL_CHUNKS = stream(toolCallChunk('t1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls'));
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        if (call === 0) {
+          const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+          if (entry) {
+            childId = entry[0] as string;
+            const session = (entry[1] as { session: any }).session;
+            // Patch installed BEFORE this call returns, so it is in place
+            // before the driver can possibly reach the real execute() below —
+            // no race with when the test resumes after `started`/`toolStarted`.
+            const tool = session.toolByName.get('Glob');
+            const realExecute = tool.execute.bind(tool);
+            tool.execute = async (...args: any[]) => {
+              toolStartedResolve();
+              await releasePromise;
+              return realExecute(...args);
+            };
+          }
+          call += 1;
+          return { stream: simulateReadableStream({ chunks: TOOL_CALL_CHUNKS, initialDelayInMs: null, chunkDelayInMs: null }) };
+        }
+        call += 1;
+        return { stream: simulateReadableStream({ chunks: REPORT_CHUNKS, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    return {
+      release: () => releaseResolve(),
+      toolStarted: toolStartedPromise,
+      getChildId: () => childId!,
+    };
+  }
+
+  /** Monkeypatches ledger.updateIfRunning (the write path staleness uses,
+   *  same as the review-round-2 fault-injection tests above) so the test can
+   *  deterministically AWAIT the real write the interval fires — a bare
+   *  `await vi.advanceTimersByTimeAsync(...)` gives no guarantee the
+   *  fire-and-forget disk write it triggered has actually landed yet. */
+  function trackStaleWrites() {
+    const ledger = (host as any).ledger;
+    const real = ledger.updateIfRunning.bind(ledger);
+    let lastWrite: Promise<void> = Promise.resolve();
+    ledger.updateIfRunning = async (...args: any[]) => {
+      lastWrite = real(...args);
+      return lastWrite;
+    };
+    return { waitForWrite: () => lastWrite, ledger };
+  }
+
+  it('a silent child is flagged stale after the idle threshold and unflagged by its next event', async () => {
+    fakeStaleTimers();
+    const { release, started, getChildId, getEntry } = bootHangingChild();
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const { waitForWrite, ledger } = trackStaleWrites();
+
+    const runPromise = host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+    await started;
+    const childId = getChildId();
+
+    // Still under the idle threshold: not yet stale.
+    await vi.advanceTimersByTimeAsync(SPECIALIST_IDLE_STALE_MS - 10_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).not.toBe(true);
+
+    // Cross it — the next poll tick flags it.
+    await vi.advanceTimersByTimeAsync(20_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).toBe(true);
+
+    // The child's NEXT event (fired directly on its own session emitter, the
+    // exact channel runSpecialist's onEvent listens on) unflags it.
+    getEntry().session.emit('transcript-event', {
+      type: 'assistant-text', sessionId: childId, uuid: 'evt-unflag', timestamp: Date.now(),
+      data: { text: 'still working', partId: 't2' },
+    });
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).toBe(false);
+
+    // The run still finishes normally — staleness never touched it.
+    release();
+    const { report } = await runPromise;
+    expect(report).toContain('REPORT: done');
+  });
+
+  it('watchdog heartbeat events (text-less assistant-thinking) count as activity — an open model request is never stale', async () => {
+    fakeStaleTimers();
+    const { release, started, getChildId, getEntry } = bootHangingChild();
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const { waitForWrite, ledger } = trackStaleWrites();
+
+    const runPromise = host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+    await started;
+    const childId = getChildId();
+
+    // 90s of silence (under the 120s idle threshold)...
+    await vi.advanceTimersByTimeAsync(90_000);
+    // ...then the streaming watchdog's text-less, partId-less heartbeat
+    // arrives — session-store.ts:93-95 drops it from disk, but the emitter
+    // still fires, and that is exactly what must count as activity here (a
+    // slow local prefill must never be flagged stale).
+    getEntry().session.emit('transcript-event', {
+      type: 'assistant-thinking', sessionId: childId, uuid: 'evt-heartbeat', timestamp: Date.now(),
+      data: {},
+    });
+    await waitForWrite();
+
+    // Another 90s since the heartbeat (180s total since the run started, but
+    // only 90s since the last activity) — still must NOT be stale.
+    await vi.advanceTimersByTimeAsync(90_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).not.toBe(true);
+
+    // Sanity: the mechanism is not permanently exempted — with no further
+    // heartbeats it does eventually trip once genuinely 120s pass.
+    await vi.advanceTimersByTimeAsync(40_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).toBe(true);
+
+    release();
+    await runPromise;
+  });
+
+  it('an unresolved tool call uses the longer in-tool threshold', async () => {
+    fakeStaleTimers();
+    const { release, toolStarted, getChildId } = bootHangingTool();
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const { waitForWrite, ledger } = trackStaleWrites();
+
+    const runPromise = host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+    // Waits for the REAL Glob execute() to actually start — at that point the
+    // REAL tool-use event has already fired (openTools now holds 't1') and
+    // the model's step-level stream is fully drained, so there is no
+    // per-step watchdog running underneath this wait.
+    await toolStarted;
+    const childId = getChildId();
+
+    // Past the plain idle threshold (120s) but under the in-tool one (300s):
+    // an open tool call must NOT be flagged yet.
+    await vi.advanceTimersByTimeAsync(SPECIALIST_IDLE_STALE_MS + 60_000); // 180s
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).not.toBe(true);
+
+    // Past the in-tool threshold (300s total) — now it flags.
+    await vi.advanceTimersByTimeAsync(SPECIALIST_IN_TOOL_STALE_MS - (SPECIALIST_IDLE_STALE_MS + 60_000) + 10_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).toBe(true);
+
+    // The tool result arrives — the run finishes normally afterward.
+    release();
+    const { report } = await runPromise;
+    expect(report).toContain('REPORT: done');
+  });
+
+  it('staleness never interrupts, kills, or fails the child', async () => {
+    fakeStaleTimers();
+    const { release, toolStarted, getChildId } = bootHangingTool();
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const { waitForWrite, ledger } = trackStaleWrites();
+
+    const runPromise = host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+    await toolStarted;
+    const childId = getChildId();
+
+    // Go well stale — long past the (longer, since a tool is open) threshold.
+    await vi.advanceTimersByTimeAsync(SPECIALIST_IN_TOOL_STALE_MS + 60_000);
+    await waitForWrite();
+    expect(ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId)?.stale).toBe(true);
+
+    // The child completes normally afterward — no abort, no interrupt, no
+    // typed failure. spawnSpecialist resolves with its real report.
+    release();
+    const { report } = await runPromise;
+    expect(report).toContain('REPORT: done');
+
+    const rec = ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+    expect(rec?.status).toBe('completed');
+    // Torn down normally, same as every other successful run in this file.
+    expect((host as any).live.has(childId)).toBe(false);
   });
 });
