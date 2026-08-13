@@ -27,6 +27,30 @@ export type WriteResolution =
   | { ok: false; error: 'protected-path' | 'needs-confirm'; path: string }
   | { ok: false; error: 'conflict' };
 
+/**
+ * An external artifact's `absolutePath` is contractually canonical and absolute
+ * (shared/artifacts/types.ts). Records written before the 2026-08-12
+ * resolveTrackedPath fix violate that — they hold relative strings like
+ * 'flappy-bird/play.html'. Every filesystem call resolves a relative path
+ * against the PROCESS cwd (/home/destin for a GUI-launched Electron app, never
+ * the project root), so such a record can silently address a file outside the
+ * project, or — on the write path, whose ENOENT fallback resolves the PARENT —
+ * create one.
+ *
+ * EXPORTED because write-authorization is not the only site that builds a path
+ * from a record: artifacts:check-existence (ipc-handlers.ts) and countArtifacts
+ * (projects-index.ts) call fs.access on the raw string. All four sites share
+ * this one definition.
+ *
+ * path.isAbsolute is deliberately used bare. It is already platform-correct: on
+ * Windows it accepts 'C:\...' (a real absolute path there); on POSIX it rejects
+ * it, which lands cross-device Windows records on the same orphan outcome their
+ * realpath ENOENT already produced.
+ */
+export function isAbsoluteRecorded(p: string): boolean {
+  return path.isAbsolute(p);
+}
+
 async function inRealRoot(projectRoot: string, realPath: string): Promise<boolean> {
   const realRoot = await fs.promises.realpath(path.resolve(projectRoot)).catch(() => null);
   if (!realRoot) return false;
@@ -44,6 +68,10 @@ export async function authorizeArtifactRead(
   fullPath: string,
   mustStayInRoot: boolean
 ): Promise<ReadResolution> {
+  // Corrupt sidecar record — same outcome the caller already renders for these
+  // (orphan), but without letting realpath resolve it against the process cwd.
+  if (!isAbsoluteRecorded(fullPath)) return { ok: false, orphan: true };
+
   let realPath: string;
   try {
     realPath = await fs.promises.realpath(fullPath);
@@ -77,6 +105,12 @@ export async function authorizeArtifactWrite(args: {
   confirmed?: boolean;
 }): Promise<WriteResolution> {
   const { projectRoot, fullPath, mustStayInRoot, baseMtimeMs, confirmed } = args;
+
+  // Corrupt sidecar record. Critically, the ENOENT fallback below resolves the
+  // PARENT directory — for a bare 'ROADMAP.md' that is realpath('.'), so a save
+  // would create a stray file in the process cwd, outside the project, with the
+  // in-root check skipped (mustStayInRoot is false for externals).
+  if (!isAbsoluteRecorded(fullPath)) return { ok: false, error: 'artifact-not-found' };
 
   let realPath: string;
   try {
