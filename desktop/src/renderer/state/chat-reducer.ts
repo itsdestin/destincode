@@ -225,11 +225,26 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
-    segments.push({
-      type: 'text',
-      id: `sa-text-${action.uuid}`,
-      content: action.text,
-    });
+    // Fix: the native harness (harness-session.ts:1769) emits one
+    // assistant-text event per STREAM DELTA, not per whole message like CC's
+    // watcher — without coalescing, a specialist's report rendered as
+    // hundreds of separately-markdown-rendered blocks, breaking markdown
+    // that spans a chunk boundary. Mirror the main-timeline merge (below,
+    // TRANSCRIPT_ASSISTANT_TEXT case): same partId as the LAST segment →
+    // append into it; otherwise push a new segment. CC never sets partId,
+    // so its events keep today's one-segment-per-event behavior.
+    const lastIdx = segments.length - 1;
+    const last = lastIdx >= 0 ? segments[lastIdx] : null;
+    if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
+      segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else {
+      segments.push({
+        type: 'text',
+        id: `sa-text-${action.uuid}`,
+        content: action.text,
+        partId: action.partId,
+      });
+    }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
     const existingIdx = segments.findIndex(
       s => s.type === 'tool' && s.toolUseId === action.toolUseId,
@@ -863,6 +878,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            // Carried for the same reason as denyListed: ToolCard gates the
+            // "Always allow" button on it, so losing it here would re-offer a
+            // grant the engine can never honor.
+            external: synTool.external,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -1226,6 +1245,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 ? { input: action.input } : {}),
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
         });
         found = true;
       }
@@ -1251,6 +1271,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
         });
 
         const groupId = nextGroupId();

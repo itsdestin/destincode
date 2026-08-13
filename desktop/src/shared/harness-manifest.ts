@@ -45,8 +45,13 @@ export const NATIVE_TOOL_NAMES = [
  *  preset would do exactly what the registry↔manifest guard exists to prevent:
  *  tell the model about a tool that, on a small local model or a machine with no
  *  skills installed, is not attached. The model learns about it the only reliable
- *  way — from the tool schema buildAiTools() actually sends. */
-export const CONDITIONAL_TOOL_NAMES = ['Skill'] as const;
+ *  way — from the tool schema buildAiTools() actually sends.
+ *
+ *  `Task` (Task 6, spec decision 4) exists only when profile.canDelegate is
+ *  true AND the session is not itself a specialist child — a weak/unverified
+ *  orchestrator or a specialist attempting depth-2 delegation must never even
+ *  see the tool on its schema, same reasoning as Skill above. */
+export const CONDITIONAL_TOOL_NAMES = ['Skill', 'Task'] as const;
 
 export const ASSISTANT_PRESET: HarnessManifest = {
   schema: 1,

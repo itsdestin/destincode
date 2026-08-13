@@ -238,6 +238,34 @@ describe('SessionStore', () => {
       expect(store.has('s-1')).toBe(false); // no create() call in this test
     });
   });
+
+  describe('specialist child headers (plan 1a)', () => {
+    const CHILD: NativeSessionHeader = {
+      ...HEADER, sessionId: 'child-1',
+      parentSessionId: 'root-1', sessionKind: 'specialist', agentType: 'explorer',
+    };
+    it('round-trips the additive child fields through create() and readHeader', async () => {
+      await store.create(CHILD);
+      const back = store.readHeader('child-1', HEADER.cwd);
+      expect(back?.parentSessionId).toBe('root-1');
+      expect(back?.agentType).toBe('explorer');
+    });
+    it('list() hides specialist children by default and includes them on request', async () => {
+      await store.create({ ...HEADER, sessionId: 'root-1' });
+      await store.create(CHILD);
+      const defaults = await store.list();
+      expect(defaults.map(e => e.sessionId)).toEqual(['root-1']);
+      const all = await store.list({ includeChildren: true });
+      expect(all.map(e => e.sessionId).sort()).toEqual(['child-1', 'root-1']);
+    });
+    it('a v1 header WITHOUT the new fields still validates (no migration)', async () => {
+      await store.create({ ...HEADER, sessionId: 'old-1' });   // exactly the pre-plan-1a field set
+      const back = store.readHeader('old-1', HEADER.cwd);
+      expect(back?.sessionId).toBe('old-1');
+      expect(back?.parentSessionId).toBeUndefined();
+      expect(back?.sessionKind).toBeUndefined();
+    });
+  });
 });
 
 // Task 3 (M2 plan) — pins the DELIBERATE divergence documented at the top of

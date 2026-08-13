@@ -4,8 +4,12 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
+import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
+import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -444,6 +448,61 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // ---- Task 6 review fix 2: the per-parent slot/writer bookkeeping had zero
+  // host-level tests before this — everything exercising it went through
+  // tools/task.ts's fakes (task-tool.test.ts), which never touch the REAL host
+  // methods. Drives tryReserveSpecialistSlot/releaseSpecialistSlot/
+  // isSpecialistWriterBusy directly, keyed by an arbitrary parent id (no live
+  // session needed — these three are pure bookkeeping over host-owned Maps,
+  // enforced independently of whether a parent session actually exists). ----
+  describe('specialist slot + writer-lock bookkeeping (Task 6)', () => {
+    it('ceiling: HOSTED_MAX_CONCURRENT_SPECIALISTS reserves succeed for one parent, the next is refused', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        expect(host.tryReserveSpecialistSlot('A')).toBe(true);
+      }
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+    });
+
+    it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);   // A is full
+      expect(host.tryReserveSpecialistSlot('B')).toBe(true);    // B's own ceiling is untouched
+    });
+
+    it('release: freeing one slot lets A reserve again; releasing to zero drops the map entry', () => {
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+      host.releaseSpecialistSlot('A');
+      expect(host.tryReserveSpecialistSlot('A')).toBe(true);    // one freed → one more fits
+      // Release every reservation currently held (back at the ceiling after the
+      // line above) down to zero — the map entry must not linger at 0 forever
+      // (releaseSpecialistSlot's own header: "so a parent that never delegates
+      // again doesn't linger in the map").
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.releaseSpecialistSlot('A');
+      expect((host as any).specialistSlots.has('A')).toBe(false);
+    });
+
+    it('releasing a parent with no reservation is a harmless no-op', () => {
+      expect(() => host.releaseSpecialistSlot('never-reserved')).not.toThrow();
+      expect((host as any).specialistSlots.has('never-reserved')).toBe(false);
+    });
+
+    it('writer lock: busy only for the parent that holds it, never an unrelated parent; clearing it frees the parent up', () => {
+      expect(host.isSpecialistWriterBusy('A')).toBe(false);
+      // No public setter exists — spawnSpecialist is the only production writer
+      // (native-session-host.ts ~:220), and it always tears the lock back down
+      // in the SAME call (Fix 5 below) before ever returning. Reaching the Map
+      // directly is how tools/task.ts's own isWriterBusy() gate — read while a
+      // sibling Task call is still IN FLIGHT — actually gets pinned at the host
+      // level rather than only through task-tool.test.ts's fakes.
+      (host as any).activeWriterChild.set('A', 'child-x');
+      expect(host.isSpecialistWriterBusy('A')).toBe(true);
+      expect(host.isSpecialistWriterBusy('B')).toBe(false);     // per-parent isolation
+      (host as any).activeWriterChild.delete('A');
+      expect(host.isSpecialistWriterBusy('A')).toBe(false);
+    });
+  });
+
   // ---- Task 5: the host resolves + threads a CapabilityProfile per binding ----
   describe('capability profile threading', () => {
     // Binding-aware fakes: a 'local' provider is a small local engine; anything
@@ -632,6 +691,10 @@ describe('NativeSessionHost', () => {
       const hangingStore = {
         rulesFor: async () => [] as any[],
         remember: () => new Promise<void>(() => { /* never resolves */ }),
+        // Present only to satisfy RememberedRuleStore, which the revocation task
+        // widened with remove/removeProject. Never called in this test.
+        remove: async () => false,
+        removeProject: async () => false,
       };
       const p = new NativeSessionHost(
         new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
@@ -654,6 +717,174 @@ describe('NativeSessionHost', () => {
       await waitForTurnComplete(p, 1);
       expect(asks).toHaveLength(1);       // still just the first ask (no re-ask)
       expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
+    });
+  });
+
+  // ---- M5 2a Task 7: revocation that reaches a LIVE session ----
+  // The whole feature rests on this. buildDecide() unions the on-disk rules with
+  // the per-session `rememberedFor` map on EVERY permission decision, so deleting
+  // a rule from disk alone leaves a running session still granting exactly what
+  // the user just revoked. These tests drive REAL turns (writeFactory builds a
+  // fresh scripted model per turn, so every turn genuinely re-attempts the gated
+  // Write) and assert on whether the session asks again — the only observable
+  // that proves the revoke actually landed.
+  describe('revokeRule / revokeProject', () => {
+    const binding = { providerId: 'openrouter', modelId: 'm' } as const;
+
+    /** A host wired to the given remembered-rule store, driving the Write-then-stop turn. */
+    const revokeHost = (permStore: any) => new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      permStore, '9.9.9',
+    );
+
+    /** Drive one whole turn whose gated Write is answered with "Always allow".
+     *  Sequential by construction — firstAsk/waitForTurnComplete are host-wide,
+     *  not per-session, so two of these must never overlap. */
+    async function alwaysAllowTurn(p: NativeSessionHost, sessionId: string, text: string): Promise<void> {
+      const ask = firstAsk(p);
+      const done = waitForTurnComplete(p, 1);
+      p.send(sessionId, text);
+      p.respondPermission(await ask, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
+      await done;
+    }
+
+    /** Drive one whole turn and report whether it raised a permission ask.
+     *  Answers any ask with a deny so the turn always finishes — a firstAsk()
+     *  await would hang forever on the (expected) no-ask path. */
+    async function turnAsked(p: NativeSessionHost, sessionId: string, text: string): Promise<boolean> {
+      let asked = false;
+      const onHook = (e: any) => {
+        if (e.type !== 'PermissionRequest' || asked) return;
+        asked = true;
+        p.respondPermission(e.payload._requestId, { decision: { behavior: 'deny' } });
+      };
+      p.on('hook-event', onHook);
+      const done = waitForTurnComplete(p, 1);
+      p.send(sessionId, text);
+      await done;
+      p.off('hook-event', onHook);
+      return asked;
+    }
+
+    /** The disk persist behind "Always allow" is fire-and-forget (mutateJson under
+     *  a file lock), so wait for it to land before revoking — otherwise remove()
+     *  could run BEFORE the write and report a miss that is really a race. */
+    async function waitForStoredRule(store: PermissionStore, cwd: string): Promise<PermissionRule> {
+      for (let i = 0; i < 100; i++) {
+        const hit = (await store.rulesFor(cwd)).find((r) => r.tool === 'Write' && r.action === 'allow');
+        if (hit) return hit;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error('the remembered Write rule never reached disk');
+    }
+
+    it('stops a live session granting the revoked rule', async () => {
+      const store = new PermissionStore(new NativeHome(root));
+      const p = revokeHost(store);
+      await p.create({ sessionId: 's', cwd: root, binding });
+
+      await alwaysAllowTurn(p, 's', 'write once');
+      expect(await turnAsked(p, 's', 'write again')).toBe(false);   // remembered — no ask
+
+      // Pass the rule AS STORED, which carries a grantedAt key the in-memory copy
+      // never had. Matching must be on the (tool, pattern, action) TRIPLE — a
+      // whole-object comparison would silently stop dropping the in-memory rule.
+      const stored = await waitForStoredRule(store, root);
+      expect((stored as any).grantedAt).toBeTypeOf('string');
+      await expect(p.revokeRule(cwdToProjectSlug(root), stored)).resolves.toBe(true);
+
+      // Disk is clear AND the SAME still-running session asks again. If revokeRule
+      // had only touched disk, rememberedFor would still grant and this stays false.
+      expect(await store.rulesFor(root)).toEqual([]);
+      expect(await turnAsked(p, 's', 'write a third time')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('clears sessions whose cwd differs in spelling but shares the slug', async () => {
+      // cwdToProjectSlug collapses spaces to '-' exactly as it does '/', so these
+      // two REAL, distinct directories genuinely share one entry on disk.
+      const spacedCwd = path.join(root, 'my project');
+      const dashedCwd = path.join(root, 'my-project');
+      fs.mkdirSync(spacedCwd); fs.mkdirSync(dashedCwd);
+      expect(cwdToProjectSlug(spacedCwd)).toBe(cwdToProjectSlug(dashedCwd));   // the premise
+
+      // A store that never grants and never persists: rulesFor is always [], so
+      // the ONLY thing that can make either session grant is its in-memory copy —
+      // which is precisely what a slug-keyed drop has to clear in BOTH sessions.
+      // (A real store would also mean the first session's disk write silently
+      // pre-granted the second one, so it could never build an in-memory copy.)
+      const memoryOnlyStore = {
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      };
+      const p = revokeHost(memoryOnlyStore);
+      await p.create({ sessionId: 'spaced', cwd: spacedCwd, binding });
+      await p.create({ sessionId: 'dashed', cwd: dashedCwd, binding });
+      await alwaysAllowTurn(p, 'spaced', 'write once');
+      await alwaysAllowTurn(p, 'dashed', 'write once');
+      expect(await turnAsked(p, 'spaced', 'again')).toBe(false);
+      expect(await turnAsked(p, 'dashed', 'again')).toBe(false);
+
+      await p.revokeRule(cwdToProjectSlug(spacedCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+
+      // Path equality would have cleared at most one of these.
+      expect(await turnAsked(p, 'spaced', 'after revoke')).toBe(true);
+      expect(await turnAsked(p, 'dashed', 'after revoke')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('leaves an unrelated project untouched', async () => {
+      const mineCwd = path.join(root, 'mine');
+      const otherCwd = path.join(root, 'other');
+      fs.mkdirSync(mineCwd); fs.mkdirSync(otherCwd);
+      const memoryOnlyStore = {
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      };
+      const p = revokeHost(memoryOnlyStore);
+      await p.create({ sessionId: 'mine', cwd: mineCwd, binding });
+      await p.create({ sessionId: 'other', cwd: otherCwd, binding });
+      await alwaysAllowTurn(p, 'mine', 'write once');
+      await alwaysAllowTurn(p, 'other', 'write once');
+
+      await p.revokeRule(cwdToProjectSlug(mineCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+
+      expect(await turnAsked(p, 'mine', 'after revoke')).toBe(true);
+      expect(await turnAsked(p, 'other', 'after revoke')).toBe(false);   // untouched
+      await p.destroyAll();
+    });
+
+    it('returns false when the store matched nothing', async () => {
+      const p = revokeHost(new PermissionStore(new NativeHome(root)));
+      await expect(
+        p.revokeRule('-never-granted', { tool: 'Bash', pattern: 'ls', action: 'allow' }),
+      ).resolves.toBe(false);
+      await p.destroyAll();
+    });
+
+    it('revokeProject clears the whole slice on disk AND in the live session', async () => {
+      const store = new PermissionStore(new NativeHome(root));
+      const p = revokeHost(store);
+      await p.create({ sessionId: 's', cwd: root, binding });
+      await alwaysAllowTurn(p, 's', 'write once');
+      await waitForStoredRule(store, root);
+      expect(await turnAsked(p, 's', 'write again')).toBe(false);
+
+      await expect(p.revokeProject(cwdToProjectSlug(root))).resolves.toBe(true);
+
+      expect(await store.list()).toEqual([]);
+      expect(await turnAsked(p, 's', 'after revoke')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('revokeProject returns false for a slug with nothing stored', async () => {
+      const p = revokeHost(new PermissionStore(new NativeHome(root)));
+      await expect(p.revokeProject('-never-granted')).resolves.toBe(false);
       await p.destroyAll();
     });
   });
@@ -897,6 +1128,404 @@ describe('NativeSessionHost', () => {
       const types = store.readEvents('qz2', root).map((e) => e.type);
       expect(types).not.toContain('turn-complete');
       await qHost.destroyAll();
+    });
+  });
+
+  // ---- Specialists (plan 1a, Task 5): createChild mints a CHILD session —
+  // an ordinary HarnessSession marked by parentage, cold-started, with a
+  // charter-capped tool + permission surface and no route to a user ask.
+  describe('specialist children (Task 5)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+    // Boot a host we hold the store handle for (the suite's shared `host`
+    // builds its store inline) so a test can read the child's header back.
+    function bootHost(modelFactory: any = factory, skillCatalog?: any) {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, modelFactory, async () => null, async () => null, async () => null,
+        undefined, undefined, undefined, skillCatalog,
+      );
+      return { store, h };
+    }
+    async function withParent(modelFactory: any = factory, skillCatalog?: any) {
+      const { store, h } = bootHost(modelFactory, skillCatalog);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      return { store, h };
+    }
+    // The child's live HarnessSession — Task 7 reaches it the same way (through
+    // the host's live map); here it is the only route to the child's tool surface.
+    const childSession = (h: NativeSessionHost, id: string) => (h as any).live.get(id).session;
+    const toolNames = (h: NativeSessionHost, id: string) => Object.keys(childSession(h, id).buildAiTools());
+
+    it('createChild mints a child session with parent header fields and restricted tools', async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.parentSessionId).toBe('root-1');
+      expect(header?.sessionKind).toBe('specialist');
+      expect(header?.agentType).toBe('explorer');
+      expect(header?.cwd).toBe(root);
+      expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });   // inherits the parent's model
+      // Task 8: the child's assigned fun name lands in the header's existing
+      // `title` field — the transcript header/list machinery renders it for
+      // free, no new plumbing needed beyond this write.
+      expect(header?.title).toMatch(/^\w+ the \w+ (Explorer|Researcher|Reviewer|Worker)$/);
+      // Exactly the definition's allowlist — no Write/Edit/Bash/TodoWrite/AskUserQuestion.
+      expect(toolNames(h, childId).sort()).toEqual([...EXPLORER.allowedTools].sort());
+      await h.destroyAll();
+    });
+
+    it('createChild rejects a workDir outside the parent cwd', async () => {
+      const { h } = await withParent();
+      await expect(h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: '/etc', parentToolCallId: 'tc-1',
+      })).rejects.toThrow(/inside the parent/i);
+      await h.destroyAll();
+    });
+
+    it('createChild accepts a subdirectory of the parent cwd (a narrower jail is fine)', async () => {
+      const { store, h } = await withParent();
+      const sub = path.join(root, 'sub');
+      fs.mkdirSync(sub, { recursive: true });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: sub, parentToolCallId: 'tc-1',
+      });
+      expect(store.readHeader(childId, sub)?.cwd).toBe(sub);
+      await h.destroyAll();
+    });
+
+    it('createChild refuses a parent that is not live — never a child with no owner', async () => {
+      const { h } = await withParent();
+      await expect(h.createChild('ghost', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      })).rejects.toThrow(/ghost/);
+      await h.destroyAll();
+    });
+
+    it('a child session has no Skill tool and no Task tool (cold-start contract, depth 1)', async () => {
+      // The host IS given a populated catalog, so the parent gets the Skill tool
+      // — that is what makes the child's absence meaningful rather than an
+      // artifact of the sandboxed HOME (tests/global-setup.ts) finding no skills.
+      const catalog = { list: () => [{ id: 'journal', description: 'Write a journal entry' }], load: (id: string) => ({ id, displayName: id, description: 'd', body: 'b' }) };
+      const { h } = await withParent(factory, catalog);
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      expect(toolNames(h, 'root-1')).toContain('Skill');   // the parent can reach skills…
+      const names = toolNames(h, childId);
+      expect(names).not.toContain('Skill');                // …the child cannot
+      expect(names).not.toContain('Task');                 // depth 1 by toolset omission
+      // Explicit-suppression pin: the child was HANDED an empty catalog rather
+      // than left to fall back to createSkillCatalog(). Both look identical in
+      // this suite (the sandboxed HOME has no skills either), so only reading
+      // back what was injected can tell them apart — and in production that is
+      // the difference between "no skills" and "the user's whole library".
+      const injected = (childSession(h, childId) as any).opts.skillCatalog;
+      expect(injected.list()).toEqual([]);
+      expect(() => injected.load('journal')).toThrow(/No skill named/);
+      // Same for MCP: no lease is acquired for a child, so no servers ride along.
+      expect((childSession(h, childId) as any).opts.mcpServers).toBeUndefined();
+      await h.destroyAll();
+    });
+
+    it('children are hidden from the Resume Browser list', async () => {
+      const { h } = await withParent();
+      await h.createChild('root-1', { specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1' });
+      expect(h.list().map((r) => r.sessionId)).toEqual(['root-1']);
+      await h.destroyAll();
+    });
+
+    it("a child's events persist under its OWN id and never reach the host emitter (display copies are Task 7)", async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const onHost: any[] = [];
+      h.on('transcript-event', (e) => onHost.push(e));
+      await childSession(h, childId).send('go');
+      await h.drain(childId);
+      // Persisted to the child's own JSONL...
+      expect(store.readEvents(childId, root).map((e) => e.type)).toEqual(['user-message', 'assistant-text', 'turn-complete']);
+      // ...and NOT forwarded raw to the renderer: an un-stamped child event
+      // would mint a conversation record for a session no window owns.
+      expect(onHost.filter((e) => e.sessionId === childId)).toEqual([]);
+      await h.destroyAll();
+    });
+
+    it("the child runs inside the launch envelope: a parent 'ask' for an in-charter tool never prompts", async () => {
+      // Worker charter is read-write and lists Write; the parent sits in the
+      // default 'ask' mode, where Write would normally raise a permission ask.
+      // The envelope (the user's approval at spawn) converts that to an allow —
+      // and no ask may reach the broker, because a child has no user.
+      const WORKER = resolveSpecialist('worker')!;
+      const writeOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Write', { file_path: 'child-note.txt', content: 'hi' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => writeOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      await childSession(h, childId).send('go');
+      expect(asks).toEqual([]);                                           // no ask was raised
+      expect(fs.existsSync(path.join(root, 'child-note.txt'))).toBe(true); // the tool actually ran
+      await h.destroyAll();
+    });
+
+    it("the destructive deny-list cuts through the envelope: a spawn-approved child still cannot rm -rf", async () => {
+      // Critical review fix: launch consent (the envelope) is consent for the
+      // specialist's CHARTER of work, not for `rm -rf` — spec §5 says no charter
+      // or envelope overrides the destructive deny-list. Worker is read-write and
+      // has Bash, and the parent sits in the default 'ask' mode where the
+      // deny-list layer marks `rm *` denyListed — exactly the shape that used to
+      // fall into the envelope branch and come out an allow.
+      const WORKER = resolveSpecialist('worker')!;
+      fs.writeFileSync(path.join(root, 'marker.txt'), 'do not delete me');
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      const events: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/destructive-action list/i);
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);   // never ran
+      expect(asks).toEqual([]);                                          // no ask reached the host either
+      await h.destroyAll();
+    });
+
+    it("an external-directory Read is declined by the wired ask policy, not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
+      // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
+      // askUser only through the max_steps gate, which short-circuits identically
+      // whether `askUser: childAskPolicy()` is wired or deleted from createChild —
+      // so that pin alone cannot catch the wiring being dropped. This drives a
+      // DIFFERENT askUser call site: the external-directory forced ask
+      // (harness-session.ts checkPathGuard 'external' verdict, ~:1830-1852). With
+      // the policy wired, childAskPolicy denies it and the model reads the
+      // DECLINED copy (~:1854, "user declined"). With askUser undefined,
+      // harness-session's own guard answers first with the "No approval handler
+      // is wired... configuration error" copy (~:1851) instead — the two are
+      // mutually exclusive, so asserting the declined copy AND the absence of the
+      // config-error copy discriminates policy-wired from policy-missing.
+      const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-external-'));
+      const outsideFile = path.join(external, 'secret.txt');
+      fs.writeFileSync(outsideFile, 'outside the jail');
+      const readOutside = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Read', { file_path: outsideFile }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => readOutside());
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/user declined|dismissed/i);
+      expect(res.data.toolResult).not.toMatch(/No approval handler is wired/i);
+      fs.rmSync(external, { recursive: true, force: true });
+      await h.destroyAll();
+    });
+
+    const writesOnce = (file: string) => async () => scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: file, content: 'x' }), finishChunk('tool-calls')),
+      stream(...textChunks('t', 'done'), finishChunk('stop')),
+    ]) as any;
+
+    it('a tool the specialist does not have is refused by omission, naming what it DOES have', async () => {
+      // Explorer is read-only and has no Write, so Write is never attached — the
+      // driver's unknown-tool result answers first and the charter cap in
+      // buildChildDecide is never consulted. That IS the contract: the outer
+      // layer already names the available tools, so the model gets a next step
+      // rather than retrying the same call.
+      const { h } = await withParent(writesOnce('nope.txt'));
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/Unknown tool Write/);
+      expect(res.data.toolResult).toMatch(/Read, Glob, Grep/);
+      expect(fs.existsSync(path.join(root, 'nope.txt'))).toBe(false);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);   // refusal, not a crash
+      await h.destroyAll();
+    });
+
+    it('the read-only charter still refuses a write tool a definition wrongly listed', async () => {
+      // The second cap earns its keep here: a definition that lists Write under a
+      // read-only charter DOES get the tool attached, so the tool filter can no
+      // longer help — decide() is what stops it, with a reason that says why.
+      // (The same layer is what would catch a dynamically-attached tool, since
+      // Skill and MCP tools are attached inside HarnessSession, not from `tools`.)
+      const MISDECLARED = { ...EXPLORER, allowedTools: [...EXPLORER.allowedTools, 'Write'] };
+      const { h } = await withParent(writesOnce('charter.txt'));
+      const { childId } = await h.createChild('root-1', {
+        specialist: MISDECLARED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      await childSession(h, childId).send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/read-only charter/i);
+      expect(fs.existsSync(path.join(root, 'charter.txt'))).toBe(false);
+      await h.destroyAll();
+    });
+
+    // Task 5.5 step 4 — the behavioral pin the ask-policy exists for. Four paths
+    // in harness-session call askUser directly, bypassing decide(); the step-cap
+    // gate is one of them. Wired to a broker, the child's ask would go to a
+    // sessionId no window owns, the reducer would drop it, and the promise would
+    // never resolve — the child would hang until teardown. With the policy it
+    // ends the turn cleanly.
+    it("stepCap is enforced: the turn ends with stopReason 'max_steps' instead of hanging, and no ask is raised", async () => {
+      const CAPPED = { ...EXPLORER, stepCap: 2 };   // definition-driven, not a global
+      // A model that never stops calling tools (scriptedModel replays its last
+      // script forever), so only the step cap can end this turn.
+      const loops = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
+      ]) as any;
+      const { h } = await withParent(async () => loops());
+      const { childId } = await h.createChild('root-1', {
+        specialist: CAPPED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+
+      await childSession(h, childId).send('go');   // must SETTLE — a hang fails by timeout
+
+      const done = events.find((e) => e.type === 'turn-complete');
+      expect(done).toBeDefined();
+      expect(done.data.stopReason).toBe('max_steps');
+      // The DEFINITION's cap is what stopped it, not the model-tier default:
+      // exactly two steps ran. Without the harness.limits.maxSteps wiring this
+      // model would loop to stepBudgetFor(modelId) — same stopReason, ~25 steps.
+      expect(events.filter((e) => e.type === 'tool-use')).toHaveLength(2);
+      expect(asks.filter((e) => e.payload?.sessionId === childId || e.payload?._sessionId === childId)).toEqual([]);
+      expect(asks).toEqual([]);   // nothing reached the host emitter at all
+      await h.destroyAll();
+    });
+
+    it("the child's permissions are keyed to the PARENT's project, not its work subdirectory", async () => {
+      // buildDecide looks remembered "Always allow" rules up by cwd. A child
+      // narrowed to a subdirectory must still read the rules the user granted
+      // for the PROJECT — grants follow the project, not the subtree — so the
+      // lookup has to use the parent's cwd even though the child runs in `sub`.
+      const rulesFor = vi.fn(async () => []);
+      const store = new SessionStore(new NativeHome(root));
+      const globOnce = async () => scriptedModel([
+        stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const h = new NativeSessionHost(store, globOnce, async () => null, async () => null, async () => null,
+        { rulesFor, remember: async () => { /* no-op */ } });
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const sub = path.join(root, 'sub-perms');
+      fs.mkdirSync(sub, { recursive: true });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: sub, parentToolCallId: 'tc-1',
+      });
+      rulesFor.mockClear();
+      await childSession(h, childId).send('go');
+      expect(rulesFor).toHaveBeenCalled();                                  // the child DID consult them
+      expect(rulesFor.mock.calls.map((c) => c[0])).toEqual([root]);         // ...under the parent's cwd
+      await h.destroyAll();
+    });
+
+    it('destroying the parent destroys its children and releases their model ref', async () => {
+      const { h } = await withParent();
+      const released: string[] = [];
+      h.setModelReleasedHandler((id) => released.push(id));
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      expect(h.sessionsForModel('m').sort()).toEqual([childId, 'root-1'].sort());
+
+      await h.destroy('root-1');
+      expect(h.isNative(childId)).toBe(false);          // the child went with its parent
+      expect(h.sessionsForModel('m')).toEqual([]);      // ...and gave back its model ref
+      expect(released).toEqual(['m']);
+      await h.destroyAll();
+    });
+
+    // ---- Task 6 review fix 1 (kept, retargeted at Task 7's real run loop):
+    // spawnSpecialist's finally block once released only the writer lock,
+    // leaving the child createChild() minted (live entry, disk header,
+    // retainModel ref, childrenOf registration) alive forever on EVERY Task
+    // call. Mirrors "destroying the parent destroys its children and releases
+    // their model ref" above, but drives the teardown through spawnSpecialist
+    // directly rather than through destroy(). The FAILED-run half of the same
+    // guard lives in specialist-run.test.ts. --
+    it('a completed spawnSpecialist run does not leak the minted child (leak guard)', async () => {
+      const { store, h } = await withParent();
+      const released: string[] = [];
+      h.setModelReleasedHandler((id) => released.push(id));
+
+      // The suite's default `factory` answers with one text step ("Hi there"),
+      // which IS this child's report — a one-shot specialist that says its
+      // piece and is torn down.
+      const { childId, report } = await h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      expect(report).toContain('Hi there');
+
+      // The persisted record still names it as this parent's child.
+      const childRow = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1');
+      expect(childRow?.sessionId).toBe(childId);
+
+      // No live child entry survives the run — the leak guard's whole point.
+      expect((h as any).live.has(childId)).toBe(false);
+      expect(h.isNative(childId)).toBe(false);
+      // De-registered from the parent's live children set too (destroy() does
+      // this; a leaked child would still show up here).
+      expect((h as any).childrenOf.get('root-1')?.has(childId)).toBeFalsy();
+      // store.list() still carries the REAL persisted record (the child did
+      // genuinely exist for a moment) but exactly once — no duplicate, no
+      // dangling live-only phantom with no matching header.
+      expect(store.list({ includeChildren: true }).filter((r) => r.sessionId === childId)).toHaveLength(1);
+
+      // The child's model ref did NOT leak: destroying the parent (its only
+      // remaining user of 'm') now fully releases the model. Before this fix,
+      // the leaked child's retainModel() ref would keep 'm' referenced
+      // forever even after the parent was gone — exactly "a local model could
+      // never unload" from the review finding.
+      await h.destroy('root-1');
+      expect(released).toEqual(['m']);
+      await h.destroyAll();
+    });
+
+    it('interrupting the parent interrupts its running children', async () => {
+      const { h } = await withParent(delayedFactory);
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const turn = childSession(h, childId).send('go');   // slow (delayedFactory) turn
+      await new Promise((r) => setTimeout(r, 20));
+      h.interrupt('root-1');
+      await turn;                                         // settles — no hang
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
+      await h.destroyAll();
     });
   });
 });

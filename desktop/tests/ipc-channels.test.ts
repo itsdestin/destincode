@@ -1007,3 +1007,36 @@ describe('native:* channel parity', () => {
     for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`"${t}"`);
   });
 });
+
+// Five-surface parity for the permissions management UI (M5 2a). A channel
+// missing from remote-shim.ts or SessionService.kt would silently break the
+// screen on remote or Android — the exact gap native:* had until 2026-07-28.
+describe('permissions:* channel parity', () => {
+  const NEW_TYPES = ['permissions:list', 'permissions:remove', 'permissions:remove-project'];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'permissions:list': 'IPC.PERMISSIONS_LIST',
+    'permissions:remove': 'IPC.PERMISSIONS_REMOVE',
+    'permissions:remove-project': 'IPC.PERMISSIONS_REMOVE_PROJECT',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+});

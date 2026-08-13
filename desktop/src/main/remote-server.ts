@@ -21,6 +21,8 @@ import type { SearchKeyStore } from './harness/search/search-key-store';
 import type { SearchService } from './harness/search/search-service';
 import type { EngineManager } from './engine/engine-manager';
 import type { ModelManager } from './models/model-manager';
+import type { PermissionStore } from './harness/permission-store';
+import type { PermissionRule } from '../shared/permission-types';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
@@ -101,7 +103,9 @@ export class RemoteServer {
   // native:* / provider:* WS cases no-op until then.
   // Merge note: nativeRuntime carries modelManager (Plan C) AND the leaseWiring
   // field (Plan 2b) — both were added independently on master and this branch.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService } | null = null;
+  // permissionStore (M5 2a) is carried for the READ side only — permissions:list.
+  // The two revokes go through nativeHost, which also clears live in-memory state.
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -140,7 +144,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore }): void {
     this.nativeRuntime = rt;
   }
 
@@ -942,6 +946,37 @@ export class RemoteServer {
           ? await this.nativeRuntime.searchService.testBackend(payload.backend, payload.key)
           : { ok: false, message: 'Native runtime not available.' };
         this.respond(client.ws, type, id, res);
+        break;
+      }
+      // Remembered "Always allow" rules (M5 2a) — mirror the desktop IPC handlers
+      // so a remote client (a phone, typically) reaches the SAME permissionStore /
+      // nativeHost instances. There is no generic passthrough here: a channel with
+      // no explicit case gets no reply at all, which hangs the request instead of
+      // failing it. Payloads arrive object-wrapped from remote-shim (payload.slug /
+      // payload.rule), matching the search:* cases above.
+      case 'permissions:list': {
+        // Read-only: the store is the disk authority. No native runtime → no
+        // grants to show, same shape the renderer already handles for an empty list.
+        this.respond(client.ws, type, id, this.nativeRuntime ? await this.nativeRuntime.permissionStore.list() : []);
+        break;
+      }
+      case 'permissions:remove': {
+        // nativeHost.revokeRule, NEVER permissionStore.remove — the host also
+        // clears the live in-memory rule so an already-running session stops
+        // granting what was just revoked. false = nothing matched (stale list),
+        // which is also the honest answer when the runtime isn't wired.
+        const removed = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.revokeRule(payload.slug, payload.rule as PermissionRule)
+          : false;
+        this.respond(client.ws, type, id, removed);
+        break;
+      }
+      case 'permissions:remove-project': {
+        // Same disk-plus-live-memory contract as permissions:remove above.
+        const removed = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.revokeProject(payload.slug)
+          : false;
+        this.respond(client.ws, type, id, removed);
         break;
       }
       case 'tags:list': {

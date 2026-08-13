@@ -3,6 +3,17 @@
 // gating, and defineTool() (registry.ts) wraps execute with truncation + errors.
 import type { z } from 'zod';
 import type { StructuredPatchHunk } from '../../../shared/types';
+import type { SpecialistDefinition } from '../specialists/registry';
+
+/** Task 6 — what the Task tool's execute() hands the host to actually run a
+ *  specialist. Structural, mirroring the rest of ToolServices: the tool never
+ *  imports NativeSessionHost, it only calls the callback the host injected. */
+export interface SpecialistSpawnOpts {
+  specialist: SpecialistDefinition;
+  prompt: string;
+  workDir: string;
+  parentToolCallId: string;
+}
 
 // Runtime services injected into tools that need process-level collaborators
 // (spec §3.2). WebSearch reads services.search — the chain-walking SearchService.
@@ -10,12 +21,40 @@ import type { StructuredPatchHunk } from '../../../shared/types';
 // imports the service implementation.
 export interface ToolServices {
   search?: { search(query: string, signal: AbortSignal): Promise<{ results: Array<{ title: string; url: string; snippet?: string }>; source: string }> };
+  /** Task 6 — the Task tool's host-side collaborators. Per-parent slot and
+   *  single-writer state live on NativeSessionHost (spec §5 Global
+   *  Constraints scope decision: PER-PARENT, never host-global), so the tool
+   *  can only reach them through these injected callbacks — same pattern as
+   *  `search` above. Absent on a session where the Task tool cannot possibly
+   *  be attached (e.g. a specialist child); present whenever profile.canDelegate
+   *  gates the tool on (harness-session.ts's syncTaskTool). */
+  specialists?: {
+    /** Reserve one of this parent's concurrent-specialist slots
+     *  (HOSTED_MAX_CONCURRENT_SPECIALISTS, per-parent). false = at capacity;
+     *  the caller must not spawn. A successful reservation MUST be paired
+     *  with exactly one releaseSlot() call, however the spawn turns out. */
+    tryReserveSlot(parentId: string): boolean;
+    releaseSlot(parentId: string): void;
+    /** True when a WRITE-capable specialist (charter: 'read-write') is
+     *  already running under this parent — the single-writer invariant
+     *  (spec §5): two concurrent write-capable children could race edits to
+     *  the same files. Read-only specialists never need to check this. */
+    isWriterBusy(parentId: string): boolean;
+    /** Mint + (eventually, Task 7) run the child, returning its final report. */
+    spawn(parentId: string, opts: SpecialistSpawnOpts): Promise<{ childId: string; report: string }>;
+  };
 }
 
 export interface ToolContext {
   sessionId: string;
   cwd: string;
   signal: AbortSignal;
+  /** The Task-tool call's own toolCallId (Task 6/7), when the driver knows
+   *  one — used as createChild's parentToolCallId so the host can later stamp
+   *  the child's display events with the launch card they belong under.
+   *  Absent for every non-driver test construction (harness-tools-core.test.ts
+   *  and friends never set it), which is fine: those never drive the Task tool. */
+  toolCallId?: string;
   /** read-before-edit registry: canonical path → mtimeMs at last Read. RESETS on resume (spec §2.5). */
   readRegistry: Map<string, number>;
   /** Scoped-persistence shell cwd: the directory the NEXT Bash call starts in.

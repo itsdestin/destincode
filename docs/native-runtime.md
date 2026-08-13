@@ -367,3 +367,112 @@ quit, and an OS SIGTERM bypass that handler entirely and leak the spawned MCP su
 `SessionManager.destroyAll()` and `HookRelay.stop()` ride the exact same single hook, so this is
 the existing quit-hook gap (logged as its own ROADMAP bug) applying to one more subsystem, not a
 new hole this work introduced.
+
+## Specialists (plan 1a)
+
+Design: workspace `docs/active/specs/2026-08-11-native-specialists-design.md`. Eight tasks built
+a Task tool that a native session's model can call to delegate a scoped piece of work to a
+**specialist** — a short-lived, foreground CHILD `HarnessSession` cold-started with a narrow tool
+allowlist, run to completion, and torn down. `harness/native-session-host.ts` (`createChild`,
+`spawnSpecialist`, `formatSpecialistReport`) and `harness/specialists/` (`registry.ts`,
+`builtins.ts`, `child-permissions.ts`, `child-ask-policy.ts`, `limits.ts`, `report-budget.ts`,
+`names.ts`) are the whole surface.
+
+- **A specialist child is an ordinary session, marked by parentage.** `NativeSessionHeader` grows
+  three ADDITIVE fields — `parentSessionId`, `sessionKind: 'specialist'`, `agentType` — so v1
+  session files need no migration. `createChild` writes them at header-create time; nothing else
+  in the persistence layer needed to change for a child to be a real, resumable, on-disk session.
+- **Depth-by-omission, not a depth counter.** No `SpecialistDefinition` lists `'Task'` in its
+  `allowedTools`, so a child's tool set is structurally incapable of spawning its own children —
+  there is no recursion guard to get wrong because there is no path to recurse through. Belt-and-
+  suspenders: `isSpecialistChild: true` on the child's `HarnessSessionOpts` is a second,
+  independent gate `syncTaskTool` checks before ever offering the Task tool, so a bug in the
+  allowlist filtering alone still cannot open depth-2 delegation.
+- **Frozen-surface re-emission: exactly three display types, never persisted under the parent.**
+  The child's own transcript-event listener does two things per event: (1) persist it, verbatim,
+  to the CHILD's own JSONL on the child's own append chain, and (2) if — and only if — the event's
+  type is one of `tool-use` / `tool-result` / `assistant-text` (the frozen `SUBAGENT_DISPLAY_TYPES`
+  set), re-emit a STAMPED COPY on the host's own event emitter, under the PARENT's `sessionId`,
+  carrying `data.agentId` (which child) and `data.parentAgentToolUseId` (which Task call). That
+  stamped copy is what the renderer's `applySubagentEvent` (`chat-reducer.ts`) consumes to fill in
+  the subagent card live. A `turn-complete` or `session-error` is deliberately NEVER in that set and
+  therefore never re-emitted — a stamped `turn-complete` would hit the conversation-record IPC
+  listener (`noteModelUsed`) and the title feeder under the PARENT's id, making a specialist's
+  internal turn boundary look like the parent finished a turn. The host is NOT wired via `wire()`
+  for this same reason: `wire()` is what makes a session mint a Conversation Store record and feed
+  the title feeder, and a child must never surface as a conversation the user never started.
+- **The envelope + deny-list cut-through.** A child's `decide()` (`child-permissions.ts`) is built
+  from the PARENT's fully resolved decide function, capped by the specialist's `charter`
+  (`'read-only'` or `'read-write'`) and `allowedTools` — a read-only charter cannot approve Write/
+  Edit/Bash even if the parent's own mode would. `envelopeGranted: true` in 1a means the Task-tool
+  call itself (which the parent's own permission stack already gated) IS the user's consent for
+  everything inside the child's charter — there is no second per-tool ask surface for a child's
+  own actions. `DESTRUCTIVE_DENY_LIST` still applies underneath the envelope unmodified: the
+  envelope raises what's grantable, it never lowers the floor guards below it already enforce.
+- **Charter-scoped consent key.** Remembered "Always allow" rules are built against the PARENT's
+  id and the PARENT's cwd (never the child's), because `buildDecide` keys live permission mode by
+  session id and remembered rules by cwd — both are properties of the delegating conversation and
+  its project, not of a one-shot child that will be gone before the rule could ever be looked up
+  again under the child's own id.
+- **Per-parent slots and single writer, never host-global.** `specialistSlots` (capped by
+  `HOSTED_MAX_CONCURRENT_SPECIALISTS`, `specialists/limits.ts`) and `activeWriterChild` (the
+  single-writer invariant — at most one `charter: 'read-write'` child running at a time per
+  parent, so two concurrent writers can't race edits to the same files) are BOTH keyed by parent
+  session id. An unrelated conversation's specialist fan-out never caps or blocks this one's.
+- **Cold-start contract.** A child gets NONE of the parent's conversation history — its system
+  prompt is the specialist's own definition body (not the preset's), its `<env>` block describes
+  the child's own `workDir`, and both the skill catalog and MCP servers are explicitly suppressed
+  (an empty catalog object, not an omission — `syncSkillTool` falls back to the FULL installed
+  catalog whenever `opts.skillCatalog` is `undefined`, so leaving it out would silently hand a
+  child the user's whole skill library). The entire brief the child ever sees is its first user
+  turn, delivered by `spawnSpecialist`.
+- **Containment.** A child's `workDir` must resolve to the parent's `cwd` or a subdirectory of it —
+  checked through the same `canonicalize`/`isUnderRoot` helpers the tool-layer path guards use, so
+  this check and `checkPathGuard` can never disagree about what counts as "inside."
+- **The names easter egg (Task 8).** Every child gets an alliterative fun title —
+  `"{Name} the {Descriptor} {Role}"` (e.g. "Rowan the Relentless Researcher") — drawn without
+  replacement from a shared first-name pool via `specialists/names.ts`'s `assignSpecialistName`,
+  scoped per PARENT (`NativeSessionHost`'s `takenNamesOf: Map<parentId, Set<string>>`, cleared
+  alongside `childrenOf` when the parent tears down). The descriptor pool alliterates with the
+  role (E-words for Explorer, R-words for Researcher/Reviewer, W-words for Worker). A pool
+  exhausted mid-conversation falls back to a numbered title (`"Explorer 13"`) rather than crashing
+  or repeating a name. The title lands in the child's `NativeSessionHeader.title` field at
+  `createChild` time — the existing title-precedence read path in `session-store.ts`'s `list()`
+  renders it for free — and `formatSpecialistReport` uses the same title (not the bare
+  `SpecialistDefinition.displayName`) in the parent-facing report header, so the model always
+  knows WHICH specialist (by name) answered, alongside the role id in parentheses.
+- **Children are hidden from every default list, by construction, not by filtering them out
+  downstream.** `SessionStore.list()` defaults `includeChildren` to `false` and skips any header
+  with `sessionKind === 'specialist'` OR a `parentSessionId` set. Every list-shaped surface in the
+  app — `NativeSessionHost.list()` (Resume Browser feed, `NATIVE_SESSIONS_LIST` IPC), the
+  Conversation Store's `'native'`/`'claude'` buckets (chat search, session browser overlay) — is
+  either downstream of that one default or is itself record-driven and structurally can't see a
+  child, because `createChild` never mints a Conversation Store record for one (see the `wire()`
+  point above). `createChild` also has no IPC route at all — it's host-internal, called only from
+  `spawnSpecialist`, itself called only from the Task tool's implementation — so a child never
+  reaches `ipc-handlers.ts`'s session-create path in the first place. (Verified by an exhaustive
+  `rg` sweep of every `store.list(`/`SessionStore`/`listSessionFiles`/`cwdToProjectSlug` hit under
+  `desktop/src/main`, per-site, as part of landing this section — see the Task 8 commit.)
+- **A child never reaches a real user ask.** `askUser: childAskPolicy()` replaces the parent's
+  `PermissionBroker` entirely for a child session — the broker would emit under the CHILD's
+  session id, which no renderer window owns, so the reducer would silently drop the ask and the
+  broker's promise would hang forever. `childAskPolicy()` instead resolves synchronously with a
+  typed refusal, so a child that hits an ask-shaped situation (an `AskUserQuestion` call, or a
+  guard that would otherwise prompt) gets an immediate, legible "no" instead of stalling until
+  teardown.
+- **Reload tradeoff, stated plainly.** Specialist display events are DISPLAY-ONLY re-emissions —
+  they are never persisted under the parent's own session file (see the frozen-surface point
+  above). That means after an app restart, a resumed parent's subagent card renders EMPTY: the
+  child's `tool-use`/`tool-result`/`assistant-text` events live only in the child's own JSONL, and
+  nothing replays them back onto the parent on resume. What DOES survive is the report text
+  itself — it was returned as the Task tool's result, which IS part of the parent's own persisted
+  transcript (an ordinary tool result), so the parent model (and a human reading the resumed
+  transcript) still sees what the specialist reported, just not the blow-by-blow tool calls that
+  produced it. Replaying a child's display history back onto a resumed parent is explicitly out of
+  scope for 1a — durability and replay are plan 1b's job.
+
+**Deferred to plan 1b (not a 1a oversight):** background/non-blocking delegation, a persistent
+run ledger, heartbeats for a long-running child, subagent-card replay after resume, file-based
+custom specialists, and CC-compat with Claude Code's own subagent file format. **Deferred to plan
+1c:** pretty launch/report cards in the renderer, a specialist badge, and hidden-utility built-ins
+beyond the four (explorer/researcher/reviewer/worker) shipped here.

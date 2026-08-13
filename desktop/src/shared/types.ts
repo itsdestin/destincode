@@ -295,7 +295,17 @@ export interface StructuredPatchHunk {
  * don't have user-typed messages).
  */
 export type SubagentSegment =
-  | { type: 'text'; id: string; content: string }
+  | {
+      type: 'text';
+      id: string;
+      content: string;
+      // Native runtime: per-token delta id, mirrors the main-timeline text
+      // segment's partId (chat-types.ts TRANSCRIPT_ASSISTANT_TEXT). Lets the
+      // reducer coalesce same-partId deltas into one segment instead of one
+      // per delta — see chat-reducer.ts applySubagentEvent. CC events never
+      // set this, so its absence preserves today's one-segment-per-event.
+      partId?: string;
+    }
   | {
       type: 'tool';
       id: string;
@@ -318,6 +328,11 @@ export interface ToolCallState {
   /** Native broker only: winning rule came from the destructive deny-list →
    *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
   denyListed?: boolean;
+  /** Native broker only: the ask was forced by a path outside the session
+   *  folder → the "Always allow" button is HIDDEN. The engine forces an ask on
+   *  every external path and never consults the stored rules there, so a
+   *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
+  external?: boolean;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
@@ -1234,6 +1249,14 @@ export const IPC = {
   SEARCH_SET_KEY: 'search:set-key',
   SEARCH_REMOVE_KEY: 'search:remove-key',
   SEARCH_TEST: 'search:test',
+  // ---- Remembered "Always allow" rules (M5 2a: permissions management UI) ----
+  // list = every project's stored grants; remove/remove-project revoke them.
+  // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
+  // pre-existing entries and cwdToProjectSlug is lossy, so the slug is the only
+  // stable handle the renderer can send back.
+  PERMISSIONS_LIST: 'permissions:list',
+  PERMISSIONS_REMOVE: 'permissions:remove',
+  PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

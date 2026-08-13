@@ -138,6 +138,31 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);       // loop continued to completion
   });
 
+  // Specialists (plan 1a, Task 5): a deny MAY carry its own model-facing reason.
+  // When it does, that reason replaces the generic copy in the tool result —
+  // otherwise a child refused a tool ("not available to this specialist") would
+  // read a generic "blocked by a permission rule" and simply retry the same call.
+  it('decide() deny WITH a message surfaces that message verbatim instead of the generic copy', async () => {
+    const write = fakeTool('Write');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [write], decide: async () => ({ action: 'deny', denyListed: false, message: 'The Write tool is not available to this specialist.' }) }),
+      async () => model as any,
+    );
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toBe('The Write tool is not available to this specialist.');
+    expect(res.data.toolResult).not.toMatch(/blocked by a permission rule/);
+    expect(JSON.stringify(seen[1])).toMatch(/not available to this specialist/); // model receives the REASON
+    expect((write as any).calls).toHaveLength(0);
+  });
+
   it('decide() ask → askUser; allow executes, deny returns "user declined" and does NOT execute', async () => {
     // Scenario A: ask → allow → executes.
     {
@@ -338,6 +363,88 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(askUser.mock.calls[0][0].toolName).toBe('Write');
     expect(decide).not.toHaveBeenCalled();               // external short-circuits configured decision
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
+  });
+
+  // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
+  // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
+  // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
+  // alongside that change, or checkPathGuard would try to canonicalize the
+  // charter prefix AS a path. Pinned indirectly (the set itself isn't
+  // exported): a subject shaped like a charter-scoped key that ALSO happens to
+  // look like a path outside cwd would force the 'external directory' ask
+  // above if Task were still running through the path guard — this proves it
+  // isn't, mirroring the sibling test one case up.
+  it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => 'read-write:/etc/x', schema: z.object({ agent: z.string() }) });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { agent: 'worker' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [task], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
+    // never ran checkPathGuard against "read-write:/etc/x" as though it were
+    // an absolute path outside C:/x.
+    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(askUser).not.toHaveBeenCalled();
+  });
+
+  // Phase 3 of the permissions-management plan (spec 2026-08-11, finding 3).
+  // An external-directory path forces the ask AND skips decide() on every future
+  // call, so a rule remembered here could never be consulted — storing one tells
+  // the user "you won't be asked again" and then asks them every single time.
+  describe('"Always allow" on an external-directory ask', () => {
+    // permissionSubject returns the raw path so checkPathGuard sees it; cwd is
+    // C:/x (makeOpts), so C:/other/... is external and C:/x/... is not.
+    const pathTool = () => fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+    const oneWriteTo = (filePath: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: filePath }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    it('does not emit remember-rule when an external path forced the ask', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      expect(askUser).toHaveBeenCalledTimes(1);            // the ask still happens
+      expect(remembered).toEqual([]);                      // …but nothing is persisted
+    });
+
+    it('marks an external-directory ask so the UI can suppress Always-allow', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      collect(session);
+      await session.send('go');
+      expect(askUser.mock.calls[0][0]).toMatchObject({ external: true });
+    });
+
+    // The control: an in-project ask still records the rule, and is NOT flagged
+    // external — without this, deleting the emit entirely would pass the test above.
+    it('still remembers a rule for an in-project ask, and does not flag it external', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/x/in-project.ts');
+      const session = new HarnessSession(
+        makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }), askUser }),
+        async () => model as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow' }]);
+      expect(askUser.mock.calls[0][0].external).toBe(false);
+    });
   });
 
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {

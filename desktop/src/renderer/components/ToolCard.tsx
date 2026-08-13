@@ -297,7 +297,9 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
    *  scope checkable — a worktree does NOT inherit its parent repo's rules. */
   folderName?: string;
   /** Budget gates (max_steps / doom_loop) are a binary "Continue?" — never offer
-   *  "Always Allow" (it'd persist a rule that permanently disables the guard). */
+   *  "Always Allow" (it'd persist a rule that permanently disables the guard).
+   *  Also set for an external-directory ask, where a remembered rule could
+   *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
   onResponded?: () => void;
   onFailed?: () => void;
@@ -887,7 +889,11 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             command={typeof (tool.input as any)?.command === 'string' ? (tool.input as any).command : undefined}
             folderName={sessionCwd ? basename(sessionCwd) : undefined}
             // Budget gates are a plain Yes/No "Continue?" — no "Always Allow".
-            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop'}
+            // `tool.external` joins them: the engine forces an ask for every path
+            // outside the session folder and never consults the stored rules
+            // there, so offering "Always allow" would promise a grant that can
+            // never fire. Spec 2026-08-11, finding 3.
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

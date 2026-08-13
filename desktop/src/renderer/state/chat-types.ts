@@ -455,6 +455,10 @@ export type ChatAction =
       // Native broker only: winning rule came from the destructive deny-list →
       // ToolCard shows the consequence-gated "Always allow" warning. Task 13.
       denyListed?: boolean;
+      // Native broker only: the ask was forced by a path outside the session
+      // folder → ToolCard HIDES "Always allow", because the engine skips the
+      // rules on every later external call and could never honor the grant.
+      external?: boolean;
     }
   | {
       type: 'PERMISSION_EXPIRED';
