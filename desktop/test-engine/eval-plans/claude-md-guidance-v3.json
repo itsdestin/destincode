@@ -1,0 +1,15 @@
+{
+  "_notes": [
+    "Destin's own revision, run VERBATIM. draft-v3.md is his text exactly as he wrote it — not edited, not reflowed.",
+    "It compresses draft-v2's four added paragraphs into two sentences at the end of his original, cutting 212 words to 146, and adds 'UI/UX risks' by name plus first person ('changes that i can't trace back').",
+    "The open question: draft-v2 scored real-downsides 5/5 (Opus) / 3/5 (Qwen) on this same case, up from 1/5 for the original draft — and it carried CONCRETE examples plus an explicit self-test ('would he connect the difference back to your change?'). v3 drops both. The original draft also asked for pros/cons abstractly and got 1/5, so whether v3 holds the gain at two-thirds the length is genuinely unknown.",
+    "Same case, judge and fixture as every other arm, so it compares directly against none / draft / tightened / draft-v2 already measured on 2026-08-13."
+  ],
+  "name": "claude-md-guidance-v3",
+  "cases": ["options-proposal"],
+  "instructions": [
+    { "id": "draft-v3", "file": "../eval-guidance/draft-v3.md" }
+  ],
+  "models": ["Claude Opus 5", "Qwen 3.8 Max"],
+  "judge": "x-ai/grok-4.5"
+}

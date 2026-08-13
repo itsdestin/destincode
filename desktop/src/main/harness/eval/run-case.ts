@@ -8,16 +8,18 @@ import { HarnessSession, type ModelFactory } from '../harness-session';
 import { ASSISTANT_PRESET } from '../../../shared/harness-manifest';
 import { CORE_TOOLS } from '../tools';
 import { seedFixtureWorkspace } from './fixture-workspace';
+import { assembleSystemPrompt } from '../prompt-assembly';
+import { resolvePreset } from '../preset-registry';
 import { BATTERY_PROMPT } from './battery';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { AskRequest, AskDecision } from '../permission-broker';
 import type { SkillCatalog } from '../skills/skill-catalog';
-import type { ToolServices } from '../tools/types';
+import type { ToolServices, NativeTool } from '../tools/types';
 import { ddgBackend } from '../search/backends/ddg';
 
-export type BatteryOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
+export type CaseOutcome = 'complete' | 'wrapped-up' | 'no-review' | 'error';
 
-export interface BatteryMetrics {
+export interface CaseMetrics {
   wallClockMs: number;
   toolCalls: number;
   asks: number;
@@ -43,7 +45,7 @@ export interface BatteryMetrics {
   repeats: { key: string; count: number }[];
 }
 
-export interface BatteryRun {
+export interface CaseRun {
   label: string;
   modelId: string;
   review: string;
@@ -70,7 +72,7 @@ export interface BatteryRun {
    *  `error`. 'complete' — the (single) testing turn finished on its own with
    *  a non-empty review. 'no-review' — the testing turn finished with empty
    *  final text and nothing else went wrong. */
-  outcome: BatteryOutcome;
+  outcome: CaseOutcome;
   /** Which trigger sent the run to a wrap-up turn, if any. Undefined means the
    *  testing turn ended on its own. 'budget' and 'timeout' fire on the testing
    *  turn's own outcome (max_steps exhaustion, wall clock); 'stopped-early'
@@ -80,7 +82,7 @@ export interface BatteryRun {
   wrapUpReason?: 'budget' | 'timeout' | 'stopped-early';
   /** The REAL error message, never a substitute (error-message-standards.md). */
   error?: string;
-  metrics: BatteryMetrics;
+  metrics: CaseMetrics;
 }
 
 // Root-cause fix (2026-08-09): the first full-roster live run denied EVERY
@@ -198,7 +200,7 @@ export const BATTERY_TIMEOUT_MS = 1_200_000;
 //
 // fitToContext (harness-session.ts) sizes history as
 //     ctx (opts.contextLength ?? 32_768) - limits.maxTokens - 1024
-// and runBattery passed no contextLength, so the sum was
+// and runCase passed no contextLength, so the sum was
 //     32_768 - 32_000 - 1_024 = -256
 // — a NEGATIVE history budget, measured, on every request. With a non-positive
 // budget the size loop keeps exactly one message (its own comment: "history
@@ -306,10 +308,23 @@ export const BATTERY_HARNESS = {
   },
 };
 
-export interface RunBatteryOpts {
+export interface RunCaseOpts {
   modelFactory: ModelFactory;
   modelId: string;
   label: string;
+  /** The task prompt. WHY optional: every existing caller (test-engine/
+   *  review-harness.mjs, the 69 pinning tests) predates the evaluator and
+   *  must keep running the battery unchanged. Defaults to BATTERY_PROMPT. */
+  prompt?: string;
+  /** Sent as the forced-final-answer turn when the run is cut short. WHY
+   *  per-task: WRAP_UP_PROMPT literally says "write your review of the
+   *  harness", which is wrong for every task that is not the harness review.
+   *  Defaults to WRAP_UP_PROMPT. */
+  wrapUpPrompt?: string;
+  /** Tool set attached to the session. WHY a tool-set input: a task can ask
+   *  "is Grep earning its context slot?" by running with it detached.
+   *  Defaults to CORE_TOOLS. */
+  tools?: NativeTool[];
   /** Wall-clock ceiling for one model's whole battery. */
   timeoutMs?: number;
   /** Keep the fixture on disk for debugging. Default false. */
@@ -319,6 +334,13 @@ export interface RunBatteryOpts {
    *  BATTERY_CONTEXT_CAP. Without this the session takes fitToContext's own
    *  32_768 default, which is what produced the 2026-08-11 amnesia bug. */
   contextLength?: number;
+  /** Markdown written into the fixture as CLAUDE.md before the session starts,
+   *  so assembleSystemPrompt's real disk-read path picks it up as project
+   *  instructions. `null`/absent means no file — the no-instructions arm of an
+   *  instruction A/B. See fixture-workspace.ts's seedFixtureWorkspace for why
+   *  this has to be a real file rather than text handed to the session
+   *  directly. */
+  instructions?: string | null;
 }
 
 // No skills, no path-triggered rule injection: the fixture has neither, and
@@ -336,7 +358,7 @@ const EMPTY_SKILL_CATALOG: SkillCatalog = {
   },
 };
 
-// Defect 2 fix: runBattery previously never passed `toolServices` at all, so
+// Defect 2 fix: runCase previously never passed `toolServices` at all, so
 // WebSearchTool's `if (!ctx.services?.search)` guard always tripped and every
 // live run reported "Web search is not wired for this session" — a false
 // finding, not a real harness limitation, and it left battery area 6 (Web)
@@ -376,7 +398,7 @@ export function makeReviewSearchServices(fetchImpl?: typeof fetch): ToolServices
   };
 }
 
-export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
+export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
   // Resolved and CHECKED before the fixture is seeded or a single token is
   // spent — a misconfigured window is a config error, not a run to salvage.
   const contextLength = Math.min(
@@ -384,8 +406,13 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     BATTERY_CONTEXT_CAP,
   );
   assertHistoryBudget(contextLength);
+  // Defaults preserve battery behavior exactly (see the WHY comments on
+  // RunCaseOpts.prompt/wrapUpPrompt above) — every pre-evaluator caller omits
+  // these and gets the same prompt/wrap-up text runCase always sent.
+  const prompt = opts.prompt ?? BATTERY_PROMPT;
+  const wrapUpPrompt = opts.wrapUpPrompt ?? WRAP_UP_PROMPT;
 
-  const fixtureRoot = seedFixtureWorkspace();
+  const fixtureRoot = seedFixtureWorkspace(opts.instructions);
   const events: TranscriptEvent[] = [];
   let toolCalls = 0;
   let asks = 0;
@@ -407,7 +434,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
   // at all. WHY a second turn instead of a bigger budget: see WRAP_UP_PROMPT's
   // WHY comment above.
   let wrappingUp = false;
-  let wrapUpReason: BatteryRun['wrapUpReason'];
+  let wrapUpReason: CaseRun['wrapUpReason'];
   // Keyed on tool name + exact input. Reporting only — see REPEAT_REPORT_FLOOR.
   const repeatCounts = new Map<string, number>();
 
@@ -416,6 +443,46 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       sessionId: `review-${Date.now()}`,
       cwd: fixtureRoot,
       harness: BATTERY_HARNESS,
+      // Fix (2026-08-12): without this, HarnessSession falls through to
+      // opts.harness.systemPrompt — which harness-manifest.ts:12 documents as a
+      // "fallback one-liner" and which is literally one sentence. Every harness
+      // review to date ran on that sentence rather than the app's real prompt, so
+      // the battery has never tested the shipped prompt at all. Calling the real
+      // assembleSystemPrompt also gives us the <project-instructions> block, which
+      // is what makes a CLAUDE.md A/B possible.
+      //
+      // KNOWN FIDELITY GAP (Task 3 review, Fix 4): this passes only the three
+      // required PromptInputs fields (presetBody, cwd, appVersion). The one
+      // production caller, native-session-host.ts (`assembleSystemPrompt({
+      // ..., promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
+      // instructionBudgetTokens: profile.injectionBudgetTokens })`), also passes
+      // promptVariant, hasTools, and instructionBudgetTokens, all sourced from the
+      // session's resolved CapabilityProfile. Omitting them here means this
+      // evaluator always assembles the prompt with NO variant overlay and
+      // prompt-assembly.ts's default 20,000-token instruction budget
+      // (DEFAULT_INSTRUCTION_BUDGET_TOKENS), regardless of which model is being
+      // tested — not the profile the real app would resolve for that model.
+      //
+      // Currently safe: tests/prompt-assembly.test.ts:118-120 pins the
+      // default/anthropic/gpt variants as byte-identical to no variant at all,
+      // and only the local-small variant appends text — the OpenRouter roster
+      // this evaluator drives never resolves to local-small. 20k tokens has also
+      // been enough for every CLAUDE.md used in an eval run to date.
+      //
+      // Stops being safe when: (1) a local/small model that resolves to the
+      // local-small prompt variant is added to the roster this evaluator runs
+      // against, so the review would silently omit the plan-then-execute
+      // steering the real app would give that model; or (2) an instruction A/B
+      // is run with a CLAUDE.md/AGENTS.md long enough to exceed 20k tokens,
+      // which fitProjectInstructions (injection-budget.ts) would then silently
+      // truncate to a budget the real profile might not have used. Wiring a
+      // resolved CapabilityProfile through `runCase` is out of scope for this
+      // fix — see the Task 3 Fix pass 1 report.
+      systemPrompt: assembleSystemPrompt({
+        presetBody: resolvePreset('assistant').body,
+        cwd: fixtureRoot,
+        appVersion: 'eval',
+      }),
       // Load-bearing (2026-08-11): omitted, HarnessSession takes fitToContext's
       // own 32_768 default, which against this harness's output ceiling left a
       // NEGATIVE history budget and gave every model amnesia. See
@@ -423,7 +490,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       // money if that relationship is ever broken again.
       contextLength,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
-      tools: CORE_TOOLS,
+      tools: opts.tools ?? CORE_TOOLS,
       // Auto-approve everything decide() is consulted about — EXCEPT during the
       // wrap-up turn, where every tool call is refused so the model must answer.
       // NOTE: PermissionDecision (shared/permission-types.ts:17) carries only
@@ -544,7 +611,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // Fix pass 1, Finding 2: HarnessSession emits 'tool-use' for a step BEFORE
     // execution and BEFORE decide() is consulted, so a call denied during
     // wrap-up would otherwise still land here. That matters because
-    // BatteryMetrics.toolsUsed is documented as "the evidence a review's
+    // CaseMetrics.toolsUsed is documented as "the evidence a review's
     // claims are checked against" (run-facts.ts consumes it that way — it
     // flags a review that names a tool absent from toolsUsed) — a denied
     // wrap-up attempt injecting a tool name into toolsUsed would silently
@@ -634,7 +701,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // (or vice versa).
     const eventsBeforeSend = events.length;
     try {
-      await session.send(BATTERY_PROMPT);
+      await session.send(prompt);
     } catch (err) {
       // Salvage, don't discard. A provider error still leaves a transcript
       // worth writing — round 5 threw four of them away and left the failures
@@ -723,7 +790,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
       const wrapDeadline = setTimeout(() => session.interrupt(), WRAP_UP_TIMEOUT_MS);
       wrapDeadline.unref();
       try {
-        await session.send(WRAP_UP_PROMPT);
+        await session.send(wrapUpPrompt);
       } catch (err) {
         // A failed wrap-up is not fatal: the testing transcript is still worth
         // writing, and outcome stays 'wrapped-up' with an empty review.
@@ -813,7 +880,7 @@ export async function runBattery(opts: RunBatteryOpts): Promise<BatteryRun> {
     // secondary fact that the wrap-up attempt also failed. Otherwise an error
     // takes priority over a review the model may have partially produced
     // before failing.
-    const outcome: BatteryOutcome =
+    const outcome: CaseOutcome =
       wrapUpReason ? 'wrapped-up'
       : error ? 'error'
       : review ? 'complete'
