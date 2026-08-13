@@ -1237,15 +1237,19 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     expect(injected.data.text).toContain('Full report saved to:');
   });
 
-  it('Critical fix (external review 2026-08-13): delivery never names a spill path it just failed to read', async () => {
-    // Simulates the completion-time spill file being gone by delivery time
-    // (process restart, external cleanup — exactly what readSessionArtifact's
-    // own doc comment anticipates). Mocking the READ (rather than deleting
-    // the real file) isolates the assertion to what formatDelivery DOES when
-    // told the file can't be read, with no race against the delivery loop's
-    // own timing. `writeSessionArtifact` is left real (spied, not mocked) so
-    // a re-spill is independently provable by call count and by the file it
-    // actually leaves on disk.
+  it('Critical fix pass 2 (2026-08-13): delivery never overwrites a spill path it just failed to read, and never claims it as the full report', async () => {
+    // Simulates the completion-time spill file being unreadable by delivery
+    // time (process restart, external cleanup — exactly what
+    // readSessionArtifact's own doc comment anticipates). Mocking the READ
+    // (rather than deleting the real file) is what makes this test able to
+    // catch a re-spill: `writeSessionArtifact` is left REAL (spied, not
+    // mocked), so if delivery re-writes the ledger's capped copy to the same
+    // path, the file on disk actually changes underneath the still-genuinely-
+    // full body a real reader could otherwise have recovered by, say, retrying
+    // the read a moment later. Fix pass 1 (the prior "Critical fix" test this
+    // one replaces) asserted the OPPOSITE of what's correct here — it treated
+    // a second write that clobbers the real file with the capped copy as the
+    // desired outcome, which is the exact data-loss bug this pass fixes.
     const huge = 'q'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
     const model = scriptedModel([stream(...textChunks('t', huge), finishChunk('stop'))]);
     const home = new NativeHome(root);
@@ -1268,23 +1272,36 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
       expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
     });
 
-    // TWO writes: runDelegation's completion-time spill, PLUS a re-spill at
-    // delivery once the read came back null. Before the fix, a truthy
-    // rec.reportPath was passed straight through regardless of the read
-    // result, so formatSpecialistReport's write-guard was skipped and this
-    // would be ONE — the exact defect this test pins.
-    expect(writeSpy).toHaveBeenCalledTimes(2);
+    // ONE write total: runDelegation's completion-time spill. Delivery must
+    // NOT re-spill the ledger's capped copy over it just because the read
+    // failed — that would silently downgrade a possibly-still-good file to a
+    // truncated one with no way back.
+    expect(writeSpy).toHaveBeenCalledTimes(1);
 
     const ledger = (host as any).ledger;
     const rec = ledger.listFor(root, 'root-1')[0];
     expect(rec.reportPath).toBeTruthy();
+
+    // The file on disk must be untouched by delivery: still the FULL
+    // original body, not the ledger's capped copy. This is the assertion
+    // fix pass 1's test never made — it checked footer wording only, so it
+    // could not detect that the named file's content had been clobbered.
+    const onDisk = fs.readFileSync(rec.reportPath, 'utf8');
+    expect(onDisk.length).toBe(huge.length);
+    expect(onDisk).toBe(huge);
+
     const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
-    // The footer must name a path the delivery-time re-spill actually just
-    // wrote (real, readable content), never a stale path reused blindly
-    // after the read above proved it unreadable — and it must never claim
-    // the write failed when it didn't.
-    expect(injected.data.text).toContain(`Full report saved to: ${rec.reportPath}`);
-    expect(injected.data.text).not.toContain('could not be saved');
+    // The footer must not name rec.reportPath as holding the full report —
+    // the code just proved it could not read that path, so claiming it does
+    // is exactly the false claim under test. It must also not claim a SAVE
+    // failed, since no save was attempted (attempting one is what would have
+    // clobbered the file above).
+    expect(injected.data.text).not.toContain(`Full report saved to: ${rec.reportPath}`);
+    expect(injected.data.text).not.toContain('Full report saved to:');
+    expect(injected.data.text).not.toContain('could not be saved to disk');
+    // Plain, honest, model-facing: this is a shortened copy and the rest is
+    // gone, full stop — no path implied to exist.
+    expect(injected.data.text).toContain('[Truncated to fit. The full report is no longer available');
   });
 
   // ---- Fix pass (external review, 2026-08-12): three follow-on gaps ----------
