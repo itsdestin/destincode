@@ -500,19 +500,21 @@ describe('NativeSessionHost', () => {
     });
 
     it('writer lock: busy only for the parent that holds it, never an unrelated parent; clearing it frees the parent up', () => {
-      expect(host.isSpecialistWriterBusy('A')).toBe(false);
-      // No public setter exists — spawnSpecialist/bindReservation is the only
-      // production writer (native-session-host.ts's reserveSpecialist /
-      // bindReservation), and it always tears the lock back down before ever
-      // returning. Reaching the Map directly is how a sibling Task call's
-      // in-flight writer lock — read while it is still IN FLIGHT — actually
-      // gets pinned at the host level rather than only through
-      // task-tool.test.ts's fakes.
+      // WHY read the map directly rather than through a query method:
+      // isSpecialistWriterBusy was removed as dead production code (nothing
+      // outside tests ever called it — reserveSpecialist inlines the same
+      // check). No public setter exists either — spawnSpecialist/
+      // bindReservation is the only production writer, and it always tears
+      // the lock back down before ever returning. Reaching the Map directly
+      // is how a sibling Task call's in-flight writer lock — read while it is
+      // still IN FLIGHT — actually gets pinned at the host level rather than
+      // only through task-tool.test.ts's fakes.
+      expect((host as any).activeWriterChild.has('A')).toBe(false);
       (host as any).activeWriterChild.set('A', 'child-x');
-      expect(host.isSpecialistWriterBusy('A')).toBe(true);
-      expect(host.isSpecialistWriterBusy('B')).toBe(false);     // per-parent isolation
+      expect((host as any).activeWriterChild.has('A')).toBe(true);
+      expect((host as any).activeWriterChild.has('B')).toBe(false);     // per-parent isolation
       (host as any).activeWriterChild.delete('A');
-      expect(host.isSpecialistWriterBusy('A')).toBe(false);
+      expect((host as any).activeWriterChild.has('A')).toBe(false);
     });
 
     // ---- Task 1 (plan 1b): the actual fix. 1a's writer-lock gate was a

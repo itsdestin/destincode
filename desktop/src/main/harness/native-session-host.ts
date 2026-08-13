@@ -240,17 +240,6 @@ export class NativeSessionHost extends EventEmitter {
   private specialistSlots = new Map<string, number>();
   private activeWriterChild = new Map<string, string>();
 
-  /** True when a write-capable specialist is already running (or already
-   *  RESERVED — see RESERVED_WRITER below) under this parent — the
-   *  single-writer invariant (spec §5). Read-only diagnostic: reserveSpecialist
-   *  below is now the sole production gate (it inlines this same check inside
-   *  its own synchronous reserve-or-refuse step), so nothing on the hot path
-   *  calls this anymore — it stays as a query other callers/tests can read
-   *  without reaching into the private map directly. */
-  isSpecialistWriterBusy(parentId: string): boolean {
-    return this.activeWriterChild.has(parentId);
-  }
-
   /** Task 13 will make this profile-derived (per-preset concurrency ceilings);
    *  for now every parent shares the same static HOSTED_MAX_CONCURRENT_SPECIALISTS. */
   private maxSpecialistsFor(_parentId: string): number {

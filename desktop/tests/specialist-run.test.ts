@@ -168,7 +168,10 @@ describe('specialist foreground run (Task 7)', () => {
 
     expect((host as any).live.has(childId)).toBe(false);
     expect((host as any).childrenOf.get('root-1')?.has(childId)).toBeFalsy();
-    expect(host.isSpecialistWriterBusy('root-1')).toBe(false);
+    // WHY read the map directly: isSpecialistWriterBusy was removed as dead
+    // production code (only tests called it) — activeWriterChild is still
+    // the source of truth this assertion verifies.
+    expect((host as any).activeWriterChild.has('root-1')).toBe(false);
     // The child gave back its model ref: the parent is now 'm''s only user.
     expect(host.sessionsForModel('m')).toEqual(['root-1']);
     await host.destroy('root-1');
@@ -237,7 +240,10 @@ describe('specialist foreground run (Task 7)', () => {
     const childRow = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1');
     expect(childRow).toBeDefined();
     expect((host as any).live.has(childRow!.sessionId)).toBe(false);
-    expect(host.isSpecialistWriterBusy('root-1')).toBe(false);
+    // WHY read the map directly: isSpecialistWriterBusy was removed as dead
+    // production code (only tests called it) — activeWriterChild is still
+    // the source of truth this assertion verifies.
+    expect((host as any).activeWriterChild.has('root-1')).toBe(false);
     // De-registered from the parent's live children set (mirrors the
     // success-path leak guard) — a leaked child would still show up here.
     expect((host as any).childrenOf.get('root-1')?.has(childRow!.sessionId)).toBeFalsy();
