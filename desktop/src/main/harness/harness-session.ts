@@ -367,6 +367,13 @@ export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
   private interrupted = false;
+  // Task 3 — queued mid-run course corrections (postSteer), drained as
+  // history-only user messages at the top of the NEXT turn-loop iteration.
+  // Anything left here when a turn ends (posted during the final step, too
+  // late for another iteration to drain it) is a MISSED steer — surfaced via
+  // drainUnappliedSteers() so a caller (runDelegation, Task 6) can report it
+  // honestly instead of silently dropping it.
+  private pendingSteers: string[] = [];
   // Prompt tokens as of the PREVIOUS step of this turn. Used to report how much
   // context is genuinely NEW — llama.cpp reuses the cached prefix, so only the
   // appended messages actually get prefilled. Reset per turn; 0 means "next step
@@ -1384,6 +1391,14 @@ export class HarnessSession extends EventEmitter {
       // roughly 5x the real occupancy (Destin, 2026-07-28).
       let lastOutputTokens = 0;
       turnLoop: while (true) {
+        // WHY: steering (spec §3) applies at the child's next iteration boundary — a
+        // tool call is never cut. History-only, like injectPathTriggers: not a
+        // transcript event, so it costs nothing on the frozen emit surface.
+        if (this.pendingSteers.length > 0) {
+          for (const s of this.pendingSteers.splice(0)) {
+            this.history.push({ role: 'user', content: `<steer>\n${s}\n</steer>` });
+          }
+        }
         // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
         // pruning can't get under budget. Inert (returns immediately) below the
         // trigger, so the existing loop behavior is unchanged for normal turns.
@@ -1994,6 +2009,29 @@ export class HarnessSession extends EventEmitter {
   interrupt(): void {
     this.interrupted = true;
     this.abort?.abort();
+  }
+
+  /** Queue a mid-run course correction (spec §3). Drains as a history-only
+   *  user message at the top of the NEXT turn-loop iteration — never
+   *  mid-step, so an in-flight tool call is never cut. Returns whether a
+   *  turn is actually in flight to receive it (`this.abort !== null` is the
+   *  turn-in-flight invariant — set in beginTurn, nulled in its finally);
+   *  when false, nothing is queued and the caller should record a missed
+   *  steer itself (there is no turn for drainUnappliedSteers to report it
+   *  against). */
+  postSteer(text: string): boolean {
+    const inFlight = this.abort !== null;
+    if (inFlight) this.pendingSteers.push(text);
+    return inFlight;
+  }
+
+  /** Steers that were queued but never drained into history — posted during
+   *  a turn's FINAL step, after the last iteration-boundary check already
+   *  ran. Empties the queue. A later task (6) folds this into the
+   *  delegation ledger's missedSteers so a postSteer that returned `true`
+   *  is still honestly reported as un-applied when the turn ended first. */
+  drainUnappliedSteers(): string[] {
+    return this.pendingSteers.splice(0);
   }
 
   destroy(): void { this.abort?.abort(); this.removeAllListeners(); }
