@@ -100,6 +100,10 @@ describe('migrateRelativeExternals', () => {
     ]), ROOT);
 
     expect(res.merged).toBe(1);
+    // `reclassified` INCLUDES merged records per the interface contract — this
+    // is the one test where a caller could otherwise believe merges are counted
+    // separately from reclassifications instead of being a subset of them.
+    expect(res.reclassified).toBe(1);
     expect(res.sidecar.artifacts).toHaveLength(1);
     const m = res.sidecar.artifacts[0];
     expect(m.id).toBe('art_1_OLD');                     // older record survives
@@ -121,6 +125,40 @@ describe('migrateRelativeExternals', () => {
     expect(res.sidecar.artifacts[0].versions.map((v) => v.id)).toEqual(['v1', 'v2']);
   });
 
+  it('resolves a 3-way collision chain, merging a third record into an already-merged pair', () => {
+    // WHY: after two records merge, the by-path index (`byPath`) must point at
+    // the MERGED record in place of the one it replaced, so a third record that
+    // resolves to the same path finds it there and merges in too — instead of
+    // `out.indexOf(existing)` returning -1 for a stale reference and either
+    // throwing or silently creating a duplicate at the same path.
+    //
+    // Ordered so the record processed FIRST ('art_3_FIRST') has the LARGEST id
+    // and is NOT the survivor: if ids happened to match processing order, a
+    // buggy "first one in wins" implementation could pass this test for the
+    // wrong reason. Here the true survivor ('art_1_SURVIVOR', smallest id) is
+    // processed SECOND, so the test only passes if the id-comparison ("older
+    // wins") logic actually ran on every collision, not just the first one.
+    const res = migrateRelativeExternals(sidecar([
+      rec({ id: 'art_3_FIRST', path: 'note.md', kind: 'external', absolutePath: 'shared/note.md',
+            versions: [{ id: 'v3', ts: '2026-08-03T00:00:00.000Z', sessionId: 's', type: 'edit', author: 'agent' }] }),
+      rec({ id: 'art_1_SURVIVOR', path: 'note.md', kind: 'external', absolutePath: 'shared/note.md',
+            versions: [{ id: 'v1', ts: '2026-08-01T00:00:00.000Z', sessionId: 's', type: 'create', author: 'agent' }] }),
+      rec({ id: 'art_2_MID', path: 'note.md', kind: 'external', absolutePath: 'shared/note.md',
+            versions: [{ id: 'v2', ts: '2026-08-02T00:00:00.000Z', sessionId: 's', type: 'edit', author: 'agent' }] }),
+    ]), ROOT);
+
+    expect(res.reclassified).toBe(3);            // all three records resolved to internal
+    expect(res.merged).toBe(2);                  // two merge events needed to fold three into one
+    expect(res.sidecar.artifacts).toHaveLength(1);
+    const m = res.sidecar.artifacts[0];
+    expect(m.id).toBe('art_1_SURVIVOR');          // smallest id overall — not the first processed
+    expect(m.kind).toBe('internal');
+    expect(m.path).toBe('shared/note.md');
+    // All three histories present and ts-sorted — proves the SECOND merge folded
+    // into the output of the FIRST merge rather than starting a fresh pair.
+    expect(m.versions.map((v) => v.id)).toEqual(['v1', 'v2', 'v3']);
+  });
+
   it('dedupes version ids so a re-run cannot duplicate history', () => {
     const shared = { id: 'v1', ts: '2026-08-01T00:00:00.000Z', sessionId: 's', type: 'create' as const, author: 'agent' as const };
     const res = migrateRelativeExternals(sidecar([
@@ -136,6 +174,27 @@ describe('migrateRelativeExternals', () => {
     const once = migrateRelativeExternals(sidecar([
       rec({ id: 'art_A', path: 'play.html', kind: 'external', absolutePath: 'flappy-bird/play.html' }),
     ]), ROOT);
+    const twice = migrateRelativeExternals(once.sidecar, ROOT);
+    expect(twice.reclassified).toBe(0);
+    expect(twice.merged).toBe(0);
+    expect(twice.sidecar).toEqual(once.sidecar);
+  });
+
+  // THE RUN-ONCE GATE, MERGE EDITION. The plain idempotency test above only
+  // exercises the no-collision reclassify path. Production gates its run-once
+  // ratchet on `reclassified === 0` for EVERY sidecar, including ones that
+  // needed a merge on the first pass — if a merged record weren't stable under
+  // a second run, the app would keep rewriting (and possibly re-merging) the
+  // sidecar on every project open forever instead of exactly once.
+  it('is idempotent across a merge — a second run over merged output changes nothing', () => {
+    const once = migrateRelativeExternals(sidecar([
+      rec({ id: 'art_1_OLD', path: 'shared.md', kind: 'internal', absolutePath: null,
+            versions: [{ id: 'v1', ts: '2026-08-01T00:00:00.000Z', sessionId: 's', type: 'create', author: 'agent' }] }),
+      rec({ id: 'art_2_NEW', path: 'shared.md', kind: 'external', absolutePath: 'shared.md',
+            versions: [{ id: 'v2', ts: '2026-08-05T00:00:00.000Z', sessionId: 's', type: 'edit', author: 'agent' }] }),
+    ]), ROOT);
+    expect(once.merged).toBe(1);   // sanity: this run must have actually merged, or the test below is vacuous
+
     const twice = migrateRelativeExternals(once.sidecar, ROOT);
     expect(twice.reclassified).toBe(0);
     expect(twice.merged).toBe(0);
