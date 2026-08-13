@@ -9,7 +9,7 @@
 // is only safe because remembered rules are allow-originated today (the "Always
 // allow" flow persists only allow rules); a future feature persisting remembered
 // ask/deny rules must revisit this consequence-warning logic.
-import { subjectMatches } from './tools/subject-glob';
+import { subjectMatches } from '../../shared/subject-glob';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
 
 export interface PermissionLayers {

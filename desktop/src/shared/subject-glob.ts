@@ -1,3 +1,6 @@
+// Lives in shared/ because the renderer's deny-list copy module
+// (components/permissions/deny-list-copy.ts) must classify with the SAME
+// matcher the engine decided with — two matchers would eventually disagree.
 // Tiny glob for permission SUBJECTS (bash command strings, relative paths).
 // Homegrown on purpose: no new dep, and `*` must cross path separators here
 // ("git push*" must match "git push origin x") — unlike file globbing.

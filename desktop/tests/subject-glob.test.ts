@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { subjectMatches } from '../src/main/harness/tools/subject-glob';
+import { subjectMatches } from '../src/shared/subject-glob';
 
 describe('subjectMatches', () => {
   it('matches * within a segmentless subject (command strings)', () => {
