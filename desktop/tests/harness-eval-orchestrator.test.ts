@@ -278,8 +278,15 @@ describe('plan validation goes through matrix.ts validatePlan', () => {
     // orchestrator's own one never looked at case ids or roster labels, so a
     // plan naming a case that does not exist expanded happily and would have
     // been billed as a real matrix.
+    // The known-ids list is alphabetical, so this matches harness-battery
+    // ANYWHERE in it rather than pinning it to first place — the assertion is
+    // "the bad id is named and the valid set is printed", which is what the
+    // deleted local validator failed to do. Pinning the position instead made
+    // this test fail the moment a case sorting before "harness-battery" was
+    // registered, which is a fact about the alphabet, not about validation.
+    // Same shape the roster-label assertion below already used (`.*Claude Opus 5`).
     await expect(readPlanFile(writePlan({ ...BASE_PLAN, cases: ['confgi-investigation'] })))
-      .rejects.toThrow(/Unknown case id "confgi-investigation"\. Known case ids: harness-battery/);
+      .rejects.toThrow(/Unknown case id "confgi-investigation"\. Known case ids: .*harness-battery/);
   });
 
   it('rejects a model that is not a roster label', async () => {
@@ -555,8 +562,11 @@ describe('runCell refuses to run a cell it cannot run honestly', () => {
     // battery, so every cell in the matrix ran the same task under a different
     // label. The body now comes from the registry, so the hole closes one level
     // up — an unknown caseId cannot produce a body at all, and says so by name.
+    // `.*harness-battery` for the same alphabetical reason as the plan-validation
+    // test above: the assertion is that the unknown id is named and the valid set
+    // is printed with it, not that harness-battery happens to sort first.
     await expect(runCell({ ...cell, caseId: 'nope' }, { apiKey: 'sk-fake' }))
-      .rejects.toThrow(/Unknown case "nope"\. Known cases: harness-battery/);
+      .rejects.toThrow(/Unknown case "nope"\. Known cases: .*harness-battery/);
   });
 
   it('throws when the cell has no dist, naming the build arm', async () => {
