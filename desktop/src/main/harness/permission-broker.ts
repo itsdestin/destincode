@@ -76,6 +76,12 @@ export type LateResponseEntry = {
   toolName: string;
   raisedBy?: string;
   specialist?: AskRequest['specialist'];
+  /** Task 11 fix pass (Finding 2): the original ask's permission-engine
+   *  SUBJECT, carried through so a LATE "Always allow" can persist the same
+   *  rule the in-time path (child-ask-router.ts) would have written. Before
+   *  this field existed, `onLateResponse` had no way to name what was being
+   *  approved — it could only steer or notify, never remember. */
+  subject?: string;
 };
 export type LateResponseHandler = (entry: LateResponseEntry, decision: AskDecision) => void;
 
@@ -84,6 +90,9 @@ interface PendingAsk {
   toolName: string;
   raisedBy?: string;
   specialist?: AskRequest['specialist'];
+  /** Task 11 fix pass (Finding 2): carried from AskRequest.subject through to
+   *  a late response — see LateResponseEntry.subject's own WHY. */
+  subject?: string;
   resolve: (d: AskDecision) => void;
   timer?: ReturnType<typeof setTimeout>;
   /** Task 8: true once the hold timeout has fired and already resolved the
@@ -120,6 +129,7 @@ export class PermissionBroker extends EventEmitter {
         toolName: req.toolName,
         raisedBy: req.raisedBy,
         specialist: req.specialist,
+        subject: req.subject,
         resolve,
         timedOut: false,
       };
@@ -188,7 +198,10 @@ export class PermissionBroker extends EventEmitter {
       this.pending.delete(requestId);
       if (this.lateResponseHandler) {
         this.lateResponseHandler(
-          { sessionId: entry.sessionId, toolName: entry.toolName, raisedBy: entry.raisedBy, specialist: entry.specialist },
+          {
+            sessionId: entry.sessionId, toolName: entry.toolName, raisedBy: entry.raisedBy,
+            specialist: entry.specialist, subject: entry.subject,
+          },
           resolved,
         );
       } else {

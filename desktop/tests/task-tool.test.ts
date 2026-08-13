@@ -231,6 +231,27 @@ describe('Task tool — typed refusals (plan 1a)', () => {
       expect(tool.permissionSubject({ agent: 'explorer', work_dir: '.', description: 'd', prompt: 'p' } as any))
         .toBe(tool.permissionSubject({ agent: 'explorer', work_dir: process.cwd(), description: 'd', prompt: 'p' } as any));
     });
+
+    // Fix pass, Finding 1: the consent key doubles as DISPLAY TEXT — describe-
+    // rule.ts slices this exact string into what the permissions screen
+    // renders. The old implementation reused guards.ts's `canonicalize()`,
+    // which case-folds the WHOLE path on win32 (right for the sensitive-path
+    // comparison sets it was built for, wrong for anything a user reads back
+    // — see that function's own doc comment). Forced via a platform stub
+    // since canonicalize's lowercasing branch only engages when
+    // `process.platform === 'win32'`, which this test suite normally isn't.
+    it('preserves the real casing of work_dir even on win32 (Fix 1 — the key doubles as display text)', () => {
+      const realPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        const tool = createTaskTool();
+        const subject = tool.permissionSubject({ agent: 'wizard', work_dir: '/Proj/MixedCase', description: 'd', prompt: 'p' } as any);
+        expect(subject).toContain('MixedCase');
+        expect(subject).not.toBe(subject.toLowerCase());
+      } finally {
+        Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+      }
+    });
   });
 
   // ---- Task 4: background: true dispatches through spawnBackground, not

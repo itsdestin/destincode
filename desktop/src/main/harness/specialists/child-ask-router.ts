@@ -9,8 +9,11 @@ import { SPECIALIST_ASK_HOLD_MS } from './limits';
 // session: harness-session.ts only reads AskDecision.always at the ONE call
 // site that gates on decide() (the normal gated-tool ask), never at either of
 // these. A routed copy of the same ask must not gain a capability the direct
-// (root-session) version never had.
-const BUDGET_ASK_TOOL_NAMES = new Set(['max_steps', 'doom_loop']);
+// (root-session) version never had. Exported (Task 11 fix pass, Finding 2) so
+// native-session-host.ts's onLateResponse can apply the SAME exclusion to a
+// LATE "Always allow" — a budget ask can still time out and be routed, so the
+// late path needs to refuse it exactly like the in-time path does.
+export const BUDGET_ASK_TOOL_NAMES = new Set(['max_steps', 'doom_loop']);
 
 // Child ask routing (plan 1b, Task 8). Replaces child-ask-policy.ts's
 // deny-everything stub: a specialist child has no user of its own, but it now

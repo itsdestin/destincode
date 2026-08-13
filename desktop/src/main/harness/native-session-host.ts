@@ -34,7 +34,7 @@ import { canonicalize, resolveP } from './tools/guards';
 import { isUnderRoot } from '../artifacts/read-binary-access';
 import { resolveSpecialist, type SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
-import { childAskRouter } from './specialists/child-ask-router';
+import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-router';
 import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS } from './specialists/limits';
 import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, type DelegationRecord } from './specialists/delegation-ledger';
@@ -836,6 +836,44 @@ export class NativeSessionHost extends EventEmitter {
   private onLateResponse(entry: LateResponseEntry, decision: AskDecision): void {
     const allowed = decision.behavior === 'allow';
     const childId = entry.raisedBy;
+
+    // Task 11 fix pass (Finding 2): a LATE "Always allow" used to silently
+    // drop the "and remember this" half — this handler only ever steered the
+    // still-live child or notified the parent, never persisted anything,
+    // even though decision.always rides the same AskDecision the in-time path
+    // (child-ask-router.ts) reads. This handler is reached ONLY for a routed
+    // (specialist) ask: a root session's own askUser is wired straight to
+    // `this.broker.ask(req)` with no `opts.timeoutMs` (see the `askUser:
+    // (req) => this.broker.ask(req)` root wiring below), so a root ask's
+    // PendingAsk.timedOut never flips true and it never reaches
+    // lateResponseHandler at all — only createChild's childAskRouter wiring
+    // passes a timeout. So `entry.specialist` is always set here in
+    // production; the `undefined` guard below is belt-and-suspenders for a
+    // hand-built test entry, not a real production path. Persisted against
+    // `entry.sessionId`, which childAskRouter already rewrote to the PARENT's
+    // id before ever calling broker.ask() (see AskRequest.raisedBy's own
+    // comment) — the same session/cwd pair the in-time path writes against.
+    // Budget asks (max_steps/doom_loop) never support "Always allow" even for
+    // a root session (child-ask-router.ts's BUDGET_ASK_TOOL_NAMES) — excluded
+    // here for the same reason the in-time path excludes them.
+    if (allowed && decision.always && entry.specialist && !BUDGET_ASK_TOOL_NAMES.has(entry.toolName)) {
+      const parent = this.live.get(entry.sessionId);
+      if (parent) {
+        this.rememberRule(entry.sessionId, parent.cwd, {
+          tool: entry.toolName,
+          ...(entry.subject !== undefined ? { pattern: entry.subject } : {}),
+          action: 'allow',
+          specialist: entry.specialist.agentType,
+        });
+      } else {
+        // The parent session was torn down before the late answer arrived —
+        // there is no live cwd left to persist against (the store is keyed by
+        // project, not sessionId). Same accepted loss as queueHostNotice's own
+        // WARN below: nothing durable was ever promised once the parent is gone.
+        log('WARN', 'NativeSessionHost', 'a late "Always allow" arrived after its parent session was already destroyed — the rule could not be persisted', { sessionId: entry.sessionId, toolName: entry.toolName });
+      }
+    }
+
     if (childId && this.live.has(childId)) {
       this.live.get(childId)!.session.postSteer(
         `The user has now responded to your earlier blocked request (${entry.toolName}): ${allowed ? 'APPROVED — you may do it now.' : 'DENIED — do not attempt it.'}`,

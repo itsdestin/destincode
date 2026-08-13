@@ -78,19 +78,30 @@ describe('describeRule', () => {
   // assistant itself never gets this permission, only a specialist working
   // under it does. Plain language, no jargon (project constraint).
   describe('specialist-keyed rules', () => {
-    it('names the specialist in the verb, reusing the ordinary tool verb', () => {
+    // Fix 3: the display NAME ("Worker"), never the raw internal agentType id
+    // ("worker") — every other user-facing site (e.g. tools/task.ts's error
+    // copy) names a specialist this way.
+    it('names the specialist in the verb by its DISPLAY NAME, reusing the ordinary tool verb', () => {
       expect(describeRule({ tool: 'Bash', pattern: 'npm test*', action: 'allow', specialist: 'worker' }))
-        .toEqual({ verb: 'Let the worker specialist run', subject: 'npm test*', broad: false });
+        .toEqual({ verb: 'Let the Worker specialist run', subject: 'npm test*', broad: false });
     });
 
     it('still reports breadth correctly for a pattern-less specialist grant', () => {
       expect(describeRule({ tool: 'Write', action: 'allow', specialist: 'worker' }))
-        .toEqual({ verb: 'Let the worker specialist create or overwrite', subject: undefined, broad: true });
+        .toEqual({ verb: 'Let the Worker specialist create or overwrite', subject: undefined, broad: true });
     });
 
     it('an unscoped rule (no specialist) is unaffected', () => {
       expect(describeRule({ tool: 'Bash', pattern: 'npm test*', action: 'allow' }))
         .toEqual({ verb: 'Run', subject: 'npm test*', broad: false });
+    });
+
+    // A future specialist added to the registry but not yet mirrored in this
+    // file's local display-name table must still read as a name, not crash
+    // or render blank.
+    it('falls back to capitalizing an unmapped specialist id', () => {
+      expect(describeRule({ tool: 'Bash', pattern: 'x*', action: 'allow', specialist: 'archivist' }))
+        .toEqual({ verb: 'Let the Archivist specialist run', subject: 'x*', broad: false });
     });
   });
 });

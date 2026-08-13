@@ -1612,6 +1612,90 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    // ---- Fix pass, Finding 2: a LATE "Always allow" must persist too, not
+    // just steer/notify. Before this fix onLateResponse never read
+    // decision.always at all — it only ever steered the live child or queued
+    // a host notice, so "Always allow" answered after the timeout silently
+    // dropped the "and remember this" half, reachable through a second door
+    // beyond child-ask-router.ts's in-time path. ----
+    it('a LATE "Always allow" while the child is still live BOTH steers AND persists a specialist-keyed rule (Fix 2)', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const store = new PermissionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+        store, undefined, undefined, undefined, undefined, undefined, 20,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go'); // times out into the redirect; child stays live
+      const requestId = await askArrived;
+      // Same "Always allow" payload shape the in-time router test uses.
+      expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+      expect(steerSpy).toHaveBeenCalledTimes(1); // the steer still happens — this fix must not regress it
+
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.specialist === 'worker')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules).toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+      }));
+      await h.destroyAll();
+    });
+
+    it('a LATE "Always allow" after the child already ended ALSO persists a specialist-keyed rule (Fix 2)', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      let calls = 0;
+      const rmThenText = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return scriptedModel([
+            stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+            stream(...textChunks('t', 'done'), finishChunk('stop')),
+          ]) as any;
+        }
+        return factory();
+      };
+      const store = new PermissionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), rmThenText, NO_CONTEXT, async () => null, async () => null,
+        store, undefined, undefined, undefined, undefined, undefined, 20,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // times out into the redirect
+      const requestId = await askArrived;
+      await h.destroy(childId); // normal teardown AFTER the ask already timed out
+      const noticeArrived = waitForEvent(h, (e) => e.sessionId === 'root-1' && e.type === 'user-message' && e.data.injected === 'specialist-report');
+      expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+      await noticeArrived; // the host-notice half still fires — this fix must not regress it
+
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.specialist === 'worker')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules).toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+      }));
+      await h.destroyAll();
+    });
+
     it('a late APPROVE after the child ended queues a parent delivery naming task_id', async () => {
       const WORKER = resolveSpecialist('worker')!;
       // First factory call (the child's turn) attempts the destructive Bash

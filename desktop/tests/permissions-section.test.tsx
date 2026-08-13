@@ -310,7 +310,7 @@ describe('PermissionsSection — behavioural contracts', () => {
     render(<PermissionsSection />);
     await openFolder(/^p/);
     expect(screen.getByRole('button', { name: /^Revoke permission: Run npm test\*$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Revoke permission: Let the worker specialist run npm test\*$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Revoke permission: Let the Worker specialist run npm test\*$/ })).toBeTruthy();
   });
 
   it('passes the specialist through to remove() so the revoke matches the right grant', async () => {
