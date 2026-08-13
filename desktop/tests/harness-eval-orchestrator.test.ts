@@ -1309,17 +1309,20 @@ describe('the real CLI, end to end (fetch faked, no key, no spend)', () => {
   /** A preload module that replaces `fetch`. `usage` is the sequence
    *  GET /api/v1/key hands back, one per call; a `null` entry answers with a
    *  non-numeric `data.usage` (a changed API shape), which fetchKeyUsage
-   *  refuses to read as "$0 spent". The catalog is empty, so every model comes
-   *  back `unpriced` (which also pins the null-estimate branch). */
-  function fetchStub(usage: (number | null)[]): string {
+   *  refuses to read as "$0 spent". The catalog defaults to empty, so every
+   *  model comes back `unpriced` (which also pins the null-estimate branch);
+   *  `catalog` seeds real `/api/v1/models` rows for the tests that need a
+   *  PRICED model — the judge disclosure quotes the judge's own rate. */
+  function fetchStub(usage: (number | null)[], catalog: unknown[] = []): string {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-stub-')), 'stub.mjs');
     fs.writeFileSync(file, `
 const usage = ${JSON.stringify(usage)};
+const catalog = ${JSON.stringify(catalog)};
 let i = 0;
 globalThis.fetch = async (url) => {
   const u = String(url);
   if (u.includes('/api/v1/models')) {
-    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: [] }) };
+    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: catalog }) };
   }
   if (u.includes('/api/v1/key')) {
     const value = usage[Math.min(i++, usage.length - 1)];
@@ -1592,6 +1595,18 @@ export const runCase = async (c) => ({
       expect(report).toContain('ANSWER_MARKER — I read the loader before changing anything.');
       // No judge in this plan: an empty grade column must SAY it was not graded.
       expect(report).toContain('NOT GRADED');
+      // Fix pass 1 (2026-08-12 review, IMPORTANT 3), asserted on the REAL path
+      // rather than on a hand-written CellResult: judgeRun's no-judge return
+      // used to be indistinguishable from "a judge answered and returned
+      // nothing", so this page said "the judge returned no grades for this run"
+      // about a call that was never made. Scoped to the grades block — the
+      // header and the limits paragraph both mention judging on every report.
+      const grades = report.slice(report.indexOf('**Grades**'), report.indexOf('**The answer, verbatim**'));
+      expect(grades).toMatch(/no judge was configured for this plan/);
+      expect(grades).not.toMatch(/the judge returned no grades/);
+      // IMPORTANT 4's other half, end to end: this run grades fine, so the
+      // checks are recorded and the page must not claim the case declares none.
+      expect(report).not.toMatch(/declares no mechanical checks/);
       // And the transcript it names is really there, under the Windows-safe name.
       const named = report.match(/transcript `([^`]+)`/);
       expect(named).not.toBeNull();
@@ -1637,9 +1652,53 @@ export const runCase = async (c) => ({
       expect(realError.length).toBeGreaterThan(10);
       const report = fs.readFileSync(path.join(runsDir, 'report.md'), 'utf8');
       expect(report).toContain(realError);
+
+      // Fix pass 1 (2026-08-12 review, IMPORTANT 4). collectRunFacts throws on
+      // this run, and gradeCell used to assign `facts` BEFORE `checks` — so the
+      // throw left `checks` undefined and this page printed "This case declares
+      // no mechanical checks." for a case that declares three. Checks are
+      // recorded first now, and the renderer no longer reads absent as empty.
+      const checkBlock = report.slice(report.indexOf('**Checks**'), report.indexOf('**Grades**'));
+      expect(checkBlock).not.toMatch(/declares no mechanical checks/);
+      expect(checkBlock).toContain('stayed-inside-test-folder');
+      expect(checkBlock).toContain('ended-with-an-answer');
+      expect(checkBlock).toContain('called-tool:Grep');
     } finally {
       restore();
     }
+  }, 60_000);
+
+  it('prints the judge calls the estimate does not price, with the figure and not after it', () => {
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 1). printEstimate prices CELLS —
+    // one model run each — and grading adds a second paid call per graded cell
+    // that the printed total never counted. The operator answers "Spend up to
+    // $X?" against that number, and without --max-spend it is the only bound
+    // there is.
+    const stub = fetchStub([0], [
+      { id: 'x-ai/grok-4.5', pricing: { prompt: '0.0000005', completion: '0.000002' } },
+    ]);
+    const plan = writePlan({ ...BASE_PLAN, judge: 'x-ai/grok-4.5' });
+    const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--dry-run']);
+    expect(status).toBe(0);
+    // Scoped to the estimate block: the plan grid above it names the judge too.
+    const block = stdout.slice(stdout.indexOf('Estimated cost'));
+    expect(block).toContain('NOT IN THE TOTAL');
+    expect(block).toContain('x-ai/grok-4.5');
+    expect(block).toContain('up to 1 more call');
+    // The judge's own catalog rate — the one number here that is measured.
+    expect(block).toContain('$0.50/M input');
+    expect(block).toContain('$2.00/M output');
+    // And no invented dollar total for the judging itself.
+    expect(block).toMatch(/no dollar figure for it is invented/);
+  }, 60_000);
+
+  it('says plainly when a plan grades nothing, so the figure is known to be whole', () => {
+    const stub = fetchStub([0]);
+    const { status, stdout } = runCliStubbed(stub, ['--plan', writePlan(BASE_PLAN), '--dry-run']);
+    expect(status).toBe(0);
+    const block = stdout.slice(stdout.indexOf('Estimated cost'));
+    expect(block).toMatch(/names no judge/);
+    expect(block).not.toContain('NOT IN THE TOTAL');
   }, 60_000);
 
   it('refuses a plan whose instruction file cannot be read, before spawning or spending anything', () => {

@@ -506,14 +506,44 @@ describe('judgeRun failure handling', () => {
     expect(fenced.grades).toHaveLength(1);
   });
 
-  it('is a clean no-op when there is no judge', async () => {
+  // PREMISE FIX (fix pass 1, 2026-08-12 review, IMPORTANT 3). These two used to
+  // assert the exact shape `{ grades: [], warnings: [], attempted: 0, kept: 0 }`
+  // — which is BYTE-IDENTICAL to the result of a judge that was called and
+  // answered `{"grades": []}`. The report could not tell the two apart and told
+  // the reader "the judge returned no grades for this run" about a call that was
+  // never made. The no-op is unchanged (no call, no warnings, no spend); the
+  // result now SAYS which no-op it was, and these assert that rather than
+  // asserting its absence. Every original assertion is still here — the object
+  // is still compared whole with toEqual, so a stray warning or a phantom grade
+  // still fails.
+  it('is a clean no-op when there is no judge, and says that is why', async () => {
     const r = await judgeRun(makeRun(), RUBRIC, null, []);
-    expect(r).toEqual({ grades: [], warnings: [], attempted: 0, kept: 0 });
+    expect(r).toEqual({
+      grades: [], warnings: [], attempted: 0, kept: 0,
+      notAttempted: 'no judge was configured for this plan, so nothing was graded and nothing was spent on grading',
+    });
+    // Distinguishable from "a judge answered with nothing", which is what the
+    // report used to print for this shape.
+    expect(r.unavailable).toBeUndefined();
   });
 
-  it('is a clean no-op when the case has no rubric', async () => {
-    const r = await judgeRun(makeRun(), [], fakeJudge([g()]), []);
-    expect(r).toEqual({ grades: [], warnings: [], attempted: 0, kept: 0 });
+  it('is a clean no-op when the case has no rubric, and NEVER calls the judge', async () => {
+    const seen: any[] = [];
+    const r = await judgeRun(makeRun(), [], fakeJudge([g()], 'vendor/judge-model', seen), []);
+    expect(r).toEqual({
+      grades: [], warnings: [], attempted: 0, kept: 0,
+      notAttempted: 'this case declares no rubric, so no judge call was made — nothing was asked and nothing was '
+        + 'spent on grading',
+    });
+    // The no-op is a REAL no-op: the fake judge was never generated from, so
+    // nothing would have been billed.
+    expect(seen).toHaveLength(0);
+  });
+
+  it('tells the two no-op reasons apart', async () => {
+    const noJudge = await judgeRun(makeRun(), RUBRIC, null, []);
+    const noRubric = await judgeRun(makeRun(), [], fakeJudge([g()]), []);
+    expect(noJudge.notAttempted).not.toBe(noRubric.notAttempted);
   });
 });
 

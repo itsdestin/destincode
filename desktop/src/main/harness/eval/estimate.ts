@@ -328,6 +328,61 @@ export function parsePriceCatalog(body: unknown): Record<string, Price> {
   return out;
 }
 
+/**
+ * What GRADING adds to the bill, in the only terms this module can stand behind.
+ *
+ * WHY this exists (fix pass 1, 2026-08-12 review, IMPORTANT 1): `estimateCells`
+ * prices cells — one model run each — and the judge is a SECOND paid API call
+ * per graded cell that appeared nowhere in the figure or in the words printed
+ * with it. The operator then answered `Spend up to $X? [y/N]` against a number
+ * that was knowably low, which on a plan with no `--max-spend` is the only bound
+ * there is. This module's whole premise is not lying about money.
+ */
+export interface JudgeCost {
+  /** The plan's judge (an OpenRouter model id), or null when it grades nothing. */
+  modelId: string | null;
+  /** Upper bound on judge CALLS: one per cell, and only cells that produce a
+   *  run are graded, so the real number can only be lower. */
+  maxCalls: number;
+  /** The catalog price for that model id, or null when the catalog had no entry
+   *  for it (a fetch failure, or a judge that is not an OpenRouter model). */
+  price: Price | null;
+}
+
+/**
+ * The judge lines that print WITH the total, one string per line.
+ *
+ * WHY no dollar figure is produced here, and why that is the honest answer
+ * rather than a lazy one: pricing a judge call needs its TOKEN COUNT, and no
+ * judge call has ever been measured. The two measured tables above come from
+ * whole-battery model runs and say nothing about a grading call, whose prompt is
+ * one answer plus one rubric. Any number here would be arithmetic over an
+ * invented token count wearing the same authority as the measured rows — the
+ * exact failure the header of this file describes. So the cost is NAMED,
+ * BOUNDED in calls, and given the judge's real per-token price where the catalog
+ * has one, which is the same treatment `unpriced` models already get: a cost the
+ * reader is told about and told is not in the total, never a silent zero.
+ */
+export function judgeCostLines(cost: JudgeCost): string[] {
+  if (!cost.modelId) {
+    return ['Judging: this plan names no judge, so no grading calls are made and none are missing from the figure above.'];
+  }
+  const lines = [
+    '! NOT IN THE TOTAL — the judge. The figure above prices MODEL RUNS ONLY.',
+    `  This plan grades with ${cost.modelId}: one further API call per cell that produces a run,`,
+    `  so up to ${cost.maxCalls} more call${cost.maxCalls === 1 ? '' : 's'} on top of the ${cost.maxCalls} run${cost.maxCalls === 1 ? '' : 's'} priced above.`,
+  ];
+  lines.push(cost.price
+    ? `  That model costs $${cost.price.inputPerM.toFixed(2)}/M input and $${cost.price.outputPerM.toFixed(2)}/M output,`
+      + ' but no judge call has ever been'
+    : `  The catalog has no price for ${cost.modelId}, so its rate is unknown as well as its size, and no judge call has ever been`);
+  lines.push(
+    '  measured — so its token count is unknown and no dollar figure for it is invented here.',
+    '  --max-spend DOES cover it (it reads what OpenRouter actually billed), so use that if the number matters.',
+  );
+  return lines;
+}
+
 /** Dollars, rendered so a small figure never reads as $0.00.
  *  WHY: a 24-cell grid can contain cells worth $0.004, and "$0.00" next to a
  *  row is a claim that the row is free. */

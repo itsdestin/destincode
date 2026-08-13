@@ -81,6 +81,20 @@ export interface JudgeResult {
   grades: Grade[];
   /** Set only when grading did not happen. Carries the provider's real message. */
   unavailable?: string;
+  /** Set when NO judge call was ever made — there was no judge, or the case has
+   *  no rubric. Carries the reason in words.
+   *
+   *  WHY it exists at all (fix pass 1, 2026-08-12 review, IMPORTANT 3): the
+   *  no-call return used to be `{ grades: [], warnings: [], attempted: 0,
+   *  kept: 0 }` with nothing else set — byte-identical to the result of a judge
+   *  that WAS called and answered `{"grades": []}`. The report could not tell
+   *  them apart, so an ungraded plan was told "the judge returned no grades for
+   *  this run": an assertion about a call that never happened, printed on the
+   *  page someone reads to decide how to spend money. Kept separate from
+   *  `unavailable` because that one means "a call was attempted and failed" and
+   *  carries a provider message; this one means nothing was asked and nothing
+   *  was spent. */
+  notAttempted?: string;
   /** Rendered ABOVE the grades by the report. Never folded into a score. */
   warnings: string[];
   /** How many grade rows the judge returned (before verification). 0 whenever
@@ -440,8 +454,9 @@ function parseGrades(text: string): RawGrade[] | null {
  *  out, returns nothing, or returns junk yields `{ grades: [], unavailable }`,
  *  and the caller keeps the run's mechanical checks and written answer.
  *
- *  `judge: null` means "not grading" and is a clean no-op — no call, no error,
- *  no warnings. */
+ *  `judge: null` (and an empty rubric) means "not grading" and is a clean no-op
+ *  — no call, no error, no warnings — but it comes back with `notAttempted` set
+ *  so a reader is never told a judge answered when none was asked. */
 export async function judgeRun(
   run: CaseRun,
   rubric: RubricItem[],
@@ -450,7 +465,24 @@ export async function judgeRun(
   judge: { modelId: string; factory: ModelFactory } | null,
   checks: CheckResult[],
 ): Promise<JudgeResult> {
-  if (!judge || rubric.length === 0) return { grades: [], warnings: [], attempted: 0, kept: 0 };
+  // The two ways grading can be a no-op, told apart in the RESULT and not only
+  // in this function's control flow (fix pass 1, 2026-08-12 review, IMPORTANT
+  // 3). Both are still clean no-ops — no call, no spend, no warnings — but the
+  // report can now say which one happened instead of guessing that a judge
+  // answered and said nothing.
+  if (!judge) {
+    return {
+      grades: [], warnings: [], attempted: 0, kept: 0,
+      notAttempted: 'no judge was configured for this plan, so nothing was graded and nothing was spent on grading',
+    };
+  }
+  if (rubric.length === 0) {
+    return {
+      grades: [], warnings: [], attempted: 0, kept: 0,
+      notAttempted: 'this case declares no rubric, so no judge call was made — nothing was asked and nothing was '
+        + 'spent on grading',
+    };
+  }
 
   const warnings: string[] = [];
   // Flagged, not refused: models favour their own output, and the reader needs

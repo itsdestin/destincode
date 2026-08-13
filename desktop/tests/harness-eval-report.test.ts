@@ -16,8 +16,12 @@
 import { describe, it, expect } from 'vitest';
 import { renderReport, type CellResult, type ReportMeta } from '../src/main/harness/eval/report';
 import { cellFilename, type Cell, type EvalPlan } from '../src/main/harness/eval/matrix';
-import type { CaseRun, CheckResult } from '../src/main/harness/eval/case-types';
-import type { JudgeResult } from '../src/main/harness/eval/judge';
+import type { CaseRun, CheckResult, RubricItem } from '../src/main/harness/eval/case-types';
+// judgeRun is imported so the "no judge" tests can render the shape the
+// ORCHESTRATOR really produces instead of a hand-written one — see the premise
+// fix in the all-discarded group. `judge: null` makes no call and spends
+// nothing, so this stays a pure, offline suite.
+import { judgeRun, type JudgeResult } from '../src/main/harness/eval/judge';
 import { collectRunFacts } from '../src/main/harness/eval/run-facts';
 import type { TranscriptEvent } from '../src/shared/types';
 
@@ -93,6 +97,30 @@ const ALL_DISCARDED: JudgeResult = {
   attempted: 3,
   kept: 0,
 };
+
+const RUBRIC: RubricItem[] = [{ id: 'tradeoffs', ask: 'Does the answer lay out the trade-offs?' }];
+
+/** One cell block's GRADES region — from its `**Grades**` header to the answer
+ *  printed under it.
+ *
+ *  WHY assertions about grading are scoped to this rather than to the page: the
+ *  stated-limits paragraph and the grid legend BOTH discuss grading on every
+ *  report, so a page-wide `toContain('not graded')` passes with the block empty.
+ *  That trap was measured on this branch once already (the grid test passed off
+ *  the legend until it was narrowed), so it is a helper now. */
+function gradeBlockOf(page: string): string {
+  const start = page.indexOf('**Grades**');
+  if (start < 0) throw new Error(`no **Grades** block on this page:\n${page}`);
+  const end = page.indexOf('**The answer, verbatim**', start);
+  return page.slice(start, end < 0 ? undefined : end);
+}
+
+/** One cell block's CHECKS region, scoped for the same reason. */
+function checkBlockOf(page: string): string {
+  const start = page.indexOf('**Checks**');
+  if (start < 0) throw new Error(`no **Checks** block on this page:\n${page}`);
+  return page.slice(start, page.indexOf('**Grades**', start));
+}
 
 function ok(over: Partial<CellResult> = {}): CellResult {
   const run = over.run ?? makeRun();
@@ -225,14 +253,186 @@ describe('a run whose grades were all discarded is ungraded, not clean', () => {
     expect(unavailable).not.toMatch(/discarded/i);
   });
 
-  it('says so when no judge was configured at all', () => {
-    const out = renderReport({ ...PLAN, judge: null }, [ok({ judge: undefined })], META);
-    expect(out).toMatch(/no judge was configured/i);
+  // PREMISE FIX (fix pass 1, 2026-08-12 review, IMPORTANT 3). This test used to
+  // pass `judge: undefined` — a shape the ORCHESTRATOR CANNOT PRODUCE, because
+  // gradeCell always assigns the result of judgeRun. So it was green while the
+  // real path printed "the judge returned no grades for this run": an assertion
+  // about a call that was never made, on the page someone reads to decide how to
+  // spend money. The fix is to stop hand-writing the shape and let the real
+  // judgeRun produce it — `judge: null` means no judge, needs no network, no key
+  // and no spend, and is exactly what gradeCell passes when a plan names none.
+  it('says so when no judge was configured at all, on the shape the orchestrator really produces', async () => {
+    const run = makeRun();
+    const real = await judgeRun(run, RUBRIC, null, []);
+    const out = renderReport({ ...PLAN, judge: null }, [ok({ run, judge: real })], META);
+    // Scoped to the cell's grade block, not the page: the limits section and the
+    // grid legend both talk about grading, so a page-wide match proves nothing.
+    expect(gradeBlockOf(out)).toMatch(/no judge was configured/i);
+    // The sentence that used to print here — about a judge that answered.
+    expect(gradeBlockOf(out)).not.toMatch(/the judge returned no grades/i);
+  });
+
+  it('does not claim a judge answered when the case has no rubric', async () => {
+    const run = makeRun();
+    // A judge IS configured; the case has no rubric, so judgeRun makes no call.
+    const real = await judgeRun(run, [], { modelId: 'x-ai/grok-4.5', factory: async () => { throw new Error('the judge must not be called'); } }, []);
+    const block = gradeBlockOf(renderReport(PLAN, [ok({ run, judge: real })], META));
+    expect(block).toMatch(/no judge call was made/i);
+    expect(block).not.toMatch(/the judge returned no grades/i);
+  });
+
+  it('still says a judge answered with nothing when it really did', () => {
+    // The other side of the same coin: `{"grades": []}` parses to attempted 0
+    // with no `unavailable` and no `notAttempted`, and that sentence must
+    // survive — it is the one case where a judge really did return nothing.
+    const block = gradeBlockOf(renderReport(PLAN, [ok({
+      judge: { grades: [], warnings: [], attempted: 0, kept: 0 },
+    })], META));
+    expect(block).toMatch(/the judge returned no grades/i);
   });
 
   it('reports a grading failure in the words of whatever failed', () => {
     const out = renderReport(PLAN, [ok({ judge: undefined, gradingError: 'EACCES: permission denied' })], META);
     expect(out).toContain('EACCES: permission denied');
+  });
+
+  it('does not let a grading failure delete grades the judge already returned', () => {
+    // Fix pass 1 (2026-08-12 review, MINOR 2). gradeCell writes .grades.json
+    // AFTER judgeRun, inside the same try — so a failed write landed in
+    // `gradingError` and the whole block rendered NOT GRADED, throwing away
+    // grades that had already been paid for.
+    const out = renderReport(PLAN, [ok({ judge: KEPT_GRADE, gradingError: 'ENOSPC: no space left on device' })], META);
+    const block = gradeBlockOf(out);
+    // The grades survive, with their score and their quote…
+    expect(block).toContain('**tradeoffs** — 4/5');
+    expect(block).toContain('a lock is simpler to reason about');
+    expect(block).not.toContain('NOT GRADED');
+    // …and the failure is still on the page, in the real words, above them.
+    expect(block).toContain('ENOSPC: no space left on device');
+    expect(block.indexOf('ENOSPC')).toBeLessThan(block.indexOf('**tradeoffs**'));
+  });
+
+  it('still renders NOT GRADED when the grading failure left no grades at all', () => {
+    // The control for the test above: suppressing NOT GRADED unconditionally
+    // would be a worse bug than the one being fixed.
+    const block = gradeBlockOf(renderReport(PLAN, [ok({
+      judge: { grades: [], warnings: [], attempted: 0, kept: 0 }, gradingError: 'EACCES: permission denied',
+    })], META));
+    expect(block).toContain('NOT GRADED');
+    expect(block).toContain('EACCES: permission denied');
+  });
+});
+
+// --- IMPORTANT 4: checks that could not be evaluated are not a fact ----------
+
+describe('checks that were never recorded are not "this case declares none"', () => {
+  it('renders an absent check list differently from an empty one', () => {
+    // gradeCell can leave `checks` undefined (anything in the grading step that
+    // throws before they are recorded). Rendering that as "declares no checks"
+    // states a definite fact about the CASE, invented from missing data — the
+    // never-ran failure one level up.
+    const notRecorded = renderReport(PLAN, [ok({ checks: undefined })], META);
+    const declaresNone = renderReport(PLAN, [ok({ checks: [] })], META);
+    expect(notRecorded).not.toBe(declaresNone);
+    expect(checkBlockOf(notRecorded)).toMatch(/NOT RECORDED/);
+    expect(checkBlockOf(notRecorded)).not.toMatch(/declares no mechanical checks/i);
+    expect(checkBlockOf(declaresNone)).toMatch(/declares no mechanical checks/i);
+    expect(checkBlockOf(declaresNone)).not.toMatch(/NOT RECORDED/);
+  });
+
+  it('says so in the grid square too, where a reader looks first', () => {
+    const row = (page: string) => page.split('\n').find((l) => l.startsWith('| config-investigation |'))!;
+    expect(row(renderReport(PLAN, [ok({ checks: undefined })], META))).toMatch(/checks not recorded/i);
+    expect(row(renderReport(PLAN, [ok({ checks: [] })], META))).toMatch(/no checks/);
+    expect(row(renderReport(PLAN, [ok({ checks: [] })], META))).not.toMatch(/not recorded/i);
+  });
+});
+
+// --- IMPORTANT 2: builds are an axis, in the count AND in the missing list ---
+
+describe('a plan with two build arms', () => {
+  const TWO_BUILDS: EvalPlan = {
+    ...PLAN,
+    cases: ['config-investigation'],
+    instructions: [{ id: 'none', file: null }],
+    builds: [{ id: 'master', dist: '/abs/master' }, { id: 'branch', dist: '/abs/branch' }],
+  };
+
+  function resultFor(buildId: string): CellResult {
+    return ok({
+      cell: makeCell({ buildId, id: `config-investigation|none|Claude Opus 5|${buildId}|0` }),
+    });
+  }
+
+  /** The `N of M` clause of the header line, on its own. */
+  function headerCount(page: string): string {
+    return page.split('\n').find((l) => l.startsWith('**Started**'))!;
+  }
+
+  it('counts both arms as planned cells', () => {
+    // The bug: `planned` multiplied cases x instructions x models x repeats and
+    // skipped `builds`, which expandPlan multiplies by — so two builds both
+    // running printed "**2 of 1** planned cell produced a run".
+    const out = renderReport(TWO_BUILDS, [resultFor('master'), resultFor('branch')], META);
+    expect(headerCount(out)).toContain('**2 of 2** planned cells');
+  });
+
+  it('names the build arm that never ran instead of reporting a full house', () => {
+    // The worse half: `missing` keyed on case x arm x model, which structurally
+    // cannot see a build. A branch-vs-master run where the branch arm never
+    // started printed "None — every combination produced at least one result".
+    const out = renderReport(TWO_BUILDS, [resultFor('master')], META);
+    expect(headerCount(out)).toContain('**1 of 2** planned cells');
+    const section = out.slice(out.indexOf('## Combinations that did not run'), out.indexOf('## The answers'));
+    expect(section).toContain('build branch');
+    expect(section).not.toMatch(/^None —/m);
+    // …and it does not invent a missing master arm, which did run.
+    expect(section).not.toContain('build master');
+  });
+
+  it('leaves the build off the line when there is only one arm', () => {
+    // Otherwise every line on every single-build report carries the same word.
+    // The plan NAMES its one build: measured, a version of this test that used a
+    // build-less plan did not discriminate, because breaking the label then
+    // printed "build null" and the assertion below was looking for the id.
+    const out = renderReport({ ...PLAN, builds: [{ id: 'current', dist: '/abs/dist' }] }, [], META);
+    const section = out.slice(out.indexOf('## Combinations that did not run'), out.indexOf('## The answers'));
+    expect(section).toContain('config-investigation · draft · Claude Opus 5');
+    expect(section).not.toContain('build current');
+  });
+});
+
+// --- MINOR 1: "None" must not print under a header that says 0 of 4 ----------
+
+describe('the did-not-run list is keyed on a RUN, not on a result object', () => {
+  it('lists every combination of an all-402 matrix instead of claiming a full house', () => {
+    const dead: CellResult[] = PLAN.cases.flatMap((caseId) => PLAN.instructions.map((arm) => ({
+      cell: makeCell({ caseId, instructionsId: arm.id, id: `${caseId}|${arm.id}|Claude Opus 5|current|0` }),
+      run: null,
+      error: 'provider returned HTTP 402: insufficient credits',
+    })));
+    const out = renderReport(PLAN, dead, META);
+    const section = out.slice(out.indexOf('## Combinations that did not run'), out.indexOf('## The answers'));
+    // The header says 0 of 4; this section used to say the opposite two screens
+    // below it, because a 402'd CellResult counted as the combination "running".
+    expect(out).toMatch(/\*\*0 of 4\*\*/);
+    expect(section).not.toMatch(/None —/);
+    expect(section).toContain('config-investigation · none · Claude Opus 5');
+    // And it distinguishes the two ways a combination can be missing: this one
+    // was attempted and billed, which is not the same as never starting.
+    expect(section).toMatch(/attempted, but produced no run/);
+    expect(section).not.toMatch(/never started/);
+  });
+
+  it('explains a shortfall that is only repeats, rather than leaving it contradicting the header', () => {
+    const twoRepeats = { ...PLAN, cases: ['config-investigation'], instructions: [{ id: 'none', file: null }], repeats: 2 };
+    const out = renderReport(twoRepeats, [ok()], META);
+    const section = out.slice(out.indexOf('## Combinations that did not run'), out.indexOf('## The answers'));
+    expect(section).toMatch(/None — every combination/);
+    // Every combination ran, and the header still says 1 of 2. The page must
+    // account for the gap rather than leaving two numbers disagreeing.
+    expect(section).toMatch(/1 of the 2 planned cells still produced no run/);
+    expect(section).toMatch(/repeats of combinations that did run/);
   });
 });
 

@@ -129,7 +129,13 @@ const CHECK_WORD: Record<CheckResult['state'], string> = {
  *  present is named; a state with zero entries is omitted so a clean row stays
  *  short. `never ran` is spelled out in full, never abbreviated into the pass
  *  count. */
-function checkTally(checks: CheckResult[]): string {
+function checkTally(checks: CheckResult[] | undefined): string {
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 4): `undefined` is NOT `[]`.
+  // Nothing recorded means the checks could not be evaluated (the grading step
+  // threw before or during them); an empty array means the case genuinely
+  // declares none. Collapsing the two printed "nothing could be measured" as a
+  // definite fact about the case — the never-ran failure shape one level up.
+  if (checks === undefined) return '⚠️ checks not recorded';
   if (!checks.length) return 'no checks';
   const count = (state: CheckResult['state']) => checks.filter((c) => c.state === state).length;
   const parts: string[] = [];
@@ -141,16 +147,39 @@ function checkTally(checks: CheckResult[]): string {
 
 /** Why a cell has no grades, in the words of whatever actually failed — or
  *  `null` when it does have grades. Ordered most-specific first. */
-function ungradedReason(result: CellResult): string | null {
-  if (result.gradingError) return `grading could not be carried out: ${result.gradingError}`;
+function ungradedReason(result: CellResult, judgeModelId: string | null | undefined): string | null {
   const judge = result.judge;
-  if (!judge) return 'no judge was configured for this plan, so nothing was graded';
+  // Fix pass 1 (2026-08-12 review, MINOR 2): kept grades outrank a
+  // `gradingError`. The judge answering and THEN the .grades.json write failing
+  // used to render as NOT GRADED, suppressing grades that had already been paid
+  // for. The error is not hidden — renderCellBlock prints it as a warning above
+  // the grades — but it no longer deletes the thing it happened after.
+  if (judge && judge.grades.length > 0) return null;
+  if (result.gradingError) return `grading could not be carried out: ${result.gradingError}`;
+  if (!judge) {
+    // No judge result AT ALL, and no grading error either — nothing recorded
+    // grading for this cell. Say only that; the orchestrator always assigns a
+    // judge result, so guessing a cause here would be inventing one.
+    return judgeModelId
+      ? 'no judge result was recorded for this cell, so nothing was graded'
+      : 'no judge was configured for this plan, so nothing was graded';
+  }
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 3): FIRST, because "no call was
+  // made" must never fall through to a sentence about what a judge returned.
+  // judgeRun sets this on both of its no-op paths (no judge, empty rubric); the
+  // orchestrator hands that result straight through, so this is the branch a
+  // plan without a judge actually reaches.
+  if (judge.notAttempted) return judge.notAttempted;
   if (judge.unavailable) return judge.unavailable;
   if (judge.grades.length === 0 && judge.attempted > 0) {
     return `the judge returned ${judge.attempted} grade${judge.attempted === 1 ? '' : 's'} and ALL of them were `
       + 'discarded (0 kept) — see the warnings above. This is not "no issues found"; it is "nothing the judge said '
       + 'could be verified".';
   }
+  // Only reachable now when a judge call WAS made and came back with an empty
+  // grade list (`{"grades": []}` parses to attempted 0 with no `unavailable`).
+  // The no-call cases are caught by `notAttempted` above, so this sentence no
+  // longer asserts a call that never happened.
   if (judge.grades.length === 0) return 'the judge returned no grades for this run';
   return null;
 }
@@ -208,7 +237,10 @@ function squareSummary(result: CellResult, rubricSize: number): string {
     const excerpt = detail.length > GRID_ERROR_CHARS ? `${detail.slice(0, GRID_ERROR_CHARS)}…` : detail;
     return `❗ ${why}${excerpt ? ` — ${excerpt}` : ''}`;
   }
-  const parts = [checkTally(result.checks ?? [])];
+  // `result.checks` is passed THROUGH, not defaulted to `[]`: checkTally has to
+  // see the difference between "no check results were recorded" and "this case
+  // declares no checks" (fix pass 1, IMPORTANT 4).
+  const parts = [checkTally(result.checks)];
   const judge = result.judge;
   if (judge && judge.grades.length > 0) {
     parts.push(`grades ${gradeTotal(judge, rubricSize)}`);
@@ -305,8 +337,21 @@ function renderCellBlock(
   if (result.facts) lines.push(renderRunFacts(result.facts), '');
 
   lines.push('**Checks**', '');
-  const checks = result.checks ?? [];
-  if (!checks.length) {
+  const checks = result.checks;
+  if (checks === undefined) {
+    // Fix pass 1 (2026-08-12 review, IMPORTANT 4). This used to be `?? []`,
+    // which printed "This case declares no mechanical checks." for a case that
+    // declares three — a definite negative FACT about the case, invented from
+    // the absence of data. Reachable whenever the grading step threw before the
+    // checks were recorded (a collectRunFacts failure did exactly this). The
+    // real reason, if there is one, is the grading error printed elsewhere in
+    // this block; this line claims nothing beyond what is known.
+    lines.push(
+      '- ⚠️ **NOT RECORDED** — no check results were recorded for this cell, so nothing mechanical was measured. '
+      + 'This is NOT "this case declares no checks", and it is NOT a pass.',
+      '',
+    );
+  } else if (!checks.length) {
     lines.push('- This case declares no mechanical checks.', '');
   } else {
     for (const check of checks) {
@@ -323,7 +368,21 @@ function renderCellBlock(
   }
   for (const warning of result.judge?.warnings ?? []) lines.push(`> ⚠️ ${warning.replace(/^⚠️\s*/, '')}`, '');
 
-  const ungraded = ungradedReason(result);
+  // Fix pass 1 (2026-08-12 review, MINOR 2): a grading error that happened AFTER
+  // the judge produced grades (the .grades.json write failing is the reachable
+  // one) is printed HERE, above the grades it did not invalidate — instead of
+  // replacing them with NOT GRADED, which threw away work already paid for. The
+  // sentence says only what is known: grading did not finish, in the words of
+  // whatever failed, with no guess at which step was lost.
+  if (result.gradingError && (result.judge?.grades.length ?? 0) > 0) {
+    lines.push(
+      '> ⚠️ **Grading did not finish**, but the judge had already returned the grades below, so they are printed. '
+      + `Whatever ran after the judge failed with: ${result.gradingError}`,
+      '',
+    );
+  }
+
+  const ungraded = ungradedReason(result, judgeModelId);
   if (ungraded) {
     lines.push(`**NOT GRADED** — ${ungraded}`, '');
   } else {
@@ -378,7 +437,24 @@ export function renderReport(plan: EvalPlan, results: CellResult[], meta: Report
   }
 
   const ran = results.filter((r) => r.run).length;
-  const planned = plan.cases.length * plan.instructions.length * plan.models.length * repeats;
+
+  // The BUILD arms, which are an axis of expandPlan (matrix.ts) and were missing
+  // from this count until fix pass 1 (2026-08-12 review, IMPORTANT 2): a
+  // master-vs-branch plan expands to twice these cells, so two builds both
+  // running printed "**2 of 1** planned cell produced a run" — an impossible
+  // number on the line that tells the reader how much of what they paid for
+  // actually happened.
+  //
+  // WHY the fallback chain: `builds` is optional in the plan FILE (the
+  // orchestrator resolves and injects the current build before expanding), so a
+  // plan object handed straight to this renderer may not carry it. Falling back
+  // to the build ids the RESULTS actually carry keeps the keys below matching
+  // real cells; with neither, there is exactly one unnamed arm.
+  const buildIds: (string | null)[] = plan.builds?.length
+    ? plan.builds.map((build) => build.id)
+    : [...new Set(results.map((r) => r.cell.buildId))];
+  if (!buildIds.length) buildIds.push(null);
+  const planned = plan.cases.length * plan.instructions.length * plan.models.length * buildIds.length * repeats;
 
   const lines: string[] = [];
   lines.push(`# Harness eval — ${plan.name}`, '');
@@ -423,21 +499,64 @@ export function renderReport(plan: EvalPlan, results: CellResult[], meta: Report
   // Item 6, in list form as well as in the grid: the combinations that produced
   // nothing, named one by one. A reader scanning for "what did I not get?"
   // should not have to reconstruct it from empty squares.
+  //
+  // Fix pass 1 (2026-08-12 review). Two things were wrong with this list:
+  //   IMPORTANT 2 — the key was case x arm x model, with no BUILD in it, so a
+  //     plan whose `branch` arm never ran at all had that whole arm vanish
+  //     silently: "every combination produced at least one result" was printed
+  //     about a comparison that only ever tested one side. Branch-vs-master is
+  //     the use case this file exists for.
+  //   MINOR 1 — membership was keyed on a CellResult EXISTING, not on a run
+  //     existing. A matrix where every cell 402'd therefore printed "None —
+  //     every combination produced at least one result" two screens under a
+  //     "0 of 4" header. A result that carries an error is not a run.
+  const ranCombos = new Set<string>();
+  for (const result of results) {
+    if (result.run) ranCombos.add(JSON.stringify([result.cell.caseId, result.cell.instructionsId, result.cell.model, result.cell.buildId]));
+  }
+  // Which combinations were ATTEMPTED (a result exists) but produced no run —
+  // told apart below from the ones that never started, because "the provider
+  // refused it" and "it never happened" are different facts about the money.
+  const attemptedCombos = new Set<string>();
+  for (const result of results) {
+    if (!result.run) attemptedCombos.add(JSON.stringify([result.cell.caseId, result.cell.instructionsId, result.cell.model, result.cell.buildId]));
+  }
   const missing: string[] = [];
+  // The build id is only spelled out when there is more than one arm: on a
+  // single-build plan it is the same word on every line and reads as noise.
+  const showBuild = buildIds.length > 1;
   for (const caseId of plan.cases) {
     for (const arm of plan.instructions) {
       for (const model of plan.models) {
-        if (!bySquare.has(squareKey(caseId, arm.id, model))) missing.push(`${caseId} · ${arm.id} · ${model}`);
+        for (const buildId of buildIds) {
+          const key = JSON.stringify([caseId, arm.id, model, buildId]);
+          if (ranCombos.has(key)) continue;
+          const name = `${caseId} · ${arm.id} · ${model}${showBuild ? ` · build ${buildId}` : ''}`;
+          missing.push(attemptedCombos.has(key)
+            ? `${name} — attempted, but produced no run (its block below carries the error)`
+            : `${name} — never started`);
+        }
       }
     }
   }
   lines.push('## Combinations that did not run', '');
   if (!missing.length) {
-    lines.push('None — every combination in this plan produced at least one result.', '');
+    lines.push('None — every combination in this plan produced at least one run.', '');
+    // Repeats are the only axis not in the key above, so when every combination
+    // ran and cells are still missing, repeats is what they are. Printed because
+    // the header's "N of M" would otherwise contradict this line with no
+    // explanation anywhere on the page.
+    if (ran < planned) {
+      lines.push(
+        `${planned - ran} of the ${planned} planned cells still produced no run: this plan asks for ${repeats} runs `
+        + 'per combination, and the missing ones are repeats of combinations that did run at least once.',
+        '',
+      );
+    }
   } else {
     lines.push(
-      `${missing.length} combination${missing.length === 1 ? '' : 's'} in this plan produced no result at all. `
-      + 'They are blank because they never happened, not because they were fine:',
+      `${missing.length} combination${missing.length === 1 ? '' : 's'} in this plan produced no run at all. `
+      + 'They are blank because nothing was measured, not because they were fine:',
       '',
     );
     for (const name of missing) lines.push(`- ${name}`);

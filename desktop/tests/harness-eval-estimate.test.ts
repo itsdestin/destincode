@@ -5,6 +5,7 @@ import {
   estimateCells,
   parsePriceCatalog,
   formatUsd,
+  judgeCostLines,
   MEASURED_OUTPUT_TOKENS,
   MEASURED_INPUT_TOKENS,
   FALLBACK_INPUT_TOKENS,
@@ -234,5 +235,51 @@ describe('formatUsd', () => {
     expect(formatUsd(0)).toBe('$0.00');
     expect(formatUsd(1.5)).toBe('$1.50');
     expect(formatUsd(12.345)).toBe('$12.35');
+  });
+});
+
+// --- the judge, which the per-cell figure does not price ---------------------
+
+describe('judgeCostLines', () => {
+  // Fix pass 1 (2026-08-12 review, IMPORTANT 1). `estimateCells` prices one
+  // model run per cell; grading adds a SECOND paid call per graded cell that
+  // appeared nowhere in the printed figure — the figure the operator answers
+  // "Spend up to $X? [y/N]" against, and the only bound a run without
+  // --max-spend has. These pin what the disclosure says, and that it never
+  // invents a dollar amount for a call nobody has measured.
+  const P: Price = { inputPerM: 0.5, outputPerM: 2 };
+
+  it('names the judge, the call count, and that none of it is in the total', () => {
+    const lines = judgeCostLines({ modelId: 'x-ai/grok-4.5', maxCalls: 12, price: P }).join('\n');
+    expect(lines).toContain('NOT IN THE TOTAL');
+    expect(lines).toContain('x-ai/grok-4.5');
+    expect(lines).toContain('up to 12 more calls');
+    // The one figure that IS known: the judge's own catalog rate.
+    expect(lines).toContain('$0.50/M input');
+    expect(lines).toContain('$2.00/M output');
+  });
+
+  it('invents no dollar figure for the judge, because no judge call was ever measured', () => {
+    // THE DISCRIMINATING ASSERTION. A helpful-looking "≈ $0.41 of judging" would
+    // be arithmetic over a token count nobody has: the measured tables in this
+    // module come from whole-battery model runs and say nothing about a grading
+    // call. So the cost is named and bounded in CALLS, never in dollars.
+    const lines = judgeCostLines({ modelId: 'x-ai/grok-4.5', maxCalls: 12, price: P }).join('\n');
+    expect(lines).toMatch(/token count is unknown/i);
+    expect(lines).toMatch(/no dollar figure for it is invented/i);
+    // No total-shaped dollar amount anywhere — only the two per-million rates.
+    expect(lines.replace(/\$\d+\.\d+\/M/g, '')).not.toMatch(/\$\d/);
+  });
+
+  it('says the rate is unknown too when the catalog has no entry for the judge', () => {
+    const lines = judgeCostLines({ modelId: 'vendor/unlisted', maxCalls: 3, price: null }).join('\n');
+    expect(lines).toContain('The catalog has no price for vendor/unlisted');
+    expect(lines).not.toMatch(/\$\d/);
+  });
+
+  it('says plainly when a plan grades nothing, so the reader knows the figure is whole', () => {
+    const lines = judgeCostLines({ modelId: null, maxCalls: 12, price: P }).join('\n');
+    expect(lines).toMatch(/names no judge/i);
+    expect(lines).not.toContain('NOT IN THE TOTAL');
   });
 });

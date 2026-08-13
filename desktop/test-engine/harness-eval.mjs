@@ -143,6 +143,9 @@ async function importGraders() {
     estimateCells: estimate.estimateCells,
     parsePriceCatalog: estimate.parsePriceCatalog,
     formatUsd: estimate.formatUsd,
+    // The judge's share of the bill, which the per-cell figure does not include
+    // (fix pass 1, 2026-08-12 review, IMPORTANT 1).
+    judgeCostLines: estimate.judgeCostLines,
     MEASURED_ROSTER_SPEND_USD: estimate.MEASURED_ROSTER_SPEND_USD,
     // Both halves of the anchor, so the CLI can print WHAT WAS BILLED and OVER
     // HOW MANY ROUNDS rather than only the derived per-round average — see
@@ -607,7 +610,15 @@ async function gradeCell(cell, result, { apiKey, judgeModelId, runDir }) {
   try {
     const { getCase, judgeRun, collectRunFacts, makeOpenRouterFactory } = await loadGraders();
     const caseBody = getCase(cell.caseId);
-    entry.facts = collectRunFacts(result.run, caseBody.minToolCalls);
+    // CHECKS FIRST, FACTS SECOND (fix pass 1, 2026-08-12 review, IMPORTANT 4).
+    // These two were the other way round, and `collectRunFacts` throws on a run
+    // with no `metrics` — so a facts failure left `entry.checks` UNDEFINED and
+    // the report printed "This case declares no mechanical checks" for a case
+    // that declares three. Nothing here depends on facts, so the cheapest fix is
+    // to record the checks before anything that can throw can eat them. (The
+    // renderer no longer reads `undefined` as "none declared" either — two
+    // independent fixes, because either one alone leaves the other shape
+    // reachable from a different caller.)
     entry.checks = caseBody.expect.map((check) => {
       try {
         return check.run(result.run);
@@ -620,6 +631,7 @@ async function gradeCell(cell, result, { apiKey, judgeModelId, runDir }) {
         return { id: check.id, state: 'never-ran', detail: `This check could not be evaluated: ${errText(err)}` };
       }
     });
+    entry.facts = collectRunFacts(result.run, caseBody.minToolCalls);
     entry.judge = await judgeRun(
       result.run,
       caseBody.rubric,
@@ -1111,20 +1123,25 @@ const CATALOG_TIMEOUT_MS = 15_000;
  * `printEstimate` names them all and refuses to show a total. That is the
  * honest degradation. The real fetch error is printed, never a guess at why.
  *
- * @returns {Promise<{ prices: Record<string, {inputPerM:number,outputPerM:number}>, error?: string }>}
+ * `judgeModelId` is looked up by MODEL ID rather than by roster label: the judge
+ * is named as an OpenRouter id in the plan and need not be on the roster at all
+ * (fix pass 1, 2026-08-12 review, IMPORTANT 1 — the judge's spend has to be
+ * printed with the estimate, and its rate is the one honest number available).
+ *
+ * @returns {Promise<{ prices: Record<string, {inputPerM:number,outputPerM:number}>, judgePrice: {inputPerM:number,outputPerM:number}|null, error?: string }>}
  */
-async function fetchPrices(roster, parsePriceCatalog) {
+async function fetchPrices(roster, parsePriceCatalog, judgeModelId) {
   let byModelId;
   try {
     const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) });
     if (!res.ok) {
       // The server's own status line and body, capped — never "network error".
       const body = (await res.text().catch(() => '')).slice(0, 300);
-      return { prices: {}, error: `GET ${OPENROUTER_MODELS_URL} returned HTTP ${res.status} ${res.statusText}${body ? `: ${body}` : ''}` };
+      return { prices: {}, judgePrice: null, error: `GET ${OPENROUTER_MODELS_URL} returned HTTP ${res.status} ${res.statusText}${body ? `: ${body}` : ''}` };
     }
     byModelId = parsePriceCatalog(await res.json());
   } catch (err) {
-    return { prices: {}, error: `GET ${OPENROUTER_MODELS_URL} failed: ${err.message}` };
+    return { prices: {}, judgePrice: null, error: `GET ${OPENROUTER_MODELS_URL} failed: ${err.message}` };
   }
   // The catalog is keyed by OpenRouter model id; cells carry roster LABELS. The
   // roster is the only thing that knows the correspondence, so the mapping
@@ -1133,19 +1150,24 @@ async function fetchPrices(roster, parsePriceCatalog) {
   for (const entry of roster) {
     if (byModelId[entry.modelId]) prices[entry.label] = byModelId[entry.modelId];
   }
-  return { prices };
+  return { prices, judgePrice: (judgeModelId && byModelId[judgeModelId]) || null };
 }
 
 /**
  * Print the dollar figure a human is about to agree to.
  *
  * Everything that could make the number wrong is printed WITH it: unpriced
- * models, models with no measured token count, a failed catalog fetch, and the
- * fact that the measured tokens come from whole-battery runs. A total with no
- * caveats next to it is a number someone will act on.
+ * models, models with no measured token count, a failed catalog fetch, the fact
+ * that the measured tokens come from whole-battery runs, and — since fix pass 1
+ * (2026-08-12 review, IMPORTANT 1) — the JUDGE, which is a second paid call per
+ * graded cell and is not in the total at all. That contract was false the moment
+ * grading was wired in, and the figure below is the only bound a run without
+ * --max-spend has. A total with no caveats next to it is a number someone will
+ * act on.
  */
 function printEstimate(estimate, cells, {
-  fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
+  fetchError, formatUsd, judgeCostLines, judgeModelId, judgePrice,
+  MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
 }) {
   console.log('\nEstimated cost');
   const width = Math.max(...estimate.perCell.map((c) => c.cellId.length), 4);
@@ -1169,6 +1191,13 @@ function printEstimate(estimate, cells, {
   if (estimate.unmeasured.length) {
     console.log(`  ! No measured token count for: ${estimate.unmeasured.join(', ')} — priced from the worst measured run,`);
     console.log('    so those rows read HIGH rather than low.');
+  }
+  // The judge, ALWAYS — including the "this plan has no judge" line, because
+  // "the figure covers everything" is itself information the reader needs, and a
+  // caveat that only prints sometimes teaches nobody to look for it.
+  console.log('');
+  for (const line of judgeCostLines({ modelId: judgeModelId ?? null, maxCalls: cells.length, price: judgePrice ?? null })) {
+    console.log(`  ${line}`);
   }
   console.log('\n  Basis: token counts measured from whole-BATTERY runs (40-63 tool calls, ~20 minutes each).');
   console.log('  A short case costs a fraction of this; a model that loops costs more.');
@@ -1499,13 +1528,15 @@ async function main(argv) {
   // grid above is only half of what someone needs to decide. The prices come
   // from a public catalog endpoint, so this path needs no credential at all.
   const {
-    roster, estimateCells, parsePriceCatalog, formatUsd,
+    roster, estimateCells, parsePriceCatalog, formatUsd, judgeCostLines,
     MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
   } = await loadGraders();
-  const { prices, error: fetchError } = await fetchPrices(roster, parsePriceCatalog);
+  const judgeModelId = plan.judge ?? null;
+  const { prices, judgePrice, error: fetchError } = await fetchPrices(roster, parsePriceCatalog, judgeModelId);
   const estimate = estimateCells(cells, prices);
   printEstimate(estimate, cells, {
-    fetchError, formatUsd, MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
+    fetchError, formatUsd, judgeCostLines, judgeModelId, judgePrice,
+    MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
   });
 
   if (dryRun) {
@@ -1544,11 +1575,18 @@ async function main(argv) {
     // priced there is no number to show; with a partial total, the prompt says so
     // in the same breath as the number.
     const pricedCount = estimate.perCell.filter((c) => c.usd !== null).length;
-    const label = pricedCount === 0
+    const base = pricedCount === 0
       ? 'an UNKNOWN amount (no model in this plan could be priced — see above)'
       : estimate.unpriced.length
         ? `${formatUsd(estimate.totalUsd)} for ${pricedCount} of ${cells.length} cells, plus ${estimate.unpriced.length} unpriced model(s) — the real figure is HIGHER`
         : formatUsd(estimate.totalUsd);
+    // …and the judge, which is not in that figure at all (fix pass 1,
+    // 2026-08-12 review, IMPORTANT 1). "Spend up to $X?" was a false ceiling on
+    // a graded plan: grading adds a call per cell that the total never counted.
+    // Named in the same breath as the number, because this line IS the gate.
+    const label = judgeModelId
+      ? `${base}, PLUS up to ${cells.length} judge call${cells.length === 1 ? '' : 's'} to ${judgeModelId} that are NOT in that figure`
+      : base;
     let ok;
     try {
       ok = await confirmSpend(label);
