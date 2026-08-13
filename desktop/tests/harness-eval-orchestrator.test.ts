@@ -1544,6 +1544,104 @@ globalThis.fetch = async (url) => {
     }
   }, 60_000);
 
+  /** A "dist under test" whose runCase returns a run complete enough to be
+   *  GRADED: real metrics, a written answer, and a tool list that makes the
+   *  battery's three checks land on three different states. */
+  function gradableDist(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-gradable-'));
+    fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}');
+    const dir = path.join(root, 'main/harness/eval');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'run-case.js'), `
+export const runCase = async (c) => ({
+  label: c.label, modelId: 'anthropic/claude-opus-5',
+  review: 'ANSWER_MARKER — I read the loader before changing anything.',
+  events: [], toolCalls: 1, asks: 0, stepGates: 0, fixtureRoot: '/tmp/fixture', outcome: 'complete',
+  metrics: { wallClockMs: 1000, toolCalls: 1, asks: 0, stepGates: 0, thinkingEvents: 0,
+    inputTokens: 1, outputTokens: 1, stopReasons: ['stop'], toolsUsed: ['Read'], repeats: [] },
+});
+`);
+    fs.writeFileSync(path.join(dir, 'openrouter-factory.js'), 'export const makeOpenRouterFactory = () => async () => ({});\n');
+    return root;
+  }
+
+  it('writes a report.md that shows all three check states, next to the transcripts', () => {
+    // Task 11 end to end: the CLI runs a cell, writes its transcript, grades it
+    // with THIS checkout's checks, and renders the report. The battery's three
+    // checks land on three different states for this run (no events at all →
+    // the fixture-jail check never runs; a non-empty answer → passed; no Grep in
+    // toolsUsed → failed), so one report exercises the whole three-state rule
+    // that a passing/failing pair would not.
+    const stub = fetchStub([0]);
+    const plan = writePlan({ ...BASE_PLAN, builds: [{ id: 'fake', dist: gradableDist() }] });
+    const runsDir = runsDirOf(stub, plan);
+    const restore = runsDirGuard(runsDir);
+    try {
+      const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+      expect(status).toBe(0);
+      expect(stdout).toContain('Report: ');
+
+      const report = fs.readFileSync(path.join(runsDir, 'report.md'), 'utf8');
+      expect(report).toContain('# Harness eval — unit-test-plan');
+      // All three states, spelled differently — the invariant a green-vs-red
+      // report would silently lose.
+      expect(report).toContain('**PASSED**');
+      expect(report).toContain('**FAILED**');
+      expect(report).toContain('**NEVER RAN**');
+      // The model's answer, verbatim, on the same page as the grades.
+      expect(report).toContain('ANSWER_MARKER — I read the loader before changing anything.');
+      // No judge in this plan: an empty grade column must SAY it was not graded.
+      expect(report).toContain('NOT GRADED');
+      // And the transcript it names is really there, under the Windows-safe name.
+      const named = report.match(/transcript `([^`]+)`/);
+      expect(named).not.toBeNull();
+      expect(fs.existsSync(path.join(runsDir, named![1]))).toBe(true);
+    } finally {
+      restore();
+    }
+  }, 60_000);
+
+  it('writes the transcript BEFORE grading, and a grading failure neither stops the run nor loses the conversation', () => {
+    // fastDist's run has no `metrics`, so collectRunFacts throws inside the
+    // grading step — a real failure of exactly the kind that must not cost a
+    // paid conversation. Two cells, so "did the matrix keep going" is testable.
+    //
+    // THE ORDERING ASSERTION IS THE STDOUT ORDER: the transcript write prints
+    // "ok → <file>.json" and the grading failure prints "not graded: …". Swap
+    // the two steps in main()'s onResult and this test fails on the order,
+    // which is the only observable difference a passing run has.
+    const stub = fetchStub([0]);
+    const plan = writePlan({ ...BASE_PLAN, builds: [{ id: 'fake', dist: fastDist() }], repeats: 2 });
+    const runsDir = runsDirOf(stub, plan);
+    const restore = runsDirGuard(runsDir);
+    try {
+      const { status, stdout } = runCliStubbed(stub, ['--plan', plan, '--yes', '--key-file', canaryKeyFile()]);
+      expect(status).toBe(0);
+
+      const wroteAt = stdout.indexOf('ok → ');
+      const gradeFailedAt = stdout.indexOf('not graded: ');
+      expect(wroteAt).toBeGreaterThan(-1);
+      expect(gradeFailedAt).toBeGreaterThan(-1);
+      expect(wroteAt).toBeLessThan(gradeFailedAt);
+
+      // Both cells ran despite both failing to grade.
+      expect(stdout).toContain('[2/2]');
+      expect(stdout).toContain('2 of 2 cells ran');
+
+      // The conversations survived...
+      const transcripts = fs.readdirSync(runsDir).filter((f) => f.endsWith('.json') && f !== 'run-summary.json');
+      expect(transcripts).toHaveLength(2);
+      // ...and the report carries the grading failure in the words of whatever
+      // actually threw, not a hardcoded guess.
+      const realError = stdout.slice(gradeFailedAt + 'not graded: '.length).split('\n')[0].trim();
+      expect(realError.length).toBeGreaterThan(10);
+      const report = fs.readFileSync(path.join(runsDir, 'report.md'), 'utf8');
+      expect(report).toContain(realError);
+    } finally {
+      restore();
+    }
+  }, 60_000);
+
   it('refuses a plan whose instruction file cannot be read, before spawning or spending anything', () => {
     // The failure this task exists to prevent is discovering a typo'd path after
     // half a matrix has been billed. Two cells here; neither may start.

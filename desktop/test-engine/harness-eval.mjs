@@ -47,7 +47,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP = path.resolve(HERE, '..');
@@ -111,7 +111,7 @@ async function importGraders() {
   const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
   const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
   const load = (rel) => import(path.join(root, rel));
-  const [matrix, cases, battery, estimate] = await Promise.all([
+  const [matrix, cases, battery, estimate, judge, report, runFacts, factory] = await Promise.all([
     load('main/harness/eval/matrix.js'),
     load('main/harness/eval/cases/index.js'),
     load('main/harness/eval/battery.js'),
@@ -120,6 +120,16 @@ async function importGraders() {
     // test. A branch that changed its own price table would otherwise quote
     // itself.
     load('main/harness/eval/estimate.js'),
+    // Task 11: the grading and reporting half. Every one of these is
+    // grader-side by the same argument as the estimate — a branch-vs-master
+    // comparison that graded each build with ITS OWN judge, ran ITS OWN
+    // checks, or rendered ITS OWN report would produce a diff nobody could
+    // attribute to the harness. The judge's model factory is grader-side too:
+    // it is the grader's own provider call, not the harness's.
+    load('main/harness/eval/judge.js'),
+    load('main/harness/eval/report.js'),
+    load('main/harness/eval/run-facts.js'),
+    load('main/harness/eval/openrouter-factory.js'),
   ]);
   return {
     graderRoot,
@@ -139,7 +149,29 @@ async function importGraders() {
     // printEstimate (fix pass 1, 2026-08-12 review, IMPORTANT 2).
     MEASURED_ROSTER_SPEND_ROUNDS: estimate.MEASURED_ROSTER_SPEND_ROUNDS,
     MEASURED_ROSTER_SPEND_TOTAL_USD: estimate.MEASURED_ROSTER_SPEND_TOTAL_USD,
+    judgeRun: judge.judgeRun,
+    renderReport: report.renderReport,
+    collectRunFacts: runFacts.collectRunFacts,
+    makeOpenRouterFactory: factory.makeOpenRouterFactory,
   };
+}
+
+/** Which commit produced the harness that ran this matrix, and whether the
+ *  worktree was dirty. Copied in shape from review-harness.mjs's
+ *  resolveBuildSha and for the identical reason: report.ts is PURE and cannot
+ *  shell out to git itself, so this file resolves the build and hands it in as
+ *  data. Every git failure (no git binary, not a repo) degrades to 'unknown'
+ *  rather than aborting a paid run over metadata. */
+function resolveBuildSha(cwd) {
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim();
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim().length > 0;
+    return dirty ? `${sha}+dirty` : sha;
+  } catch {
+    return 'unknown';
+  }
 }
 
 // -- flag parsing -----------------------------------------------------------
@@ -535,6 +567,75 @@ async function expandPlanFile(plan) {
 async function cellResultPath(runDir, cell) {
   const { cellFilename } = await loadGraders();
   return path.join(runDir, `${cellFilename(cell)}.json`);
+}
+
+/** Where a cell's GRADES go — a second file beside the transcript, never inside
+ *  it.
+ *
+ *  WHY not append to the transcript file: the transcript is written first and
+ *  is then never touched again (see onResult in main()). Rewriting it to add
+ *  grades would put a paid, irreplaceable conversation back at risk on every
+ *  grading pass, which is the exact class of loss the transcript-first rule
+ *  exists to prevent — a previous round lost four paid conversations to a save
+ *  that sat behind a throw. */
+async function cellGradePath(runDir, cell) {
+  const { cellFilename } = await loadGraders();
+  return path.join(runDir, `${cellFilename(cell)}.grades.json`);
+}
+
+/**
+ * Grade one finished cell: the case's mechanical checks, then the LLM judge.
+ *
+ * THIS RUNS AFTER THE TRANSCRIPT IS ON DISK, ALWAYS. Nothing in here can lose
+ * a conversation that was paid for.
+ *
+ * NOTHING IN HERE MAY STOP THE MATRIX EITHER. Every failure becomes a sentence
+ * in the report (`gradingError`, or the judge's own `unavailable`), because by
+ * the time this is called the money for the cell is already spent and a
+ * grading hiccup is not a reason to throw away the cells still to come.
+ * `judgeRun` never throws by construction; the checks are third-party-ish code
+ * from the case registry, so each one is wrapped individually.
+ *
+ * @returns {Promise<import('../src/main/harness/eval/report').CellResult>}
+ */
+async function gradeCell(cell, result, { apiKey, judgeModelId, runDir }) {
+  const entry = { cell, run: result.run ?? null, error: result.error, timedOut: result.timedOut };
+  // A cell that produced no run has nothing to check and nothing to grade. It
+  // is still a row in the report, carrying its real error.
+  if (!result.run) return entry;
+
+  try {
+    const { getCase, judgeRun, collectRunFacts, makeOpenRouterFactory } = await loadGraders();
+    const caseBody = getCase(cell.caseId);
+    entry.facts = collectRunFacts(result.run, caseBody.minToolCalls);
+    entry.checks = caseBody.expect.map((check) => {
+      try {
+        return check.run(result.run);
+      } catch (err) {
+        // WHY 'never-ran' and not 'failed': the check produced no verdict at
+        // all, and recording that as a failure would blame the model for a bug
+        // in the checker. 'never-ran' is the state that means "nothing was
+        // measured here", which is exactly what happened — and the report
+        // renders it distinctly from both a pass and a failure.
+        return { id: check.id, state: 'never-ran', detail: `This check could not be evaluated: ${errText(err)}` };
+      }
+    });
+    entry.judge = await judgeRun(
+      result.run,
+      caseBody.rubric,
+      judgeModelId ? { modelId: judgeModelId, factory: makeOpenRouterFactory(apiKey, judgeModelId) } : null,
+      entry.checks,
+    );
+    const gradeFile = await cellGradePath(runDir, cell);
+    fs.writeFileSync(gradeFile, JSON.stringify({
+      cellId: cell.id, checks: entry.checks, judge: entry.judge,
+    }, null, 2));
+  } catch (err) {
+    // The real message, never a guess at the cause. The transcript is already
+    // safe on disk at this point, and the report will say this row is ungraded.
+    entry.gradingError = redactKey(errText(err), apiKey);
+  }
+  return entry;
 }
 
 /** Directory a run's per-cell result files land in.
@@ -1471,6 +1572,36 @@ async function main(argv) {
   // 1, 2026-08-12 review, CRITICAL). It used to be written only on the paths
   // that returned normally, so the whole class of failures that rejected out of
   // runMatrix left no run-summary.json at all — no `neverRan`, nothing.
+  // Everything the report needs that only this file can know: when the run
+  // started (report.ts is pure, so it has no clock) and which commit built the
+  // harness. Captured BEFORE the first cell so the timestamp is the run's, not
+  // the report-writing moment's.
+  const startedISO = new Date().toISOString();
+  const buildSha = resolveBuildSha(DESKTOP);
+  /** Graded cells, in the order they finished. Filled by onResult below. */
+  const graded = [];
+
+  const reportFile = path.join(runs.dir, 'report.md');
+  /** Render and write the human-readable report.
+   *
+   *  Hoisted for the same reason writeSummary is: EVERY exit path that has
+   *  results must write one. A stopped run's report is the whole point of
+   *  having no resume — it is what the finished cells were paid for.
+   *
+   *  Wrapped: a failure to render must not also destroy the summary and the
+   *  exit code. The real error is printed; the transcripts are already safe. */
+  const writeReport = async ({ stopReason } = {}) => {
+    if (!graded.length) return;
+    try {
+      const { renderReport } = await loadGraders();
+      fs.writeFileSync(reportFile, renderReport(plan, graded, { startedISO, buildSha, stopReason }));
+      console.log(`Report: ${reportFile}`);
+    } catch (err) {
+      console.error(`\nharness-eval: the results are on disk but the report could not be written: ${errText(err)}`);
+      console.error(`  Per-cell transcripts and grades are in ${runs.dir}`);
+    }
+  };
+
   const summaryFile = path.join(runs.dir, 'run-summary.json');
   const writeSummary = ({ stopReason, results, skipped }) => {
     fs.writeFileSync(summaryFile, JSON.stringify({
@@ -1508,12 +1639,24 @@ async function main(argv) {
     // by the cap, by Ctrl-C, or by a crash — must not also lose the results of
     // the cells that were already paid for.
     onResult: async (cell, result) => {
+      // THE TRANSCRIPT IS WRITTEN FIRST — before the checks run, before the
+      // judge is called, before the report is rendered. This ordering is a
+      // hard-won rule, not a preference: a previous round lost four paid
+      // conversations to a save that sat behind a throw. Everything after this
+      // line can fail without costing the record of what was bought.
       const file = await cellResultPath(runs.dir, cell);
       fs.writeFileSync(file, JSON.stringify(result, null, 2));
       const label = result.timedOut ? 'TIMED OUT' : (result.error ? 'error' : 'ok');
       console.log(`  ${label} → ${path.basename(file)}`);
+
+      // Now grade it. gradeCell never throws (see its header), so a broken
+      // judge or a broken check cannot stop the matrix — which matters because
+      // runMatrix treats a throw from onResult as "stop, the disk is failing".
+      const gradedCell = await gradeCell(cell, result, { apiKey, judgeModelId: plan.judge ?? null, runDir: runs.dir });
+      graded.push(gradedCell);
+      if (gradedCell.gradingError) console.log(`  not graded: ${gradedCell.gradingError}`);
     },
-  }).catch((err) => {
+  }).catch(async (err) => {
     // Fix pass 1 (2026-08-12 review, CRITICAL). This used to print one hardcoded
     // sentence — "--max-spend was given but the starting OpenRouter usage could
     // not be read ... NOTHING WAS SPENT" — for EVERY rejection, and runMatrix had
@@ -1537,6 +1680,11 @@ async function main(argv) {
     // anything about what was spent — per-cell result files are written as each
     // cell finishes, so whatever ran is already on disk.
     writeSummary({ stopReason: `the run failed in a way it could not attribute: ${detail}` });
+    // Cells that finished before this were BILLED, and there is no resume — so
+    // whatever was graded still gets a report rather than being thrown away
+    // with the failure. (`await` inside this handler is why it is async; both
+    // of its branches exit, so nothing downstream sees its return value.)
+    await writeReport({ stopReason: `the run failed in a way it could not attribute: ${detail}` });
     console.error(
       `\nharness-eval: the run stopped and could not attribute the failure to a cell.`
       + `\n  ${detail}`
@@ -1552,6 +1700,9 @@ async function main(argv) {
   // -- the summary. `skipped` is the list this whole gate exists to make
   // legible: exactly which rows of the printed grid never happened.
   writeSummary({ stopReason, results, skipped });
+  // The report comes last, after every transcript and every grade file is
+  // already on disk — it is a rendering of them, never the only copy.
+  await writeReport({ stopReason });
 
   console.log(`\n${results.length} of ${cells.length} cells ran. Summary: ${summaryFile}`);
   if (stopReason) {
