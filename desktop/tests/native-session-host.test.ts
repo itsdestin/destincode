@@ -2784,14 +2784,30 @@ describe('NativeSessionHost', () => {
     // introduce. By the time this hook is installed (right before resume),
     // recordStart and steerSpecialist's appendMissedSteers have already
     // landed via the real, unhooked mutateJson, so THIS hook's own call
-    // count starts fresh at resume. Today takeMissedSteers makes exactly
-    // ONE call for this record, so "call === 2" never fires here — the real
-    // write succeeds and resume completes normally; the dual-branch
-    // assertion below accepts that as the (currently correct) outcome. If
-    // takeMissedSteers were ever re-split into two mutateJson calls, this
-    // hook's "call === 2" WOULD fire on the second one — forcing the exact
-    // partial-commit shape (first write's half landed, second one didn't)
-    // the comment above describes, which the assertion below rejects.
+    // count starts fresh at resume. Today takeMissedSteers makes exactly ONE
+    // call for this record (call === 1) — but "call === 2" is NOT dead: this
+    // resume is FOREGROUND (background: false below), so resumeSpecialist
+    // itself awaits runDelegation to completion before returning, and
+    // runDelegation's own completion write (`ledger.update(...status:
+    // 'completed'...)`, native-session-host.ts) is the SECOND lock-guarded
+    // write this hook sees against this record. That write IS the one being
+    // sabotaged here, and it does throw — but runDelegation wraps it in its
+    // own log-only try/catch (a bookkeeping failure must never fail the run
+    // or discard the report), so the throw never reaches resumeSpecialist:
+    // resumeError stays null and the record on disk is left exactly as
+    // takeMissedSteers' own patch (call 1) wrote it — status 'running',
+    // missedSteers cleared — because the completion write that would have
+    // changed either never landed. That is why the dual-branch assertion
+    // below lands in its ELSE branch today: the verdict ("resume completes
+    // normally, steer folded in and cleared") is right, it just isn't
+    // because takeMissedSteers' own write was never split — it's because a
+    // DIFFERENT write got sabotaged and was swallowed where it stood. If
+    // takeMissedSteers were ever re-split into two mutateJson calls, THIS
+    // hook's "call === 2" would fire on the second HALF OF THAT WRITE instead
+    // (shifting the already-sabotaged completion write to call 3, which this
+    // hook lets through untouched) — forcing the exact partial-commit shape
+    // (first write's half landed, second one didn't) the comment above
+    // describes, which the assertion below rejects.
     it('a taken steer must not be lost when the resume\'s own status-flip write fails (regression — the resume split-write gap)', async () => {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
@@ -3464,6 +3480,62 @@ describe('NativeSessionHost', () => {
 
       const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-failed');
       expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    // The finding this test pins (external review 2026-08-13): a FOREGROUND
+    // specialist's failure already reached the model as the Task tool's own
+    // `isError` result (tools/task.ts) the instant spawnSpecialist rejected —
+    // spawnSpecialist only ever calls confirmDelivered on the SUCCESS path
+    // (native-session-host.ts, spawnSpecialist), so a foreground failure's
+    // ledger row is stuck 'failed'/delivered:false forever, identically to a
+    // genuine undelivered background failure. Before this fix,
+    // reconcileDelegations' hasUndelivered check (and claimUndelivered's own
+    // eligibility filter) had no `background` gate, so reopening this
+    // conversation queued this already-seen failure for delivery and injected
+    // it a SECOND time, mislabeled "[Background specialist failed]" even
+    // though it never ran in the background. Sibling test above
+    // ("an undelivered FAILURE notice...") pins that a GENUINE background
+    // failure still gets exactly one delivery through this same restart path.
+    it('a foreground specialist\'s failure is never re-delivered as a "[Background specialist failed]" notice after the conversation is reopened', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // The exact shape spawnSpecialist's own throw path leaves behind: a
+      // FOREGROUND ('background: false') record, terminal 'failed', and
+      // still undelivered — because confirmDelivered is only ever reached on
+      // the success branch, and the failure already went back to the model
+      // inline as the tool result (tools/task.ts's catch).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-fg-failed', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: false,
+        status: 'failed', startedAt: Date.now() - 60_000, endedAt: Date.now(),
+        failureText: 'ENOENT: no such file or directory', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      // No positive event to wait for here — the whole point is that nothing
+      // fires. Wait past the delivery pass's own async hops (same margin the
+      // rest of this file's negative-assertion tests use, e.g. the send-queue
+      // survivor check above) rather than asserting immediately after resume.
+      await new Promise((r) => setTimeout(r, 150));
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(0);
+
+      // Not merely "we didn't wait long enough" — the record itself was
+      // never touched by the delivery lane: no lease taken, never marked
+      // delivered.
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-fg-failed');
+      expect(rec?.delivered).toBe(false);
+      expect(rec?.claimedBy).toBeUndefined();
 
       await h2.destroyAll();
     });

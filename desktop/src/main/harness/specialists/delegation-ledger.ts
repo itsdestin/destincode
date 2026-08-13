@@ -409,8 +409,26 @@ export class DelegationLedger {
       // no matter what claimedBy or delivered read afterward — see
       // markInjectionAttempted's own comment for the one ambiguity this
       // can't close (its own write failing).
+      // WHY `d.background` (external review 2026-08-13, the foreground
+      // re-delivery finding): a FOREGROUND delegation's outcome — success OR
+      // failure — is already delivered the instant the Task tool call
+      // returns (spawnSpecialist's return value / thrown error IS the tool
+      // result, tools/task.ts). Its ledger row still ends up 'completed' or
+      // 'failed' + delivered:false forever, because confirmDelivered is only
+      // called on the SUCCESS branch (spawnSpecialist) — a foreground FAILURE
+      // never confirms delivery, since the failure already went back to the
+      // model inline and there is no follow-up write to make. Without this
+      // gate, that permanently-undelivered-looking row is eligible here
+      // exactly like a real background one: reopening the conversation (or
+      // any later delivery pass) claims it and formatDelivery's failed branch
+      // injects "[Background specialist failed] ..." — a second delivery of
+      // an outcome the model already saw, mislabeled "Background" when it
+      // ran in the foreground. This is the ONE eligibility check every lane
+      // (reconcileDelegations' restart queue, the live idle-boundary drain
+      // loop) bottoms out in, so gating it HERE — rather than in each caller
+      // — is what a future caller can't route around.
       const eligible = data.delegations.filter(
-        (d) => (d.status === 'completed' || d.status === 'failed') && !d.delivered && !d.injectionAttempted &&
+        (d) => d.background && (d.status === 'completed' || d.status === 'failed') && !d.delivered && !d.injectionAttempted &&
           (!d.claimedBy || d.claimedBy.instanceId === OWNER.instanceId || !isOwnerAlive(d.claimedBy))
       );
       if (eligible.length === 0) return data;

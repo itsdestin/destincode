@@ -1636,8 +1636,10 @@ export class NativeSessionHost extends EventEmitter {
    *  named the child's own session id — nothing in this harness can Read a
    *  transcript by session id, so a model told to "read" it hit a dead end.
    *  Task 10 (plan 1b) fixes that: when the cap truncates the body, the FULL
-   *  text is spilled to sessions/<slug>/<childId>.report.md
-   *  (NativeHome.writeSessionArtifact) and the footer names that real,
+   *  text is spilled to sessions/<slug>/specialist-reports/<childId>.report.md
+   *  (NativeHome.writeSessionArtifact, narrowed to this subdirectory — see
+   *  SPECIALIST_REPORT_SPILL_SUBDIR's own WHY — by Important 5, final review)
+   *  and the footer names that real,
    *  Readable path instead (internalReadRoots, wired by toolWiring below, is
    *  what lets the parent actually open it without an external_directory
    *  ask). The untruncated case still needs SOME pointer for 1c's card
@@ -2711,7 +2713,19 @@ export class NativeSessionHost extends EventEmitter {
       // after a restart: the ledger delivery lane was skipped entirely and
       // the failure notice never arrived, even though claimUndelivered itself
       // was perfectly willing to hand it over once asked.
-      if ((rec.status === 'completed' || rec.status === 'failed') && !rec.delivered) hasUndelivered = true;
+      //
+      // Fix (external review 2026-08-13, the foreground re-delivery finding):
+      // `rec.background` gates this too, mirroring claimUndelivered's own new
+      // gate — a foreground record can sit 'completed'/'failed' + undelivered
+      // forever (delivery already happened inline as the tool result;
+      // nothing ever calls confirmDelivered on the failure branch), and
+      // that's expected, not a bug. Without this gate, reopening the
+      // conversation would call queueDelivery() for a parent whose only
+      // "undelivered" record claimUndelivered will now always refuse to
+      // claim — harmless (the kicked pass would just find nothing), but a
+      // wasted no-op turn on every resume, and untrue to this method's own
+      // "queued ... so its report lands" class comment above.
+      if (rec.background && (rec.status === 'completed' || rec.status === 'failed') && !rec.delivered) hasUndelivered = true;
     }
     // One call regardless of how many records are undelivered — queueDelivery
     // just marks the parent pending and kicks a pass if it's already idle;

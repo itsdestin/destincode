@@ -188,11 +188,13 @@ export interface HarnessSessionOpts {
   /** Task 10 (plan 1b): directories checkPathGuard treats as internal to THIS
    *  session — readable without an external_directory ask, the same way
    *  Bash's own spillRoot() is (tools/guards.ts). Wired by NativeSessionHost
-   *  (toolWiring) to exactly one root: this project's own sessions/<slug>/
-   *  artifact directory (shared with every OTHER session in this same
-   *  project, not exclusive to this one — same sharing every session JSONL
-   *  and the delegation ledger sidecar already have), where an oversized
-   *  specialist report's spill file (NativeHome.writeSessionArtifact) lands —
+   *  (toolWiring) to exactly one root: this project's own
+   *  sessions/<slug>/specialist-reports/ subdirectory (Important 5, final
+   *  review — narrowed from the whole sessions/<slug>/ artifact directory,
+   *  which also holds every OTHER conversation's transcript .jsonl and the
+   *  delegation ledger sidecars; a model exempted from the ask for its own
+   *  spill file must not get free read access to those too), where an
+   *  oversized specialist report's spill file (NativeHome.writeSessionArtifact) lands —
    *  so the footer that tells the model "Read it if you need the rest"
    *  points at a path the guard will actually let it open. Absent → no
    *  exemption, which is the pre-Task-10 behavior every existing session (and

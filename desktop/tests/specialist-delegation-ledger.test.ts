@@ -26,7 +26,14 @@ function makeRecord(overrides: Partial<DelegationRecord> & { childId: string }):
     title: 'Fig the Explorer',
     workDir: CWD,
     description: 'Explores the codebase',
-    background: false,
+    // WHY true: claimUndelivered (fix, external review 2026-08-13) only ever
+    // leases BACKGROUND records — a foreground delegation's outcome is
+    // already delivered inline as the Task tool's own result, so claiming it
+    // here would re-deliver it. Every test below is exercising the
+    // claim/lease/release mechanism itself, which is now inherently a
+    // background-lane concept; the one test that needs a foreground record
+    // (proving it's NEVER eligible) overrides this explicitly.
+    background: true,
     status: 'running',
     startedAt: Date.now(),
     delivered: false,
@@ -84,6 +91,22 @@ describe('DelegationLedger', () => {
 
   it('claimUndelivered returns null when nothing is eligible', async () => {
     await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'still-running', status: 'running' }));
+    expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
+  });
+
+  // Fix (external review 2026-08-13, the foreground re-delivery finding): a
+  // FOREGROUND delegation's outcome — success or failure — is already
+  // delivered the instant the Task tool call returns; nothing ever calls
+  // confirmDelivered on a foreground FAILURE (only the success branch does),
+  // so its row can sit 'completed'/'failed' + delivered:false forever. Before
+  // this fix that made it indistinguishable on disk from a genuinely
+  // undelivered background report — claimUndelivered would hand it out and
+  // the caller would inject it a SECOND time, mislabeled "background".
+  it('claimUndelivered never leases a FOREGROUND record, no matter how undelivered it looks', async () => {
+    await ledger.recordStart(CWD, 'p1', makeRecord({
+      childId: 'fg-failed', background: false, status: 'failed', startedAt: 100,
+      failureText: 'boom', delivered: false,
+    }));
     expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
   });
 
