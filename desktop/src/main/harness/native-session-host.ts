@@ -36,7 +36,7 @@ import type { SpecialistDefinition } from './specialists/registry';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskPolicy } from './specialists/child-ask-policy';
 import { assignSpecialistName } from './specialists/names';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from './specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from './specialists/limits';
 import { DelegationLedger, OWNER } from './specialists/delegation-ledger';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
@@ -116,6 +116,13 @@ const EMPTY_REPORT_NUDGE = 'Your final message is your report — reply with you
 // swaps it for the real childId once createChild mints one, a few awaits
 // later in spawnSpecialist). Never a valid session id, so it can't collide.
 const RESERVED_WRITER = '__reserved__';
+
+// Task 7: poll cadence for the staleness check in runSpecialist. Deliberately
+// much finer than either threshold (SPECIALIST_IDLE_STALE_MS/
+// SPECIALIST_IN_TOOL_STALE_MS, 120s/300s) so a crossing is caught within
+// seconds, not up to a whole threshold late. Not exported: nothing outside
+// runSpecialist needs to know how often this checks, only what it checks.
+const STALE_CHECK_INTERVAL_MS = 5_000;
 
 /** What one specialist run produced. `usage` is summed across the run's turns
  *  (the brief turn plus a nudge turn, if one was needed). */
@@ -410,7 +417,7 @@ export class NativeSessionHost extends EventEmitter {
       // by the time the finally block runs the report is already a value this
       // method owns — a teardown failure can no longer discard work the child
       // genuinely produced.
-      const run = await this.runSpecialist(childId, opts.prompt);
+      const run = await this.runSpecialist(childId, opts.prompt, parentId, parentCwd);
       const report = this.formatSpecialistReport({ parentId, childId, specialist: opts.specialist, title, body: run.report });
       if (this.ledger && parentCwd) {
         // Fix (review round 2, Finding 1): this write used to sit INSIDE the
@@ -488,9 +495,39 @@ export class NativeSessionHost extends EventEmitter {
    *
    *  Throws (typed, with the child id) on every no-report outcome; the Task
    *  tool renders that as an isError result for the parent model to read. */
-  private async runSpecialist(childId: string, prompt: string): Promise<SpecialistRunResult> {
+  private async runSpecialist(childId: string, prompt: string, parentId: string, parentCwd: string | undefined): Promise<SpecialistRunResult> {
     const entry = this.live.get(childId);
     if (!entry) throw new Error(`the specialist session ${childId} was gone before its work could start.`);
+
+    // ---- Task 7 (plan 1b, spec §3): heartbeat staleness, flags-never-kills --
+    // Liveness is heartbeat-based, not wall-clock: a slow local model doing a
+    // long prefill emits text-less `assistant-thinking` heartbeats that count
+    // as activity below (session-store.ts drops them from disk, but the
+    // emitter still fires), so it is never flagged. `stale` only ever informs
+    // the Task 5 status block and the ledger — nothing here aborts,
+    // interrupts, or fails the child; the user's interrupt and the model's own
+    // `interrupt: true` (Task 6) are the only things that ever end a run.
+    let lastActivityAt = Date.now();
+    const openTools = new Set<string>();      // toolUseIds with no tool-result yet
+    let isStale = false;                      // mirrors the ledger's `stale` field
+    const setStale = (next: boolean) => {
+      if (isStale === next) return;           // write ONLY on transitions — not every poll tick
+      isStale = next;
+      if (this.ledger && parentCwd) {
+        // Fire-and-forget, same log-only/never-fatal contract every other
+        // ledger write in this method follows: a bookkeeping failure must
+        // never disturb a run that is otherwise healthy. updateIfRunning (not
+        // update) so a flag can't resurrect/overwrite a record that already
+        // reached a terminal status (interrupted/failed/completed) elsewhere.
+        this.ledger.updateIfRunning(parentCwd, parentId, childId, { stale: next }).catch((err) => {
+          log('ERROR', 'NativeSessionHost', 'failed to record specialist staleness in the ledger', { childId, parentId, error: String(err) });
+        });
+      }
+    };
+    const staleCheck = setInterval(() => {
+      const threshold = openTools.size > 0 ? SPECIALIST_IN_TOOL_STALE_MS : SPECIALIST_IDLE_STALE_MS;
+      if (Date.now() - lastActivityAt >= threshold) setStale(true);
+    }, STALE_CHECK_INTERVAL_MS);
 
     // ---- Observation state, written by the listener below ----
     let errorText: string | null = null;      // a session-error ended a turn
@@ -517,14 +554,30 @@ export class NativeSessionHost extends EventEmitter {
     let steered = false;
 
     const onEvent = (event: TranscriptEvent) => {
+      // Task 7: ANY event is activity — including a text-less
+      // assistant-thinking heartbeat, which is exactly what keeps a slow
+      // local prefill from ever being flagged stale. Also the transition
+      // point that unflags a child that WAS stale: its next event, whatever
+      // type, proves it is alive again.
+      lastActivityAt = Date.now();
+      setStale(false);
       switch (event.type) {
         case 'assistant-text':
           sinceLastTool += String(event.data.text ?? '');
           if (sinceLastTool.trim()) lastNonEmpty = sinceLastTool;
           break;
         case 'tool-use':
+          if (event.data.toolUseId) openTools.add(event.data.toolUseId);
           steps += 1;
           sinceLastTool = '';
+          break;
+        case 'tool-result':
+          // Task 7: closes the window the in-tool (longer) threshold covers —
+          // once every open call has its result, silence reverts to the
+          // shorter idle threshold. Everything else about this event type
+          // (persisting the result) is handled elsewhere; the listener only
+          // cares about the tool remaining "open" for staleness purposes.
+          if (event.data.toolUseId) openTools.delete(event.data.toolUseId);
           break;
         case 'turn-complete': {
           stopReason = event.data.stopReason;
@@ -624,6 +677,10 @@ export class NativeSessionHost extends EventEmitter {
       // never observe teardown-time events (and so a run that throws does not
       // leave a listener attached to a session the caller may keep alive).
       entry.session.off('transcript-event', onEvent);
+      // Task 7: cleared on EVERY exit path (success, throw, nudge, step-cap) —
+      // a leaked interval per child would keep the process awake and pile up
+      // across every specialist ever spawned.
+      clearInterval(staleCheck);
     }
   }
 

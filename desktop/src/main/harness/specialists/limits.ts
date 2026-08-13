@@ -18,3 +18,19 @@ export const HOSTED_MAX_CONCURRENT_SPECIALISTS = 4;
 // for a model that keeps delegating without end, not a resource limit, so 30
 // is generous headroom for legitimate fan-out while still catching a loop.
 export const SPECIALIST_SPAWN_BUDGET_PER_SESSION = 30;
+
+// Task 7 (plan 1b, spec §3): liveness is HEARTBEAT-based, never wall-clock —
+// these are the two "no activity" thresholds runSpecialist's listener polls
+// lastActivityAt against. Crossing one only ever sets `stale: true` on the
+// ledger record (read by the Task 5 status block); nothing here aborts,
+// interrupts, or fails a child. A slow local model doing a long prefill must
+// never be flagged: the harness watchdog's text-less `assistant-thinking`
+// heartbeats flow through the same transcript-event stream and count as
+// activity even though session-store.ts drops them from disk.
+//
+// The in-tool threshold is longer because a real tool call (Bash, a slow
+// local model's own tool round-trip) can legitimately run for minutes with no
+// transcript event in between — treating that the same as idle silence
+// between turns would flag healthy long-running tool use as stuck.
+export const SPECIALIST_IDLE_STALE_MS = 120_000;
+export const SPECIALIST_IN_TOOL_STALE_MS = 300_000;
