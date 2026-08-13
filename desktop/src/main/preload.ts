@@ -1216,6 +1216,16 @@ contextBridge.exposeInMainWorld('claude', {
     removeKey: (backend: string) => ipcRenderer.invoke('search:remove-key', backend),
     test: (backend: string, key: string) => ipcRenderer.invoke('search:test', backend, key),
   },
+  // Remembered "Always allow" rules (Settings → Permissions, M5 2a). Keyed by
+  // PROJECT SLUG, not cwd — the cwd is not recoverable from the lossy slug, so
+  // the renderer sends back the slug it was handed. remove/removeProject resolve
+  // false when nothing matched, i.e. the on-screen list had gone stale.
+  // Positional args match ipc-handlers, same as search:* above.
+  permissions: {
+    list: () => ipcRenderer.invoke('permissions:list'),
+    remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),
+    removeProject: (slug: string) => ipcRenderer.invoke('permissions:remove-project', slug),
+  },
   // Local llama.cpp engine (Plan B). Progress/status pushes return an
   // unsubscribe, matching every other on* subscription in this file.
   engine: {

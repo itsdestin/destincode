@@ -3708,6 +3708,14 @@ class SessionService : Service() {
             "search:set-key",
             "search:remove-key",
             "search:test",
+            // Remembered "Always allow" rules (M5 2a — permissions management UI).
+            // These read/revoke the DESKTOP native harness's ~/.youcoded/permissions.json;
+            // Android has no native harness to hold those grants until M8, which is
+            // where M5's Android parity belongs. Reply not-implemented so the shared
+            // React UI degrades to a "desktop only" state instead of timing out.
+            "permissions:list",
+            "permissions:remove",
+            "permissions:remove-project",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",

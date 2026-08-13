@@ -48,6 +48,16 @@ export function WorkbenchFrame() {
     // the fixture factory, which reads it from the CHILD's search params.
     const stressRows = params.get('stressRows');
     if (stressRows) child.set('stressRows', stressRows);
+    // Forward every OTHER param through to the child verbatim. The child is what
+    // reads ad-hoc design-review selectors — a one-off `?variant=` while a screen
+    // is being compared, and whatever the next one is called; the frame has no
+    // business knowing their names. Enumerating them was a bug twice — an
+    // unforwarded param is dropped silently, so the frame renders the default and
+    // looks exactly like "your change didn't work".
+    // The keys set above are authoritative and are never overwritten here.
+    for (const [key, value] of params) {
+      if (!child.has(key)) child.set(key, value);
+    }
     return `${location.pathname}?${child.toString()}`;
   }, [view]);
 
