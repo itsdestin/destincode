@@ -1430,8 +1430,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // CONSENT bug: the honest fallback is the synthetic card below, which
       // describes the ask's own payload and is reclaimed by TRANSCRIPT_TOOL_USE
       // when the real event lands.
-      // (An older requestId pass was unreachable — a running tool never carries
-      // a requestId; PERMISSION_RESPONDED clears it.)
+      // (An older requestId pass was unreachable — a running tool never carried
+      // a requestId; PERMISSION_RESPONDED clears it. That is no longer quite
+      // true: a card whose ask was overwritten keeps the requestId while
+      // reverting to 'running', which is exactly the stale binding the loop
+      // directly below detects and clears.)
       const toolCalls = new Map(session.toolCalls);
 
       // This action is REPEATABLE (2026-08-16): main re-announces every
