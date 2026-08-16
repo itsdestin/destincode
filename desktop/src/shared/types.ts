@@ -404,6 +404,15 @@ export type SubagentSegment =
       partId?: string;
     };
 
+/** Specialists 1c — one mid-run steering message, kept on the ledger record so
+ *  a card replay (reattach, restart) shows the same steer history the live
+ *  run saw, not just whatever survived in the model's own transcript. */
+export interface SpecialistNote {
+  text: string;
+  from: 'user' | 'assistant';
+  at: number;
+}
+
 /**
  * Specialists 1c — what the renderer knows about one hire, keyed by the Task
  * call that started it. Mirrors the host's DelegationRecord (delegation-
@@ -428,6 +437,9 @@ export interface SpecialistRunView {
   stale?: boolean;
   /** Which model actually ran it, once resolved (tier fallback stated honestly). */
   model?: { label: string; via?: 'budget' | 'frontier' | 'named' | 'parent'; fallback?: boolean };
+  /** Mid-run steers sent to this hire, in order. Absent on a pre-1c record —
+   *  the ledger reads that as []. */
+  notes?: SpecialistNote[];
 }
 
 /** A background specialist's delivered report, folded into its Task card. */
