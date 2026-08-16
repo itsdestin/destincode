@@ -194,6 +194,13 @@ describe('runHealthCheck — resolved warnings clear themselves', () => {
       svc.stop();
       await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
       expect(health).toHaveBeenCalledTimes(2);
+      // WHY: the interval-fired check does real async fs I/O that
+      // advanceTimersByTimeAsync does not wait for, and stop() only clears the
+      // interval — it doesn't await the in-flight check. Without this, that
+      // check's writeWarnings leaked into the NEXT test and raced its own
+      // atomicWrite (the cross-OS ENOENT-on-rename CI flake). Drain every
+      // runHealthCheck promise before the test ends so nothing escapes.
+      await Promise.allSettled(health.mock.results.map((r) => r.value));
     } finally {
       vi.useRealTimers();
     }
