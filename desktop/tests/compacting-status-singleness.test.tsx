@@ -73,6 +73,7 @@ describe('one status per compaction', () => {
     mocks.state.timeline = [];
     mocks.state.compactionPending = null;
     mocks.state.isThinking = true;
+    mocks.state.attentionState = 'ok';
   });
 
   it('shows the compacting card and NO thinking indicator while compacting', () => {
@@ -81,6 +82,19 @@ describe('one status per compaction', () => {
     renderChat();
     expect(screen.getByText(/Compacting conversation/)).toBeTruthy();
     expect(screen.queryByTestId('thinking-indicator')).toBeNull();
+  });
+
+  // The first version of this fix folded !compactionPending into `thinkingArea`,
+  // which ALSO gates the 'stuck' AttentionBanner — silently swallowing the one
+  // message that says something is wrong, during exactly the long operation
+  // most likely to hang.
+  it('still warns that the session is stuck DURING a compaction', () => {
+    mocks.state.compactionPending = { startedAt: Date.now(), beforeContextTokens: null };
+    mocks.state.timeline = [{ kind: 'compacting', id: 'c1', startedAt: Date.now() }];
+    mocks.state.attentionState = 'stuck';
+    renderChat();
+    expect(screen.queryByTestId('thinking-indicator')).toBeNull();   // still no spinner
+    expect(screen.getByText(/Still waiting on Claude/)).toBeTruthy(); // but the warning survives
   });
 
   it('still shows the thinking indicator on an ordinary turn', () => {

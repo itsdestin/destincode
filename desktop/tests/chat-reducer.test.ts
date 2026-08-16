@@ -476,6 +476,44 @@ describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () 
     });
     expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(1);
   });
+
+  // The suppression MUST sit below the confirm arm. The `\/compact` escape
+  // hatch is passthrough text, so InputBar does dispatch an optimistic bubble
+  // for it; dropping its confirmation would leave `pending` set forever and
+  // useSubmitConfirmation would fire a stray recovery keystroke.
+  it('still confirms an optimistic /compact bubble instead of stranding it pending', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'USER_PROMPT', sessionId: SESSION, content: '/compact', timestamp: 1000,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-esc', timestamp: 1001,
+      text: '/compact',
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users).toHaveLength(1);
+    expect(users[0].pending).toBe(false);
+  });
+
+  // Reload/resume replays CC's JSONL through loadHistory, which has no filter
+  // for this (it only gates on isMeta/promptId/non-empty). Without the same
+  // rule here, every bubble the live fix removed grows back on reload.
+  it('drops the echo from replayed history too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'HISTORY_LOADED', sessionId: SESSION, hasMore: false,
+      messages: [
+        { role: 'user', content: 'first question', timestamp: 1 },
+        { role: 'user', content: '/compact', timestamp: 2 },
+        { role: 'assistant', content: 'an answer', timestamp: 3 },
+        { role: 'user', content: 'second question', timestamp: 4 },
+      ],
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users.map((e) => e.message.content)).toEqual(['first question', 'second question']);
+    // The assistant turn either side of it must survive untouched.
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
 });
 
 describe('PERMISSION_RESPONDED budget gates', () => {
