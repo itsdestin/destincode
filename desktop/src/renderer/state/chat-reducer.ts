@@ -1134,11 +1134,34 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
       if (mergedSynthetic) return next;
 
+      // Fix (2026-08-16, Specialists 1b Test 1 hang — a master bug from the
+      // preparing-card merge, not specialist-specific): a preparing card is
+      // placed under the REAL tool id with status 'running', and the ask for
+      // that very call can bind to it BEFORE this event lands — main emits
+      // tool-use then the ask, but the renderer batches transcript events into
+      // an animation frame while hook events dispatch immediately, so the
+      // reducer sees NATIVE_TOOL_PREPARING → PERMISSION_REQUEST →
+      // TRANSCRIPT_TOOL_USE. Overwriting wholesale here reset the card to
+      // 'running' and dropped its requestId: no Allow/Deny buttons ever
+      // rendered, and the turn hung on an ask nobody could answer. Carry the
+      // ask over exactly as the synthetic-reclaim branch above does; every
+      // other superseded card (no ask yet) still becomes a plain running tool.
+      const superseded = toolCalls.get(action.toolUseId);
+      const carriedAsk = superseded?.status === 'awaiting-approval' && superseded.requestId
+        ? {
+            status: 'awaiting-approval' as const,
+            requestId: superseded.requestId,
+            permissionSuggestions: superseded.permissionSuggestions,
+            denyListed: superseded.denyListed,
+            external: superseded.external,
+            permissionMode: superseded.permissionMode,
+          }
+        : { status: 'running' as const };
       toolCalls.set(action.toolUseId, {
         toolUseId: action.toolUseId,
         toolName: action.toolName,
         input: action.toolInput,
-        status: 'running',
+        ...carriedAsk,
       });
 
       // Placement is idempotent by toolUseId (see placeToolInCurrentGroup), so
