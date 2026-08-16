@@ -213,11 +213,15 @@ describe('grader isolation', () => {
     // shares it between `require()` and `import()` of a CommonJS file, so a
     // function loaded from any other root can never be `===` to this one.
     // WHY the identity check runs in a SPAWNED plain-node process instead of
-    // here: vitest serves `harness-eval.mjs` through vite's module runner, so
-    // the dynamic `import()` inside it is intercepted and returns a DIFFERENT
-    // module instance than `createRequire()` does — measured, the in-process
-    // version of this assertion failed with "expected [Function validatePlan]
-    // to be [Function validatePlan] // Object.is equality" on a correct tree.
+    // here: vitest USED TO serve `harness-eval.mjs` through vite's module
+    // runner, so the dynamic `import()` inside it was intercepted and returned
+    // a DIFFERENT module instance than `createRequire()` does — measured, the
+    // in-process version of this assertion failed with "expected [Function
+    // validatePlan] to be [Function validatePlan] // Object.is equality" on a
+    // correct tree. Since 2026-08-16 vitest.config.ts externalizes
+    // test-engine/*.mjs (native Node load — the fix for the Windows file://
+    // import failure), which also makes the identities agree in-process; the
+    // spawned probe stays because it measures the CLI exactly as it ships.
     // The CLI runs under plain node, where Node's module cache is keyed by
     // resolved path and shared between require() and import() of a CommonJS
     // file, so identity is exactly the right instrument — it just has to be
