@@ -613,8 +613,6 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
   // the second name a native `explorer` specialist rendered a chip that said
   // "general-purpose", which is a wrong label, not just a missing one.
   const subagent = asString(tool.input.subagent_type) || asString(tool.input.agent) || 'general-purpose';
-  const prompt = asString(tool.input.prompt);
-  const segments = tool.subagentSegments || [];
 
   // Specialists 1c — a native Task card knows more than a CC Agent card: its
   // run record (title, real status, background flag, model), the roster entry
@@ -628,56 +626,11 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
   const roster = useSpecialistRoster();
   const definition = isNative ? roster?.find(d => d.id === subagent) : undefined;
   const title = run?.title;
-  const firstName = title ? title.split(' ')[0] : (target?.title ? target.title.split(' ')[0] : undefined);
-  // "Settled" is what auto-collapses Activity. For a background hire the tool
-  // result is only the launch ack, so keying on `response` collapsed a card
-  // whose child was still streaming (Test 4) — the run record is the truth.
-  const settled = run ? run.status !== 'running' : !!tool.response;
-
-  // Auto-expand the activity section while running; auto-collapse once
-  // settled. User toggles stick for the rest of the session.
-  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!settled));
-  // Start userToggled=true when the shortcut is already in effect so the
-  // auto-collapse-on-settle effect below doesn't fight the user's intent.
-  const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
-  const prevSettled = useRef(settled);
-  useEffect(() => {
-    if (userToggled) return;
-    if (!prevSettled.current && settled) setShowTimeline(false);
-    prevSettled.current = settled;
-  }, [settled, userToggled]);
-  // Specialists 1c: a helper's ask lives in Activity — open it when one
-  // arrives, even on a settled card (a held ask outlives the run).
-  const nestedAsk = hasNestedAsk(tool);
-  useEffect(() => { if (nestedAsk) setShowTimeline(true); }, [nestedAsk]);
-  // Ctrl+O: mark userToggled so the auto-collapse effect doesn't fight the
-  // shortcut back closed as soon as the subagent completes.
-  useExpandAllToggle(
-    () => { setShowTimeline(true); setUserToggled(true); },
-    () => { setShowTimeline(false); setUserToggled(true); },
-  );
-
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
   const charter = definition?.charter;
   // The consent envelope for an awaiting Task call renders in ToolCard (above
   // the buttons, visible without expanding) — not here, or it would double.
   const awaiting = tool.status === 'awaiting-approval';
-
-  // The report section. Foreground: the tool result IS the report. Background:
-  // the delivered report folded into this card (specialistReport). A task_id
-  // call's result is the management outcome ("Steer delivered…") — a Response.
-  const report = tool.specialistReport
-    ? { title: tool.specialistReport.status === 'failed' ? 'Report — failed' : 'Report', text: displayReport(tool.specialistReport.text) }
-    : tool.response && !taskId && (run ? run.background === false : isNative)
-      ? { title: 'Report', text: displayReport(tool.response) }
-      : tool.response
-        ? { title: 'Response', text: tool.response }
-        : null;
-  // A background hire's launch ack is not worth a section: the header + status
-  // line already say "working in the background". Hide it while the report is
-  // pending; the folded report replaces it.
-  const hideLaunchAck = !!run && run.background && !tool.specialistReport && !!tool.response
-    && /is now working in the background/.test(tool.response);
 
   return (
     <div className="space-y-2">
@@ -699,6 +652,87 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
       </div>
       {desc && title && <div className="text-xs text-fg-dim">{desc}</div>}
       {run && <RunStatusLine run={run} report={tool.specialistReport} />}
+      <AgentSections tool={tool} sessionId={sessionId} targetTitle={target?.title}>
+        {run && run.status === 'running' && !awaiting && sessionId && (
+          <SpecialistActions sessionId={sessionId} run={run} />
+        )}
+      </AgentSections>
+      {tool.error && <ErrorBlock error={tool.error} />}
+    </div>
+  );
+}
+
+/**
+ * The three collapsible sections of an Agent/Task card — Briefing, Activity,
+ * Report — as ONE component, so the specialists popup (SpecialistsChip) shows
+ * a helper's work with exactly the chat card's rendering instead of a second
+ * summary of it that could drift (Destin, 1c round 9). `children` slots
+ * between Activity and Report (the chat card puts Send-a-note / Stop there).
+ * `suppressAsk` hides the Yes/No buttons inside Activity where the host
+ * already shows the ask elsewhere (the popup's amber band).
+ */
+export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = false, children }: {
+  tool: ToolCallState;
+  sessionId?: string;
+  /** For a task_id call: the other child's title (first name feeds the ask/note copy). */
+  targetTitle?: string;
+  suppressAsk?: boolean;
+  children?: React.ReactNode;
+}) {
+  const prompt = asString(tool.input.prompt);
+  const segments = tool.subagentSegments || [];
+  const isNative = tool.toolName === 'Task';
+  const run = isNative ? tool.specialistRun : undefined;
+  const taskId = isNative ? asString(tool.input.task_id) : '';
+  const title = run?.title;
+  const firstName = title ? title.split(' ')[0] : (targetTitle ? targetTitle.split(' ')[0] : undefined);
+  // "Settled" is what auto-collapses Activity. For a background hire the tool
+  // result is only the launch ack, so keying on `response` collapsed a card
+  // whose child was still streaming (Test 4) — the run record is the truth.
+  const settled = run ? run.status !== 'running' : !!tool.response;
+
+  // Auto-expand the activity section while running; auto-collapse once
+  // settled. User toggles stick for the rest of the session.
+  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!settled));
+  // Start userToggled=true when the shortcut is already in effect so the
+  // auto-collapse-on-settle effect below doesn't fight the user's intent.
+  const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
+  const prevSettled = useRef(settled);
+  useEffect(() => {
+    if (userToggled) return;
+    if (!prevSettled.current && settled) setShowTimeline(false);
+    prevSettled.current = settled;
+  }, [settled, userToggled]);
+  // Specialists 1c: a helper's ask lives in Activity — open it when one
+  // arrives, even on a settled card (a held ask outlives the run). Not when
+  // the host shows the ask itself (suppressAsk): then Activity is just history.
+  const nestedAsk = hasNestedAsk(tool);
+  useEffect(() => { if (nestedAsk && !suppressAsk) setShowTimeline(true); }, [nestedAsk, suppressAsk]);
+  // Ctrl+O: mark userToggled so the auto-collapse effect doesn't fight the
+  // shortcut back closed as soon as the subagent completes.
+  useExpandAllToggle(
+    () => { setShowTimeline(true); setUserToggled(true); },
+    () => { setShowTimeline(false); setUserToggled(true); },
+  );
+
+  // The report section. Foreground: the tool result IS the report. Background:
+  // the delivered report folded into this card (specialistReport). A task_id
+  // call's result is the management outcome ("Steer delivered…") — a Response.
+  const report = tool.specialistReport
+    ? { title: tool.specialistReport.status === 'failed' ? 'Report — failed' : 'Report', text: displayReport(tool.specialistReport.text) }
+    : tool.response && !taskId && (run ? run.background === false : isNative)
+      ? { title: 'Report', text: displayReport(tool.response) }
+      : tool.response
+        ? { title: 'Response', text: tool.response }
+        : null;
+  // A background hire's launch ack is not worth a section: the header + status
+  // line already say "working in the background". Hide it while the report is
+  // pending; the folded report replaces it.
+  const hideLaunchAck = !!run && run.background && !tool.specialistReport && !!tool.response
+    && /is now working in the background/.test(tool.response);
+
+  return (
+    <>
       {prompt && (
         <AgentSection title={taskId ? 'Message' : 'Briefing'} defaultOpen={false}>
           <div className="text-sm text-fg-dim">
@@ -712,12 +746,10 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
           open={showTimeline}
           onToggle={() => { setShowTimeline(s => !s); setUserToggled(true); }}
         >
-          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} />
+          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} suppressAsk={suppressAsk} />
         </AgentSection>
       )}
-      {run && run.status === 'running' && !awaiting && sessionId && (
-        <SpecialistActions sessionId={sessionId} run={run} />
-      )}
+      {children}
       {report && !hideLaunchAck && (
         <AgentSection title={report.title} defaultOpen={true}>
           <div className="text-sm text-fg-dim">
@@ -725,8 +757,7 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
           </div>
         </AgentSection>
       )}
-      {tool.error && <ErrorBlock error={tool.error} />}
-    </div>
+    </>
   );
 }
 

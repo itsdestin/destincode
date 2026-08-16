@@ -28,12 +28,16 @@ import { useExpandAllToggle, getInitialExpanded } from '../../hooks/useExpandAll
  * The left vertical border frames the nested work visually so a dense
  * subagent (20+ tool calls) doesn't dominate the parent AgentView card.
  */
-export function SubagentTimeline({ segments, sessionId, specialistName }: {
+export function SubagentTimeline({ segments, sessionId, specialistName, suppressAsk = false }: {
   segments: SubagentSegment[];
   /** Needed only for a nested ask's response dispatch + folder name. */
   sessionId?: string;
   /** First name of the helper, for the ask/note copy ("Wren wants to…"). */
   specialistName?: string;
+  /** Host already renders the ask's buttons elsewhere (the specialists popup's
+   *  band): keep the ? row, drop the buttons, so one ask never shows twice
+   *  in one card. */
+  suppressAsk?: boolean;
 }) {
   if (!segments || segments.length === 0) return null;
   const groups = groupSegments(segments);
@@ -43,7 +47,7 @@ export function SubagentTimeline({ segments, sessionId, specialistName }: {
         g.kind === 'text' ? <SubagentText key={g.id} content={g.content} />
         : g.kind === 'thinking' ? <SubagentThinking key={g.id} content={g.content} />
         : g.kind === 'note' ? <SubagentNote key={g.id} content={g.content} from={g.from} specialistName={specialistName} />
-        : <SubagentToolGroup key={g.id} tools={g.tools} sessionId={sessionId} specialistName={specialistName} />
+        : <SubagentToolGroup key={g.id} tools={g.tools} sessionId={sessionId} specialistName={specialistName} suppressAsk={suppressAsk} />
       )}
     </div>
   );
@@ -146,7 +150,7 @@ function SubagentNote({ content, from, specialistName }: { content: string; from
 // at a smaller scale suited to a nested timeline.
 // ---------------------------------------------------------------------------
 
-function SubagentToolGroup({ tools, sessionId, specialistName }: { tools: ToolSegment[]; sessionId?: string; specialistName?: string }) {
+function SubagentToolGroup({ tools, sessionId, specialistName, suppressAsk }: { tools: ToolSegment[]; sessionId?: string; specialistName?: string; suppressAsk?: boolean }) {
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     getInitialExpanded() ? new Set(tools.map(t => t.id)) : new Set()
   );
@@ -174,6 +178,7 @@ function SubagentToolGroup({ tools, sessionId, specialistName }: { tools: ToolSe
           separatorAbove={i > 0}
           sessionId={sessionId}
           specialistName={specialistName}
+          suppressAsk={suppressAsk}
         />
       ))}
     </div>
@@ -181,7 +186,7 @@ function SubagentToolGroup({ tools, sessionId, specialistName }: { tools: ToolSe
 }
 
 function SubagentToolRow({
-  segment, expanded, onToggle, separatorAbove, sessionId, specialistName,
+  segment, expanded, onToggle, separatorAbove, sessionId, specialistName, suppressAsk,
 }: {
   segment: ToolSegment;
   expanded: boolean;
@@ -189,6 +194,7 @@ function SubagentToolRow({
   separatorAbove: boolean;
   sessionId?: string;
   specialistName?: string;
+  suppressAsk?: boolean;
 }) {
   const tool = segmentToToolState(segment);
   // Same natural-language title derivation the main ChatView uses for its
@@ -218,7 +224,7 @@ function SubagentToolRow({
         )}
         <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted ml-auto" expanded={expanded} />
       </button>
-      {awaiting && (
+      {awaiting && !suppressAsk && (
         <SpecialistAskBlock segment={segment} sessionId={sessionId} specialistName={specialistName} />
       )}
       {expanded && <ToolBody tool={tool} sessionId={sessionId} />}

@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useSpecialistSummary, type SpecialistSummary, type HelperView } from '../hooks/useSpecialists';
+import { useSpecialistSummary, type SpecialistSummary, type HelperView, type AskSegment } from '../hooks/useSpecialists';
 import { SpecialistAskBlock } from './specialists/SpecialistAskBlock';
 import { SpecialistActions } from './specialists/SpecialistActions';
-import { formatElapsed } from './specialists/RunStatusLine';
+import { RunStatusLine } from './specialists/RunStatusLine';
+import { AgentSections } from './tool-views/ToolBody';
 import { friendlyToolDisplay } from './ToolCard';
 import { Dialog } from './ui';
 import BrailleSpinner from './BrailleSpinner';
@@ -110,16 +111,14 @@ function StatusPill({ h }: { h: HelperView }) {
   if (h.group === 'needs-you') return <span className={`${base} border-amber-500/40 text-amber-500 bg-amber-500/10`}><QuestionIcon className="w-3 h-3" />Needs you</span>;
   if (h.run.status === 'running') return <span className={`${base} border-blue-400/40 text-blue-400 bg-blue-400/10`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
   if (h.run.status === 'interrupted') return <span className={`${base} border-edge text-fg-muted`}><StoppedIcon className="w-3 h-3" />Stopped</span>;
-  if (h.run.status === 'failed' || h.report?.status === 'failed') return <span className={`${base} border-danger/40 text-danger bg-danger/10`}><FailIcon className="w-3 h-3" />Failed</span>;
+  if (h.run.status === 'failed' || h.tool.specialistReport?.status === 'failed') return <span className={`${base} border-danger/40 text-danger bg-danger/10`}><FailIcon className="w-3 h-3" />Failed</span>;
   return <span className={`${base} border-edge text-fg-muted`}><CheckIcon className="w-3 h-3" />Finished</span>;
 }
 
 function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: string; onJump: () => void }) {
-  const { run } = h;
+  const { run, tool } = h;
   const first = run.title.split(' ')[0];
   const done = h.group === 'finished';
-  const elapsed = formatElapsed(Math.max(0, (run.endedAt ?? Date.now()) - run.startedAt));
-  const steps = run.steps ?? h.toolCalls;
   const jump = () => { jumpToCard(h.parentToolCallId); onJump(); };
   const attention = h.group === 'needs-you';
 
@@ -128,9 +127,8 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
       className={`rounded-lg border ${attention ? 'border-amber-500/40' : 'border-edge'} bg-inset/50 overflow-hidden ${done ? 'opacity-80' : ''}`}
       data-testid={`helper-card-${run.childId}`}
     >
-      {/* ── WHO — name in-line with role, what it may do, and model (Destin,
-             round 6). No "Needs you" pill: the ask band at the bottom says it. */}
-      <div className="px-3 pt-2.5 pb-2">
+      {/* ── WHO / WHAT / HOW FAR ─────────────────────────────────────────── */}
+      <div className="px-3 pt-2.5 pb-2 space-y-1.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <div className="min-w-0 flex-1 text-2xs text-fg-muted leading-snug">
             {/* The name is the link to the card — dotted underline says "out-link"
@@ -152,64 +150,13 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
             ? <div className="shrink-0"><SpecialistActions sessionId={sessionId} run={run} compact /></div>
             : !attention && <StatusPill h={h} />}
         </div>
-        {/* ── WHAT ─────────────────────────────────────────────────────── */}
-        {run.description && <div className="mt-1.5 text-xs text-fg-2">{run.description}</div>}
+        {run.description && <div className="text-xs text-fg-2">{run.description}</div>}
+        <RunStatusLine run={run} report={tool.specialistReport} />
+        {/* The chat card's own Briefing / Activity / Report sections, verbatim
+            (Destin, round 9: one representation of a helper's work). Ask
+            buttons inside Activity are suppressed — the band below has them. */}
+        <AgentSections tool={tool} sessionId={sessionId} suppressAsk />
       </div>
-
-      {/* ── HOW FAR ──────────────────────────────────────────────────────── */}
-      {!done && (
-        <div className="border-t border-edge-dim px-3 py-2">
-          <div className="flex items-center gap-2 text-2xs text-fg-muted">
-            <span className="text-fg-dim">{elapsed}</span>
-            <span aria-hidden>·</span>
-            <span>{steps} step{steps === 1 ? '' : 's'}</span>
-            {h.current && !attention && (
-              <>
-                <span aria-hidden>·</span>
-                <span className="truncate min-w-0">now: {friendlyToolDisplay(segToTool(h.current)).label}</span>
-              </>
-            )}
-            {run.stale && run.status === 'running' && <><span aria-hidden>·</span><span className="text-amber-500">may be stuck</span></>}
-          </div>
-          {h.recent.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5">
-              {h.recent.map(seg => {
-                const { label, detail } = friendlyToolDisplay(segToTool(seg));
-                return (
-                  <li key={seg.id} className="flex items-center gap-1.5 text-2xs min-w-0">
-                    <span className="shrink-0 inline-flex text-fg-muted">
-                      {seg.status === 'running' ? <BrailleSpinner size="xs" />
-                        : seg.status === 'awaiting-approval' ? <QuestionIcon className="w-3 h-3 text-amber-500" />
-                        : seg.status === 'failed' ? <FailIcon className="w-3 h-3" />
-                        : <CheckIcon className="w-3 h-3" />}
-                    </span>
-                    <span className="text-fg-dim shrink-0">{label}</span>
-                    {detail && <span className="text-fg-muted truncate min-w-0">{detail}</span>}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {/* ── THE REPORT (finished) ─────────────────────────────────────────── */}
-      {done && (
-        <div className="border-t border-edge-dim px-3 py-2">
-          <div className="text-2xs text-fg-muted mb-1">
-            {run.status === 'interrupted' ? `Stopped after ${elapsed}` : run.status === 'failed' || h.report?.status === 'failed' ? `Failed after ${elapsed}` : `Finished in ${elapsed}`}
-            {' · '}{steps} step{steps === 1 ? '' : 's'}
-          </div>
-          {h.report ? (
-            // Plain-text teaser, not rendered markdown: a table or heading
-            // rendered at full size inside a 3-line clip looked broken. The
-            // real report, formatted, is on the card one click away.
-            <p className="text-xs text-fg-dim leading-snug line-clamp-3">{reportPreview(h.report.text)}</p>
-          ) : (
-            <div className="text-2xs text-fg-muted italic">No report — the assistant can pick this back up.</div>
-          )}
-        </div>
-      )}
 
       {/* ── WHAT IT NEEDS — the bottom of the card, request and buttons on
              one line (Destin, round 6). */}
@@ -248,28 +195,8 @@ function askSubject(input: Record<string, unknown>): string {
   return '';
 }
 
-function segToTool(seg: HelperView['recent'][number]) {
+function segToTool(seg: AskSegment) {
   return { toolUseId: seg.toolUseId, toolName: seg.toolName, input: seg.input, status: seg.status };
-}
-
-/** A plain-text teaser of the report body: framing the card header already
- *  states is dropped, markdown is flattened (headings, emphasis, table pipes,
- *  links → their text), whitespace collapsed. ~3 lines; the card has the rest. */
-function reportPreview(text: string): string {
-  let t = text;
-  if (/^\[Background specialist/.test(t)) { const i = t.indexOf('\n\n'); t = i === -1 ? t : t.slice(i + 2); }
-  t = t.replace(/^## Report from [^\n]*\n+/, '').replace(/\n*\[specialist session [^\]]+\]\s*$/, '');
-  t = t
-    .replace(/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/gm, '')   // table rules
-    .replace(/^#{1,6}\s+/gm, '')                                     // headings
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')                        // links → text
-    .replace(/[*_`]+/g, '')                                          // emphasis / code ticks
-    .replace(/\s*\|\s*/g, ' · ')                                     // table cells
-    .replace(/(\s*·\s*){2,}/g, ' · ')                                // collapse doubled separators
-    .replace(/\s+/g, ' ')
-    .replace(/^(\s*·\s*)+/, '')
-    .trim();
-  return t.length > 320 ? `${t.slice(0, 320)}…` : t;
 }
 
 /** Scroll the launching Task card into view and flash it. ToolCard stamps
