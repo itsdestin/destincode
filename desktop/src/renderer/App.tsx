@@ -3491,6 +3491,8 @@ function AppInner() {
           z-[8000]: sits below the SessionStrip dropdown (9000) but above all
           L1–L4 overlays, the same tier used by similar full-screen views. */}
       <ProjectView
+        // Project view homes to the focused conversation's folder on every open.
+        activeSessionCwd={currentSession?.cwd}
         onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
         onResumeConversation={(sid, slug, path, provider) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path, undefined, undefined, undefined, provider); }}
       />
