@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useSpecialistSummary, useSpecialistRoster, type SpecialistSummary, type HelperView } from '../hooks/useSpecialists';
+import { useSpecialistSummary, type SpecialistSummary, type HelperView } from '../hooks/useSpecialists';
 import { SpecialistAskBlock } from './specialists/SpecialistAskBlock';
 import { SpecialistActions } from './specialists/SpecialistActions';
 import { formatElapsed } from './specialists/RunStatusLine';
@@ -81,7 +81,6 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
 const SECTION_LABEL = 'text-3xs font-medium text-fg-muted tracking-wider uppercase px-1 pt-1 pb-1.5';
 
 function SpecialistManager({ summary, sessionId, onJump }: { summary: SpecialistSummary; sessionId?: string; onJump: () => void }) {
-  const roster = useSpecialistRoster();
   const groups: Array<{ id: HelperView['group']; label: string }> = [
     { id: 'needs-you', label: 'Needs you' },
     { id: 'working', label: 'Working' },
@@ -96,16 +95,7 @@ function SpecialistManager({ summary, sessionId, onJump }: { summary: Specialist
           <section key={g.id}>
             <h3 className={SECTION_LABEL}>{g.label}</h3>
             <div className="space-y-2">
-              {items.map(h => (
-                <HelperCard
-                  key={h.run.childId}
-                  h={h}
-                  sessionId={sessionId}
-                  charter={roster?.find(d => d.id === h.run.agentType)?.charter}
-                  canShell={roster?.find(d => d.id === h.run.agentType)?.allowedTools.includes('Bash') ?? false}
-                  onJump={onJump}
-                />
-              ))}
+              {items.map(h => <HelperCard key={h.run.childId} h={h} sessionId={sessionId} onJump={onJump} />)}
             </div>
           </section>
         );
@@ -124,9 +114,7 @@ function StatusPill({ h }: { h: HelperView }) {
   return <span className={`${base} border-edge text-fg-muted`}><CheckIcon className="w-3 h-3" />Finished</span>;
 }
 
-function HelperCard({ h, sessionId, charter, canShell, onJump }: {
-  h: HelperView; sessionId?: string; charter?: 'read-only' | 'read-write'; canShell: boolean; onJump: () => void;
-}) {
+function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: string; onJump: () => void }) {
   const { run } = h;
   const first = run.title.split(' ')[0];
   const done = h.group === 'finished';
@@ -145,17 +133,24 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
       <div className="px-3 pt-2.5 pb-2">
         <div className="flex items-baseline gap-2 min-w-0">
           <div className="min-w-0 flex-1 text-2xs text-fg-muted leading-snug">
-            <button type="button" onClick={jump} className="text-sm font-semibold text-fg hover:underline text-left align-baseline" title="Show this helper's card in the conversation">
+            {/* The name is the link to the card — dotted underline says "out-link"
+                (Destin, round 7); no separate Show-in-chat button. */}
+            <button
+              type="button"
+              onClick={jump}
+              className="text-sm font-semibold text-fg text-left align-baseline underline decoration-dotted decoration-fg-muted underline-offset-2 hover:decoration-fg"
+              title="Show this helper's card in the conversation"
+            >
               {run.title}
             </button>
             {' · '}<span className="font-mono uppercase tracking-wide">{run.agentType}</span>
-            {charter && <>{' · '}<span className={charter === 'read-write' ? 'text-amber-500' : ''}>
-              {charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only'}
-            </span></>}
             {run.model ? ` · on ${run.model.label}` : ''}
             {run.background && run.status === 'running' ? ' · in the background' : ''}
           </div>
-          {!attention && <StatusPill h={h} />}
+          {/* Top-right: Note / Stop while running, else the status pill. */}
+          {run.status === 'running' && sessionId
+            ? <div className="shrink-0"><SpecialistActions sessionId={sessionId} run={run} compact /></div>
+            : !attention && <StatusPill h={h} />}
         </div>
         {/* ── WHAT ─────────────────────────────────────────────────────── */}
         {run.description && <div className="mt-1.5 text-xs text-fg-2">{run.description}</div>}
@@ -215,16 +210,6 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
           )}
         </div>
       )}
-
-      {/* ── WHAT YOU CAN DO ──────────────────────────────────────────────── */}
-      <div className="border-t border-edge-dim px-3 py-1.5 flex items-center gap-2">
-        {run.status === 'running' && sessionId
-          ? <SpecialistActions sessionId={sessionId} run={run} compact />
-          : <span className="text-2xs text-fg-muted">{done && h.report ? 'Full report is on the card.' : ''}</span>}
-        <button type="button" onClick={jump} className="ml-auto text-2xs text-fg-muted hover:text-fg-2 shrink-0">
-          Show in chat ↗
-        </button>
-      </div>
 
       {/* ── WHAT IT NEEDS — the bottom of the card, request and buttons on
              one line (Destin, round 6). */}
