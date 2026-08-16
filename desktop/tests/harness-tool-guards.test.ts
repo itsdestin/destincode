@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { checkPathGuard, canonicalize, toPosix } from '../src/main/harness/tools/guards';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { checkPathGuard, canonicalize, toPosix, workspaceMatchFor } from '../src/main/harness/tools/guards';
 import { spillDirFor, spillRoot } from '../src/main/harness/tools/spill-paths';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -137,5 +138,77 @@ describe('toPosix', () => {
   it('does not resolve, absolutize, or case-fold — it is not canonicalize()', () => {
     expect(toPosix('SRC/README.md')).toBe('SRC/README.md');
     expect(toPosix('a\\..\\b')).toBe('a/../b');
+  });
+});
+
+// 2026-08-16: a local model answered "read the roadmap" by Globbing (which
+// returns WORKSPACE-RELATIVE paths — "ROADMAP.md") and then inventing an
+// absolute path from the project NAME: "/youcoded-dev/ROADMAP.md". That is
+// outside the workspace, so checkPathGuard forced an external_directory ask
+// for a path that does not exist anywhere — and the turn hung on it. This
+// helper is the narrow escape: the ask is skipped ONLY when the outside path
+// is fictional AND the real file is confirmed inside the workspace.
+describe('workspaceMatchFor — an outside path the model meant to write as a workspace path', () => {
+  let root: string;
+  const realExists = (p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-match-'));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'ROADMAP.md'), '# roadmap');
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export {};');
+  });
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('recovers the workspace file when the model prefixed the project folder name', () => {
+    // The exact live failure: cwd basename repeated as a fake root segment.
+    expect(workspaceMatchFor(`/${path.basename(root)}/ROADMAP.md`, root, realExists)).toBe('ROADMAP.md');
+  });
+
+  it('prefers the LONGEST matching suffix, not the bare basename', () => {
+    fs.writeFileSync(path.join(root, 'index.ts'), 'export {};');
+    // Both `src/index.ts` and `index.ts` exist; the deeper one is the honest read
+    // of what the model asked for.
+    expect(workspaceMatchFor('/elsewhere/src/index.ts', root, realExists)).toBe('src/index.ts');
+  });
+
+  it('returns null when the outside path is REAL — that one still deserves an ask', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-outside-'));
+    fs.writeFileSync(path.join(outside, 'ROADMAP.md'), '# a genuinely external file');
+    try {
+      expect(workspaceMatchFor(path.join(outside, 'ROADMAP.md'), root, realExists)).toBeNull();
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when nothing inside the workspace matches — no guessing', () => {
+    // Per docs/error-message-standards.md (and resolveUnderAlternateCwd's own
+    // WHY): a wrong "did you mean" is worse than none. No match → normal ask.
+    expect(workspaceMatchFor('/elsewhere/NOPE.md', root, realExists)).toBeNull();
+  });
+
+  it('never returns a directory match for a file-shaped question', () => {
+    // `exists` is the caller's question. Read/Edit ask "is it a FILE?", so a
+    // same-named directory inside the workspace must not be offered.
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    expect(workspaceMatchFor('/elsewhere/docs', root, realExists)).toBeNull();
+  });
+
+  it('a `..` path is canonicalized first, so it is matched by where it LANDS', () => {
+    // /a/../../etc/passwd lands at /etc/passwd; neither `etc/passwd` nor
+    // `passwd` exists in the workspace, so there is nothing to offer.
+    expect(workspaceMatchFor('/a/../../etc/passwd', root, realExists)).toBeNull();
+  });
+
+  // The isUnderRoot re-check inside the loop is load-bearing on win32 ONLY:
+  // there the canonical path's first segment is a DRIVE (`c:`), and
+  // path.resolve(cwd, 'c:/windows/...') re-absolutizes rather than nesting, so
+  // a suffix can leave the jail. On POSIX every suffix is jail-relative by
+  // construction and the check never fires. Pinned so a future "this branch is
+  // unreachable" cleanup doesn't delete a real win32 guard.
+  (process.platform === 'win32' ? it : it.skip)('a drive-qualified suffix cannot leave the workspace', () => {
+    const hosts = 'C:/Windows/System32/drivers/etc/hosts';
+    expect(workspaceMatchFor(hosts, root, realExists)).toBeNull();
   });
 });

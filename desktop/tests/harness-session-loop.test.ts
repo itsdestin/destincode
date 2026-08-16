@@ -5,7 +5,7 @@
 // step-level retry, and interrupt semantics. The v0 emit surface is FROZEN —
 // this suite only ever asserts existing TranscriptEventType values; max_steps
 // and doom_loop surface as permission ASKS (askUser), never as new events.
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -369,6 +369,91 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(askUser.mock.calls[0][0].toolName).toBe('Write');
     expect(decide).not.toHaveBeenCalled();               // external short-circuits configured decision
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
+  });
+
+  // 2026-08-16 stuck-session investigation. A local model Globbed "ROADMAP.md"
+  // (Glob returns workspace-RELATIVE paths) and then invented an absolute path
+  // from the project's name — "/youcoded-dev/ROADMAP.md" — which is outside the
+  // workspace and exists nowhere. That forced an external_directory ask about a
+  // fictional location, and the turn hung on it. The model is told the truth
+  // and retries instead; only a path we can CONFIRM inside the workspace
+  // short-circuits the ask.
+  describe('an invented outside path that is really a workspace file', () => {
+    let root: string;
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-path-'));
+      fs.writeFileSync(path.join(root, 'ROADMAP.md'), '# roadmap');
+    });
+    afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+    it('Read: no ask at all — the model is told the real workspace path', async () => {
+      const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'Read', { file_path: `/${path.basename(root)}/ROADMAP.md` }), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      expect(askUser).not.toHaveBeenCalled();
+      expect((read as any).calls).toHaveLength(0);       // NOT executed — the path is fiction
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toContain('ROADMAP.md');       // names the real path
+      expect(res.data.toolResult).not.toMatch(/declined|permission rule/i); // never blames the user
+    });
+
+    it('Write is NOT diverted — creating a new file outside the workspace is a real request', async () => {
+      // "Doesn't exist yet" is normal for Write, so nonexistence cannot mean
+      // "the model must have meant the workspace copy". This one still asks.
+      const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'Write', { file_path: `/${path.basename(root)}/ROADMAP.md` }), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ cwd: root, tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      collect(session);
+      await session.send('go');
+
+      expect(askUser).toHaveBeenCalledTimes(1);
+      expect(askUser.mock.calls[0][0]).toMatchObject({ external: true });
+    });
+
+    it('a REAL file outside the workspace still asks — the divert is not a jail hole', async () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'genuinely-outside-'));
+      fs.writeFileSync(path.join(outside, 'ROADMAP.md'), '# a real external file');
+      try {
+        const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+        const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+        const model = scriptedModel([
+          stream(toolCallChunk('c1', 'Read', { file_path: path.join(outside, 'ROADMAP.md') }), finishChunk('tool-calls')),
+          stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        ]);
+        const session = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
+        collect(session);
+        await session.send('go');
+        expect(askUser).toHaveBeenCalledTimes(1);
+        expect((read as any).calls).toHaveLength(1);
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('an outside path with NO workspace match still asks — no guessing', async () => {
+      const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'Read', { file_path: '/nowhere-at-all/NOPE.md' }), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
+      collect(session);
+      await session.send('go');
+      expect(askUser).toHaveBeenCalledTimes(1);
+    });
   });
 
   // Task 10 (plan 1b): the parent has to be able to Read the spill file its

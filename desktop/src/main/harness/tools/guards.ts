@@ -115,6 +115,54 @@ export function workspaceRootMissHint(
   return hint ? ` It exists relative to the workspace root (${ctx.cwd}) instead — pass "${hint}".` : '';
 }
 
+/** Third direction (2026-08-16), and the only one that changes a DECISION
+ *  rather than decorating an error: `rawPath` resolved OUTSIDE the workspace —
+ *  is it a path the model invented for a file that actually lives INSIDE?
+ *  Returns the workspace-relative path when it does, else null.
+ *
+ *  WHY: a local model answered "what's in the roadmap" by Globbing (which
+ *  returns workspace-relative paths — `ROADMAP.md`) and then rebuilding an
+ *  absolute path out of the project's NAME: `/youcoded-dev/ROADMAP.md`. That
+ *  is outside the cwd jail, so checkPathGuard forced an external_directory ask
+ *  — an approval prompt about a location that does not exist, for a file
+ *  sitting in the workspace the model was already allowed to read. The turn
+ *  then hung on that ask (2026-08-16 stuck-session investigation).
+ *
+ *  Deliberately narrow, on two axes:
+ *   • It fires only when the outside path is FICTIONAL. A real file outside
+ *     the workspace is a real external access and still gets its ask.
+ *   • It reports only what is CONFIRMED inside the workspace. Answering
+ *     "no such file" for any outside path would let a model map the user's
+ *     disk without ever asking; here every stat is inside the cwd jail, so it
+ *     discloses nothing the model could not already Glob for.
+ *  Same disk-confirmed contract as resolveUnderAlternateCwd above — never a
+ *  guess, per docs/error-message-standards.md.
+ *
+ *  `exists` is the caller's own question (a file for Read/Edit), matching the
+ *  injection style of the two hint helpers. */
+export function workspaceMatchFor(
+  rawPath: string,
+  cwd: string,
+  exists: (absPath: string) => boolean,
+): string | null {
+  const canonical = canonicalize(rawPath, cwd);
+  if (exists(canonical)) return null; // a real outside file — genuinely external
+  const root = canonicalize(cwd, cwd);
+  // Longest suffix first: `/elsewhere/src/index.ts` should recover
+  // `src/index.ts`, not a coincidentally-named top-level `index.ts`.
+  const segments = toPosix(canonical).split('/').filter(Boolean);
+  for (let i = 0; i < segments.length; i++) {
+    const suffix = segments.slice(i).join('/');
+    const candidate = path.resolve(cwd, suffix);
+    // The suffix comes from an already-canonicalized path so it carries no
+    // `..`, but re-check rather than reason about it: this helper's whole
+    // value is that it only ever names something inside the jail.
+    if (!isUnderRoot(canonicalize(candidate, cwd), root)) continue;
+    if (exists(candidate)) return suffix;
+  }
+  return null;
+}
+
 export type GuardVerdict =
   | { kind: 'ok' }
   | { kind: 'deny'; reason: string }
