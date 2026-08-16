@@ -1,4 +1,3 @@
-import type React from 'react';
 import type { SubagentSegment } from '../../../shared/types';
 import { PermissionButtons } from '../ToolCard';
 import { useChatDispatch } from '../../state/chat-context';
@@ -18,14 +17,12 @@ type ToolSegment = Extract<SubagentSegment, { type: 'tool' }>;
  * row, AND in the specialists popup (SpecialistsChip), which is where asks
  * are managed centrally. Same requestId → answering in either place clears both.
  */
-export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false, trailing }: {
+export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false }: {
   segment: ToolSegment;
   sessionId?: string;
   specialistName?: string;
   /** Popup rows: no border/background chrome, tighter notes — the row supplies the frame. */
   compact?: boolean;
-  /** Compact only: extra controls laid out on the SAME line as the buttons, right-aligned. */
-  trailing?: React.ReactNode;
 }) {
   const dispatch = useChatDispatch();
   const artifacts = useArtifactOptional();
@@ -54,23 +51,19 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
       )}
       {segment.askHeld && (
         <p className={`${note} text-amber-500`} data-testid="nested-ask-held">
-          5 min unanswered — {who} carried on. A Yes now lands as a follow-up.
+          No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.
         </p>
       )}
-      <div className={compact ? 'flex items-center gap-2 flex-wrap' : ''}>
-        <PermissionButtons
-          requestId={requestId}
-          denyListed={segment.denyListed}
-          permissionMode={segment.permissionMode}
-          command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
-          folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
-          suppressAlwaysAllow={segment.external === true}
-          onResponded={onResponded}
-          onFailed={onFailed}
-          bare={compact}
-        />
-        {compact && trailing && <div className="ml-auto flex items-center gap-1.5">{trailing}</div>}
-      </div>
+      <PermissionButtons
+        requestId={requestId}
+        denyListed={segment.denyListed}
+        permissionMode={segment.permissionMode}
+        command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
+        folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
+        suppressAlwaysAllow={segment.external === true}
+        onResponded={onResponded}
+        onFailed={onFailed}
+      />
     </div>
   );
 }

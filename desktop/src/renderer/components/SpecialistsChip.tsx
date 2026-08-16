@@ -130,90 +130,121 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
   const { run } = h;
   const first = run.title.split(' ')[0];
   const done = h.group === 'finished';
-  const running = run.status === 'running';
   const elapsed = formatElapsed(Math.max(0, (run.endedAt ?? Date.now()) - run.startedAt));
   const steps = run.steps ?? h.toolCalls;
   const jump = () => { jumpToCard(h.parentToolCallId); onJump(); };
   const attention = h.group === 'needs-you';
-
-  // Row 2 — everything about the run in one muted line. Order: identity facts
-  // (fixed) → progress facts (moving) → what it is doing right now.
-  const meta: string[] = [run.agentType.toUpperCase()];
-  if (charter) meta.push(charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only');
-  // The model only when it is NOT simply the conversation's own — that is the
-  // default and saying it on every card is noise.
-  if (run.model && run.model.via && run.model.via !== 'parent') meta.push(`on ${run.model.label}`);
-  if (run.background && running) meta.push('background');
-  if (running) meta.push(elapsed, `${steps} step${steps === 1 ? '' : 's'}`);
-  else meta.push(
-    run.status === 'interrupted' ? `stopped after ${elapsed}` : (run.status === 'failed' || h.report?.status === 'failed') ? `failed after ${elapsed}` : `finished in ${elapsed}`,
-    `${steps} step${steps === 1 ? '' : 's'}`,
-  );
-  if (running && h.current && !attention) meta.push(`now: ${friendlyToolDisplay(segToTool(h.current)).label}`);
-  if (running && run.stale) meta.push('may be stuck');
-
-  const actions = running && sessionId ? <SpecialistActions sessionId={sessionId} run={run} compact /> : null;
 
   return (
     <div
       className={`rounded-lg border ${attention ? 'border-amber-500/40' : 'border-edge'} bg-inset/50 overflow-hidden ${done ? 'opacity-80' : ''}`}
       data-testid={`helper-card-${run.childId}`}
     >
-      <div className="px-3 py-2 space-y-0.5">
-        {/* Row 1 — who and what, status at the right, ↗ to the card. */}
-        <div className="flex items-baseline gap-2 min-w-0">
-          <button type="button" onClick={jump} className="text-sm font-semibold text-fg hover:underline text-left shrink-0" title="Show this helper's card in the conversation">
-            {run.title}
-          </button>
-          {run.description && <span className="text-xs text-fg-2 truncate min-w-0 flex-1">— {run.description}</span>}
-          <span className="ml-auto shrink-0 flex items-center gap-1.5">
-            <StatusPill h={h} />
-            <button type="button" onClick={jump} className="text-fg-muted hover:text-fg-2 text-xs leading-none" title="Show in chat" aria-label="Show in chat">↗</button>
-          </span>
-        </div>
-        {/* Row 2 — the run in one line; Note / Stop live here when there is
-            no ask (with an ask they sit on the button row below instead). */}
-        <div className="flex items-baseline gap-2 min-w-0">
-          <div className="text-2xs text-fg-muted leading-snug min-w-0 flex-1">
-            {meta.map((m, i) => (
-              <span key={i} className={m === 'may be stuck' ? 'text-amber-500' : (m.startsWith('can edit') ? 'text-amber-500' : '')}>
-                {i > 0 ? ' · ' : ''}{m}
-              </span>
-            ))}
+      {/* ── WHO ─────────────────────────────────────────────────────────── */}
+      <div className="px-3 pt-2.5 pb-2">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <button type="button" onClick={jump} className="text-sm font-semibold text-fg hover:underline text-left truncate block max-w-full" title="Show this helper's card in the conversation">
+              {run.title}
+            </button>
+            {/* One wrapping line, separators inline with the text (a flex-gap
+                version left a dangling "·" at a wrap). */}
+            <div className="mt-0.5 text-2xs text-fg-muted leading-snug">
+              <span className="font-mono uppercase tracking-wide">{run.agentType}</span>
+              {charter && <>{' · '}<span className={charter === 'read-write' ? 'text-amber-500' : ''}>
+                {charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only'}
+              </span></>}
+              {run.model ? ` · on ${run.model.label}` : ''}
+              {run.background && run.status === 'running' ? ' · in the background' : ''}
+            </div>
           </div>
-          {!attention && actions && <div className="shrink-0">{actions}</div>}
+          <StatusPill h={h} />
         </div>
-        {/* Finished — a two-line teaser; the formatted report is on the card. */}
-        {done && h.report && (
-          <p className="text-2xs text-fg-dim leading-snug line-clamp-2 pt-0.5">{reportPreview(h.report.text)}</p>
-        )}
-        {done && !h.report && run.status === 'interrupted' && (
-          <p className="text-2xs text-fg-muted italic pt-0.5">No report — the assistant can pick this back up.</p>
-        )}
+        {/* ── WHAT ─────────────────────────────────────────────────────── */}
+        {run.description && <div className="mt-1.5 text-xs text-fg-2">{run.description}</div>}
       </div>
 
-      {/* Ask band — what exactly it wants, then the buttons with Note / Stop
-          on the same line. */}
-      {h.asks.map((seg, i) => {
+      {/* ── HOW FAR ──────────────────────────────────────────────────────── */}
+      {!done && (
+        <div className="border-t border-edge-dim px-3 py-2">
+          <div className="flex items-center gap-2 text-2xs text-fg-muted">
+            <span className="text-fg-dim">{elapsed}</span>
+            <span aria-hidden>·</span>
+            <span>{steps} step{steps === 1 ? '' : 's'}</span>
+            {h.current && !attention && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="truncate min-w-0">now: {friendlyToolDisplay(segToTool(h.current)).label}</span>
+              </>
+            )}
+          </div>
+          {h.recent.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {h.recent.map(seg => {
+                const { label, detail } = friendlyToolDisplay(segToTool(seg));
+                return (
+                  <li key={seg.id} className="flex items-center gap-1.5 text-2xs min-w-0">
+                    <span className="shrink-0 inline-flex text-fg-muted">
+                      {seg.status === 'running' ? <BrailleSpinner size="xs" />
+                        : seg.status === 'awaiting-approval' ? <QuestionIcon className="w-3 h-3 text-amber-500" />
+                        : seg.status === 'failed' ? <FailIcon className="w-3 h-3" />
+                        : <CheckIcon className="w-3 h-3" />}
+                    </span>
+                    <span className="text-fg-dim shrink-0">{label}</span>
+                    {detail && <span className="text-fg-muted truncate min-w-0">{detail}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* ── WHAT IT NEEDS ────────────────────────────────────────────────── */}
+      {h.asks.map(seg => {
         const { label } = friendlyToolDisplay(segToTool(seg));
+        // The exact thing being approved, in full — a command, a path, a URL —
+        // not the card's abbreviated "↳ cache/" detail.
         const subject = askSubject(seg.input);
         return (
           <div key={seg.requestId} className="border-t border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 space-y-1.5" data-testid="helper-card-ask">
-            <div className="text-xs leading-snug min-w-0">
+            <div className="text-xs">
               <span className="font-medium text-fg">{first} wants to: </span>
               <span className="text-fg-2">{label}</span>
-              {subject && subject !== label && <span className="font-mono text-2xs text-fg-dim break-all"> — {subject}</span>}
             </div>
-            <SpecialistAskBlock
-              segment={seg}
-              sessionId={sessionId}
-              specialistName={first}
-              compact
-              trailing={i === h.asks.length - 1 ? actions : undefined}
-            />
+            {subject && <div className="text-2xs font-mono text-fg-dim break-all">{subject}</div>}
+            <SpecialistAskBlock segment={seg} sessionId={sessionId} specialistName={first} compact />
           </div>
         );
       })}
+
+      {/* ── THE REPORT (finished) ─────────────────────────────────────────── */}
+      {done && (
+        <div className="border-t border-edge-dim px-3 py-2">
+          <div className="text-2xs text-fg-muted mb-1">
+            {run.status === 'interrupted' ? `Stopped after ${elapsed}` : run.status === 'failed' || h.report?.status === 'failed' ? `Failed after ${elapsed}` : `Finished in ${elapsed}`}
+            {' · '}{steps} step{steps === 1 ? '' : 's'}
+          </div>
+          {h.report ? (
+            // Plain-text teaser, not rendered markdown: a table or heading
+            // rendered at full size inside a 3-line clip looked broken. The
+            // real report, formatted, is on the card one click away.
+            <p className="text-xs text-fg-dim leading-snug line-clamp-3">{reportPreview(h.report.text)}</p>
+          ) : (
+            <div className="text-2xs text-fg-muted italic">No report — the assistant can pick this back up.</div>
+          )}
+        </div>
+      )}
+
+      {/* ── WHAT YOU CAN DO ──────────────────────────────────────────────── */}
+      <div className="border-t border-edge-dim px-3 py-1.5 flex items-center gap-2">
+        {run.status === 'running' && sessionId
+          ? <SpecialistActions sessionId={sessionId} run={run} compact />
+          : <span className="text-2xs text-fg-muted">{done && h.report ? 'Full report is on the card.' : ''}</span>}
+        <button type="button" onClick={jump} className="ml-auto text-2xs text-fg-muted hover:text-fg-2 shrink-0">
+          Show in chat ↗
+        </button>
+      </div>
     </div>
   );
 }

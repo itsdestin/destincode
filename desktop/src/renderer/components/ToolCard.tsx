@@ -353,12 +353,8 @@ export function friendlyToolDisplay(
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed, bare = false }: {
+export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
   requestId: string;
-  /** Specialists 1c: render the generic row WITHOUT its own band (border/bg/
-   *  padding) so a host can lay it out inline — the specialists popup puts
-   *  Note/Stop on the same line. Confirm and safety-stop paths keep their band. */
-  bare?: boolean;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
   denyListed?: boolean;
@@ -667,7 +663,7 @@ export function PermissionButtons({ requestId, suggestions, denyListed, command,
     // (buttonsRef[next].focus()), so adding ui/Button's focus-visible ring would
     // paint an accent ring on top of this one on the selected button. Left alone
     // on purpose; don't "finish the migration" by adding FOCUS_RING here.
-    <div className={bare ? 'space-y-1.5' : 'px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5'}>
+    <div className="px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5">
     <div className="flex items-center gap-2">
       <button
         ref={el => { buttonsRef.current[0] = el; }}
