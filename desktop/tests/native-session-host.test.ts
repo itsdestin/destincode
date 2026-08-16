@@ -119,6 +119,21 @@ describe('NativeSessionHost', () => {
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
+  it('pendingAskEventsFor delegates to the broker for one session', () => {
+    // Task 0 (ROADMAP #permissions): TRANSCRIPT_REPLAY needs a host-level
+    // method to re-send open asks after a reload — this just proves the host
+    // forwards to the broker rather than re-implementing the lookup.
+    const emitted: any[] = [];
+    host.on('hook-event', (e) => emitted.push(e));
+    void host.askPermission({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
+    void host.askPermission({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
+    const events = host.pendingAskEventsFor('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].sessionId).toBe('s1');
+    expect(events[0].type).toBe('PermissionRequest');
+    expect(events[0].payload._requestId).toBe(emitted[0].payload._requestId);
+  });
+
   it('create → send → events forwarded AND persisted; getHistory replays them', async () => {
     const seen: any[] = [];
     host.on('transcript-event', (e) => seen.push(e));

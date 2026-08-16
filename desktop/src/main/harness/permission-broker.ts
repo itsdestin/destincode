@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { log } from '../logger';
 import type { GrantScope } from '../../shared/bash-grant-shapes';
+import type { HookEvent } from '../../shared/types';
 
 export interface AskRequest {
   sessionId: string;
@@ -246,6 +247,31 @@ export class PermissionBroker extends EventEmitter {
       payload: { ...entry.announcement.payload },
       timestamp: Date.now(),
     });
+  }
+
+  /** Task 0 (ROADMAP #permissions, 2026-08-16): a renderer reload rebuilds
+   *  every card from the on-disk transcript (TRANSCRIPT_REPLAY), but an open
+   *  ask lives ONLY here — nothing on disk records that it is still awaiting
+   *  an answer. Without this, the rebuilt card comes back with no buttons and
+   *  a root ask (which has no timeout) hangs the turn forever. Re-sending the
+   *  stored `announcement` is the same "just say it again" trick the
+   *  heartbeat above already relies on, one-shot instead of on an interval —
+   *  and, unlike the heartbeat, it deliberately includes TIMED-OUT entries:
+   *  those are still "the ask stays answerable" (see PendingAsk.timedOut), so
+   *  the reloaded window must show a card a late human answer can still hit,
+   *  even though nothing is stuck waiting on it. */
+  pendingEventsFor(sessionId: string): HookEvent[] {
+    const events: HookEvent[] = [];
+    for (const entry of this.pending.values()) {
+      if (entry.sessionId !== sessionId) continue;
+      events.push({
+        sessionId: entry.announcement.sessionId,
+        type: entry.announcement.type,
+        payload: { ...entry.announcement.payload },
+        timestamp: Date.now(),
+      });
+    }
+    return events;
   }
 
   /** Re-emit every ask whose turn is still WAITING on it. A timed-out entry is
