@@ -143,7 +143,7 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
             >
               {run.title}
             </button>
-            {' · '}<span className="font-mono uppercase tracking-wide">{run.agentType}</span>
+            {/* No role tag: "Wren the Whistling Worker" already says worker (Destin, round 8). */}
             {run.model ? ` · on ${run.model.label}` : ''}
             {run.background && run.status === 'running' ? ' · in the background' : ''}
           </div>
