@@ -856,7 +856,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // `injected` rides only this append path on purpose: a host-injected
         // turn never has an optimistic pending bubble to confirm (nobody typed
         // it), so it can only ever land here.
-        timeline: [...session.timeline, { kind: 'user', message, pending: false, ...(action.injected ? { injected: action.injected } : {}) }],
+        timeline: [...session.timeline, {
+          kind: 'user', message, pending: false,
+          ...(action.injected ? { injected: action.injected } : {}),
+          ...(action.injectedMeta ? { injectedMeta: action.injectedMeta } : {}),
+        }],
         seenUuids,
         queuedMessages,
         isThinking: true,

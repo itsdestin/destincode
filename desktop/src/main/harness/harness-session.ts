@@ -1398,8 +1398,14 @@ export class HarnessSession extends EventEmitter {
    *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
    *  if it were called mid-turn, by design (never splice into a running turn:
    *  role alternation + the local prompt cache both depend on it). */
-  async runNotice(text: string): Promise<void> {
-    return this.beginTurn(text, () => this.emitEvent('user-message', { text, injected: 'specialist-report' }));
+  async runNotice(text: string, meta?: NonNullable<TranscriptEvent['data']>['injectedMeta']): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', {
+      text, injected: 'specialist-report',
+      // Structured header data for the renderer's SpecialistReportCard —
+      // optional so every existing caller/test that passes text alone is
+      // unchanged; the card falls back to the prose when it's absent.
+      ...(meta ? { injectedMeta: meta } : {}),
+    }));
   }
 
   /** Image parts for a user message, or [] when the model cannot see images / none

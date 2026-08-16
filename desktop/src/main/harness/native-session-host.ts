@@ -3119,7 +3119,15 @@ export class NativeSessionHost extends EventEmitter {
                 log('WARN', 'NativeSessionHost', 'failed to record a truncation-time spill path in the ledger', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
               }
             }
-            await entry.session.runNotice(delivery.text);
+            await entry.session.runNotice(delivery.text, {
+              // Header data for the renderer's compact SpecialistReportCard —
+              // from the ledger record, the same source formatDelivery's prose
+              // is written from, so header and body can never disagree.
+              childId: rec.childId, title: rec.title, agentType: rec.agentType,
+              description: rec.description, status: rec.status === 'failed' ? 'failed' : 'completed',
+              ...(rec.steps !== undefined ? { steps: rec.steps } : {}),
+              parentToolCallId: rec.parentToolCallId,
+            });
             // Recheck AGAIN: destroy() can land during the runNotice() await
             // itself (no throw, per the WHY above), so confirmDelivered must
             // never be reached on a session that stopped being live while the

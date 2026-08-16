@@ -428,6 +428,7 @@ describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
     state = dispatch(state, {
       type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-inj', timestamp: 1000,
       text: '[Background specialist finished] Vega completed the task.', injected: 'specialist-report',
+      injectedMeta: { childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 },
     });
     state = dispatch(state, {
       type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 2000, text: 'thanks',
@@ -435,6 +436,7 @@ describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
     const entries = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as Extract<import('../src/renderer/state/chat-types').TimelineEntry, { kind: 'user' }>[];
     expect(entries).toHaveLength(2);
     expect(entries[0].injected).toBe('specialist-report');
+    expect(entries[0].injectedMeta).toEqual({ childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 });
     expect(entries[0].message.content).toContain('[Background specialist finished]');
     expect(entries[1].injected).toBeUndefined();
   });

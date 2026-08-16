@@ -205,22 +205,32 @@ export interface TranscriptEvent {
      * actually typed. Data-field extension, not a new TranscriptEventType — the
      * frozen emit surface stays frozen.
      *
-     * Final-review fix: this is a PERSISTED HOOK with no renderer consumer yet.
-     * Neither `preload.ts` nor `remote-shim.ts` forwards it, and no chat-reducer
-     * case reads it (`rg injected src/renderer` is empty) — its only current
-     * readers are test assertions (native-session-host.test.ts,
-     * specialist-run.test.ts) that use it to pick the injected event out of a
-     * list, not product code. Until a renderer case is added, an injected
-     * report renders as an ordinary user bubble, indistinguishable from
-     * something the user typed. Do not claim elsewhere that this field already
-     * gives injected turns distinct styling — it does not. Kept (not deleted)
-     * because harness-session.ts already writes it and removing it would mean
-     * re-deriving "which event was the injected one" in every test that needs
-     * it; styling the bubble is a follow-up plan's scope, not this fix pass's.
+     * CONSUMED by the renderer since 2026-08-16: App.tsx/BubbleFeed.tsx forward
+     * it onto TRANSCRIPT_USER_MESSAGE, the reducer stamps it on the timeline
+     * entry, and ChatView/BubbleFeed draw such an entry as a compact
+     * SpecialistReportCard (a collapsed "task finished" row, tool-card style)
+     * instead of a user bubble — the text is what the PARENT MODEL reads, and
+     * showing it as the user's own words, or even as a big notice, put text in
+     * the chat nobody actually said (Destin, 1b hands-on).
      * Only value today is 'specialist-report'; a plain `string` (not a union)
      * so a future injected kind never needs a TranscriptEvent schema change.
      */
     injected?: string;
+    /**
+     * Structured companion to `injected: 'specialist-report'` (2026-08-16):
+     * who finished, what they were asked, how it ended — so the card header
+     * is exact rather than parsed back out of the prose the model reads.
+     * `parentToolCallId` names the Task card that started this child.
+     */
+    injectedMeta?: {
+      childId: string;
+      title: string;
+      agentType: string;
+      description?: string;
+      status: 'completed' | 'failed';
+      steps?: number;
+      parentToolCallId?: string;
+    };
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */

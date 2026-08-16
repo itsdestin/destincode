@@ -137,12 +137,15 @@ export type TimelineEntry =
   // itself"). See docs/active — Task 12 brief.
   // `injected` (2026-08-16): set when the host, not the user, wrote this
   // user-role turn — today only 'specialist-report' (a background specialist's
-  // delivered report, harness-session.ts runNotice). ChatView/BubbleFeed draw
-  // such an entry as a left-aligned system notice, never as the user's own
-  // bubble: the text is what the PARENT MODEL reads, and painting it in the
-  // user's colour on the user's side said "you typed this" about words the
-  // user never wrote (Destin, 1b hands-on).
-  | { kind: 'user'; message: ChatMessage; pending?: boolean; injected?: string }
+  // delivered report, or a host follow-up note, harness-session.ts runNotice).
+  // ChatView/BubbleFeed draw such an entry as a compact, collapsed
+  // SpecialistReportCard — never as the user's own bubble and never as a
+  // full-width message: the text is what the PARENT MODEL reads, and putting
+  // it in the chat as anyone's words showed text nobody actually said
+  // (Destin, 1b hands-on: "these reports just shouldn't be rendering at all
+  // in chat … should only register as a task completion toolcard").
+  // `injectedMeta` is the structured header (who/what/status/steps).
+  | { kind: 'user'; message: ChatMessage; pending?: boolean; injected?: string; injectedMeta?: InjectedMeta }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
   // /cost and /usage render a snapshot card inline. Permanent (not dismissible).
@@ -502,9 +505,10 @@ export type ChatAction =
       text: string;
       timestamp: number;
       // Host-injected user-role turn (TranscriptEvent.data.injected, e.g.
-      // 'specialist-report'). Carried onto the timeline entry so the renderer
-      // can draw it as a system notice instead of a user bubble.
+      // 'specialist-report') + its structured header. Carried onto the
+      // timeline entry so the renderer draws a compact report card, not a bubble.
       injected?: string;
+      injectedMeta?: InjectedMeta;
       // Present when this event came from a subagent's JSONL (the briefing
       // Claude Code writes as the subagent's first user-role line). Reducer
       // uses these to drop it from the main chat timeline — the briefing is
@@ -780,3 +784,6 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
   }
   return result;
 }
+
+/** Structured header for a host-injected specialist report — mirrors TranscriptEvent.data.injectedMeta. */
+export type InjectedMeta = NonNullable<NonNullable<import('../../shared/types').TranscriptEvent['data']>['injectedMeta']>;

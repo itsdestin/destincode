@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
-import InjectedNoticeBubble from './InjectedNoticeBubble';
+import SpecialistReportCard from './SpecialistReportCard';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
@@ -769,12 +769,14 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                 case 'user':
                   key = entry.message.id;
                   // A host-injected user-role turn (a delivered specialist
-                  // report) is a system notice, not the user's own words —
-                  // see InjectedNoticeBubble. MUST mirror BubbleFeed.tsx.
+                  // report) is an EVENT for the assistant, not anyone's words —
+                  // a compact collapsed card, see SpecialistReportCard. MUST
+                  // mirror BubbleFeed.tsx.
                   content = entry.injected ? (
-                    <InjectedNoticeBubble
+                    <SpecialistReportCard
                       message={entry.message}
                       injected={entry.injected}
+                      meta={entry.injectedMeta}
                       sessionId={sessionId}
                       showTimestamps={showTimestamps}
                     />
