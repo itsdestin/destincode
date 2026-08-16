@@ -155,7 +155,7 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
         {/* The chat card's own Briefing / Activity / Report sections, verbatim
             (Destin, round 9: one representation of a helper's work). Ask
             buttons inside Activity are suppressed — the band below has them. */}
-        <AgentSections tool={tool} sessionId={sessionId} suppressAsk />
+        <AgentSections tool={tool} sessionId={sessionId} suppressAsk accordion />
       </div>
 
       {/* ── WHAT IT NEEDS — the bottom of the card, request and buttons on

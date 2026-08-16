@@ -671,12 +671,16 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
  * `suppressAsk` hides the Yes/No buttons inside Activity where the host
  * already shows the ask elsewhere (the popup's amber band).
  */
-export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = false, children }: {
+export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = false, accordion = false, children }: {
   tool: ToolCallState;
   sessionId?: string;
   /** For a task_id call: the other child's title (first name feeds the ask/note copy). */
   targetTitle?: string;
   suppressAsk?: boolean;
+  /** Popup mode (Destin, round 10): every section starts COLLAPSED and at most
+   *  one is open at a time. The chat card keeps its own behaviour (Activity
+   *  open while running, Report open when it lands, Ctrl+O expand-all). */
+  accordion?: boolean;
   children?: React.ReactNode;
 }) {
   const prompt = asString(tool.input.prompt);
@@ -731,10 +735,16 @@ export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = fals
   const hideLaunchAck = !!run && run.background && !tool.specialistReport && !!tool.response
     && /is now working in the background/.test(tool.response);
 
+  // Accordion (popup) state: which ONE section is open, if any.
+  const [openOne, setOpenOne] = useState<'briefing' | 'activity' | 'report' | null>(null);
+  const acc = (key: 'briefing' | 'activity' | 'report') => accordion
+    ? { open: openOne === key, onToggle: () => setOpenOne(o => (o === key ? null : key)) }
+    : {};
+
   return (
     <>
       {prompt && (
-        <AgentSection title={taskId ? 'Message' : 'Briefing'} defaultOpen={false}>
+        <AgentSection title={taskId ? 'Message' : 'Briefing'} defaultOpen={false} {...acc('briefing')}>
           <div className="text-sm text-fg-dim">
             <MarkdownContent content={prompt} />
           </div>
@@ -743,15 +753,16 @@ export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = fals
       {segments.length > 0 && (
         <AgentSection
           title={`Activity (${segments.length})`}
-          open={showTimeline}
-          onToggle={() => { setShowTimeline(s => !s); setUserToggled(true); }}
+          {...(accordion
+            ? acc('activity')
+            : { open: showTimeline, onToggle: () => { setShowTimeline(s => !s); setUserToggled(true); } })}
         >
           <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} suppressAsk={suppressAsk} />
         </AgentSection>
       )}
       {children}
       {report && !hideLaunchAck && (
-        <AgentSection title={report.title} defaultOpen={true}>
+        <AgentSection title={report.title} defaultOpen={true} {...acc('report')}>
           <div className="text-sm text-fg-dim">
             <MarkdownContent content={report.text} />
           </div>
