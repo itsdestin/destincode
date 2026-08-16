@@ -161,6 +161,8 @@ data class AppendVersionInput(
     val sessionId:    String,
     val type:         String,   // "create" | "edit" | "delete" | "read"
     val author:       String,   // "agent" | "user"
+    // Replay-dedupe key — see VersionEvent.toolUseId. Null keeps always-append.
+    val toolUseId:    String? = null,
 )
 
 /**
@@ -191,6 +193,14 @@ fun appendVersion(
             is ReadResult.Ok -> current.sidecar to current.sidecar.updatedAt
         }
 
+        val existing = sidecar.artifacts.find { it.path == input.path && it.kind == input.kind }
+        // Replay dedupe (mirror of artifact-store.ts appendVersionsDirect): the
+        // same tool call recorded once already ⇒ nothing to add, nothing to
+        // write. Same sessionId AND same toolUseId — never toolUseId alone.
+        if (existing != null && input.toolUseId != null &&
+            existing.versions.any { it.sessionId == input.sessionId && it.toolUseId == input.toolUseId }
+        ) return true
+
         val now = Instant.now().toString()
         val versionEvent = VersionEvent(
             id        = newVersionId(),
@@ -198,9 +208,9 @@ fun appendVersion(
             sessionId = input.sessionId,
             type      = input.type,
             author    = input.author,
+            toolUseId = input.toolUseId,
         )
 
-        val existing = sidecar.artifacts.find { it.path == input.path && it.kind == input.kind }
         if (existing != null) {
             existing.versions.add(versionEvent)
             existing.lastModified = now
