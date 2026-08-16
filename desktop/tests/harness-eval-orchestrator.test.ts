@@ -122,7 +122,11 @@ const casesJs   = ${q(path.join(DESKTOP, 'dist/main/harness/eval/cases/index.js'
 const batteryJs = ${q(path.join(DESKTOP, 'dist/main/harness/eval/battery.js'))};
 const pathsJs   = ${q(COMPILED_PATHS)};
 
-const { loadGraders } = await import(${q(CLI)});
+// WHY the file URL: Node's ESM loader rejects a bare absolute path on Windows
+// (a D: drive path parses as protocol 'd:' → ERR_UNSUPPORTED_ESM_URL_SCHEME). It is
+// still the same file through the same loader, so the require()-vs-import()
+// module-cache identity this probe measures is unaffected.
+const { loadGraders } = await import(${q(pathToFileURL(CLI).href)});
 const g = await loadGraders();
 
 const problems = [];
