@@ -22,8 +22,7 @@ import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
-import { categorizeArtifact } from '../shared/artifacts/categorization';
-import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
+import { createArtifactToolUseTracker } from './state/artifact-tool-use-tracker';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
@@ -1229,6 +1228,22 @@ function AppInner() {
               partId: event.data.partId,
             });
           } else {
+            // Argument-generation progress: draw/update the preparing tool card.
+            // Dispatched IN ADDITION to the heartbeat, not instead of it — the
+            // heartbeat's promptProcessing:null is the right outcome here (prefill
+            // is over once arguments are streaming), and suppressing it would
+            // strand the previous phase's progress line on screen.
+            // MUST mirror BubbleFeed.tsx.
+            if (event.data?.toolPreparing) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_TOOL_PREPARING',
+                sessionId: event.sessionId,
+                toolCallId: event.data.toolPreparing.toolCallId,
+                toolName: event.data.toolPreparing.toolName,
+                chars: event.data.toolPreparing.chars,
+                cleared: event.data.toolPreparing.cleared,
+              });
+            }
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
@@ -1487,86 +1502,22 @@ function AppInner() {
     // We resolve cwd by looking up the session in the sessions state. Because
     // the handler is registered in a useEffect that doesn't re-subscribe on
     // sessions changes, we read via sessionsRef.current to always see fresh data.
+    // The handler itself lives in state/artifact-tool-use-tracker.ts (pinned by
+    // tests/artifacts/artifact-tool-use-tracker.test.ts). It appends one version
+    // per tracked tool call and refreshes the session's drawer list ONCE per
+    // burst — see the WHY there for the 2026-08-15 out-of-memory incident.
+    const artifactTracker = createArtifactToolUseTracker({
+      getSessions: () => sessionsRef.current,
+      getSessionArtifacts: (sessionId) => artifactStateRef.current.sessionArtifacts[sessionId] ?? [],
+      appendVersion: (projectRoot, sessionId, args) =>
+        (window.claude as any).artifacts?.appendVersion?.(projectRoot, sessionId, args) ?? Promise.resolve(),
+      listSession: (sessionId, projectRoot) =>
+        (window.claude as any).artifacts?.listSession?.(sessionId, projectRoot) ?? Promise.resolve(undefined),
+      onSessionArtifacts: (sessionId, artifacts) =>
+        dispatchArtifact({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: artifacts as any }),
+    });
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
-      if (!event?.type || !event?.sessionId) return;
-      if (event.type !== 'tool-use') return;
-      const toolName: string = event.data?.toolName ?? '';
-      const isRead = toolName === 'Read';
-      if (!['Write', 'Edit', 'MultiEdit', 'Read'].includes(toolName)) return;
-      const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
-      if (!targetPath) return;
-
-      // Reads are tracked for DOCUMENTS only (plans, notes, mockups, images) so
-      // the tool card becomes openable — code/config reads would flood the
-      // drawer and aren't what the artifact viewer is for. Writes/Edits track
-      // everything (they're genuine changes Claude made).
-      if (isRead && categorizeArtifact(targetPath) !== 'document') return;
-
-      // Resolve cwd by looking up the session — transcript events don't carry cwd.
-      const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
-      const projectRoot: string = session?.cwd ?? '';
-      if (!projectRoot) return;
-
-      // Dedup reads: only the FIRST read of a doc this session appends a 'read'
-      // version. Skip if the file is already a known session artifact (already
-      // written/edited/read this session) so repeated reads don't stack version
-      // noise or bump lastModified on a real artifact. appendVersion has no
-      // dedup of its own.
-      if (isRead) {
-        const known = artifactStateRef.current.sessionArtifacts[event.sessionId] ?? [];
-        const tnorm = targetPath.replace(/\\/g, '/');
-        const already = known.some((a: any) => {
-          const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-          const an = aPath.replace(/\\/g, '/');
-          return an === tnorm || tnorm.endsWith('/' + an) || an.endsWith('/' + tnorm);
-        });
-        if (already) return;
-      }
-
-      // Determine internal vs external. The Session Drawer shows BOTH (a
-      // session's activity log includes anything Claude touched); Project View
-      // filters externals out unless they're in manualIncludes.
-      //
-      // resolveTrackedPath also REMAPS cross-device paths: a resumed conversation
-      // replays a transcript whose absolute paths were recorded on ANOTHER device
-      // (Windows `C:\…\<project>\file` resumed on Linux). Without the remap those
-      // synced files mis-filed as external → showed "deleted" in the artifact
-      // viewer even though the file is right there under the local root.
-      const resolved = resolveTrackedPath(targetPath, projectRoot);
-
-      // Read → 'read' (viewed, not modified); Write → 'create'; Edit/MultiEdit → 'edit'.
-      const versionType: 'create' | 'edit' | 'read' =
-        isRead ? 'read' : toolName === 'Write' ? 'create' : 'edit';
-
-      const appendArgs: {
-        path: string;
-        kind: 'internal' | 'external';
-        absolutePath: string | null;
-        type: 'create' | 'edit' | 'read';
-        author: 'agent';
-      } = {
-        path: resolved.path,
-        kind: resolved.kind,
-        absolutePath: resolved.absolutePath,
-        type: versionType,
-        author: 'agent',
-      };
-      ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
-        .catch((e: any) => console.error('[artifact-tracker] appendVersion failed', e))
-        .finally(() => {
-          // Then refresh the session view from the now-updated sidecar.
-          (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
-            .then((res: any) => {
-              if (res && res.ok && Array.isArray(res.artifacts)) {
-                dispatchArtifact({
-                  type: 'SESSION_ARTIFACTS_LOADED',
-                  sessionId: event.sessionId,
-                  artifacts: res.artifacts,
-                });
-              }
-            })
-            .catch((e: any) => console.error('[artifact-tracker] listSession failed', e));
-        });
+      artifactTracker.handle(event);
     });
 
     // NOTE: the artifacts:changed push event is consumed directly by
@@ -1594,6 +1545,7 @@ function AppInner() {
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
+      artifactTracker.dispose();
     };
   }, [dispatch]);
 

@@ -2,7 +2,10 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
-import { Button } from './ui';
+import { Button, Radio, RadioGroup } from './ui';
+// The card renders the widths this SHARED derivation produced and sends back only
+// which one was chosen — it never builds a rule pattern of its own.
+import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
 import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
@@ -10,6 +13,10 @@ import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { asString } from '../utils/tool-input';
+// Full-auto safety stop (spec 2026-08-12, M5 2b): per-family copy + the
+// status-bar chip colors, so the footer band can never drift from the chip.
+import { fullAutoStopCopy } from './permissions/deny-list-copy';
+import { PERMISSION_DISPLAY } from './StatusBar';
 
 // --- Helpers for friendly display ---
 
@@ -35,6 +42,18 @@ function truncate(s: string, max: number): string {
 // to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
 
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
+  // The model is still GENERATING this call's arguments, so `input` is empty and
+  // every per-tool detail line below would render blank. Show the argument
+  // character count instead: it is the only thing on a preparing card that
+  // CHANGES, and for Read/Write/Edit the preparing state is effectively the
+  // card's whole visible life (execution is a synchronous fs call), so a static
+  // card would sit unchanged for minutes and read as stuck.
+  if (tool.preparing) {
+    return {
+      label: tool.toolName,
+      detail: `preparing… ${(tool.preparingChars ?? 0).toLocaleString()} chars`,
+    };
+  }
   const { toolName, input } = tool;
 
   switch (toolName) {
@@ -282,7 +301,7 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, onResponded, onFailed }: {
+function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
@@ -297,8 +316,15 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
    *  scope checkable — a worktree does NOT inherit its parent repo's rules. */
   folderName?: string;
   /** Budget gates (max_steps / doom_loop) are a binary "Continue?" — never offer
-   *  "Always Allow" (it'd persist a rule that permanently disables the guard). */
+   *  "Always Allow" (it'd persist a rule that permanently disables the guard).
+   *  Also set for an external-directory ask, where a remembered rule could
+   *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
+  /** The session's mode when the ask fired (native broker only). 'full-auto'
+   *  + denyListed renders the safety-stop footer instead of the generic row —
+   *  Full auto's only rule-based ask IS the destructive-command stop, and a
+   *  generic "may I?" there reads as noise (spec 2026-08-12, M5 2b). */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
@@ -309,12 +335,42 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   // thread. CC keeps its suggestions-gated behavior unchanged.
   const isNative = requestId.startsWith('native-');
   const hasSuggestions = !!(suggestions?.length);
-  const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow;
+  // canAlwaysAllow also gates on noGrantPossible (declared below with the grant
+  // options) — see its definition for the one case it removes the button.
+  // Full-auto's only rule-based ask is a deny-list stop — swap the generic row
+  // for the safety-stop footer the compare view settled (workbench surface
+  // 'full-auto-ask', R1–R4). Every other combination keeps the row as-is.
+  const fullAutoStop = permissionMode === 'full-auto' && !!denyListed;
   // Consequence-gated confirm strip (deny-listed asks) — mirrors the delete-model
   // confirm in LocalModelsSection: replace the button row with a plain-language
   // warning + Cancel / confirm.
   const [confirmingAlways, setConfirmingAlways] = useState(false);
-  const [focusIdx, setFocusIdx] = useState(canAlwaysAllow ? 1 : 0);
+
+  // M5 2c — the widths this command may be granted at. The card shows what the
+  // SHARED derivation produced and never builds a pattern itself; it sends back
+  // only which option was chosen (see alwaysAllowDecision). Only native asks
+  // carry a real Bash command — CC asks keep their suggestions-driven behavior.
+  const grantOptions = useMemo(
+    () => (isNative && typeof command === 'string' ? bashGrantOptions(command) : []),
+    [isNative, command],
+  );
+  // A Bash ask whose command yields NO option may not be always-allowed at all
+  // (a bare `git push`: its target is not in the command and changes underneath
+  // the grant). Non-Bash native asks have no options and are unaffected.
+  const noGrantNote = useMemo(
+    () => (isNative && typeof command === 'string' ? bashNoGrantNote(command) : null),
+    [isNative, command],
+  );
+  const noGrantPossible = isNative && typeof command === 'string' && grantOptions.length === 0;
+  // Which width the user picked. Preselected narrow; irrelevant when the
+  // derivation offered only one option (see chosenScope).
+  const [grantPick, setGrantPick] = useState<GrantScope>('exact');
+  const chosenScope: GrantScope = grantOptions.length === 1 ? grantOptions[0].scope : grantPick;
+  const chosen = grantOptions.find((o) => o.scope === chosenScope) ?? grantOptions[0];
+  const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow && !noGrantPossible;
+  // Safety-stop default is Run it (the primary verb, index 0); the generic
+  // row keeps its shipped default (Always Allow when present).
+  const [focusIdx, setFocusIdx] = useState(fullAutoStop ? 0 : canAlwaysAllow ? 1 : 0);
   const buttonsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
   const handleRespond = useCallback(async (decision: object) => {
@@ -340,21 +396,35 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   const alwaysAllowDecision = () =>
     hasSuggestions
       ? { decision: { behavior: 'allow' }, updatedPermissions: [suggestions![0]] }
-      : { decision: { behavior: 'allow' }, updatedPermissions: [NATIVE_ALWAYS_ALLOW] };
+      // A SELECTOR, never a pattern — the session re-derives the rule. Sending a
+      // pattern from here would let the renderer write the top precedence layer.
+      : { decision: { behavior: 'allow' }, updatedPermissions: [NATIVE_ALWAYS_ALLOW], grantScope: chosenScope };
 
-  // Deny-listed asks show the consequence confirm first; otherwise respond directly.
+  // The confirm opens for a deny-listed ask (as it always has) AND for any Bash
+  // ask the derivation produced options for — that is where the width choice and
+  // the limits sentence live (compare rounds R1·B / R2·C). Everything else
+  // responds directly, exactly as before.
   const onAlwaysAllow = useCallback(() => {
-    if (denyListed) { setConfirmingAlways(true); return; }
+    if (denyListed || grantOptions.length > 0) { setConfirmingAlways(true); return; }
     handleRespond(alwaysAllowDecision());
-  }, [denyListed, handleRespond, hasSuggestions, suggestions]);
+  }, [denyListed, grantOptions.length, handleRespond, hasSuggestions, suggestions, chosenScope]);
 
-  // Build actions list so keyboard handler can index into it
+  // Build actions list so keyboard handler can index into it. The array MUST
+  // match the VISUAL order so Arrow Left/Right walk the row: the safety stop
+  // puts deny in the MIDDLE (Run it / Skip it | Always Allow) — red mid-row is
+  // owner-approved (compare R2) even though every other row ends on red.
   const actions = useRef<(() => void)[]>([]);
-  actions.current = [
-    () => handleRespond({ decision: { behavior: 'allow' } }),
-    ...(canAlwaysAllow ? [onAlwaysAllow] : []),
-    () => handleRespond({ decision: { behavior: 'deny' } }),
-  ];
+  actions.current = fullAutoStop
+    ? [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+        onAlwaysAllow,
+      ]
+    : [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        ...(canAlwaysAllow ? [onAlwaysAllow] : []),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+      ];
   const count = actions.current.length;
 
   // Global keyboard navigation: arrows cycle, Enter activates. Suspended while
@@ -392,17 +462,67 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
         {/* The header carries the ask so the body only has to carry the risk.
             Naming the folder keeps the promise checkable — the remembered rule is
             cwd-scoped, so "in this folder" alone would be unverifiable. */}
+        {/* The heading names what is actually being granted (compare R2·C): the
+            shipped "this exact command" is FALSE the moment the only option is a
+            named grant like "Always allow pushing to master", and ambiguous when
+            there are two options to choose between. */}
         <p className="text-xs font-medium text-fg-2">
-          Always allow this exact command{folderName ? ` in ${folderName}` : ''}?
+          {grantOptions.length > 1
+            ? `Always allow this${folderName ? ` in ${folderName}` : ''}?`
+            : grantOptions.length === 1 && grantOptions[0].scope === 'wide'
+              ? `${grantOptions[0].label}${folderName ? ` in ${folderName}` : ''}?`
+              : `Always allow this exact command${folderName ? ` in ${folderName}` : ''}?`}
         </p>
         {command && (
           <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
             {command}
           </p>
         )}
-        <p className="text-2xs text-fg-dim leading-relaxed">
-          It can delete files or change published code, and you won't be asked again.
-        </p>
+        {denyListed && (
+          <p className="text-2xs text-fg-dim leading-relaxed">
+            {/* Owner-set copy (2026-08-12), shared by every mode's confirm. The
+                rule also applies to the REST OF THIS SESSION — the "future
+                sessions" understatement was accepted knowingly. Gated on
+                denyListed: an ordinary command never carried this warning, and
+                showing "may delete files" over `npm run build` would be the
+                misleading-error failure in a different costume. */}
+            It may delete files or change published code, and you won't be asked again during future sessions in this project.
+          </p>
+        )}
+        {/* The width choice. Only rendered when the derivation actually produced
+            two — a named grant replaces its exact rung rather than sitting beside
+            it, so every `git push` lands on the single-option path. */}
+        {grantOptions.length > 1 && (
+          <RadioGroup
+            options={grantOptions.map((o) => o.scope)}
+            value={chosenScope}
+            onChange={(next) => setGrantPick(next as GrantScope)}
+            aria-label="How much to allow"
+            className="flex flex-col gap-1.5 pt-0.5"
+          >
+            {grantOptions.map((o) => (
+              <button
+                key={o.scope}
+                type="button"
+                disabled={responding}
+                onClick={() => setGrantPick(o.scope)}
+                className="flex items-start gap-2 text-left disabled:opacity-50"
+              >
+                <Radio checked={chosenScope === o.scope} onChange={() => setGrantPick(o.scope)} className="mt-0.5" />
+                <span className="text-2xs text-fg-2 break-all">
+                  {o.scope === 'exact' ? 'Only this exact command' : o.label}
+                </span>
+              </button>
+            ))}
+          </RadioGroup>
+        )}
+        {/* What the grant will NOT cover. This is the item's ONLY warning about
+            the two cases that re-ask anyway (a chained command, a flag that
+            changes what the command does) — the after-the-fact explanation was
+            deliberately dropped, so this line is load-bearing. Settled R2·C. */}
+        {chosen && (
+          <p className="text-3xs text-fg-muted leading-relaxed">{chosen.limits}</p>
+        )}
         <div className="flex items-center gap-2">
           {/* "Allow once" IS the plain-allow decision, so it wears the same green
               as Yes. Previously this slot was Cancel, which dead-ended back on the
@@ -434,6 +554,56 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     );
   }
 
+  // The full-auto safety stop (compare surface 'full-auto-ask', settled R4).
+  // Same §11/change-61 carve-out as the rows below: green/red/orange are STATUS
+  // colors; the band wears the chip's own colors so it reads as the MODE
+  // stopping itself, not a generic permission question.
+  if (fullAutoStop) {
+    const fa = PERMISSION_DISPLAY['full-auto'];
+    const stop = fullAutoStopCopy(command);
+    return (
+      <div className="px-3 py-2 space-y-2 border-t" style={{ background: fa.bg, borderColor: fa.border }}>
+        {/* Header + subheader as ONE tight block; the footer's only real gap
+            sits before the buttons (owner spacing direction, compare R3). */}
+        <div className="space-y-0.5">
+          <p className="text-xs font-medium" style={{ color: fa.color }}>{stop.header}</p>
+          <p className="text-2xs text-fg-dim leading-relaxed">{stop.subline}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            ref={el => { buttonsRef.current[0] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50 ${focusIdx === 0 ? ring : ''}`}
+          >
+            Run it
+          </button>
+          <button
+            ref={el => { buttonsRef.current[1] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'deny' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
+          >
+            Skip it
+          </button>
+          <span className="text-fg-faint text-xs select-none">|</span>
+          {/* Orange, not the generic row's blue: a fourth member of the status
+              button set, distinct from the amber band behind it (compare R2·A).
+              fullAutoStop implies a native deny-listed ask, so onAlwaysAllow
+              always routes through the consequence confirm above. */}
+          <button
+            ref={el => { buttonsRef.current[2] = el; }}
+            disabled={responding}
+            onClick={onAlwaysAllow}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-orange-600/60 hover:bg-orange-600/80 text-orange-100 transition-colors disabled:opacity-50 ${focusIdx === 2 ? ring : ''}`}
+          >
+            Always Allow
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     // Same §11/change-61 carve-out as the confirm row above: status colors stay,
     // radius normalizes. The `ring` here is NOT a focus ring — it tracks focusIdx,
@@ -441,7 +611,8 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     // (buttonsRef[next].focus()), so adding ui/Button's focus-visible ring would
     // paint an accent ring on top of this one on the selected button. Left alone
     // on purpose; don't "finish the migration" by adding FOCUS_RING here.
-    <div className="flex items-center gap-2 px-3 py-2 border-t border-edge bg-inset/30">
+    <div className="px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5">
+    <div className="flex items-center gap-2">
       <button
         ref={el => { buttonsRef.current[0] = el; }}
         disabled={responding}
@@ -468,6 +639,13 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
       >
         No
       </button>
+    </div>
+      {/* Why there is no "Always Allow" here. Without it a missing button on a
+          command the user runs constantly reads as a bug rather than a decision
+          (compare R2·C). Shape-owned copy — see CommandShape.noGrantNote. */}
+      {noGrantPossible && noGrantNote && (
+        <p className="text-3xs text-fg-muted leading-relaxed">{noGrantNote}</p>
+      )}
     </div>
   );
 }
@@ -884,10 +1062,15 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
             denyListed={tool.denyListed}
+            permissionMode={tool.permissionMode}
             command={typeof (tool.input as any)?.command === 'string' ? (tool.input as any).command : undefined}
             folderName={sessionCwd ? basename(sessionCwd) : undefined}
             // Budget gates are a plain Yes/No "Continue?" — no "Always Allow".
-            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop'}
+            // `tool.external` joins them: the engine forces an ask for every path
+            // outside the session folder and never consults the stored rules
+            // there, so offering "Always allow" would promise a grant that can
+            // never fire. Spec 2026-08-11, finding 3.
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

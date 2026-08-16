@@ -18,6 +18,17 @@ export function hookEventToAction(event: HookEvent): ChatAction | null {
       // mirror permissionSuggestions' optional-passthrough so ToolCard can gate
       // the "Always allow" consequence warning. Absent for CC hook events. Task 13.
       const denyListed = payload.denyListed as boolean | undefined;
+      // Same optional-passthrough for `external`: the ask was forced by a path
+      // outside the session folder, which also skips the permission rules on
+      // every later call — so ToolCard must NOT offer "Always allow". Absent for
+      // CC hook events. See spec 2026-08-11, finding 3.
+      const external = payload.external as boolean | undefined;
+      // Validate against the union rather than trusting the wire — a remote
+      // peer on an older/newer build must degrade to the generic row, never
+      // to a mode-shaped string the safety-stop footer misreads.
+      const rawMode = payload.permissionMode;
+      const permissionMode =
+        rawMode === 'ask' || rawMode === 'auto-edit' || rawMode === 'full-auto' ? rawMode : undefined;
 
       if (!requestId) return null;
 
@@ -29,6 +40,8 @@ export function hookEventToAction(event: HookEvent): ChatAction | null {
         requestId,
         permissionSuggestions: permissionSuggestions || undefined,
         denyListed: denyListed || undefined,
+        external: external || undefined,
+        permissionMode,
       };
     }
 

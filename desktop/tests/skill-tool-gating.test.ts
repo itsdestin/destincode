@@ -87,9 +87,13 @@ describe('gating Skill leaves the other tools alone', () => {
   it('the core set is unaffected either way', () => {
     for (const expose of [true, false]) {
       const s = sessionWith({ exposeSkillCatalog: expose });
-      // makeOpts passes no tools, so the set is exactly {} or {Skill} — the point
-      // is that gating never DROPS something, only adds or withholds Skill.
-      expect(toolNames(s).filter((n) => n !== 'Skill')).toEqual([]);
+      // makeOpts passes no tools, so the set is exactly {}, {Skill}, {Task}, or
+      // {Skill, Task} — the point is that gating never DROPS something, only
+      // adds or withholds Skill. Task 6's syncTaskTool runs the identical
+      // add-or-withhold dance for 'Task' (CLOUD_DEFAULT.canDelegate is true
+      // and makeOpts sets no isSpecialistChild), which is a second,
+      // independent conditional tool — filtered here too, not a regression.
+      expect(toolNames(s).filter((n) => n !== 'Skill' && n !== 'Task')).toEqual([]);
     }
   });
 });
@@ -105,6 +109,34 @@ import { decidePermission } from '../src/main/harness/permission-engine';
 const layers = (mode: 'ask' | 'auto-edit' | 'full-auto', remembered = [] as any[]) => ({
   presetRules: [], modeRules: rulesForMode(mode),
   denyList: DESTRUCTIVE_DENY_LIST, rememberedRules: remembered,
+});
+
+// ---------------------------------------------------------------------------
+// Task 6 review fix 3: syncTaskTool (harness-session.ts) has TWO independent
+// gates — profile.canDelegate AND !isSpecialistChild (the depth-1 guard) —
+// but only the ON direction (harness-tool-presentation.test.ts, CLOUD_DEFAULT
+// attaches Task) was pinned before this. Neither OFF direction had a test, so
+// an accidental deletion of EITHER guard would have shipped silently — the
+// depth-1 one especially, since that's the ONLY thing stopping a specialist
+// from spawning its own specialists once allowedTools filtering alone has a
+// bug. Mirrors the Skill ON/OFF pattern above.
+// ---------------------------------------------------------------------------
+describe('Task attachment is profile + depth gated (OFF direction)', () => {
+  it('canDelegate: false withholds Task even for an ordinary (non-child) session', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: false } }),
+      async () => ({} as any),
+    );
+    expect((s as any).buildAiTools()).not.toHaveProperty('Task');
+  });
+
+  it('canDelegate: true but isSpecialistChild: true STILL withholds Task (depth-1 guard)', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true }, isSpecialistChild: true }),
+      async () => ({} as any),
+    );
+    expect((s as any).buildAiTools()).not.toHaveProperty('Task');
+  });
 });
 
 describe('Skill permission posture', () => {

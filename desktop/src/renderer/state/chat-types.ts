@@ -433,6 +433,21 @@ export type ChatAction =
       promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
     }
   | {
+      // Native runtime only. The model is generating a tool call's arguments.
+      // Creates (or updates) a display-only "preparing" tool card keyed by the
+      // provider's REAL tool call id, so the later TRANSCRIPT_TOOL_USE — which
+      // is already idempotent by toolUseId — supersedes it in place rather than
+      // adding a second card.
+      type: 'NATIVE_TOOL_PREPARING';
+      sessionId: string;
+      toolCallId: string;
+      toolName: string;
+      chars: number;
+      // The step is being retried; withdraw this card. No-op if the id already
+      // became a real tool.
+      cleared?: boolean;
+    }
+  | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
       // merged into a single reasoning segment by partId (UNLIKE the text
       // path, which appends whole blocks), rendered as a collapsible
@@ -455,6 +470,13 @@ export type ChatAction =
       // Native broker only: winning rule came from the destructive deny-list →
       // ToolCard shows the consequence-gated "Always allow" warning. Task 13.
       denyListed?: boolean;
+      // Native broker only: the ask was forced by a path outside the session
+      // folder → ToolCard HIDES "Always allow", because the engine skips the
+      // rules on every later external call and could never honor the grant.
+      external?: boolean;
+      // Native broker only: the session's mode at ask time. 'full-auto' +
+      // denyListed → ToolCard renders the safety-stop footer (spec 2026-08-12).
+      permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
     }
   | {
       type: 'PERMISSION_EXPIRED';

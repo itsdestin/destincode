@@ -51,7 +51,15 @@ const DENSITY: Record<SettingRowVariant, { title: string; desc: string }> = {
 // `stepped-hover` frame-budgets the hover fade — SettingsPanel renders 33 of
 // these rows inside the app's largest backdrop-filter region, so a pointer
 // sweep down the list keeps many fades alive at once. See globals.css.
-const ROW_BASE = 'w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50 text-left transition-colors stepped-hover';
+//
+// EXPORTED for the same reason Button exports `buttonClasses` and `FOCUS_RING`:
+// a caller occasionally needs this surface on an element `SettingRow` itself
+// cannot render. The only such caller today is Settings → Permissions, whose
+// folder headers are DISCLOSURE buttons — `SettingRow` has no `aria-expanded`
+// pass-through, and its `<button>` branch appends a static right-chevron that
+// cannot express open/closed. Taking the string by reference keeps one
+// definition; copying it is what setting-row-authority exists to stop.
+export const SETTING_ROW_BASE = 'w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-inset/50 text-left transition-colors stepped-hover';
 
 /**
  * `items-center`, always — deviating from the spec's `items-start`.
@@ -206,7 +214,7 @@ export function SettingRow({
     </>
   );
 
-  const cls = `${ROW_BASE}${hover} ${disabled ? 'opacity-50' : ''} ${className}`.trim();
+  const cls = `${SETTING_ROW_BASE}${hover} ${disabled ? 'opacity-50' : ''} ${className}`.trim();
 
   if (isButton) {
     return (

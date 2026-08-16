@@ -222,6 +222,24 @@ export interface TranscriptEvent {
      */
     promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
     /**
+     * Native runtime only. The model is GENERATING a tool call's arguments —
+     * nothing has executed yet. This is what makes a "preparing" ToolCard
+     * appear instead of minutes of bare thinking spinner on a big Write.
+     *
+     * Rides `assistant-thinking` with NO text and NO partId so
+     * SessionStore.append drops it (session-store.ts): partial arguments must
+     * never reach the JSONL, or a resume would replay a half-written file.
+     *
+     * `toolCallId` is the provider's REAL id — identical to the one the
+     * completed `tool-call` stream part carries — which is what lets the card
+     * transition in place instead of being swapped.
+     *
+     * `cleared: true` means "remove this preparing card": the stall auto-retry
+     * re-runs a step WITHOUT ending the turn, so its cards must be withdrawn
+     * explicitly (every other death path ends the turn, where endTurn reaps).
+     */
+    toolPreparing?: { toolCallId: string; toolName: string; chars: number; cleared?: boolean };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
@@ -295,7 +313,17 @@ export interface StructuredPatchHunk {
  * don't have user-typed messages).
  */
 export type SubagentSegment =
-  | { type: 'text'; id: string; content: string }
+  | {
+      type: 'text';
+      id: string;
+      content: string;
+      // Native runtime: per-token delta id, mirrors the main-timeline text
+      // segment's partId (chat-types.ts TRANSCRIPT_ASSISTANT_TEXT). Lets the
+      // reducer coalesce same-partId deltas into one segment instead of one
+      // per delta — see chat-reducer.ts applySubagentEvent. CC events never
+      // set this, so its absence preserves today's one-segment-per-event.
+      partId?: string;
+    }
   | {
       type: 'tool';
       id: string;
@@ -318,6 +346,33 @@ export interface ToolCallState {
   /** Native broker only: winning rule came from the destructive deny-list →
    *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
   denyListed?: boolean;
+  /** Native broker only: the ask was forced by a path outside the session
+   *  folder → the "Always allow" button is HIDDEN. The engine forces an ask on
+   *  every external path and never consults the stored rules there, so a
+   *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
+  external?: boolean;
+  /** Native broker only: the session's permission mode when the ask fired.
+   *  'full-auto' + denyListed swaps the generic button row for the safety-stop
+   *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /**
+   * Native runtime only. The model is still GENERATING this call's arguments —
+   * nothing has executed, and `input` is an empty object until the real
+   * tool-use event supersedes this entry in place.
+   *
+   * A FLAG on a 'running' entry rather than a fifth ToolCallStatus, so every
+   * existing status consumer (endTurn, ChatView's hasRunningTools, ToolCard's
+   * spinner, AssistantTurnBubble's awaiting-approval hiding) keeps working
+   * untouched. Exactly two places opt in: ToolCard's body and reaping.
+   *
+   * Display-only and NEVER persisted — a preparing entry is DELETED on turn
+   * end, never failed and never given a result, so the tool-call/result pairing
+   * invariant is not involved.
+   */
+  preparing?: boolean;
+  /** Argument characters generated so far — the preparing card's liveness
+   *  counter. Meaningless once `preparing` is gone. */
+  preparingChars?: number;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
@@ -1234,6 +1289,14 @@ export const IPC = {
   SEARCH_SET_KEY: 'search:set-key',
   SEARCH_REMOVE_KEY: 'search:remove-key',
   SEARCH_TEST: 'search:test',
+  // ---- Remembered "Always allow" rules (M5 2a: permissions management UI) ----
+  // list = every project's stored grants; remove/remove-project revoke them.
+  // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
+  // pre-existing entries and cwdToProjectSlug is lossy, so the slug is the only
+  // stable handle the renderer can send back.
+  PERMISSIONS_LIST: 'permissions:list',
+  PERMISSIONS_REMOVE: 'permissions:remove',
+  PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

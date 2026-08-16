@@ -19,7 +19,8 @@ import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type Model
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
-import type { PermissionDecision } from '../../shared/permission-types';
+import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
+import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
@@ -34,7 +35,47 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // Skill the wrong treatment the moment it was added (found in the 2026-07-28
 // branch review). Naming the set means the next non-path-subject tool has one
 // place to declare itself instead of inheriting file-tool behavior by default.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
+//
+// Fix 4 (review round 1): Task's subject is a CHARTER-SCOPED CONSENT KEY
+// (`${charter}:${work_dir}`, tools/task.ts's permissionSubject), not a bare
+// path — the charter prefix exists precisely so a remembered "Always allow"
+// for a read-only specialist can't silently cover a future read-write one at
+// the same path (spec §5: the charter is the unit of envelope consent).
+// Running that string through checkPathGuard/injectPathTriggers would try to
+// canonicalize "read-only:/home/x/proj" AS a path, which is a category error
+// exactly like Bash's command string or Skill's id above — workDir containment
+// itself is already enforced inside NativeSessionHost.createChild.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+
+/** The rule an "Always allow" persists.
+ *
+ *  The RENDERER never supplies a pattern — only a width selector — and this
+ *  re-derives from the tool call the session already holds. A renderer that could
+ *  name its own pattern could grant itself anything, because remembered rules are
+ *  the final precedence layer, above the destructive deny-list.
+ *
+ *  Returns null when nothing may be remembered for this call. */
+function rememberedRuleFor(
+  toolName: string,
+  subject: string | undefined,
+  scope: GrantScope | undefined,
+): PermissionRule | null {
+  if (toolName === 'Bash' && typeof subject === 'string') {
+    // The subject is passed through untouched — bashGrantOptions does not trim,
+    // so the exact rung is byte-identical to what the engine compares later.
+    const options = bashGrantOptions(subject);
+    // Empty means no grant of any width may be offered (a bare `git push`, whose
+    // target is not in the command and changes underneath the grant). Fail closed.
+    if (options.length === 0) return null;
+    // Fall back to the NARROWEST option when the requested width was not offered
+    // for this command — never widen past what bashGrantOptions produced.
+    return (options.find((o) => o.scope === (scope ?? 'exact')) ?? options[0]).rule;
+  }
+  if (subject === undefined) return { tool: toolName, action: 'allow' };
+  // Non-Bash subjects are literal paths / ids. match:'exact' makes them mean what
+  // the confirm always claimed — a path containing '*' was a wildcard grant.
+  return { tool: toolName, pattern: subject, action: 'allow', match: 'exact' };
+}
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
@@ -43,6 +84,7 @@ import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, coun
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
+import { createTaskTool } from './tools/task';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -97,6 +139,14 @@ export interface HarnessSessionOpts {
    *  NativeSessionHost from the process-level McpManager at create/resume.
    *  Absent/[] → no MCP tools attached, exactly the pre-Task-6 behavior. */
   mcpServers?: ReadyServer[];
+  /** Set ONLY by NativeSessionHost.createChild (Task 6) — true for a
+   *  specialist child session. Belt-and-suspenders against depth-2
+   *  delegation: createChild already never puts 'Task' in a child's filtered
+   *  tool set (no SpecialistDefinition.allowedTools lists it), so this is a
+   *  SECOND, independent gate on syncTaskTool, not the only one — a bug in
+   *  either check alone still cannot let a specialist spawn its own
+   *  specialists. Absent/false for every ordinary (non-child) session. */
+  isSpecialistChild?: boolean;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -267,6 +317,43 @@ export function describeProviderError(err: any): string {
 // the persisted history ends on a dangling tool_call that provider APIs reject.
 const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 
+// Returned to the model when the user closes an AskUserQuestion card without
+// answering. The OLD copy ("Continue with your best judgment") invited the model
+// to guess and keep working — which is the behavior this replaces. This states
+// the outcome instead: the user has taken the turn back. It is a real tool
+// result (pairing holds); the driver stops the loop right after recording it.
+// Spec: youcoded-dev/docs/archive/specs/2026-08-13-dismiss-ends-turn-design.md
+const DISMISSED_TOOL_TEXT =
+  'The user closed this question without answering and took over. Stop here and wait for their next message.';
+
+// Returned when an interactive ask is refused by a POLICY rather than a person
+// (childAskPolicy, the harness evaluator's fixture jail). Unlike a human
+// dismissal this does NOT end the turn — the policy's meaning is "you may not
+// ask, carry on and finish", and the evaluator's wrap-up turn depends on the
+// model answering after exactly this refusal.
+const REFUSED_ASK_TEXT =
+  'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.';
+
+// Back-filled into the still-un-executed calls of a step that ended because the
+// user dismissed a question. Deliberately NOT CANCELED_TOOL_TEXT: that says "the
+// user interrupted this action", and the user did not interrupt — a wrong cause
+// in a message the model reads is worse than a vague one.
+const NOT_RUN_TOOL_TEXT = 'Not run: the turn ended when the user closed the question.';
+
+// stopReason for that orderly stop. AssistantTurnBubble maps it to the
+// "Question closed — waiting for you." footer, so a dismissed turn can't be
+// mistaken for a session that silently died.
+const DISMISSED_STOP_REASON = 'question_dismissed';
+
+/** Driver-private "record this result, THEN end the turn" wrapper.
+ *
+ *  WHY this is not a flag on ToolResultPayload: that type is what EVERY tool
+ *  returns, so an `endsTurn` field there would let any tool end a turn — a far
+ *  bigger promise than this change makes. Only runOneTool's interactive branch
+ *  constructs this, and ToolResultPayload has no `kind` property, so the loop
+ *  can narrow on `'kind' in payload` with no ambiguity. */
+type EndTurnResult = { kind: 'end-turn'; payload: ToolResultPayload };
+
 // Streaming inactivity watchdog (native runtime). The abort-race below only
 // breaks the stream on a USER interrupt — a provider that holds the socket open
 // but stops emitting (OpenRouter keep-alive pings while an upstream stalls, or a
@@ -276,6 +363,11 @@ const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 // STALL_WARNING_MS, then act after a further STALL_RETRY_COUNTDOWN_MS grace.
 const STALL_WARNING_MS = 60_000;          // silence tolerated before we warn
 const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acting
+/** Min gap between argument-progress emits, PER tool call. The preparing card
+ *  only has to prove the stream is alive; a per-chunk emit would spam desktop
+ *  IPC, the remote WebSocket, and the Android bridge for no extra information.
+ *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
+const TOOL_PREPARING_EMIT_MS = 300;
 // consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
 // so the step can be safely re-run once (re-running after content streamed would
 // duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
@@ -433,6 +525,40 @@ export class HarnessSession extends EventEmitter {
    *  from what this session actually runs with (setBinding can have changed it). */
   get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
 
+  // How full this session's context window is right now, in tokens — the SAME
+  // number the turn-complete usage payload reports (see the emit site near the
+  // end of send()), kept on the instance so a caller can read it BETWEEN turns.
+  //
+  // WHY this exists (Task 7, specialists): sizing a specialist's report against
+  // the parent's remaining headroom needs the parent's occupancy, and main has
+  // no per-session usage cache — the old one was deliberately deleted
+  // (ipc-handlers.ts, near the noteModelUsed wiring) and the StatusBar's own
+  // context gauge is renderer-side, computed from the event it receives.
+  //
+  // WHY NOT usage.inputTokens: that field SUMS every step of the turn, so it
+  // re-counts the whole history once per step (a 5-step turn reports ~5x the
+  // real occupancy — Destin, 2026-07-28). The last step's prompt already
+  // contains everything, so lastIn + lastOut is the honest "how full".
+  private _contextUsedTokens: number | null = null;
+  /** Tokens occupying this session's window after its last COMPLETED step. Mid-
+   *  turn it is stale by at most one step, which is fine for a budget heuristic
+   *  — the alternative is a per-step event nobody else needs.
+   *
+   *  Fix (Task 7 review): this used to return raw `_contextUsedTokens`, which
+   *  stays null forever for a usage-silent provider (local models that don't
+   *  report token counts) — that made the headroom report cap silently never
+   *  fire for exactly the models that need it most. The turn-complete emit
+   *  site (near :1528, in send()) already falls back to estimateContextTokens()
+   *  in that case; mirror it here so this accessor and that payload never
+   *  disagree. Only returns null if the estimate itself were ever unavailable
+   *  (it isn't today — chars/4 always produces a number). */
+  get contextUsedTokens(): number | null { return this._contextUsedTokens ?? this.estimateContextTokens(); }
+  /** This session's resolved context window in tokens (null when no source
+   *  could answer). Paired with contextUsedTokens: "remaining" needs both, and
+   *  the session is the only place that tracks the CURRENT one — setBinding
+   *  re-resolves it on a mid-session model swap. */
+  get contextWindowTokens(): number | null { return this.opts.contextLength ?? null; }
+
   // Ids of MCP servers left off the LAST buildAiTools() pass for budget reasons
   // (Task 6) — recomputed every call, so a UI reading this after buildAiTools
   // always sees the CURRENT reason, not a stale one from a prior model/binding.
@@ -577,6 +703,29 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
+  /** Add or remove the Task tool to match the CURRENT profile + session kind
+   *  (Task 6, spec decision 4).
+   *
+   *  Two independent gates, BOTH required:
+   *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
+   *     delegated work instead of actually parallelizing it — see
+   *     capability-profile.ts's own WHY comment on the field.
+   *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
+   *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  Run per buildAiTools (not once in the constructor), same reason
+   *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
+   *  so Task must come back OFF when a session swaps down to a weak local
+   *  model and back ON when it swaps back up. The has()/delete() pair keeps
+   *  both directions idempotent.
+   */
+  private syncTaskTool(): void {
+    const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
+    if (!wanted) { this.toolByName.delete('Task'); return; }
+    if (this.toolByName.has('Task')) return;
+    this.toolByName.set('Task', createTaskTool());
+  }
+
   /** Add or remove MCP server tools to match the CURRENT profile's budget
    *  (Task 6, spec §6).
    *
@@ -664,6 +813,7 @@ export class HarnessSession extends EventEmitter {
     // old list around would misreport why MCP servers are unavailable.
     if (!this.profile.supportsTools) { this._droppedMcpServers = []; return {}; }
     this.syncSkillTool();
+    this.syncTaskTool();
     this.syncMcpTools();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
@@ -1326,6 +1476,13 @@ export class HarnessSession extends EventEmitter {
 
         lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
         lastOutputTokens = step.usage.outputTokens;
+        // Publish the same how-full number the turn-complete payload below
+        // reports, one step at a time, so `contextUsedTokens` is readable
+        // between turns (and mid-turn, stale by one step) instead of only
+        // existing inside this closure. Guarded on inputTokens > 0 for the same
+        // reason the emit site is: a provider that reports nothing must not
+        // overwrite a real reading with a zero.
+        if (lastInputTokens > 0) this._contextUsedTokens = lastInputTokens + lastOutputTokens;
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
@@ -1395,6 +1552,29 @@ export class HarnessSession extends EventEmitter {
             this.history.push({ role: 'tool', content: resultParts });
             this.emitEvent('user-interrupt', {});
             return;
+          }
+          // The user dismissed a question → end the turn ORDERLY. Record THIS
+          // call's real result, then mark every remaining un-executed call in the
+          // step as not-run (same dangling-tool_call hazard the interrupt branch
+          // above guards against). `turn-complete` rather than `user-interrupt`
+          // on purpose: usage should be reported, and anything the user queued
+          // while the turn ran should drain — typing during the turn IS taking
+          // over. The max_steps gate below is the existing precedent for a
+          // driver-decided orderly stop.
+          if ('kind' in payload) {
+            this.emitEvent('tool-result', {
+              toolUseId: call.toolCallId, toolName: call.toolName,
+              toolResult: payload.payload.text, isError: true,
+            });
+            resultParts.push(this.toolResultPart(call, payload.payload.text));
+            for (let j = i + 1; j < step.toolCalls.length; j++) {
+              const rem = step.toolCalls[j];
+              this.emitEvent('tool-result', { toolUseId: rem.toolCallId, toolName: rem.toolName, toolResult: NOT_RUN_TOOL_TEXT, isError: true });
+              resultParts.push(this.toolResultPart(rem, NOT_RUN_TOOL_TEXT));
+            }
+            this.history.push({ role: 'tool', content: resultParts });
+            stopReason = DISMISSED_STOP_REASON;
+            break turnLoop;
           }
           // Turn the tool's promised image paths into deliverable parts, charging
           // the per-turn budget/dedupe and amending the text with a named note
@@ -1623,6 +1803,11 @@ export class HarnessSession extends EventEmitter {
     }
     armWatchdog();
 
+    // Argument-generation progress, keyed by the provider's tool call id. Per
+    // STEP, not per session: a retry re-enters this function with a fresh map.
+    // Display-only — the card the renderer draws from this never reaches disk.
+    const preparing = new Map<string, { toolName: string; chars: number; lastEmitAt: number }>();
+
     try {
       while (true) {
         const nextPromise = iterator.next();
@@ -1646,7 +1831,17 @@ export class HarnessSession extends EventEmitter {
           iterator.return?.().catch(() => {});
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
-          if (!emittedAny && isFirstAttempt) return STALL_RETRY;
+          if (!emittedAny && isFirstAttempt) {
+            // The step re-runs INSIDE the same turn, so endTurn's reaping never
+            // fires. Withdraw any preparing card explicitly or it spins for the
+            // rest of the turn while the retry mints a second card beside it.
+            for (const [prepId, entry] of preparing) {
+              this.emitEvent('assistant-thinking', {
+                toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+              });
+            }
+            return STALL_RETRY;
+          }
           // Name the phase honestly: a model that never STARTED (prefill) has not
           // "stopped responding", and telling the user it did sends them chasing a
           // provider fault that isn't there.
@@ -1700,6 +1895,49 @@ export class HarnessSession extends EventEmitter {
             // assistant-thinking WITH data.text → the reducer's reasoning path;
             // payload-less would stay a heartbeat.
             this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
+            break;
+          }
+          case 'tool-input-start': {
+            // The model has begun COMPOSING a tool call — nothing has executed.
+            // Emitted unthrottled on purpose: this is the event that makes the
+            // card appear, and every ms of delay here is visible generic-spinner
+            // time, which is the entire problem this exists to fix.
+            //
+            // NOTE the field names: on fullStream this part is
+            // { id, toolName } (TextStreamToolInputStartPart) — NOT the
+            // { toolCallId, ... } UIMessageChunk variant of the same name.
+            // `id` is the same string the completed 'tool-call' below carries as
+            // toolCallId, which is what lets the card transition IN PLACE.
+            const prepId = typeof part.id === 'string' ? part.id : '';
+            const prepName = typeof part.toolName === 'string' ? part.toolName : '';
+            if (!prepId || !prepName) break;
+            preparing.set(prepId, { toolName: prepName, chars: 0, lastEmitAt: Date.now() });
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: prepName, chars: 0 },
+            });
+            break;
+          }
+          case 'tool-input-delta': {
+            // Argument fragments. Counted for the card's liveness counter and
+            // otherwise DISCARDED — the completed 'tool-call' part carries the
+            // real parsed input, and buffering a second copy of a whole file
+            // here would double the turn's peak memory for no gain.
+            //
+            // Deliberately does NOT set emittedAny: that flag gates whether a
+            // stall may auto-retry, and flipping it here would disable the retry
+            // for every turn whose stall lands mid-arguments. Nothing has
+            // executed at that point, so re-running the step is exactly the safe
+            // case the retry exists for.
+            const deltaId = typeof part.id === 'string' ? part.id : '';
+            const entry = preparing.get(deltaId);
+            if (!entry) break;
+            entry.chars += typeof part.delta === 'string' ? part.delta.length : 0;
+            const nowMs = Date.now();
+            if (nowMs - entry.lastEmitAt < TOOL_PREPARING_EMIT_MS) break;
+            entry.lastEmitAt = nowMs;
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: deltaId, toolName: entry.toolName, chars: entry.chars },
+            });
             break;
           }
           case 'tool-call':
@@ -1773,8 +2011,9 @@ export class HarnessSession extends EventEmitter {
   /** Run one tool call through the EXACT permission sequence (spec §2.1/§2.4):
    *  validate → doom-loop → guards → decide → (ask) → execute. NEVER throws —
    *  every failure mode is a tool RESULT the model can repair from, except a
-   *  user cancel which returns the 'interrupted' sentinel so the loop can unwind. */
-  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted'> {
+   *  user cancel which returns the 'interrupted' sentinel, and a dismissed
+   *  question which returns EndTurnResult — both let the loop unwind. */
+  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted' | EndTurnResult> {
     const tool = this.toolByName.get(call.toolName);
     if (!tool) return { text: `Unknown tool ${call.toolName}. Available: ${[...this.toolByName.keys()].join(', ')}.`, isError: true };
 
@@ -1816,7 +2055,14 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No user-interaction handler is wired for this session; ${call.toolName} cannot run. This is a configuration error.`, isError: true };
       const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: false });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.', isError: true };
+      // A HUMAN dismissal ENDS THE TURN: closing the card is the user taking the
+      // turn back, not permission to guess. Still a real tool result so
+      // call/result pairing holds — the loop stops right after recording it.
+      // `dismissed` is stamped only by PermissionBroker.respond (see its WHY):
+      // the OTHER askUser implementations are policies with no human behind
+      // them, and for them a deny means "you may not ask, carry on and finish".
+      if (d.behavior === 'deny' && d.dismissed) return { kind: 'end-turn', payload: { text: DISMISSED_TOOL_TEXT, isError: true } };
+      if (d.behavior !== 'allow') return { text: REFUSED_ASK_TEXT, isError: true };
       return { text: formatAnswers(args as any, d.updatedInput) };
     }
 
@@ -1837,19 +2083,38 @@ export class HarnessSession extends EventEmitter {
     const decision: PermissionDecision = externalAsk
       ? { action: 'ask', denyListed: false }
       : await (this.opts.decide?.(call.toolName, subject) ?? Promise.resolve<PermissionDecision>({ action: 'ask', denyListed: false }));
-    if (decision.action === 'deny') return { text: `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
+    // A deny may carry its own model-facing reason (PermissionDecision.message):
+    // the specialist caps (child-permissions.ts) refuse with "not available to
+    // this specialist" / "read-only charter", which tells the model what to do
+    // instead. Without the reason a refused child reads the generic copy and
+    // retries the identical call until its step budget is gone. The generic
+    // sentence stays the default for every decide() that supplies no message.
+    if (decision.action === 'deny') return { text: decision.message ?? `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
     if (decision.action === 'ask') {
       // An ABSENT handler is a WIRING gap, not a user cancel — surface it as a
       // decline RESULT (the model can't proceed) instead of the 'interrupted'
       // sentinel, so a misconfiguration never masquerades as an ESC/interrupt.
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed });
+      // `external` tells the renderer this ask was forced by the path guard, so
+      // ToolCard hides "Always allow" (see the guarded emit below for why).
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk });
       if (d.behavior === 'canceled') return 'interrupted';
       if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
       // surface is untouched.
-      if (d.always) this.emit('remember-rule', { tool: call.toolName, ...(subject !== undefined ? { pattern: subject } : {}), action: 'allow' });
+      //
+      // Only remember when the decision came from decide(). An external-directory
+      // path forced this ask and SKIPS decide() on every future call, so a stored
+      // rule can never fire — recording one promises the user something the
+      // engine will not honor. See spec 2026-08-11, finding 3.
+      if (d.always && !externalAsk) {
+        // The card sent a width, not a pattern — rememberedRuleFor derives the
+        // rule here, in main. null means this command may not be remembered at
+        // any width, so nothing is emitted.
+        const rule = rememberedRuleFor(call.toolName, subject, d.grantScope);
+        if (rule) this.emit('remember-rule', rule);
+      }
     }
 
     // 5. Execute (defineTool owns truncation + the actionable-error catch).
@@ -1857,6 +2122,10 @@ export class HarnessSession extends EventEmitter {
       sessionId: this.opts.sessionId,
       cwd: this.opts.cwd,
       signal: this.abort!.signal,
+      // Task 6/7: the Task tool's own call id, threaded through as
+      // createChild's future parentToolCallId so the host can stamp the
+      // child's display events with the launch card they belong under.
+      toolCallId: call.toolCallId,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {

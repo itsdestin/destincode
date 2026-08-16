@@ -1,0 +1,13 @@
+{
+  "firstNames": [
+    "Rowan", "Sage", "Wren", "Ellis", "Nova", "Kai",
+    "Juniper", "Adrian", "Marlowe", "Quinn", "Talon", "Vega",
+    "Briar", "Fenn"
+  ],
+  "descriptors": {
+    "explorer": ["Exuberant", "Eager", "Enterprising", "Expedient", "Earnest", "Efficient", "Elusive"],
+    "researcher": ["Rambling", "Relentless", "Rigorous", "Resourceful", "Restless", "Reflective"],
+    "reviewer": ["Ruthless", "Reasoned", "Rational", "Rigorous", "Resolute", "Robust"],
+    "worker": ["Wandering", "Watchful", "Whirlwind", "Willing", "Winsome", "Worthy"]
+  }
+}

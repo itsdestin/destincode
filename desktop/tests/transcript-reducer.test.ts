@@ -494,6 +494,55 @@ describe('Subagent threading', () => {
     if (seg.type === 'text') expect(seg.content).toBe("I'll check the Android side.");
   });
 
+  // Fix: the native harness (harness-session.ts:1769) emits one assistant-text
+  // event per stream delta rather than per whole message, so without
+  // coalescing a specialist's report rendered as hundreds of separate
+  // markdown blocks. Same-partId deltas must merge into ONE segment.
+  it('subagent assistant text deltas sharing a partId coalesce into one segment', () => {
+    state = emitParentAgentToolUse();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+      text: 'The bug is ', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+      text: 'in the Android build.', timestamp: 1001, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') {
+      expect(seg.content).toBe('The bug is in the Android build.');
+    }
+  });
+
+  it('subagent assistant text with different partIds stays as separate segments', () => {
+    state = emitParentAgentToolUse();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+      text: 'First delta.', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+      text: 'Second block.', timestamp: 1001, partId: 'part-2',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(2);
+    expect(parent.subagentSegments![0].type).toBe('text');
+    expect(parent.subagentSegments![1].type).toBe('text');
+    if (parent.subagentSegments![0].type === 'text') {
+      expect(parent.subagentSegments![0].content).toBe('First delta.');
+    }
+    if (parent.subagentSegments![1].type === 'text') {
+      expect(parent.subagentSegments![1].content).toBe('Second block.');
+    }
+  });
+
   it('subagent event for unknown parent is a no-op', () => {
     const before = state;
     state = chatReducer(state, {

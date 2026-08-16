@@ -3320,8 +3320,18 @@ class SessionService : Service() {
                         org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
                     return@handleBridgeMessage
                 }
+                // A corrupt record (relative absolutePath) would resolve against the
+                // app process cwd, not the project — report it as an orphan rather
+                // than reading whatever happens to sit at that relative location.
+                val extAbs = artifact.absolutePath
+                if (artifact.kind != "internal" && (extAbs == null || !isAbsoluteRecorded(extAbs))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", true).put("orphan", true)
+                            .put("artifact", artifact.toJson()).put("content", org.json.JSONObject.NULL)) }
+                    return@handleBridgeMessage
+                }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
-                               else java.io.File(artifact.absolutePath!!)
+                               else java.io.File(extAbs!!)
                 // Resolve symlinks BEFORE any policy decision (D5 2026-07-22):
                 // canonicalize() is string work and readBytes follows links, so a
                 // link inside the root could dodge the sensitive-path deny.
@@ -3447,8 +3457,18 @@ class SessionService : Service() {
                         org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
                     return@handleBridgeMessage
                 }
+                // Same corrupt-record guard as artifacts:get. Critical on the write
+                // path: a relative record would create a stray file under the app
+                // process cwd instead of refusing. Matches desktop's
+                // authorizeArtifactWrite refusal (error: 'artifact-not-found').
+                val extAbs = artifact.absolutePath
+                if (artifact.kind != "internal" && (extAbs == null || !isAbsoluteRecorded(extAbs))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                    return@handleBridgeMessage
+                }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
-                               else java.io.File(artifact.absolutePath!!)
+                               else java.io.File(extAbs!!)
                 // D5 boundary (2026-07-22), mirroring desktop write-authorization:
                 // this branch historically wrote absolutePath!! with NO checks —
                 // the sidecar-escalation hole (spec §12.1). Resolve symlinks first,
@@ -3562,6 +3582,8 @@ class SessionService : Service() {
                         sessionId    = sessionId,
                         type         = args.optString("type", "edit"),
                         author       = args.optString("author", "agent"),
+                        // Replay-dedupe key from the tracker (see VersionEvent.toolUseId).
+                        toolUseId    = args.optString("toolUseId", "").ifEmpty { null },
                     )
                 )
                 // Broadcast push event so connected clients refresh their view
@@ -3712,6 +3734,14 @@ class SessionService : Service() {
             "search:set-key",
             "search:remove-key",
             "search:test",
+            // Remembered "Always allow" rules (M5 2a — permissions management UI).
+            // These read/revoke the DESKTOP native harness's ~/.youcoded/permissions.json;
+            // Android has no native harness to hold those grants until M8, which is
+            // where M5's Android parity belongs. Reply not-implemented so the shared
+            // React UI degrades to a "desktop only" state instead of timing out.
+            "permissions:list",
+            "permissions:remove",
+            "permissions:remove-project",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",

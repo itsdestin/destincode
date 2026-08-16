@@ -10,6 +10,7 @@
 // renderer clears the approval card.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import type { GrantScope } from '../../shared/bash-grant-shapes';
 
 export interface AskRequest {
   sessionId: string;
@@ -18,6 +19,17 @@ export interface AskRequest {
   /** Winning rule came from the destructive deny-list → renderer shows the
    *  consequence warning on Always-allow (Task 13 consumes this). */
   denyListed: boolean;
+  /** The ask was FORCED by a path outside the session cwd, which also skips the
+   *  permission rules on every future call — so a remembered rule could never
+   *  fire. Renderer hides "Always allow" rather than promising a grant the
+   *  engine will not honor. Optional (unlike denyListed) because it only means
+   *  anything for path-subject tool asks; budget gates never set it.
+   *  See spec 2026-08-11 (permissions management UI), finding 3. */
+  external?: boolean;
+  /** The session's permission mode at ask time. Full-auto + denyListed is the
+   *  renderer's cue to swap the generic row for the safety-stop footer
+   *  (spec 2026-08-12, M5 2b). Optional: CC-path asks never carry it. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny' | 'canceled';
@@ -27,6 +39,26 @@ export interface AskDecision {
    *  (ToolCard's AskUserQuestionCard shape) — dropped for ordinary permission
    *  asks, load-bearing for interactive tools. */
   updatedInput?: Record<string, unknown>;
+  /** Which grant width the user picked, when they picked "Always allow".
+   *  A SELECTOR, never a pattern: the renderer must not be able to name the rule
+   *  it is granting itself — remembered rules are the top precedence layer, above
+   *  the destructive deny-list. Always populated on a resolved ask; defaults to
+   *  the narrow option. */
+  grantScope?: GrantScope;
+  /** A HUMAN answered "no" on a card — set ONLY by respond() below, which is the
+   *  only path a person's decision travels (renderer and remote WS clients both
+   *  land there). The driver reads it on interactive asks: a dismissed
+   *  AskUserQuestion ends the turn, because closing the card is the user taking
+   *  the turn back.
+   *
+   *  WHY this is not just `behavior === 'deny'`: the other two askUser
+   *  implementations are POLICIES with no human behind them — childAskPolicy()
+   *  and the harness evaluator's fixture jail (eval/run-case.ts) — and for both,
+   *  deny means "you may not use this, carry on and finish", NOT "stop". The
+   *  evaluator depends on that: its wrap-up turn denies AskUserQuestion
+   *  precisely so the model answers instead of asking, and ending the turn there
+   *  loses the review entirely (caught by harness-review-runner.test.ts). */
+  dismissed?: boolean;
 }
 
 export class PermissionBroker extends EventEmitter {
@@ -38,7 +70,8 @@ export class PermissionBroker extends EventEmitter {
       this.pending.set(requestId, { sessionId: req.sessionId, resolve });
       // Payload field names MUST match what hook-dispatcher extracts
       // (src/renderer/state/hook-dispatcher.ts): tool_name, tool_input,
-      // _requestId. denyListed rides along for the Task 13 warning.
+      // _requestId. denyListed rides along for the Task 13 warning, and
+      // `external` the same way so ToolCard can hide Always-allow.
       this.emit('hook-event', {
         sessionId: req.sessionId,
         type: 'PermissionRequest',
@@ -47,6 +80,10 @@ export class PermissionBroker extends EventEmitter {
           tool_name: req.toolName,
           tool_input: req.toolInput,
           denyListed: req.denyListed,
+          external: req.external === true,
+          // Spread-omitted (not `undefined`-valued) so the CC-path payload
+          // shape is byte-identical to before this field existed.
+          ...(req.permissionMode ? { permissionMode: req.permissionMode } : {}),
         },
         timestamp: Date.now(),
       });
@@ -76,7 +113,14 @@ export class PermissionBroker extends EventEmitter {
     // updatedPermissions and must never influence `always`.
     const updatedInput = inner.updatedInput && typeof inner.updatedInput === 'object'
       ? (inner.updatedInput as Record<string, unknown>) : undefined;
-    entry.resolve({ behavior, always, ...(updatedInput ? { updatedInput } : {}) });
+    // Validate to the two literals and FAIL NARROW on anything else. This value
+    // is PERSISTED (unlike permissionMode, which is display-only), so it is
+    // checked here AND re-derived at the session rather than trusted.
+    const grantScope: GrantScope = decision.grantScope === 'wide' ? 'wide' : 'exact';
+    // Stamp a human "no" so the driver can tell it from a policy refusal (see
+    // AskDecision.dismissed). Only reachable from here — a policy askUser
+    // constructs its own decision and never sets it.
+    entry.resolve({ behavior, always, grantScope, ...(behavior === 'deny' ? { dismissed: true } : {}), ...(updatedInput ? { updatedInput } : {}) });
     return true;
   }
 

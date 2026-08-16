@@ -19,7 +19,7 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // Scripted-mock builders live in a shared helper — the history-rebuild test
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
-import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+import { textChunks, toolCallChunk, toolInputChunks, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
 // Session-construction scaffolding (HARNESS/makeOpts/fakeTool) lives in a shared
 // helper so the profile-driven driver test (Task 5) reuses the exact same setup.
 // makeSession/scriptModel/drainTurn (2026-08-11 review fixes) reused from the
@@ -136,6 +136,31 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(0);       // never executed
     expect(JSON.stringify(seen[1])).toMatch(/blocked by a permission rule/); // model receives it
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);       // loop continued to completion
+  });
+
+  // Specialists (plan 1a, Task 5): a deny MAY carry its own model-facing reason.
+  // When it does, that reason replaces the generic copy in the tool result —
+  // otherwise a child refused a tool ("not available to this specialist") would
+  // read a generic "blocked by a permission rule" and simply retry the same call.
+  it('decide() deny WITH a message surfaces that message verbatim instead of the generic copy', async () => {
+    const write = fakeTool('Write');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({ tools: [write], decide: async () => ({ action: 'deny', denyListed: false, message: 'The Write tool is not available to this specialist.' }) }),
+      async () => model as any,
+    );
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toBe('The Write tool is not available to this specialist.');
+    expect(res.data.toolResult).not.toMatch(/blocked by a permission rule/);
+    expect(JSON.stringify(seen[1])).toMatch(/not available to this specialist/); // model receives the REASON
+    expect((write as any).calls).toHaveLength(0);
   });
 
   it('decide() ask → askUser; allow executes, deny returns "user declined" and does NOT execute', async () => {
@@ -340,6 +365,154 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
   });
 
+  // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
+  // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
+  // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
+  // alongside that change, or checkPathGuard would try to canonicalize the
+  // charter prefix AS a path. Pinned indirectly (the set itself isn't
+  // exported): a subject shaped like a charter-scoped key that ALSO happens to
+  // look like a path outside cwd would force the 'external directory' ask
+  // above if Task were still running through the path guard — this proves it
+  // isn't, mirroring the sibling test one case up.
+  it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => 'read-write:/etc/x', schema: z.object({ agent: z.string() }) });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { agent: 'worker' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [task], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
+    // never ran checkPathGuard against "read-write:/etc/x" as though it were
+    // an absolute path outside C:/x.
+    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(askUser).not.toHaveBeenCalled();
+  });
+
+  // Phase 3 of the permissions-management plan (spec 2026-08-11, finding 3).
+  // An external-directory path forces the ask AND skips decide() on every future
+  // call, so a rule remembered here could never be consulted — storing one tells
+  // the user "you won't be asked again" and then asks them every single time.
+  describe('"Always allow" on an external-directory ask', () => {
+    // permissionSubject returns the raw path so checkPathGuard sees it; cwd is
+    // C:/x (makeOpts), so C:/other/... is external and C:/x/... is not.
+    const pathTool = () => fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+    const oneWriteTo = (filePath: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: filePath }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    it('does not emit remember-rule when an external path forced the ask', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      expect(askUser).toHaveBeenCalledTimes(1);            // the ask still happens
+      expect(remembered).toEqual([]);                      // …but nothing is persisted
+    });
+
+    it('marks an external-directory ask so the UI can suppress Always-allow', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = oneWriteTo('C:/other/secrets-elsewhere.ts');
+      const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ALLOW, askUser }), async () => model as any);
+      collect(session);
+      await session.send('go');
+      expect(askUser.mock.calls[0][0]).toMatchObject({ external: true });
+    });
+
+    // The control: an in-project ask still records the rule, and is NOT flagged
+    // external — without this, deleting the emit entirely would pass the test above.
+    it('still remembers a rule for an in-project ask, and does not flag it external', async () => {
+      const write = pathTool();
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+      const model = oneWriteTo('C:/x/in-project.ts');
+      const session = new HarnessSession(
+        makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }), askUser }),
+        async () => model as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      // match:'exact' — a file path containing '*' was a wildcard grant on this
+      // exact code path until M5 2c.
+      expect(remembered).toEqual([{ tool: 'Write', pattern: 'C:/x/in-project.ts', action: 'allow', match: 'exact' }]);
+      expect(askUser.mock.calls[0][0].external).toBe(false);
+    });
+  });
+
+  // M5 2c: the RENDERER never names a pattern — it sends a width selector and the
+  // session re-derives from the tool call it already holds. A renderer that could
+  // name its own pattern could grant itself anything, because remembered rules are
+  // the final precedence layer, above the destructive deny-list.
+  describe('"Always allow" derives the rule it stores', () => {
+    const bashTool = () => fakeTool('Bash', {
+      schema: z.object({ command: z.string() }),
+      permissionSubject: (a: any) => a.command,
+    });
+    const oneBash = (command: string) => scriptedModel([
+      stream(toolCallChunk('c1', 'Bash', { command }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+
+    /** Drive one gated Bash call answered with "Always allow" at `grantScope`. */
+    async function rulesFor(command: string, grantScope?: 'exact' | 'wide'): Promise<unknown[]> {
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow', always: true, grantScope }));
+      const session = new HarnessSession(
+        makeOpts({
+          tools: [bashTool()],
+          decide: async () => ({ action: 'ask', denyListed: false }) as PermissionDecision,
+          askUser,
+        }),
+        async () => oneBash(command) as any,
+      );
+      const remembered: unknown[] = [];
+      session.on('remember-rule', (r) => remembered.push(r));
+      collect(session);
+      await session.send('go');
+      return remembered;
+    }
+
+    it('an exact grant stores the literal command with match:exact', async () => {
+      expect(await rulesFor('rm *.log', 'exact'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm *.log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a wide grant stores the DERIVED rule, not the raw command', async () => {
+      expect(await rulesFor('git push origin feat/x', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git push*origin feat/x', action: 'allow', match: 'glob' }]);
+    });
+
+    it('a renderer asking for "wide" on a command with no wide rung gets the narrow one', async () => {
+      expect(await rulesFor('rm -rf build', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'rm -rf build', action: 'allow', match: 'exact' }]);
+    });
+
+    it('a renderer asking for "wide" on a WITHHELD rung gets the narrow one', async () => {
+      // 'Any git command' is withheld because it would cover pushes and resets.
+      expect(await rulesFor('git --no-pager log', 'wide'))
+        .toEqual([{ tool: 'Bash', pattern: 'git --no-pager log', action: 'allow', match: 'exact' }]);
+    });
+
+    it('nothing is remembered when the command offers no grant at all', async () => {
+      // Bare `git push` sends whatever branch is checked out AT RUN TIME.
+      expect(await rulesFor('git push', 'exact')).toEqual([]);
+    });
+
+    it('a missing selector is treated as the narrowest option', async () => {
+      expect(await rulesFor('npm run build', undefined))
+        .toEqual([{ tool: 'Bash', pattern: 'npm run build', action: 'allow', match: 'exact' }]);
+    });
+  });
+
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
     // C:/x/.env is a dotenv file → isSensitivePath → checkPathGuard 'deny'.
     const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
@@ -479,22 +652,103 @@ describe('HarnessSession — multi-step turn driver', () => {
       expect(events.some((e) => e.type === 'turn-complete')).toBe(true);   // turn ended
     });
 
-    it('deny (dismissal) → error result telling the model the question was dismissed; loop continues', async () => {
+    it('deny (dismissal) → records the result, ends the turn as question_dismissed, takes NO further step', async () => {
+      const ask = fakeInteractive();
+      // `dismissed` is what PermissionBroker.respond stamps on a HUMAN "no" —
+      // the flag that separates a person closing the card from a policy refusal.
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny', dismissed: true }));
+      const seen: any[] = [];
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
+        // If the loop wrongly continued it would consume this second step and
+        // emit its text — which is exactly the guessing behavior this change removes.
+        stream(...textChunks('b', 'GUESSED ANYWAY'), finishChunk('stop')),
+      ], seen);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      // The dismissal is a REAL tool result on the real call id — pairing holds.
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.toolUseId).toBe('c1');
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toBe('The user closed this question without answering and took over. Stop here and wait for their next message.');
+      // The loop STOPPED: the model was consulted exactly once.
+      expect(seen).toHaveLength(1);
+      expect(events.some((e) => e.type === 'assistant-text' && e.data.text === 'GUESSED ANYWAY')).toBe(false);
+      // ORDERLY end — turn-complete with the new reason, never a user-interrupt.
+      const done = events.find((e) => e.type === 'turn-complete')!;
+      expect(done.data.stopReason).toBe('question_dismissed');
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);
+    });
+
+    it('multi-call step, dismissal on the FIRST call → sibling marked not-run, both paired, turn ends', async () => {
+      // A step with two tool-calls where the first is the question. The sibling
+      // must still get a tool-result or it dangles → provider 400 on the next
+      // send. It must NOT get the interrupt copy: the user did not interrupt.
+      const ask = fakeInteractive();
+      const read = fakeTool('Read');
+      const askUser = async (): Promise<AskDecision> => ({ behavior: 'deny', dismissed: true });
+      const model = scriptedModel([
+        stream(
+          toolCallChunk('c1', 'AskUserQuestion', oneQuestion()),
+          toolCallChunk('c2', 'Read', { file_path: 'x.ts' }),
+          finishChunk('tool-calls'),
+        ),
+        stream(...textChunks('b', 'unreached'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask, read], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      const results = events.filter((e) => e.type === 'tool-result');
+      expect(results.map((e) => e.data.toolUseId)).toEqual(['c1', 'c2']);
+      expect(results[1].data.toolResult).toBe('Not run: the turn ended when the user closed the question.');
+      expect(results[1].data.toolResult).not.toMatch(/interrupted/i);
+      expect(results[1].data.isError).toBe(true);
+      expect((read as any).calls).toHaveLength(0);   // sibling never executed
+
+      // Pairing invariant: every tool-call in history has a matching tool-result.
+      const history = (session as any).history as any[];
+      const callIds = new Set<string>(); const resultIds = new Set<string>();
+      for (const m of history) {
+        if (!Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+          if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+          if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+        }
+      }
+      expect([...callIds].sort()).toEqual(['c1', 'c2']);
+      expect([...resultIds].sort()).toEqual(['c1', 'c2']);
+      expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('question_dismissed');
+    });
+
+    it('POLICY deny (no `dismissed`) → corrective text and the loop CONTINUES', async () => {
+      // The discrimination test for the whole feature. Two askUser
+      // implementations have no human behind them — childAskPolicy() and the
+      // harness evaluator's fixture jail — and for both, deny means "you may not
+      // ask, carry on and finish". The evaluator's wrap-up turn REQUIRES this:
+      // it denies AskUserQuestion so the model answers instead, and ending the
+      // turn there loses the review outright.
       const ask = fakeInteractive();
       const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny' }));
       const seen: any[] = [];
       const model = scriptedModel([
         stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
-        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        stream(...textChunks('b', 'fine, here is the answer'), finishChunk('stop')),
       ], seen);
       const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
       const events = collect(session);
       await session.send('go');
+
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/dismiss|without answering/i);
-      expect(JSON.stringify(seen[1])).toMatch(/dismiss|without answering/i);   // model sees it on the next step
-      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
+      expect(res.data.toolResult).toMatch(/without answering/i);
+      // The loop CONTINUED: the model was consulted twice and produced its answer.
+      expect(seen).toHaveLength(2);
+      expect(events.some((e) => e.type === 'assistant-text' && e.data.text === 'fine, here is the answer')).toBe(true);
+      // A normal completion — NOT the dismissal reason.
+      expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).not.toBe('question_dismissed');
     });
 
     it('canceled (interrupt) → back-filled canceled result + user-interrupt, no turn-complete', async () => {
@@ -583,6 +837,92 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'tool-use')).toBe(false);
     expect(decide).not.toHaveBeenCalled();
     expect(askUser).not.toHaveBeenCalled();
+  });
+
+  it('emits a toolPreparing heartbeat at tool-input-start, before the tool-call completes', async () => {
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', '{"file_path":', '"x.ts"}'),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    const prep = events.filter((e) => e.data?.toolPreparing);
+    // The FIRST preparing event must precede the tool-use card entirely.
+    expect(prep.length).toBeGreaterThan(0);
+    expect(prep[0].type).toBe('assistant-thinking');
+    expect(prep[0].data.toolPreparing).toMatchObject({ toolCallId: 'c1', toolName: 'Read', chars: 0 });
+    expect(events.indexOf(prep[0])).toBeLessThan(events.findIndex((e) => e.type === 'tool-use'));
+  });
+
+  it('preparing heartbeats carry no text and no partId, so SessionStore drops them', async () => {
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', '{"file_path":"x.ts"}'),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    for (const e of events.filter((ev) => ev.data?.toolPreparing)) {
+      expect(e.data.text).toBeUndefined();
+      expect(e.data.partId).toBeUndefined();
+    }
+  });
+
+  it('throttles argument-progress emits to one per TOOL_PREPARING_EMIT_MS per call', async () => {
+    // 40 deltas arrive back-to-back within one tick. Unthrottled that is 41
+    // events; throttled it is the unconditional start plus at most a couple of
+    // window crossings. Asserting "far fewer than the delta count" pins the
+    // throttle without pinning wall-clock timing, which is flaky in CI.
+    const read = fakeTool('Read');
+    const deltas = Array.from({ length: 40 }, (_, i) => `chunk${i}`);
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c1', 'Read', ...deltas),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    const prep = events.filter((e) => e.data?.toolPreparing);
+    expect(prep.length).toBeLessThan(10);
+    expect(prep.length).toBeGreaterThan(0);
+  });
+
+  it('tool-input-end emits nothing on its own', async () => {
+    // The completed tool-call part follows immediately and supersedes the card;
+    // an event here would be pure noise on every single tool call.
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        { type: 'tool-input-start', id: 'c1', toolName: 'Read' },
+        { type: 'tool-input-end', id: 'c1' },
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'Done.'), finishChunk('stop')),
+    ]);
+    const session = makeSession({ model, tools: [read], decide: async () => ALLOW });
+    const events = collect(session);
+    await drainTurn(session, 'go');
+
+    expect(events.filter((e) => e.data?.toolPreparing).length).toBe(1);
   });
 });
 

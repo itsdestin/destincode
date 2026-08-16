@@ -127,4 +127,37 @@ describe('authorizeArtifactRead', () => {
     const res = await authorizeArtifactRead(root, link, false); // external: no in-root rule
     expect(res).toMatchObject({ ok: false, error: 'protected-path' });
   });
+
+  // A relative absolutePath is a corrupt sidecar record (pre-2026-08-12
+  // resolveTrackedPath wrote them). realpath()/fs.access()/File() resolve it
+  // against the PROCESS cwd, not the project root, so it can silently address a
+  // file outside the project. Refuse before resolution rather than guessing.
+
+  // NOTE the deliberate choice of 'package.json': it EXISTS relative to the
+  // vitest cwd (youcoded/desktop). Before the guard, realpath resolves it and
+  // the call returns ok:true pointing at a file outside the notional project —
+  // exactly the wrong-file read this guard closes. A non-existent relative path
+  // would return orphan both before and after, so the test could never fail
+  // first and would prove nothing.
+  it('read: refuses a relative path instead of resolving it against process cwd', async () => {
+    const res = await authorizeArtifactRead('/some/project', 'package.json', false);
+    expect(res).toEqual({ ok: false, orphan: true });
+  });
+
+  // Behavior PIN, not a fix: a Windows-drive record already orphans on POSIX
+  // (realpath ENOENT) and is already accepted on Windows (path.isAbsolute is
+  // true there). Same expectation on both platforms, before and after. It exists
+  // so a future "simplification" of isAbsoluteRecorded to a hand-rolled
+  // startsWith('/') cannot silently break cross-device records on Windows.
+  it('read: a Windows-drive path orphans on POSIX and is accepted on Windows', async () => {
+    const res = await authorizeArtifactRead('/some/project', 'C:/Users/desti/notes.md', false);
+    expect(res).toEqual({ ok: false, orphan: true });
+  });
+
+  it('write: refuses a relative path instead of creating a file under process cwd', async () => {
+    const res = await authorizeArtifactWrite({
+      projectRoot: '/some/project', fullPath: 'ROADMAP.md', mustStayInRoot: false,
+    });
+    expect(res).toEqual({ ok: false, error: 'artifact-not-found' });
+  });
 });

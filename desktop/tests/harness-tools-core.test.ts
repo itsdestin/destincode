@@ -980,7 +980,13 @@ describe('Bash', () => {
       // must still name the directory the command actually ran in, regardless of
       // whether spawning powershell.exe itself succeeds on this machine.
       expect(r.text).toContain(`[cwd: ${dir} ·`);
-    });
+    }, 30_000);
+    // ^ WHY the explicit timeout: on a real Windows runner this test genuinely
+    // spawns powershell.exe (spawnSpy is a passthrough), after resetModules +
+    // a cold re-import of the bash module. A cold PowerShell start on a CI box
+    // routinely blows vitest's 5,000ms default — Windows CI failed here as
+    // "Test timed out in 5000ms", never on an assertion. Same precedent as the
+    // wrap-up tests in harness-review-runner.test.ts (16a9adb5).
   });
 
   // 2026-08-10 review: reviewers measured a `seq 1 20000` costing ~7k tokens

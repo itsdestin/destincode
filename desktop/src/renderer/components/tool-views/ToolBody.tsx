@@ -603,7 +603,12 @@ function AgentView({ tool }: { tool: ToolCallState }) {
   // Fix: object description/subagent_type rendered as React children crashed
   // the card; MarkdownContent requires a string prompt.
   const desc = asString(tool.input.description);
-  const subagent = asString(tool.input.subagent_type) || 'general-purpose';
+  // `subagent_type` is Claude Code's Agent-tool arg; `agent` is the native
+  // harness Task tool's (tools/task.ts). Both render the same card (see the
+  // 'Agent'/'Task' cases below), so read whichever this call carries — without
+  // the second name a native `explorer` specialist rendered a chip that said
+  // "general-purpose", which is a wrong label, not just a missing one.
+  const subagent = asString(tool.input.subagent_type) || asString(tool.input.agent) || 'general-purpose';
   const prompt = asString(tool.input.prompt);
   const segments = tool.subagentSegments || [];
 
@@ -916,6 +921,14 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
   );
 
   const inner = (() => {
+    // No arguments exist yet — every view below would render an empty shell.
+    if (tool.preparing) {
+      return (
+        <div className="px-3 py-2 text-xs text-fg-muted">
+          {`Still preparing tool call… ${(tool.preparingChars ?? 0).toLocaleString()} characters so far`}
+        </div>
+      );
+    }
     switch (tool.toolName) {
       case 'Edit':
         return <EditView tool={tool} sessionId={sessionId} />;
@@ -934,6 +947,12 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
       }
       case 'Read':
         return <ReadView tool={tool} sessionId={sessionId} />;
+      // 'Agent' is Claude Code's subagent launcher; 'Task' is the native
+      // harness's (tools/task.ts). The subagent card is selected by toolName,
+      // so WITHOUT the 'Task' case the stamped child events would accumulate in
+      // reducer state (applySubagentEvent fills subagentSegments regardless) and
+      // the timeline would still show a raw JSON card. Pinned by
+      // tests/task-subagent-card.test.tsx.
       case 'Agent':
       case 'Task':
         return <AgentView tool={tool} />;

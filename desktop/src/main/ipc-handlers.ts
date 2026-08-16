@@ -40,6 +40,8 @@ import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
+// Type-only: the payload the permissions:remove handler forwards to the host.
+import type { PermissionRule } from '../shared/permission-types';
 // Task 7b: the MCP registry (WHICH servers ~/.youcoded/mcp.json configures)
 // and the pooled connection manager that acquire()s them per session. See the
 // construction site below for the eager-vs-lazy invariant this must preserve.
@@ -95,20 +97,20 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
-import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } from './artifacts/project-manager';
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
-import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
+import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
 import { GIT_IPC } from './git/ipc-channels';
@@ -820,15 +822,28 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // File picker dialog
+  // File picker dialog (attachment paperclip)
   ipcMain.handle(IPC.DIALOG_OPEN_FILE, async () => {
+    // NO `filters` on purpose — do NOT re-add a filter list here. Destin's ask
+    // is "default to all files, on all platforms", and Electron's dialog API
+    // cannot deliver an All-Files DEFAULT alongside a category dropdown:
+    //   - Linux: a live D-Bus capture of org.freedesktop.portal.FileChooser.OpenFile
+    //     (KDE Plasma, 2026-08-12) showed Electron strips the wildcard filter
+    //     (file_dialog_linux.cc GetFilterInfo() keeps only include_all_files,
+    //     hardcodes file_type_index=0), Chromium re-appends "*.*" LAST and emits
+    //     no current_filter key — so the portal selects the first listed filter
+    //     (Images), and app-side ordering can never win. electron#43491, closed
+    //     not-planned. A lone All-Files filter is no fix either: '*' serializes
+    //     as the glob '*.*', which excludes extensionless files like Makefile.
+    //   - Windows: same rule by design — the dialog "picks the first filter as
+    //     default, except the All Files one". electron#19492, closed not-planned.
+    //   - macOS: filters are a selection allowlist, not a dropdown default, so
+    //     a list adds nothing once All Files is present.
+    // If a category dropdown is ever wanted, that means an upstream Electron
+    // patch or an in-app picker — not a filters array. Pinned by
+    // tests/ipc-handlers.test.ts → "dialog:open-file attachment picker filters".
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        // All Files first so the picker opens in unrestricted mode by default
-        { name: 'All Files', extensions: ['*'] },
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
-      ],
     });
     return result.canceled ? [] : result.filePaths;
   });
@@ -2209,6 +2224,12 @@ export function registerIpcHandlers(
   // lock (fire-and-forget — list/languageModel read on demand). The catalog's
   // contextLengthFor feeds HarnessSession's context-window sizing.
   const nativeHome = new NativeHome();
+  // Hoisted out of the NativeSessionHost constructor call below (M5 2a): the
+  // permissions:list handler and the remote-server WS case both need to READ the
+  // same store the host writes through. Constructing a second one would still
+  // work (they share one file under NativeHome's lock) but would make the
+  // "one store" invariant a coincidence rather than a fact.
+  const permissionStore = new PermissionStore(nativeHome);
   const secretsStore = new SecretsStore(app.getPath('userData'));
   // Plan B: the local engine. EngineManager owns acquisition + supervision; its
   // hook makes the 'local' provider real and its listModels feeds the model
@@ -2299,7 +2320,7 @@ export function registerIpcHandlers(
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
-    new PermissionStore(nativeHome),
+    permissionStore,
     app.getVersion(),
     // Runtime services threaded into every native tool's ToolContext — WebSearch
     // reads services.search (the chain-walking SearchService).
@@ -2416,7 +2437,9 @@ export function registerIpcHandlers(
   // Give the remote server access to the native stack so its WS clients reach
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService });
+  // permissionStore rides along for the remote permissions:list case (M5 2a) —
+  // the WS revokes go through nativeHost, which is already here.
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2544,6 +2567,19 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SEARCH_SET_KEY, async (_e, backend: 'tavily' | 'exa', key: string) => { await searchKeyStore.setKey(backend, key); return true; });
   ipcMain.handle(IPC.SEARCH_REMOVE_KEY, async (_e, backend: 'tavily' | 'exa') => { await searchKeyStore.removeKey(backend); return true; });
   ipcMain.handle(IPC.SEARCH_TEST, async (_e, backend: 'tavily' | 'exa', key: string) => searchService.testBackend(backend, key));
+  // Remembered "Always allow" rules (Settings → Permissions, M5 2a).
+  // list READS the store directly — it only reports what is on disk.
+  // remove / remove-project go through nativeHost.revokeRule / revokeProject and
+  // NEVER through permissionStore.remove / removeProject: the store touches disk
+  // only, while the host also clears the per-session in-memory `rememberedFor`
+  // map that buildDecide unions into every decision. A disk-only delete would
+  // leave an already-running session granting exactly what the user just
+  // revoked — the failure this whole feature exists to prevent.
+  // Both revokes return true only when something actually matched; false means
+  // the renderer's list was stale, and it says so instead of claiming success.
+  ipcMain.handle(IPC.PERMISSIONS_LIST, async () => permissionStore.list());
+  ipcMain.handle(IPC.PERMISSIONS_REMOVE, async (_e, slug: string, rule: PermissionRule) => nativeHost.revokeRule(slug, rule));
+  ipcMain.handle(IPC.PERMISSIONS_REMOVE_PROJECT, async (_e, slug: string) => nativeHost.revokeProject(slug));
   // --- Local engine IPC (Plan B) ---
   // install/restart resolve to a fresh status() so the caller doesn't need a
   // second round-trip. The push emitters below keep every window + remote in
@@ -3371,6 +3407,14 @@ export function registerIpcHandlers(
   // Write/Edit/MultiEdit transcript event so the central index is populated and
   // artifacts appear in the Session Drawer even before the user opens it.
   // ensureProject and applyGitTreatment are both idempotent.
+  //
+  // Burst-safe by construction (2026-08-15): opening a long conversation
+  // replays ~1,000 of these at once (the tracker cannot tell replayed history
+  // from live events — see transcript-watcher's offset-0 read and
+  // TRANSCRIPT_REPLAY). The coalesced helpers answer the burst with one index
+  // write and one .gitignore read; appendVersion queues per project and applies
+  // the whole burst in a few read/write cycles instead of a thousand, each of
+  // which used to pin a parsed 4.4 MB sidecar in memory until the app OOM'd.
   ipcMain.handle(ARTIFACT_IPC.APPEND_VERSION, async (
     _e,
     projectRoot: string,
@@ -3381,11 +3425,11 @@ export function registerIpcHandlers(
       absolutePath: string | null;
       type: 'create' | 'edit' | 'delete' | 'read';
       author: 'agent' | 'user';
+      toolUseId?: string;
     }
   ) => {
-    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
-    await applyGitTreatment(projectRoot);
-    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
+    const { project } = await ensureProjectCoalesced(CLAUDE_DIR, projectRoot, sessionId);
+    await applyGitTreatmentCoalesced(projectRoot);
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
       kind: args.kind,
@@ -3393,7 +3437,14 @@ export function registerIpcHandlers(
       sessionId,
       type: args.type,
       author: args.author,
+      toolUseId: typeof args.toolUseId === 'string' && args.toolUseId ? args.toolUseId : undefined,
     });
+    // AFTER the append resolves, not before it (2026-08-15 review): appendVersion
+    // is queued now, so an invalidate issued before the call could be followed
+    // by a watcher rebuild that read the OLD sidecar — leaving a just-created
+    // artifact unmapped until the cache's next TTL. Invalidating once the write
+    // has committed closes that window.
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     // A newly created/edited file may also be a discovered doc — drop the cached
     // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
     invalidateDiscoveryCache(projectRoot);
@@ -3401,14 +3452,19 @@ export function registerIpcHandlers(
     // artifactId: null was dropped by every consumer, which meant the
     // ActiveArtifactView "Claude also edited this file" conflict banner could
     // never fire for agent edits (its entire purpose).
-    webContents.getAllWebContents().forEach((wc) =>
-      wc.send(ARTIFACT_IPC.CHANGED, {
-        projectRoot,
-        artifactId: result.artifactId,
-        kind: args.type,
-        by: args.author,
-      })
-    );
+    // A deduped append changed nothing on disk — it is a replayed tool call
+    // that was recorded the first time round — so it must not announce an
+    // edit: that banner would be a lie about a file nobody just touched.
+    if (!result.deduped) {
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, {
+          projectRoot,
+          artifactId: result.artifactId,
+          kind: args.type,
+          by: args.author,
+        })
+      );
+    }
     return { ok: result.committed, project };
   });
 
@@ -3447,6 +3503,20 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
+    // Repair legacy relative-external records before listing. The Session
+    // Drawer is the only surface where an unpinned external is visible, so this
+    // is where the false "no longer on disk" actually renders. Memoized per
+    // project per process — this handler also fires after every tracked write.
+    const migration = await runSidecarMigration(projectRoot);
+    // Fix: every other sidecar writer here calls invalidateSidecarIdCache after
+    // committing (see APPEND_VERSION/RENAME/REMOVE_RECORD above) so the
+    // watcher's path-to-id map doesn't go stale. runSidecarMigration writes too
+    // (it rewrites reclassified records' path/kind) but had no caller doing
+    // this. Wiring it from artifact-store.ts would import project-watcher.ts,
+    // which already imports artifact-store.ts's readSidecar — a cycle — so it's
+    // done here at each of the three call sites instead, and only when a write
+    // actually happened.
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot);
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
@@ -3513,6 +3583,11 @@ export function registerIpcHandlers(
     // index entry — fall back to reading the sidecar at that path so their
     // artifacts resolve too. A bogus id simply yields no sidecar.
     const projectRoot = p ? p.path : projectId;
+    // Same legacy-repair call as LIST_SESSION above (filepath pills + the
+    // hero/switcher count also read through this handler) — memoized per
+    // project per process, so this costs one Set lookup after the first call.
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const sidecar = await readSidecar(projectRoot);
 
     let tracked: any[] = [];
@@ -3549,6 +3624,15 @@ export function registerIpcHandlers(
     if (isGatedRoot(projectRoot) && !opts?.force) {
       return { ok: true, files: [], truncated: false, gated: true };
     }
+    // Fix: this repair call used to run BEFORE the gated-root check above,
+    // so a gated root (home dir / drive root) could have its sidecar read
+    // and rewritten on a listing the user never confirmed via "Browse
+    // anyway?". Moved below the early return so the repair only touches a
+    // gated root once the user has actually agreed to browse it. Same
+    // legacy-repair call as LIST_SESSION above. Memoized per project per
+    // process.
+    const migration = await runSidecarMigration(projectRoot);
+    if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
     const r = await projectAllFiles(projectRoot);
     return { ok: true, files: r.files, truncated: r.truncated };
   });
@@ -4064,10 +4148,16 @@ export function registerIpcHandlers(
       artifactIds.map(async (id) => {
         const a = byId.get(id);
         if (!a) return id; // unknown id treated as missing
+        // A corrupt record (relative absolutePath) resolves against the PROCESS
+        // cwd here, which cuts both ways: it reports an in-project file as
+        // missing (the Session Drawer's "no longer on disk" — this handler feeds
+        // that label, SessionDrawer.tsx:42) AND would report an artifact as
+        // present if a same-named file happens to sit in the process cwd.
         const fullPath = a.kind === 'internal'
           ? path.join(projectRoot, a.path)
           : a.absolutePath;
         if (!fullPath) return id;
+        if (a.kind !== 'internal' && !isAbsoluteRecorded(fullPath)) return id;
         try {
           await fs.promises.access(fullPath);
           return null;

@@ -9,7 +9,7 @@ import {
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
 } from './chat-types';
-import { SubagentSegment, ToolCallState } from '../../shared/types';
+import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -81,6 +81,105 @@ function getOrCreateTurn(session: SessionChatState): {
   });
   timeline = [...timeline, { kind: 'assistant-turn' as const, turnId: currentTurnId }];
   return { assistantTurns, timeline, currentTurnId };
+}
+
+/**
+ * Place a tool id in the session's current tool group, creating the turn and/or
+ * group if needed. IDEMPOTENT by tool id: an id already in a group leaves both
+ * the group and currentGroupId untouched, so a re-emit can never render a
+ * duplicate card or retarget where subsequent tools land.
+ *
+ * Shared by TRANSCRIPT_TOOL_USE and NATIVE_TOOL_PREPARING. It MUST stay one
+ * function: the whole preparing-card design rests on the two paths placing a
+ * card identically, so the real tool-use supersedes the preparing entry in
+ * place instead of adding a second card beside it.
+ */
+function placeToolInCurrentGroup(
+  session: SessionChatState,
+  toolUseId: string,
+): {
+  assistantTurns: Map<string, AssistantTurn>;
+  timeline: TimelineEntry[];
+  toolGroups: Map<string, ToolGroupState>;
+  currentGroupId: string | null;
+  currentTurnId: string;
+} {
+  const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
+  const toolGroups = new Map(session.toolGroups);
+  let currentGroupId = session.currentGroupId;
+
+  // The watcher deliberately re-emits tool-use on repeated uuids (CC rewrites
+  // the same JSONL line as the assistant message grows, and a rewrite may carry
+  // NEW tool_use blocks), relying on "the reducer dedupes by toolUseId" — true
+  // of the toolCalls Map, but a group append would add the id a second time,
+  // rendering a duplicate ToolCard. Symptom was most visible on
+  // AskUserQuestion: AssistantTurnBubble hides awaiting-approval tools from
+  // groups, so both copies only became visible once answered.
+  // See transcript-watcher.ts readNewLines (~line 679) for the emit contract.
+  let existingGroupId: string | null = null;
+  for (const [gid, group] of toolGroups) {
+    if (group.toolIds.includes(toolUseId)) { existingGroupId = gid; break; }
+  }
+
+  if (existingGroupId) {
+    // Already placed by an earlier emit of this same tool.
+  } else if (currentGroupId && toolGroups.has(currentGroupId)) {
+    const group = toolGroups.get(currentGroupId)!;
+    toolGroups.set(currentGroupId, { ...group, toolIds: [...group.toolIds, toolUseId] });
+  } else {
+    currentGroupId = nextGroupId();
+    toolGroups.set(currentGroupId, { id: currentGroupId, toolIds: [toolUseId] });
+    const turn = assistantTurns.get(currentTurnId)!;
+    assistantTurns.set(currentTurnId, {
+      ...turn,
+      segments: [...turn.segments, { type: 'tool-group', groupId: currentGroupId }],
+    });
+  }
+
+  return { assistantTurns, timeline, toolGroups, currentGroupId, currentTurnId };
+}
+
+/**
+ * Remove a PREPARING tool card: no tool was ever invoked, so it is deleted
+ * rather than failed. Prunes an emptied group and that group's turn segment —
+ * an empty group otherwise renders as a stray bar.
+ *
+ * Refuses to touch an entry that is not `preparing`, so a stall-retry clear can
+ * never delete a real tool card whose result is still coming (that would be the
+ * dangling tool_call the native runtime forbids).
+ *
+ * Shared by the `cleared` path and endTurn so the two removals cannot drift.
+ * Mutates the Maps it is handed — callers pass their own fresh copies.
+ */
+function removePreparingTool(
+  toolCalls: Map<string, ToolCallState>,
+  toolGroups: Map<string, ToolGroupState>,
+  assistantTurns: Map<string, AssistantTurn>,
+  toolUseId: string,
+): boolean {
+  const entry = toolCalls.get(toolUseId);
+  if (!entry?.preparing) return false;
+  toolCalls.delete(toolUseId);
+
+  for (const [gid, group] of toolGroups) {
+    if (!group.toolIds.includes(toolUseId)) continue;
+    const toolIds = group.toolIds.filter((id) => id !== toolUseId);
+    if (toolIds.length > 0) {
+      toolGroups.set(gid, { ...group, toolIds });
+    } else {
+      toolGroups.delete(gid);
+      for (const [tid, turn] of assistantTurns) {
+        const segments = turn.segments.filter(
+          (s) => !(s.type === 'tool-group' && s.groupId === gid),
+        );
+        if (segments.length !== turn.segments.length) {
+          assistantTurns.set(tid, { ...turn, segments });
+        }
+      }
+    }
+    break;
+  }
+  return true;
 }
 
 /**
@@ -171,16 +270,34 @@ function injectPlanSegment(
 function endTurn(
   session: SessionChatState,
   errorMessage: string = 'Turn ended',
+  // Callers that edit assistantTurns themselves (TURN_COMPLETE stamps usage,
+  // INTERRUPT stamps stopReason) MUST pass their edited map in: endTurn now
+  // returns an assistantTurns of its own to prune emptied preparing groups, and
+  // spreading it over their `...session, assistantTurns` would silently discard
+  // their edit — which is exactly how the interrupt footer lost 'Interrupted'.
+  baseAssistantTurns?: Map<string, AssistantTurn>,
 ): Partial<SessionChatState> {
   const toolCalls = new Map(session.toolCalls);
+  const toolGroups = new Map(session.toolGroups);
+  const assistantTurns = new Map(baseAssistantTurns ?? session.assistantTurns);
   for (const id of session.activeTurnToolIds) {
     const tool = toolCalls.get(id);
-    if (tool && (tool.status === 'running' || tool.status === 'awaiting-approval')) {
+    if (!tool) continue;
+    // A PREPARING card is deleted, not failed: the model was still composing
+    // the request, so no tool was ever invoked and "failed" would describe an
+    // event that did not happen (Destin, 2026-08-12).
+    if (tool.preparing) {
+      removePreparingTool(toolCalls, toolGroups, assistantTurns, id);
+      continue;
+    }
+    if (tool.status === 'running' || tool.status === 'awaiting-approval') {
       toolCalls.set(id, { ...tool, status: 'failed', error: errorMessage });
     }
   }
   return {
     toolCalls,
+    toolGroups,
+    assistantTurns,
     isThinking: false,
     // Prefill is over the moment the turn is. Leaving it set meant the next
     // generation pause longer than ThinkingIndicator's 2s streaming window
@@ -225,11 +342,26 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
-    segments.push({
-      type: 'text',
-      id: `sa-text-${action.uuid}`,
-      content: action.text,
-    });
+    // Fix: the native harness (harness-session.ts:1769) emits one
+    // assistant-text event per STREAM DELTA, not per whole message like CC's
+    // watcher — without coalescing, a specialist's report rendered as
+    // hundreds of separately-markdown-rendered blocks, breaking markdown
+    // that spans a chunk boundary. Mirror the main-timeline merge (below,
+    // TRANSCRIPT_ASSISTANT_TEXT case): same partId as the LAST segment →
+    // append into it; otherwise push a new segment. CC never sets partId,
+    // so its events keep today's one-segment-per-event behavior.
+    const lastIdx = segments.length - 1;
+    const last = lastIdx >= 0 ? segments[lastIdx] : null;
+    if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
+      segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else {
+      segments.push({
+        type: 'text',
+        id: `sa-text-${action.uuid}`,
+        content: action.text,
+        partId: action.partId,
+      });
+    }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
     const existingIdx = segments.findIndex(
       s => s.type === 'tool' && s.toolUseId === action.toolUseId,
@@ -808,6 +940,61 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    case 'NATIVE_TOOL_PREPARING': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const toolCalls = new Map(session.toolCalls);
+      const existing = toolCalls.get(action.toolCallId);
+
+      if (action.cleared) {
+        // Withdraw a card the stall retry abandoned. No-op unless the entry is
+        // still preparing — a real tool card must never be removed here.
+        const toolGroups = new Map(session.toolGroups);
+        const assistantTurns = new Map(session.assistantTurns);
+        if (!removePreparingTool(toolCalls, toolGroups, assistantTurns, action.toolCallId)) {
+          return state;
+        }
+        const activeTurnToolIds = new Set(session.activeTurnToolIds);
+        activeTurnToolIds.delete(action.toolCallId);
+        next.set(action.sessionId, {
+          ...session, toolCalls, toolGroups, assistantTurns, activeTurnToolIds,
+          lastActivityAt: Date.now(),
+        });
+        return next;
+      }
+
+      if (existing) {
+        // Progress update only. Never touch status, group, or position — the
+        // card's identity and slot must survive until the real tool-use lands.
+        if (!existing.preparing) return state;
+        toolCalls.set(action.toolCallId, { ...existing, preparingChars: action.chars });
+        next.set(action.sessionId, { ...session, toolCalls, lastActivityAt: Date.now(), attentionState: 'ok' });
+        return next;
+      }
+
+      // input:{} because ToolCallState.input is non-optional; the real input
+      // arrives with TRANSCRIPT_TOOL_USE, which overwrites this entry wholesale.
+      toolCalls.set(action.toolCallId, {
+        toolUseId: action.toolCallId,
+        toolName: action.toolName,
+        input: {},
+        status: 'running',
+        preparing: true,
+        preparingChars: action.chars,
+      });
+      const { assistantTurns, timeline, toolGroups, currentGroupId, currentTurnId } =
+        placeToolInCurrentGroup(session, action.toolCallId);
+      const activeTurnToolIds = new Set(session.activeTurnToolIds);
+      activeTurnToolIds.add(action.toolCallId);
+      next.set(action.sessionId, {
+        ...session, toolCalls, toolGroups, assistantTurns, timeline,
+        currentGroupId, currentTurnId, activeTurnToolIds,
+        lastActivityAt: Date.now(),
+        attentionState: 'ok',
+      });
+      return next;
+    }
+
     case 'TRANSCRIPT_TOOL_USE': {
       // Subagent event: route into the parent Agent tool's nested timeline.
       if (action.parentAgentToolUseId) return applySubagentEvent(state, action);
@@ -863,6 +1050,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            // Carried for the same reason as denyListed: ToolCard gates the
+            // "Always allow" button on it, so losing it here would re-offer a
+            // grant the engine can never honor.
+            external: synTool.external,
+            // Carried so the full-auto safety-stop footer survives the
+            // synthetic→real tool-id handover (spec 2026-08-12, M5 2b).
+            permissionMode: synTool.permissionMode,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -917,58 +1111,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         status: 'running',
       });
 
-      let { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
-      const toolGroups = new Map(session.toolGroups);
-      let currentGroupId = session.currentGroupId;
+      // Placement is idempotent by toolUseId (see placeToolInCurrentGroup), so
+      // a re-emit — or a preparing card the native runtime already placed under
+      // this same id — is superseded IN PLACE rather than duplicated.
+      const placed = placeToolInCurrentGroup(session, action.toolUseId);
+      let { assistantTurns } = placed;
+      const { timeline, toolGroups, currentGroupId, currentTurnId } = placed;
 
       // ExitPlanMode: inject plan markdown as its own bubble BEFORE the
       // tool-group, so the full plan is visible in chat view (not just the
-      // approval buttons).
+      // approval buttons). injectPlanSegment is idempotent by toolUseId, and
+      // splices before the group it is given, so placing first is safe.
       if (action.toolName === 'ExitPlanMode') {
         assistantTurns = injectPlanSegment(
           assistantTurns,
           currentTurnId,
           action.toolUseId,
           action.toolInput,
+          currentGroupId ?? undefined,
         );
-      }
-
-      // Fix: group placement must be IDEMPOTENT. The watcher deliberately
-      // re-emits tool-use on repeated uuids (CC rewrites the same JSONL line as
-      // the assistant message grows, and a rewrite may carry NEW tool_use
-      // blocks), relying on "the reducer dedupes by toolUseId" — true of the
-      // toolCalls Map above, but the group append below used to add the id a
-      // second time, rendering a duplicate ToolCard. Symptom was most visible
-      // on AskUserQuestion: AssistantTurnBubble hides awaiting-approval tools
-      // from groups, so both copies only became visible once answered.
-      // See transcript-watcher.ts readNewLines (~line 679) for the emit contract.
-      let existingGroupId: string | null = null;
-      for (const [gid, group] of toolGroups) {
-        if (group.toolIds.includes(action.toolUseId)) { existingGroupId = gid; break; }
-      }
-
-      if (existingGroupId) {
-        // Already placed by an earlier emit of this same tool — leave both the
-        // group and currentGroupId untouched, so a re-emit can't retarget where
-        // subsequent NEW tools land. (injectPlanSegment above is already
-        // idempotent by toolUseId, so ExitPlanMode needs no equivalent guard.)
-      } else if (currentGroupId && toolGroups.has(currentGroupId)) {
-        // Add to existing group (no new segment needed)
-        const group = toolGroups.get(currentGroupId)!;
-        toolGroups.set(currentGroupId, {
-          ...group,
-          toolIds: [...group.toolIds, action.toolUseId],
-        });
-      } else {
-        // Create new group and add as segment to current turn
-        currentGroupId = nextGroupId();
-        toolGroups.set(currentGroupId, { id: currentGroupId, toolIds: [action.toolUseId] });
-
-        const turn = assistantTurns.get(currentTurnId)!;
-        assistantTurns.set(currentTurnId, {
-          ...turn,
-          segments: [...turn.segments, { type: 'tool-group', groupId: currentGroupId }],
-        });
       }
 
       const activeTurnToolIds = new Set(session.activeTurnToolIds);
@@ -1094,7 +1255,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
-      next.set(action.sessionId, { ...session, assistantTurns, ...endTurn(session) });
+      next.set(action.sessionId, { ...session, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 
@@ -1122,8 +1283,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       next.set(action.sessionId, {
         ...session,
-        assistantTurns,
-        ...endTurn(session, 'Turn interrupted'),
+        ...endTurn(session, 'Turn interrupted', assistantTurns),
       });
       return next;
     }
@@ -1226,6 +1386,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 ? { input: action.input } : {}),
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
+          permissionMode: action.permissionMode,
         });
         found = true;
       }
@@ -1251,6 +1413,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
+          permissionMode: action.permissionMode,
         });
 
         const groupId = nextGroupId();

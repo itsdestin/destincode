@@ -704,7 +704,11 @@ async function pickAndUploadFiles(): Promise<string[]> {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
-    input.accept = 'image/*,text/*,.pdf,.json,.csv,.md,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h';
+    // No `accept` attribute on purpose — the attachment picker must default to
+    // ALL file types (Destin's 2026-08-12 request). The old whitelist here made
+    // mobile browsers open a media-biased picker and desktop browsers preselect
+    // a "Custom Files" filter. Browsers can't offer a multi-category filter
+    // dropdown like Electron's native dialog, so "no accept" IS the whole fix.
     input.style.display = 'none';
     document.body.appendChild(input);
     input.addEventListener('change', () => {
@@ -1569,6 +1573,16 @@ export function installShim(): void {
       setKey: (backend: string, key: string) => invoke('search:set-key', { backend, key }),
       removeKey: (backend: string) => invoke('search:remove-key', { backend }),
       test: (backend: string, key: string) => invoke('search:test', { backend, key }),
+    },
+    // Remembered "Always allow" rules (Settings → Permissions, M5 2a) — WS
+    // transport. Object payloads match remote-server's WS case reads
+    // (payload.slug / payload.rule); the desktop preload passes the same values
+    // positionally. The section is NOT gated on native.supported, so this route
+    // is the one a phone over remote access actually uses.
+    permissions: {
+      list: () => invoke('permissions:list'),
+      remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),
+      removeProject: (slug: string) => invoke('permissions:remove-project', { slug }),
     },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an

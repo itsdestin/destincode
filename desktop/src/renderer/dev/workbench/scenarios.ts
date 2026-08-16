@@ -1,7 +1,9 @@
 import type { SessionInfo } from '../../../shared/types';
 import type { TagRecord } from '../../../shared/tags';
+import type { StoredProject } from '../../../shared/permission-types';
 import type { FlagName } from '../../components/resume-browser-filters';
 import { sessions } from './fixtures/sessions';
+import { permissions as seedPermissions, stressPermissions } from './fixtures/permissions';
 import { providers as seedProviders, catalog as seedCatalog, type ProviderRow, type CatalogRow } from './fixtures/providers';
 import { tags as seedTags } from './fixtures/tags';
 import { defaults as seedDefaults, type MockDefaults } from './fixtures/defaults';
@@ -58,6 +60,7 @@ export interface MockState {
   catalog: CatalogRow[];
   tags: TagRecord[];
   defaults: MockDefaults;
+  permissions: StoredProject[];
 }
 
 const PROJECTS = [
@@ -165,16 +168,17 @@ export function seed(scenario: ScenarioId): MockState {
     catalog: seedCatalog(),
     tags: seedTags(),
     defaults: seedDefaults(),
+    permissions: seedPermissions(),
   };
   switch (scenario) {
     case 'empty':
-      return { ...base, sessions: [], past: [], tags: [] };
+      return { ...base, sessions: [], past: [], tags: [], permissions: [] };
     case 'no-providers':
       // Native runtime is still "supported" — it is the providers that are
       // absent, which is the state the empty-provider guidance renders for.
       return { ...base, providers: base.providers.map((p) => ({ ...p, ready: false })), catalog: [] };
     case 'stress':
-      return { ...base, past: stressPast() };
+      return { ...base, past: stressPast(), permissions: stressPermissions() };
     case 'refused':
     case 'default':
     default:

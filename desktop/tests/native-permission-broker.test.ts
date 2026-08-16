@@ -29,6 +29,22 @@ describe('PermissionBroker', () => {
     await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true });
   });
 
+  it('rides permissionMode along the PermissionRequest payload (full-auto safety stop keys on it)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git push' }, denyListed: true, permissionMode: 'full-auto' });
+    expect(emitted[0].payload.permissionMode).toBe('full-auto');
+  });
+
+  it('omits permissionMode when the caller did not supply one (CC-path payload shape unchanged)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    expect('permissionMode' in emitted[0].payload).toBe(false);
+  });
+
   it('does NOT flag always when behavior is deny (guards against persisting an allow rule for a denied tool)', async () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
@@ -39,6 +55,38 @@ describe('PermissionBroker', () => {
     const d = await p;
     expect(d.behavior).toBe('deny');
     expect(d.always).toBeFalsy();
+  });
+
+  it('stamps `dismissed` on a human deny — and ONLY on a deny', async () => {
+    // respond() is the only path a person's answer travels, so it is the only
+    // place that can honestly say "a human said no". The driver ends the turn on
+    // a dismissed AskUserQuestion; a POLICY askUser (childAskPolicy, the harness
+    // evaluator's jail) constructs its own decision, never sets this, and keeps
+    // the old carry-on semantics. Guard: harness-session-loop's POLICY-deny test.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+
+    const denied = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[0].payload._requestId as string, { decision: { behavior: 'deny' } })).toBe(true);
+    expect((await denied).dismissed).toBe(true);
+
+    const allowed = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[1].payload._requestId as string, { decision: { behavior: 'allow' } })).toBe(true);
+    expect((await allowed).dismissed).toBeFalsy();
+  });
+
+  it('a canceled ask carries no `dismissed` (an interrupt is not a dismissal)', async () => {
+    // cancelSession resolves pending asks as 'canceled'; the driver unwinds that
+    // as an interrupt. It must not look like the user closed the card.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    broker.cancelSession('s1');
+    const d = await p;
+    expect(d.behavior).toBe('canceled');
+    expect(d.dismissed).toBeFalsy();
   });
 
   it('passes decision.updatedInput through to the resolver (AskUserQuestion answers)', async () => {
@@ -79,5 +127,34 @@ describe('PermissionBroker', () => {
     broker.cancelSession('s1');
     await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
     expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true); // clears the card
+  });
+});
+
+describe('PermissionBroker — grantScope', () => {
+  /** ask() + the id it emitted, so each case reads as one call. */
+  const askOnce = (broker: PermissionBroker) => {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's', toolName: 'Bash', toolInput: { command: 'npm run build' }, denyListed: false });
+    return { p, id: emitted[0].payload._requestId as string };
+  };
+
+  it('passes a valid selector through', async () => {
+    const broker = new PermissionBroker();
+    const { p, id } = askOnce(broker);
+    broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: 'wide' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true, grantScope: 'wide' });
+  });
+
+  it('fails NARROW on anything that is not the literal "wide"', async () => {
+    // This value is persisted, so it is validated here AND re-derived at the
+    // session. A renderer that could widen its own grant by sending junk would
+    // be writing the top precedence layer.
+    for (const bad of [undefined, 'WIDE', 'tool-wide', 42, { scope: 'wide' }, null]) {
+      const broker = new PermissionBroker();
+      const { p, id } = askOnce(broker);
+      broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: bad });
+      await expect(p).resolves.toMatchObject({ grantScope: 'exact' });
+    }
   });
 });

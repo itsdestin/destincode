@@ -20,7 +20,7 @@ Cloud-first slice: `~/.youcoded/` home, provider registry + keychain keys, `Harn
 
 - **API-key storage** — `safeStorage`-encrypted in `userData/native-secrets.json`, NEVER in `~/.youcoded/`. `providers.json` holds only a `secretRef`. `SecretsStore` encrypts BEFORE the file write (no path can serialize plaintext) and refuses to store keys when `safeStorage.isEncryptionAvailable()` is false — no plaintext fallback. `list()` never returns key material. Machine-bound ciphertext must not enter a syncable home; per-profile `userData` is deliberate.
 - **`NativeHome` write path** — all `~/.youcoded/` JSON writes go through `mutateFileUnderLock`; it THROWS on lock exhaustion, never silently drops (dev + built app share the home — same cross-process race as the artifact index). `readJson` absorbs ENOENT only and rethrows other I/O errors. `readSessionHead` (256KB bounded head-read) is what `list()` uses so a huge session file can't throw-then-vanish from the Resume Browser; `readSessionLines` (full read) is only for replay.
-- **`SessionStore` delta coalescing** — same-`partId` `assistant-text`/`assistant-thinking` deltas coalesce into ONE persisted event before disk (~50× smaller; replay reproduces the identical merged reducer segment). `session-error` events are display-only + NEVER persisted (a stale error banner on resume would be wrong) but DO flush the open part first. `SessionStore.append()` and `HarnessSession.send()` both require the CALLER to serialize per session — `NativeSessionHost` enforces a per-session append promise chain (forward-to-renderer is synchronous and NOT gated on the disk write); HarnessSession hard-throws on a re-entrant `send()`.
+- **`SessionStore` delta coalescing** — same-`partId` `assistant-text`/`assistant-thinking` deltas coalesce into ONE persisted event before disk (~50× smaller; replay reproduces the identical merged reducer segment). **Display-only is a family, not a single event, and the filter is structural.** `SessionStore.append` drops (a) `session-error`, and (b) any `assistant-thinking` carrying **neither `text` nor `partId`** — which is what keeps `stallWarning`, `promptProcessing`, and `toolPreparing` (streaming tool-argument progress, the preparing-tool-card feed) off disk. Because the filter keys on the *absence* of those two fields rather than on a payload name, **adding `text` or `partId` to any of those payloads silently starts persisting it** — that is the regression shape to watch for, not a forgotten allow-list entry. The two halves differ on flushing: `session-error` IS a turn boundary and flushes the open streaming part first (a stale error banner on resume would be wrong); the heartbeats are NOT boundaries and must leave the open part buffered, since the stream may resume the same `partId`. Guard: `session-store.test.ts` pins both halves, including a `toolPreparing` case asserting the surrounding deltas still coalesce into one event. `SessionStore.append()` and `HarnessSession.send()` both require the CALLER to serialize per session — `NativeSessionHost` enforces a per-session append promise chain (forward-to-renderer is synchronous and NOT gated on the disk write); HarnessSession hard-throws on a re-entrant `send()`.
 - **`NativeSessionHost` lifecycle** — `send()` still never throws; it now returns a `NativeSendResult` synchronously (`{status:'sent'|'queued'}` or `{status:'failed', reason}`) instead of blocking on the turn. `'sent'` means dispatched, not completed — turn failures arrive later as `session-error` events, not as a rejected call. The dispatch is deferred one `setImmediate` so the invoke ack reaches the renderer before the `user-message` event does (ordering the UI depends on). `destroy()` order is load-bearing: `session.destroy()` (abort + removeAllListeners — synchronous, this stops re-enqueue, NOT the map delete) → await the append chain → `store.dispose()` (flush open part) → `live.delete`. App-quit calls `destroyAll()` (best-effort flush; bounded to one in-flight part).
 - **`quiesce(id)` (M2) is a SEPARATE, STRONGER teardown than `interrupt()` — cross-device takeover only, never the Stop button.** `interrupt()` aborts only the in-flight turn and leaves the M1 send queue draining (a queued message starts a new turn right after). `quiesce()` additionally clears the queue synchronously, awaits one macrotask (lets a same-tick `send()` finish its deferred dispatch before the abort), and awaits the turn settling + append chain — its postcondition is "no further appends until a new `send()`", which a cross-device transcript flush depends on. `createHolderTakeover` (conversations/takeover.ts) branches to it for a native holder instead of sending the ESC byte. Depth + full 5-step order: `docs/conversations.md` → "Native provider participation".
 - **M1 send queue** — per-session FIFO capped at `SEND_QUEUE_LIMIT` (10) in the host; drains ONLY on the dispatched `send()`'s turn settling, one queued message per drain step. Interrupt aborts the current turn only — the queue is untouched and still drains after. Past the cap, `send()` refuses honestly (`{status:'failed', reason:'queue-full'}`) rather than silently accepting. Pinned: `native-session-host.test.ts` "send queue (M1)" block.
@@ -48,7 +48,39 @@ Native sessions now write through the same Conversation Store (`conversations/se
 - **Permission precedence is two-tier:** tool-layer guards (secret paths, `external_directory`) sit BELOW all configuration and never yield; the destructive deny-list is CONFIG — an explicit remembered Always-allow beats it (by design, consequence-gated in UI, surfaced via the `denyListed` flag on the ask). Guard: `permission-engine.test.ts`.
 - **The Bash tool bypasses the file-tool guards** — secret-path denial and the cwd jail live in the file tools; `cat .env` through Bash defeats them, and the command-glob deny-list can't catch every phrasing. ACCEPTED limitation (CC has the same hole); the guards are honest friction, not a sandbox. Don't present them as a security boundary, and don't try to glob your way to one. (Migrated from workspace `docs/PITFALLS.md`.)
 - **`PERMISSION_RESPOND` routes by `native-` id prefix** — native ask ids are `native-`-prefixed so the handler tries `nativeHost.respondPermission(requestId, …)` FIRST, then falls through to `hookRelay.respond` (which may be absent in native-only sessions). Don't collapse the two brokers into one. Verify: `src/main/ipc-handlers.ts` (`respondPermission` before `hookRelay`).
-- **The serialization contract now also covers ask-pauses** — `HarnessSession.send()` still hard-throws when a turn is in flight, but an ask PAUSES the turn, it does NOT end it: the same in-flight turn resumes on `respondPermission`. Callers must not re-`send()` while an ask is open. Guard: `harness-session-loop.test.ts` (canceled-ask regression).
+- **The serialization contract now also covers ask-pauses** — `HarnessSession.send()` still hard-throws when a turn is in flight, but an ask PAUSES the turn, it does NOT end it: the same in-flight turn resumes on `respondPermission`. Callers must not re-`send()` while an ask is open. Guard: `harness-session-loop.test.ts` (canceled-ask regression). **One carve-out since 2026-08-13: a HUMAN dismissal of an interactive ask ends the turn** — see "A dismissed question ends the turn" below.
+
+### A dismissed question ends the turn (2026-08-13)
+
+Denying an ordinary permission ask returns "the user declined this action" and the
+model may try a different approach — still true. An interactive ask is different:
+the user closing an `AskUserQuestion` card is them taking the turn back, so the
+driver records `DISMISSED_TOOL_TEXT` as that call's real result, back-fills any
+un-executed siblings in the step with `NOT_RUN_TOOL_TEXT`, and `break turnLoop`s
+to `turn-complete` with `stopReason: 'question_dismissed'`. `AssistantTurnBubble`
+renders that as *"Question closed — waiting for you."*
+
+**A human "no" and a policy "no" are different things wearing one word, and the
+driver must not confuse them.** There are exactly three `askUser` implementations:
+`native-session-host.ts:747` (→ `PermissionBroker.ask`, the only one with a person
+behind it), `childAskPolicy()`, and the harness evaluator's fixture jail
+(`eval/run-case.ts`). Only the first can produce a dismissal, so
+`PermissionBroker.respond` stamps `dismissed: true` on a deny and the driver keys
+the end-turn on THAT, not on `behavior === 'deny'`. For the two policies a deny
+still means "you may not ask, carry on and finish" and returns `REFUSED_ASK_TEXT`.
+This is not theoretical: the evaluator's wrap-up turn denies `AskUserQuestion`
+precisely so the model answers instead of asking, and an early version that ended
+the turn on any deny lost the review outright (`harness-review-runner.test.ts`).
+Guard: `harness-session-loop.test.ts` → "POLICY deny (no `dismissed`)".
+
+Three more things are load-bearing. It is `turn-complete`, not `user-interrupt`:
+an interrupted turn skips the usage payload and the reducer stamps
+`stopReason: 'interrupted'`, and a dismissal should report usage and let queued
+messages drain (typing during the turn IS taking over). The sibling copy is its
+own string, because `CANCELED_TOOL_TEXT` names a cause — "the user interrupted
+this action" — that did not happen. And the signal is a driver-private
+`EndTurnResult` wrapper rather than a field on `ToolResultPayload`, so an ordinary
+tool cannot end a turn.
 - **Tool-call/result pairing is an invariant EVERYWHERE** — the driver back-fills canceled/interrupted calls, `rebuildHistory` back-fills crash-truncated ones, and `fitToContext` trims pair-aware. *Why:* a dangling tool_call 400s on real providers and bricks the session. Guards: `harness-session-loop.test.ts` + `harness-history-rebuild.test.ts` (truncated-tail).
 - **The driver emits ALL of a step's tool-use events BEFORE executing** (not interleaved) — `rebuildHistory` groups by event adjacency and relies on this ordering; don't "fix" it back to interleaved. Guard: `harness-session-loop.test.ts`.
 - **The read-before-edit registry RESETS on resume** — files change while a session is closed, so a stored Read can't stand in for a fresh one. Don't "optimize" the registry back from persisted Read events. Guard: `harness-session-loop.test.ts`.
@@ -272,7 +304,7 @@ tool has no way to know that from a shell it never rendered.
 
 ## MCP in native sessions (M3 item 4, phase 1)
 
-Design: workspace `docs/active/specs/2026-07-30-native-mcp-design.md`. Nine tasks built a
+Design: workspace `docs/archive/specs/2026-07-30-native-mcp-design.md`. Nine tasks built a
 registry store, a single-server client, a refcounted connection manager, a per-tool adapter,
 budget-gated session wiring, and projection into Claude Code's `~/.claude.json` — all on branch
 `feat/native-mcp-phase1`, not yet merged to master.
@@ -367,3 +399,112 @@ quit, and an OS SIGTERM bypass that handler entirely and leak the spawned MCP su
 `SessionManager.destroyAll()` and `HookRelay.stop()` ride the exact same single hook, so this is
 the existing quit-hook gap (logged as its own ROADMAP bug) applying to one more subsystem, not a
 new hole this work introduced.
+
+## Specialists (plan 1a)
+
+Design: workspace `docs/active/specs/2026-08-11-native-specialists-design.md`. Eight tasks built
+a Task tool that a native session's model can call to delegate a scoped piece of work to a
+**specialist** — a short-lived, foreground CHILD `HarnessSession` cold-started with a narrow tool
+allowlist, run to completion, and torn down. `harness/native-session-host.ts` (`createChild`,
+`spawnSpecialist`, `formatSpecialistReport`) and `harness/specialists/` (`registry.ts`,
+`builtins.ts`, `child-permissions.ts`, `child-ask-policy.ts`, `limits.ts`, `report-budget.ts`,
+`names.ts`) are the whole surface.
+
+- **A specialist child is an ordinary session, marked by parentage.** `NativeSessionHeader` grows
+  three ADDITIVE fields — `parentSessionId`, `sessionKind: 'specialist'`, `agentType` — so v1
+  session files need no migration. `createChild` writes them at header-create time; nothing else
+  in the persistence layer needed to change for a child to be a real, resumable, on-disk session.
+- **Depth-by-omission, not a depth counter.** No `SpecialistDefinition` lists `'Task'` in its
+  `allowedTools`, so a child's tool set is structurally incapable of spawning its own children —
+  there is no recursion guard to get wrong because there is no path to recurse through. Belt-and-
+  suspenders: `isSpecialistChild: true` on the child's `HarnessSessionOpts` is a second,
+  independent gate `syncTaskTool` checks before ever offering the Task tool, so a bug in the
+  allowlist filtering alone still cannot open depth-2 delegation.
+- **Frozen-surface re-emission: exactly three display types, never persisted under the parent.**
+  The child's own transcript-event listener does two things per event: (1) persist it, verbatim,
+  to the CHILD's own JSONL on the child's own append chain, and (2) if — and only if — the event's
+  type is one of `tool-use` / `tool-result` / `assistant-text` (the frozen `SUBAGENT_DISPLAY_TYPES`
+  set), re-emit a STAMPED COPY on the host's own event emitter, under the PARENT's `sessionId`,
+  carrying `data.agentId` (which child) and `data.parentAgentToolUseId` (which Task call). That
+  stamped copy is what the renderer's `applySubagentEvent` (`chat-reducer.ts`) consumes to fill in
+  the subagent card live. A `turn-complete` or `session-error` is deliberately NEVER in that set and
+  therefore never re-emitted — a stamped `turn-complete` would hit the conversation-record IPC
+  listener (`noteModelUsed`) and the title feeder under the PARENT's id, making a specialist's
+  internal turn boundary look like the parent finished a turn. The host is NOT wired via `wire()`
+  for this same reason: `wire()` is what makes a session mint a Conversation Store record and feed
+  the title feeder, and a child must never surface as a conversation the user never started.
+- **The envelope + deny-list cut-through.** A child's `decide()` (`child-permissions.ts`) is built
+  from the PARENT's fully resolved decide function, capped by the specialist's `charter`
+  (`'read-only'` or `'read-write'`) and `allowedTools` — a read-only charter cannot approve Write/
+  Edit/Bash even if the parent's own mode would. `envelopeGranted: true` in 1a means the Task-tool
+  call itself (which the parent's own permission stack already gated) IS the user's consent for
+  everything inside the child's charter — there is no second per-tool ask surface for a child's
+  own actions. `DESTRUCTIVE_DENY_LIST` still applies underneath the envelope unmodified: the
+  envelope raises what's grantable, it never lowers the floor guards below it already enforce.
+- **Charter-scoped consent key.** Remembered "Always allow" rules are built against the PARENT's
+  id and the PARENT's cwd (never the child's), because `buildDecide` keys live permission mode by
+  session id and remembered rules by cwd — both are properties of the delegating conversation and
+  its project, not of a one-shot child that will be gone before the rule could ever be looked up
+  again under the child's own id.
+- **Per-parent slots and single writer, never host-global.** `specialistSlots` (capped by
+  `HOSTED_MAX_CONCURRENT_SPECIALISTS`, `specialists/limits.ts`) and `activeWriterChild` (the
+  single-writer invariant — at most one `charter: 'read-write'` child running at a time per
+  parent, so two concurrent writers can't race edits to the same files) are BOTH keyed by parent
+  session id. An unrelated conversation's specialist fan-out never caps or blocks this one's.
+- **Cold-start contract.** A child gets NONE of the parent's conversation history — its system
+  prompt is the specialist's own definition body (not the preset's), its `<env>` block describes
+  the child's own `workDir`, and both the skill catalog and MCP servers are explicitly suppressed
+  (an empty catalog object, not an omission — `syncSkillTool` falls back to the FULL installed
+  catalog whenever `opts.skillCatalog` is `undefined`, so leaving it out would silently hand a
+  child the user's whole skill library). The entire brief the child ever sees is its first user
+  turn, delivered by `spawnSpecialist`.
+- **Containment.** A child's `workDir` must resolve to the parent's `cwd` or a subdirectory of it —
+  checked through the same `canonicalize`/`isUnderRoot` helpers the tool-layer path guards use, so
+  this check and `checkPathGuard` can never disagree about what counts as "inside."
+- **The names easter egg (Task 8).** Every child gets an alliterative fun title —
+  `"{Name} the {Descriptor} {Role}"` (e.g. "Rowan the Relentless Researcher") — drawn without
+  replacement from a shared first-name pool via `specialists/names.ts`'s `assignSpecialistName`,
+  scoped per PARENT (`NativeSessionHost`'s `takenNamesOf: Map<parentId, Set<string>>`, cleared
+  alongside `childrenOf` when the parent tears down). The descriptor pool alliterates with the
+  role (E-words for Explorer, R-words for Researcher/Reviewer, W-words for Worker). A pool
+  exhausted mid-conversation falls back to a numbered title (`"Explorer 13"`) rather than crashing
+  or repeating a name. The title lands in the child's `NativeSessionHeader.title` field at
+  `createChild` time — the existing title-precedence read path in `session-store.ts`'s `list()`
+  renders it for free — and `formatSpecialistReport` uses the same title (not the bare
+  `SpecialistDefinition.displayName`) in the parent-facing report header, so the model always
+  knows WHICH specialist (by name) answered, alongside the role id in parentheses.
+- **Children are hidden from every default list, by construction, not by filtering them out
+  downstream.** `SessionStore.list()` defaults `includeChildren` to `false` and skips any header
+  with `sessionKind === 'specialist'` OR a `parentSessionId` set. Every list-shaped surface in the
+  app — `NativeSessionHost.list()` (Resume Browser feed, `NATIVE_SESSIONS_LIST` IPC), the
+  Conversation Store's `'native'`/`'claude'` buckets (chat search, session browser overlay) — is
+  either downstream of that one default or is itself record-driven and structurally can't see a
+  child, because `createChild` never mints a Conversation Store record for one (see the `wire()`
+  point above). `createChild` also has no IPC route at all — it's host-internal, called only from
+  `spawnSpecialist`, itself called only from the Task tool's implementation — so a child never
+  reaches `ipc-handlers.ts`'s session-create path in the first place. (Verified by an exhaustive
+  `rg` sweep of every `store.list(`/`SessionStore`/`listSessionFiles`/`cwdToProjectSlug` hit under
+  `desktop/src/main`, per-site, as part of landing this section — see the Task 8 commit.)
+- **A child never reaches a real user ask.** `askUser: childAskPolicy()` replaces the parent's
+  `PermissionBroker` entirely for a child session — the broker would emit under the CHILD's
+  session id, which no renderer window owns, so the reducer would silently drop the ask and the
+  broker's promise would hang forever. `childAskPolicy()` instead resolves synchronously with a
+  typed refusal, so a child that hits an ask-shaped situation (an `AskUserQuestion` call, or a
+  guard that would otherwise prompt) gets an immediate, legible "no" instead of stalling until
+  teardown.
+- **Reload tradeoff, stated plainly.** Specialist display events are DISPLAY-ONLY re-emissions —
+  they are never persisted under the parent's own session file (see the frozen-surface point
+  above). That means after an app restart, a resumed parent's subagent card renders EMPTY: the
+  child's `tool-use`/`tool-result`/`assistant-text` events live only in the child's own JSONL, and
+  nothing replays them back onto the parent on resume. What DOES survive is the report text
+  itself — it was returned as the Task tool's result, which IS part of the parent's own persisted
+  transcript (an ordinary tool result), so the parent model (and a human reading the resumed
+  transcript) still sees what the specialist reported, just not the blow-by-blow tool calls that
+  produced it. Replaying a child's display history back onto a resumed parent is explicitly out of
+  scope for 1a — durability and replay are plan 1b's job.
+
+**Deferred to plan 1b (not a 1a oversight):** background/non-blocking delegation, a persistent
+run ledger, heartbeats for a long-running child, subagent-card replay after resume, file-based
+custom specialists, and CC-compat with Claude Code's own subagent file format. **Deferred to plan
+1c:** pretty launch/report cards in the renderer, a specialist badge, and hidden-utility built-ins
+beyond the four (explorer/researcher/reviewer/worker) shipped here.

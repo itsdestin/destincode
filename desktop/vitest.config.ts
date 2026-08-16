@@ -53,6 +53,24 @@ export default defineConfig({
     // Don't reinstate it; use `test.projects` if per-glob environments are ever
     // wanted again.
     environment: 'node',
+    // test-engine/*.mjs are plain-Node CLIs (harness-eval, its worker, the
+    // review runner) that tests import in-process. WHY they must load NATIVELY
+    // instead of through vite's module runner: they `import()` compiled dist/
+    // modules by absolute path, and vite intercepts every dynamic import inside
+    // a module it serves. On Linux that interception happened to work; on
+    // Windows CI the file:// URL form Node itself requires (pathToFileURL, the
+    // 2026-08-16 fix for ERR_UNSUPPORTED_ESM_URL_SCHEME) came back out of the
+    // runner as "SyntaxError: Invalid or unexpected token" for all 60 tests
+    // touching the CLI. Externalizing hands the file to Node's own loader —
+    // the same path production takes — so the CLI's imports behave identically
+    // in tests and at the terminal. (harness-eval-orchestrator.test.ts already
+    // notes that the runner made require()/import() module identity diverge;
+    // this removes that divergence too.)
+    server: {
+      deps: {
+        external: [/[\\/]test-engine[\\/][^\\/]+\.mjs$/],
+      },
+    },
     alias: {
       // Stub Electron APIs so main-process imports don't crash in Node.js
       electron: path.resolve(__dirname, 'tests/__mocks__/electron.ts'),

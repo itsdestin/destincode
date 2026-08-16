@@ -92,6 +92,28 @@ describe('SessionStore', () => {
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
 
+  it('never persists a toolPreparing heartbeat, and does not flush the open part', async () => {
+    // Partial tool arguments must not reach the JSONL — a resume would replay a
+    // half-written file. The filter this relies on keys off "assistant-thinking
+    // with no text and no partId", so ADDING A FIELD to that event is exactly
+    // how it would silently regress.
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Writing', partId: 'p1' }, 'u-1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', {
+      toolPreparing: { toolCallId: 'c1', toolName: 'Write', chars: 512 },
+    }, 'u-2') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: ' a file', partId: 'p1' }, 'u-3') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 'u-4') as any);
+
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.some((e: any) => e.data?.toolPreparing)).toBe(false);
+    // The open p1 part was NOT flushed by the heartbeat: both halves coalesced
+    // into ONE persisted assistant-text.
+    const texts = events.filter((e: any) => e.type === 'assistant-text');
+    expect(texts).toHaveLength(1);
+    expect((texts[0] as any).data.text).toBe('Writing a file');
+  });
+
   it('a new partId flushes the previous open part', async () => {
     await store.create(HEADER);
     await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'thi', partId: 'r1' }, 'r1a') as any);
@@ -236,6 +258,34 @@ describe('SessionStore', () => {
 
     it('is false when no sessions directory exists at all', () => {
       expect(store.has('s-1')).toBe(false); // no create() call in this test
+    });
+  });
+
+  describe('specialist child headers (plan 1a)', () => {
+    const CHILD: NativeSessionHeader = {
+      ...HEADER, sessionId: 'child-1',
+      parentSessionId: 'root-1', sessionKind: 'specialist', agentType: 'explorer',
+    };
+    it('round-trips the additive child fields through create() and readHeader', async () => {
+      await store.create(CHILD);
+      const back = store.readHeader('child-1', HEADER.cwd);
+      expect(back?.parentSessionId).toBe('root-1');
+      expect(back?.agentType).toBe('explorer');
+    });
+    it('list() hides specialist children by default and includes them on request', async () => {
+      await store.create({ ...HEADER, sessionId: 'root-1' });
+      await store.create(CHILD);
+      const defaults = await store.list();
+      expect(defaults.map(e => e.sessionId)).toEqual(['root-1']);
+      const all = await store.list({ includeChildren: true });
+      expect(all.map(e => e.sessionId).sort()).toEqual(['child-1', 'root-1']);
+    });
+    it('a v1 header WITHOUT the new fields still validates (no migration)', async () => {
+      await store.create({ ...HEADER, sessionId: 'old-1' });   // exactly the pre-plan-1a field set
+      const back = store.readHeader('old-1', HEADER.cwd);
+      expect(back?.sessionId).toBe('old-1');
+      expect(back?.parentSessionId).toBeUndefined();
+      expect(back?.sessionKind).toBeUndefined();
     });
   });
 });
