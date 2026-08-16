@@ -45,3 +45,9 @@ export const SPECIALIST_IN_TOOL_STALE_MS = 300_000;
 // past this deadline; this is only how long the CHILD waits before it is
 // told to route around the block and keep working.
 export const SPECIALIST_ASK_HOLD_MS = 300_000;
+
+// Task 5 (plan 1c): the cap on a user-typed mid-run note (steerFromUser).
+// Lives here, not inline in native-session-host.ts, for the same reason every
+// other specialist limit does — it is a spec-fixed number a reviewer should
+// find in one place, not re-derive from a validation `if`.
+export const SPECIALIST_NOTE_MAX_CHARS = 2_000;

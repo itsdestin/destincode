@@ -81,8 +81,9 @@ export interface DelegationRecord {
    *  missing array the same as an empty one, never a crash. */
   notes?: SpecialistNote[];
   /** Which model actually ran it, once resolved (plan 1c, tier fallback
-   *  stated honestly). Mirrors SpecialistRunView.model exactly. */
-  model?: { label: string; via?: 'budget' | 'frontier' | 'named' | 'parent'; fallback?: boolean };
+   *  stated honestly). Referenced from SpecialistRunView's own field type
+   *  (rather than a duplicated literal) so the two can never silently drift. */
+  model?: SpecialistRunView['model'];
 }
 
 // Full body cap for the copy that rides IN the ledger file. mutateJson is a
@@ -163,7 +164,10 @@ export class DelegationLedger {
    *  listener sees each of them — enumerating methods in the host would go stale
    *  the day a twelfth is added. Changed = records whose object identity differs
    *  from before (the map callbacks return the same `d` for untouched records;
-   *  recordStart appends), so a no-op write reports nothing. */
+   *  recordStart appends) — a write that matches no record reports nothing.
+   *  (A write that DOES match a record always reports it, even when the patch
+   *  it applies happens to be content-identical to what was already there —
+   *  the map callback still returns a new object for a matched record.) */
   private async mutate(parentCwd: string, parentId: string, fn: (data: LedgerFile) => LedgerFile): Promise<void> {
     let before: DelegationRecord[] = []; let after: DelegationRecord[] | undefined;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {

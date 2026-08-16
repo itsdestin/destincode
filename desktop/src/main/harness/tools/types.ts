@@ -2,7 +2,7 @@
 // implements NativeTool<A>; the driver (Task 9) owns validation + permission
 // gating, and defineTool() (registry.ts) wraps execute with truncation + errors.
 import type { z } from 'zod';
-import type { StructuredPatchHunk } from '../../../shared/types';
+import type { StructuredPatchHunk, SpecialistRunView } from '../../../shared/types';
 import type { CatalogModel, ModelBinding } from '../../../shared/provider-types';
 import type { SpecialistDefinition } from '../specialists/registry';
 import type { DelegatedModels } from '../specialists/delegated-models';
@@ -33,6 +33,13 @@ export interface SpecialistSpawnOpts {
   // fall back to before this field existed, and is useless in a background
   // completion's preamble ("the task you delegated (\"...\")").
   description: string;
+  // Task 5 (plan 1c) — the model this run actually launched on, computed by
+  // tools/task.ts from the SAME resolution that produced `binding` above
+  // (absent here means "no binding was wired at all" — a bare test
+  // construction, never a real session; see task.ts's own WHY). Threaded
+  // through so the ledger record (and the run view the renderer reads) can
+  // say what actually ran, not just what the parent's own conversation is on.
+  model?: SpecialistRunView['model'];
 }
 
 /** Task 1 (plan 1b) — the receipt reserveSpecialist() hands back. Opaque to the

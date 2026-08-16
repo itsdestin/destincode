@@ -449,6 +449,56 @@ describe('Task tool — model resolution (Task 14)', () => {
     expect(r.isError).toBeFalsy();
     expect(spawn).toHaveBeenCalledWith('parent-1', expect.not.objectContaining({ binding: expect.anything() }));
   });
+
+  // Task 5 (plan 1c) — the ledger record (and later the run view) needs to
+  // know what model actually ran, not just what binding was passed. `label`
+  // is always the raw model id — never a pretty name (see task.ts's own WHY).
+  it('Task passes model {label: modelId, via: tier|named|parent, fallback} into spawn opts', async () => {
+    // via: 'budget' — a tier that IS configured, no fallback.
+    const budgetBinding: ModelBinding = { providerId: 'openrouter', modelId: 'cheap-model' };
+    const designated1 = await designatedWith({ budget: budgetBinding });
+    const spawn1 = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'budget' },
+      { spawn: spawn1, binding: PARENT_BINDING, models: { designated: designated1, catalog: async () => null } },
+    );
+    expect(spawn1).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'cheap-model', via: 'budget', fallback: false },
+    }));
+
+    // via: 'named' — a specific model id resolved against the live catalog.
+    const designated2 = await designatedWith({});
+    const catalog: CatalogModel[] = [{ id: 'gpt-5', providerId: 'openai', label: 'GPT-5' }];
+    const spawn2 = vi.fn(async () => ({ childId: 'child-2', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'gpt-5' },
+      { spawn: spawn2, binding: PARENT_BINDING, models: { designated: designated2, catalog: async () => catalog } },
+    );
+    expect(spawn2).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'gpt-5', via: 'named', fallback: false },
+    }));
+
+    // via: 'parent' — no model requested, no specialist preference: falls
+    // back to the conversation's own binding.
+    const spawn3 = vi.fn(async () => ({ childId: 'child-3', report: 'done' }));
+    await runTaskTool({ agent: 'explorer' }, { spawn: spawn3, binding: PARENT_BINDING });
+    expect(spawn3).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'parent-model', via: 'parent', fallback: false },
+    }));
+
+    // via: 'frontier' with a genuine fallback (the tier isn't configured) —
+    // fallback: true, and the label is honestly the PARENT's model, not a
+    // frontier model that was never actually used.
+    const designated4 = await designatedWith({});
+    const spawn4 = vi.fn(async () => ({ childId: 'child-4', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'frontier' },
+      { spawn: spawn4, binding: PARENT_BINDING, models: { designated: designated4, catalog: async () => null } },
+    );
+    expect(spawn4).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'parent-model', via: 'frontier', fallback: true },
+    }));
+  });
 });
 
 // ---------------------------------------------------------------------------

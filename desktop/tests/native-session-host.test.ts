@@ -3031,6 +3031,216 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // Task 5 (plan 1c) — the ledger's own change listener (wired once at
+  // construction, native-session-host.ts) turning every ledger write into a
+  // 'specialists-event' the renderer will eventually consume (Task 10), plus
+  // the user-facing note/stop surface (steerFromUser/interruptFromUser) and
+  // the spawn-time model landing on the record. Deliberately does NOT
+  // re-test steerSpecialist's own miss/deliver dispatch logic (task_id
+  // management (Task 6) above already covers postSteer's in-flight branch) —
+  // these tests are about the NOTE recording and the EVENT feed layered on
+  // top of it.
+  describe('user-facing steer/stop + specialists-event feed (Task 5, plan 1c)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    function bootHostWithLedger(modelFactory: any = factory) {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      return { home, store, h };
+    }
+    const childSession = (h: NativeSessionHost, id: string) => (h as any).live.get(id).session;
+
+    it('ledger changes surface as specialists-event {kind:run} with a SpecialistRunView (no delivery bookkeeping fields)', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      });
+
+      // recordDelegationStart is awaited inside spawnSpecialistBackground
+      // before it returns, so the FIRST event is guaranteed to already be
+      // sitting in `events` by the time we get here — no polling needed.
+      expect(events.length).toBeGreaterThan(0);
+      const first = events[0];
+      expect(first.kind).toBe('run');
+      expect(first.sessionId).toBe('root-1');
+      expect(first.run.childId).toBe(childId);
+      expect(first.run.status).toBe('running');
+      expect(first.run.agentType).toBe(EXPLORER.id);
+      // The run view is the RENDERER's shape — never the host's own delivery
+      // bookkeeping (toRunView's own comment lists exactly this set).
+      const bookkeepingFields = ['delivered', 'injectionAttempted', 'claimedBy', 'claimedAt', 'owner', 'missedSteers', 'rawReport', 'reportPath'];
+      for (const f of bookkeepingFields) expect(first.run).not.toHaveProperty(f);
+
+      await h.destroyAll();
+    });
+
+    it('steerSpecialist appends the note to the record for a LIVE delivery (one write) and for a PARKED steer (the same write as the parked steer) — the run event carries it either way', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Child A: mid-turn (delayedFactory trickles chunks), so postSteer
+      // delivers live and the note is a plain appendNote — ONE write.
+      const { childId: liveChildId, title: liveTitle } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: liveChildId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: liveTitle,
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const turn = childSession(h, liveChildId).send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const liveResult = h.steerSpecialist('root-1', liveChildId, 'focus on auth.ts instead', 'user');
+      expect(liveResult.status).toBe('ok');
+
+      // The ledger write is fire-and-forget — poll for it to land.
+      let liveRec: any;
+      for (let i = 0; i < 50; i++) {
+        liveRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === liveChildId);
+        if (liveRec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(liveRec.notes).toEqual([{ text: 'focus on auth.ts instead', from: 'user', at: expect.any(Number) }]);
+      expect(liveRec.missedSteers).toEqual([]); // delivered live, never parked
+      // ONE ledger write for the live delivery → exactly one emitted event
+      // for this child (proves appendNote, not a second write anywhere).
+      expect(events.filter((e) => e.run.childId === liveChildId)).toHaveLength(1);
+      expect(events.find((e) => e.run.childId === liveChildId)!.run.notes).toEqual([
+        { text: 'focus on auth.ts instead', from: 'user', at: expect.any(Number) },
+      ]);
+
+      await turn; // let the delayed stream settle before moving on
+
+      // Child B: never sent a turn, so postSteer misses and the steer parks.
+      const { childId: parkedChildId, title: parkedTitle } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p2', workDir: root, parentToolCallId: 'tc-2',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: parkedChildId, parentToolCallId: 'tc-2', agentType: EXPLORER.id, title: parkedTitle,
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      events.length = 0;
+
+      const parkedResult = h.steerSpecialist('root-1', parkedChildId, 'check config.ts instead', 'assistant');
+      expect(parkedResult.status).toBe('ok');
+
+      let parkedRec: any;
+      for (let i = 0; i < 50; i++) {
+        parkedRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === parkedChildId);
+        if (parkedRec?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(parkedRec.missedSteers).toEqual(['check config.ts instead']);
+      expect(parkedRec.notes).toEqual([{ text: 'check config.ts instead', from: 'assistant', at: expect.any(Number) }]);
+      // The parked steer and its note commit in the SAME mutateJson call
+      // (appendMissedSteers' `note` param) — never two independent writes —
+      // so this child gets exactly ONE event, carrying the note already.
+      const parkedEvents = events.filter((e) => e.run.childId === parkedChildId);
+      expect(parkedEvents).toHaveLength(1);
+      expect(parkedEvents[0].run.notes).toEqual([{ text: 'check config.ts instead', from: 'assistant', at: expect.any(Number) }]);
+
+      await h.destroyAll();
+    });
+
+    it('steerFromUser: empty → error, 2001 chars → error naming the limit and the length, foreign childId → error, ok → {ok:true}', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      expect(h.steerFromUser('root-1', childId, '   ')).toEqual({ ok: false, error: 'The note is empty.' });
+
+      const tooLong = 'a'.repeat(2001);
+      expect(h.steerFromUser('root-1', childId, tooLong)).toEqual({
+        ok: false,
+        error: 'Notes are limited to 2,000 characters — this one is 2,001.',
+      });
+
+      expect(h.steerFromUser('root-1', 'not-a-real-child', 'hello')).toEqual({
+        ok: false, error: 'That helper isn’t part of this conversation.',
+      });
+
+      expect(h.steerFromUser('root-1', childId, 'a real note')).toEqual({ ok: true });
+
+      await h.destroyAll();
+    });
+
+    it('interruptFromUser mirrors the outcome mapping', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      expect(h.interruptFromUser('root-1', 'not-a-real-child')).toEqual({
+        ok: false, error: 'That helper isn’t part of this conversation.',
+      });
+
+      expect(h.interruptFromUser('root-1', childId)).toEqual({ ok: true });
+
+      // Already finished — destroy() drops it from childrenOf, but the
+      // ledger's own (own child, not live) record is still there.
+      await h.destroy(childId);
+      expect(h.interruptFromUser('root-1', childId)).toEqual({
+        ok: false, error: 'This helper has already finished.',
+      });
+
+      await h.destroyAll();
+    });
+
+    it('the spawn-time model lands on the record and in the run view', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+        model: { label: 'anthropic/claude-opus-5', via: 'named', fallback: false },
+      });
+
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.model).toEqual({ label: 'anthropic/claude-opus-5', via: 'named', fallback: false });
+
+      const runEvent = events.find((e) => e.run.childId === childId);
+      expect(runEvent.run.model).toEqual({ label: 'anthropic/claude-opus-5', via: 'named', fallback: false });
+
+      await h.destroyAll();
+    });
+  });
+
   // Fix (Important 5, final review): the internalReadRoots exemption used to
   // cover the ENTIRE sessions/<slug>/ directory — every conversation's own
   // transcript .jsonl AND the delegation ledger sidecars, not just the

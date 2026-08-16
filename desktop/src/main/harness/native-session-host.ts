@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, SpecialistsEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -37,8 +37,8 @@ import { resolveSpecialist, type SpecialistDefinition } from './specialists/regi
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-router';
 import { assignSpecialistName } from './specialists/names';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS } from './specialists/limits';
-import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, type DelegationRecord } from './specialists/delegation-ledger';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS, SPECIALIST_NOTE_MAX_CHARS } from './specialists/limits';
+import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, toRunView, type DelegationRecord } from './specialists/delegation-ledger';
 import { DelegatedModels } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
@@ -586,23 +586,73 @@ export class NativeSessionHost extends EventEmitter {
    *  whatever it drained, erasing the steer this method just recorded.
    *  appendMissedSteers reads-and-appends from INSIDE the ledger's own lock,
    *  so two concurrent writers to the same record's `missedSteers` commute
-   *  instead of one clobbering the other — see its own WHY. */
-  steerSpecialist(parentId: string, childId: string, text: string): SpecialistManageOutcome {
+   *  instead of one clobbering the other — see its own WHY.
+   *
+   *  `from` (plan 1c, default 'assistant' so the Task tool's own task_id
+   *  steer call — which never names a `from` — keeps its existing behavior
+   *  unchanged): the note is recorded when it is ACCEPTED, whichever way it
+   *  travels, so the card learns of it from the run record the ledger emits
+   *  (spec §2) rather than a separate message type. A LIVE delivery is one
+   *  ledger write (appendNote); a PARKED steer's note rides in the SAME write
+   *  as the parked steer itself (appendMissedSteers' own `note` param) — the
+   *  global "one ledger write per related change" rule, so a throw between
+   *  two writes can never park the steer while dropping the note the user
+   *  saw, or the reverse. */
+  steerSpecialist(parentId: string, childId: string, text: string, from: 'user' | 'assistant' = 'assistant'): SpecialistManageOutcome {
     const loc = this.locateOwnChild(parentId, childId);
     if (!loc) return { status: 'not-yours' };
     if (!loc.live) return { status: 'not-running', agentType: loc.record.agentType };
     const { entry, record } = loc;
     const delivered = entry.session.postSteer(text);
-    if (!delivered) {
-      const parentCwd = this.live.get(parentId)?.cwd;
-      if (this.ledger && parentCwd) {
-        void this.ledger.appendMissedSteers(parentCwd, parentId, childId, [text]).catch((err) => {
+    const parentCwd = this.live.get(parentId)?.cwd;
+    if (this.ledger && parentCwd) {
+      const note = { text, from, at: Date.now() };
+      if (delivered) {
+        void this.ledger.appendNote(parentCwd, parentId, childId, note).catch((err) => {
+          log('ERROR', 'NativeSessionHost', 'failed to record a steer note in the ledger', { childId, parentId, error: String(err) });
+        });
+      } else {
+        void this.ledger.appendMissedSteers(parentCwd, parentId, childId, [text], note).catch((err) => {
           log('ERROR', 'NativeSessionHost', 'failed to record a missed steer in the ledger', { childId, parentId, error: String(err) });
         });
       }
     }
     const { title, description } = this.titleAndDescriptionFor(childId, entry.cwd, record);
     return { status: 'ok', title, description };
+  }
+
+  /** Task 5 (plan 1c) — the user-facing "send a note" surface (mid-run steer
+   *  from the card, not the model's own task_id steer). Never throws: every
+   *  refusal is a plain-English string the renderer shows verbatim, so it
+   *  must read as a sentence a non-developer would understand, never a status
+   *  code or a guessed cause (error-message-standards.md). Validation runs
+   *  BEFORE steerSpecialist so an empty/oversized note never reaches the
+   *  ledger at all — trimmed here once, and the trimmed text is what actually
+   *  gets recorded (steerSpecialist sees `t`, not the raw `text`). */
+  steerFromUser(parentId: string, childId: string, text: string): { ok: true } | { ok: false; error: string } {
+    const t = text.trim();
+    if (!t) return { ok: false, error: 'The note is empty.' };
+    if (t.length > SPECIALIST_NOTE_MAX_CHARS) {
+      return {
+        ok: false,
+        error: `Notes are limited to ${SPECIALIST_NOTE_MAX_CHARS.toLocaleString()} characters — this one is ${t.length.toLocaleString()}.`,
+      };
+    }
+    const outcome = this.steerSpecialist(parentId, childId, t, 'user');
+    if (outcome.status === 'not-yours') return { ok: false, error: 'That helper isn’t part of this conversation.' };
+    if (outcome.status === 'not-running') return { ok: false, error: 'This helper has already finished, so a note can’t reach it.' };
+    return { ok: true };
+  }
+
+  /** Task 5 (plan 1c) — the user-facing "stop this helper" surface, the same
+   *  outcome-to-plain-English mapping as steerFromUser above (see its own
+   *  comment for why this never throws). No length/emptiness to validate —
+   *  interruptSpecialist itself has no input beyond the child to act on. */
+  interruptFromUser(parentId: string, childId: string): { ok: true } | { ok: false; error: string } {
+    const outcome = this.interruptSpecialist(parentId, childId);
+    if (outcome.status === 'not-yours') return { ok: false, error: 'That helper isn’t part of this conversation.' };
+    if (outcome.status === 'not-running') return { ok: false, error: 'This helper has already finished.' };
+    return { ok: true };
   }
 
   /** Task 6 — cancel a RUNNING own child outright (`task_id` management
@@ -872,6 +922,11 @@ export class NativeSessionHost extends EventEmitter {
         delivered: false,
         owner: OWNER,
         missedSteers: [],
+        // Task 5 (plan 1c) — whatever task.ts resolved this run's model to
+        // (or undefined, for a bare test/one-off construction that never
+        // wires ctx.binding). Stamped at spawn time so it's on the record
+        // from the child's very first ledger row, not backfilled later.
+        model: opts.model,
       });
     } catch (err) {
       try {
@@ -1866,7 +1921,25 @@ export class NativeSessionHost extends EventEmitter {
     // ask already timed out — see onLateResponse's own comment for the
     // live-child-vs-ended-child split.
     this.broker.setLateResponseHandler((entry, decision) => this.onLateResponse(entry, decision));
-    this.ledger = nativeHome ? new DelegationLedger(nativeHome) : undefined;
+    // Plan 1c — the ONE place a ledger write becomes a renderer-visible push.
+    // The listener lives HERE, at construction, and nowhere else: the global
+    // house rule is "emit in the ledger, never the host per method" — every
+    // one of the ledger's own write methods (recordStart, update, appendNote,
+    // appendMissedSteers, ...) already funnels through its single mutate()
+    // chokepoint, so wiring the listener once here means a future write
+    // method gets the push for free, with no call site in THIS file to
+    // remember to add one to. `changed` is only the records a write actually
+    // touched, so one steer/status/model change becomes exactly one event —
+    // never a re-diff of the whole file. toRunView() strips the delivery
+    // bookkeeping (delivered, claimedBy, missedSteers, rawReport, ...) the
+    // card never needs; see its own comment for the full omitted list.
+    this.ledger = nativeHome
+      ? new DelegationLedger(nativeHome, (cwd, parentId, changed) => {
+          for (const rec of changed) {
+            this.emit('specialists-event', { kind: 'run', sessionId: parentId, run: toRunView(rec) } satisfies SpecialistsEvent);
+          }
+        })
+      : undefined;
     this.nativeHome = nativeHome;
     this.delegatedModels = nativeHome ? new DelegatedModels(nativeHome) : undefined;
   }

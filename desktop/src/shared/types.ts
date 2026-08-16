@@ -442,6 +442,17 @@ export interface SpecialistRunView {
   notes?: SpecialistNote[];
 }
 
+/** Task 5 (plan 1c) — the push event `specialists:run-changed` carries: one
+ *  ledger write, one event, one changed hire. `kind` is a discriminant with
+ *  exactly ONE member today ('run') — kept, rather than dropped down to a
+ *  bare `SpecialistRunView`, so a later kind (e.g. a one-off toast) can be
+ *  added without every existing listener's shape changing underneath it.
+ *  There is no separate "note" event: a note is a field ON the run record
+ *  (SpecialistRunView.notes), so the SAME 'run' event that carries a status
+ *  change also carries a newly-added note — the card never needs to merge
+ *  two event kinds to know what a hire's note history looks like. */
+export type SpecialistsEvent = { kind: 'run'; sessionId: string; run: SpecialistRunView };
+
 /** A background specialist's delivered report, folded into its Task card. */
 export interface SpecialistReportView {
   text: string;

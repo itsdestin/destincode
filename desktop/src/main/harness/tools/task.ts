@@ -395,6 +395,11 @@ export function createTaskTool(): NativeTool<TaskArgs> {
       const requestedModel = resolveRequestedModel(args.model, specialist.modelPreference);
       let resolvedBinding: ModelBinding | undefined;
       let fallbackNote = '';
+      // Hoisted out of the `if` below (Task 5, plan 1c) so the model-record
+      // computation after it can read `resolution?.fellBack` — undefined
+      // (never entered the block) reads the same as "no fallback happened",
+      // which is correct: the 'parent' path never falls back to anything.
+      let resolution: { binding: ModelBinding; fellBack: boolean; reason?: string } | undefined;
       if (requestedModel !== 'parent') {
         if (!ctx.binding) {
           return { text: 'Task failed: no model binding is wired for this session (configuration error).', isError: true };
@@ -409,7 +414,6 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         const catalog: CatalogModel[] | null = typeof requestedModel === 'object'
           ? (await models.catalog()) ?? null
           : null;
-        let resolution;
         try {
           resolution = resolveDelegatedBinding({
             requested: requestedModel, parent: ctx.binding, designated: models.designated, catalog,
@@ -435,6 +439,25 @@ export function createTaskTool(): NativeTool<TaskArgs> {
           fallbackNote = `\n\n(No ${requestedModel as DelegatedTier} model is designated — using this conversation's model.)`;
         }
       }
+
+      // Task 5 (plan 1c) — the model actually used, recorded onto the ledger
+      // row/run view alongside the delegation itself. `label` is the RAW
+      // model id, deliberately not a pretty display name: it is the only
+      // honest label available at this point in the pipeline — Settings
+      // resolves pretty names from the live catalog later, and inventing one
+      // here would be a name this run was never actually confirmed to be
+      // running under. `modelLabel` is undefined only when no binding is
+      // wired at all (a bare test/one-off ToolContext) — the real driver
+      // (harness-session.ts) always sets ctx.binding, so a production
+      // delegation always gets a model on its record.
+      const modelLabel = resolvedBinding?.modelId ?? ctx.binding?.modelId;
+      const model = modelLabel
+        ? {
+            label: modelLabel,
+            via: requestedModel === 'parent' ? 'parent' as const : typeof requestedModel === 'object' ? 'named' as const : requestedModel,
+            fallback: !!resolution?.fellBack,
+          }
+        : undefined;
 
       // Per-conversation spawn budget (Task 12, item 3): a LIFETIME cap,
       // distinct from the concurrency slot below — checked BEFORE reserving a
@@ -480,6 +503,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
             parentToolCallId: ctx.toolCallId ?? '',
             description: args.description,
             token: reservation.token,
+            ...(model ? { model } : {}),
           });
           return {
             text: `${title} (${args.agent}) is now working in the background (task_id: ${childId}). Their report will be delivered to you automatically when they finish — do not wait or poll. Keep working; a status block at the start of your turns tracks running specialists.`,
@@ -502,6 +526,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
           description: args.description,
           token: reservation.token,
           ...(resolvedBinding ? { binding: resolvedBinding } : {}),
+          ...(model ? { model } : {}),
         });
         // Task 14: the one honest line a tier fallback earns — appended to the
         // report, never folded into it, so the child's own words stay intact.
