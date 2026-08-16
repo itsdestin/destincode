@@ -656,6 +656,51 @@ describe('Subagent threading', () => {
     expect(parent.subagentSegments![2].type).toBe('text');
   });
 
+  // Task 9 fix (external review, 2026-08-13): getHistory() has no guard
+  // against being called twice against an already-populated reducer state —
+  // a live re-dock re-sends the SAME stamped events off disk, not just a
+  // post-restart resume. Replaying the identical delta twice must not
+  // duplicate the text it produced the first time.
+  it('replaying the same subagent assistant-text delta twice does not duplicate the segment content', () => {
+    state = emitParentAgentToolUse();
+    const deliver = (s: ChatState) => chatReducer(s, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-report',
+      text: 'The bug is in the Android build.', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = deliver(state);
+    state = deliver(state); // second delivery of the SAME event (identical uuid) — replay-twice
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') expect(seg.content).toBe('The bug is in the Android build.');
+  });
+
+  it('replaying a multi-delta subagent report twice reproduces the same final text exactly once', () => {
+    state = emitParentAgentToolUse();
+    const events: ChatAction[] = [
+      {
+        type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+        text: 'The bug is ', timestamp: 1000, partId: 'part-1',
+        parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+      },
+      {
+        type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+        text: 'in the Android build.', timestamp: 1001, partId: 'part-1',
+        parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+      },
+    ];
+    const replay = (s: ChatState) => events.reduce((acc, ev) => chatReducer(acc, ev), s);
+    state = replay(state); // first replay (e.g. getHistory() after a restart)
+    state = replay(state); // second replay (e.g. a live re-dock) — the SAME stamped events again
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') expect(seg.content).toBe('The bug is in the Android build.');
+  });
+
   it('CLEAR_TIMELINE preserves subagentSegments on toolCalls entries', () => {
     state = emitParentAgentToolUse();
     state = chatReducer(state, {

@@ -87,13 +87,14 @@ describe('gating Skill leaves the other tools alone', () => {
   it('the core set is unaffected either way', () => {
     for (const expose of [true, false]) {
       const s = sessionWith({ exposeSkillCatalog: expose });
-      // makeOpts passes no tools, so the set is exactly {}, {Skill}, {Task}, or
-      // {Skill, Task} — the point is that gating never DROPS something, only
-      // adds or withholds Skill. Task 6's syncTaskTool runs the identical
-      // add-or-withhold dance for 'Task' (CLOUD_DEFAULT.canDelegate is true
-      // and makeOpts sets no isSpecialistChild), which is a second,
-      // independent conditional tool — filtered here too, not a regression.
-      expect(toolNames(s).filter((n) => n !== 'Skill' && n !== 'Task')).toEqual([]);
+      // makeOpts passes no tools, so the set is exactly {}, {Skill}, {Task,
+      // ModelSearch}, or {Skill, Task, ModelSearch} — the point is that
+      // gating never DROPS something, only adds or withholds Skill. Task 6's
+      // syncTaskTool runs the identical add-or-withhold dance for 'Task'
+      // (CLOUD_DEFAULT.canDelegate is true and makeOpts sets no
+      // isSpecialistChild), and Task 14's ModelSearch rides that same gate —
+      // both filtered here too, not a regression.
+      expect(toolNames(s).filter((n) => n !== 'Skill' && n !== 'Task' && n !== 'ModelSearch')).toEqual([]);
     }
   });
 });

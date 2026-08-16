@@ -29,9 +29,11 @@ export interface ChildPermissionInputs {
   allowedTools: string[];
   /** True when the user approved this specialist's launch (the Task-tool ask IS
    *  the consent moment — spec §5). Inside a granted envelope the child does not
-   *  re-ask for work the user already said yes to; a child cannot ask anyway
-   *  (childAskPolicy denies every ask), so without the envelope an in-charter
-   *  tool the parent would ASK about is effectively refused. */
+   *  re-ask for work the user already said yes to; without the envelope an
+   *  in-charter tool the parent would ASK about passes through as 'ask' (step 7
+   *  below), which childAskRouter then routes to the parent's card too — it is
+   *  no longer an effective refusal as it was under plan 1a's deny-everything
+   *  child-ask-policy.ts, just a real ask with a real (if delayed) answer. */
   envelopeGranted: boolean;
 }
 
@@ -41,7 +43,9 @@ export interface ChildPermissionInputs {
  *   2. write tool under a read-only charter  → deny, naming the charter
  *   3. parent says deny                      → pass that deny through unchanged
  *   4. parent says allow                     → allow
- *   5. parent says ask + deny-listed         → deny, always (no envelope can override — spec §5)
+ *   5. parent says ask + deny-listed         → pass the ask through UNCHANGED, always
+ *      (no envelope can override — spec §5; plan 1b Task 8: childAskRouter carries
+ *      this to a REAL user via the parent's card instead of hard-denying it)
  *   6. parent says ask + envelope granted    → allow (the user already consented)
  *   7. parent says ask + no envelope         → pass the ask through
  *
@@ -87,16 +91,16 @@ export function buildChildDecide(i: ChildPermissionInputs): ChildPermissionInput
     if (parent.action === 'allow') return parent;
     // The destructive deny-list ALWAYS cuts through the envelope (spec §5): approving
     // a specialist's LAUNCH is consent for its charter of work, not for `rm -rf` /
-    // `git push` / `sudo`. Children have no user to ask in 1a, so this surfaces as a
-    // typed deny the model can actually read — plan 1b's timeout-redirect will route
-    // it to the parent's user instead. A remembered "Always allow" on the parent wins
-    // upstream (it produces action 'allow', never reaching this branch) — the user
-    // stays sovereign.
+    // `git push` / `sudo`. Plan 1a had no user to ask, so this hard-denied with a
+    // typed message; plan 1b Task 8 gives specialists a real path to the parent's
+    // user via childAskRouter, so this now passes the ask through UNCHANGED instead —
+    // the router re-registers it under the PARENT's session with the specialist's
+    // identity attached, holds it up to SPECIALIST_ASK_HOLD_MS, and only THEN denies
+    // it (with a redirect, not a blame-the-user message) if nobody answers. A
+    // remembered "Always allow" on the parent wins upstream (it produces action
+    // 'allow', never reaching this branch) — the user stays sovereign either way.
     if (parent.action === 'ask' && parent.denyListed) {
-      return {
-        action: 'deny', denyListed: true,
-        message: `${tool} on this input is on the destructive-action list and needs the user's direct approval, which specialists cannot request. Use a non-destructive approach, or note what you wanted to do in your final report.`,
-      };
+      return parent;
     }
     // 6/7. Parent ask. The launch approval already covered this work, so inside
     //      a granted envelope it becomes an allow. denyListed is hardcoded

@@ -20,6 +20,18 @@ export interface PermissionRule {
    *  '\' as a regex literal, so a backslash escape syntax would break Windows
    *  commands like `del C:\foo\*`. A discriminator sidesteps that entirely. */
   match?: 'exact' | 'glob';
+  /** Task 11: the specialist agentType (e.g. 'worker') this rule is scoped to.
+   *  Absent means the rule is the ROOT session's own grant — a plain
+   *  PermissionRule from before specialists existed, or a preset/deny-list/
+   *  mode-baseline entry, none of which are ever specialist-scoped. Rule
+   *  IDENTITY is the QUINT (tool, pattern, action, match, specialist)
+   *  everywhere a remembered rule is deduped, removed, matched, or displayed —
+   *  declared here on the base type (not only on StoredRule below) because the
+   *  scope filter that keeps a specialist-keyed grant from leaking to the
+   *  root session or a different specialist type (native-session-host.ts's
+   *  buildDecide) has to read it off the SAME rule objects decidePermission
+   *  consumes, not a separate UI-only shape. */
+  specialist?: string;
 }
 
 /** A rule read off disk, in the semantics it was WRITTEN with.
@@ -36,19 +48,24 @@ export function normalizeRule<T extends PermissionRule>(rule: T): T {
   return rule.match ? rule : { ...rule, match: 'exact' };
 }
 
-/** Rule identity: the QUAD (tool, pattern, action, match). Two grants that differ
- *  only in `match` are different grants — collapsing them makes Settings revoke
- *  the wrong one. `grantedAt` is deliberately excluded so re-approving something
- *  does not look like a fresh grant.
+/** Rule identity: the QUINT (tool, pattern, action, match, specialist). Two grants
+ *  that differ only in `match` are different grants — collapsing them makes Settings
+ *  revoke the wrong one. Two grants that differ only in `specialist` are ALSO
+ *  different grants — collapsing THOSE would let a specialist's own grant satisfy
+ *  (or get revoked by) the root session's, which is exactly the leak Task 11 added
+ *  `specialist` to prevent. `grantedAt` is deliberately excluded so re-approving
+ *  something does not look like a fresh grant.
  *
  *  Normalizes BOTH sides, so a rule read straight off disk (no `match`) compares
  *  equal to the same rule after a read through PermissionStore (`match: 'exact'`).
  *  Callers therefore never have to remember to normalize first — one default for
- *  an absent `match`, in one place. */
+ *  an absent `match`, in one place. `specialist` needs no such normalization:
+ *  absent already means "root session's own grant" on both sides of any read path. */
 export function sameRule(a: PermissionRule, b: PermissionRule): boolean {
   const x = normalizeRule(a);
   const y = normalizeRule(b);
-  return x.tool === y.tool && x.pattern === y.pattern && x.action === y.action && x.match === y.match;
+  return x.tool === y.tool && x.pattern === y.pattern && x.action === y.action &&
+    x.match === y.match && x.specialist === y.specialist;
 }
 
 /** A remembered rule as STORED — the engine's PermissionRule plus provenance
@@ -128,6 +145,10 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
     // Prompting here would add friction with no safety gained, and would train the
     // user to click through prompts that never matter (M3 item 1).
     { tool: 'Skill', action: 'allow' },
+    // Task 14: ModelSearch reads public catalog metadata only (no provider
+    // keys, no session state) and attaches only alongside Task — same
+    // "narrow read, never worth an ask" reasoning as Skill just above.
+    { tool: 'ModelSearch', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':

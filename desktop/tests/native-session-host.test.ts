@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
-import { NativeSessionHost } from '../src/main/harness/native-session-host';
+import { NativeSessionHost, SUBAGENT_DISPLAY_TYPES, mergeChildEvents } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
 import { nativeStoreSlug } from '../src/main/slug-encoding';
 import type { PermissionRule } from '../src/shared/permission-types';
@@ -10,6 +10,9 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
+import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
+import { ModelSearchTool } from '../src/main/harness/tools/model-search';
+import type { CatalogModel } from '../src/shared/provider-types';
 
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
@@ -29,6 +32,17 @@ function firstAsk(h: NativeSessionHost): Promise<string> {
   });
 }
 
+// Task 8: resolves with the first transcript-event matching `match` — used to
+// catch a delivered host notice (a synthetic user-message with
+// data.injected === 'specialist-report', same shape a background specialist
+// report rides in on) without racing the delivery pass's own async timing.
+function waitForEvent(h: NativeSessionHost, match: (e: any) => boolean): Promise<any> {
+  return new Promise((res) => {
+    const on = (e: any) => { if (match(e)) { h.off('transcript-event', on); res(e); } };
+    h.on('transcript-event', on);
+  });
+}
+
 // RAW V4 stream-part shapes (see harness-session.test.ts): deltas carry `delta`, usage is nested.
 const CHUNKS = [
   { type: 'stream-start', warnings: [] },
@@ -38,6 +52,13 @@ const CHUNKS = [
   { type: 'finish', finishReason: { unified: 'stop' }, usage: { inputTokens: { total: 3 }, outputTokens: { total: 2 } } },
 ];
 const factory = async () => new MockLanguageModelV4({ doStream: async () => ({ stream: simulateReadableStream({ chunks: CHUNKS }) }) }) as any;
+
+// Fix pass 2 (Task 13): the constructor's 3rd param collapsed from a bare
+// contextLengthFor(binding) => Promise<number|null> into ONE closure that
+// also answers the engine's slot count (contextAndSlotsFor). Most fixtures
+// below don't care about either value — this stub answers "no source could
+// tell" for both, matching the old `async () => null`'s intent.
+const NO_CONTEXT = async () => ({ contextLength: null, totalSlots: null });
 
 // A ReadableStream that trickles chunks with a per-chunk delay so a turn can be
 // caught mid-stream (for the destroy-while-streaming test). The enqueue loop is
@@ -94,7 +115,7 @@ describe('NativeSessionHost', () => {
   let root: string; let host: NativeSessionHost;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
-    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -119,7 +140,7 @@ describe('NativeSessionHost', () => {
     await host.drain('s-1');
     await host.destroyAll();
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root);
     expect(resumed).toBe(true);
     expect(host2.getHistory('s-1')!.length).toBe(3);
@@ -142,7 +163,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'ulid-A', modelId: 'model-A' } });
     await host.destroy('s-1');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root, { providerId: 'local', modelId: 'model-B' });
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-1')).toBe('model-B');
@@ -154,7 +175,7 @@ describe('NativeSessionHost', () => {
     await host.create({ sessionId: 's-2', cwd: root, binding: { providerId: 'openrouter', modelId: 'header-model' } });
     await host.destroy('s-2');
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
     const resumed = await host2.resume('s-2', root);
     expect(resumed).toBe(true);
     expect(host2.modelForSession('s-2')).toBe('header-model');
@@ -184,7 +205,7 @@ describe('NativeSessionHost', () => {
 
   it('destroy() while a stream is mid-emit: no throw, coherent prefix persisted', async () => {
     const store = new SessionStore(new NativeHome(root));
-    const midHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+    const midHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       midHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -219,7 +240,7 @@ describe('NativeSessionHost', () => {
     });
     // delayedFactory trickles chunks, so the first turn is genuinely mid-stream
     // when resume lands — the exact window where an orphan does its damage.
-    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+    const orphanHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -259,7 +280,7 @@ describe('NativeSessionHost', () => {
       if (!threw && event.type === 'assistant-text') { threw = true; throw new Error('disk hiccup'); }
       return realAppend(cwd, event);
     });
-    const failHost = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+    const failHost = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
     await failHost.create({ sessionId: 's-f', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     failHost.send('s-f', 'hello');       // M1: dispatch-only — wait for the turn separately
     await waitForTurnComplete(failHost, 1);
@@ -315,7 +336,7 @@ describe('NativeSessionHost', () => {
     it('destroyAll() also tears down the pooled MCP connections', async () => {
       const mcpDestroyAll = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: mcpDestroyAll },
       );
@@ -324,7 +345,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('destroyAll() works fine with no mcpManager wired (pre-Task-6 wiring)', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
       await expect(h.destroyAll()).resolves.toBeUndefined();
     });
   });
@@ -346,7 +367,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv0')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -360,7 +381,7 @@ describe('NativeSessionHost', () => {
       const wanted = [fakeServer('srv1')];
       const acquire = vi.fn(async () => fakeLease(wanted));
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -372,7 +393,7 @@ describe('NativeSessionHost', () => {
       acquire.mockClear();
 
       const h2 = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -387,7 +408,7 @@ describe('NativeSessionHost', () => {
     it('destroy() releases this session\'s hold on MCP servers', async () => {
       const release = vi.fn(async () => {});
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire: async () => fakeLease([], release) },
       );
@@ -414,7 +435,7 @@ describe('NativeSessionHost', () => {
       let n = 0;
       const acquire = vi.fn(async () => leases[n++]);
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -438,7 +459,7 @@ describe('NativeSessionHost', () => {
     it('a registry-wide acquire failure does not block session creation — the session just opens with no MCP servers', async () => {
       const acquire = vi.fn(async () => { throw new Error('registry file corrupt'); });
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null,
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, undefined,
         { destroyAll: async () => {}, acquire },
       );
@@ -451,55 +472,209 @@ describe('NativeSessionHost', () => {
   // ---- Task 6 review fix 2: the per-parent slot/writer bookkeeping had zero
   // host-level tests before this — everything exercising it went through
   // tools/task.ts's fakes (task-tool.test.ts), which never touch the REAL host
-  // methods. Drives tryReserveSpecialistSlot/releaseSpecialistSlot/
-  // isSpecialistWriterBusy directly, keyed by an arbitrary parent id (no live
-  // session needed — these three are pure bookkeeping over host-owned Maps,
-  // enforced independently of whether a parent session actually exists). ----
+  // methods. Drives reserveSpecialist/releaseReservation directly, keyed by an
+  // arbitrary parent id (no live session needed — these are pure bookkeeping
+  // over host-owned Maps, enforced independently of whether a parent session
+  // actually exists).
+  //
+  // Task 1 (plan 1b): tryReserveSpecialistSlot/releaseSpecialistSlot are gone
+  // — reserveSpecialist folds the slot check AND the writer-busy check into
+  // ONE synchronous call, so a throw or an await between "checked" and "set"
+  // can no longer let two parallel Task calls both win the same reservation.
+  // ----
   describe('specialist slot + writer-lock bookkeeping (Task 6)', () => {
     it('ceiling: HOSTED_MAX_CONCURRENT_SPECIALISTS reserves succeed for one parent, the next is refused', () => {
       for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
-        expect(host.tryReserveSpecialistSlot('A')).toBe(true);
+        expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(true);
       }
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
+      // Task 13: no live session under 'A' → maxSpecialistsFor's defensive
+      // fallback (HOSTED_MAX_CONCURRENT_SPECIALISTS), carried on the refusal
+      // as `max` so tools/task.ts can render the REAL resolved number.
+      expect(host.reserveSpecialist('A', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
     });
 
     it('per-parent isolation: an UNRELATED parent is unaffected by A being at capacity', () => {
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);   // A is full
-      expect(host.tryReserveSpecialistSlot('B')).toBe(true);    // B's own ceiling is untouched
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.reserveSpecialist('A', { writer: false });
+      expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(false);   // A is full
+      expect(host.reserveSpecialist('B', { writer: false }).ok).toBe(true);    // B's own ceiling is untouched
     });
 
     it('release: freeing one slot lets A reserve again; releasing to zero drops the map entry', () => {
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.tryReserveSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(false);
-      host.releaseSpecialistSlot('A');
-      expect(host.tryReserveSpecialistSlot('A')).toBe(true);    // one freed → one more fits
+      const tokens: any[] = [];
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        const r = host.reserveSpecialist('A', { writer: false });
+        if (r.ok) tokens.push(r.token);
+      }
+      expect(host.reserveSpecialist('A', { writer: false }).ok).toBe(false);
+      host.releaseReservation(tokens.pop());
+      const refilled = host.reserveSpecialist('A', { writer: false });    // one freed → one more fits
+      expect(refilled.ok).toBe(true);
+      if (refilled.ok) tokens.push(refilled.token);
       // Release every reservation currently held (back at the ceiling after the
       // line above) down to zero — the map entry must not linger at 0 forever
-      // (releaseSpecialistSlot's own header: "so a parent that never delegates
+      // (releaseReservation's own header: "so a parent that never delegates
       // again doesn't linger in the map").
-      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) host.releaseSpecialistSlot('A');
+      for (const t of tokens) host.releaseReservation(t);
       expect((host as any).specialistSlots.has('A')).toBe(false);
     });
 
-    it('releasing a parent with no reservation is a harmless no-op', () => {
-      expect(() => host.releaseSpecialistSlot('never-reserved')).not.toThrow();
+    it('releasing a token for a parent with no live reservation is a harmless no-op', () => {
+      expect(() => host.releaseReservation({ parentId: 'never-reserved', writer: false })).not.toThrow();
       expect((host as any).specialistSlots.has('never-reserved')).toBe(false);
     });
 
     it('writer lock: busy only for the parent that holds it, never an unrelated parent; clearing it frees the parent up', () => {
-      expect(host.isSpecialistWriterBusy('A')).toBe(false);
-      // No public setter exists — spawnSpecialist is the only production writer
-      // (native-session-host.ts ~:220), and it always tears the lock back down
-      // in the SAME call (Fix 5 below) before ever returning. Reaching the Map
-      // directly is how tools/task.ts's own isWriterBusy() gate — read while a
-      // sibling Task call is still IN FLIGHT — actually gets pinned at the host
-      // level rather than only through task-tool.test.ts's fakes.
+      // WHY read the map directly rather than through a query method:
+      // isSpecialistWriterBusy was removed as dead production code (nothing
+      // outside tests ever called it — reserveSpecialist inlines the same
+      // check). No public setter exists either — spawnSpecialist/
+      // bindReservation is the only production writer, and it always tears
+      // the lock back down before ever returning. Reaching the Map directly
+      // is how a sibling Task call's in-flight writer lock — read while it is
+      // still IN FLIGHT — actually gets pinned at the host level rather than
+      // only through task-tool.test.ts's fakes.
+      expect((host as any).activeWriterChild.has('A')).toBe(false);
       (host as any).activeWriterChild.set('A', 'child-x');
-      expect(host.isSpecialistWriterBusy('A')).toBe(true);
-      expect(host.isSpecialistWriterBusy('B')).toBe(false);     // per-parent isolation
+      expect((host as any).activeWriterChild.has('A')).toBe(true);
+      expect((host as any).activeWriterChild.has('B')).toBe(false);     // per-parent isolation
       (host as any).activeWriterChild.delete('A');
-      expect(host.isSpecialistWriterBusy('A')).toBe(false);
+      expect((host as any).activeWriterChild.has('A')).toBe(false);
+    });
+
+    // ---- Task 1 (plan 1b): the actual fix. 1a's writer-lock gate was a
+    // check-then-set split across an await (tools/task.ts checked
+    // isWriterBusy(), native-session-host.ts's spawnSpecialist set the lock
+    // AFTER await createChild(...)) — safe only because the driver ran one
+    // tool at a time. Two Task calls issued in the SAME parallel tool-call
+    // step interleave at that await, and both could see "not busy" before
+    // either set the lock. reserveSpecialist closes that window by doing the
+    // check AND the set in one synchronous call. ----
+    it('reserves slot and writer atomically — two synchronous writer reservations, second refused', () => {
+      const a = host.reserveSpecialist('parent-1', { writer: true });
+      const b = host.reserveSpecialist('parent-1', { writer: true });
+      expect(a.ok).toBe(true);
+      expect(b).toEqual({ ok: false, reason: 'writer-busy' });
+    });
+
+    it('a released writer reservation frees the writer lock even when no child was ever bound', () => {
+      const a = host.reserveSpecialist('parent-1', { writer: true });
+      if (!a.ok) throw new Error('unexpected');
+      host.releaseReservation(a.token);
+      expect(host.reserveSpecialist('parent-1', { writer: true }).ok).toBe(true);
+    });
+
+    it('readers do not consume the writer lock and cap at the profile max', () => {
+      for (let i = 0; i < 4; i++) expect(host.reserveSpecialist('parent-1', { writer: false }).ok).toBe(true);
+      expect(host.reserveSpecialist('parent-1', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+    });
+  });
+
+  // ---- Task 13: maxSpecialistsFor now resolves the PARENT'S OWN live
+  // CapabilityProfile snapshot (capability-profile.ts's maxConcurrentSpecialists)
+  // instead of the flat HOSTED_MAX_CONCURRENT_SPECIALISTS constant — a local
+  // session's real ceiling can be smaller than hosted's. The fallback constant
+  // above still applies whenever no live session backs the parent id (the
+  // 'never created' cases in the describe block above). ----
+  describe('specialist concurrency cap follows the profile (Task 13)', () => {
+    const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
+    // Fix pass 2: contextLengthFor collapsed into contextAndSlotsFor — this
+    // fixture doesn't care about slots (totalSlots: null keeps the Layer 3
+    // fallback/unknown-model floor of 1 in play for the first two tests).
+    const contextAndSlotsFor = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: null });
+
+    it('a local-engine parent (unknown model → Layer 3 fallback) caps reservations at 1, not the hosted constant', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'local-parent', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(h.reserveSpecialist('local-parent', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 1 });
+      await h.destroyAll();
+    });
+
+    it('a cloud/hosted parent is unaffected — still caps at HOSTED_MAX_CONCURRENT_SPECIALISTS', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
+      await h.create({ sessionId: 'cloud-parent', cwd: root, binding: { providerId: 'openrouter', modelId: 'gpt-4o' } });
+      for (let i = 0; i < HOSTED_MAX_CONCURRENT_SPECIALISTS; i++) {
+        expect(h.reserveSpecialist('cloud-parent', { writer: false }).ok).toBe(true);
+      }
+      expect(h.reserveSpecialist('cloud-parent', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: HOSTED_MAX_CONCURRENT_SPECIALISTS });
+      await h.destroyAll();
+    });
+
+    // Fix pass (gap the review found): DiscoveredModel.totalSlots was built and
+    // tested at the capability-profile.ts layer, but nothing threaded a REAL
+    // engine reading into it — every local session silently fell back to the
+    // conservative floor of 1, a regression from the pre-Task-13 flat cap of 4.
+    // This is the closing link: a contextAndSlotsFor closure that answers a
+    // live 2-slot reading for a KNOWN local model (qwen3.6-35b-moe matches
+    // KNOWN_MODELS, 'full' tier, same modelId capability-profile.test.ts
+    // already proves clamps to a live reading) must make the HOST actually
+    // enforce 2, not 1 and not the hosted 4. Fix pass 2 folds the old separate
+    // slotCountFor closure into this same one — see the constructor param's
+    // comment for why that removes the shared-state race this test's sibling
+    // (below, "no cross-talk") now covers directly.
+    it('a KNOWN local model with a live 2-slot engine reading caps reservations at 2', async () => {
+      const localTwoSlots = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: b.providerId === 'local' ? 2 : null });
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, localTwoSlots as any, providerTypeFor as any, async () => null,
+      );
+      await h.create({ sessionId: 'local-parent-2', cwd: root, binding: { providerId: 'local', modelId: 'qwen3.6-35b-moe-q4' } });
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('local-parent-2', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 2 });
+      await h.destroyAll();
+    });
+
+    // Fix pass 2 concurrency regression: the OLD design shared one /props
+    // reading between two closures (contextLengthFor, slotCountFor) through a
+    // variable scoped at the ipc-handlers.ts wiring site — correct only if
+    // every resolveContextAndProfile call awaited both closures back-to-back
+    // with nothing else able to run in between. Two local-engine sessions
+    // starting while the OTHER is still mid-resolution is exactly the
+    // interleaving that variable could not survive. The new design has no
+    // shared state to interleave: this drives two overlapping create() calls
+    // for two DIFFERENT local bindings with two DIFFERENT slot counts and
+    // proves each session's resolved cap is its own — never the other's,
+    // never zeroed by the other landing in between.
+    it('two overlapping local-engine session starts each resolve their OWN slot count — no cross-talk', async () => {
+      let releaseA: () => void;
+      const stallA = new Promise<void>((res) => { releaseA = res; });
+      // Both ids must match a KNOWN_MODELS entry — an unknown local model hits
+      // the Layer 3 fallback, which floors to 1 UNCONDITIONALLY regardless of
+      // totalSlots (capability-profile.ts's localFallback), which would mask
+      // the exact cross-talk this test exists to catch. 'model-a' hits the
+      // Qwen 3.6 MoE entry, 'model-b' the Qwen 3.5 9B entry — different
+      // families, so a mix-up between them is unambiguous.
+      //
+      // model-a's read stalls mid-flight (simulating its /props round trip
+      // still being in the air) until the test explicitly releases it —
+      // model-b's read resolves immediately, landing WHILE model-a is still
+      // pending. The old shared-variable design could not tell these apart.
+      const contextAndSlotsFor = async (b: any) => {
+        if (b.modelId === 'model-a-qwen3.6-35b-moe') { await stallA; return { contextLength: 8192, totalSlots: 2 }; }
+        return { contextLength: 8192, totalSlots: 4 };
+      };
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null,
+      );
+
+      const createA = h.create({ sessionId: 'race-a', cwd: root, binding: { providerId: 'local', modelId: 'model-a-qwen3.6-35b-moe' } });
+      // Started WHILE createA is still stalled inside its own contextAndSlotsFor
+      // await — the exact overlap the review flagged.
+      await h.create({ sessionId: 'race-b', cwd: root, binding: { providerId: 'local', modelId: 'model-b-qwen3.5-9b' } });
+      releaseA!();
+      await createA;
+
+      // race-a's own reading (2 slots) — NOT 4 (race-b's), NOT 1 (floored by
+      // a stale/null read).
+      expect(h.reserveSpecialist('race-a', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-a', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-a', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 2 });
+
+      // race-b's own reading (4 slots) — unaffected by race-a's later resolve.
+      for (let i = 0; i < 4; i++) expect(h.reserveSpecialist('race-b', { writer: false }).ok).toBe(true);
+      expect(h.reserveSpecialist('race-b', { writer: false })).toEqual({ ok: false, reason: 'at-capacity', max: 4 });
+
+      await h.destroyAll();
     });
   });
 
@@ -508,11 +683,11 @@ describe('NativeSessionHost', () => {
     // Binding-aware fakes: a 'local' provider is a small local engine; anything
     // else is a cloud provider. Reach into the live session's resolved profile.
     const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
-    const contextLengthFor = async (b: any) => (b.providerId === 'local' ? 8192 : 200_000);
+    const contextAndSlotsFor = async (b: any) => ({ contextLength: b.providerId === 'local' ? 8192 : 200_000, totalSlots: null });
     const profileOf = (h: NativeSessionHost, id: string) => ((h as any).live.get(id).session as any).profile;
 
     it('a small local-engine binding yields a simplified profile; a swap to cloud re-resolves to full', async () => {
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any, async () => null);
       await h.create({ sessionId: 's', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
       expect(profileOf(h, 's').maxToolPresentation).toBe('simplified');
       expect(profileOf(h, 's').promptVariant).toBe('local-small');
@@ -535,7 +710,7 @@ describe('NativeSessionHost', () => {
     // fail this exact assertion.
     it('a discovered supportsVision:true from visionSupportFor reaches the resolved profile', async () => {
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
         async () => true,
       );
       await h.create({ sessionId: 'v', cwd: root, binding: { providerId: 'openrouter', modelId: 'vision-model' } });
@@ -549,7 +724,7 @@ describe('NativeSessionHost', () => {
     // openrouter has no VISION_PROVIDERS default, so this pins supportsVision: false.
     it('visionSupportFor returning null leaves the profile exactly as it was before this task', async () => {
       const h = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any,
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
         async () => null,
       );
       await h.create({ sessionId: 'v2', cwd: root, binding: { providerId: 'openrouter', modelId: 'unknown-model' } });
@@ -566,7 +741,7 @@ describe('NativeSessionHost', () => {
 
     it('a NON-local binding matching a registry family is NOT clamped to the registry ceiling', async () => {
       // Same model id, same raw 1M window; only the provider TYPE differs.
-      const bigWindow = async () => 1_000_000;
+      const bigWindow = async () => ({ contextLength: 1_000_000, totalSlots: null });
       const typeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
       const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, bigWindow as any, typeFor as any, async () => null);
 
@@ -586,7 +761,7 @@ describe('NativeSessionHost', () => {
     // A host wired with a REAL PermissionStore (over the temp home) + an injected
     // app version, driving the Write-then-stop turn.
     const permHost = () => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
       new PermissionStore(new NativeHome(root)), '9.9.9',
     );
 
@@ -670,7 +845,11 @@ describe('NativeSessionHost', () => {
         stream(...textChunks('t', 'done'), finishChunk('stop')),
       ]) as any;
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), bashFactory, async () => null, async () => null, async () => null,
+        // 3rd arg must be NO_CONTEXT (an object-returning stub), not a bare
+        // `async () => null` — the constructor's 3rd param answers BOTH
+        // context length and slot count in one closure (Task 13), so a plain
+        // null return fails the destructure in resolveContextAndProfile.
+        new SessionStore(new NativeHome(root)), bashFactory, NO_CONTEXT, async () => null, async () => null,
         new PermissionStore(new NativeHome(root)), '9.9.9',
       );
       const asks: any[] = [];
@@ -691,7 +870,8 @@ describe('NativeSessionHost', () => {
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, store, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
+        store, '9.9.9',
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
@@ -726,7 +906,8 @@ describe('NativeSessionHost', () => {
         removeProject: async () => false,
       };
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null, hangingStore, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
+        hangingStore, '9.9.9',
       );
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -763,7 +944,7 @@ describe('NativeSessionHost', () => {
 
     /** A host wired to the given remembered-rule store, driving the Write-then-stop turn. */
     const revokeHost = (permStore: any) => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, NO_CONTEXT, async () => null, async () => null,
       permStore, '9.9.9',
     );
 
@@ -946,7 +1127,7 @@ describe('NativeSessionHost', () => {
 
     it('create stamps the chosen preset in the header and seeds its default mode', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's1', cwd: root, binding, presetId: 'coder' });
       expect(store.readHeader('s1', root)?.harnessId).toBe('coder');
       expect(h.getPermissionMode('s1')).toBe('auto-edit');
@@ -955,7 +1136,7 @@ describe('NativeSessionHost', () => {
 
     it('create defaults to assistant when no preset is given', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's2', cwd: root, binding });
       expect(store.readHeader('s2', root)?.harnessId).toBe('assistant');
       expect(h.getPermissionMode('s2')).toBe('ask');
@@ -967,7 +1148,7 @@ describe('NativeSessionHost', () => {
       const store = new SessionStore(new NativeHome(root));
       await store.create({ v: 1, sessionId: 'legacy1', harnessId: 'chat', binding, cwd: root, createdAt: Date.now() });
 
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
       expect(await h.resume('legacy1', root)).toBe(true);
       expect(h.getHarnessId('legacy1')).toBe('assistant');
       expect(store.readHeader('legacy1', root)?.harnessId).toBe('chat'); // header untouched — mapping is read-side
@@ -976,7 +1157,7 @@ describe('NativeSessionHost', () => {
 
     it('an explicit user mode flip still beats the preset default', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null, async () => null, async () => null);
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
       await h.create({ sessionId: 's3', cwd: root, binding, presetId: 'coder' });
       h.setPermissionMode('s3', 'ask');
       expect(h.getPermissionMode('s3')).toBe('ask');
@@ -998,7 +1179,7 @@ describe('NativeSessionHost', () => {
     let id: string;
 
     beforeEach(async () => {
-      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null, async () => null, async () => null);
+      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, NO_CONTEXT, async () => null, async () => null);
       id = 'q-1';
       await host.create({ sessionId: id, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     });
@@ -1085,7 +1266,7 @@ describe('NativeSessionHost', () => {
     });
 
     it('a failed turn (factory throw) does not strand the queue', async () => {
-      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null, async () => null, async () => null);
+      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), NO_CONTEXT, async () => null, async () => null);
       await errHost.create({ sessionId: 'e-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const types: string[] = [];
       errHost.on('transcript-event', (e) => types.push(e.type));
@@ -1141,7 +1322,7 @@ describe('NativeSessionHost', () => {
     it('quiesce clears the queue, aborts mid-stream, and no appends occur after it resolves', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       qHost.send('qz', 'long');              // slow (delayedFactory) turn in flight
       qHost.send('qz', 'queued-survivor');   // FIFO'd behind it — must NEVER run
@@ -1162,7 +1343,7 @@ describe('NativeSessionHost', () => {
     it('quiesce catches a same-tick send (setImmediate defer) — the turn is aborted, never completed', async () => {
       const store = new SessionStore(new NativeHome(root));
       const appendSpy = vi.spyOn(store, 'append');
-      const qHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+      const qHost = new NativeSessionHost(store, delayedFactory, NO_CONTEXT, async () => null, async () => null);
       await qHost.create({ sessionId: 'qz2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       // send() and quiesce() in the SAME synchronous tick. send() defers its
       // runTurns dispatch one macrotask (setImmediate), so an interrupt that ran
@@ -1192,13 +1373,26 @@ describe('NativeSessionHost', () => {
     function bootHost(modelFactory: any = factory, skillCatalog?: any) {
       const store = new SessionStore(new NativeHome(root));
       const h = new NativeSessionHost(
-        store, modelFactory, async () => null, async () => null, async () => null,
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
         undefined, undefined, undefined, skillCatalog,
       );
       return { store, h };
     }
     async function withParent(modelFactory: any = factory, skillCatalog?: any) {
       const { store, h } = bootHost(modelFactory, skillCatalog);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      return { store, h };
+    }
+    // Task 8: a host whose specialistAskHoldMs is overridden to a small,
+    // real (not fake-timer) delay — see the constructor param's own WHY for
+    // why tests prefer this over vi.useFakeTimers() against a file this
+    // heavy in setImmediate-driven async machinery.
+    async function withParentFastAskHold(askHoldMs: number, modelFactory: any = factory) {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, askHoldMs,
+      );
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       return { store, h };
     }
@@ -1224,6 +1418,37 @@ describe('NativeSessionHost', () => {
       expect(header?.title).toMatch(/^\w+ the \w+ (Explorer|Researcher|Reviewer|Worker)$/);
       // Exactly the definition's allowlist — no Write/Edit/Bash/TodoWrite/AskUserQuestion.
       expect(toolNames(h, childId).sort()).toEqual([...EXPLORER.allowedTools].sort());
+      await h.destroyAll();
+    });
+
+    // Task 14: opts.binding, when tools/task.ts already resolved an override
+    // (a designated tier or a validated specific id), is what the CHILD
+    // actually launches on — not the parent's own binding. Every field that
+    // reads `binding` downstream (the header, retainModel's ref-count, the
+    // child's own HarnessSession) must agree on the OVERRIDE, not silently
+    // fall back to the parent's.
+    it('createChild launches on opts.binding when one is given, not the parent\'s own model', async () => {
+      const { store, h } = await withParent();
+      const override = { providerId: 'anthropic', modelId: 'claude-opus-5' };
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        binding: override,
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual(override);                 // NOT the parent's { providerId: 'openrouter', modelId: 'm' }
+      expect(h.modelForSession(childId)).toBe('claude-opus-5');   // retainModel ref-counted the RESOLVED model
+      expect(h.sessionsForModel('claude-opus-5')).toEqual([childId]);
+      expect(h.sessionsForModel('m')).toEqual(['root-1']);        // the parent's own ref is untouched
+      await h.destroyAll();
+    });
+
+    it('createChild falls back to the parent\'s binding when opts.binding is omitted (pre-Task-14 default, unchanged)', async () => {
+      const { store, h } = await withParent();
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const header = store.readHeader(childId, root);
+      expect(header?.binding).toEqual({ providerId: 'openrouter', modelId: 'm' });
       await h.destroyAll();
     });
 
@@ -1326,13 +1551,14 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    it("the destructive deny-list cuts through the envelope: a spawn-approved child still cannot rm -rf", async () => {
-      // Critical review fix: launch consent (the envelope) is consent for the
-      // specialist's CHARTER of work, not for `rm -rf` — spec §5 says no charter
-      // or envelope overrides the destructive deny-list. Worker is read-write and
-      // has Bash, and the parent sits in the default 'ask' mode where the
-      // deny-list layer marks `rm *` denyListed — exactly the shape that used to
-      // fall into the envelope branch and come out an allow.
+    it("the destructive deny-list cuts through the envelope, but now ROUTES to the parent instead of hard-denying (Task 8)", async () => {
+      // Critical review fix (plan 1a): launch consent (the envelope) is consent
+      // for the specialist's CHARTER of work, not for `rm -rf` — spec §5 says no
+      // charter or envelope overrides the destructive deny-list. Worker is
+      // read-write and has Bash, and the parent sits in the default 'ask' mode
+      // where the deny-list layer marks `rm *` denyListed. Plan 1b Task 8 flips
+      // the OUTCOME of that (a real user can now approve it) without touching
+      // the invariant itself (the envelope still never silently overrides it).
       const WORKER = resolveSpecialist('worker')!;
       fs.writeFileSync(path.join(root, 'marker.txt'), 'do not delete me');
       const rmOnce = () => scriptedModel([
@@ -1347,28 +1573,443 @@ describe('NativeSessionHost', () => {
       const events: any[] = [];
       h.on('hook-event', (e) => asks.push(e));
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
-      await childSession(h, childId).send('go');
+      const askArrived = firstAsk(h);
+      const sendPromise = childSession(h, childId).send('go');
+      const requestId = await askArrived;
+      // The ask reaches the host under the PARENT's id (root-1), with the
+      // specialist labelled — not the child's own id, which no window owns.
+      const ask = asks.find((e) => e.type === 'PermissionRequest')!;
+      expect(ask.sessionId).toBe('root-1');
+      expect(ask.payload.denyListed).toBe(true);
+      expect(ask.payload.specialist).toMatchObject({ childId, agentType: 'worker' });
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true); // still hasn't run — awaiting an answer
+      // A real user answers (deny) within the window — real declines get the
+      // plain copy, no redirect wording.
+      expect(h.respondPermission(requestId, { behavior: 'deny' })).toBe(true);
+      await sendPromise;
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/destructive-action list/i);
-      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);   // never ran
-      expect(asks).toEqual([]);                                          // no ask reached the host either
+      expect(res.data.toolResult).toMatch(/user declined/i);
+      expect(res.data.toolResult).not.toMatch(/pending on their screen/i); // not the timeout redirect
+      expect(fs.existsSync(path.join(root, 'marker.txt'))).toBe(true);     // never ran
       await h.destroyAll();
     });
 
-    it("an external-directory Read is declined by the wired ask policy, not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
+    it('an unanswered destructive-action ask times out into the redirect, and the ask stays answerable after', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      const events: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // resolves once the (timed-out) turn settles
+      const requestId = await askArrived;
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/pending on their screen/i);
+      expect(res.data.toolResult).toMatch(/Do NOT attempt the blocked action by any other means/);
+      // Nothing expired the card — no PermissionExpired for this id, so it is
+      // exactly what "the entry stays answerable" means.
+      expect(asks.some((e) => e.type === 'PermissionExpired' && e.payload._requestId === requestId)).toBe(false);
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true); // still findable
+      await h.destroyAll();
+    });
+
+    it('a late APPROVE while the child is still live arrives as a steer naming the tool', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go'); // times out into the redirect; the child stays LIVE (never destroy()'d here)
+      const requestId = await askArrived;
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true);
+      expect(steerSpy).toHaveBeenCalledTimes(1);
+      const [text] = steerSpy.mock.calls[0];
+      expect(text).toMatch(/Bash/);
+      expect(text).toMatch(/APPROVED — you may do it now/);
+      await h.destroyAll();
+    });
+
+    it('a late DENY while the child is still live arrives as a steer naming the tool, denied', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParentFastAskHold(20, async () => rmOnce());
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go');
+      const requestId = await askArrived;
+      expect(h.respondPermission(requestId, { behavior: 'deny' })).toBe(true);
+      const [text] = steerSpy.mock.calls[0];
+      expect(text).toMatch(/DENIED — do not attempt it/);
+      await h.destroyAll();
+    });
+
+    // ---- Fix pass, Finding 2: a LATE "Always allow" must persist too, not
+    // just steer/notify. Before this fix onLateResponse never read
+    // decision.always at all — it only ever steered the live child or queued
+    // a host notice, so "Always allow" answered after the timeout silently
+    // dropped the "and remember this" half, reachable through a second door
+    // beyond child-ask-router.ts's in-time path. ----
+    it('a LATE "Always allow" while the child is still live BOTH steers AND persists a specialist-keyed rule (Fix 2)', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const store = new PermissionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+        store, undefined, undefined, undefined, undefined, undefined, 20,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      const child = childSession(h, childId);
+      const steerSpy = vi.spyOn(child, 'postSteer');
+      await child.send('go'); // times out into the redirect; child stays live
+      const requestId = await askArrived;
+      // Same "Always allow" payload shape the in-time router test uses.
+      expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+      expect(steerSpy).toHaveBeenCalledTimes(1); // the steer still happens — this fix must not regress it
+
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.specialist === 'worker')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules).toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+      }));
+      await h.destroyAll();
+    });
+
+    it('a LATE "Always allow" after the child already ended ALSO persists a specialist-keyed rule (Fix 2)', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      let calls = 0;
+      const rmThenText = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return scriptedModel([
+            stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+            stream(...textChunks('t', 'done'), finishChunk('stop')),
+          ]) as any;
+        }
+        return factory();
+      };
+      const store = new PermissionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), rmThenText, NO_CONTEXT, async () => null, async () => null,
+        store, undefined, undefined, undefined, undefined, undefined, 20,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // times out into the redirect
+      const requestId = await askArrived;
+      await h.destroy(childId); // normal teardown AFTER the ask already timed out
+      const noticeArrived = waitForEvent(h, (e) => e.sessionId === 'root-1' && e.type === 'user-message' && e.data.injected === 'specialist-report');
+      expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+      await noticeArrived; // the host-notice half still fires — this fix must not regress it
+
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.specialist === 'worker')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules).toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+      }));
+      await h.destroyAll();
+    });
+
+    // Fix (Important 6, final review): onLateResponse used to hand-build its
+    // own rule object, discarding decision.grantScope entirely — an exact
+    // rule was stored no matter what width the user picked. Same command
+    // shape (git push origin feat/x) the root-session-level rememberedRuleFor
+    // test suite already pins for the 'wide' grant, driven through the LATE
+    // routed path this time.
+    it('a LATE "Always allow" persists the DERIVED WIDE rule when the user picked that width, not an exact-match rule', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      let calls = 0;
+      const pushThenText = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return scriptedModel([
+            stream(toolCallChunk('c1', 'Bash', { command: 'git push origin feat/x' }), finishChunk('tool-calls')),
+            stream(...textChunks('t', 'done'), finishChunk('stop')),
+          ]) as any;
+        }
+        return factory();
+      };
+      const store = new PermissionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), pushThenText, NO_CONTEXT, async () => null, async () => null,
+        store, undefined, undefined, undefined, undefined, undefined, 20,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // times out into the redirect
+      const requestId = await askArrived;
+      await h.destroy(childId); // normal teardown AFTER the ask already timed out
+      const noticeArrived = waitForEvent(h, (e) => e.sessionId === 'root-1' && e.type === 'user-message' && e.data.injected === 'specialist-report');
+      expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }], grantScope: 'wide' })).toBe(true);
+      await noticeArrived;
+
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.specialist === 'worker')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules).toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'git push*origin feat/x', match: 'glob', action: 'allow', specialist: 'worker',
+      }));
+      // The forbidden shape (what the bug produced): an exact-match rule
+      // storing the literal command instead of the derived wide pattern.
+      expect(rules).not.toContainEqual(expect.objectContaining({
+        tool: 'Bash', pattern: 'git push origin feat/x', specialist: 'worker',
+      }));
+      await h.destroyAll();
+    });
+
+    it('a late APPROVE after the child ended queues a parent delivery naming task_id', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      // First factory call (the child's turn) attempts the destructive Bash
+      // call; every later call (the parent's own turns, including the
+      // injected notice's turn) gets the plain text-only model.
+      let calls = 0;
+      const rmThenText = async () => {
+        calls += 1;
+        if (calls === 1) {
+          return scriptedModel([
+            stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+            stream(...textChunks('t', 'done'), finishChunk('stop')),
+          ]) as any;
+        }
+        return factory();
+      };
+      const { h } = await withParentFastAskHold(20, rmThenText);
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const askArrived = firstAsk(h);
+      await childSession(h, childId).send('go'); // times out into the redirect
+      const requestId = await askArrived;
+      await h.destroy(childId); // the specialist's own normal teardown, AFTER its ask already timed out
+      const noticeArrived = waitForEvent(h, (e) => e.sessionId === 'root-1' && e.type === 'user-message' && e.data.injected === 'specialist-report');
+      expect(h.respondPermission(requestId, { behavior: 'allow' })).toBe(true);
+      const notice = await noticeArrived;
+      expect(notice.data.text).toMatch(/^\[Specialist follow-up\]/);
+      expect(notice.data.text).toMatch(/approved/i);
+      expect(notice.data.text).toMatch(/Bash/);
+      expect(notice.data.text).toContain(childId); // task_id, so the parent can name what to resume
+      await h.destroyAll();
+    });
+
+    it('destroy(childId) cancels a routed ask registered under the parent id (raisedBy match) while still within its window', async () => {
+      const WORKER = resolveSpecialist('worker')!;
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+      const { h } = await withParent(async () => rmOnce()); // real 5-minute hold — never lets the timeout race this test
+      const { childId } = await h.createChild('root-1', {
+        specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
+      const askArrived = firstAsk(h);
+      const sendPromise = childSession(h, childId).send('go');
+      await askArrived;
+      await h.destroy(childId); // torn down WHILE the ask is still pending, not yet timed out
+      await sendPromise; // the child's own turn unwinds via the 'canceled' interrupt path
+      expect(asks.some((e) => e.type === 'PermissionExpired')).toBe(true); // card cleared
+      await h.destroyAll();
+    });
+
+    // ---- Task 11: the dropped-decision finding (previous task's review) ----
+    // A routed child ask's "Always allow" used to vanish: HarnessSession emits
+    // 'remember-rule' on ITSELF regardless of root/child, but createChild
+    // deliberately never wire()s a child (see createChild's own "NOT wire()"
+    // comment) — so nothing was ever listening. The fix routes persistence
+    // through child-ask-router.ts instead, scoped to the specialist's
+    // agentType so the grant can never widen the root session's own
+    // permissions or leak to a different specialist type.
+    describe('"Always allow" on a routed child ask (Task 11 dropped-decision fix)', () => {
+      const rmOnce = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Bash', { command: 'rm -rf marker.txt' }), finishChunk('tool-calls')),
+        stream(...textChunks('t', 'done'), finishChunk('stop')),
+      ]) as any;
+
+      it('persists a SPECIALIST-KEYED rule via the router, against the PARENT\'s cwd', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        const store = new PermissionStore(new NativeHome(root));
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+          store, '9.9.9',
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        const requestId = await askArrived;
+        // "Always allow", exactly the same payload shape a root-session card sends.
+        expect(h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] })).toBe(true);
+        await sendPromise;
+
+        // Fire-and-forget disk persist (same contract as the root path) — poll.
+        let rules: any[] = [];
+        for (let i = 0; i < 50; i++) {
+          rules = await store.rulesFor(root);          // the PARENT's cwd, never the child's workDir
+          if (rules.some((r) => r.specialist === 'worker')) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(rules).toContainEqual(expect.objectContaining({
+          tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker',
+        }));
+        await h.destroyAll();
+      });
+
+      it('sticks for the SAME child\'s next identical command (in-memory, not just disk)', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        // A FRESH scripted instance per factory call, same reasoning as
+        // writeFactory at the top of this file — each send() needs its own
+        // per-step counter.
+        const rmEachTime = async () => rmOnce();
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), rmEachTime, NO_CONTEXT, async () => null, async () => null,
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const asks: any[] = []; h.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        const requestId = await askArrived;
+        h.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] });
+        await sendPromise;
+        expect(asks).toHaveLength(1);
+
+        // Same child, same command again — must NOT re-ask: the in-memory
+        // rememberedFor bucket (not just the fire-and-forget disk write) is what
+        // guarantees this sticks for the rest of THIS run, exactly as the root
+        // session's own "Always-allow sticks in-session" test proves.
+        await childSession(h, childId).send('go again');
+        await h.drain(childId);
+        expect(asks).toHaveLength(1);
+        await h.destroyAll();
+      });
+
+      it('never widens the ROOT session\'s own permissions', async () => {
+        const WORKER = resolveSpecialist('worker')!;
+        const store = new PermissionStore(new NativeHome(root));
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), async () => rmOnce(), NO_CONTEXT, async () => null, async () => null,
+          store, '9.9.9',
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+        const { childId } = await h.createChild('root-1', {
+          specialist: WORKER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        });
+        const askArrived = firstAsk(h);
+        const sendPromise = childSession(h, childId).send('go');
+        h.respondPermission(await askArrived, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] });
+        await sendPromise;
+        for (let i = 0; i < 50; i++) {
+          if ((await store.rulesFor(root)).some((r) => r.specialist === 'worker')) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+
+        // The ROOT session itself attempts the EXACT same command — must still ask.
+        const asks: any[] = []; h.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+        const rootAsk = firstAsk(h);
+        const rootSend = childSession(h, 'root-1').send('go');
+        const rootRequestId = await rootAsk;
+        h.respondPermission(rootRequestId, { decision: { behavior: 'deny' } });
+        await rootSend;
+        expect(asks.some((e) => e.type === 'PermissionRequest')).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('never leaks to a DIFFERENT specialist type (buildDecide scope filter, direct)', async () => {
+        // Drives the actual filtering logic buildDecide applies, independent of
+        // any one specialist's tool charter — the built-in roster has only ONE
+        // read-write specialist (worker), so a full end-to-end run with a
+        // second, differently-typed specialist attempting Bash isn't possible;
+        // this is the mechanism the end-to-end tests above rely on, isolated.
+        const store = {
+          rulesFor: async () => [{ tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', specialist: 'worker' }],
+          remember: async () => { /* no-op */ }, remove: async () => false, removeProject: async () => false,
+        };
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, store,
+        );
+        await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+        const decideRoot = (h as any).buildDecide('root-1', root, []);
+        expect((await decideRoot('Bash', 'rm -rf marker.txt')).action).toBe('ask');       // invisible to root
+
+        const decideOtherSpecialist = (h as any).buildDecide('root-1', root, [], { specialistScope: 'reviewer' });
+        expect((await decideOtherSpecialist('Bash', 'rm -rf marker.txt')).action).toBe('ask'); // invisible to a different agentType
+
+        const decideSameSpecialist = (h as any).buildDecide('root-1', root, [], { specialistScope: 'worker' });
+        expect((await decideSameSpecialist('Bash', 'rm -rf marker.txt')).action).toBe('allow'); // visible to the SAME agentType
+
+        await h.destroyAll();
+      });
+    });
+
+    it("an external-directory Read is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
       // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
       // askUser only through the max_steps gate, which short-circuits identically
-      // whether `askUser: childAskPolicy()` is wired or deleted from createChild —
-      // so that pin alone cannot catch the wiring being dropped. This drives a
+      // whether `askUser: childAskRouter(...)` is wired or deleted from createChild
+      // — so that pin alone cannot catch the wiring being dropped. This drives a
       // DIFFERENT askUser call site: the external-directory forced ask
       // (harness-session.ts checkPathGuard 'external' verdict, ~:1830-1852). With
-      // the policy wired, childAskPolicy denies it and the model reads the
-      // DECLINED copy (~:1854, "user declined"). With askUser undefined,
-      // harness-session's own guard answers first with the "No approval handler
-      // is wired... configuration error" copy (~:1851) instead — the two are
-      // mutually exclusive, so asserting the declined copy AND the absence of the
-      // config-error copy discriminates policy-wired from policy-missing.
+      // the router wired, it denies this instantly (never reaching the broker —
+      // see child-ask-router.ts) with FACTUAL copy naming the real constraint —
+      // Task 8 deliberately dropped the old "user declined" wording here since no
+      // user was ever asked (error-message-standards.md: never blame a user for a
+      // decision they never made). With askUser undefined, harness-session's own
+      // guard answers first with the "No approval handler is wired... configuration
+      // error" copy instead — the two are mutually exclusive, so asserting the
+      // router's copy AND the absence of the config-error copy discriminates
+      // router-wired from router-missing.
       const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-external-'));
       const outsideFile = path.join(external, 'secret.txt');
       fs.writeFileSync(outsideFile, 'outside the jail');
@@ -1380,13 +2021,17 @@ describe('NativeSessionHost', () => {
       const { childId } = await h.createChild('root-1', {
         specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
+      const asks: any[] = [];
+      h.on('hook-event', (e) => asks.push(e));
       const events: any[] = [];
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
       await childSession(h, childId).send('go');
       const res = events.find((e) => e.type === 'tool-result')!;
       expect(res.data.isError).toBe(true);
-      expect(res.data.toolResult).toMatch(/user declined|dismissed/i);
+      expect(res.data.toolResult).toMatch(/work directory/i);
+      expect(res.data.toolResult).not.toMatch(/user declined|dismissed/i); // no user was ever asked
       expect(res.data.toolResult).not.toMatch(/No approval handler is wired/i);
+      expect(asks).toEqual([]); // never reached the broker/card at all — an instant, local deny
       fs.rmSync(external, { recursive: true, force: true });
       await h.destroyAll();
     });
@@ -1439,20 +2084,21 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
-    // Task 5.5 step 4 — the behavioral pin the ask-policy exists for. Four paths
-    // in harness-session call askUser directly, bypassing decide(); the step-cap
-    // gate is one of them. Wired to a broker, the child's ask would go to a
-    // sessionId no window owns, the reducer would drop it, and the promise would
-    // never resolve — the child would hang until teardown. With the policy it
-    // ends the turn cleanly.
-    it("stepCap is enforced: the turn ends with stopReason 'max_steps' instead of hanging, and no ask is raised", async () => {
+    // Task 5.5 step 4 — the behavioral pin the ask-policy/ask-router exists
+    // for. Four paths in harness-session call askUser directly, bypassing
+    // decide(); the step-cap gate is one of them. Plan 1a's childAskPolicy
+    // denied this instantly so the turn could never hang; plan 1b Task 8
+    // routes it to the parent's card instead — still never hangs (the
+    // timeout redirect guarantees an eventual answer), but it is no longer
+    // instant and an ask now genuinely reaches the host.
+    it("stepCap is enforced: the turn ends with stopReason 'max_steps' once the routed ask times out — never hangs", async () => {
       const CAPPED = { ...EXPLORER, stepCap: 2 };   // definition-driven, not a global
       // A model that never stops calling tools (scriptedModel replays its last
       // script forever), so only the step cap can end this turn.
       const loops = () => scriptedModel([
         stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
       ]) as any;
-      const { h } = await withParent(async () => loops());
+      const { h } = await withParentFastAskHold(20, async () => loops());
       const { childId } = await h.createChild('root-1', {
         specialist: CAPPED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
@@ -1470,8 +2116,11 @@ describe('NativeSessionHost', () => {
       // exactly two steps ran. Without the harness.limits.maxSteps wiring this
       // model would loop to stepBudgetFor(modelId) — same stopReason, ~25 steps.
       expect(events.filter((e) => e.type === 'tool-use')).toHaveLength(2);
-      expect(asks.filter((e) => e.payload?.sessionId === childId || e.payload?._sessionId === childId)).toEqual([]);
-      expect(asks).toEqual([]);   // nothing reached the host emitter at all
+      // Task 8: the ask DOES now reach the host — under the PARENT's id, never
+      // answered here, ended only by the timeout redirect.
+      const maxStepsAsk = asks.find((e) => e.type === 'PermissionRequest');
+      expect(maxStepsAsk?.sessionId).toBe('root-1');
+      expect(maxStepsAsk?.payload.tool_name).toBe('max_steps');
       await h.destroyAll();
     });
 
@@ -1486,7 +2135,7 @@ describe('NativeSessionHost', () => {
         stream(toolCallChunk('c1', 'Glob', { pattern: '*.ts' }), finishChunk('tool-calls')),
         stream(...textChunks('t', 'done'), finishChunk('stop')),
       ]) as any;
-      const h = new NativeSessionHost(store, globOnce, async () => null, async () => null, async () => null,
+      const h = new NativeSessionHost(store, globOnce, NO_CONTEXT, async () => null, async () => null,
         { rulesFor, remember: async () => { /* no-op */ } });
       await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const sub = path.join(root, 'sub-perms');
@@ -1535,6 +2184,11 @@ describe('NativeSessionHost', () => {
       // piece and is torn down.
       const { childId, report } = await h.spawnSpecialist('root-1', {
         specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        // Task 1 (plan 1b): spawnSpecialist now binds a caller-supplied
+        // reservation rather than reserving one itself — this test drives the
+        // run loop directly (below tools/task.ts), so it hands a plain reader
+        // token rather than going through reserveSpecialist.
+        token: { parentId: 'root-1', writer: false },
       });
       expect(report).toContain('Hi there');
 
@@ -1577,6 +2231,1498 @@ describe('NativeSessionHost', () => {
       expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
       expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
       await h.destroyAll();
+    });
+
+    // Task 2 (plan 1b), Step 4: interrupt(parentId) — the Stop button — must
+    // NOT cascade to a BACKGROUND child (deliberate 1b change from the test
+    // above, which pins the FOREGROUND case). spawnSpecialist itself only
+    // ever records background: false (Task 2's own scope is the foreground
+    // flow; a real background-spawn path is a later task), so this test
+    // reaches the private ledger directly to stamp a background: true record
+    // — same pattern this suite already uses for other private state
+    // ((host as any).live, .childrenOf, etc).
+    it('interrupt(parentId) does NOT cascade to a BACKGROUND specialist child — it keeps working', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, delayedFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Bg the Explorer',
+        workDir: root, description: EXPLORER.description, background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const events: any[] = [];
+      childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
+      const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn
+
+      await new Promise((r) => setTimeout(r, 20));
+      h.interrupt('root-1'); // Stop button — must NOT reach the background child
+
+      // The child was never told to stop, and it's still live.
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);
+      expect((h as any).live.has(childId)).toBe(true);
+      await turn; // let its turn settle naturally, undisturbed
+
+      const rec = (h as any).ledger.listFor(root, 'root-1');
+      expect(rec.find((r: any) => r.childId === childId)?.status).toBe('running');
+
+      // Teardown is still stronger than interrupt — destroy takes it down
+      // regardless of foreground/background (spec §1 cascade-cancel).
+      await h.destroyAll();
+      expect((h as any).live.has(childId)).toBe(false);
+    });
+
+    // Task 15 pin (1a handoff, asked for explicitly): quiesce() is the
+    // takeover/teardown path (native-session-host.ts:3263) — deliberately
+    // STRONGER than interrupt(), and 1b reworked both teardown paths (Task 2
+    // made interrupt(parentId) skip background children on purpose — the
+    // test above). This pins that quiesce was NOT weakened the same way: it
+    // must still cascade-destroy every live specialist child (foreground or
+    // background) and leave an honest 'interrupted' ledger record behind,
+    // never a silently orphaned child or a ledger row still claiming 'running'.
+    it('quiesce(parentId) destroys running children and their ledger records read interrupted', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, delayedFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Stamp the ledger row a real spawnSpecialist would have (createChild
+      // alone doesn't) — same pattern the background-cascade test above uses.
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Q the Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn, genuinely still running
+      await new Promise((r) => setTimeout(r, 20));
+
+      await h.quiesce('root-1'); // NOT interrupt() — the takeover/teardown path this pin guards
+      await turn; // settles — quiesce's own cascade aborts it, never leaves it hanging
+
+      // Destroyed, not merely interrupted-in-place: a running child must not
+      // survive a whole-parent quiesce.
+      expect((h as any).live.has(childId)).toBe(false);
+      // The ledger write is fire-and-forget (destroyChildrenOf's own WHY —
+      // a lock-contended write must never make teardown appear to hang), so
+      // poll for it to land rather than assuming it's synchronous with quiesce.
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.status === 'interrupted') break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec?.status).toBe('interrupted');
+
+      await h.destroyAll();
+    });
+
+    // Fix (Critical 3, final review): destroyChildrenOf's own comment used to
+    // claim "any child still in childrenOf is, by construction, still
+    // 'running' in the ledger" — true for a FOREGROUND child (spawnSpecialist
+    // de-registers it synchronously with its own completion write) but false
+    // for a BACKGROUND one: runDelegation's completion write lands, and the
+    // child is only removed from childrenOf a few microtasks later. A
+    // whole-parent quiesce()/destroy() racing that exact gap fires its own
+    // fire-and-forget `{status:'interrupted'}` write, which — before this fix
+    // — would land AFTER the completion write and silently overwrite it.
+    // Reproduced directly: the ledger record is set to 'completed' (as if
+    // runDelegation's write already landed) while the child is STILL present
+    // in childrenOf (as if its de-registration hasn't happened yet) — exactly
+    // the race window. The outcome that matters: the report survives as
+    // 'completed' and remains claimable, not merely that some field held
+    // steady.
+    it('quiesce() must not clobber a specialist whose ledger record already reads completed (regression — the teardown-after-completion race)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // The ledger already reflects a genuine, successful completion — as if
+      // runDelegation's own completion write had already landed — while the
+      // child is STILL in childrenOf (createChild alone never removes it),
+      // reproducing the exact gap the finding describes.
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Race the Explorer',
+        workDir: root, description: EXPLORER.description, background: true,
+        status: 'completed', startedAt: Date.now() - 1000, endedAt: Date.now(), steps: 2,
+        rawReport: 'the real, already-finished report', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      expect((h as any).childrenOf.get('root-1')?.has(childId)).toBe(true); // still in the set — the race window
+
+      await h.quiesce('root-1');
+
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec?.status).toBe('completed');                              // NOT clobbered to 'interrupted'
+      expect(rec?.rawReport).toBe('the real, already-finished report');
+      // The outcome that matters: the report is still reachable through the
+      // real delivery path, not stranded behind a status claimUndelivered
+      // never looks at.
+      const claimed = await (h as any).ledger.claimUndelivered(root, 'root-1');
+      expect(claimed?.childId).toBe(childId);
+
+      await h.destroyAll();
+    });
+
+    // Same race, the OTHER call site: an explicit task_id interrupt
+    // (interruptSpecialist) instead of a whole-parent quiesce/destroy. Same
+    // fix (updateUnlessCompleted), same outcome bar.
+    it('an explicit task_id interrupt must not clobber a specialist whose ledger record already reads completed', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'Race the Explorer',
+        workDir: root, description: EXPLORER.description, background: true,
+        status: 'completed', startedAt: Date.now() - 1000, endedAt: Date.now(), steps: 2,
+        rawReport: 'the real, already-finished report', delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const result = h.interruptSpecialist('root-1', childId);
+      expect(result.status).toBe('ok'); // the interrupt call itself still succeeds — only the ledger write is guarded
+
+      // The ledger write is fire-and-forget — poll for it, then assert it
+      // never actually clobbered the completed row.
+      await new Promise((r) => setTimeout(r, 30));
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec?.status).toBe('completed');
+      const claimed = await (h as any).ledger.claimUndelivered(root, 'root-1');
+      expect(claimed?.childId).toBe(childId);
+
+      await h.destroyAll();
+    });
+  });
+
+  // Task 6 — the task_id management surface's two host-level invariants the
+  // plan calls out explicitly: a specialist header can never re-enter through
+  // the ROOT resume() path, and a steer that misses its window is never
+  // silently lost. steerSpecialist/interruptSpecialist/resumeSpecialist's own
+  // dispatch logic (refusal wording, reservation sizing) is exercised through
+  // the Task tool instead — task-tool.test.ts — since that's the surface a
+  // model actually calls; these two are host-internal invariants.
+  describe('task_id management (Task 6)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    it('resume() refuses a specialist header — children re-enter only through resumeSpecialist', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Tear the child down first so resume()'s own single-writer guard
+      // (destroy-the-orphan-then-continue) isn't what this test is exercising
+      // — the header's sessionKind check below is.
+      await h.destroy(childId);
+      const ok = await h.resume(childId, root);
+      expect(ok).toBe(false);
+      expect((h as any).live.has(childId)).toBe(false); // never re-entered as a root session
+      await h.destroyAll();
+    });
+
+    it('a steer posted between child iterations lands in missedSteers and is prepended to the resumed brief', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      // Stamp the ledger row a real spawnSpecialist would have (createChild
+      // alone doesn't — same pattern the background-cascade test above uses).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // The child is live but has never been sent a turn — postSteer's own
+      // in-flight check (this.abort !== null) is false, so this IS the
+      // "between iterations" miss steerSpecialist is documented to record
+      // rather than lose.
+      const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
+      expect(steerResult.status).toBe('ok');
+      // The ledger write is fire-and-forget (steerSpecialist's own WHY —
+      // never blocks the caller on disk I/O), so poll for it to land rather
+      // than assuming it's synchronous.
+      let recBefore: any;
+      for (let i = 0; i < 50; i++) {
+        recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (recBefore?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(recBefore.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      // Tear the child down (without going through a normal completion —
+      // this test only needs "not live, own ledger record", exactly
+      // resumeSpecialist's own eligibility check) and resume it.
+      await h.destroy(childId);
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const result = await h.resumeSpecialist('root-1', {
+        childId, prompt: 'continue the investigation', background: false,
+        parentToolCallId: 'tc-2', reservation: reservation.token,
+      });
+      expect(result.status).toBe('ok');
+
+      // The resumed child's first turn is the REAL proof: read its own
+      // persisted transcript and confirm the missed steer was prepended,
+      // not silently dropped.
+      const events = store.readEvents(childId, root);
+      const userMessages = events.filter((e: any) => e.type === 'user-message');
+      const resumedMsg = userMessages[userMessages.length - 1] as any;
+      expect(resumedMsg.data.text).toContain('<steer>\nfocus on auth.ts instead\n</steer>');
+      expect(resumedMsg.data.text).toContain('continue the investigation');
+
+      // And the ledger's missedSteers is cleared once folded in — a second
+      // resume of the same child must not replay it again.
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfter.missedSteers).toEqual([]);
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding: steerSpecialist's miss-write used
+    // to compute its patch (`[...record.missedSteers, text]`) from a ledger
+    // snapshot read OUTSIDE the lock, then fire a fixed-array update(). If the
+    // child's run completed in the same narrow window, runDelegation's own
+    // completion write — its `missedSteers` drained from the CHILD's live
+    // pendingSteers queue, a source the miss above never touched — could land
+    // AFTER and silently overwrite the just-recorded steer with `[]`. This
+    // test forces exactly that ordering (steer write observed landed FIRST,
+    // then the completion write runs), which is the case the finding names:
+    // "If the child's run completes in that narrow window, the completion
+    // write's missedSteers: [] ... can land after and silently erase the
+    // steer just recorded." A test that only fires both writes concurrently
+    // via Promise.all would be flaky (real mkdir-lock scheduling decides the
+    // winner); sequencing it explicitly is what makes this deterministic
+    // while still reproducing the true bug (the completion write's patch is
+    // computed independently of the ledger, so ordering — not concurrency
+    // per se — is what causes the loss).
+    it('a completion write landing after a recorded miss must not clobber it (regression — the clobber race)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // Miss the steer's window exactly like the sibling test above — the
+      // child is live but has never taken a turn, so postSteer's in-flight
+      // check is false and the miss is recorded to the ledger instead. Poll
+      // for the fire-and-forget write to actually land before moving on, so
+      // the ordering below is real, not assumed.
+      const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
+      expect(steerResult.status).toBe('ok');
+      let recBefore: any;
+      for (let i = 0; i < 50; i++) {
+        recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (recBefore?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(recBefore.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      // NOW run the child's delegation to completion directly through
+      // runDelegation (the same private method spawnSpecialist/
+      // resumeSpecialist call) — the "child's run completes in that narrow
+      // window" half of the race. Its own `missedSteers` drains the child's
+      // pendingSteers queue, which the miss above never touched (postSteer
+      // returned false, so nothing was ever pushed to it) — so this is
+      // genuinely a [] from an unrelated source landing after a real steer.
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      await (h as any).runDelegation('root-1', childId, title, {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      }, reservation.token);
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfter.status).toBe('completed');
+      // The proof: the completion write (which landed second) must not have
+      // erased the steer the miss-write (which landed first) recorded.
+      expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding (fix pass 2): the fix above closed
+    // the clobber race by making the end-of-run ledger write into TWO
+    // separate awaited calls — `update()`/`updateIfRunning()` for status,
+    // then a SEPARATE `appendMissedSteers()` call. That is itself two
+    // independent lock acquisitions: if the first (status) landed and the
+    // second (steers) then threw, the record was durably 'completed' while
+    // this run's own drained steers were silently dropped — log-only, never
+    // retried. This test reproduces exactly that: it lets the FIRST
+    // mutateJson call for this record's completion write succeed, then
+    // forces the SECOND one to throw. Against the two-call shape this is the
+    // real bug (status commits, steers vanish); against a genuinely single
+    // atomic write there is no second call for this to ever hit, so the
+    // whole write lands together or not at all.
+    it('a completion write that fails partway must not durably commit status while silently dropping that run\'s own missed steers (regression — the split-write gap)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // Simulate a steer that got queued into the child's own LIVE
+      // pendingSteers queue but never applied before the run ends — the
+      // exact source runDelegation's completion write drains
+      // (drainUnappliedSteers' own doc comment: "posted during a turn's
+      // FINAL step, after the last iteration-boundary check already ran").
+      // Stubbing drainUnappliedSteers() directly, rather than pushing into
+      // the private pendingSteers queue before the run starts — pushing
+      // early would let the turn loop's own iteration-boundary check drain
+      // and genuinely APPLY it as a normal steer (harness-session.ts's own
+      // per-iteration drain), leaving nothing "missed" for runDelegation to
+      // find afterward. This test is about the LEDGER WRITE split, not
+      // about racing the turn loop, so it isolates that half directly.
+      const liveSession = (h as any).live.get(childId).session;
+      vi.spyOn(liveSession, 'drainUnappliedSteers').mockReturnValue(['focus on auth.ts instead']);
+
+      // Force the ledger's underlying NativeHome.mutateJson to fail on the
+      // SECOND call that touches THIS record after this point — reproducing
+      // the exact shape the split-write bug needs: one call for the status
+      // patch, a separate one right after for the steer append. Scoped to
+      // this record's own file so an unrelated write (e.g. a different
+      // parent/child's ledger row) can't accidentally consume the count.
+      const ledgerHome = (h as any).ledger.home as NativeHome;
+      const originalMutateJson = ledgerHome.mutateJson.bind(ledgerHome);
+      let call = 0;
+      const spy = vi.spyOn(ledgerHome, 'mutateJson').mockImplementation(async (...args: any[]) => {
+        const rel = args[0];
+        if (typeof rel === 'string' && rel.includes('root-1.delegations.json')) {
+          call++;
+          if (call === 2) throw new Error('simulated ledger write failure');
+        }
+        return originalMutateJson(...(args as [any, any, any?]));
+      });
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      await (h as any).runDelegation('root-1', childId, title, {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      }, reservation.token);
+
+      spy.mockRestore();
+
+      // Final-review fix (Finding 5): without this, the `else` branch below
+      // "passes" identically whether the completion write genuinely ran (and
+      // rolled back cleanly) or never ran AT ALL — e.g. a regression that
+      // skips the `if (this.ledger && parentCwd)` gate, or swallows a throw
+      // before it ever reaches mutateJson. Both leave status 'running' and
+      // missedSteers empty, so the old else branch blessed "the completion
+      // write never happened" as an equally valid pass. Proving `call >= 1`
+      // means mutateJson really was invoked for this record — the write was
+      // attempted, whatever the outcome.
+      expect(call).toBeGreaterThanOrEqual(1);
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      // The forbidden state: status durably flipped to 'completed' while the
+      // steer this run genuinely drained is nowhere on the record — the
+      // exact inconsistent split a two-call write can produce and a
+      // one-call write cannot (either both land, or the record stays
+      // 'running' with nothing appended — log-only failure, same contract
+      // this ledger has always had for a bookkeeping write that fails).
+      if (recAfter.status === 'completed') {
+        expect(recAfter.missedSteers).toContain('focus on auth.ts instead');
+      } else {
+        expect(recAfter.status).toBe('running');
+        expect(recAfter.missedSteers).toEqual([]);
+      }
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding (fix pass 2) — the reviewer's other
+    // ask: verify the resume-time CLEAR of missedSteers, which wasn't in the
+    // reviewed diff. resumeSpecialist used to read `record.missedSteers`
+    // from a snapshot taken well before wireChildLive() made the child live
+    // again, then LATER fire a blind `missedSteers: []` clear — two
+    // independent operations with an unlocked gap between them. A steer
+    // landing in that gap is silently wiped, never delivered to the resumed
+    // brief and never left on the ledger for a later resume either — genuine
+    // loss, of a steer the user just gave.
+    //
+    // Deterministic sequencing (not a real Promise.all race, same reason the
+    // clobber-race test above avoids one): this hooks the ONE ledger call
+    // resumeSpecialist makes to read-clear-and-flip the record back to
+    // 'running', and injects a genuinely-landed (fully awaited) concurrent
+    // append immediately before letting that read-and-clear proceed.
+    // "Concurrent" here means "landed in the real gap", not "maybe won a
+    // race". Retargeted in fix pass 3: this used to hook
+    // `DelegationLedger.prototype.update` (the status-flip write that used
+    // to be separate from the take) — fix pass 3 folded that write INTO
+    // takeMissedSteers, so the call carrying the 'running' patch is now
+    // takeMissedSteers itself; hooking the old call site would leave
+    // `injected` permanently false and the test would no longer exercise
+    // anything.
+    it('a steer appended concurrently with a resume-time clear is neither lost nor delivered twice (regression — the resume-clear race)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+      // Not live, own ledger record — resumeSpecialist's own eligibility bar
+      // (same pattern the sibling tests in this describe block use).
+      await h.destroy(childId);
+
+      const originalTake = DelegationLedger.prototype.takeMissedSteers;
+      let injected = false;
+      const spy = vi.spyOn(DelegationLedger.prototype, 'takeMissedSteers').mockImplementation(
+        async function (this: DelegationLedger, ...args: Parameters<DelegationLedger['takeMissedSteers']>) {
+          const [pCwd, pId, cId, patch] = args;
+          if (!injected && cId === childId && (patch as any)?.status === 'running') {
+            injected = true;
+            await this.appendMissedSteers(pCwd, pId, cId, ['a fresh steer landing mid-resume']);
+          }
+          return originalTake.apply(this, args);
+        },
+      );
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const result = await h.resumeSpecialist('root-1', {
+        childId, prompt: 'continue the investigation', background: false,
+        parentToolCallId: 'tc-2', reservation: reservation.token,
+      });
+      expect(result.status).toBe('ok');
+      spy.mockRestore();
+
+      const events = store.readEvents(childId, root);
+      const userMessages = events.filter((e: any) => e.type === 'user-message');
+      const resumedMsg = userMessages[userMessages.length - 1] as any;
+      const inPrompt = resumedMsg.data.text.includes('a fresh steer landing mid-resume') ? 1 : 0;
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      const inLedger = (recAfter.missedSteers ?? []).filter((s: string) => s === 'a fresh steer landing mid-resume').length;
+
+      // Exactly once — never 0 (lost) and never 2 (delivered to this
+      // resume's brief AND left behind to be delivered again next time).
+      expect(inPrompt + inLedger).toBe(1);
+
+      await h.destroyAll();
+    });
+
+    // External review, Important finding (fix pass 3) — the split-write gap
+    // survives in the resume path too. Fix pass 2 folded the read-and-clear
+    // of missedSteers into ONE atomic takeMissedSteers() call, but the
+    // status flip that used to follow it stayed a SEPARATE, later
+    // `ledger.update()` — still two lock acquisitions. If the take landed
+    // (steers cleared on disk) and that following write then threw, the
+    // catch tore the freshly-wired child down and rethrew before it ever got
+    // a turn: the resumed brief carrying those steers was never delivered,
+    // and the steers were already wiped from the ledger by the take. Lost,
+    // with no retry.
+    //
+    // Final-review fix (Finding 5): the previous version of this test made
+    // `DelegationLedger.prototype.update`/`takeMissedSteers` THROW directly
+    // for matching args, instead of exercising the real methods at all. That
+    // proves nothing about takeMissedSteers' own atomicity — the mock
+    // intercepts the call before any disk I/O runs, so "the steer survives"
+    // held simply because NEITHER method ever got a chance to touch disk;
+    // re-splitting takeMissedSteers back into two separate writes (patch,
+    // then a second clear) would still pass, since the mock would keep
+    // intercepting the whole method either way, before either write ran.
+    //
+    // Retargeted to the SAME technique the split-write-gap test above uses:
+    // hook the ledger's underlying NativeHome.mutateJson (the ONE primitive
+    // every ledger write bottoms out in) and fail the SECOND call this hook
+    // sees against this record, exactly as that test does — not the first.
+    // Failing the first call can't distinguish "one atomic write failed"
+    // from "the first of two writes never even ran"; failing the SECOND is
+    // what actually exercises the partial-commit shape a re-split would
+    // introduce. By the time this hook is installed (right before resume),
+    // recordStart and steerSpecialist's appendMissedSteers have already
+    // landed via the real, unhooked mutateJson, so THIS hook's own call
+    // count starts fresh at resume. Today takeMissedSteers makes exactly ONE
+    // call for this record (call === 1) — but "call === 2" is NOT dead: this
+    // resume is FOREGROUND (background: false below), so resumeSpecialist
+    // itself awaits runDelegation to completion before returning, and
+    // runDelegation's own completion write (`ledger.update(...status:
+    // 'completed'...)`, native-session-host.ts) is the SECOND lock-guarded
+    // write this hook sees against this record. That write IS the one being
+    // sabotaged here, and it does throw — but runDelegation wraps it in its
+    // own log-only try/catch (a bookkeeping failure must never fail the run
+    // or discard the report), so the throw never reaches resumeSpecialist:
+    // resumeError stays null and the record on disk is left exactly as
+    // takeMissedSteers' own patch (call 1) wrote it — status 'running',
+    // missedSteers cleared — because the completion write that would have
+    // changed either never landed. That is why the dual-branch assertion
+    // below lands in its ELSE branch today: the verdict ("resume completes
+    // normally, steer folded in and cleared") is right, it just isn't
+    // because takeMissedSteers' own write was never split — it's because a
+    // DIFFERENT write got sabotaged and was swallowed where it stood. If
+    // takeMissedSteers were ever re-split into two mutateJson calls, THIS
+    // hook's "call === 2" would fire on the second HALF OF THAT WRITE instead
+    // (shifting the already-sabotaged completion write to call 3, which this
+    // hook lets through untouched) — forcing the exact partial-commit shape
+    // (first write's half landed, second one didn't) the comment above
+    // describes, which the assertion below rejects.
+    it('a taken steer must not be lost when the resume\'s own status-flip write fails (regression — the resume split-write gap)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId, title } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title, workDir: root,
+        description: EXPLORER.description, background: false, status: 'running', startedAt: Date.now(),
+        delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      // Real ledger path, not the live pendingSteers queue — same reason the
+      // sibling tests above stub drainUnappliedSteers directly instead of
+      // pushing into the queue: the child hasn't taken a turn yet, so
+      // postSteer's in-flight check is false and the miss is recorded via
+      // steerSpecialist's own ledger write, exactly what a real between-
+      // iterations steer would produce. Poll for it to land before moving on
+      // so the ordering below is real, not assumed.
+      const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
+      expect(steerResult.status).toBe('ok');
+      let recBefore: any;
+      for (let i = 0; i < 50; i++) {
+        recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (recBefore?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(recBefore.missedSteers).toEqual(['focus on auth.ts instead']);
+
+      await h.destroy(childId);
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+
+      const ledgerHome = (h as any).ledger.home as NativeHome;
+      const originalMutateJson = ledgerHome.mutateJson.bind(ledgerHome);
+      let call = 0;
+      const spy = vi.spyOn(ledgerHome, 'mutateJson').mockImplementation(async (...args: any[]) => {
+        const rel = args[0];
+        if (typeof rel === 'string' && rel.includes('root-1.delegations.json')) {
+          call++;
+          if (call === 2) throw new Error('simulated ledger write failure (resume status flip)');
+        }
+        return originalMutateJson(...(args as [any, any, any?]));
+      });
+
+      let resumeError: unknown = null;
+      try {
+        await h.resumeSpecialist('root-1', {
+          childId, prompt: 'continue the investigation', background: false,
+          parentToolCallId: 'tc-2', reservation: reservation.token,
+        });
+      } catch (err) {
+        resumeError = err;
+      }
+      spy.mockRestore();
+
+      const recAfter = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      // Same dual-branch shape as the split-write-gap test above, and for
+      // the identical reason: today's atomic single-call takeMissedSteers
+      // never reaches "call === 2" for this record, so the real write
+      // succeeds and resume completes normally (steer folded into the
+      // resumed brief and cleared from the ledger). The forbidden state — a
+      // re-split write leaves the steer gone from the ledger WHILE the
+      // resume itself also failed, meaning it was never delivered (no turn
+      // ever read it) and never recoverable (wiped from the ledger too) — is
+      // what the else branch rejects; a real two-call split hits exactly
+      // that branch, and the injected failure at "call === 2" is what would
+      // put it there.
+      if (resumeError) {
+        expect(recAfter.missedSteers).toEqual(['focus on auth.ts instead']);
+        expect(recAfter.status).toBe('running');
+      } else {
+        expect(recAfter.missedSteers).toEqual([]);
+        expect(recAfter.status).toBe('running'); // takeMissedSteers' own patch restores 'running'
+      }
+
+      await h.destroyAll();
+    });
+
+    // Fix (Critical 2, final review): resumeSpecialist's takeMissedSteers patch
+    // reset status/startedAt/endedAt/failureText/delivered/background but left
+    // injectionAttempted (and reportPath/rawReport/steps) at whatever RUN 1
+    // left behind. Run 1 in the background delivers successfully — which
+    // durably stamps injectionAttempted: true on this childId's ONE ledger
+    // row (fix pass 5's marker; there is only ever one row per childId).
+    // Resuming the SAME child for a second background run reused that row: if
+    // the stale injectionAttempted survives the resume, claimUndelivered's
+    // `!d.injectionAttempted` bar (delegation-ledger.ts) can never pass again
+    // for this childId, so run 2's real report is claimed by nobody, forever
+    // — not the ledger lane, not the in-memory fallback (which was never
+    // stashed, since run 2's completion write succeeds), not reconcile, not a
+    // restart. This drives BOTH runs through the real background chain
+    // (spawnSpecialistBackground, then resumeSpecialist with background:true)
+    // and asserts the OUTCOME: run 2's own report text actually reaches the
+    // parent's conversation as a second injected notice, not that a field was
+    // merely set.
+    it('a SECOND background run after a resume still gets delivered, carrying its OWN report (regression — stale injectionAttempted)', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      // Call 1 is the child's run-1 turn; call 3 is the child's run-2 turn
+      // (after resume); every other call (the parent's own turns, including
+      // both injected-notice turns) gets the suite's default text-only model.
+      let calls = 0;
+      const seqFactory = async () => {
+        calls += 1;
+        if (calls === 1) return scriptedModel([stream(...textChunks('t', 'FIRST REPORT'), finishChunk('stop'))]) as any;
+        if (calls === 3) return scriptedModel([stream(...textChunks('t', 'SECOND REPORT'), finishChunk('stop'))]) as any;
+        return factory();
+      };
+      const h = new NativeSessionHost(
+        store, seqFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('transcript-event', (e) => events.push(e));
+
+      const reservation1 = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation1.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation1.token, description: EXPLORER.description,
+      });
+
+      // Run 1's report lands as the first injected notice — proves
+      // injectionAttempted really did get stamped for this childId (fix pass
+      // 5's marker), the precondition for the bug this test pins.
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      expect(events.find((e) => e.data?.injected === 'specialist-report')!.data.text).toContain('FIRST REPORT');
+      const recAfterRun1 = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfterRun1.delivered).toBe(true);
+      expect(recAfterRun1.injectionAttempted).toBe(true);
+
+      // Resume the SAME child in the background — reuses the SAME ledger row.
+      const reservation2 = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation2.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const resumeResult = await h.resumeSpecialist('root-1', {
+        childId, prompt: 'now check the loader for edge cases', background: true,
+        parentToolCallId: 'tc-2', reservation: reservation2.token,
+      });
+      expect(resumeResult.status).toBe('ok-background');
+
+      // The outcome that matters: run 2's OWN report reaches the parent as a
+      // SECOND injected notice — not silently stuck forever behind run 1's
+      // stale injectionAttempted marker.
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(2);
+      });
+      const secondNotice = events.filter((e) => e.data?.injected === 'specialist-report')[1];
+      expect(secondNotice.data.text).toContain('SECOND REPORT');
+      // Also proves the (b) half of the finding: run 2's own report, not a
+      // stale reportPath/rawReport copy of run 1's body.
+      expect(secondNotice.data.text).not.toContain('FIRST REPORT');
+
+      const recAfterRun2 = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(recAfterRun2.delivered).toBe(true);
+      expect(recAfterRun2.rawReport).toContain('SECOND REPORT');
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 2 (final review): `rg "Background specialist failed"
+    // tests` returned NOTHING before this test — every existing status-block
+    // test synthesizes a 'failed' ledger row directly via recordStart and
+    // only asserts the status-line WORDING (see "specialist status block"
+    // below), never driving a real child through death and confirming the
+    // typed failure notice actually reaches the parent's conversation as an
+    // injected turn. This drives the real chain end to end: a model factory
+    // that throws on the child's own turn -> runDelegation's catch writes
+    // 'failed' to the ledger -> runBackgroundDelegation's .finally calls
+    // queueDelivery -> claimUndelivered (widened, per Important 4, to also
+    // claim 'failed' records) -> formatDelivery's failed branch -> runNotice
+    // injects "[Background specialist failed] ..." as a real parent turn.
+    it('a background specialist that dies delivers a typed "[Background specialist failed]" notice to the parent', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      // Call 1 is the child's own first (and only) turn; every later call —
+      // including the parent's turn that receives the injected failure
+      // notice — gets the suite's default text-only model.
+      let calls = 0;
+      const seqFactory = async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('scripted specialist crash');
+        return factory();
+      };
+      const h = new NativeSessionHost(
+        store, seqFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('transcript-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      });
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      const notice = events.find((e) => e.data?.injected === 'specialist-report')!;
+      expect(notice.data.text).toContain('[Background specialist failed]');
+      expect(notice.data.text).toContain('scripted specialist crash');
+
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.status).toBe('failed');
+      expect(rec.delivered).toBe(true);
+
+      await h.destroyAll();
+    });
+  });
+
+  // Fix (Important 5, final review): the internalReadRoots exemption used to
+  // cover the ENTIRE sessions/<slug>/ directory — every conversation's own
+  // transcript .jsonl AND the delegation ledger sidecars, not just the
+  // specialist-report spill files it exists for. Narrowed to a dedicated
+  // sessions/<slug>/specialist-reports/ subdirectory both writeSessionArtifact
+  // writes into and toolWiring exempts — nothing else in a project's harness
+  // storage should ever be Read/Grep/Glob-able without the external_directory
+  // ask a genuinely foreign path requires.
+  describe('specialist report spill scoping (Important 5, final review)', () => {
+    it('the wired internalReadRoots is the specialist-reports subdirectory, not the whole per-project sessions dir', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const session = (h as any).live.get('root-1').session;
+      const roots: string[] = session.opts.internalReadRoots;
+      expect(roots).toHaveLength(1);
+      const slug = nativeStoreSlug(root);
+      expect(roots[0]).toBe(path.join(home.root, 'sessions', slug, 'specialist-reports'));
+      // Not the bare per-project sessions directory — that's the shape being fixed.
+      expect(roots[0]).not.toBe(path.join(home.root, 'sessions', slug));
+
+      await h.destroyAll();
+    });
+
+    it('a real oversized-report spill lands under specialist-reports/, so this OWN session can still read it without an ask', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const { RAW_REPORT_CAP_CHARS } = await import('../src/main/harness/specialists/delegation-ledger');
+      const huge = 'x'.repeat(RAW_REPORT_CAP_CHARS + 5_000);
+      const spillPath = home.writeSessionArtifact(nativeStoreSlug(root), path.join('specialist-reports', 'child-x.report.md'), huge);
+      expect(spillPath).toContain(`${path.sep}specialist-reports${path.sep}`);
+
+      const { checkPathGuard } = await import('../src/main/harness/tools/guards');
+      const session = (h as any).live.get('root-1').session;
+      const verdict = checkPathGuard(spillPath, root, session.opts.internalReadRoots);
+      expect(verdict.kind).toBe('ok'); // no external_directory ask for this session's own spill
+
+      await h.destroyAll();
+    });
+
+    it('a SIBLING file in the same per-project sessions directory (another conversation transcript, or the ledger sidecar) is NOT covered by the exemption', async () => {
+      // A SEPARATE home dir from the project cwd — matching production
+      // reality, where ~/.youcoded is never nested inside a project
+      // directory. (The other two tests above reuse `root` for both, purely
+      // for convenience; here the distinction is the whole point — a sibling
+      // path only proves anything about the EXEMPTION, not about "is it under
+      // cwd anyway", if it genuinely sits outside the project cwd.)
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-home-'));
+      const home = new NativeHome(homeDir);
+      const store = new SessionStore(home);
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const slug = nativeStoreSlug(root);
+      // A DIFFERENT conversation's own transcript, living in the SAME
+      // per-project sessions/<slug>/ directory the old (too-wide) exemption
+      // covered — this must still require the external_directory ask.
+      const otherTranscript = path.join(home.root, 'sessions', slug, 'some-other-session-id.jsonl');
+      const { checkPathGuard } = await import('../src/main/harness/tools/guards');
+      const session = (h as any).live.get('root-1').session;
+      const verdict = checkPathGuard(otherTranscript, root, session.opts.internalReadRoots);
+      expect(verdict.kind).toBe('external');
+
+      fs.rmSync(homeDir, { recursive: true, force: true });
+
+      await h.destroyAll();
+    });
+  });
+
+  // Task 5 (plan 1b): the per-turn specialist status block. wire() attaches
+  // opts.specialistStatus to every ROOT session; this suite pins what that
+  // callback reports given a stamped ledger, reaching the private ledger
+  // directly (same pattern the Task 2 tests above use) rather than driving a
+  // real specialist run end-to-end.
+  describe('specialist status block (Task 5, plan 1b)', () => {
+    it('the host status block lists running and undelivered-finished specialists and omits delivered ones', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-running', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-finished', parentToolCallId: 'tc-2', agentType: 'researcher', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-delivered', parentToolCallId: 'tc-3', agentType: 'writer', title: 'Priya',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: true, owner: OWNER, missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toBeTruthy();
+      expect(status).toContain('Nadia');
+      expect(status).toContain('running');
+      expect(status).toContain('Otis');
+      expect(status).toContain('report delivery pending');
+      // Delivered specialist never appears.
+      expect(status).not.toContain('Priya');
+
+      await h.destroyAll();
+    });
+
+    it('returns null (and wires nothing to inject) when the session has no delegations at all', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      expect(rootSession.opts.specialistStatus?.()).toBeNull();
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 1: DelegationRecord.steps is only ever written AT
+    // COMPLETION (spawnSpecialist's success-path patch) — recordStart never
+    // sets it, so a RUNNING record's `steps` is always undefined. The old
+    // `r.steps ?? 0` rendered a permanently-wrong "step 0" for the entire
+    // life of every running child. Pin that the running line never claims a
+    // step count it doesn't have.
+    it('a running specialist with no live step count omits the step clause instead of claiming "step 0"', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-running', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toBeTruthy();
+      expect(status).not.toContain('step 0');
+      expect(status).not.toMatch(/step \d/);
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 2: `stale` only ever means "at least SPECIALIST_IDLE_
+    // STALE_MS has elapsed" (setStale in this file never fires sooner) — the
+    // real elapsed time can be far larger (e.g. the 5m in-tool threshold, or
+    // just more wall-clock time). The old wording ("no activity for 2m") read
+    // as an exact measurement. Pin that the floor is now stated as a floor.
+    it('a stale running specialist reports the idle threshold as an "at least" floor, not a measurement', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-stale', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [], stale: true,
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+
+      expect(status).toContain('no activity for at least 2m');
+
+      await h.destroyAll();
+    });
+
+    // Fix pass, Finding 3 (original): 'interrupted' records never get
+    // delivered (a parent teardown killed the child — nothing is left to
+    // claim them), so they keep their own honest "no report will arrive"
+    // line, distinct from the running-record's "finished — report delivery
+    // pending" wording.
+    //
+    // Final-review fix (Finding 1): 'failed' is NOT like 'interrupted' — the
+    // ledger's own claimUndelivered() eligibility was later widened
+    // (Important 4) to claim 'completed' OR 'failed' records, so a background
+    // child's death DOES eventually deliver a typed
+    // "[Background specialist failed] ..." notice (see the end-to-end test
+    // above). "no report will arrive" for 'failed' was therefore a stale
+    // claim once that widening landed. 'failed' now gets the SAME "delivery
+    // pending" framing as 'completed', naming the real failureText inline
+    // (never a guessed cause — error-message-standards.md); only
+    // 'interrupted' keeps "no report will arrive".
+    it('failed specialists get an honest "delivery pending" line (they DO get claimed); interrupted specialists still say no report will arrive', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-failed', parentToolCallId: 'tc-1', agentType: 'debugger', title: 'Fiona',
+        workDir: root, description: 'd', background: true,
+        status: 'failed', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER,
+        missedSteers: [], failureText: 'ENOENT: no such file or directory',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-interrupted', parentToolCallId: 'tc-2', agentType: 'writer', title: 'Greg',
+        workDir: root, description: 'd', background: true,
+        status: 'interrupted', startedAt: Date.now(), endedAt: Date.now(), delivered: false, owner: OWNER,
+        missedSteers: [],
+      });
+
+      const rootSession = (h as any).live.get('root-1').session;
+      const status: string | null = rootSession.opts.specialistStatus?.();
+      const lines = (status ?? '').split('\n');
+
+      const failedLine = lines.find((l) => l.startsWith('Fiona'));
+      expect(failedLine).toBe('Fiona (debugger): failed — ENOENT: no such file or directory — report delivery pending');
+      expect(failedLine).not.toContain('no report will arrive');
+
+      const interruptedLine = lines.find((l) => l.startsWith('Greg'));
+      expect(interruptedLine).toBe('Greg (writer): interrupted — no report will arrive');
+      expect(interruptedLine).not.toContain('delivery pending');
+
+      await h.destroyAll();
+    });
+  });
+
+  // Fix pass, Finding 1: toolWiring() used to hardcode `catalog: async () =>
+  // null` unconditionally, so ModelSearch and a per-hire specific-model-id
+  // override could NEVER see a real catalog even when one was available —
+  // every specific id was refused regardless of whether it existed. This
+  // proves the fix: when the constructor's `toolServices` param carries a
+  // `modelCatalog` closure (exactly how ipc-handlers.ts wires it — see its
+  // own construction site), the session's assembled services.models.catalog()
+  // resolves to REAL rows, and ModelSearch reports actual matches instead of
+  // the "catalog not loaded" fallback.
+  describe('a real catalog reaches services.models.catalog() (Task 14 fix pass, Finding 1)', () => {
+    const CATALOG: CatalogModel[] = [
+      { id: 'anthropic/claude-opus-5', providerId: 'openrouter', label: 'Claude Opus 5', pricing: { in: 15, out: 75 }, contextLength: 200_000 },
+    ];
+
+    it('services.models.catalog() resolves to the injected modelCatalog closure\'s rows, not null', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const catalog = await session.opts.toolServices.models.catalog();
+      expect(catalog).toEqual(CATALOG);
+      await h.destroyAll();
+    });
+
+    it('ModelSearch, run through the real wiring, returns actual matches instead of the "catalog not loaded" refusal', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const ctx = {
+        sessionId: 'root-1', cwd: root, signal: new AbortController().signal,
+        readRegistry: new Map(), todos: [] as any[], services: session.opts.toolServices,
+      };
+      const result = await ModelSearchTool.execute({ query: 'claude' } as any, ctx as any);
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain('anthropic/claude-opus-5');
+      expect(result.text).not.toContain('Model list is unavailable right now (catalog not loaded)');
+      await h.destroyAll();
+    });
+
+    it('without a modelCatalog closure, the catalog stays null (unchanged pre-fix-pass default — no behavior change)', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const session = (h as any).live.get('root-1').session;
+      const catalog = await session.opts.toolServices.models.catalog();
+      expect(catalog).toBeNull();
+      await h.destroyAll();
+    });
+  });
+
+  // Task 9 (plan 1b) — restart recovery + subagent-card replay. Unrelated to
+  // the "Task 9" label on the `quiesce` describe above (Phase 1 Plan A used
+  // its own numbering) — both names are pinned in their own commit history,
+  // not renamed here to avoid an unrelated diff.
+  //
+  // Reconcile needs a REAL ledger (a NativeHome pointed at the test's tmp
+  // root), same as the Task 4 background-delivery suite in
+  // specialist-run.test.ts — the delivery loop and reconcile both read/write
+  // it directly, so a fake would just be reimplementing the real thing.
+  describe('restart recovery + subagent-card replay (Task 9, plan 1b)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    function bootHost(home: NativeHome, store: SessionStore, modelFactory: any = factory) {
+      return new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, home,
+      );
+    }
+
+    it('resuming a parent marks dead-owner running children as interrupted, honestly — and leaves a live owner\'s record untouched', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // A record whose owner is a process that does not exist — the shape a
+      // real crash-and-restart leaves behind (nothing ever marked it
+      // 'interrupted' because the process that would have died mid-flight).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-dead', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false,
+        owner: { pid: 999999, instanceId: 'dead-instance' }, missedSteers: [],
+      });
+      // A record owned by THIS process (OWNER is a module singleton, so it
+      // reads as alive to every host built in this test file) — reconcile
+      // must never touch a live owner's record.
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-alive', parentToolCallId: 'tc-2', agentType: 'explorer', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false,
+        owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1'); // parent goes away without ever marking either child
+
+      const h2 = bootHost(home, store);
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      const records = (h2 as any).ledger.listFor(root, 'root-1');
+      const dead = records.find((r: any) => r.childId === 'child-dead');
+      expect(dead?.status).toBe('interrupted'); // honest — the child really did stop
+      expect(dead?.endedAt).toBeDefined();
+
+      const alive = records.find((r: any) => r.childId === 'child-alive');
+      expect(alive?.status).toBe('running'); // untouched — its owner is still around
+
+      await h2.destroyAll();
+    });
+
+    it('an undelivered background report from before the restart is delivered at the first idle boundary', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-done', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: true,
+        status: 'completed', startedAt: Date.now() - 60_000, endedAt: Date.now(), steps: 3,
+        rawReport: 'REPORT: found it in src/config.ts', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+      expect(injected.type).toBe('user-message');
+      expect(injected.data.text).toContain('REPORT: found it in src/config.ts');
+
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-done');
+      expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    // Fix (Important 4, final review): claimUndelivered's own eligibility
+    // (delegation-ledger.ts) covers 'completed' OR 'failed' — a dead
+    // background child still owes the parent a typed failure notice. Before
+    // this fix, reconcileDelegations' own "has undelivered" flag only fired
+    // for 'completed', so a parent whose ONLY undelivered record was 'failed'
+    // never got queued for delivery after a restart — the failure notice
+    // never arrived, even though claimUndelivered was willing to hand it
+    // over. Same shape as the sibling test above, but the pre-restart record
+    // is 'failed', not 'completed'.
+    it('an undelivered FAILURE notice from before the restart is also delivered at the first idle boundary', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-failed', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: true,
+        status: 'failed', startedAt: Date.now() - 60_000, endedAt: Date.now(),
+        failureText: 'ENOENT: no such file or directory', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      const injected = events.find((e) => e.data?.injected === 'specialist-report')!;
+      expect(injected.type).toBe('user-message');
+      expect(injected.data.text).toContain('ENOENT: no such file or directory');
+
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-failed');
+      expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    // The finding this test pins (external review 2026-08-13): a FOREGROUND
+    // specialist's failure already reached the model as the Task tool's own
+    // `isError` result (tools/task.ts) the instant spawnSpecialist rejected —
+    // spawnSpecialist only ever calls confirmDelivered on the SUCCESS path
+    // (native-session-host.ts, spawnSpecialist), so a foreground failure's
+    // ledger row is stuck 'failed'/delivered:false forever, identically to a
+    // genuine undelivered background failure. Before this fix,
+    // reconcileDelegations' hasUndelivered check (and claimUndelivered's own
+    // eligibility filter) had no `background` gate, so reopening this
+    // conversation queued this already-seen failure for delivery and injected
+    // it a SECOND time, mislabeled "[Background specialist failed]" even
+    // though it never ran in the background. Sibling test above
+    // ("an undelivered FAILURE notice...") pins that a GENUINE background
+    // failure still gets exactly one delivery through this same restart path.
+    it('a foreground specialist\'s failure is never re-delivered as a "[Background specialist failed]" notice after the conversation is reopened', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // The exact shape spawnSpecialist's own throw path leaves behind: a
+      // FOREGROUND ('background: false') record, terminal 'failed', and
+      // still undelivered — because confirmDelivered is only ever reached on
+      // the success branch, and the failure already went back to the model
+      // inline as the tool result (tools/task.ts's catch).
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-fg-failed', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: false,
+        status: 'failed', startedAt: Date.now() - 60_000, endedAt: Date.now(),
+        failureText: 'ENOENT: no such file or directory', delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      // No positive event to wait for here — the whole point is that nothing
+      // fires. Wait past the delivery pass's own async hops (same margin the
+      // rest of this file's negative-assertion tests use, e.g. the send-queue
+      // survivor check above) rather than asserting immediately after resume.
+      await new Promise((r) => setTimeout(r, 150));
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(0);
+
+      // Not merely "we didn't wait long enough" — the record itself was
+      // never touched by the delivery lane: no lease taken, never marked
+      // delivered.
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-fg-failed');
+      expect(rec?.delivered).toBe(false);
+      expect(rec?.claimedBy).toBeUndefined();
+
+      await h2.destroyAll();
+    });
+
+    it('a report CLAIMED by a dead instance but never confirmed is re-delivered after restart', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-claimed', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'find the config loader', background: true,
+        status: 'completed', startedAt: Date.now() - 60_000, endedAt: Date.now(), steps: 2,
+        rawReport: 'REPORT: config lives in src/config.ts', delivered: false, owner: OWNER,
+        missedSteers: [], claimedBy: { pid: 999999, instanceId: 'gone' }, claimedAt: Date.now() - 30_000,
+      });
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const events: any[] = [];
+      h2.on('transcript-event', (e) => events.push(e));
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+      });
+      // Settle a bit longer — a duplicate delivery (the bug this reconcile
+      // pass exists to prevent) would show up as a SECOND injected event.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+
+      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-claimed');
+      expect(rec?.delivered).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    it('getHistory splices stamped child events immediately after the parent Task tool-use', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // What a real turn produces when the model calls Task (task.ts): a
+      // tool-use event on the PARENT's own transcript, then a tool-result once
+      // the specialist's report comes back. Appended directly rather than
+      // driven through a scripted Task tool-call — the Task tool's own
+      // execute() path is exercised in task-tool.test.ts; this test only needs
+      // the parent-side shape getHistory splices against.
+      await store.append(root, {
+        type: 'tool-use', sessionId: 'root-1', uuid: 'u-tool-use', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolName: 'Task', toolInput: { agent: 'explorer' } },
+      });
+
+      const { childId, report } = await h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+      expect(report).toContain('Hi there'); // the suite's default `factory`'s one text step
+
+      await store.append(root, {
+        type: 'tool-result', sessionId: 'root-1', uuid: 'u-tool-result', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolResult: report },
+      });
+
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      const resumed = await h2.resume('root-1', root);
+      expect(resumed).toBe(true);
+
+      const events = h2.getHistory('root-1')!;
+      const taskIdx = events.findIndex((e) => e.type === 'tool-use' && e.data.toolName === 'Task');
+      expect(taskIdx).toBeGreaterThanOrEqual(0);
+      // Immediately after — not just "somewhere after".
+      expect(events[taskIdx + 1].data.agentId).toBe(childId);
+      expect(events[taskIdx + 1].data.parentAgentToolUseId).toBe(events[taskIdx].data.toolUseId);
+      // Every stamped (agentId-bearing) event is display-safe — nothing else
+      // rode along under the parent's id.
+      const stamped = events.filter((e) => e.data.agentId);
+      expect(stamped.length).toBeGreaterThan(0);
+      expect(stamped.every((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))).toBe(true);
+
+      await h2.destroyAll();
+    });
+
+    it('replayed stamped events preserve partId so the reducer coalesces deltas identically', async () => {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = bootHost(home, store);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await store.append(root, {
+        type: 'tool-use', sessionId: 'root-1', uuid: 'u-tool-use', timestamp: Date.now(),
+        data: { toolUseId: 'tc-1', toolName: 'Task', toolInput: { agent: 'explorer' } },
+      });
+
+      await h.spawnSpecialist('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: { parentId: 'root-1', writer: false },
+      });
+
+      // The child's own persisted assistant-text event, straight off disk —
+      // this is the source of truth the replay must match, not a guess.
+      const childHeader = store.list({ includeChildren: true }).find((r) => r.parentSessionId === 'root-1')!;
+      const childOwnEvents = store.readEvents(childHeader.sessionId, root);
+      const originalText = childOwnEvents.find((e) => e.type === 'assistant-text')!;
+      expect(originalText.data.partId).toBeTruthy(); // sanity: the fixture really does carry one
+
+      await h.destroy('root-1');
+
+      const h2 = bootHost(home, store);
+      await h2.resume('root-1', root);
+
+      const events = h2.getHistory('root-1')!;
+      const replayedText = events.find((e) => e.type === 'assistant-text' && e.data.agentId === childHeader.sessionId)!;
+      expect(replayedText.data.partId).toBe(originalText.data.partId);
+
+      await h2.destroyAll();
+    });
+  });
+
+  // mergeChildEvents (Task 9, plan 1b) — the pure splice function, tested
+  // directly per the brief rather than only through getHistory() above.
+  describe('mergeChildEvents (pure function)', () => {
+    const rec = (over: Partial<any> = {}) => ({
+      childId: 'child-1', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+      workDir: '/x', description: 'd', background: false, status: 'completed',
+      startedAt: 0, delivered: true, owner: OWNER, missedSteers: [], ...over,
+    });
+    const ev = (type: string, over: Partial<any> = {}): any => ({
+      type, sessionId: 'child-1', uuid: `u-${Math.random()}`, timestamp: 0, data: {}, ...over,
+    });
+
+    it('splices the stamped block immediately after the matching parent Task tool-use event', () => {
+      const parentEvents = [
+        ev('user-message', { sessionId: 'root-1' }),
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1', toolName: 'Task' } }),
+        ev('turn-complete', { sessionId: 'root-1' }),
+      ];
+      const childEvents = [ev('assistant-text', { data: { text: 'child said this' } })];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged).toHaveLength(4);
+      expect(merged[1].type).toBe('tool-use');
+      expect(merged[2].type).toBe('assistant-text');
+      expect(merged[2].sessionId).toBe('root-1');
+      expect(merged[2].data.agentId).toBe('child-1');
+      expect(merged[2].data.parentAgentToolUseId).toBe('tc-1');
+      expect(merged[3].type).toBe('turn-complete');
+    });
+
+    it('filters child events down to the display-safe subset — turn-complete/user-message never ride along', () => {
+      const parentEvents = [ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } })];
+      const childEvents = [
+        ev('user-message', { data: { text: 'the brief' } }),
+        ev('assistant-text', { data: { text: 'ok' } }),
+        ev('turn-complete', {}),
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged.map((e) => e.type)).toEqual(['tool-use', 'assistant-text']);
+    });
+
+    // Explicit requirement (brief): a crash between minting the child and
+    // appending the parent's own Task tool-use event leaves a ledger record
+    // with no matching parent event — must be skipped, never guessed at.
+    it('skips a record defensively when its parentToolCallId has no matching parent tool-use event', () => {
+      const parentEvents = [ev('user-message', { sessionId: 'root-1' })];
+      const childEvents = [ev('assistant-text', { data: { text: 'orphaned' } })];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged).toEqual(parentEvents); // untouched — no guess, no drop of parent events
+    });
+
+    it('splices multiple children after their OWN respective parent tool-use events, in order', () => {
+      const parentEvents = [
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } }),
+        ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-2' } }),
+      ];
+      const children = [
+        { record: rec({ childId: 'child-1', parentToolCallId: 'tc-1' }), events: [ev('assistant-text', { data: { text: 'from child 1' } })] },
+        { record: rec({ childId: 'child-2', parentToolCallId: 'tc-2' }), events: [ev('assistant-text', { data: { text: 'from child 2' } })] },
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, children);
+      expect(merged.map((e) => `${e.type}:${e.data.agentId ?? e.data.toolUseId}`)).toEqual([
+        'tool-use:tc-1', 'assistant-text:child-1', 'tool-use:tc-2', 'assistant-text:child-2',
+      ]);
     });
   });
 });

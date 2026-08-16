@@ -50,8 +50,13 @@ export const NATIVE_TOOL_NAMES = [
  *  `Task` (Task 6, spec decision 4) exists only when profile.canDelegate is
  *  true AND the session is not itself a specialist child — a weak/unverified
  *  orchestrator or a specialist attempting depth-2 delegation must never even
- *  see the tool on its schema, same reasoning as Skill above. */
-export const CONDITIONAL_TOOL_NAMES = ['Skill', 'Task'] as const;
+ *  see the tool on its schema, same reasoning as Skill above.
+ *
+ *  `ModelSearch` (Task 14) rides the identical gate as `Task` and only ever
+ *  exists alongside it (harness-session.ts's syncTaskTool attaches/detaches
+ *  both together) — it exists to name a specific model for a Task
+ *  delegation, so a session that cannot delegate has nothing for it to do. */
+export const CONDITIONAL_TOOL_NAMES = ['Skill', 'Task', 'ModelSearch'] as const;
 
 export const ASSISTANT_PRESET: HarnessManifest = {
   schema: 1,

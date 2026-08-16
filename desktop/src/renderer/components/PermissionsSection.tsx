@@ -279,20 +279,35 @@ function grantedLabel(grantedAt?: string): string | null {
   return `Approved ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 }
 
-/** React list key. remember() dedupes exact repeats, so (tool, pattern, action)
- *  is unique within a project — the same triple the removal API matches on. */
+/** React list key. remember() dedupes exact repeats, so the sameRule QUINT
+ *  (tool, pattern, action, match, specialist) is unique within a project —
+ *  the same identity the removal API matches on. Both `match` and
+ *  `specialist` must be in the key: `specialist` (Task 11) so a root grant
+ *  and a specialist-keyed grant sharing the same tool/pattern/action still
+ *  render as two distinct rows instead of colliding on one React key, and
+ *  `match` so an exact grant and a wide (glob) grant sharing the same
+ *  pattern don't collide either. Rules come from list(), which already
+ *  normalizes `match` via normalizeRule — so a legacy row reads 'exact' here
+ *  exactly as sameRule would compare it. */
 function ruleKey(rule: PermissionRule): string {
-  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}`;
+  return `${rule.tool}::${rule.pattern ?? ''}::${rule.action}::${rule.match ?? ''}::${rule.specialist ?? ''}`;
 }
 
 /** Hand the backend a bare PermissionRule, not the StoredRule the list returned:
  *  grantedAt is provenance the matcher never reads, and sending it invites a
- *  future exact-shape comparison to silently stop matching. */
+ *  future exact-shape comparison to silently stop matching. `match` and
+ *  `specialist` DO ride along — the remove matcher (sameRule) needs both to
+ *  tell rules apart: dropping `specialist` would revoke a same-triple root
+ *  grant instead of (or as well as) the specialist-keyed one; dropping `match`
+ *  would make a wide (glob) grant compare as 'exact' once stripped, so
+ *  sameRule would never find it on disk and the revoke would silently no-op. */
 function toPermissionRule(rule: StoredRule): PermissionRule {
   return {
     tool: rule.tool,
     ...(rule.pattern !== undefined ? { pattern: rule.pattern } : {}),
     action: rule.action,
+    ...(rule.match !== undefined ? { match: rule.match } : {}),
+    ...(rule.specialist !== undefined ? { specialist: rule.specialist } : {}),
   };
 }
 

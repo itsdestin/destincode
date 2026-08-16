@@ -198,6 +198,39 @@ export interface TranscriptEvent {
      * the parent Agent tool_use that this subagent's work threads into.
      */
     parentAgentToolUseId?: string;
+    /**
+     * Task 4 (native specialists, background execution) — marks a `user-message`
+     * event as a SYNTHETIC turn the host injected (a background specialist's
+     * finished report, or its typed failure notice), not something the user
+     * actually typed. Data-field extension, not a new TranscriptEventType — the
+     * frozen emit surface stays frozen.
+     *
+     * CONSUMED by the renderer since 2026-08-16: App.tsx/BubbleFeed.tsx forward
+     * it onto TRANSCRIPT_USER_MESSAGE, the reducer stamps it on the timeline
+     * entry, and ChatView/BubbleFeed draw such an entry as a compact
+     * SpecialistReportCard (a collapsed "task finished" row, tool-card style)
+     * instead of a user bubble — the text is what the PARENT MODEL reads, and
+     * showing it as the user's own words, or even as a big notice, put text in
+     * the chat nobody actually said (Destin, 1b hands-on).
+     * Only value today is 'specialist-report'; a plain `string` (not a union)
+     * so a future injected kind never needs a TranscriptEvent schema change.
+     */
+    injected?: string;
+    /**
+     * Structured companion to `injected: 'specialist-report'` (2026-08-16):
+     * who finished, what they were asked, how it ended — so the card header
+     * is exact rather than parsed back out of the prose the model reads.
+     * `parentToolCallId` names the Task card that started this child.
+     */
+    injectedMeta?: {
+      childId: string;
+      title: string;
+      agentType: string;
+      description?: string;
+      status: 'completed' | 'failed';
+      steps?: number;
+      parentToolCallId?: string;
+    };
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */

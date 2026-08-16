@@ -54,8 +54,22 @@ const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
  *  name its own pattern could grant itself anything, because remembered rules are
  *  the final precedence layer, above the destructive deny-list.
  *
- *  Returns null when nothing may be remembered for this call. */
-function rememberedRuleFor(
+ *  Returns null when nothing may be remembered for this call.
+ *
+ *  Exported (Fix, Important 6, final review): this is the ONE function that
+ *  decides both the confirm-sentence width (indirectly, via the caller
+ *  reading `scope`) and the stored rule's pattern/match shape — a routed
+ *  specialist ask (child-ask-router.ts) and a LATE routed answer
+ *  (native-session-host.ts's onLateResponse) used to hand-build their own
+ *  `{tool, pattern: subject, action:'allow', specialist}` object instead of
+ *  calling this, which silently dropped every "never rememberable" case this
+ *  function enforces (e.g. a bare `git push`, whose bashGrantOptions is empty
+ *  — see below) and discarded the grant WIDTH the user actually picked,
+ *  always storing an exact-match rule regardless of `grantScope`. Both call
+ *  sites now go through here, merging in `specialist` themselves (this
+ *  function has no concept of a specialist key — it's the same builder a
+ *  root session's own ask uses). */
+export function rememberedRuleFor(
   toolName: string,
   subject: string | undefined,
   scope: GrantScope | undefined,
@@ -71,6 +85,20 @@ function rememberedRuleFor(
     // for this command — never widen past what bashGrantOptions produced.
     return (options.find((o) => o.scope === (scope ?? 'exact')) ?? options[0]).rule;
   }
+  // Fix (Critical 1, final review): Task's subject is undefined ONLY for a
+  // task_id management call (steer/resume/interrupt), which never carries a
+  // charter/work_dir — every OTHER Task call has a real `${charter}:${workDir}`
+  // subject (tools/task.ts's permissionSubject). Falling through to the
+  // tool-wide branch below (built for genuinely subject-less tools like
+  // TodoWrite) would let a single "Always allow" on a task_id call persist a
+  // pattern-less `{tool:'Task', action:'allow'}` rule that then silently
+  // pre-approves EVERY future Task call — including a brand-new read-write
+  // spawn at any directory, which the user never saw or consented to. Fail
+  // closed: no rule of ANY width is ever remembered for a subject-less Task
+  // call — mirrors the existing "no grant possible" precedent (Bash commands
+  // with no safe width, e.g. bare `git push`, above return null the same way).
+  // The ask itself still resolves 'allow' for this one call either way.
+  if (toolName === 'Task' && subject === undefined) return null;
   if (subject === undefined) return { tool: toolName, action: 'allow' };
   // Non-Bash subjects are literal paths / ids. match:'exact' makes them mean what
   // the confirm always claimed — a path containing '*' was a wildcard grant.
@@ -85,6 +113,7 @@ import { toReport, type PrefillProgress } from '../providers/prefill-progress';
 import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
 import { createTaskTool } from './tools/task';
+import { ModelSearchTool } from './tools/model-search';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -147,6 +176,30 @@ export interface HarnessSessionOpts {
    *  either check alone still cannot let a specialist spawn its own
    *  specialists. Absent/false for every ordinary (non-child) session. */
   isSpecialistChild?: boolean;
+  /** Per-turn specialist status block (Task 5, MOIM pattern). Evaluated at the
+   *  START of every turn; a non-null return is injected as a `<specialists-
+   *  status>` history message so the model can see which delegated children
+   *  are running or finished-and-unread WITHOUT ever polling for them. Wired
+   *  by NativeSessionHost.wire() — root sessions only, since wire() is never
+   *  called for a specialist child (see createChild's own "NOT wire()" note).
+   *  Absent → no injection, which is exactly the pre-Task-5 behavior every
+   *  existing test relies on (zero cost for a session that never delegates). */
+  specialistStatus?: () => string | null;
+  /** Task 10 (plan 1b): directories checkPathGuard treats as internal to THIS
+   *  session — readable without an external_directory ask, the same way
+   *  Bash's own spillRoot() is (tools/guards.ts). Wired by NativeSessionHost
+   *  (toolWiring) to exactly one root: this project's own
+   *  sessions/<slug>/specialist-reports/ subdirectory (Important 5, final
+   *  review — narrowed from the whole sessions/<slug>/ artifact directory,
+   *  which also holds every OTHER conversation's transcript .jsonl and the
+   *  delegation ledger sidecars; a model exempted from the ask for its own
+   *  spill file must not get free read access to those too), where an
+   *  oversized specialist report's spill file (NativeHome.writeSessionArtifact) lands —
+   *  so the footer that tells the model "Read it if you need the rest"
+   *  points at a path the guard will actually let it open. Absent → no
+   *  exemption, which is the pre-Task-10 behavior every existing session (and
+   *  every specialist CHILD, which never gets this wired) still gets. */
+  internalReadRoots?: string[];
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -440,6 +493,13 @@ export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
   private interrupted = false;
+  // Task 3 — queued mid-run course corrections (postSteer), drained as
+  // history-only user messages at the top of the NEXT turn-loop iteration.
+  // Anything left here when a turn ends (posted during the final step, too
+  // late for another iteration to drain it) is a MISSED steer — surfaced via
+  // drainUnappliedSteers() so a caller (runDelegation, Task 6) can report it
+  // honestly instead of silently dropping it.
+  private pendingSteers: string[] = [];
   // Prompt tokens as of the PREVIOUS step of this turn. Used to report how much
   // context is genuinely NEW — llama.cpp reuses the cached prefix, so only the
   // appended messages actually get prefilled. Reset per turn; 0 means "next step
@@ -614,6 +674,14 @@ export class HarnessSession extends EventEmitter {
     if (profile) this.profile = profile;
   }
 
+  /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
+   *  session right after construction — opts is already built by then, so this
+   *  is the same late-bind-onto-opts shape setBinding uses above, not a new
+   *  pattern. Never called for a specialist child (wire() isn't). */
+  setSpecialistStatus(fn: () => string | null): void {
+    this.opts.specialistStatus = fn;
+  }
+
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
   private get systemText(): string { return this.opts.systemPrompt ?? this.opts.harness.systemPrompt; }
 
@@ -703,8 +771,8 @@ export class HarnessSession extends EventEmitter {
     this.toolByName.set('Skill', createSkillTool(scoped));
   }
 
-  /** Add or remove the Task tool to match the CURRENT profile + session kind
-   *  (Task 6, spec decision 4).
+  /** Add or remove the Task tool — and, since Task 14, ModelSearch alongside
+   *  it — to match the CURRENT profile + session kind (Task 6, spec decision 4).
    *
    *  Two independent gates, BOTH required:
    *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
@@ -712,6 +780,10 @@ export class HarnessSession extends EventEmitter {
    *     capability-profile.ts's own WHY comment on the field.
    *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
    *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  ModelSearch rides the IDENTICAL gate and never attaches alone: it exists
+   *  to name a specific model for a Task delegation, so a session that
+   *  cannot delegate has nothing for it to do (Task 14).
    *
    *  Run per buildAiTools (not once in the constructor), same reason
    *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
@@ -721,9 +793,9 @@ export class HarnessSession extends EventEmitter {
    */
   private syncTaskTool(): void {
     const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
-    if (!wanted) { this.toolByName.delete('Task'); return; }
-    if (this.toolByName.has('Task')) return;
-    this.toolByName.set('Task', createTaskTool());
+    if (!wanted) { this.toolByName.delete('Task'); this.toolByName.delete('ModelSearch'); return; }
+    if (!this.toolByName.has('Task')) this.toolByName.set('Task', createTaskTool());
+    if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }
 
   /** Add or remove MCP server tools to match the CURRENT profile's budget
@@ -1199,13 +1271,20 @@ export class HarnessSession extends EventEmitter {
    *  Detected by content shape rather than a flag: injectPathTriggers (above)
    *  pushes them as `<project-rule source="...">...`, and that's the only
    *  thing this method has to go on — synthetic wire messages never enter
-   *  history at all, so they were already immune by construction. */
+   *  history at all, so they were already immune by construction.
+   *
+   *  Task 5's `<specialists-status>` block gets the SAME exclusion for the
+   *  same reason: it is also role:'user', also synthetic, and — unlike the
+   *  one-shot rule injections above — it rides EVERY turn while a specialist
+   *  is live, so miscounting it would shrink the protected window on every
+   *  single turn of a long delegated run, not just an occasional one. */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];
     this.history.forEach((m, i) => {
       const c = (m as any).content;
-      const isInjectedRule = typeof c === 'string' && c.startsWith('<project-rule ');
-      if ((m as any).role === 'user' && !isInjectedRule) userIdx.push(i);
+      const isSyntheticInjection = typeof c === 'string'
+        && (c.startsWith('<project-rule ') || c.startsWith('<specialists-status>'));
+      if ((m as any).role === 'user' && !isSyntheticInjection) userIdx.push(i);
     });
     return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
   }
@@ -1302,6 +1381,31 @@ export class HarnessSession extends EventEmitter {
     // present to keep the no-attachment event byte-identical to before (#290
     // follow-up fix 2).
     return this.beginTurn(text, () => this.emitEvent('user-message', attachments.length ? { text, attachments } : { text }), attachments);
+  }
+
+  /** Task 4 (native specialists, background execution) — inject a background
+   *  specialist's finished report (or typed failure) as a full, real turn.
+   *  Same turn machinery as send()/runSkill(), with ONE difference: the
+   *  `user-message` event carries `data.injected: 'specialist-report'` — a
+   *  data-field extension (shared/types.ts), never a new event type, so a
+   *  renderer that doesn't know the field yet still shows a plain message.
+   *
+   *  WHY a real turn and not a history-only splice: the model needs to
+   *  actually SEE and reason about the report on its next step, which means
+   *  it has to go through the model exactly like any other turn — this is
+   *  not a status update, it is new information the parent must act on.
+   *  Callers (NativeSessionHost.runTurns) are responsible for only calling
+   *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
+   *  if it were called mid-turn, by design (never splice into a running turn:
+   *  role alternation + the local prompt cache both depend on it). */
+  async runNotice(text: string, meta?: NonNullable<TranscriptEvent['data']>['injectedMeta']): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', {
+      text, injected: 'specialist-report',
+      // Structured header data for the renderer's SpecialistReportCard —
+      // optional so every existing caller/test that passes text alone is
+      // unchanged; the card falls back to the prose when it's absent.
+      ...(meta ? { injectedMeta: meta } : {}),
+    }));
   }
 
   /** Image parts for a user message, or [] when the model cannot see images / none
@@ -1401,6 +1505,45 @@ export class HarnessSession extends EventEmitter {
     }
     this.interrupted = false;
     emit();
+    // WHY (spec §3, MOIM pattern): the model never polls and never forgets a child
+    // exists — a compact status block rides every turn while specialists are live.
+    // History-only (no transcript event), so replay and the emit surface are untouched.
+    // Exactly ONE block lives in history: the previous turn's is removed first
+    // (external review 2026-08-12 — appending accumulates stale, contradictory
+    // blocks over a long child run). Accepted cost: removing a mid-history message
+    // invalidates local KV prefix cache from that point while specialists run.
+    //
+    // Fix pass, Finding 6: guarded on opts.specialistStatus being wired at all.
+    // That field stays permanently undefined for any session wire() never
+    // touched (every specialist child, per its own "NOT wire()" comment) — for
+    // those sessions there is never a block to remove or add, so the whole
+    // history scan below is skipped rather than run as an unconditional no-op
+    // every single turn.
+    if (this.opts.specialistStatus) {
+      const statusIdx = this.history.findIndex(
+        (m) => typeof m.content === 'string' && m.content.startsWith('<specialists-status>'),
+      );
+      if (statusIdx >= 0) this.history.splice(statusIdx, 1);
+      // Fix pass, Finding 4: opts.specialistStatus() reaches
+      // NativeSessionHost.buildSpecialistStatus -> DelegationLedger.listFor ->
+      // NativeHome.readJson, which deliberately RETHROWS any non-ENOENT I/O
+      // error (permissions, disk full, AV lock — see native-home.ts). Before
+      // this try/catch, that throw escaped beginTurn uncaught: it ran AFTER
+      // emit() had already announced the user's message but BEFORE this.abort
+      // was set and before the turn's own try block began, so the throw was
+      // never caught anywhere — no assistant reply, no error surfaced, and the
+      // re-entrancy guard never got set (stranding every later send() on this
+      // session). Degrade the same way this file's other fallible side-read
+      // already does (acquireMcp, above: log and continue with no MCP
+      // servers) — a missing status block must never cost the user a turn.
+      let status: string | null = null;
+      try {
+        status = this.opts.specialistStatus() ?? null;
+      } catch (err) {
+        log('ERROR', 'HarnessSession', 'specialist status callback threw — turn continues with no status block', { error: String(err) });
+      }
+      if (status) this.history.push({ role: 'user', content: `<specialists-status>\n${status}\n</specialists-status>` });
+    }
     // A plain string when there are no image parts — that is the byte-identical
     // shape every existing test and rebuildHistory() already assert on, so the
     // no-attachment path must not become a one-element parts array.
@@ -1457,6 +1600,14 @@ export class HarnessSession extends EventEmitter {
       // roughly 5x the real occupancy (Destin, 2026-07-28).
       let lastOutputTokens = 0;
       turnLoop: while (true) {
+        // WHY: steering (spec §3) applies at the child's next iteration boundary — a
+        // tool call is never cut. History-only, like injectPathTriggers: not a
+        // transcript event, so it costs nothing on the frozen emit surface.
+        if (this.pendingSteers.length > 0) {
+          for (const s of this.pendingSteers.splice(0)) {
+            this.history.push({ role: 'user', content: `<steer>\n${s}\n</steer>` });
+          }
+        }
         // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
         // pruning can't get under budget. Inert (returns immediately) below the
         // trigger, so the existing loop behavior is unchanged for normal turns.
@@ -2019,7 +2170,24 @@ export class HarnessSession extends EventEmitter {
 
     // 1. Validate (zod) — invalid args are a RESULT the model repairs from, not
     //    a crash, and precede permissions (never ask about garbage).
-    const parsed = tool.inputSchema.safeParse(call.input);
+    let parsed = tool.inputSchema.safeParse(call.input);
+    if (!parsed.success && typeof call.input === 'string') {
+      // Weak-model hardening (Task 12, spec §3): the ai@7 SDK already parses a
+      // provider tool-call's stringified args into an object for us (see
+      // harness-sdk-toolcall-contract.test.ts), but a weak local model
+      // sometimes puts its WHOLE args object as a STRING one level further in
+      // — e.g. it emits `"{\"prompt\": ...}"` where a real object belongs. If
+      // the raw string itself JSON.parses to an object, give it ONE recovery
+      // attempt before falling back to the normal arg error — never a general
+      // coercion layer (YAGNI: one attempt, then the ordinary failure path).
+      try {
+        const recovered: unknown = JSON.parse(call.input);
+        if (recovered && typeof recovered === 'object') {
+          const reparsed = tool.inputSchema.safeParse(recovered);
+          if (reparsed.success) parsed = reparsed;
+        }
+      } catch { /* not JSON — fall through to the normal arg error below */ }
+    }
     if (!parsed.success) {
       return { text: `Invalid arguments for ${call.toolName}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}. Fix the arguments and call again.`, isError: true };
     }
@@ -2073,7 +2241,7 @@ export class HarnessSession extends EventEmitter {
     const subject = tool.permissionSubject(args);
     let externalAsk = false;
     if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
-      const verdict = checkPathGuard(subject, this.opts.cwd);
+      const verdict = checkPathGuard(subject, this.opts.cwd, this.opts.internalReadRoots);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
       if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask
     }
@@ -2097,9 +2265,18 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
       // `external` tells the renderer this ask was forced by the path guard, so
       // ToolCard hides "Always allow" (see the guarded emit below for why).
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk });
+      // `subject` (Task 11) is the SAME value the remember-rule emit below uses
+      // as `pattern` — threaded through so a routed CHILD ask (child-ask-
+      // router.ts, which has no other way to reach it) can persist the exact
+      // same rule a root session's own remember-rule listener would.
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk, subject });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
+      // Task 8: d.message carries specific copy for a deny that ISN'T a real
+      // user decline — e.g. a routed specialist ask that timed out with no
+      // answer (ASK_REDIRECT_MESSAGE), which must not read as "the user said
+      // no" when no user ever answered. Falls back to the real-decline copy
+      // (still accurate for an actual respond({behavior:'deny'})).
+      if (d.behavior !== 'allow') return { text: d.message ?? 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
       // surface is untouched.
@@ -2126,6 +2303,12 @@ export class HarnessSession extends EventEmitter {
       // createChild's future parentToolCallId so the host can stamp the
       // child's display events with the launch card they belong under.
       toolCallId: call.toolCallId,
+      // Task 14: this session's CURRENT binding — the `parent` fallback
+      // resolveDelegatedBinding needs for a tier that isn't set (or a bare
+      // "run on this conversation's model" request). Reads this.binding, not
+      // opts.binding, so a mid-session setBinding() swap is reflected on the
+      // very next tool call, same as every other live-state field here.
+      binding: this.binding,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {
@@ -2162,6 +2345,29 @@ export class HarnessSession extends EventEmitter {
   interrupt(): void {
     this.interrupted = true;
     this.abort?.abort();
+  }
+
+  /** Queue a mid-run course correction (spec §3). Drains as a history-only
+   *  user message at the top of the NEXT turn-loop iteration — never
+   *  mid-step, so an in-flight tool call is never cut. Returns whether a
+   *  turn is actually in flight to receive it (`this.abort !== null` is the
+   *  turn-in-flight invariant — set in beginTurn, nulled in its finally);
+   *  when false, nothing is queued and the caller should record a missed
+   *  steer itself (there is no turn for drainUnappliedSteers to report it
+   *  against). */
+  postSteer(text: string): boolean {
+    const inFlight = this.abort !== null;
+    if (inFlight) this.pendingSteers.push(text);
+    return inFlight;
+  }
+
+  /** Steers that were queued but never drained into history — posted during
+   *  a turn's FINAL step, after the last iteration-boundary check already
+   *  ran. Empties the queue. A later task (6) folds this into the
+   *  delegation ledger's missedSteers so a postSteer that returned `true`
+   *  is still honestly reported as un-applied when the turn ended first. */
+  drainUnappliedSteers(): string[] {
+    return this.pendingSteers.splice(0);
   }
 
   destroy(): void { this.abort?.abort(); this.removeAllListeners(); }

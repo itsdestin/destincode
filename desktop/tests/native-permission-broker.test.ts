@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PermissionBroker } from '../src/main/harness/permission-broker';
 
 // The emitted payload uses CC's snake_case field names because hook-dispatcher
@@ -127,6 +127,123 @@ describe('PermissionBroker', () => {
     broker.cancelSession('s1');
     await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
     expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true); // clears the card
+  });
+
+  // --- Task 8: timeout + late-response + raisedBy cancellation ---
+
+  it('ask() with a timeout resolves onTimeout() at the deadline but leaves the entry answerable', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(p).resolves.toEqual({ behavior: 'deny', message: 'redirect' });
+      const requestId = emitted[0].payload._requestId as string;
+      // Still answerable — respond() finds it and reports success, even though
+      // the promise above already settled.
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a real respond() before the deadline clears the timer — no leaked timeout fires later', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const onTimeout = vi.fn(() => ({ behavior: 'deny' as const, message: 'redirect' }));
+      const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true }, { timeoutMs: 1000, onTimeout });
+      const requestId = emitted[0].payload._requestId as string;
+      broker.respond(requestId, { behavior: 'allow' });
+      await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+      await vi.advanceTimersByTimeAsync(5000); // well past the deadline
+      expect(onTimeout).not.toHaveBeenCalled(); // the timer was cleared on respond(), not merely raced
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a late respond() after timeout routes to the lateResponseHandler instead of dropping silently', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const late: any[] = [];
+      broker.setLateResponseHandler((entry, decision) => late.push({ entry, decision }));
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1', specialist: { childId: 'child-1', agentType: 'worker', title: 'W' } },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      const requestId = emitted[0].payload._requestId as string;
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+      expect(late).toHaveLength(1);
+      expect(late[0].entry).toMatchObject({ sessionId: 'parent-1', toolName: 'Bash', raisedBy: 'child-1' });
+      expect(late[0].decision.behavior).toBe('allow');
+      // A THIRD respond() for the same (now fully consumed) id is unknown.
+      expect(broker.respond(requestId, { behavior: 'deny' })).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancelSession(childId) cancels a routed ask (raisedBy match) while still within its window', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' });
+    broker.cancelSession('child-1'); // the CHILD's id, not the parent's — this is the routed-ask case
+    await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
+    expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true);
+  });
+
+  it('cancelSession(childId) does NOT cancel a routed ask that already timed out — it stays answerable for the parent', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await p; // settles with the redirect
+      broker.cancelSession('child-1'); // the child was torn down AFTER its ask already timed out
+      const requestId = emitted[0].payload._requestId as string;
+      // Still present: a real answer can still reach the parent (Task 8's late-answer path).
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancelSession(parentId) cancels a routed, already-timed-out ask too — the parent's own teardown always wins", async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      broker.cancelSession('parent-1');
+      const requestId = emitted[0].payload._requestId as string;
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(false); // gone — parent teardown removed it
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

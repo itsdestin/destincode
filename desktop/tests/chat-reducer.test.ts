@@ -360,8 +360,88 @@ describe('PERMISSION_REQUEST tool matching', () => {
 // no TRANSCRIPT_TOOL_RESULT ever closes its card. If the card stays 'running'
 // after the response, endTurn() force-fails it 'Turn ended' on a normal finish.
 // The card must close 'complete' on response. (The tier-3 "first running tool of
+
+// ---------------------------------------------------------------------------
+// Preparing card × permission ask ordering (2026-08-16, Destin's Specialists 1b
+// Test 1 hang). Main emits tool-use THEN the ask; the renderer batches
+// transcript events into an animation frame but dispatches hook events at once,
+// so the reducer sees NATIVE_TOOL_PREPARING → PERMISSION_REQUEST →
+// TRANSCRIPT_TOOL_USE. The ask binds to the preparing card (status 'running');
+// the late tool-use used to overwrite that entry wholesale — status back to
+// 'running', requestId gone — so the Allow/Deny buttons never rendered and the
+// turn hung on an ask nobody could answer.
+// ---------------------------------------------------------------------------
+describe('TRANSCRIPT_TOOL_USE landing on a preparing card that already holds an ask', () => {
+  it('keeps awaiting-approval + requestId (and the ask metadata) when the real tool-use supersedes the preparing card', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'NATIVE_TOOL_PREPARING', sessionId: SESSION, toolCallId: 'call-1', toolName: 'Task', chars: 120,
+    });
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Task',
+      input: { agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' },
+      requestId: 'req-prep', denyListed: false, external: false, permissionMode: 'ask',
+    });
+    // Sanity: the ask bound to the preparing card.
+    expect(state.get(SESSION)!.toolCalls.get('call-1')!.status).toBe('awaiting-approval');
+
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'uuid-call-1', toolUseId: 'call-1', toolName: 'Task',
+      toolInput: { agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' }, timestamp: 1000,
+    } as ChatAction);
+
+    const tool = state.get(SESSION)!.toolCalls.get('call-1')!;
+    expect(tool.status).toBe('awaiting-approval');
+    expect(tool.requestId).toBe('req-prep');
+    expect(tool.permissionMode).toBe('ask');
+    expect(tool.preparing).toBeFalsy();
+    expect(tool.input).toEqual({ agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' });
+    // Still exactly one card — superseded in place, never duplicated.
+    expect([...state.get(SESSION)!.toolCalls.keys()].filter((k) => k === 'call-1' || k.startsWith('perm-'))).toEqual(['call-1']);
+  });
+
+  it('a preparing card with NO ask still becomes a plain running tool (unchanged path)', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'NATIVE_TOOL_PREPARING', sessionId: SESSION, toolCallId: 'call-2', toolName: 'Bash', chars: 10,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'uuid-call-2', toolUseId: 'call-2', toolName: 'Bash',
+      toolInput: { command: 'ls' }, timestamp: 1000,
+    } as ChatAction);
+    const tool = state.get(SESSION)!.toolCalls.get('call-2')!;
+    expect(tool.status).toBe('running');
+    expect(tool.requestId).toBeUndefined();
+    expect(tool.preparing).toBeFalsy();
+  });
+});
+
 // any name" fallback this also used to cite was deleted 2026-08-09.)
 // ---------------------------------------------------------------------------
+// 2026-08-16: a host-injected user-role turn (a delivered specialist report,
+// TranscriptEvent.data.injected = 'specialist-report') must carry its marker
+// onto the timeline entry so ChatView/BubbleFeed can draw it as a system
+// notice rather than the user's own bubble.
+describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
+  it('stamps `injected` on the appended entry, and leaves a real user message unmarked', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-inj', timestamp: 1000,
+      text: '[Background specialist finished] Vega completed the task.', injected: 'specialist-report',
+      injectedMeta: { childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 },
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 2000, text: 'thanks',
+    });
+    const entries = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as Extract<import('../src/renderer/state/chat-types').TimelineEntry, { kind: 'user' }>[];
+    expect(entries).toHaveLength(2);
+    expect(entries[0].injected).toBe('specialist-report');
+    expect(entries[0].injectedMeta).toEqual({ childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 });
+    expect(entries[0].message.content).toContain('[Background specialist finished]');
+    expect(entries[1].injected).toBeUndefined();
+  });
+});
+
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
 

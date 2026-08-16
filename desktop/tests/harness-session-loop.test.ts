@@ -20,12 +20,18 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
 import { textChunks, toolCallChunk, toolInputChunks, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+// Direct MockLanguageModelV4 construction — only the postSteer tests below need
+// a per-call SIDE EFFECT (posting a steer from inside doStream) that the
+// scripted-model helpers don't support; everything else in this suite goes
+// through scriptedModel/scriptModel.
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 // Session-construction scaffolding (HARNESS/makeOpts/fakeTool) lives in a shared
 // helper so the profile-driven driver test (Task 5) reuses the exact same setup.
 // makeSession/scriptModel/drainTurn (2026-08-11 review fixes) reused from the
 // compaction suite's own scaffolding rather than hand-rolling a second way to
 // force the summarize branch.
 import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn } from './helpers/harness-fakes';
+import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
   const events: TranscriptEvent[] = [];
@@ -365,6 +371,48 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
   });
 
+  // Task 10 (plan 1b): the parent has to be able to Read the spill file its
+  // own truncated specialist report was written to, without the guard
+  // treating that path like any other file outside the workspace — otherwise
+  // the footer's "Read it if you need the rest" advice hits the exact same
+  // ask/block wall the Bash spill-file fix (guards.ts) already closed for
+  // Bash's own output. internalReadRoots is how NativeSessionHost wires that
+  // exemption in per-session, scoped to this one session's own artifact dir.
+  it('tool-layer guard: internalReadRoots lets the parent Read its own spill path without an ask', async () => {
+    const spillDir = 'C:/spill/session-1';
+    const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: `${spillDir}/child-1.report.md` }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [read], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
+    );
+    collect(session);
+    await session.send('go');
+    expect(askUser).not.toHaveBeenCalled();                          // internal root → no forced ask
+    expect(decide).toHaveBeenCalledWith('Read', `${spillDir}/child-1.report.md`); // reaches decide() normally
+  });
+
+  it('tool-layer guard: internalReadRoots does not widen to a sibling directory — that still asks', async () => {
+    const spillDir = 'C:/spill/session-1';
+    const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: 'C:/spill/not-our-session/x.txt' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [read], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
+    );
+    collect(session);
+    await session.send('go');
+    expect(askUser).toHaveBeenCalledTimes(1);   // sibling directory outside the exempted root still forces an ask
+  });
+
   // Task 6 review fix 4: Task's permission subject became a CHARTER-SCOPED
   // consent key (`${charter}:${work_dir}`, tools/task.ts) rather than a bare
   // path — so 'Task' had to join NON_PATH_SUBJECT_TOOLS (Bash/Skill's set)
@@ -511,6 +559,38 @@ describe('HarnessSession — multi-step turn driver', () => {
       expect(await rulesFor('npm run build', undefined))
         .toEqual([{ tool: 'Bash', pattern: 'npm run build', action: 'allow', match: 'exact' }]);
     });
+  });
+
+  // Fix (Critical 1, final review): a Task task_id call (steer/resume/interrupt
+  // an EXISTING specialist) omits work_dir entirely, so permissionSubject
+  // returns undefined for it — the SAME shape as a genuinely subject-less tool
+  // (TodoWrite). Before this fix rememberedRuleFor treated undefined subject as
+  // "tool has no meaningful subject, so remember tool-wide" for EVERY tool,
+  // which was safe when Task always had a `${charter}:${work_dir}` subject
+  // (work_dir was required) but became a hole once task_id calls made work_dir
+  // optional: an "Always allow" on a task_id management call would persist a
+  // pattern-less `{tool:'Task', action:'allow'}` rule that then silently
+  // pre-approves EVERY future Task call, including a brand-new read-write spawn
+  // at any directory. Task must never mint a tool-wide rule — mirrors the
+  // existing "no grant possible" precedent for a Bash command with no safe
+  // width (rulesFor('git push', ...) above).
+  it('never remembers a tool-wide rule for a Task call with no subject (task_id management)', async () => {
+    const task = fakeTool('Task', { permissionSubject: () => undefined, schema: z.object({ task_id: z.string() }) });
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow', always: true }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Task', { task_id: 'abc' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(
+      makeOpts({ tools: [task], decide: async () => ({ action: 'ask', denyListed: false }) as PermissionDecision, askUser }),
+      async () => model as any,
+    );
+    const remembered: unknown[] = [];
+    session.on('remember-rule', (r) => remembered.push(r));
+    collect(session);
+    await session.send('go');
+    expect(askUser).toHaveBeenCalledTimes(1);   // the one-time approval still happens
+    expect(remembered).toEqual([]);              // …but nothing tool-wide is ever persisted
   });
 
   it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
@@ -1276,5 +1356,265 @@ describe('shown-image cache reset on history-discarding events (Fixes 1 & 2, 202
     const result = await session.compactNow();
     expect(result).toEqual({ ok: true });
     expect((session as any).shownImages.size).toBe(0);
+  });
+});
+
+// Task 3: postSteer — mid-run course corrections drained at turn-loop
+// iteration boundaries, never mid-step (a tool call is never cut).
+describe('HarnessSession — postSteer', () => {
+  it('postSteer lands as a user-role message before the NEXT model step, never mid-step', async () => {
+    const seen: any[] = [];
+    let session!: HarnessSession;
+    // Hook mid-STEP-1 tool execution — the earliest a caller could plausibly
+    // course-correct a running child. postSteer must report success (a turn
+    // IS in flight) but must not be visible in step 1's request, since that
+    // request was already sent before the tool ran.
+    const read = fakeTool('Read', {
+      onExecute: async () => {
+        expect(session.postSteer('focus on X')).toBe(true);
+        return { text: 'Read ran' };
+      },
+    });
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ], seen);
+    session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    // Step 1's request predates the steer — it can't be in there.
+    expect(JSON.stringify(seen[0])).not.toContain('<steer>');
+    // Step 2's request has it, positioned AFTER step 1's tool result — proof
+    // it landed at the iteration boundary, not mid-step.
+    const p2 = JSON.stringify(seen[1]);
+    expect(p2).toContain('<steer>');
+    expect(p2).toContain('focus on X');
+    expect(p2.indexOf('Read ran')).toBeLessThan(p2.indexOf('<steer>'));
+    // History-only, like injectPathTriggers: no new transcript event type, and
+    // nothing on the existing events references it — the frozen emit surface
+    // is untouched.
+    expect(JSON.stringify(events)).not.toContain('<steer>');
+  });
+
+  it('postSteer with no turn in flight returns false and injects nothing', () => {
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW }),
+      async () => { throw new Error('model factory should not be called — no turn is ever started'); },
+    );
+    expect(session.postSteer('late note')).toBe(false);
+    expect((session as any).history).toHaveLength(0);
+    expect(session.drainUnappliedSteers()).toEqual([]);
+  });
+
+  it('a steer posted during the FINAL step never lands — drainUnappliedSteers returns it after the turn', async () => {
+    const read = fakeTool('Read');
+    const seen: any[] = [];
+    let session!: HarnessSession;
+    let call = 0;
+    // Custom model (not scriptedModel): the side effect must fire from INSIDE
+    // doStream for the second, LAST step (a plain-text end) — after that
+    // iteration's steer-drain check has already run and with no further
+    // iteration for a freshly-posted steer to land in.
+    const model = new MockLanguageModelV4({
+      doStream: async (req: any) => {
+        seen.push(req.prompt);
+        call++;
+        if (call === 2) {
+          expect(session.postSteer('the steer')).toBe(true);
+        }
+        const chunks = call === 1
+          ? stream(toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls'))
+          : stream(...textChunks('t2', 'done'), finishChunk('stop'));
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    await session.send('go');
+
+    expect(session.drainUnappliedSteers()).toEqual(['the steer']);
+    // Never reached any model request, nor persisted history.
+    expect(seen.some((p) => JSON.stringify(p).includes('<steer>'))).toBe(false);
+    expect(JSON.stringify((session as any).history)).not.toContain('<steer>');
+    // Draining empties the queue.
+    expect(session.drainUnappliedSteers()).toEqual([]);
+  });
+});
+
+describe('HarnessSession — specialist status block (Task 5, MOIM pattern)', () => {
+  it('a non-null specialistStatus is injected before the user message, and a null one REMOVES the stale block', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    // Turn 1: a specialist is running. Turn 2: nothing left to report.
+    const statuses = ['Nadia (researcher): running — step 3, 12s', null];
+    let call = 0;
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => statuses[call++] }),
+      async () => model as any,
+    );
+    await session.send('go');
+    await session.send('again');
+
+    // Turn 1's request carries the status block, positioned BEFORE the typed
+    // user text — the model reads "here's what's running" before "here's what
+    // you asked".
+    const p1 = JSON.stringify(seen[0]);
+    expect(p1).toContain('<specialists-status>');
+    expect(p1.indexOf('<specialists-status>')).toBeLessThan(p1.indexOf('go'));
+
+    // Turn 2's specialistStatus returned null — the block from turn 1 must be
+    // GONE, not merely un-added-to.
+    const p2 = JSON.stringify(seen[1]);
+    expect(p2).not.toContain('<specialists-status>');
+  });
+
+  it('exactly ONE status block ever lives in history — turn N replaces turn N-1', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const statuses = ['Nadia (researcher): running — step 1, 5s', 'Nadia (researcher): running — step 3, 40s'];
+    let call = 0;
+    const session = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => statuses[call++] }),
+      async () => model as any,
+    );
+    await session.send('go');
+    await session.send('again');
+
+    const p2 = JSON.stringify(seen[1]);
+    const blockCount = (p2.match(/<specialists-status>/g) ?? []).length;
+    expect(blockCount).toBe(1);
+    expect(p2).toContain('step 3');
+    expect(p2).not.toContain('step 1');
+  });
+
+  // Fix pass, Finding 4: opts.specialistStatus?.() runs in beginTurn AFTER
+  // emit() (the user-message transcript event has already fired) but BEFORE
+  // this.abort is set. The real callback reaches NativeHome.readJson, which
+  // deliberately RETHROWS any non-ENOENT I/O error (permissions, disk full,
+  // AV lock) — an uncaught throw here would escape beginTurn entirely: no
+  // assistant reply, no error surfaced, and the re-entrancy guard (this.abort)
+  // never gets set, stranding the session on every future send(). Pin that a
+  // throwing callback degrades to "no status block" instead.
+  it('a specialistStatus callback that throws degrades to no status block instead of stranding the turn', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'ok'), finishChunk('stop')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(
+      makeOpts({
+        decide: async () => ALLOW,
+        specialistStatus: () => { throw new Error('EACCES: permission denied'); },
+      }),
+      async () => model as any,
+    );
+
+    // Must not throw / must not hang — the turn completes normally.
+    await expect(session.send('go')).resolves.toBeUndefined();
+
+    // No status block was injected — the callback never produced a value.
+    expect(JSON.stringify(seen[0])).not.toContain('<specialists-status>');
+
+    // Re-entrancy guard cleared: a second turn on the same session still
+    // works (this.abort was set and released normally by the first turn).
+    await expect(session.send('again')).resolves.toBeUndefined();
+    expect(seen.length).toBe(2);
+  });
+
+  // Fix pass, Finding 6: a session that never delegates (opts.specialistStatus
+  // stays undefined — true for every specialist child, and any root session
+  // wire() never touched) must pay literally nothing for this feature, not
+  // just "no history mutation" but no scan of history at all.
+  //
+  // Final-review fix (Finding 5): the ORIGINAL version of this test only
+  // asserted `expect(spy).not.toHaveBeenCalled()` for the UNWIRED session —
+  // an assertion that also passes if the whole guarded-scan feature were
+  // deleted outright (no specialistStatus handling anywhere in beginTurn),
+  // since then findIndex would never be called for ANY session, wired or
+  // not. Added a positive control: a second, WIRED session (specialistStatus
+  // present) must still call findIndex — proving the "zero cost when unwired"
+  // claim is actually the guard skipping REAL work, not the absence of the
+  // feature entirely. A regression that deletes the whole
+  // `if (this.opts.specialistStatus) { ... }` block now fails the wired
+  // assertion below instead of passing both.
+  it('a session with no specialistStatus wired never scans history for a status block (Finding 6: zero cost)', async () => {
+    const model = scriptedModel([stream(...textChunks('a', 'ok'), finishChunk('stop'))], []);
+    const session = new HarnessSession(makeOpts({ decide: async () => ALLOW }), async () => model as any);
+    const historyRef = (session as any).history;
+    const spy = vi.spyOn(historyRef, 'findIndex');
+
+    await session.send('go');
+
+    expect(spy).not.toHaveBeenCalled();
+
+    // Positive control: an otherwise-identical WIRED session DOES scan —
+    // same model script, same decide, only specialistStatus differs.
+    const wiredModel = scriptedModel([stream(...textChunks('a', 'ok'), finishChunk('stop'))], []);
+    const wiredSession = new HarnessSession(
+      makeOpts({ decide: async () => ALLOW, specialistStatus: () => null }),
+      async () => wiredModel as any,
+    );
+    const wiredHistoryRef = (wiredSession as any).history;
+    const wiredSpy = vi.spyOn(wiredHistoryRef, 'findIndex');
+
+    await wiredSession.send('go');
+
+    expect(wiredSpy).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 14 — ModelSearch attaches/detaches under the IDENTICAL gate as Task
+// (syncTaskTool in harness-session.ts runs both add-or-withhold decisions
+// together): profile.canDelegate AND !isSpecialistChild. It never attaches
+// alone — a session that cannot delegate has nothing for it to name a model
+// FOR. Mirrors skill-tool-gating.test.ts's Task ON/OFF pattern.
+// ---------------------------------------------------------------------------
+describe('ModelSearch attachment mirrors Task\'s gate (Task 14)', () => {
+  const toolNames = (s: HarnessSession) => Object.keys((s as any).buildAiTools());
+
+  it('canDelegate: true attaches BOTH Task and ModelSearch', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).toContain('Task');
+    expect(toolNames(s)).toContain('ModelSearch');
+  });
+
+  it('canDelegate: false withholds BOTH', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: false } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).not.toContain('Task');
+    expect(toolNames(s)).not.toContain('ModelSearch');
+  });
+
+  it('canDelegate: true but isSpecialistChild: true STILL withholds both (depth-1 guard)', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true }, isSpecialistChild: true }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).not.toContain('Task');
+    expect(toolNames(s)).not.toContain('ModelSearch');
+  });
+
+  it('a model swap re-gates ModelSearch exactly like Task', () => {
+    const s = new HarnessSession(
+      makeOpts({ profile: { ...CLOUD_DEFAULT, canDelegate: true } }),
+      async () => ({} as any),
+    );
+    expect(toolNames(s)).toContain('ModelSearch');
+    s.setBinding({ providerId: 'local', modelId: 'tiny' }, 8_192, { ...CLOUD_DEFAULT, canDelegate: false });
+    expect(toolNames(s)).not.toContain('ModelSearch');
+    s.setBinding({ providerId: 'openrouter', modelId: 'big' }, 200_000, { ...CLOUD_DEFAULT, canDelegate: true });
+    expect(toolNames(s)).toContain('ModelSearch');
   });
 });

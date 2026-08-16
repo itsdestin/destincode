@@ -407,8 +407,12 @@ a Task tool that a native session's model can call to delegate a scoped piece of
 **specialist** — a short-lived, foreground CHILD `HarnessSession` cold-started with a narrow tool
 allowlist, run to completion, and torn down. `harness/native-session-host.ts` (`createChild`,
 `spawnSpecialist`, `formatSpecialistReport`) and `harness/specialists/` (`registry.ts`,
-`builtins.ts`, `child-permissions.ts`, `child-ask-policy.ts`, `limits.ts`, `report-budget.ts`,
-`names.ts`) are the whole surface.
+`builtins.ts`, `child-permissions.ts`, `limits.ts`, `report-budget.ts`, `names.ts`) were the
+whole surface at the time. **Two of the bullets below describe 1a's launch shape and were
+superseded by plan 1b** (background execution, durability, steering) — each says so in place
+and points to the "Specialists (plan 1b)" section, which is now where the current behavior
+lives; `child-ask-policy.ts` named above no longer exists on disk (replaced by
+`child-ask-router.ts`, see 1b).
 
 - **A specialist child is an ordinary session, marked by parentage.** `NativeSessionHeader` grows
   three ADDITIVE fields — `parentSessionId`, `sessionKind: 'specialist'`, `agentType` — so v1
@@ -485,26 +489,116 @@ allowlist, run to completion, and torn down. `harness/native-session-host.ts` (`
   reaches `ipc-handlers.ts`'s session-create path in the first place. (Verified by an exhaustive
   `rg` sweep of every `store.list(`/`SessionStore`/`listSessionFiles`/`cwdToProjectSlug` hit under
   `desktop/src/main`, per-site, as part of landing this section — see the Task 8 commit.)
-- **A child never reaches a real user ask.** `askUser: childAskPolicy()` replaces the parent's
-  `PermissionBroker` entirely for a child session — the broker would emit under the CHILD's
-  session id, which no renderer window owns, so the reducer would silently drop the ask and the
-  broker's promise would hang forever. `childAskPolicy()` instead resolves synchronously with a
-  typed refusal, so a child that hits an ask-shaped situation (an `AskUserQuestion` call, or a
-  guard that would otherwise prompt) gets an immediate, legible "no" instead of stalling until
-  teardown.
-- **Reload tradeoff, stated plainly.** Specialist display events are DISPLAY-ONLY re-emissions —
-  they are never persisted under the parent's own session file (see the frozen-surface point
-  above). That means after an app restart, a resumed parent's subagent card renders EMPTY: the
-  child's `tool-use`/`tool-result`/`assistant-text` events live only in the child's own JSONL, and
-  nothing replays them back onto the parent on resume. What DOES survive is the report text
-  itself — it was returned as the Task tool's result, which IS part of the parent's own persisted
-  transcript (an ordinary tool result), so the parent model (and a human reading the resumed
-  transcript) still sees what the specialist reported, just not the blow-by-blow tool calls that
-  produced it. Replaying a child's display history back onto a resumed parent is explicitly out of
-  scope for 1a — durability and replay are plan 1b's job.
+- **(1a launch shape, SUPERSEDED — see "Specialists (plan 1b)" below.) A child never reached a
+  real user ask.** 1a's `askUser: childAskPolicy()` resolved every ask-shaped call synchronously
+  with a typed refusal, because a broker ask under the CHILD's session id had no owning renderer
+  window and would have hung forever. Plan 1b replaced this with `childAskRouter` — a child's ask
+  now DOES reach a real user, routed to the PARENT's own card. `child-ask-policy.ts` no longer
+  exists on disk.
+- **(1a launch shape, SUPERSEDED — see "Specialists (plan 1b)" below.) The reload tradeoff.** 1a's
+  specialist display events were DISPLAY-ONLY re-emissions with nothing to replay them after a
+  restart, so a resumed parent's subagent card rendered EMPTY even though the report text itself
+  (an ordinary tool result) survived in the parent's own transcript. Plan 1b's `getHistory` merge
+  now replays a child's own JSONL back onto a resumed parent, so the card is no longer empty.
 
-**Deferred to plan 1b (not a 1a oversight):** background/non-blocking delegation, a persistent
-run ledger, heartbeats for a long-running child, subagent-card replay after resume, file-based
-custom specialists, and CC-compat with Claude Code's own subagent file format. **Deferred to plan
-1c:** pretty launch/report cards in the renderer, a specialist badge, and hidden-utility built-ins
-beyond the four (explorer/researcher/reviewer/worker) shipped here.
+**Plan 1b (below) shipped everything deferred here:** background/non-blocking delegation, a
+persistent run ledger, heartbeats for a long-running child, and subagent-card replay after resume.
+File-based custom specialists and CC-compat with Claude Code's own subagent file format are still
+open — folded into the **plan 1c** deferred list next to pretty launch/report cards in the
+renderer, a specialist badge, and hidden-utility built-ins beyond the four
+(explorer/researcher/reviewer/worker) shipped here. Two items 1b did NOT ship — a user-visible
+deletion/GC path for child transcripts, and consent-card copy adapted for a `task_id` management
+call — are tracked in the workspace `ROADMAP.md` under `#specialists`, not here.
+
+## Specialists (plan 1b — background, durability, steering)
+
+Design: workspace `docs/active/plans/2026-08-12-native-specialists-plan-1b-background-durability.md`.
+Fourteen tasks made specialists background-capable and durable: the parent keeps working while a
+child runs, completions arrive as injected turns at an idle boundary, the model can steer a
+running child, a blocked child ask routes to the parent's own card, and every piece of state
+(undelivered reports, interrupted children, the subagent card) survives an app restart. New
+surface: `harness/specialists/delegation-ledger.ts`, `child-ask-router.ts` (replaces
+`child-ask-policy.ts`), `delegated-models.ts`; `harness/tools/model-search.ts`.
+
+- **The delegation ledger is the durable record of every spawn.** One sidecar JSON file per
+  parent (`sessions/<slug>/<parentId>.delegations.json`), written exclusively through
+  `NativeHome.mutateJson` (lock-guarded read-modify-write). A **claim is a lease, not a
+  delivery**: `claimUndelivered` stamps `claimedBy`/`claimedAt` but leaves `delivered: false`;
+  only `confirmDelivered`, called AFTER the injected turn actually ran, flips it. `isOwnerAlive`
+  (an instance-UUID fast path, else `process.kill(pid, 0)`) means a lease held by a crashed
+  process is reclaimable — a crash between claim and injection re-delivers the report exactly
+  once instead of losing it forever.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/specialists/delegation-ledger.ts", "contains": "A CLAIM IS A LEASE"} -->
+- **Background execution resolves the Task call at LAUNCH; the report is delivered later, never
+  mid-turn.** `background: true` on the Task tool detaches the run — `runDelegation` finishes on
+  its own schedule, and the completion is queued (`pendingDeliveryParents`). The host's `runTurns`
+  drain loop injects it as a `user-message` (`data.injected: 'specialist-report'`, via
+  `HarnessSession.runNotice`) only at an idle boundary — after the parent's own turn has fully
+  completed, never spliced in. A report too large for the ledger's cap spills to
+  `<childId>.report.md` (`NativeHome.writeSessionArtifact`); the parent can `Read` its own spill
+  directory without an external-directory ask (`internalReadRoots`).
+- **A compact per-turn status block, never polling.** `HarnessSessionOpts.specialistStatus`
+  injects one `<specialists-status>` history message before each real user turn, listing running
+  and undelivered-finished specialists; the PREVIOUS turn's block is removed first, so exactly one
+  ever lives in history — never an accumulating, increasingly stale list.
+- **Steering (`postSteer`) lands at the next iteration boundary — a tool call is never cut.**
+  Posted text queues and drains as a `<steer>` history message at the top of the next turn-loop
+  iteration. A steer posted with no turn in flight, or during the child's own FINAL step (too late
+  to drain before the turn ends), is recorded to the ledger's `missedSteers` instead of silently
+  dropped, and is prepended to the brief the next time that child is resumed via `task_id`.
+- **Heartbeat staleness flags — never kills.** A child silent past `SPECIALIST_IDLE_STALE_MS`
+  (2 min) or, mid-tool-call, `SPECIALIST_IN_TOOL_STALE_MS` (5 min) is flagged `stale` on its
+  ledger record and surfaces in the status block ("may be stuck"). There is no kill path: only an
+  explicit `interrupt: true` (model, via `task_id`) or a future user action ends a stale child.
+- **`task_id` re-enters a specialist a model already started — steer, resume, or interrupt.** The
+  Task tool's `task_id` branch: running → the prompt is a steer; finished/interrupted → the child
+  RESUMES with cold state rebuilt from its own JSONL, `prompt` as its next brief; `interrupt: true`
+  cancels it. Own-children-only — a `task_id` belonging to another conversation or nonexistent
+  reads identically, so the refusal never leaks whether a foreign id exists. A specialist header
+  can never re-enter through the root `resume()` path (it would get the preset's prompt and could
+  re-acquire the Task tool) — `resumeSpecialist` is the only door back in.
+- **A child's ask now reaches a real user — routed to the parent's card, with a 5-minute
+  redirect.** `childAskRouter` replaces 1a's synchronous refusal: the ask re-registers on the
+  broker under the PARENT's own sessionId (the existing permission card renders it) and holds for
+  `SPECIALIST_ASK_HOLD_MS` (5 minutes, `specialists/limits.ts`). Only if nobody answers by then
+  does it resolve with `ASK_REDIRECT_MESSAGE` — copy that tells the child to keep working on
+  anything that doesn't depend on the blocked action and never route around it — while the ask
+  entry stays answerable past the timeout, not canceled. A real answer that lands late either
+  steers the still-live child (`APPROVED`/`DENIED`, naming the tool) or, once the child has
+  already ended, queues a parent delivery naming the `task_id` to resume.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/specialists/child-ask-router.ts", "contains": "ASK_REDIRECT_MESSAGE"} -->
+- **Permission-store rule identity is now a quad, and the store is versioned.** `specialist?:
+  string` (the agentType) joined `(tool, pattern, action)` as identity's fourth axis at every
+  comparison site (dedupe, remove, the host's in-memory filter, the UI's `ruleKey`) — a
+  specialist-keyed grant never leaks to the root session or a different specialist.
+  `~/.youcoded/permissions.json` is `v: 1 | 2`; a v1 file reads as valid v2 with no migration
+  step. Full depth: `native-permissions.md` rule.
+- **Restart reconcile + card replay.** On parent resume: a `running` record whose owner failed
+  `isOwnerAlive` is marked `interrupted` HONESTLY (the child remains an ordinary resumable session
+  via `task_id`, never silently discarded); a dead-owner delivery lease is released so the report
+  re-delivers instead of vanishing; a `completed && !delivered` record is queued for delivery at
+  the next idle boundary. `getHistory` now MERGES each child's own JSONL back into the parent's
+  stream — filtered to `SUBAGENT_DISPLAY_TYPES`, re-stamped identically to the live path, and
+  spliced immediately after the parent's own Task tool-use event — so the subagent card is no
+  longer empty after a restart (see the corrected 1a bullet above).
+- **Concurrency is engine-measured locally, profile-fixed hosted.**
+  `CapabilityProfile.maxConcurrentSpecialists` is `4` for cloud bindings, `1` for an unrecognized
+  local model, and — for a known local engine — the real parallel-slot count read from `/props` at
+  runtime (clamped 1–4), never a copied constant. `interrupt(parentId)` (the Stop button) no
+  longer cascades to a BACKGROUND child — stopping the parent's own turn should not fire a
+  researcher still working — but `destroy`/`quiesce` (teardown, takeover) still take every child
+  down regardless of foreground/background, and mark its ledger record `interrupted`.
+- **Delegated model tiers — user-designated, never auto-priced.** Two named tiers, `budget` and
+  `frontier`, each bound to a concrete model via `DelegatedModels` (`~/.youcoded/delegated-models.json`,
+  1c ships the Settings picker). An unset tier falls back to the parent's own model with an honest
+  "(No ${tier} model is set — using this conversation's model.)" note, never a silent substitution.
+  The orchestrating model can also name a specific model id per hire, but ONLY when the user asked
+  for one — an id absent from the live catalog refuses the Task call rather than guessing. The
+  `ModelSearch` tool (catalog lookup by substring, price-sorted) rides the identical `canDelegate`
+  gate as `Task` and exists only to find ids for that per-hire override.
+- **Weak-model hardening, three independent guards.** A single JSON-string tool-arg (`"{\"prompt\":
+  ...}"`) is re-parsed once before failing. Placeholder prompts (`todo`, `task 1`, an unexpanded
+  `{{...}}` template) are refused against the WHOLE trimmed prompt only, never per-line — a
+  narrower check than the 40-char floor alone, which a padded placeholder can clear. A
+  per-conversation spawn budget (`SPECIALIST_SPAWN_BUDGET_PER_SESSION`, 30) is a runaway backstop,
+  not a normal-use limit.

@@ -319,7 +319,7 @@ describe('createHolderTakeover', () => {
       appends.push(event.type);
       return realAppend(cwd, event);
     });
-    const host = new NativeSessionHost(store, delayedFactory, async () => null, async () => null, async () => null);
+    const host = new NativeSessionHost(store, delayedFactory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null);
     const nativeId = 'nat-real';
     await host.create({ sessionId: nativeId, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
 

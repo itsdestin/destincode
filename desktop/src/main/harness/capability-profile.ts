@@ -2,6 +2,7 @@
 // known model gets curated tuning, an unknown one gets a safe fallback, and the
 // harness NEVER branches on a model-name string (only the registry matcher does).
 import { KNOWN_MODELS, matchKnownModel, type KnownModelEntry } from './known-models';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from './specialists/limits';
 
 export type ToolPresentation = 'full' | 'simplified';
 export type PromptVariant = 'anthropic' | 'gpt' | 'default' | 'local-small';
@@ -51,6 +52,18 @@ export interface CapabilityProfile {
    *  NativeSessionHost.createChild directly — a session that cannot delegate
    *  simply never sees the option on its tool schema. */
   canDelegate: boolean;
+  /** Task 13 — the per-parent specialist CONCURRENCY ceiling
+   *  NativeSessionHost.maxSpecialistsFor reads off the parent's resolved
+   *  profile. Distinct from canDelegate: that gates whether the Task tool is
+   *  attached AT ALL; this gates how many children may run AT ONCE once it
+   *  is. Hosted/cloud sessions get the spec's flat constant
+   *  (HOSTED_MAX_CONCURRENT_SPECIALISTS) — there is no engine to measure. A
+   *  local session's ceiling instead comes from the ENGINE's own measured
+   *  parallel-slot count (llama-server's n_slots), because a local machine's
+   *  real concurrency ceiling is hardware-bound, not spec-bound — see
+   *  localFallback / the known-model overlay below for how each layer
+   *  resolves it. */
+  maxConcurrentSpecialists: number;
 }
 
 export type ProfileProviderType =
@@ -67,6 +80,27 @@ export interface DiscoveredModel {
    *  discovered", not "no". visionFor() treats it as the middle precedence
    *  layer: below the KNOWN_MODELS registry, above the provider-type default. */
   supportsVision?: boolean;
+  /** Task 13 — the engine's live parallel-slot count (llama-server's
+   *  n_slots), read from the SAME /props call that already supplies
+   *  contextLength (see docs/engine-dependencies.md § "Parallel
+   *  slots" — the 2026-08-12 probe that measured n_slots=4 batching cleanly
+   *  at ~1.7-1.85x single-request latency, the largest tested N that still
+   *  cleared that bar). engine-manager.ts's effectiveContextWindow() now
+   *  reads it off that same /props call and threads it through
+   *  ipc-handlers.ts's contextAndSlotsFor closure into
+   *  NativeSessionHost.resolveContextAndProfile() — so, unlike when this
+   *  comment first landed, a construction site DOES wire a live reading
+   *  through. Still optional: resolveContextAndProfile coalesces
+   *  contextAndSlotsFor's `null` (no running engine instance, an older
+   *  llama.cpp build with no `n_slots` in its /props response, or a
+   *  non-local-engine binding, which never queries the engine at all) into
+   *  `undefined` before calling resolveProfile — so in production this
+   *  field is either a real discovered count or `undefined`, never the
+   *  explicit `null` the type also allows for a lower-level caller (the
+   *  resolveProfile unit tests exercise `null` directly). Either absent form
+   *  reaches the same fallback in the known-model overlay below:
+   *  conservative 1, never "one slot confirmed". */
+  totalSlots?: number | null;
 }
 
 const SMALL_LOCAL_CONTEXT = 32_768;
@@ -80,6 +114,12 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   // Frontier/cloud models default true (spec decision 4) — they're the
   // verified-capable orchestrator case the Task tool exists for.
   canDelegate: true,
+  // Task 13 — hosted/cloud sessions keep the flat spec constant: there is no
+  // local engine to measure. Imported rather than repeated as a literal `4`
+  // so this and HOSTED_MAX_CONCURRENT_SPECIALISTS (specialists/limits.ts,
+  // still the value tools/task.ts's at-capacity refusal falls back to when no
+  // live profile is available) can never silently drift apart.
+  maxConcurrentSpecialists: HOSTED_MAX_CONCURRENT_SPECIALISTS,
   // Conservative placeholder only: resolveProfile ALWAYS spreads the real
   // visionFor() result over this. It is false rather than true so a direct use
   // of CLOUD_DEFAULT (tests, future call sites) cannot accidentally claim a
@@ -205,6 +245,29 @@ function mcpBudgetSizing(d: DiscoveredModel, registry: KnownModelEntry[]): numbe
 // instead of letting a spread paper over it.
 type BehavioralProfile = Omit<CapabilityProfile, 'exposeSkillCatalog' | 'injectionBudgetTokens' | 'mcpToolBudgetTokens' | 'supportsVision'>;
 
+// Task 13 — the local engine's REAL parallel-slot ceiling this app trusts,
+// per the 2026-08-12 probe recorded in docs/engine-dependencies.md
+// § "Parallel slots": at N=4, average per-request latency (~939-1188ms) was
+// still <=2x the single-request baseline in both measured runs — the largest
+// tested N that cleared that bar (N=4 batches partially, not serially).
+// Deliberately its OWN constant, not reused from HOSTED_MAX_CONCURRENT_SPECIALISTS
+// even though both happen to be 4 today: one is a hardware/engine-measured
+// ceiling, the other is the spec's flat hosted number — they must be free to
+// diverge later (e.g. a beefier dev box measuring a higher ceiling) without
+// dragging the hosted constant along for no reason.
+const LOCAL_SLOT_CLAMP_CEILING = 4;
+
+/** Task 13 — clamp a live engine slot reading into the concurrency ceiling a
+ *  KNOWN local model's profile uses. `totalSlots` is null/undefined on any
+ *  build that hasn't reported a slot count yet (or hasn't been read at all)
+ *  — that is UNKNOWN slot behavior, not "one slot confirmed", so it degrades
+ *  to the same conservative 1 the Layer-3 fallback uses below, never to the
+ *  clamp ceiling. */
+function localSlotCap(totalSlots: number | null | undefined): number {
+  if (totalSlots == null) return 1;
+  return Math.max(1, Math.min(LOCAL_SLOT_CLAMP_CEILING, totalSlots));
+}
+
 function localFallback(ctx: number | null): BehavioralProfile {
   const small = ctx == null || ctx <= SMALL_LOCAL_CONTEXT;
   return {
@@ -227,6 +290,14 @@ function localFallback(ctx: number | null): BehavioralProfile {
     // entry the maintainers explicitly reviewed and tuned to 'full' (see
     // resolveProfile's known-model branch below), earns delegation.
     canDelegate: false,
+    // Task 13 — an UNKNOWN local model gets the conservative floor
+    // UNCONDITIONALLY, same posture as canDelegate just above: even if a live
+    // slot reading happened to be available, an unvetted model's real
+    // behavior under concurrent load is unknown, so this does not consult
+    // totalSlots at all (unlike the known-model overlay's localSlotCap
+    // below). canDelegate is already false here, so the Task tool is never
+    // attached anyway — this value only matters if that ever changes.
+    maxConcurrentSpecialists: 1,
   };
 }
 
@@ -300,6 +371,13 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     // without opining on canDelegate still reads its OWN presentation tier,
     // not the conservative fallback's blanket false.
     canDelegate: (known.maxToolPresentation ?? base.maxToolPresentation) === 'full',
+    // Task 13 — a KNOWN local model earns a REAL concurrency ceiling derived
+    // from the engine's own measured slot count (d.totalSlots), clamped to
+    // [1, 4] by localSlotCap — unlike the flat conservative 1 an unknown
+    // model gets (base.maxConcurrentSpecialists, never read here): the
+    // registry match is what marks a model "vetted enough" to trust with
+    // more than the floor, mirroring canDelegate's own reasoning just above.
+    maxConcurrentSpecialists: localSlotCap(d.totalSlots),
     ...sizing,
     mcpToolBudgetTokens,
     supportsVision,

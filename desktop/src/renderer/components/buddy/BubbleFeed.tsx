@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../../state/chat-context';
 import { hookEventToAction } from '../../state/hook-dispatcher';
 import UserMessage from '../UserMessage';
+import SpecialistReportCard from '../SpecialistReportCard';
 import AssistantTurnBubble from '../AssistantTurnBubble';
 import { CompactToolStrip } from './CompactToolStrip';
 import PromptCard from '../PromptCard';
@@ -98,6 +99,9 @@ export function BubbleFeed({ sessionId }: Props) {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Host-injected turn marker + header — MUST mirror App.tsx.
+            injected: event.data.injected,
+            injectedMeta: event.data.injectedMeta,
             // Forward the subagent stamp so the reducer can drop subagent
             // briefings (they're already shown on the parent Agent card).
             parentAgentToolUseId: event.data.parentAgentToolUseId,
@@ -368,7 +372,10 @@ export function BubbleFeed({ sessionId }: Props) {
                   key = entry.message.id;
                   // sessionId ?? '' — the buddy window has no ArtifactProvider, so
                   // FilepathToken pills render but their click is a documented no-op.
-                  content = <UserMessage message={entry.message} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />;
+                  // Host-injected turn → compact report card, MUST mirror ChatView.tsx.
+                  content = entry.injected
+                    ? <SpecialistReportCard message={entry.message} injected={entry.injected} meta={entry.injectedMeta} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />
+                    : <UserMessage message={entry.message} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />;
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);

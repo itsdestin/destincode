@@ -141,4 +141,18 @@ describe('NativeHome', () => {
     const ids = home.listSessionFiles().map((f) => f.sessionId);
     expect(ids).toContain('tiny');
   });
+
+  // DelegationLedger (plan 1b Task 2) writes one sidecar per parent session,
+  // sessions/<slug>/<parentId>.delegations.json — sitting in the SAME slug
+  // directory as real .jsonl session files. listSessionFiles feeds the Resume
+  // Browser and pruneNativePhantomRecords; a sidecar mistaken for a session
+  // would show up as a broken, unopenable row in both.
+  it('listSessionFiles ignores .delegations.json sidecars', async () => {
+    await home.appendSessionLine('proj-c', 'real-session', { v: 1 });
+    const slugDir = path.join(root, '.youcoded', 'sessions', 'proj-c');
+    fs.writeFileSync(path.join(slugDir, 'parent-1.delegations.json'), JSON.stringify({ v: 1, delegations: [] }));
+
+    const ids = home.listSessionFiles().map((f) => f.sessionId);
+    expect(ids).toEqual(['real-session']);
+  });
 });
