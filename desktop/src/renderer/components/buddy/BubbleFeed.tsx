@@ -196,6 +196,8 @@ export function BubbleFeed({ sessionId }: Props) {
               text: event.data.text,
               timestamp: event.timestamp,
               partId: event.data.partId,
+              // Specialists 1c — MUST mirror App.tsx.
+              parentAgentToolUseId: event.data.parentAgentToolUseId,
             });
           } else {
             // Preparing tool card — the buddy feed renders tool cards too, so
@@ -290,9 +292,22 @@ export function BubbleFeed({ sessionId }: Props) {
       const action = hookEventToAction(event);
       if (action) dispatch(action);
     });
+    // Specialists 1c: delegation feed — MUST mirror App.tsx.
+    const unsubSpecialist = (window.claude.on as any).specialistEvent?.((event: any) => {
+      if (event?.sessionId !== sessionId) return;
+      if (event.kind === 'run' && event.run) {
+        dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId, run: event.run });
+      } else if (event.kind === 'note' && typeof event.text === 'string') {
+        dispatch({
+          type: 'SPECIALIST_NOTE', sessionId, childId: event.childId, text: event.text,
+          from: event.from === 'assistant' ? 'assistant' : 'user', timestamp: event.timestamp ?? Date.now(),
+        });
+      }
+    });
 
     return () => {
       window.claude.off('hook:event', unsubHook);
+      if (unsubSpecialist) window.claude.off('specialists:event', unsubSpecialist);
     };
   }, [sessionId, dispatch]);
 

@@ -328,7 +328,8 @@ function endTurn(
 function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   if (action.type !== 'TRANSCRIPT_TOOL_USE'
       && action.type !== 'TRANSCRIPT_TOOL_RESULT'
-      && action.type !== 'TRANSCRIPT_ASSISTANT_TEXT') {
+      && action.type !== 'TRANSCRIPT_ASSISTANT_TEXT'
+      && action.type !== 'TRANSCRIPT_ASSISTANT_REASONING') {
     return state;
   }
   const parentId = (action as any).parentAgentToolUseId as string | undefined;
@@ -387,6 +388,22 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
         partId: action.partId,
       });
     }
+  } else if (action.type === 'TRANSCRIPT_ASSISTANT_REASONING') {
+    // Specialists 1c: a child's reasoning lands in ITS card as a 'thinking'
+    // segment (coalesced by partId like text), never in the parent's own
+    // reasoning bubble — which is where an unstamped dispatch used to send it.
+    const lastIdx = segments.length - 1;
+    const last = lastIdx >= 0 ? segments[lastIdx] : null;
+    if (action.partId && last && last.type === 'thinking' && last.partId === action.partId) {
+      segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else {
+      segments.push({
+        type: 'thinking',
+        id: `sa-think-${action.uuid}`,
+        content: action.text,
+        partId: action.partId,
+      });
+    }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
     const existingIdx = segments.findIndex(
       s => s.type === 'tool' && s.toolUseId === action.toolUseId,
@@ -400,12 +417,40 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
       status: 'running',
     };
     if (existingIdx >= 0) {
-      // Duplicate tool_use emit — JSONL FIFO order guarantees the
-      // tool_result hasn't been emitted yet, so overwriting back to
-      // 'running' is safe and keeps the segment's input fresh.
-      segments[existingIdx] = next;
+      const existing = segments[existingIdx] as Extract<SubagentSegment, { type: 'tool' }>;
+      // Specialists 1c: the ask can beat the (rAF-batched) tool-use event by
+      // ~50ms — the exact race that hung plan 1b's Test 1 at the top level
+      // (cd6fb766). A segment already flipped to 'awaiting-approval' keeps
+      // its ask state; only a plain duplicate tool_use overwrites to 'running'
+      // (JSONL FIFO order guarantees its result hasn't been emitted yet).
+      segments[existingIdx] = existing.status === 'awaiting-approval'
+        ? { ...existing, input: action.toolInput }
+        : next;
     } else {
-      segments.push(next);
+      // Specialists 1c: reclaim a synthetic ask placeholder (`sa-perm-*`, minted
+      // by PERMISSION_REQUEST when the ask arrived before this event) that
+      // names the same tool — exact input first, else the first still-pending
+      // one. Mirrors the top-level `perm-` reclaim in TRANSCRIPT_TOOL_USE.
+      const incoming = action.toolInput ? stableStringify(action.toolInput) : null;
+      let reclaimIdx = -1;
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        if (seg.type !== 'tool' || !seg.id.startsWith('sa-perm-')) continue;
+        if (seg.toolName !== action.toolName || seg.status !== 'awaiting-approval') continue;
+        if (incoming !== null && stableStringify(seg.input) === incoming) { reclaimIdx = i; break; }
+        if (reclaimIdx === -1) reclaimIdx = i;
+      }
+      if (reclaimIdx >= 0) {
+        const placeholder = segments[reclaimIdx] as Extract<SubagentSegment, { type: 'tool' }>;
+        segments[reclaimIdx] = {
+          ...placeholder,
+          id: next.id,
+          toolUseId: action.toolUseId,
+          input: action.toolInput,
+        };
+      } else {
+        segments.push(next);
+      }
     }
   } else if (action.type === 'TRANSCRIPT_TOOL_RESULT') {
     const idx = segments.findIndex(
@@ -435,6 +480,47 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const next = new Map(state);
   next.set(action.sessionId, { ...session, toolCalls, seenUuids });
   return next;
+}
+
+/**
+ * Specialists 1c: which Task card owns a child. Prefer the explicit
+ * parentToolCallId (the ledger and the ask router both carry it); fall back to
+ * the card whose run/agentId names the child — covers a routed ask that
+ * arrived without the id (older host) after the run record already landed.
+ */
+function findSpecialistCard(
+  toolCalls: Map<string, ToolCallState>,
+  ref: { parentToolCallId?: string; childId?: string },
+): string | null {
+  if (ref.parentToolCallId && toolCalls.has(ref.parentToolCallId)) return ref.parentToolCallId;
+  if (ref.childId) {
+    for (const [id, tool] of toolCalls) {
+      if (tool.specialistRun?.childId === ref.childId || tool.agentId === ref.childId) return id;
+    }
+  }
+  return null;
+}
+
+/** Specialists 1c: patch one tool segment (by requestId) inside every Task
+ *  card. Returns null when no nested segment holds that requestId. */
+function patchNestedAsk(
+  toolCalls: Map<string, ToolCallState>,
+  requestId: string,
+  patch: (seg: Extract<SubagentSegment, { type: 'tool' }>) => Extract<SubagentSegment, { type: 'tool' }>,
+): Map<string, ToolCallState> | null {
+  for (const [id, tool] of toolCalls) {
+    const segs = tool.subagentSegments;
+    if (!segs) continue;
+    const idx = segs.findIndex(s => s.type === 'tool' && s.requestId === requestId);
+    if (idx < 0) continue;
+    const seg = segs[idx] as Extract<SubagentSegment, { type: 'tool' }>;
+    const nextSegs = [...segs];
+    nextSegs[idx] = patch(seg);
+    const out = new Map(toolCalls);
+    out.set(id, { ...tool, subagentSegments: nextSegs });
+    return out;
+  }
+  return null;
 }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -840,6 +926,45 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return next;
       }
 
+      // Specialists 1c: a BACKGROUND specialist's delivered report folds back
+      // into the Task card that hired it (Destin's 1b directive — background
+      // and foreground render alike; the foreground report is that card's
+      // tool result). The parent model still reads this turn as its input, so
+      // the turn boundary below (isThinking, fresh turn) is kept; only the
+      // bubble is not appended. Falls through to the standalone card when the
+      // launching Task card is not on this timeline (older sessions, a report
+      // replayed without its card).
+      if (action.injected && action.injectedMeta) {
+        const cardId = findSpecialistCard(session.toolCalls, {
+          parentToolCallId: action.injectedMeta.parentToolCallId,
+          childId: action.injectedMeta.childId,
+        });
+        if (cardId) {
+          const card = session.toolCalls.get(cardId)!;
+          const toolCalls = new Map(session.toolCalls);
+          toolCalls.set(cardId, {
+            ...card,
+            specialistReport: {
+              text: action.text,
+              status: action.injectedMeta.status,
+              steps: action.injectedMeta.steps,
+              timestamp: action.timestamp,
+            },
+          });
+          next.set(action.sessionId, {
+            ...session,
+            toolCalls,
+            seenUuids,
+            queuedMessages,
+            isThinking: true,
+            currentGroupId: null,
+            currentTurnId: null,
+            attentionState: 'ok',
+          });
+          return next;
+        }
+      }
+
       // No pending match — a queued message being drained (Task 12's true-
       // position confirm: this is the ONLY place its timeline entry gets
       // created, at the end), a remote/replay client, or the user typed
@@ -936,6 +1061,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     // TRANSCRIPT_ASSISTANT_TEXT path, which appends each event as a whole
     // block in its own new segment.
     case 'TRANSCRIPT_ASSISTANT_REASONING': {
+      // Specialists 1c: a child's reasoning goes into its Task card, not here.
+      if (action.parentAgentToolUseId) return applySubagentEvent(state, action);
       const session = next.get(action.sessionId);
       if (!session) return state;
 
@@ -1384,6 +1511,68 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
+      // Specialists 1c: an ask a specialist CHILD raised nests under the Task
+      // card that hired it — never a top-level card, and never bound to one of
+      // the PARENT's own running tools by name (a background child's Bash ask
+      // arriving while the parent runs its own Bash would otherwise hijack
+      // the parent's card: a consent bug). Same two-tier match as below, but
+      // over the card's segments; unmatched → a synthetic `sa-perm-` segment
+      // the child's real tool-use event reclaims (applySubagentEvent).
+      if (action.specialist) {
+        const cardId = findSpecialistCard(session.toolCalls, {
+          parentToolCallId: action.specialist.parentToolCallId,
+          childId: action.specialist.childId,
+        });
+        if (cardId) {
+          const card = session.toolCalls.get(cardId)!;
+          const segs = card.subagentSegments ? [...card.subagentSegments] : [];
+          if (segs.some(s => s.type === 'tool' && s.requestId === action.requestId)) return state;
+          const wanted = action.input ? stableStringify(action.input) : null;
+          let inputIdx = -1;
+          let nameIdx = -1;
+          for (let i = 0; i < segs.length; i++) {
+            const seg = segs[i];
+            if (seg.type !== 'tool' || seg.status !== 'running' || seg.toolName !== action.toolName) continue;
+            if (nameIdx === -1) nameIdx = i;
+            if (wanted !== null && stableStringify(seg.input) === wanted) { inputIdx = i; break; }
+          }
+          const askFields = {
+            status: 'awaiting-approval' as const,
+            requestId: action.requestId,
+            denyListed: action.denyListed,
+            external: action.external,
+            permissionMode: action.permissionMode,
+          };
+          const target = inputIdx >= 0 ? inputIdx : nameIdx;
+          if (target >= 0) {
+            const seg = segs[target] as Extract<SubagentSegment, { type: 'tool' }>;
+            segs[target] = {
+              ...seg,
+              ...askFields,
+              ...(target === nameIdx && inputIdx === -1 && action.input && Object.keys(action.input).length > 0
+                ? { input: action.input } : {}),
+            };
+          } else {
+            segs.push({
+              type: 'tool',
+              id: `sa-perm-${action.requestId}`,
+              toolUseId: `sa-perm-${action.requestId}`,
+              toolName: action.toolName,
+              input: action.input,
+              ...askFields,
+            });
+          }
+          const toolCalls = new Map(session.toolCalls);
+          toolCalls.set(cardId, { ...card, subagentSegments: segs });
+          next.set(action.sessionId, { ...session, toolCalls, attentionState: 'ok' });
+          return next;
+        }
+        // No card to nest under (a routed ask replayed onto a timeline without
+        // its Task card) — fall through to the top-level path rather than lose
+        // an answerable ask. It still says who asked, via ToolCard's specialist
+        // label (the action's specialist field is preserved on the card).
+      }
+
       // Find the matching running tool. Match order, most → least specific:
       //   1. same name AND identical input — disambiguates parallel same-name
       //      tools (e.g. two Bash calls in one batch). Without it the approval
@@ -1448,6 +1637,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           denyListed: action.denyListed,
           external: action.external,
           permissionMode: action.permissionMode,
+          ...(action.specialist ? { specialist: action.specialist } : {}),
         });
         found = true;
       }
@@ -1475,6 +1665,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           denyListed: action.denyListed,
           external: action.external,
           permissionMode: action.permissionMode,
+          ...(action.specialist ? { specialist: action.specialist } : {}),
         });
 
         const groupId = nextGroupId();
@@ -1518,6 +1709,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
+      // Specialists 1c: the answered ask may be nested in a Task card.
+      {
+        const nested = patchNestedAsk(session.toolCalls, action.requestId, (seg) => ({
+          ...seg, status: 'running', requestId: undefined, askHeld: undefined,
+        }));
+        if (nested) { next.set(action.sessionId, { ...session, toolCalls: nested }); return next; }
+      }
+
       const toolCalls = new Map(session.toolCalls);
       for (const [id, tool] of toolCalls) {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
@@ -1548,6 +1747,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
+      // Specialists 1c: nested variant of the same expiry.
+      {
+        const nested = patchNestedAsk(session.toolCalls, action.requestId, (seg) => ({
+          ...seg,
+          status: 'failed',
+          requestId: undefined,
+          error: 'Permission request expired — socket closed before a response was sent',
+        }));
+        if (nested) { next.set(action.sessionId, { ...session, toolCalls: nested }); return next; }
+      }
+
       const toolCalls = new Map(session.toolCalls);
       for (const [id, tool] of toolCalls) {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
@@ -1561,6 +1771,62 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
+
+    case 'PERMISSION_HELD': {
+      // Specialists 1c: the 5-minute hold elapsed — the ask stays answerable,
+      // the row just says the helper carried on without it.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const nested = patchNestedAsk(session.toolCalls, action.requestId, (seg) => ({ ...seg, askHeld: true }));
+      if (!nested) return state;
+      next.set(action.sessionId, { ...session, toolCalls: nested });
+      return next;
+    }
+
+    case 'SPECIALIST_RUN_CHANGED': {
+      // Specialists 1c: the ledger record lands on the launching Task card.
+      // The card must already exist (the Task tool-use event precedes every
+      // ledger write, and replay splices child events after it) — a record for
+      // an unknown card is dropped, not parked, same as applySubagentEvent.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const cardId = findSpecialistCard(session.toolCalls, {
+        parentToolCallId: action.run.parentToolCallId,
+        childId: action.run.childId,
+      });
+      if (!cardId) return state;
+      const card = session.toolCalls.get(cardId)!;
+      const toolCalls = new Map(session.toolCalls);
+      toolCalls.set(cardId, {
+        ...card,
+        specialistRun: action.run,
+        agentId: card.agentId ?? action.run.childId,
+        agentType: card.agentType ?? action.run.agentType,
+      });
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
+
+    case 'SPECIALIST_NOTE': {
+      // Specialists 1c: a delivered steer joins the child's Activity trail.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const cardId = findSpecialistCard(session.toolCalls, { childId: action.childId });
+      if (!cardId) return state;
+      const card = session.toolCalls.get(cardId)!;
+      const segs = card.subagentSegments ? [...card.subagentSegments] : [];
+      segs.push({
+        type: 'note',
+        id: `sa-note-${action.childId}-${action.timestamp}`,
+        content: action.text,
+        from: action.from,
+        timestamp: action.timestamp,
+      });
+      const toolCalls = new Map(session.toolCalls);
+      toolCalls.set(cardId, { ...card, subagentSegments: segs });
       next.set(action.sessionId, { ...session, toolCalls });
       return next;
     }

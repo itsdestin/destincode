@@ -25,6 +25,7 @@ import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import PermissionsSection from './PermissionsSection';
+import SpecialistsSection, { SPECIALISTS_EXPLAINER_INTRO, SPECIALISTS_EXPLAINER_SECTIONS } from './SpecialistsSection';
 import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from './permissions/permissions-explainer';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
@@ -1835,6 +1836,50 @@ function PermissionsButton() {
   );
 }
 
+// Settings → Specialists (1c): the two model tiers helpers run on, and the
+// roster of everything the assistant can hire (built-in, your folder, the
+// project's folder, Claude Code agent files) with any loader warnings. Same
+// row + Dialog + (i) shape as Permissions directly above it. Not gated on
+// native.supported for the same reason Permissions isn't.
+function SpecialistsButton() {
+  const [open, setOpen] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  useEffect(() => { if (!open) setShowInfo(false); }, [open]);
+  return (
+    <>
+      <SettingRow
+        icon={
+          // Two people, one slightly behind: helpers.
+          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="9" cy="8" r="3.2" />
+            <path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
+            <path d="M16 5.5a3 3 0 0 1 0 5.6" />
+            <path d="M17.5 14.5c2 .6 3.5 2.4 3.5 4.5" />
+          </svg>
+        }
+        title="Specialists"
+        description="Helpers your assistant can hire, and the models they run on"
+        onClick={() => setOpen(true)}
+      />
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={showInfo ? 'About Specialists' : 'Specialists'}
+        onBack={showInfo ? () => setShowInfo(false) : undefined}
+        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
+        size="panel"
+        fill
+      >
+        {showInfo ? (
+          <SettingsExplainer intro={SPECIALISTS_EXPLAINER_INTRO} sections={SPECIALISTS_EXPLAINER_SECTIONS} />
+        ) : (
+          <SpecialistsSection />
+        )}
+      </Dialog>
+    </>
+  );
+}
+
 // ─── Tier selector popup ───────────────────────────────────────────────────
 
 // Mirrors PackageTier.kt — descriptions list the actual packages each tier
@@ -2642,6 +2687,11 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, on
             A phone reaching this over remote access reports platform 'browser',
             so it renders DesktopSettings and still gets the screen. */}
         <PermissionsButton />
+
+        {/* Specialists (1c) sits under Permissions: approving a hire is a
+            permission grant, and this is where its two model tiers and the
+            roster live. */}
+        <SpecialistsButton />
 
         {/* Development — bug reports, contributions, known issues */}
         <SettingRow

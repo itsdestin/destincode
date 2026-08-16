@@ -157,11 +157,123 @@ export function loadFixture(name: string, raw: string, sessionId: string = SANDB
         const after = state.get(sessionId);
         const tool = after?.toolCalls.get(parsed.tool_use_id);
         if (tool) blocks.push({ kind: 'tool', tool });
+      } else if (parsed.type === 'subagent_text' || parsed.type === 'subagent_thinking') {
+        // Specialists 1c: a child's stamped text/reasoning → nested segment on
+        // the parent Task card (`parent` = the Task tool_use id).
+        const action: ChatAction = parsed.type === 'subagent_text'
+          ? {
+              type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId,
+              uuid: `${name}-satxt-${actions.length}`, text: parsed.text,
+              timestamp: FIXTURE_T0 + actions.length * 1000,
+              parentAgentToolUseId: parsed.parent,
+            }
+          : {
+              type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId,
+              uuid: `${name}-sathk-${actions.length}`, text: parsed.text,
+              timestamp: FIXTURE_T0 + actions.length * 1000,
+              parentAgentToolUseId: parsed.parent,
+            };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'subagent_tool_use') {
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_TOOL_USE', sessionId,
+          uuid: `${name}-sause-${parsed.id}`, toolUseId: parsed.id,
+          toolName: parsed.name, toolInput: parsed.input ?? {},
+          parentAgentToolUseId: parsed.parent,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'subagent_tool_result') {
+        const content = typeof parsed.content === 'string' ? parsed.content : JSON.stringify(parsed.content);
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_TOOL_RESULT', sessionId,
+          uuid: `${name}-sares-${parsed.tool_use_id}`, toolUseId: parsed.tool_use_id,
+          result: content, isError: parsed.is_error === true,
+          parentAgentToolUseId: parsed.parent,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'subagent_permission_request') {
+        // Specialists 1c: a CHILD's routed ask. Nests under the parent Task
+        // card (specialist.parentToolCallId) — the reducer binds it to the
+        // running segment named by tool_use_id, else mints a placeholder.
+        const before = state.get(sessionId);
+        const parentCard = before?.toolCalls.get(parsed.parent);
+        const seg = parentCard?.subagentSegments?.find(
+          (x) => x.type === 'tool' && x.toolUseId === parsed.tool_use_id,
+        ) as Extract<import('../../../shared/types').SubagentSegment, { type: 'tool' }> | undefined;
+        const action: ChatAction = {
+          type: 'PERMISSION_REQUEST', sessionId,
+          toolName: seg?.toolName ?? parsed.tool_name ?? 'Bash',
+          input: seg?.input ?? parsed.input ?? {},
+          requestId: parsed.requestId,
+          denyListed: parsed.denyListed === true,
+          external: parsed.external === true,
+          permissionMode: parsed.permissionMode,
+          specialist: { ...parsed.specialist, parentToolCallId: parsed.parent },
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+        if (parsed.held === true) {
+          const heldAction: ChatAction = { type: 'PERMISSION_HELD', sessionId, requestId: parsed.requestId };
+          state = chatReducer(state, heldAction);
+          actions.push(heldAction);
+        }
+      } else if (parsed.type === 'specialist_run' && parsed.run) {
+        // A RUNNING record's elapsed time is inherently live — the card ticks
+        // against the wall clock — so a fixed startedAt would read "9189h" by
+        // the time anyone looks. `elapsedMs` (default 90s) anchors it to load
+        // time; settled records keep their fixed timestamps and stay
+        // reproducible. The one deliberate non-determinism in this loader.
+        const run = parsed.run.status === 'running'
+          ? { ...parsed.run, startedAt: Date.now() - (parsed.run.elapsedMs ?? 90_000) }
+          : parsed.run;
+        delete run.elapsedMs;
+        const action: ChatAction = { type: 'SPECIALIST_RUN_CHANGED', sessionId, run };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'specialist_note') {
+        const action: ChatAction = {
+          type: 'SPECIALIST_NOTE', sessionId, childId: parsed.childId, text: parsed.text,
+          from: parsed.from === 'assistant' ? 'assistant' : 'user',
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'specialist_report') {
+        // Specialists 1c: the host-injected user-role turn carrying a
+        // BACKGROUND report — folds into the launching Task card.
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_USER_MESSAGE', sessionId,
+          uuid: `${name}-rep-${actions.length}`, text: parsed.text,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+          injected: 'specialist-report',
+          injectedMeta: {
+            childId: parsed.childId, title: parsed.title, agentType: parsed.agentType,
+            description: parsed.description, status: parsed.status ?? 'completed',
+            steps: parsed.steps, parentToolCallId: parsed.parent,
+          },
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
       }
       // Unknown types are silently skipped (same policy as before).
     }
 
-    return { blocks, actions };
+    // Specialists 1c: a block captured at tool_result time can go stale — a
+    // background Task card's result is only the launch ack, and later lines
+    // (child events, run records, the folded report) keep changing that card.
+    // Re-read every tool block from the FINAL state so the gallery renders the
+    // card as the timeline would. A no-op for fixtures nothing touches later.
+    const finalSession = state.get(sessionId);
+    const refreshed = blocks.map((b) =>
+      b.kind === 'tool' && finalSession?.toolCalls.get(b.tool.toolUseId)
+        ? { kind: 'tool' as const, tool: finalSession.toolCalls.get(b.tool.toolUseId)! }
+        : b,
+    );
+
+    return { blocks: refreshed, actions };
   } catch (err) {
     return {
       blocks: [],

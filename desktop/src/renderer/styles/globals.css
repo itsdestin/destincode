@@ -2282,3 +2282,11 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
 .artifact-content-pane * {
   overflow-anchor: none;
 }
+
+/* Specialists 1c: the status-bar chip's "Jump" flashes the target Task card. */
+@keyframes specialist-jump-flash {
+  0% { box-shadow: 0 0 0 0 var(--accent); }
+  30% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.specialist-jump-flash { animation: specialist-jump-flash 1.5s ease-out; }

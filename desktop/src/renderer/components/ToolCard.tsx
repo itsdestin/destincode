@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
+import { useSpecialistRunByChild } from '../hooks/useSpecialists';
+import { TaskConsentBlock } from './SpecialistEnvelope';
+import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { Button, Radio, RadioGroup } from './ui';
 // The card renders the widths this SHARED derivation produced and sends back only
 // which one was chosen — it never builds a rule pattern of its own.
 import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
-import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
+import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon, StoppedIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
@@ -41,7 +44,44 @@ function truncate(s: string, max: number): string {
 // asString (the unknown-input validator this file introduced in PR #295) moved
 // to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
 
-export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
+/**
+ * Specialists 1c — what a Task card's header says. Kept out of the switch so
+ * SubagentTimeline/tests can call it with the same context ToolCard resolves:
+ * `ctx.title` is the child's minted name once the run record has landed;
+ * `ctx.targetTitle`/`ctx.targetRunning` describe the OTHER child a `task_id`
+ * management call names (steer / resume / stop read differently — the same
+ * card copy for all three was the informed-consent gap in ROADMAP).
+ */
+export function taskDisplay(
+  input: Record<string, unknown>,
+  ctx?: { title?: string; targetTitle?: string; targetRunning?: boolean; runStatus?: string },
+): { label: string; detail: string } {
+  const taskId = asString(input.task_id);
+  const prompt = asString(input.prompt);
+  if (taskId) {
+    const who = ctx?.targetTitle || 'a specialist';
+    if (input.interrupt === true) return { label: `Stopping ${who}`, detail: '' };
+    // Running child → the prompt is a mid-course note; finished → a resume
+    // with a fresh brief. Unknown (no record yet) reads as the neutral verb.
+    const label = ctx?.targetRunning === true ? `Note to ${who}`
+      : ctx?.targetRunning === false ? `Resuming ${who}`
+      : `Message to ${who}`;
+    return { label, detail: prompt ? `↳ ${truncate(prompt.replace(/\n/g, ' '), 80)}` : '' };
+  }
+  const desc = asString(input.description);
+  const agent = asString(input.agent) || 'specialist';
+  const article = /^[aeiou]/i.test(agent) ? 'an' : 'a';
+  const label = ctx?.title || `Hiring ${article} ${agent}`;
+  // "· in the background" only while it is still there — a finished background
+  // hire reads like any finished hire.
+  const bg = input.background === true && (!ctx?.runStatus || ctx.runStatus === 'running') ? ' · in the background' : '';
+  return { label: label + bg, detail: desc ? `↳ ${desc}` : '' };
+}
+
+export function friendlyToolDisplay(
+  tool: ToolCallState,
+  ctx?: { taskTargetTitle?: string; taskTargetRunning?: boolean },
+): { label: string; detail: string } {
   // The model is still GENERATING this call's arguments, so `input` is empty and
   // every per-tool detail line below would render blank. Show the argument
   // character count instead: it is the only thing on a preparing card that
@@ -151,6 +191,18 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
       return { label, detail };
     }
+
+    // Native specialists (1c). Header reads as the hire — "Wren the Whistling
+    // Worker ↳ Run the release checklist" — once the run record names the
+    // child; before that, "Hiring a worker". `task_id` calls read as the
+    // management verb they are.
+    case 'Task':
+      return taskDisplay(input, {
+        title: tool.specialistRun?.title,
+        runStatus: tool.specialistRun?.status,
+        targetTitle: ctx?.taskTargetTitle,
+        targetRunning: ctx?.taskTargetRunning,
+      });
 
     case 'Agent': {
       // Fix: a non-string description rendered "Agent: [object Object]".
@@ -301,7 +353,7 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
+export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
@@ -955,7 +1007,12 @@ interface Props {
 export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   // Seed from the module-level mode so a card that mounts AFTER Ctrl+O fired
   // (e.g. when its parent tool group just opened) starts in the right state.
-  const [expanded, setExpanded] = useState(() => getInitialExpanded());
+  const [expanded, setExpanded] = useState(() => getInitialExpanded() || hasNestedAsk(tool));
+  // Specialists 1c: a helper's ask arriving inside this card opens the card —
+  // the buttons are useless behind a collapsed header. Opens once per ask;
+  // the user can still collapse it afterwards.
+  const nestedAsk = hasNestedAsk(tool);
+  useEffect(() => { if (nestedAsk) setExpanded(true); }, [nestedAsk]);
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
   // Optional: the workbench tool gallery (?mode=workbench&view=tools) renders
@@ -963,7 +1020,25 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // name from the confirm header rather than crashing the card.
   const artifacts = useArtifactOptional();
   const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
-  const display = friendlyToolDisplay(tool);
+  // Specialists 1c: a `task_id` call names ANOTHER card's child — look up that
+  // child's run so the header can say "Note to Wren…" (a narrow selector, so
+  // this memoized card does not re-render on every session update).
+  const taskTargetId = tool.toolName === 'Task' ? asString(tool.input.task_id) : '';
+  const taskTarget = useSpecialistRunByChild(sessionId, taskTargetId || undefined);
+  const display = friendlyToolDisplay(tool, {
+    taskTargetTitle: taskTarget?.title,
+    taskTargetRunning: taskTarget ? taskTarget.status === 'running' : undefined,
+  });
+  // Specialists 1c: the REAL status of a Task card is its run record, not its
+  // tool result — a background hire's result is only the launch ack (Destin's
+  // 1b hands-on, Test 4: the card read ✓ while the child was still working).
+  const run = tool.toolName === 'Task' ? tool.specialistRun : undefined;
+  const runIcon: 'spinner' | 'check' | 'fail' | 'stopped' | null =
+    !run || tool.status === 'awaiting-approval' ? null
+    : run.status === 'running' ? 'spinner'
+    : run.status === 'completed' ? (tool.specialistReport?.status === 'failed' ? 'fail' : 'check')
+    : run.status === 'failed' ? 'fail'
+    : 'stopped';
   // Skill tool calls always return "Launching skill: X" with success — the body
   // is pure ceremony. Render header only, no chevron, non-interactive, with a
   // lighter dashed border so it reads as an annotation, not an expandable card.
@@ -977,14 +1052,19 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
     : 'w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors';
   const headerContent = (
     <>
-      {/* Status indicator */}
-      {tool.status === 'running' && (
+      {/* Status indicator — a Task card with a run record shows the RUN's
+          state (see runIcon); every other card shows the tool's. */}
+      {runIcon === 'spinner' && <BrailleSpinner size="sm" />}
+      {runIcon === 'check' && <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'fail' && <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'stopped' && <StoppedIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === null && tool.status === 'running' && (
         <BrailleSpinner size="sm" />
       )}
-      {tool.status === 'awaiting-approval' && (
+      {runIcon === null && tool.status === 'awaiting-approval' && (
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
-      {tool.status === 'complete' && (
+      {runIcon === null && tool.status === 'complete' && (
         // Skills get the note glyph on success — visually distinct from
         // the generic check used by every other tool, since "skill ran"
         // carries different meaning ("Claude consulted instructions/notes")
@@ -995,13 +1075,25 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
           <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         )
       )}
-      {tool.status === 'failed' && (
+      {runIcon === null && tool.status === 'failed' && (
         <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
       <span className="text-fg-faint text-xs select-none">|</span>
-      <span className="text-xs font-medium text-fg-2">{display.label}</span>
+      <span className="text-xs font-medium text-fg-2">
+        {/* Specialists 1c: a routed child ask that could NOT nest under its
+            Task card still says who is asking, so it never reads as the
+            parent's own request. */}
+        {tool.specialist && tool.status === 'awaiting-approval' ? `${tool.specialist.title} wants to: ` : ''}
+        {display.label}
+      </span>
       {display.detail && (
         <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
+      )}
+      {run?.stale && run.status === 'running' && (
+        <span className="text-4xs uppercase tracking-wide text-amber-500 shrink-0" title="No activity for a while — may be stuck">may be stuck</span>
+      )}
+      {runIcon === 'stopped' && (
+        <span className="text-4xs uppercase tracking-wide text-fg-muted shrink-0">stopped</span>
       )}
       {!isCompactSkill && (
         <span data-testid="tool-card-chevron" className="shrink-0 inline-flex">
@@ -1012,7 +1104,7 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   );
 
   return (
-    <div className={`${cardBorder} rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`}>
+    <div className={`${cardBorder} rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`} data-tool-use-id={tool.toolUseId}>
       {/* Header */}
       {isCompactSkill ? (
         <div className={headerClass}>{headerContent}</div>
@@ -1022,6 +1114,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         </button>
       )}
 
+
+      {/* Specialists 1c: the consent envelope for a hire / note / resume /
+          stop — what Yes allows, in plain words, ABOVE the buttons and visible
+          without expanding the card. Spec §5: approving the launch IS the grant. */}
+      {tool.status === 'awaiting-approval' && tool.requestId && tool.toolName === 'Task' && (
+        <TaskConsentBlock tool={tool} sessionId={sessionId} />
+      )}
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
       {tool.status === 'awaiting-approval' && tool.requestId && (() => {
@@ -1070,7 +1169,12 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // outside the session folder and never consults the stored rules
             // there, so offering "Always allow" would promise a grant that can
             // never fire. Spec 2026-08-11, finding 3.
-            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true}
+            // Specialists 1c: a `task_id` management call (note / resume / stop)
+            // grants nothing new, so there is nothing an "Always allow" could
+            // remember — and offering it invited a blanket-delegation misread
+            // (plan 1b checklist, Test 10).
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true
+              || (tool.toolName === 'Task' && !!tool.input?.task_id)}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

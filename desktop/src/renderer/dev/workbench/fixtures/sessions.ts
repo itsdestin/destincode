@@ -32,5 +32,19 @@ export function sessions(): SessionInfo[] {
       harnessId: 'coder',
       model: 'qwen2.5-coder:14b',
     },
+    // Specialists 1c: a native conversation that hired helpers — drives the
+    // Task-card / status-chip design (fixtures/conversations/specialists.jsonl).
+    {
+      id: 'wb-3',
+      name: 'specialists demo',
+      cwd: '/home/destin/youcoded-dev/wecoded-themes',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'active',
+      createdAt: 1_753_795_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'qwen3.6-35b-a3b',
+    },
   ];
 }

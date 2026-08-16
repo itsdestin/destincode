@@ -2,10 +2,12 @@ import { useState } from 'react';
 import type { SubagentSegment, ToolCallState } from '../../../shared/types';
 import MarkdownContent from '../MarkdownContent';
 import ToolBody from './ToolBody';
-import { friendlyToolDisplay } from '../ToolCard';
-import { CheckIcon, FailIcon, ChevronIcon } from '../Icons';
+import { friendlyToolDisplay, PermissionButtons } from '../ToolCard';
+import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon, NoteIcon } from '../Icons';
 import BrailleSpinner from '../BrailleSpinner';
 import { useExpandAllToggle, getInitialExpanded } from '../../hooks/useExpandAllToggle';
+import { useChatDispatch } from '../../state/chat-context';
+import { useArtifactOptional } from '../../state/ArtifactContext';
 
 /**
  * Renders a subagent's inline timeline inside the parent AgentView card.
@@ -18,18 +20,31 @@ import { useExpandAllToggle, getInitialExpanded } from '../../hooks/useExpandAll
  * render as prose. Each tool row click-expands to reveal its full
  * ToolBody output on demand.
  *
+ * Specialists 1c: a NATIVE specialist's routed permission ask renders HERE —
+ * the row flips to the question glyph and grows the same Yes / No / Always
+ * buttons a top-level card has — so everything about one helper lives in its
+ * Task card (Destin's 1b directive). Steers show as 'note' rows and the
+ * child's own reasoning as a collapsed 'thinking' row.
+ *
  * The left vertical border frames the nested work visually so a dense
  * subagent (20+ tool calls) doesn't dominate the parent AgentView card.
  */
-export function SubagentTimeline({ segments }: { segments: SubagentSegment[] }) {
+export function SubagentTimeline({ segments, sessionId, specialistName }: {
+  segments: SubagentSegment[];
+  /** Needed only for a nested ask's response dispatch + folder name. */
+  sessionId?: string;
+  /** First name of the helper, for the ask/note copy ("Wren wants to…"). */
+  specialistName?: string;
+}) {
   if (!segments || segments.length === 0) return null;
   const groups = groupSegments(segments);
   return (
     <div className="subagent-timeline space-y-2 text-xs">
       {groups.map(g =>
-        g.kind === 'text'
-          ? <SubagentText key={g.id} content={g.content} />
-          : <SubagentToolGroup key={g.id} tools={g.tools} />
+        g.kind === 'text' ? <SubagentText key={g.id} content={g.content} />
+        : g.kind === 'thinking' ? <SubagentThinking key={g.id} content={g.content} />
+        : g.kind === 'note' ? <SubagentNote key={g.id} content={g.content} from={g.from} specialistName={specialistName} />
+        : <SubagentToolGroup key={g.id} tools={g.tools} sessionId={sessionId} specialistName={specialistName} />
       )}
     </div>
   );
@@ -42,6 +57,8 @@ export function SubagentTimeline({ segments }: { segments: SubagentSegment[] }) 
 
 type RenderGroup =
   | { kind: 'text'; id: string; content: string }
+  | { kind: 'thinking'; id: string; content: string }
+  | { kind: 'note'; id: string; content: string; from: 'user' | 'assistant' }
   | { kind: 'tools'; id: string; tools: ToolSegment[] };
 
 type ToolSegment = Extract<SubagentSegment, { type: 'tool' }>;
@@ -56,6 +73,12 @@ function groupSegments(segments: SubagentSegment[]): RenderGroup[] {
         groups.push({ kind: 'tools', id: `tg-${seg.id}`, tools: currentTools });
       }
       currentTools.push(seg);
+    } else if (seg.type === 'note') {
+      currentTools = null;
+      groups.push({ kind: 'note', id: seg.id, content: seg.content, from: seg.from });
+    } else if (seg.type === 'thinking') {
+      currentTools = null;
+      groups.push({ kind: 'thinking', id: seg.id, content: seg.content });
     } else {
       currentTools = null;
       groups.push({ kind: 'text', id: seg.id, content: seg.content });
@@ -76,13 +99,55 @@ function SubagentText({ content }: { content: string }) {
   );
 }
 
+// The child's reasoning — collapsed by default (same disclosure the main
+// chat's reasoning bubble uses), so a chatty local model doesn't bury the
+// tool rows. Never rendered in the parent's own thinking bubble.
+function SubagentThinking({ content }: { content: string }) {
+  const [open, setOpen] = useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="rounded-lg border border-dashed border-edge-dim/60 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-1.5 px-3 py-1 text-left hover:bg-inset/50 transition-colors"
+      >
+        <span className="text-xs italic text-fg-muted">Thinking</span>
+        <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted ml-auto" expanded={open} />
+      </button>
+      {open && (
+        <div className="px-3 pb-2 text-fg-muted italic">
+          <MarkdownContent content={content} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A steer — the note the user or the assistant sent mid-run. Reads as an
+// aside in the trail: who sent it, then the text.
+function SubagentNote({ content, from, specialistName }: { content: string; from: 'user' | 'assistant'; specialistName?: string }) {
+  const who = from === 'user' ? 'You' : 'The assistant';
+  return (
+    <div className="flex items-start gap-1.5 px-3 py-1 rounded-lg bg-inset/40 border border-edge-dim/60">
+      <NoteIcon className="w-3 h-3 shrink-0 text-fg-muted mt-0.5" />
+      <div className="min-w-0 text-fg-dim">
+        <span className="font-medium text-fg-2">{who}</span>
+        <span className="text-fg-muted"> sent {specialistName ?? 'the specialist'} a note: </span>
+        <span>{content}</span>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tool group — one bordered card containing compact rows, click-to-expand
 // per row. Mimics the ToolCard shell (border + rounded-lg + hover header)
 // at a smaller scale suited to a nested timeline.
 // ---------------------------------------------------------------------------
 
-function SubagentToolGroup({ tools }: { tools: ToolSegment[] }) {
+function SubagentToolGroup({ tools, sessionId, specialistName }: { tools: ToolSegment[]; sessionId?: string; specialistName?: string }) {
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     getInitialExpanded() ? new Set(tools.map(t => t.id)) : new Set()
   );
@@ -108,6 +173,8 @@ function SubagentToolGroup({ tools }: { tools: ToolSegment[] }) {
           expanded={expanded.has(t.id)}
           onToggle={() => toggle(t.id)}
           separatorAbove={i > 0}
+          sessionId={sessionId}
+          specialistName={specialistName}
         />
       ))}
     </div>
@@ -115,18 +182,21 @@ function SubagentToolGroup({ tools }: { tools: ToolSegment[] }) {
 }
 
 function SubagentToolRow({
-  segment, expanded, onToggle, separatorAbove,
+  segment, expanded, onToggle, separatorAbove, sessionId, specialistName,
 }: {
   segment: ToolSegment;
   expanded: boolean;
   onToggle: () => void;
   separatorAbove: boolean;
+  sessionId?: string;
+  specialistName?: string;
 }) {
   const tool = segmentToToolState(segment);
   // Same natural-language title derivation the main ChatView uses for its
   // ToolCards, so subagent rows read like "Reading config.ts" rather than
   // "READ /path/to/config.ts".
   const { label, detail } = friendlyToolDisplay(tool);
+  const awaiting = segment.status === 'awaiting-approval' && !!segment.requestId;
 
   return (
     <div
@@ -141,19 +211,77 @@ function SubagentToolRow({
       >
         <StatusIcon status={segment.status} />
         <span className="text-fg-faint text-xs select-none">|</span>
-        <span className="text-xs font-medium text-fg-2">{label}</span>
+        <span className="text-xs font-medium text-fg-2">
+          {awaiting ? `${specialistName ?? 'The specialist'} wants to: ` : ''}{label}
+        </span>
         {detail && (
           <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{detail}</span>
         )}
         <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted ml-auto" expanded={expanded} />
       </button>
-      {expanded && <ToolBody tool={tool} />}
+      {awaiting && (
+        <NestedAsk segment={segment} sessionId={sessionId} specialistName={specialistName} />
+      )}
+      {expanded && <ToolBody tool={tool} sessionId={sessionId} />}
+    </div>
+  );
+}
+
+/**
+ * The nested permission ask: the SAME PermissionButtons the top-level card
+ * uses (same decisions, same "Always allow" derivation, same keyboard
+ * handling) — a helper's ask is not a lesser ask. Two additions over the
+ * top-level row: an "external" (outside-the-folder) note, and the held-state
+ * line once the 5-minute redirect has fired.
+ */
+function NestedAsk({ segment, sessionId, specialistName }: { segment: ToolSegment; sessionId?: string; specialistName?: string }) {
+  const dispatch = useChatDispatch();
+  const artifacts = useArtifactOptional();
+  const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
+  const requestId = segment.requestId!;
+  const who = specialistName ?? 'The specialist';
+  const onResponded = () => {
+    if (!sessionId) return;
+    const action = { type: 'PERMISSION_RESPONDED' as const, sessionId, requestId };
+    dispatch(action);
+    (window as any).claude?.remote?.broadcastAction(action);
+  };
+  const onFailed = () => {
+    if (!sessionId) return;
+    const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId };
+    dispatch(action);
+    (window as any).claude?.remote?.broadcastAction(action);
+  };
+  return (
+    <div data-testid="nested-ask" className="border-t border-edge/60 bg-canvas/40">
+      {segment.external && (
+        <p className="px-3 pt-2 text-xs text-fg-muted">
+          This is outside the project folder, so {who} has to ask each time — there is no “Always allow” for it.
+        </p>
+      )}
+      {segment.askHeld && (
+        <p className="px-3 pt-2 text-xs text-amber-500" data-testid="nested-ask-held">
+          Five minutes passed with no answer, so {who} was told to carry on without this.
+          You can still answer — a Yes now is delivered as a follow-up.
+        </p>
+      )}
+      <PermissionButtons
+        requestId={requestId}
+        denyListed={segment.denyListed}
+        permissionMode={segment.permissionMode}
+        command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
+        folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
+        suppressAlwaysAllow={segment.external === true}
+        onResponded={onResponded}
+        onFailed={onFailed}
+      />
     </div>
   );
 }
 
 function StatusIcon({ status }: { status: ToolSegment['status'] }) {
   if (status === 'running') return <BrailleSpinner size="xs" />;
+  if (status === 'awaiting-approval') return <QuestionIcon className="w-3 h-3 shrink-0 text-fg-dim" />;
   if (status === 'failed')  return <FailIcon  className="w-3 h-3 shrink-0 text-fg-dim" />;
   return <CheckIcon className="w-3 h-3 shrink-0 text-fg-dim" />;
 }
@@ -169,7 +297,15 @@ function segmentToToolState(segment: ToolSegment): ToolCallState {
     response: segment.response,
     error: segment.error,
     structuredPatch: segment.structuredPatch,
-    // requestId and permissionSuggestions intentionally omitted: subagents
-    // run in auto-accept mode and never hit the permission hook flow.
+    // Specialists 1c: the ask fields ride along so ToolBody's per-tool views
+    // (and friendlyToolDisplay) see the same shape a top-level card has. The
+    // buttons themselves are rendered by NestedAsk, not by ToolCard, so this
+    // never double-renders an ask. (Before 1c these were dropped with the note
+    // "subagents run in auto-accept mode" — true of CC subagents, not native
+    // specialists.)
+    requestId: segment.requestId,
+    denyListed: segment.denyListed,
+    external: segment.external,
+    permissionMode: segment.permissionMode,
   };
 }

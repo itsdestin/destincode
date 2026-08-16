@@ -1038,6 +1038,22 @@ function AppInner() {
       });
     });
 
+    // Specialists 1c: the host's delegation feed — a hire's ledger record
+    // changed (status/steps/stale/model) or a steer was delivered. Lands on the
+    // launching Task card. MUST mirror BubbleFeed.tsx.
+    const specialistHandler = (window.claude.on as any).specialistEvent?.((event: any) => {
+      if (!event?.sessionId) return;
+      if (event.kind === 'run' && event.run) {
+        dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId: event.sessionId, run: event.run });
+      } else if (event.kind === 'note' && typeof event.text === 'string') {
+        dispatch({
+          type: 'SPECIALIST_NOTE', sessionId: event.sessionId, childId: event.childId,
+          text: event.text, from: event.from === 'assistant' ? 'assistant' : 'user',
+          timestamp: event.timestamp ?? Date.now(),
+        });
+      }
+    });
+
     const hookHandler = window.claude.on.hookEvent((event) => {
       const action = hookEventToAction(event);
       if (action) {
@@ -1230,6 +1246,9 @@ function AppInner() {
               text: event.data.text,
               timestamp: event.timestamp,
               partId: event.data.partId,
+              // Specialists 1c: a child's stamped reasoning routes into its
+              // Task card, not the parent's bubble. MUST mirror BubbleFeed.tsx.
+              parentAgentToolUseId: event.data.parentAgentToolUseId,
             });
           } else {
             // Argument-generation progress: draw/update the preparing tool card.
@@ -1537,6 +1556,7 @@ function AppInner() {
       window.claude.off('session:created', createdHandler);
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);
+      if (specialistHandler) window.claude.off('specialists:event', specialistHandler);
       window.claude.off('session:renamed', renamedHandler);
       if (movedHandler) window.claude.off('session:moved', movedHandler);
       window.claude.off('status:data', statusHandler);

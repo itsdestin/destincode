@@ -1,10 +1,13 @@
 import type { MockStore } from './mock-store';
+import type { DelegatedModelsView } from '../../../shared/types';
+import { RUNS } from './specialist-runs';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
   CONTENT as ARTIFACT_CONTENT, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
+import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -21,6 +24,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  // Specialists 1c — no backend yet, registered in mock-only.ts.
+  'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
+  'specialists.steer', 'specialists.interrupt', 'specialists.openFolder', 'on.specialistEvent',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -521,6 +527,41 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   const native: Ns<'native'> = { supported: true };
 
+  // Specialists 1c — roster, model tiers, and the two card actions. Backend
+  // is the plan's to-do (mock-only.ts). Tier writes go through `write` so the
+  // refused scenario exercises the picker's revert path.
+  let tiers = seedDelegatedModels();
+  const specialistSubs = new Set<(e: any) => void>();
+  const specialists = {
+    list: async (_cwd?: string) => specialistRoster(),
+    getDelegatedModels: async () => tiers,
+    setDelegatedModel: (tier: 'budget' | 'frontier', binding: DelegatedModelsView['budget']) =>
+      write(() => {
+        // The real backend derives the display label from its catalog; the
+        // mock does the same from the seeded one so the row never shows an id.
+        const label = binding ? (store.getState().catalog.find(c => c.id === binding.modelId)?.label ?? binding.modelId) : '';
+        tiers = { ...tiers, [tier]: binding ? { ...binding, label } : null };
+      }),
+    // Steer/stop: the real host answers with a typed outcome; the workbench
+    // echoes the steer back as a note event so the Activity trail shows it,
+    // and flips the run to 'interrupted' on stop so the card settles.
+    steer: async (sessionId: string, childId: string, text: string) => {
+      for (const cb of specialistSubs) cb({ kind: 'note', sessionId, childId, text, from: 'user', timestamp: Date.now() });
+      return { ok: true };
+    },
+    interrupt: async (sessionId: string, childId: string) => {
+      const run = RUNS.get(childId);
+      if (run) {
+        const next = { ...run, status: 'interrupted' as const, endedAt: Date.now() };
+        RUNS.set(childId, next);
+        for (const cb of specialistSubs) cb({ kind: 'run', sessionId, run: next });
+      }
+      return { ok: true };
+    },
+    openFolder: async () => ({ ok: true }),
+  };
+
+
   // The attention classifier polls this every second while a turn is in flight
   // and does `raw.split('\n')` (useAttentionClassifier.ts:126,133). The catch-all
   // `[]` has no .split, so the workbench threw once per second — non-fatal, but
@@ -732,6 +773,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       return () => {};
     },
   };
+  // Specialists 1c: the delegation feed (run records + delivered notes). Not
+  // on Ns<'on'> yet (no real channel) — attached separately so the typed
+  // members above stay compiler-checked.
+  (on as any).specialistEvent = (cb: (e: any) => void) => { specialistSubs.add(cb); return () => { specialistSubs.delete(cb); }; };
 
   // `theme` is absent from useIpc.ts entirely, so NONE of this is
   // compiler-checked — the contract test is the only guard. Typed as a plain
@@ -755,6 +800,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance,
+    terminal, artifacts, syncSpaces, project, account, appearance, specialists,
   } as unknown as Record<string, Record<string, unknown>>;
 }

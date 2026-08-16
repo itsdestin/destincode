@@ -13,6 +13,10 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
+  // Specialists 1c: a child's stamped events, its routed ask, the run record,
+  // a delivered steer, and the folded background report.
+  'subagent_text', 'subagent_thinking', 'subagent_tool_use', 'subagent_tool_result',
+  'subagent_permission_request', 'specialist_run', 'specialist_note', 'specialist_report',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {
@@ -109,10 +113,15 @@ describe('shipped fixtures replay', () => {
   it.each(fixtureFiles('conversations'))(
     'conversation $name emits one action per dispatched line',
     ({ name, raw }) => {
+      // A `subagent_permission_request` with `held: true` dispatches TWO
+      // actions (the ask, then PERMISSION_HELD) — the one line kind that is
+      // deliberately not 1:1.
       const dispatched = raw.split('\n')
         .map((l) => l.trim()).filter(Boolean)
-        .filter((l) => JSON.parse(l).type !== 'text');
-      expect(loadFixture(name, raw).actions).toHaveLength(dispatched.length);
+        .map((l) => JSON.parse(l))
+        .filter((p) => p.type !== 'text')
+        .reduce((n, p) => n + (p.type === 'subagent_permission_request' && p.held === true ? 2 : 1), 0);
+      expect(loadFixture(name, raw).actions).toHaveLength(dispatched);
     },
   );
 });
@@ -126,7 +135,7 @@ describe('chat hydrate payload', () => {
 
     // Both seeded sessions from fixtures/sessions.ts must be present, keyed by
     // the ids the session list uses — a mismatch shows an empty chat view.
-    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-2']);
+    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-2', 'wb-3']);
 
     for (const [sessionId, session] of restored) {
       expect(session.timeline.length, `${sessionId} timeline`).toBeGreaterThan(0);

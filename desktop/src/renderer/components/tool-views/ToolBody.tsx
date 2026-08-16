@@ -16,6 +16,8 @@ import type { ArtifactRecord } from '../../../shared/artifacts/types';
 // string methods / React child rendering, or renders "[object Object]".
 // asString (from the PR #295 ToolCard fix) treats non-strings as absent.
 import { asString } from '../../utils/tool-input';
+import { useSpecialistRunByChild, useSpecialistRoster } from '../../hooks/useSpecialists';
+import { hasNestedAsk } from '../../utils/specialist-cards';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -599,7 +601,7 @@ const SUBAGENT_TONE: Record<string, 'neutral' | 'add' | 'info' | 'warn'> = {
   'claude-code-guide': 'add',
 };
 
-function AgentView({ tool }: { tool: ToolCallState }) {
+function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   // Fix: object description/subagent_type rendered as React children crashed
   // the card; MarkdownContent requires a string prompt.
   const desc = asString(tool.input.description);
@@ -612,37 +614,91 @@ function AgentView({ tool }: { tool: ToolCallState }) {
   const prompt = asString(tool.input.prompt);
   const segments = tool.subagentSegments || [];
 
-  // Auto-expand the activity section while running; auto-collapse once the
-  // parent Agent tool has a response (subagent completed). User toggles
-  // stick for the rest of the session.
-  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!tool.response));
+  // Specialists 1c — a native Task card knows more than a CC Agent card: its
+  // run record (title, real status, background flag, model), the roster entry
+  // for its consent block, and — for a `task_id` call — the OTHER child it
+  // names. Everything below that reads `run`/`isNative` is 1c; the CC path
+  // is unchanged.
+  const isNative = tool.toolName === 'Task';
+  const run = isNative ? tool.specialistRun : undefined;
+  const taskId = isNative ? asString(tool.input.task_id) : '';
+  const target = useSpecialistRunByChild(sessionId, taskId || undefined);
+  const roster = useSpecialistRoster();
+  const definition = isNative ? roster?.find(d => d.id === subagent) : undefined;
+  const title = run?.title;
+  const firstName = title ? title.split(' ')[0] : (target?.title ? target.title.split(' ')[0] : undefined);
+  // "Settled" is what auto-collapses Activity. For a background hire the tool
+  // result is only the launch ack, so keying on `response` collapsed a card
+  // whose child was still streaming (Test 4) — the run record is the truth.
+  const settled = run ? run.status !== 'running' : !!tool.response;
+
+  // Auto-expand the activity section while running; auto-collapse once
+  // settled. User toggles stick for the rest of the session.
+  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!settled));
   // Start userToggled=true when the shortcut is already in effect so the
-  // auto-collapse-on-response effect below doesn't fight the user's intent.
+  // auto-collapse-on-settle effect below doesn't fight the user's intent.
   const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
-  const prevHadResponse = useRef(!!tool.response);
+  const prevSettled = useRef(settled);
   useEffect(() => {
     if (userToggled) return;
-    const hasResponse = !!tool.response;
-    if (!prevHadResponse.current && hasResponse) setShowTimeline(false);
-    prevHadResponse.current = hasResponse;
-  }, [tool.response, userToggled]);
-  // Ctrl+O: mark userToggled so the auto-collapse-on-response effect doesn't
-  // fight the shortcut back closed as soon as the subagent completes.
+    if (!prevSettled.current && settled) setShowTimeline(false);
+    prevSettled.current = settled;
+  }, [settled, userToggled]);
+  // Specialists 1c: a helper's ask lives in Activity — open it when one
+  // arrives, even on a settled card (a held ask outlives the run).
+  const nestedAsk = hasNestedAsk(tool);
+  useEffect(() => { if (nestedAsk) setShowTimeline(true); }, [nestedAsk]);
+  // Ctrl+O: mark userToggled so the auto-collapse effect doesn't fight the
+  // shortcut back closed as soon as the subagent completes.
   useExpandAllToggle(
     () => { setShowTimeline(true); setUserToggled(true); },
     () => { setShowTimeline(false); setUserToggled(true); },
   );
 
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
+  const charter = definition?.charter;
+  // The consent envelope for an awaiting Task call renders in ToolCard (above
+  // the buttons, visible without expanding) — not here, or it would double.
+  const awaiting = tool.status === 'awaiting-approval';
+
+  // The report section. Foreground: the tool result IS the report. Background:
+  // the delivered report folded into this card (specialistReport). A task_id
+  // call's result is the management outcome ("Steer delivered…") — a Response.
+  const report = tool.specialistReport
+    ? { title: tool.specialistReport.status === 'failed' ? 'Report — failed' : 'Report', text: displayReport(tool.specialistReport.text) }
+    : tool.response && !taskId && (run ? run.background === false : isNative)
+      ? { title: 'Report', text: displayReport(tool.response) }
+      : tool.response
+        ? { title: 'Response', text: tool.response }
+        : null;
+  // A background hire's launch ack is not worth a section: the header + status
+  // line already say "working in the background". Hide it while the report is
+  // pending; the folded report replaces it.
+  const hideLaunchAck = !!run && run.background && !tool.specialistReport && !!tool.response
+    && /is now working in the background/.test(tool.response);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
         <Chip tone={tone}>{subagent}</Chip>
-        {desc && <span className="text-xs font-medium text-fg-2">{desc}</span>}
+        {title && <span className="text-xs font-medium text-fg-2">{title}</span>}
+        {!title && taskId && target?.title && <span className="text-xs font-medium text-fg-2">{target.title}</span>}
+        {charter && !taskId && (
+          <Chip tone={charter === 'read-write' ? 'warn' : 'info'}>
+            {charter === 'read-write' ? 'can edit & run commands' : 'read-only'}
+          </Chip>
+        )}
+        {run?.model && (
+          <span className="text-4xs text-fg-muted" title={run.model.via === 'parent' ? "This conversation's model" : run.model.via === 'named' ? 'A model the assistant named' : `The ${run.model.via} model from Settings`}>
+            on {run.model.label}{run.model.fallback ? ' (fallback)' : ''}
+          </span>
+        )}
+        {desc && !title && <span className="text-xs font-medium text-fg-2">{desc}</span>}
       </div>
+      {desc && title && <div className="text-xs text-fg-dim">{desc}</div>}
+      {run && <RunStatusLine run={run} report={tool.specialistReport} />}
       {prompt && (
-        <AgentSection title="Briefing" defaultOpen={false}>
+        <AgentSection title={taskId ? 'Message' : 'Briefing'} defaultOpen={false}>
           <div className="text-sm text-fg-dim">
             <MarkdownContent content={prompt} />
           </div>
@@ -654,17 +710,151 @@ function AgentView({ tool }: { tool: ToolCallState }) {
           open={showTimeline}
           onToggle={() => { setShowTimeline(s => !s); setUserToggled(true); }}
         >
-          <SubagentTimeline segments={segments} />
+          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} />
         </AgentSection>
       )}
-      {tool.response && (
-        <AgentSection title="Response" defaultOpen={true}>
+      {run && run.status === 'running' && !awaiting && sessionId && (
+        <SpecialistActions sessionId={sessionId} run={run} />
+      )}
+      {report && !hideLaunchAck && (
+        <AgentSection title={report.title} defaultOpen={true}>
           <div className="text-sm text-fg-dim">
-            <MarkdownContent content={tool.response} />
+            <MarkdownContent content={report.text} />
           </div>
         </AgentSection>
       )}
       {tool.error && <ErrorBlock error={tool.error} />}
+    </div>
+  );
+}
+
+// What the Report section shows. The text the MODEL reads carries framing
+// the card header already states — the injected "[Background specialist
+// finished] Kai (explorer) completed …" sentence, the "## Report from Kai
+// (explorer)" heading, and the trailing "[specialist session <id>]" tag — so
+// the section starts at the report body itself. Display-only: the model's
+// copy is untouched.
+function displayReport(text: string): string {
+  let t = text;
+  if (/^\[Background specialist/.test(t)) {
+    const idx = t.indexOf('\n\n');
+    t = idx === -1 ? t : t.slice(idx + 2);
+  }
+  t = t.replace(/^## Report from [^\n]*\n+/, '');
+  t = t.replace(/\n*\[specialist session [^\]]+\]\s*$/, '');
+  return t;
+}
+
+/** "Working in the background · 2m 14s" / "Finished in 4m · 5 steps" — the
+ *  one line that answers "is it done?" without opening anything. Ticks once a
+ *  second only while running. */
+function RunStatusLine({ run, report }: { run: NonNullable<ToolCallState['specialistRun']>; report?: ToolCallState['specialistReport'] }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (run.status !== 'running') return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [run.status]);
+  const end = run.endedAt ?? now;
+  const elapsed = formatElapsed(Math.max(0, end - run.startedAt));
+  const steps = run.steps !== undefined ? ` · ${run.steps} step${run.steps === 1 ? '' : 's'}` : '';
+  let text: string;
+  let tone = 'text-fg-muted';
+  if (run.status === 'running') {
+    text = `${run.background ? 'Working in the background' : 'Working'} · ${elapsed}${run.stale ? ' · no activity for a while — may be stuck' : ''}`;
+    if (run.stale) tone = 'text-amber-500';
+  } else if (run.status === 'completed') {
+    text = report?.status === 'failed' ? `Failed after ${elapsed}${steps}` : `Finished in ${elapsed}${steps}`;
+    if (report?.status === 'failed') tone = 'text-danger';
+  } else if (run.status === 'failed') {
+    text = `Failed after ${elapsed}${steps}`;
+    tone = 'text-danger';
+  } else {
+    text = `Stopped after ${elapsed}${steps} — the assistant can pick this back up`;
+  }
+  return <div className={`text-xs ${tone}`} data-testid="specialist-status-line">{text}</div>;
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/**
+ * The two things a person can do to a running helper from its card. Both go
+ * through the same host methods the assistant's own task_id calls use
+ * (steerSpecialist / interruptSpecialist) — one mechanism, two callers.
+ */
+function SpecialistActions({ sessionId, run }: { sessionId: string; run: NonNullable<ToolCallState['specialistRun']> }) {
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState<'note' | 'stop' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const first = run.title.split(' ')[0];
+  const send = async () => {
+    const text = note.trim();
+    if (!text) return;
+    setBusy('note'); setError(null);
+    try {
+      const res = await (window as any).claude?.specialists?.steer?.(sessionId, run.childId, text);
+      if (res && res.ok === false) { setError(res.error || `Couldn’t deliver the note to ${first}.`); }
+      else { setNote(''); setNoteOpen(false); }
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(null); }
+  };
+  const stop = async () => {
+    setBusy('stop'); setError(null);
+    try {
+      const res = await (window as any).claude?.specialists?.interrupt?.(sessionId, run.childId);
+      if (res && res.ok === false) setError(res.error || `Couldn’t stop ${first}.`);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(null); }
+  };
+  return (
+    <div className="space-y-1.5" data-testid="specialist-actions">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setNoteOpen(v => !v)}
+          className="text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2"
+          aria-expanded={noteOpen}
+        >
+          Send {first} a note
+        </button>
+        <button
+          type="button"
+          onClick={stop}
+          disabled={busy !== null}
+          className="text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2 disabled:opacity-50"
+        >
+          {busy === 'stop' ? 'Stopping…' : 'Stop'}
+        </button>
+      </div>
+      {noteOpen && (
+        <div className="flex items-start gap-2">
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+            rows={2}
+            placeholder={`Anything ${first} should know mid-run — applied at its next step`}
+            className="flex-1 min-w-0 text-xs rounded-md border border-edge bg-canvas px-2 py-1 text-fg resize-y"
+          />
+          <button
+            type="button"
+            onClick={send}
+            disabled={busy !== null || !note.trim()}
+            className="text-xs px-2 py-1 rounded-md bg-accent text-on-accent disabled:opacity-50"
+          >
+            {busy === 'note' ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      )}
+      {error && <div className="text-xs text-danger">{error}</div>}
     </div>
   );
 }
@@ -955,7 +1145,7 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
       // tests/task-subagent-card.test.tsx.
       case 'Agent':
       case 'Task':
-        return <AgentView tool={tool} />;
+        return <AgentView tool={tool} sessionId={sessionId} />;
       case 'Grep':
         return <GrepView tool={tool} />;
       case 'Glob':

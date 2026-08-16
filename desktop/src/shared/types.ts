@@ -341,9 +341,15 @@ export interface StructuredPatchHunk {
 
 /**
  * One entry in a subagent's nested timeline rendered inside AgentView.
- * Narrower than ToolCallState — no awaiting-approval, no tool groups,
- * no turn tracking (subagents don't hit the permission hook flow and
- * don't have user-typed messages).
+ * Narrower than ToolCallState — no tool groups, no turn tracking.
+ *
+ * Specialists 1c (2026-08-16): a NATIVE specialist's ask now reaches a real
+ * user (plan 1b's child-ask-router routes it to the parent's own card), so a
+ * tool segment CAN be 'awaiting-approval' and carries the same ask fields the
+ * top-level ToolCallState does — the ask renders INSIDE the launching Task
+ * card's Activity, buttons and all (Destin's 1b hands-on directive: a
+ * background hire looks exactly like a foreground one). CC subagents still
+ * never hit the ask flow; their segments never take that status.
  */
 export type SubagentSegment =
   | {
@@ -363,11 +369,105 @@ export type SubagentSegment =
       toolUseId: string;
       toolName: string;
       input: Record<string, unknown>;
-      status: 'running' | 'complete' | 'failed';
+      status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
+      /** Set while status is 'awaiting-approval' — the broker request the
+       *  nested Yes/No/Always buttons answer. Same fields as ToolCallState. */
+      requestId?: string;
+      denyListed?: boolean;
+      external?: boolean;
+      permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+      /** The 5-minute hold elapsed (child-ask-router's ASK_REDIRECT): the
+       *  specialist was told to carry on without this and the ask is STILL
+       *  answerable — a late answer becomes a follow-up. The row says so. */
+      askHeld?: boolean;
+    }
+  | {
+      /** A steer — "send a note" — from the user (card action) or the parent
+       *  model (Task tool, task_id). Shown in the Activity trail so the user
+       *  can see what the helper was told mid-run. */
+      type: 'note';
+      id: string;
+      content: string;
+      from: 'user' | 'assistant';
+      timestamp: number;
+    }
+  | {
+      /** The specialist's own reasoning (local reasoning models emit it with
+       *  text). Rendered as a collapsed "Thinking" row inside the card — never
+       *  in the parent's own thinking bubble. */
+      type: 'thinking';
+      id: string;
+      content: string;
+      partId?: string;
     };
+
+/**
+ * Specialists 1c — what the renderer knows about one hire, keyed by the Task
+ * call that started it. Mirrors the host's DelegationRecord (delegation-
+ * ledger.ts) minus the delivery/lease bookkeeping the UI never needs. Pushed
+ * over `specialists:run-changed` on every ledger write and replayed on
+ * session (re)attach, so a card's status never depends on the model's prose.
+ */
+export interface SpecialistRunView {
+  childId: string;
+  parentToolCallId: string;
+  /** Definition id (explorer / worker / a custom file's id). */
+  agentType: string;
+  /** "Nadia the Rambling Researcher" — minted at spawn. */
+  title: string;
+  description?: string;
+  background: boolean;
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
+  startedAt: number;
+  endedAt?: number;
+  steps?: number;
+  /** Heartbeat watchdog flagged no activity past the idle/in-tool threshold. */
+  stale?: boolean;
+  /** Which model actually ran it, once resolved (tier fallback stated honestly). */
+  model?: { label: string; via?: 'budget' | 'frontier' | 'named' | 'parent'; fallback?: boolean };
+}
+
+/** A background specialist's delivered report, folded into its Task card. */
+export interface SpecialistReportView {
+  text: string;
+  status: 'completed' | 'failed';
+  steps?: number;
+  timestamp: number;
+}
+
+/**
+ * Specialists 1c — one row of the roster the renderer shows (Settings →
+ * Specialists, and the Task card's consent block). Comes from
+ * `specialists:list`; the CHARTER and TOOLS are the MAPPED result the child
+ * will actually get, never what a source file claimed (spec §2: CC-format
+ * compatibility is safety-relevant).
+ */
+export interface SpecialistDefinitionView {
+  id: string;
+  displayName: string;
+  description: string;
+  charter: 'read-only' | 'read-write';
+  allowedTools: string[];
+  modelPreference?: 'parent' | 'budget' | 'frontier';
+  source: 'builtin' | 'personal' | 'project' | 'claude-code';
+  /** Absolute path of the defining file (absent for built-ins). */
+  path?: string;
+  /** Tool grants the file asked for that were stripped as unmappable/unknown,
+   *  plus any other narrowing the loader applied. Empty = loaded verbatim. */
+  warnings: string[];
+  /** Another definition with the same id was shadowed by this one. */
+  shadows?: { source: SpecialistDefinitionView['source']; path?: string };
+}
+
+/** Specialists 1c — the two user-designated model tiers (spec §2 amendment,
+ *  Destin 2026-08-12). `null` = unset → falls back to the conversation's model. */
+export interface DelegatedModelsView {
+  budget: { providerId: string; modelId: string; label: string } | null;
+  frontier: { providerId: string; modelId: string; label: string } | null;
+}
 
 export interface ToolCallState {
   toolUseId: string;
@@ -388,6 +488,10 @@ export interface ToolCallState {
    *  'full-auto' + denyListed swaps the generic button row for the safety-stop
    *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
   permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /** Specialists 1c: set on a TOP-LEVEL card only when a child's routed ask
+   *  could not be nested (its Task card is not on this timeline) — the card
+   *  then labels who asked instead of reading as the parent's own ask. */
+  specialist?: { childId: string; agentType: string; title: string };
   /**
    * Native runtime only. The model is still GENERATING this call's arguments —
    * nothing has executed, and `input` is an empty object until the real
@@ -417,6 +521,21 @@ export interface ToolCallState {
   subagentSegments?: SubagentSegment[];
   agentType?: string;
   agentId?: string;
+  /**
+   * Native specialists (1c): the live run record for the hire THIS Task call
+   * started, keyed to the card by parentToolCallId. Drives the card's real
+   * status — a background hire's tool result is only the launch acknowledgment,
+   * so `status: 'complete'` alone would read "done" while the child still
+   * works (Destin's 1b hands-on, Test 4). Absent on CC Agent cards.
+   */
+  specialistRun?: SpecialistRunView;
+  /**
+   * Native specialists (1c): a BACKGROUND hire's delivered report, folded back
+   * into the launching card so background and foreground render alike (the
+   * foreground report is simply `response`). The parent model still reads the
+   * report as its next turn; only the bubble moved here.
+   */
+  specialistReport?: SpecialistReportView;
 }
 
 export interface ToolGroupState {

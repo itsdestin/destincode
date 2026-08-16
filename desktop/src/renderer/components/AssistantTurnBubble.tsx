@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AssistantTurn } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
+import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
@@ -514,7 +515,8 @@ function ToolGroupInline({
   if (tools.length === 0) return null;
 
   // Skip awaiting-approval tools — they render as standalone bubbles at the bottom of the timeline
-  const restTools = tools.filter((t) => t.status !== 'awaiting-approval');
+  // Specialists 1c: same for a Task card whose helper is waiting on the user (hasNestedAsk).
+  const restTools = tools.filter((t) => t.status !== 'awaiting-approval' && !hasNestedAsk(t));
   if (restTools.length === 0) return null;
 
   return (

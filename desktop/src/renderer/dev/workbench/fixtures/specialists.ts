@@ -1,0 +1,65 @@
+import type { SpecialistDefinitionView, DelegatedModelsView } from '../../../../shared/types';
+
+// Specialists 1c — the roster the workbench serves for `specialists.list`.
+// Four built-ins mirror harness/specialists/builtins.ts VERBATIM (tools +
+// charter) so the consent block in the workbench says what the real child
+// would get; the last three are what the definitions-folder work will
+// produce: a personal file, a project file, and a Claude Code `.claude/agents`
+// file whose grants had to be narrowed (spec §2: strip + visible warning).
+export function specialistRoster(): SpecialistDefinitionView[] {
+  return [
+    {
+      id: 'explorer', displayName: 'Explorer', source: 'builtin', charter: 'read-only',
+      description: 'Finds things: files, code, facts. Reads and searches, never edits.',
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [],
+    },
+    {
+      id: 'researcher', displayName: 'Researcher', source: 'builtin', charter: 'read-only',
+      description: 'Web-heavy research with sourced summaries.',
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [],
+    },
+    {
+      id: 'reviewer', displayName: 'Reviewer', source: 'builtin', charter: 'read-only',
+      description: 'Checks finished work with fresh eyes. Sees only what it is handed, never the conversation.',
+      allowedTools: ['Read', 'Glob', 'Grep'], warnings: [],
+    },
+    {
+      id: 'worker', displayName: 'Worker', source: 'builtin', charter: 'read-write',
+      description: 'Does the work: edits files and runs commands. Only one Worker runs at a time.',
+      allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'], warnings: [],
+    },
+    {
+      id: 'docs-writer', displayName: 'Docs Writer', source: 'personal', charter: 'read-write',
+      description: 'Writes and updates documentation in the project’s docs folder, matching the existing voice.',
+      allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+      path: '/home/destin/.youcoded/specialists/docs-writer.md', warnings: [],
+      modelPreference: 'budget',
+    },
+    {
+      id: 'release-checker', displayName: 'Release Checker', source: 'project', charter: 'read-only',
+      description: 'Walks the release checklist and reports anything not ready.',
+      allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
+      path: '/home/destin/youcoded-dev/wecoded-themes/.youcoded/specialists/release-checker.md',
+      warnings: [
+        'Asked for a shell (Bash) but is read-only, so Bash was removed. Give it the read-write charter if it really needs to run commands.',
+      ],
+    },
+    {
+      id: 'code-reviewer', displayName: 'code-reviewer', source: 'claude-code', charter: 'read-only',
+      description: 'Expert code review specialist. Proactively reviews code for quality, security, and maintainability.',
+      allowedTools: ['Read', 'Grep', 'Glob'],
+      path: '/home/destin/youcoded-dev/wecoded-themes/.claude/agents/code-reviewer.md',
+      warnings: [
+        '2 tools this file asked for don’t exist here and were removed: NotebookEdit, MultiEdit.',
+      ],
+    },
+  ];
+}
+
+export function delegatedModels(): DelegatedModelsView {
+  return {
+    budget: null,
+    // Ids match fixtures/providers.ts's catalog so ModelPicker shows the label.
+    frontier: { providerId: 'pv-openrouter', modelId: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  };
+}
