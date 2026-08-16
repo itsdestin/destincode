@@ -13,6 +13,13 @@ import { readFolders } from '../saved-folders';
 import { getManagedRoots } from '../sync-spaces/service';
 import { getConversationStore } from './service';
 import { log } from '../logger';
+import { readState, writeState, defaultStateFile, heldForkIds } from './slug-repair-state';
+// Re-exported so callers of this module get the fork-hold reader from its
+// natural home (slug-repair.ts owns the fork-surfacing logic) without
+// reaching into the leaf module directly. service.ts imports it straight
+// from ./slug-repair-state instead — importing THIS module from service.ts
+// would create the cycle the leaf module exists to avoid.
+export { heldForkIds };
 
 export function uuidSet(filePath: string): Set<string> {
   const out = new Set<string>();
@@ -159,6 +166,11 @@ export interface RepairOpts {
   // fixtures don't silently only pass on POSIX CI runners) — default
   // process.platform, threaded through to firstCwd below.
   platform?: NodeJS.Platform;
+  // Session ids already held as surfaced forks from a prior run (fork-hold
+  // fix, found on the real-data run) — read once at the top of runSlugRepair
+  // and threaded through so the fork branches below can skip re-snapshotting
+  // an already-held pair. See heldForkIds' WHY in slug-repair-state.ts.
+  heldForks?: Set<string>;
 }
 export interface RepairFinding {
   sessionId: string;
@@ -288,8 +300,18 @@ export function repairHomeForks(opts: RepairOpts): RepairFinding[] {
           break;
         }
         // Case C — NEVER automated (spec §6.0). Snapshot both, change nothing.
-        q.snapshot(file, `6.1 FORK ${sessionId} ($HOME copy)`);
-        q.snapshot(correct, `6.1 FORK ${sessionId} (project copy)`);
+        // Fix (fork hold): a fork already held from a prior run (state's
+        // surfacedForks) doesn't need re-snapshotting every launch — the
+        // FIRST run's quarantine copies are the ones that matter, and the
+        // fork is already frozen out of both mirror directions (see
+        // heldForkIds' WHY). Still push the finding + ATTENTION log so it
+        // keeps surfacing until a human resolves it.
+        if (opts.heldForks?.has(sessionId)) {
+          q.log(`SKIP-SNAPSHOT fork ${sessionId}: snapshots already held from a prior run`);
+        } else {
+          q.snapshot(file, `6.1 FORK ${sessionId} ($HOME copy)`);
+          q.snapshot(correct, `6.1 FORK ${sessionId} (project copy)`);
+        }
         q.log(`ATTENTION fork ${sessionId}: ${file} vs ${correct} — both left on disk; user decision required`);
         findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: [file, correct] });
         break;
@@ -418,8 +440,14 @@ export async function repairRecordsAndSpace(
       });
       if (forkPairs.length > 0) {
         // Case C — NEVER automated. Snapshot every copy, change nothing,
-        // surface it — mirrors §6.1's fork discipline exactly.
-        for (const { c } of sized) q.snapshot(c, `6.2 FORK ${sessionId} (space copy)`);
+        // surface it — mirrors §6.1's fork discipline exactly. Fix (fork
+        // hold): skip re-snapshotting a fork already held from a prior run —
+        // see the identical WHY on the §6.1 branch above.
+        if (opts.heldForks?.has(sessionId)) {
+          q.log(`SKIP-SNAPSHOT space fork ${sessionId}: snapshots already held from a prior run`);
+        } else {
+          for (const { c } of sized) q.snapshot(c, `6.2 FORK ${sessionId} (space copy)`);
+        }
         q.log(`ATTENTION space fork ${sessionId}: ${copies.join(', ')} — not a clean containment chain; all copies left on disk, user decision required`);
         findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: copies });
         continue; // no moves, no record upsert — the whole session is skipped
@@ -559,7 +587,13 @@ export function repairOrphanDirs(opts: RepairOpts): RepairFinding[] {
             findings.push({ sessionId, homeFolder: P, kind: 'deferred-live', paths: [file, correct] });
             break;
           }
-          q.snapshot(file, `6.3 FORK ${sessionId} (orphan)`); q.snapshot(correct, `6.3 FORK ${sessionId} (correct)`);
+          // Fix (fork hold): skip re-snapshotting a fork already held from a
+          // prior run — see the identical WHY on the §6.1 branch above.
+          if (opts.heldForks?.has(sessionId)) {
+            q.log(`SKIP-SNAPSHOT fork ${sessionId}: snapshots already held from a prior run`);
+          } else {
+            q.snapshot(file, `6.3 FORK ${sessionId} (orphan)`); q.snapshot(correct, `6.3 FORK ${sessionId} (correct)`);
+          }
           q.log(`ATTENTION fork ${sessionId}: ${file} vs ${correct}`);
           findings.push({ sessionId, homeFolder: P, kind: 'fork-surfaced', paths: [file, correct] });
           break;
@@ -617,7 +651,14 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   }
   if (knownFolders.length === 0) return;
   const quarantine = overrides?.quarantine ?? new Quarantine(homeDir);
-  const opts: RepairOpts = { projectsDir, homeDir, knownFolders, quarantine,
+  // Fix (fork hold): load the runner's state file ONCE, up front — both the
+  // deferral bookkeeping below AND the heldForks set threaded into opts (so
+  // the fork branches can skip re-snapshotting an already-held pair) read
+  // from this same snapshot. See heldForkIds' WHY in slug-repair-state.ts.
+  const stateFile = overrides?.stateFile ?? defaultStateFile(homeDir);
+  const state = readState(stateFile);
+  const heldForks = new Set(state.surfacedForks);
+  const opts: RepairOpts = { projectsDir, homeDir, knownFolders, quarantine, heldForks,
     liveMs: overrides?.liveMs, now: overrides?.now };
 
   // ORDER IS LOAD-BEARING (spec §6.0): space repair (6.2) BEFORE orphan
@@ -636,9 +677,6 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
 
   // Bounded deferral (spec §6.5): live sessions retry next launch, at most
   // MAX_DEFERRALS times, then surface instead of looping silently.
-  const stateFile = overrides?.stateFile ?? path.join(homeDir, '.youcoded', 'slug-repair-state.json');
-  let state: { v: 1; deferred: Record<string, number> } = { v: 1, deferred: {} };
-  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
   // Review fix: the deferral contract is per-RUN ("3 runs in a row"), not
   // per-FINDING. One session can produce a 'deferred-live' finding from more
   // than one step in the SAME run — e.g. live in both the $HOME slug dir
@@ -647,9 +685,12 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   // multiple deferrals at once and surface a session in fewer real runs than
   // the contract states.
   const deferredThisRun = new Set(all.filter(f => f.kind === 'deferred-live').map(f => f.sessionId));
+  const forkSurfacedThisRun = new Set(all.filter(f => f.kind === 'fork-surfaced').map(f => f.sessionId));
+  const surfaced = new Set(state.surfacedForks);
   for (const f of all) {
     if (f.kind !== 'deferred-live') delete state.deferred[f.sessionId];
     if (f.kind === 'fork-surfaced') {
+      surfaced.add(f.sessionId); // fork hold: dedupe via Set, same shape as deferredThisRun above
       log('WARN', 'SlugRepair', 'true fork left on disk — user decision required', { sessionId: f.sessionId, paths: f.paths });
       const rec = await store.get('claude', f.sessionId);
       if (rec && !rec.note) {
@@ -658,6 +699,21 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
       }
     }
   }
+  // Fix (fork hold) — auto-release: a hold's job is done once the pair is no
+  // longer a fork on disk. Only ids ALREADY held coming into this run (i.e.
+  // in `heldForks`, the pre-run snapshot) are release candidates — a fork
+  // surfaced for the FIRST time this run was just added to `surfaced` above
+  // and is never a candidate. If this run found neither a fresh
+  // fork-surfaced finding NOR a deferred-live pause for a held id, the fork
+  // no longer exists on disk as a fork (resolved by the user, or converged by
+  // repair itself into a clean subset/superset) — drop the hold so a future
+  // repair (or this same run, for a different session) isn't stuck treating
+  // a resolved pair as still-forked. Removing an id is otherwise the user's/
+  // future tooling's job; this is the one automatic case.
+  for (const id of heldForks) {
+    if (!forkSurfacedThisRun.has(id) && !deferredThisRun.has(id)) surfaced.delete(id);
+  }
+  state.surfacedForks = [...surfaced];
   for (const sessionId of deferredThisRun) {
     const n = (state.deferred[sessionId] ?? 0) + 1;
     state.deferred[sessionId] = n;
@@ -666,9 +722,7 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
       quarantine.log(`ATTENTION deferred ${sessionId} ${n}x — repair it manually while the app is closed`);
     }
   }
-  try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify(state));
-  } catch (e) { log('WARN', 'SlugRepair', 'state write failed', { error: String(e) }); }
+  try { writeState(state, stateFile); }
+  catch (e) { log('WARN', 'SlugRepair', 'state write failed', { error: String(e) }); }
   if (all.length) log('INFO', 'SlugRepair', 'repair pass complete', { findings: all.map(f => ({ id: f.sessionId, kind: f.kind })) });
 }

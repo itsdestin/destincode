@@ -13,6 +13,10 @@ import { NativeHome } from '../native-home';
 import type { ConversationRecord, PortableModelRef } from './store-core';
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
+// Fix (fork hold): read from the leaf module, NOT from ./slug-repair — that
+// module imports getConversationStore from THIS file, so importing it back
+// here would be a cycle. See heldForkIds' WHY in slug-repair-state.ts.
+import { heldForkIds } from './slug-repair-state';
 import { laneMatches } from './lane-guards';
 import { ccProjectSlug, nativeStoreSlug } from '../slug-encoding';
 import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
@@ -549,8 +553,13 @@ async function materializeSweep(): Promise<void> {
   );
   let saved: Array<{ path: string }> = [];
   try { saved = readFolders(); } catch { /* saved folders unreadable */ }
+  // Fix (fork hold): read ONCE per sweep, not per record — a surfaced fork
+  // (slug-repair.ts §6.0 Case C) must be frozen out of this direction until a
+  // human resolves it; see heldForkIds' WHY in slug-repair-state.ts.
+  const heldForks = heldForkIds();
   for (const rec of records) {
     if (!rec.transcriptRef) continue; // no durable copy to materialize from
+    if (heldForks.has(rec.id)) continue; // fork hold — frozen until resolved
     // The record IS the truth for provider (not a param) — see
     // asSessionProvider's comment.
     const sessionProvider = asSessionProvider(rec.provider);
@@ -626,6 +635,10 @@ export function noteSessionEnded(claudeSessionId: string): void {
 // so it resolves the project via resolveLocalProject.
 export async function materializeOne(id: string, cwd?: string): Promise<void> {
   const s = store; if (!s) return;
+  // Fix (fork hold): a surfaced fork must be frozen out of this direction
+  // until a human resolves it — see heldForkIds' WHY in slug-repair-state.ts.
+  // Checked before any I/O (quiescence wait, project resolution) below.
+  if (heldForkIds().has(id)) return;
   // Task 8: try 'claude' first, then 'native' — a UUID can't legitimately
   // exist in both buckets, so the first hit IS the record (no need to read
   // both on the common path). Each lookup is isolated: a rejecting get() on
@@ -746,11 +759,16 @@ function runReconcile(): void {
   ];
   try { knownFolders.push(...readFolders().map((f) => f.path)); }
   catch { /* saved folders unreadable — managed projects still cover most cases */ }
+  // Fix (fork hold): read ONCE per reconcile run, not per mirror() call — a
+  // surfaced fork must be frozen out of the local->space direction too; see
+  // heldForkIds' WHY in slug-repair-state.ts.
+  const heldForks = heldForkIds();
   reconcile({
     projectsDir, topicsDir, store: s, device, knownFolders,
     // Production mirror closure: the reconciler stays free of transcript-mirror
     // + the Conversations root. Best-effort — a throw here must not abort the scan.
     mirror: (localPath: string, projectKey: string, sessionId: string) => {
+      if (heldForks.has(sessionId)) return; // fork hold — frozen until resolved
       try {
         // WHY hardcoded 'claude': the reconciler scans ~/.claude/projects only
         // — it is CC-only by definition, not a stopgap (reconciler.ts:115,182,188

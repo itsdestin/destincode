@@ -649,4 +649,89 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
     await runSlugRepair({ ...w.opts, stateFile: path.join(w.home, '.youcoded', 'state.json') });
     expect((await w.store.get('claude', 'sF'))?.note).toContain('two diverged copies');
   });
+
+  // Fork hold (found on the real-data run, T18 run-3): a surfaced fork must
+  // stay held across launches — see heldForkIds' WHY in slug-repair-state.ts.
+  describe('fork hold', () => {
+    it('a fork-surfaced run writes the session id into surfacedForks in the state file', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'fh1.jsonl');
+      const correct = path.join(w.correctDir, 'fh1.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+      await runSlugRepair({ ...w.opts, stateFile });
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.surfacedForks).toEqual(['fh1']);
+    });
+
+    it('a second run on an already-held fork creates no new snapshot files, still surfaces fork-surfaced', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'fh2.jsonl');
+      const correct = path.join(w.correctDir, 'fh2.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+      const quarantineRoot = path.join(w.home, '.youcoded', 'repair-quarantine');
+
+      // Each run gets its OWN quarantine (quarantine: undefined lets
+      // runSlugRepair default to `new Quarantine(homeDir)`) so the second
+      // run's directory can be inspected in isolation — a shared quarantine
+      // would make "no new files" ambiguous with "no files added this call".
+      await runSlugRepair({ ...w.opts, quarantine: undefined, stateFile }); // run 1 — fresh hold
+      const dirsAfterFirst = fs.readdirSync(quarantineRoot);
+      expect(dirsAfterFirst).toHaveLength(1);
+      const firstDir = path.join(quarantineRoot, dirsAfterFirst[0]);
+      expect(fs.existsSync(path.join(firstDir, path.relative(w.home, wrong)))).toBe(true);
+      expect(fs.existsSync(path.join(firstDir, path.relative(w.home, correct)))).toBe(true);
+
+      // Guarantee a distinct ISO-millisecond quarantine dir name for run 2.
+      await new Promise((r) => setTimeout(r, 5));
+      await runSlugRepair({ ...w.opts, quarantine: undefined, stateFile }); // run 2 — already held
+      const dirsAfterSecond = fs.readdirSync(quarantineRoot).filter((d) => !dirsAfterFirst.includes(d));
+      expect(dirsAfterSecond).toHaveLength(1);
+      const secondDir = path.join(quarantineRoot, dirsAfterSecond[0]);
+
+      const countFiles = (dir: string): number => fs.readdirSync(dir, { withFileTypes: true })
+        .reduce((n, e) => n + (e.isDirectory() ? countFiles(path.join(dir, e.name)) : 1), 0);
+      expect(countFiles(secondDir)).toBe(1); // decisions.log only — no re-snapshotted files
+
+      const log = fs.readFileSync(path.join(secondDir, 'decisions.log'), 'utf8');
+      expect(log).toContain('SKIP-SNAPSHOT fork fh2: snapshots already held from a prior run');
+      expect(log).toContain('ATTENTION fork fh2'); // still surfaced, not silently dropped
+
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      // Still held after run 2 — proves the auto-release logic did NOT drop
+      // it, which only happens if run 2 actually re-found it as a fork.
+      expect(state.surfacedForks).toEqual(['fh2']);
+    });
+
+    it('a run where the fork is gone (one copy resolved away) drops the id from surfacedForks', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'fh3.jsonl');
+      const correct = path.join(w.correctDir, 'fh3.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+
+      await runSlugRepair({ ...w.opts, stateFile }); // run 1 — surfaces + holds
+      let state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.surfacedForks).toEqual(['fh3']);
+
+      fs.unlinkSync(wrong); // simulate the user resolving the fork themselves
+
+      await runSlugRepair({ ...w.opts, stateFile }); // run 2 — no longer a fork on disk
+      state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.surfacedForks).toEqual([]);
+    });
+  });
 });
