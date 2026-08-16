@@ -134,6 +134,86 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report).toContain(`[specialist session ${childId}]`);
   });
 
+  // Task 7 (plan 1c): a helper's REASONING belongs in its own card's Thinking
+  // row (R6) — the widened predicate (isSubagentDisplayEvent) re-emits an
+  // `assistant-thinking` event ONLY when it carries data.text, using the
+  // harness's REAL reasoning-delta stream path (harness-session.ts) rather
+  // than a synthetic event, so this pins the whole path end to end.
+  it('a child\'s assistant-thinking WITH text reaches the parent as a stamped copy (parentAgentToolUseId + agentId)', async () => {
+    await withParent([
+      stream(
+        { type: 'reasoning-start', id: 'r1' },
+        { type: 'reasoning-delta', id: 'r1', delta: 'weighing which file to check first' },
+        { type: 'reasoning-end', id: 'r1' },
+        ...textChunks('t', 'REPORT: found it at src/x.ts'),
+        finishChunk('stop'),
+      ),
+    ]);
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    const thinking = events.find((e) => e.type === 'assistant-thinking' && e.data?.agentId === childId);
+    expect(thinking).toBeDefined();
+    expect(thinking!.data.text).toBe('weighing which file to check first');
+    expect(thinking!.sessionId).toBe('root-1');
+    expect(thinking!.data.parentAgentToolUseId).toBe('tc-1');
+  });
+
+  // Task 7 (plan 1c): the three NON-text-bearing shapes `assistant-thinking`
+  // actually carries in production (harness-session.ts) — a payload-less
+  // watchdog heartbeat, a stallWarning countdown, and a toolPreparing notice —
+  // must never re-emit. Any of them showing up under the parent's id would
+  // render as the PARENT's own status (a stall/prepare notice that isn't
+  // happening to the parent at all), which is exactly what the predicate's
+  // `data.text` check exists to prevent. Emitted directly on the child's own
+  // session emitter (the same technique the heartbeat-staleness suite below
+  // uses) so this is independent of whatever the scripted model's real stream
+  // happens to produce.
+  it('a payload-less heartbeat, a stallWarning, and a toolPreparing thinking event never do', async () => {
+    const REPORT = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+    let fired = false;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        if (!fired) {
+          fired = true;
+          const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1')!;
+          const [liveChildId, liveEntry] = entry as [string, { session: any }];
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-hb', timestamp: Date.now(), data: {},
+          });
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-stall', timestamp: Date.now(),
+            data: { stallWarning: { retryInMs: 5000, willRetry: true } },
+          });
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-prep', timestamp: Date.now(),
+            data: { toolPreparing: { toolCallId: 'tc-x', toolName: 'Glob', chars: 3 } },
+          });
+        }
+        return { stream: simulateReadableStream({ chunks: REPORT, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, undefined,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    const thinking = events.filter((e) => e.type === 'assistant-thinking' && e.data?.agentId === childId);
+    expect(thinking).toEqual([]);
+  });
+
   // Fix: harness-session.ts:1769 emits one assistant-text event per STREAM
   // DELTA for native models, not per whole message — the reducer's
   // applySubagentEvent (chat-reducer.ts) coalesces same-partId deltas back

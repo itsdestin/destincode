@@ -4051,5 +4051,32 @@ describe('NativeSessionHost', () => {
         'tool-use:tc-1', 'assistant-text:child-1', 'tool-use:tc-2', 'assistant-text:child-2',
       ]);
     });
+
+    // Task 7 (plan 1c): replay must match the live-copy guard's widened
+    // predicate exactly — a text-bearing assistant-thinking event splices in
+    // stamped (same as any other display-safe type), while the three
+    // NON-text-bearing shapes (heartbeat/stallWarning/toolPreparing) never do.
+    // Asserted against an in-memory events array rather than round-tripping
+    // through SessionStore: the store already drops payload-less thinking
+    // events before they ever reach disk (session-store.ts), so a disk
+    // round-trip would pass this test for the wrong reason — it wouldn't
+    // prove the FILTER excludes them, only that the store never persisted
+    // them in the first place.
+    it('mergeChildEvents replays text-bearing thinking, never heartbeats', () => {
+      const parentEvents = [ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } })];
+      const childEvents = [
+        ev('assistant-thinking', { data: {} }), // payload-less heartbeat
+        ev('assistant-thinking', { data: { text: 'thinking it through', partId: 'r1' } }),
+        ev('assistant-thinking', { data: { stallWarning: { retryInMs: 1000, willRetry: true } } }),
+        ev('assistant-thinking', { data: { toolPreparing: { toolCallId: 'x', toolName: 'Glob', chars: 1 } } }),
+        ev('assistant-text', { data: { text: 'ok' } }),
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged.map((e) => e.type)).toEqual(['tool-use', 'assistant-thinking', 'assistant-text']);
+      expect(merged[1].data.text).toBe('thinking it through');
+      expect(merged[1].sessionId).toBe('root-1');
+      expect(merged[1].data.agentId).toBe('child-1');
+      expect(merged[1].data.parentAgentToolUseId).toBe('tc-1');
+    });
   });
 });

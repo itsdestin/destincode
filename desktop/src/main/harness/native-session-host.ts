@@ -109,7 +109,33 @@ const SEND_QUEUE_LIMIT = 10;
 // Exported (Task 9) so restart-recovery card replay can filter against the
 // exact same set the live path uses, and so tests can assert against it
 // directly rather than duplicating the literal list.
+//
+// Plan 1c adds ONE more shape — assistant-thinking with text — because a
+// helper's reasoning belongs in ITS card's Thinking row (R6), never in the
+// parent's bubble. Heartbeats/stall/preparing payloads stay out: they would
+// render as the parent's own status. That widening lives in
+// isSubagentDisplayEvent below, NOT as a fourth Set entry — the frozen
+// TranscriptEventType surface means assistant-thinking must stay one Set
+// member that sometimes re-emits, rather than the Set growing a type whose
+// membership is conditional on payload. Anything checking "does this type
+// always re-emit" still reads SUBAGENT_DISPLAY_TYPES directly; anything
+// deciding whether ONE event re-emits must call isSubagentDisplayEvent.
 export const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+
+/**
+ * The single predicate for "does this child event re-emit as a display copy
+ * on the parent" — used at BOTH sites (the live wireChildLive listener below
+ * and mergeChildEvents' replay filter) so the two can never drift apart.
+ * True for the three always-on types in SUBAGENT_DISPLAY_TYPES, or for an
+ * assistant-thinking event that carries non-empty data.text (a helper's
+ * actual reasoning, per the WHY above). A payload-less heartbeat, a
+ * stallWarning countdown, or a toolPreparing notice all fail this — none
+ * carries data.text — and stay child-only.
+ */
+export function isSubagentDisplayEvent(e: TranscriptEvent): boolean {
+  return SUBAGENT_DISPLAY_TYPES.has(e.type)
+    || (e.type === 'assistant-thinking' && typeof e.data.text === 'string' && e.data.text.length > 0);
+}
 
 /**
  * Card replay (Task 9) — pure splice function, exported for direct testing.
@@ -148,7 +174,7 @@ export function mergeChildEvents(
     const idx = merged.findIndex((e) => e.type === 'tool-use' && e.data.toolUseId === record.parentToolCallId);
     if (idx === -1) continue; // defensive skip — see the function's own WHY above
     const stamped = events
-      .filter((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))
+      .filter(isSubagentDisplayEvent)
       .map((e) => ({
         ...e,
         sessionId: parentId,
@@ -2594,7 +2620,8 @@ export class NativeSessionHost extends EventEmitter {
     // where ipc-handlers mints a conversation record and feeds the title feeder —
     // a child would surface as a conversation the user never started. The child
     // gets the persistence half only; the display half (stamped COPIES of the
-    // three subagent event types, emitted under the PARENT's id) is Task 7.
+    // display-safe events per isSubagentDisplayEvent, emitted under the
+    // PARENT's id) is Task 7.
     this.wireChildLive(parentId, childId, workDir, session, binding, opts.parentToolCallId);
     return { childId, title };
   }
@@ -2705,8 +2732,8 @@ export class NativeSessionHost extends EventEmitter {
    *  where ipc-handlers mints a conversation record and feeds the title feeder
    *  — a child would surface as a conversation the user never started. This
    *  gives the child the persistence half only; the display half is the
-   *  stamped COPY of the three subagent event types, emitted under the
-   *  PARENT's id, below. */
+   *  stamped COPY of the display-safe events (isSubagentDisplayEvent),
+   *  emitted under the PARENT's id, below. */
   private wireChildLive(
     parentId: string, childId: string, workDir: string, session: HarnessSession, binding: ModelBinding, parentToolCallId: string,
   ): void {
@@ -2733,15 +2760,16 @@ export class NativeSessionHost extends EventEmitter {
             sessionId: childId, type: event.type, error: String(err),
           });
         });
-      // (2) DISPLAY (Task 7) — a stamped COPY, for the three types the
-      // renderer's subagent card consumes and NOTHING else (see
-      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break).
+      // (2) DISPLAY (Task 7) — a stamped COPY, for what the renderer's
+      // subagent card consumes and NOTHING else (see isSubagentDisplayEvent /
+      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break,
+      // and plan 1c's addition of text-bearing assistant-thinking).
       // The copy rides under the PARENT's session id, because that is the
       // session a window actually owns; `parentAgentToolUseId` threads it into
       // the parent's Task tool card and `agentId` identifies which child spoke.
       // The original is never mutated — the persisted event above and this copy
       // are two different objects on purpose.
-      if (!SUBAGENT_DISPLAY_TYPES.has(event.type)) return;
+      if (!isSubagentDisplayEvent(event)) return;
       this.emit('transcript-event', {
         ...event,
         sessionId: parentId,
