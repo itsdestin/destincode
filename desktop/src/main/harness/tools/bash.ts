@@ -175,10 +175,22 @@ function tracksCwdFor(s: ShellInfo): boolean {
  *    value — including embedded newlines or binary bytes, which a newline-joined
  *    dump would silently corrupt. */
 function withCwdProbe(command: string, captureEnv: boolean): string {
+  // The announced path goes through `cygpath -w` when that exists. WHY: under
+  // Git Bash (MSYS) on Windows, `mktemp` prints a POSIX path like /tmp/tmp.XXXX,
+  // but MSYS's `/tmp` is a virtual mount that really lives under %TEMP% — so
+  // Node's readFileSync on the Windows side resolves it as C:\tmp\tmp.XXXX,
+  // finds nothing, and the best-effort catch below silently persisted nothing
+  // (Windows CI: "carries an exported var to the NEXT call" got `got:` empty).
+  // `cygpath -w` is the MSYS translator (ships with every Git for Windows /
+  // MSYS2) and prints the C:\Users\...\Temp\tmp.XXXX spelling Node can open.
+  // Absent on Linux/macOS, where the `||` fallback keeps the raw path — stderr
+  // suppressed so "command not found" can't reach the output, the same trick
+  // `pwd -W` uses below. Only the PRINTED path changes; the shell still writes
+  // to and (later) Node still unlinks the one file.
   const envPart = captureEnv
     ? `__yc_envfile=$(mktemp 2>/dev/null || printf '/tmp/yc-env-%s' "$$")\n` +
       `{ for __yc_v in $(compgen -e); do printf '%s=%s\\0' "$__yc_v" "\${!__yc_v}"; done; } > "$__yc_envfile" 2>/dev/null\n` +
-      `printf '\\n${ENV_SENTINEL}%s\\n' "$__yc_envfile"\n`
+      `printf '\\n${ENV_SENTINEL}%s\\n' "$(cygpath -w "$__yc_envfile" 2>/dev/null || printf '%s' "$__yc_envfile")"\n`
     : '';
   // TRAILING newline is load-bearing: a background writer ('cmd &') can flush to
   // the pipe AFTER the sentinel, and without a terminator that text concatenates
