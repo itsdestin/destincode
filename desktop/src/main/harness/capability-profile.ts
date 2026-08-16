@@ -64,6 +64,24 @@ export interface CapabilityProfile {
    *  localFallback / the known-model overlay below for how each layer
    *  resolves it. */
   maxConcurrentSpecialists: number;
+  /** May this session tell the user the model is READING the prompt — the
+   *  "Reading your prompt — N tokens" heartbeat (and the live percentage the
+   *  local engine upgrades it to)? PROVIDER-TYPE fact, never a model fact, so
+   *  the registry never overrides it.
+   *
+   *  True only where the model runs on the user's OWN hardware. That affordance
+   *  exists because llama.cpp prefill scales with prompt size and can run for
+   *  minutes with nothing on screen — a silence indistinguishable from a hang,
+   *  which is exactly what it was built to explain. A hosted model's
+   *  time-to-first-token is seconds; announcing it there is noise at best and
+   *  actively misleading at worst, since no cloud provider reports prefill
+   *  progress so the notice can never upgrade past its opening estimate
+   *  (Destin, 2026-08-16: the notice was showing on OpenRouter sessions).
+   *
+   *  'openai-compatible' counts as local for the same reason FRONTIER_PROVIDERS
+   *  below excludes it: provider-registry documents that type as the Ollama /
+   *  LM Studio shape, i.e. a local model in disguise. */
+  announcePrefill: boolean;
 }
 
 export type ProfileProviderType =
@@ -130,6 +148,10 @@ export const CLOUD_DEFAULT: CapabilityProfile = {
   // a direct use of CLOUD_DEFAULT can't accidentally claim the one capability
   // that is exclusive to a single provider.
   nativeImageToolResults: false,
+  // Placeholder in the same shape as the two above: resolveProfile ALWAYS
+  // spreads the real provider-type answer over this. False is also the honest
+  // value for a session that genuinely IS this default — a hosted model.
+  announcePrefill: false,
 };
 
 function cloudVariant(t: ProfileProviderType): PromptVariant {
@@ -298,6 +320,11 @@ function localFallback(ctx: number | null): BehavioralProfile {
     // below). canDelegate is already false here, so the Task tool is never
     // attached anyway — this value only matters if that ever changes.
     maxConcurrentSpecialists: 1,
+    // Always true here: localFallback is only ever reached for 'local-engine',
+    // whose prefill IS the minutes-long silence the notice explains. Like
+    // nativeImageToolResults above, resolveProfile also spreads the computed
+    // provider-type answer over this, so the two can never disagree.
+    announcePrefill: true,
   };
 }
 
@@ -349,12 +376,17 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
   // known-model registry — which has no field for this — can never override
   // it either way.
   const nativeImageToolResults = d.providerType === 'anthropic';
+  // PROVIDER-TYPE fact like nativeImageToolResults, computed once here and
+  // spread onto every return below so no registry entry or layer can override
+  // it: only a model running on the user's own machine gets the prompt-reading
+  // notice. See the field's doc comment for why 'openai-compatible' counts.
+  const announcePrefill = d.providerType === 'local-engine' || d.providerType === 'openai-compatible';
   if (d.providerType !== 'local-engine') {
-    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
+    return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType), ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults, announcePrefill };
   }
   const base = localFallback(d.contextLength);
   const known = matchKnownModel(d.modelId, registry);   // LAYER 2 overlay
-  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults };
+  if (!known) return { ...base, ...sizing, mcpToolBudgetTokens, supportsVision, nativeImageToolResults, announcePrefill };
   return {
     maxToolPresentation: known.maxToolPresentation ?? base.maxToolPresentation,
     promptVariant: known.promptVariant ?? base.promptVariant,
@@ -382,5 +414,6 @@ export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] =
     mcpToolBudgetTokens,
     supportsVision,
     nativeImageToolResults,
+    announcePrefill,
   };
 }

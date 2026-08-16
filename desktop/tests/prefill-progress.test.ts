@@ -204,6 +204,7 @@ import { HarnessSession } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { TranscriptEvent } from '../src/shared/types';
+import { resolveProfile } from '../src/main/harness/capability-profile';
 
 describe('prefill progress re-arms the stall watchdog', () => {
   it('a stream that reports progress does NOT trip a short stall budget', async () => {
@@ -251,6 +252,53 @@ describe('prefill progress re-arms the stall watchdog', () => {
 
     expect(events.some((e) => e.type === 'session-error')).toBe(false);
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
+  });
+
+  // The re-arm above must keep working with NO profile (the CLOUD default),
+  // because proof-of-life is not a UI concern — see harness-session.ts's
+  // emitPrefillProgress, where the announcePrefill gate sits deliberately BELOW
+  // the re-arm. This case pins the other half: a LOCAL session still puts the
+  // reading on screen. Nothing else covers the live-progress emit end to end, so
+  // without it the local-only gate could silently kill the feature it protects.
+  it('a LOCAL session forwards the live reading to the UI', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          async start(c) {
+            await new Promise((r) => setTimeout(r, 300));
+            c.enqueue({ type: 'stream-start', warnings: [] });
+            c.enqueue({ type: 'text-start', id: 'p1' });
+            c.enqueue({ type: 'text-delta', id: 'p1', delta: 'ok' });
+            c.enqueue({ type: 'text-end', id: 'p1' });
+            c.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } });
+            c.close();
+          },
+        }) as any,
+      }),
+    });
+
+    const session = new HarnessSession(
+      { skillCatalog: EMPTY_SKILL_CATALOG,
+        sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET,
+        binding: { providerId: 'local', modelId: 'Qwen3.5-122B' },
+        profile: resolveProfile({ providerType: 'local-engine', modelId: 'Qwen3.5-122B', contextLength: 131_072 }),
+        prefillWarningMs: 5_000, stallCountdownMs: 5_000, retryDelays: [],
+      } as any,
+      async (_b, opts: any) => {
+        // One FINAL reading: the throttle always lets that one through, so the
+        // test doesn't race the 400ms window.
+        opts?.onPrefillProgress?.({ total: 6000, cache: 0, processed: 6000, timeMs: 3000 });
+        return model as any;
+      },
+    );
+    const events: TranscriptEvent[] = [];
+    session.on('transcript-event', (e: TranscriptEvent) => events.push(e));
+
+    await session.send('hi');
+
+    const reading = events.find((e) => (e.data as any)?.promptProcessing?.processed != null);
+    expect(reading).toBeTruthy();
+    expect((reading!.data as any).promptProcessing.processed).toBe(6000);
   });
 });
 

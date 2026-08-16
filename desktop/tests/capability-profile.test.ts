@@ -399,3 +399,31 @@ describe('maxConcurrentSpecialists (Task 13 — local concurrency from the engin
     expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: null }, registry).maxConcurrentSpecialists).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// announcePrefill (Destin, 2026-08-16) — the "Reading your prompt — N tokens"
+// heartbeat is for models running on the user's OWN hardware, where llama.cpp
+// prefill is a minutes-long silence that looks like a hang. It shipped on every
+// provider, so cloud/OpenRouter turns got it in place of the ordinary spinner.
+// A PROVIDER-TYPE fact: no registry entry may override it either way.
+// ---------------------------------------------------------------------------
+describe('announcePrefill — the prompt-reading notice is local-only', () => {
+  it('is false for every hosted provider', () => {
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 128_000 }).announcePrefill, providerType).toBe(false);
+    }
+    expect(CLOUD_DEFAULT.announcePrefill).toBe(false);
+  });
+
+  it('is true for the local engine, known model or not', () => {
+    expect(resolveProfile(local('mystery-3b', 8_192)).announcePrefill).toBe(true);
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 131_072), registry).announcePrefill).toBe(true);
+  });
+
+  it('is true for openai-compatible — the Ollama / LM Studio shape is a local model in disguise', () => {
+    // Same reasoning FRONTIER_PROVIDERS uses to exclude this type from the
+    // "assume a roomy window" shortcut.
+    expect(resolveProfile({ providerType: 'openai-compatible', modelId: 'llama3.3:70b', contextLength: null }).announcePrefill).toBe(true);
+  });
+});
