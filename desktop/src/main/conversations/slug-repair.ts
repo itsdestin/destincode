@@ -13,13 +13,7 @@ import { readFolders } from '../saved-folders';
 import { getManagedRoots } from '../sync-spaces/service';
 import { getConversationStore } from './service';
 import { log } from '../logger';
-import { readState, writeState, defaultStateFile, heldForkIds } from './slug-repair-state';
-// Re-exported so callers of this module get the fork-hold reader from its
-// natural home (slug-repair.ts owns the fork-surfacing logic) without
-// reaching into the leaf module directly. service.ts imports it straight
-// from ./slug-repair-state instead — importing THIS module from service.ts
-// would create the cycle the leaf module exists to avoid.
-export { heldForkIds };
+import { readState, writeState, defaultStateFile } from './slug-repair-state';
 
 export function uuidSet(filePath: string): Set<string> {
   const out = new Set<string>();
@@ -499,12 +493,25 @@ export async function repairRecordsAndSpace(
     const recordChanged = !rec || rec.projectName !== bucketName || rec.originalPath !== P
       || rec.transcriptRef !== targetTranscriptRef;
     if (recordChanged) {
+      // Review fix (IMPORTANT 1): guard the upsert — it can throw on a lock
+      // timeout (conversation-store.ts's mutateRecord/mutateFileUnderLock).
+      // Unguarded, that throw rejected the whole runSlugRepair call before
+      // writeState() ran, silently losing every finding/hold already
+      // computed this run. Fail this ONE session's record repair instead:
+      // log it, surface a finding so it isn't silently dropped, and move on
+      // — the space-copy cleanup above (if any) already landed regardless.
+      try {
+        await store.upsert({
+          id: sessionId, provider: 'claude',
+          projectName: bucketName, originalPath: P,
+          transcriptRef: targetTranscriptRef,
+        });
+      } catch (e) {
+        q.log(`ERROR RECORD-REPAIR ${sessionId}: upsert failed: ${String(e)}`);
+        findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: moved ? [target] : [] });
+        continue;
+      }
       q.log(`RECORD-REPAIR ${sessionId}: projectName '${rec?.projectName ?? ''}' -> '${bucketName}', originalPath '${rec?.originalPath ?? ''}' -> '${P}', transcriptRef '${rec?.transcriptRef ?? ''}' -> '${targetTranscriptRef}'`);
-      await store.upsert({
-        id: sessionId, provider: 'claude',
-        projectName: bucketName, originalPath: P,
-        transcriptRef: targetTranscriptRef,
-      });
     }
     // Review fix (IMPORTANT 1): a session with no space copies to move (or
     // whose keeper was already correctly bucketed) never touches a file —
@@ -674,7 +681,7 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   // from this same snapshot. See heldForkIds' WHY in slug-repair-state.ts.
   const stateFile = overrides?.stateFile ?? defaultStateFile(homeDir);
   const state = readState(stateFile);
-  const heldForks = new Set(state.surfacedForks);
+  const heldForks = new Set(state.surfacedForks.map(f => f.id));
   const opts: RepairOpts = { projectsDir, homeDir, knownFolders, quarantine, heldForks,
     liveMs: overrides?.liveMs, now: overrides?.now };
 
@@ -703,40 +710,82 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   // the contract states.
   const deferredThisRun = new Set(all.filter(f => f.kind === 'deferred-live').map(f => f.sessionId));
   const forkSurfacedThisRun = new Set(all.filter(f => f.kind === 'fork-surfaced').map(f => f.sessionId));
-  const surfaced = new Set(state.surfacedForks);
+  // Fix (review, IMPORTANT 2 — auto-release on absence of evidence): keyed by
+  // id -> the paths that finding recorded, so release decisions below can
+  // check the disk, not just "did this run mention the id". Seeded from the
+  // pre-run state so an id nothing touches this run keeps its LAST recorded
+  // paths (needed for the "one recorded path no longer exists" release
+  // check further down).
+  const surfacedMap = new Map(state.surfacedForks.map(f => [f.id, f.paths]));
   for (const f of all) {
     if (f.kind !== 'deferred-live') delete state.deferred[f.sessionId];
-    if (f.kind === 'fork-surfaced') {
-      surfaced.add(f.sessionId); // fork hold: dedupe via Set, same shape as deferredThisRun above
-      log('WARN', 'SlugRepair', 'true fork left on disk — user decision required', { sessionId: f.sessionId, paths: f.paths });
-      const rec = await store.get('claude', f.sessionId);
-      if (rec && !rec.note) {
-        await store.setNote('claude', f.sessionId,
-          `Repair notice: this conversation has two diverged copies on disk (see ~/.youcoded/repair-quarantine). Both were preserved.`);
-      }
-    }
+    // Paths are refreshed to whatever THIS run's finding says, every time a
+    // fork surfaces — including a re-surface of an already-held id, so a
+    // stale hold never carries paths from before a promotion/rename moved
+    // one of the copies.
+    if (f.kind === 'fork-surfaced') surfacedMap.set(f.sessionId, f.paths);
   }
-  // Fix (fork hold) — auto-release: a hold's job is done once the pair is no
-  // longer a fork on disk. Only ids ALREADY held coming into this run (i.e.
-  // in `heldForks`, the pre-run snapshot) are release candidates — a fork
-  // surfaced for the FIRST time this run was just added to `surfaced` above
-  // and is never a candidate. If this run found neither a fresh
-  // fork-surfaced finding NOR a deferred-live pause for a held id, the fork
-  // no longer exists on disk as a fork (resolved by the user, or converged by
-  // repair itself into a clean subset/superset) — drop the hold so a future
-  // repair (or this same run, for a different session) isn't stuck treating
-  // a resolved pair as still-forked. Removing an id is otherwise the user's/
-  // future tooling's job; this is the one automatic case.
+  // Fix (review, IMPORTANT 2): a hold releases ONLY on positive evidence the
+  // pair is no longer a fork — never on this run simply having nothing to say
+  // about the id. Before this fix, silence alone (e.g. the folder that owns
+  // the fork dropped out of knownFolders, or readFolders() threw and returned
+  // []) released the hold, and materializeSweep — independent of
+  // knownFolders, it resolves via the record's originalPath — clobbered the
+  // smaller fork copy within seconds of the sweeps resuming. Only ids ALREADY
+  // held coming into this run (`heldForks`, the pre-run snapshot) are release
+  // candidates; a fork surfaced for the FIRST time this run was just added to
+  // `surfacedMap` above and is never a candidate.
   for (const id of heldForks) {
-    if (!forkSurfacedThisRun.has(id) && !deferredThisRun.has(id)) surfaced.delete(id);
+    if (forkSurfacedThisRun.has(id) || deferredThisRun.has(id)) continue; // still a fork, or paused — stays held
+    // (a) positive reclassification: THIS run produced some other,
+    // non-fork/non-deferred finding for the id — the pair converged into a
+    // clean subset/superset relation (or got its record repaired), which
+    // only happens once classifyPair no longer calls it a fork.
+    const reclassified = all.some(f => f.sessionId === id && f.kind !== 'fork-surfaced' && f.kind !== 'deferred-live');
+    // (b) the user resolved it by hand: at least one of the copies this hold
+    // was protecting is gone from disk.
+    const recordedPaths = surfacedMap.get(id) ?? [];
+    const copyMissing = recordedPaths.some(p => !fs.existsSync(p));
+    if (reclassified || copyMissing) surfacedMap.delete(id);
+    // else: silence with every recorded copy still present on disk — the
+    // scan simply never reached this pair this run. Stay held.
   }
-  state.surfacedForks = [...surfaced];
+  state.surfacedForks = [...surfacedMap].map(([id, paths]) => ({ id, paths }));
   for (const sessionId of deferredThisRun) {
     const n = (state.deferred[sessionId] ?? 0) + 1;
     state.deferred[sessionId] = n;
     if (n >= MAX_DEFERRALS) {
       log('WARN', 'SlugRepair', 'session still live after repeated deferrals — needs manual quiescence', { sessionId, deferrals: n });
       quarantine.log(`ATTENTION deferred ${sessionId} ${n}x — repair it manually while the app is closed`);
+    }
+  }
+  // Fix (review, IMPORTANT 1): persist the hold/deferral bookkeeping computed
+  // above BEFORE the store calls below, which can throw (lock timeout —
+  // conversation-store.ts's mutateRecord). Before this fix, an unguarded
+  // store.setNote() rejecting this whole function meant writeState() (further
+  // down) never ran — forks just surfaced/snapshotted this run were never
+  // recorded as held, and main.ts's .finally(resumeSweeps) unpaused the
+  // mirror sweeps over an unrecorded hold: the exact clobber this branch
+  // exists to prevent. Written again (idempotent) at the end so a future edit
+  // that adds more post-processing state here doesn't have to remember to
+  // move this call again.
+  try { writeState(state, stateFile); }
+  catch (e) { log('WARN', 'SlugRepair', 'state write failed', { error: String(e) }); }
+  // Best-effort store notification for freshly/still-surfaced forks. Wrapped
+  // (review fix, IMPORTANT 1) — setNote is documented one-time best-effort;
+  // a lock-timeout rejection here must never cost the hold state already
+  // written above.
+  for (const f of all) {
+    if (f.kind !== 'fork-surfaced') continue;
+    log('WARN', 'SlugRepair', 'true fork left on disk — user decision required', { sessionId: f.sessionId, paths: f.paths });
+    try {
+      const rec = await store.get('claude', f.sessionId);
+      if (rec && !rec.note) {
+        await store.setNote('claude', f.sessionId,
+          `Repair notice: this conversation has two diverged copies on disk (see ~/.youcoded/repair-quarantine). Both were preserved.`);
+      }
+    } catch (e) {
+      log('WARN', 'SlugRepair', 'fork note not written', { sessionId: f.sessionId, error: String(e) });
     }
   }
   try { writeState(state, stateFile); }

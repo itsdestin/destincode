@@ -683,6 +683,60 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
     expect((await w.store.get('claude', 'sF'))?.note).toContain('two diverged copies');
   });
 
+  // Review fix (IMPORTANT 1): neither store write in the fork-surfacing path
+  // may reject the whole run — a throw there must never cost the hold state
+  // (writeState) that was already computed, or main.ts's
+  // .finally(resumeSweeps) unpauses the mirror sweeps over an unrecorded
+  // hold (the exact run-3 clobber this branch exists to prevent).
+  describe('store-write failures never lose the fork hold (review fix, IMPORTANT 1)', () => {
+    it('a rejecting setNote does not reject runSlugRepair, and the state file still lists the fork id', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'sG.jsonl');
+      const correct = path.join(w.correctDir, 'sG.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      // A store whose setNote always rejects (simulates a mutateRecord lock
+      // timeout — conversation-store.ts:166) — every other method is the
+      // real store's, so upsert/get behave normally.
+      const flakyStore = {
+        ...w.store,
+        setNote: async () => { throw new Error('conversation-store: could not write claude/sG (lock timeout)'); },
+      };
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+      await expect(runSlugRepair({ ...w.opts, store: flakyStore as typeof w.store, stateFile })).resolves.toBeUndefined();
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.surfacedForks).toEqual([{ id: 'sG', paths: [wrong, correct] }]);
+    });
+
+    it('a rejecting 6.2 upsert does not reject runSlugRepair — logs an ERROR and surfaces a rename-failed finding instead', async () => {
+      const w = makeWorld();
+      const t = path.join(w.correctDir, 'sH.jsonl');
+      fs.writeFileSync(t, F('u1', w.P)); age(t);
+      // Seed a record with the WRONG projectName/originalPath so recordChanged
+      // is true and repairRecordsAndSpace attempts the upsert.
+      await w.store.upsert({ id: 'sH', provider: 'claude', projectName: 'destin', originalPath: w.home, transcriptRef: 'claude/transcripts/destin/sH.jsonl' });
+      const flakyStore = {
+        ...w.store,
+        upsert: async (partial: Parameters<typeof w.store.upsert>[0]) => {
+          if (partial.id === 'sH') throw new Error('conversation-store: could not write claude/sH (lock timeout)');
+          return w.store.upsert(partial);
+        },
+      };
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+      await expect(runSlugRepair({ ...w.opts, store: flakyStore as typeof w.store, stateFile })).resolves.toBeUndefined();
+      // The record was NOT repaired (the upsert never landed) — still wrong.
+      const rec = await w.store.get('claude', 'sH');
+      expect(rec?.projectName).toBe('destin');
+      const log = fs.readFileSync(path.join(w.quarantine.dir, 'decisions.log'), 'utf8');
+      expect(log).toContain('ERROR RECORD-REPAIR sH: upsert failed');
+      // The run still completed and wrote state (no exception propagated).
+      expect(fs.existsSync(stateFile)).toBe(true);
+    });
+  });
+
   // Fork hold (found on the real-data run, T18 run-3): a surfaced fork must
   // stay held across launches — see heldForkIds' WHY in slug-repair-state.ts.
   describe('fork hold', () => {
@@ -698,7 +752,11 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
       const stateFile = path.join(w.home, '.youcoded', 'state.json');
       await runSlugRepair({ ...w.opts, stateFile });
       const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      expect(state.surfacedForks).toEqual(['fh1']);
+      // Review fix (IMPORTANT 2): surfacedForks now records the fork's paths
+      // alongside its id, so a later run can tell "user resolved it" (a
+      // recorded path vanished) apart from "this run's scan just didn't
+      // reach it" (silence).
+      expect(state.surfacedForks).toEqual([{ id: 'fh1', paths: [wrong, correct] }]);
     });
 
     it('a second run on an already-held fork creates no new snapshot files, still surfaces fork-surfaced', async () => {
@@ -742,7 +800,7 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
       const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
       // Still held after run 2 — proves the auto-release logic did NOT drop
       // it, which only happens if run 2 actually re-found it as a fork.
-      expect(state.surfacedForks).toEqual(['fh2']);
+      expect(state.surfacedForks).toEqual([{ id: 'fh2', paths: [wrong, correct] }]);
     });
 
     it('a run where the fork is gone (one copy resolved away) drops the id from surfacedForks', async () => {
@@ -758,13 +816,77 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
 
       await runSlugRepair({ ...w.opts, stateFile }); // run 1 — surfaces + holds
       let state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      expect(state.surfacedForks).toEqual(['fh3']);
+      expect(state.surfacedForks).toEqual([{ id: 'fh3', paths: [wrong, correct] }]);
 
       fs.unlinkSync(wrong); // simulate the user resolving the fork themselves
 
       await runSlugRepair({ ...w.opts, stateFile }); // run 2 — no longer a fork on disk
       state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      // Released via the IMPORTANT 2 "recorded path no longer exists" check —
+      // 6.1 finds nothing for fh3 this run (the wrong-side file is gone), so
+      // there's no fresh finding at all; the release is driven purely by
+      // `wrong` having vanished from disk, not by silence alone.
       expect(state.surfacedForks).toEqual([]);
+    });
+
+    it('a fork held from a prior run is NOT released when a run silently fails to reach it (both copies still on disk, no finding at all) — review fix, IMPORTANT 2', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'fh4.jsonl');
+      const correct = path.join(w.correctDir, 'fh4.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+
+      await runSlugRepair({ ...w.opts, stateFile }); // run 1 — surfaces + holds
+      const state1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state1.surfacedForks).toEqual([{ id: 'fh4', paths: [wrong, correct] }]);
+
+      // Run 2: knownFolders no longer includes P (simulates the user un-saving
+      // the folder, or readFolders() throwing transiently) — 6.1's scan can't
+      // even reach fh4 (its P isn't in knownFolders), so this run produces NO
+      // finding for fh4 at all. Both copies are still on disk untouched. An
+      // UNRELATED folder Q stands in for P so knownFolders isn't empty (an
+      // empty list short-circuits runSlugRepair entirely, which would make
+      // this test pass trivially without exercising the release logic).
+      const Q = path.join(w.home, 'Other Folder');
+      fs.mkdirSync(Q, { recursive: true });
+      await runSlugRepair({ ...w.opts, knownFolders: [Q], stateFile });
+      const state2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state2.surfacedForks).toEqual([{ id: 'fh4', paths: [wrong, correct] }]);
+      expect(fs.existsSync(wrong)).toBe(true);
+      expect(fs.existsSync(correct)).toBe(true);
+    });
+
+    it('a fork held from a prior run IS released once the pair converges into a clean subset relation — review fix, IMPORTANT 2', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      const wrong = path.join(homeSlugDir, 'fh5.jsonl');
+      const correct = path.join(w.correctDir, 'fh5.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+
+      await runSlugRepair({ ...w.opts, stateFile }); // run 1 — surfaces + holds
+      const state1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state1.surfacedForks).toEqual([{ id: 'fh5', paths: [wrong, correct] }]);
+
+      // Simulate the user trimming the wrong-side copy so it's now a clean
+      // uuid subset of the correct copy (no more diverging uA content) —
+      // classifyPair now says 'wrong-is-subset' instead of 'fork'.
+      fs.writeFileSync(wrong, F('u1', w.P));
+      age(wrong);
+
+      await runSlugRepair({ ...w.opts, stateFile }); // run 2 — converged, not a fork anymore
+      const state2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      // Released via the IMPORTANT 2 "positive reclassification" check — this
+      // run produced a 'quarantined' finding for fh5, not a 'fork-surfaced' one.
+      expect(state2.surfacedForks).toEqual([]);
+      expect(fs.existsSync(wrong)).toBe(false); // quarantined, not left on disk
     });
   });
 });

@@ -8,30 +8,62 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+// A held fork's id, plus the exact absolute paths its snapshot/finding named
+// at the moment it was (re)surfaced (review fix, IMPORTANT 2 — auto-release
+// on absence of evidence). Recording paths lets the runner tell "user
+// resolved the fork" (a recorded path no longer exists on disk) apart from
+// "this run's scan simply didn't reach the pair" (e.g. a knownFolders miss,
+// or readFolders() throwing) — the latter must NOT release the hold, or
+// materializeSweep can clobber the smaller fork copy within seconds of the
+// hold silently dropping.
+export interface SurfacedFork {
+  id: string;
+  paths: string[];
+}
 export interface RepairState {
   v: 1;
   deferred: Record<string, number>;
-  // Session ids of true forks (spec §6.0 Case C) the repair has surfaced to
-  // the user and left on disk, untouched. See heldForkIds' WHY below for what
-  // holding a fork actually protects against.
-  surfacedForks: string[];
+  // True forks (spec §6.0 Case C) the repair has surfaced to the user and
+  // left on disk, untouched. See heldForkIds' WHY below for what holding a
+  // fork actually protects against.
+  surfacedForks: SurfacedFork[];
 }
 
 export function defaultStateFile(homeDir: string = os.homedir()): string {
   return path.join(homeDir, '.youcoded', 'slug-repair-state.json');
 }
 
-/** Reads the state file, normalizing a missing/corrupt file or a
- *  pre-fork-hold file (no `surfacedForks` key) to an empty array — backward
- *  compatible with the `{ v, deferred }` shape this file had before. */
+// Normalizes one raw surfacedForks entry: the pre-this-fix shape was a bare
+// session-id string (no recorded paths); tolerate that on read so an
+// existing state file doesn't get treated as corrupt. Anything unrecognized
+// is dropped rather than guessed at — a bad entry silently disappearing is
+// safer than a bad entry silently holding the wrong thing.
+function normalizeSurfacedFork(entry: unknown): SurfacedFork | null {
+  if (typeof entry === 'string') return { id: entry, paths: [] };
+  if (entry && typeof entry === 'object') {
+    const e = entry as { id?: unknown; paths?: unknown };
+    if (typeof e.id === 'string') {
+      const paths = Array.isArray(e.paths) ? e.paths.filter((p): p is string => typeof p === 'string') : [];
+      return { id: e.id, paths };
+    }
+  }
+  return null;
+}
+
+/** Reads the state file, normalizing a missing/corrupt file, a
+ *  pre-fork-hold file (no `surfacedForks` key), or a pre-paths-tracking file
+ *  (`surfacedForks` as bare id strings) to the current shape. */
 export function readState(stateFile?: string): RepairState {
   const file = stateFile ?? defaultStateFile();
   try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<RepairState>;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { deferred?: Record<string, number>; surfacedForks?: unknown };
+    const surfacedForks = Array.isArray(raw.surfacedForks)
+      ? raw.surfacedForks.map(normalizeSurfacedFork).filter((f): f is SurfacedFork => f !== null)
+      : [];
     return {
       v: 1,
       deferred: raw.deferred ?? {},
-      surfacedForks: Array.isArray(raw.surfacedForks) ? raw.surfacedForks : [],
+      surfacedForks,
     };
   } catch {
     return { v: 1, deferred: {}, surfacedForks: [] };
@@ -57,5 +89,5 @@ export function writeState(state: RepairState, stateFile?: string): void {
  *  fork. Cheap on-disk read; returns an empty set on a missing/corrupt state
  *  file so a fresh install never treats "no state yet" as "everything held". */
 export function heldForkIds(stateFile?: string): Set<string> {
-  return new Set(readState(stateFile).surfacedForks);
+  return new Set(readState(stateFile).surfacedForks.map((f) => f.id));
 }
