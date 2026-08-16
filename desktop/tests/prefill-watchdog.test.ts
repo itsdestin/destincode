@@ -62,8 +62,14 @@ import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { TranscriptEvent } from '../src/shared/types';
 import { EMPTY_SKILL_CATALOG } from './helpers/harness-fakes';
+import { resolveProfile } from '../src/main/harness/capability-profile';
 
-const OPTS = { skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' } };
+// The prompt-processing notice is gated on the resolved profile, so these two are
+// what separates "a model running on this machine" from "a hosted API".
+const LOCAL_PROFILE = resolveProfile({ providerType: 'local-engine', modelId: 'Qwen3.6-35B-A3B', contextLength: 131_072 });
+const CLOUD_PROFILE = resolveProfile({ providerType: 'openrouter', modelId: 'anthropic/claude-sonnet-5', contextLength: null });
+
+const OPTS ={ skillCatalog: EMPTY_SKILL_CATALOG, sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET, binding: { providerId: 'local', modelId: 'Qwen3.6-35B-A3B' } };
 
 /** A stream that waits `delayMs` before its first part, then optionally emits text. */
 function slowFirstChunk(delayMs: number, thenEmit: boolean) {
@@ -115,9 +121,10 @@ describe('prefill vs mid-stream silence', () => {
   it('announces prompt processing BEFORE the first token, so the UI can say so', async () => {
     // Needs a prompt over the notice threshold — the point of the notice is a wait
     // long enough to look like a hang, so a tiny prompt deliberately stays silent
-    // (see the "small prompt" case below).
+    // (see the "small prompt" case below). And a LOCAL profile: the notice is
+    // local-only (see the cloud case below).
     const s = new HarnessSession(
-      { ...OPTS, systemPrompt: 'S'.repeat(20_000), prefillWarningMs: 2_000, stallWarningMs: 5_000, stallCountdownMs: 5_000, retryDelays: [] } as any,
+      { ...OPTS, profile: LOCAL_PROFILE, systemPrompt: 'S'.repeat(20_000), prefillWarningMs: 2_000, stallWarningMs: 5_000, stallCountdownMs: 5_000, retryDelays: [] } as any,
       async () => slowFirstChunk(700, true) as any,
     );
     const events: TranscriptEvent[] = [];
@@ -128,6 +135,28 @@ describe('prefill vs mid-stream silence', () => {
     const prefill = events.find((e) => (e.data as any)?.promptProcessing);
     expect(prefill).toBeTruthy();
     expect((prefill!.data as any).promptProcessing.promptTokens).toBeGreaterThan(0);
+  });
+
+  // REGRESSION (Destin, 2026-08-16): the notice shipped on EVERY provider. A
+  // cloud/OpenRouter turn big enough to clear the token threshold rendered
+  // "Reading your prompt — N tokens" in place of the ordinary spinner, which is
+  // both noise and a half-truth: the whole affordance exists because llama.cpp
+  // prefill on the user's own hardware is a minutes-long silent wait, and only
+  // the local engine ever reports real progress to upgrade it with. A hosted
+  // model's time-to-first-token is seconds — nothing to explain.
+  it('stays silent on a CLOUD profile however large the prompt', async () => {
+    const s = new HarnessSession(
+      { ...OPTS, profile: CLOUD_PROFILE, systemPrompt: 'S'.repeat(20_000), prefillWarningMs: 2_000, stallWarningMs: 5_000, stallCountdownMs: 5_000, retryDelays: [] } as any,
+      async () => slowFirstChunk(700, true) as any,
+    );
+    const events: TranscriptEvent[] = [];
+    s.on('transcript-event', (e: TranscriptEvent) => events.push(e));
+
+    await s.send('summarize roadmap');
+
+    expect(events.find((e) => (e.data as any)?.promptProcessing)).toBeUndefined();
+    // …and the turn is otherwise completely normal — silence, not suppression.
+    expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
   });
 
   it('a SMALL prompt stays silent — the frozen emit sequence is unchanged', async () => {

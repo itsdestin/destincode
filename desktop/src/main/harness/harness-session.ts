@@ -1137,6 +1137,12 @@ export class HarnessSession extends EventEmitter {
     // Proof of life FIRST, before any throttling — a throttled-away report must
     // still reset the stall clock, or the throttle itself could cause a stall.
     this.rearmStallWatchdog?.();
+    // Same local-only gate as the opening estimate below — one rule for the
+    // whole affordance, so a hosted provider that ever started reporting
+    // progress still can't put a prefill readout on a cloud session. Deliberately
+    // BELOW the re-arm above: a report is proof of life whether or not we render
+    // it, and gating the re-arm too would let a healthy stream trip the watchdog.
+    if (!this.profile.announcePrefill) return;
     const report = toReport(p);
     const isFinal = report.newProcessed >= report.newTotal;
     const now = Date.now();
@@ -1947,7 +1953,12 @@ export class HarnessSession extends EventEmitter {
     // so ordinary turns keep their existing event sequence exactly.
     // Gate on the NEW tokens: a step that adds almost nothing to a huge cached
     // context returns instantly and needs no explanation, however big the total.
-    if (newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+    // AND on the provider: this whole affordance exists for local prefill, which
+    // is a minutes-long silence on the user's own hardware. A hosted model
+    // reaches first token in seconds and reports no progress to upgrade the
+    // notice with, so on cloud it was pure noise in place of the ordinary
+    // spinner (Destin, 2026-08-16). See CapabilityProfile.announcePrefill.
+    if (this.profile.announcePrefill && newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
       this.emitEvent('assistant-thinking', {
         promptProcessing: { promptTokens: newTokens, budgetMs: firstChunkMs, source },
       });
