@@ -218,9 +218,18 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+// WHY a per-call counter on top of the pid: `.tmp.<pid>` alone is the SAME name
+// for every write in this process, so two overlapping atomicWrites to one target
+// (the 60s health check's writeWarnings racing a push-failure warning write, or
+// an in-flight check leaking across tests) both write the same tmp path — the
+// first rename moves it away and the second rename throws ENOENT. This was the
+// cross-OS CI flake in sync-warning-self-clear.test.ts. pid keeps the dev
+// instance and the built app apart; the counter keeps calls apart.
+let atomicWriteSeq = 0;
+
 /** Atomic write via temp file + rename (same directory to ensure same filesystem). */
 async function atomicWrite(target: string, content: string): Promise<void> {
-  const tmpPath = target + '.tmp.' + process.pid;
+  const tmpPath = `${target}.tmp.${process.pid}.${atomicWriteSeq++}`;
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.writeFile(tmpPath, content, 'utf8');
   await fs.promises.rename(tmpPath, target);

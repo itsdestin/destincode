@@ -122,7 +122,11 @@ const casesJs   = ${q(path.join(DESKTOP, 'dist/main/harness/eval/cases/index.js'
 const batteryJs = ${q(path.join(DESKTOP, 'dist/main/harness/eval/battery.js'))};
 const pathsJs   = ${q(COMPILED_PATHS)};
 
-const { loadGraders } = await import(${q(CLI)});
+// WHY the file URL: Node's ESM loader rejects a bare absolute path on Windows
+// (a D: drive path parses as protocol 'd:' → ERR_UNSUPPORTED_ESM_URL_SCHEME). It is
+// still the same file through the same loader, so the require()-vs-import()
+// module-cache identity this probe measures is unaffected.
+const { loadGraders } = await import(${q(pathToFileURL(CLI).href)});
 const g = await loadGraders();
 
 const problems = [];
@@ -209,11 +213,15 @@ describe('grader isolation', () => {
     // shares it between `require()` and `import()` of a CommonJS file, so a
     // function loaded from any other root can never be `===` to this one.
     // WHY the identity check runs in a SPAWNED plain-node process instead of
-    // here: vitest serves `harness-eval.mjs` through vite's module runner, so
-    // the dynamic `import()` inside it is intercepted and returns a DIFFERENT
-    // module instance than `createRequire()` does — measured, the in-process
-    // version of this assertion failed with "expected [Function validatePlan]
-    // to be [Function validatePlan] // Object.is equality" on a correct tree.
+    // here: vitest USED TO serve `harness-eval.mjs` through vite's module
+    // runner, so the dynamic `import()` inside it was intercepted and returned
+    // a DIFFERENT module instance than `createRequire()` does — measured, the
+    // in-process version of this assertion failed with "expected [Function
+    // validatePlan] to be [Function validatePlan] // Object.is equality" on a
+    // correct tree. Since 2026-08-16 vitest.config.ts externalizes
+    // test-engine/*.mjs (native Node load — the fix for the Windows file://
+    // import failure), which also makes the identities agree in-process; the
+    // spawned probe stays because it measures the CLI exactly as it ships.
     // The CLI runs under plain node, where Node's module cache is keyed by
     // resolved path and shared between require() and import() of a CommonJS
     // file, so identity is exactly the right instrument — it just has to be
@@ -322,12 +330,20 @@ describe('plan validation goes through matrix.ts validatePlan', () => {
 
   it('accepts build arms that all name a dist', async () => {
     const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
+    // path.resolve, not the literal '/a/dist': the invariant is "a fully
+    // absolute dist passes through untouched", and on Windows '/a/dist' is
+    // only drive-RELATIVE, so the orchestrator (correctly) fills in the plan
+    // file's drive and the literal came back as 'C:\a\dist' — the one red
+    // test left on Windows CI (2026-08-16). resolve() yields '/a/dist' on
+    // POSIX and 'D:\a\dist' on Windows: absolute on both, unchanged on both.
+    const A = path.resolve('/a/dist');
+    const B = path.resolve('/b/dist');
     const file = writePlan({
       ...BASE_PLAN,
-      builds: [{ id: 'current', dist: '/a/dist' }, { id: 'master', dist: '/b/dist' }],
+      builds: [{ id: 'current', dist: A }, { id: 'master', dist: B }],
     });
     const cells = await expandPlanFile(await readPlanFile(file));
-    expect(cells.map((c: { dist: string }) => c.dist)).toEqual(['/a/dist', '/b/dist']);
+    expect(cells.map((c: { dist: string }) => c.dist)).toEqual([A, B]);
   });
 
   it('resolves a relative build dist against the plan file, not the cwd', async () => {

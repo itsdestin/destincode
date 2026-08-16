@@ -46,7 +46,7 @@
 // answers this checkout's own dist; `harnessRoot(cell)` answers the cell's.
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, execFileSync } from 'child_process';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -108,9 +108,15 @@ function loadGraders() {
 /** The actual grader loads — split out only so loadGraders() can wrap them in
  *  one try/catch without indenting the whole body. */
 async function importGraders() {
-  const { graderRoot, harnessRoot } = await import(PATHS_BOOTSTRAP);
+  // WHY pathToFileURL: Node's ESM loader only accepts file:// URLs for absolute
+  // specifiers — on Windows `import('D:\a\...')` throws
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received protocol 'd:'"), which is what
+  // took down all 78 orchestrator tests on Windows CI. The URL still resolves
+  // to the same CommonJS file, so the module-cache identity the orchestrator
+  // test measures (require() vs import() of one dist file) is unchanged.
+  const { graderRoot, harnessRoot } = await import(pathToFileURL(PATHS_BOOTSTRAP).href);
   const root = graderRoot({ dist: '(ignored — graderRoot never reads its argument)' });
-  const load = (rel) => import(path.join(root, rel));
+  const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
   const [matrix, cases, battery, estimate, judge, report, runFacts, factory] = await Promise.all([
     load('main/harness/eval/matrix.js'),
     load('main/harness/eval/cases/index.js'),

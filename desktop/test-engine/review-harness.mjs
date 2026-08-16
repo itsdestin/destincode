@@ -10,7 +10,7 @@
 // pass that finds what nobody thought to assert.
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -80,7 +80,11 @@ const only = onlyAt === -1 ? null : args[onlyAt + 1];
 // --dry-run early-exit below, means `--dry-run` still works even if something
 // deep in that graph turns out to need an Electron runtime this plain-Node
 // script doesn't have.
-const { loadRoster, BATTERY_PROMPT } = await import(path.join(DESKTOP, 'dist/main/harness/eval/battery.js'));
+// WHY the `dist()` helper: Node's ESM loader rejects a bare absolute path on
+// Windows (`D:\...` → ERR_UNSUPPORTED_ESM_URL_SCHEME), so every dynamic
+// import of a computed path goes through pathToFileURL. Same file, same loader.
+const dist = (rel) => pathToFileURL(path.join(DESKTOP, 'dist/main/harness/eval', rel)).href;
+const { loadRoster, BATTERY_PROMPT } = await import(dist('battery.js'));
 
 let roster = loadRoster(path.join(HERE, 'review-roster.json'));
 if (only) roster = roster.filter((r) => r.label === only);
@@ -114,12 +118,12 @@ delete process.env.OPENROUTER_API_KEY;
 
 // Deferred until here — see the WHY above the battery.js import. Only a live
 // run needs HarnessSession, the tool tree, and the OpenRouter model factory.
-const { runCase } = await import(path.join(DESKTOP, 'dist/main/harness/eval/run-case.js'));
-const { appendReview } = await import(path.join(DESKTOP, 'dist/main/harness/eval/append-review.js'));
-const { makeOpenRouterFactory } = await import(path.join(DESKTOP, 'dist/main/harness/eval/openrouter-factory.js'));
+const { runCase } = await import(dist('run-case.js'));
+const { appendReview } = await import(dist('append-review.js'));
+const { makeOpenRouterFactory } = await import(dist('openrouter-factory.js'));
 // Task 5 widened appendReview to require a rendered run-facts block; this is
 // the CLI's own call site for that, so it has to build one per run.
-const { collectRunFacts, renderRunFacts } = await import(path.join(DESKTOP, 'dist/main/harness/eval/run-facts.js'));
+const { collectRunFacts, renderRunFacts } = await import(dist('run-facts.js'));
 
 const stamp = new Date().toISOString().slice(0, 10);
 const runDir = path.join(WORKSPACE, 'docs/active/investigations/harness-review-runs', stamp);
