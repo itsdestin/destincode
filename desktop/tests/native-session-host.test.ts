@@ -9,7 +9,7 @@ import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_NOTE_MAX_CHARS } from '../src/main/harness/specialists/limits';
 import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
@@ -3184,6 +3184,123 @@ describe('NativeSessionHost', () => {
       });
 
       expect(h.steerFromUser('root-1', childId, 'a real note')).toEqual({ ok: true });
+
+      await h.destroyAll();
+    });
+
+    // Review finding fix (plan 1c, Task 5): SPECIALIST_NOTE_MAX_CHARS was only
+    // enforced in steerFromUser (the human's send-a-note box). The model's own
+    // task_id steer reaches steerSpecialist directly with no cap at all, and
+    // every accepted steer is now a PERMANENT ledger entry (read-modify-write
+    // WHOLE on every access) — so an unbounded model-written note grows that
+    // file without limit, the same cost class RAW_REPORT_CAP_CHARS already
+    // guards against on the report side. The cap now lives INSIDE
+    // steerSpecialist so it holds no matter which path reaches it.
+    it('an over-cap ASSISTANT steer is delivered to the helper in full, but the note recorded on the ledger is clamped and says so', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Mid-turn child (delayedFactory trickles chunks) so postSteer delivers
+      // live — proves the DELIVERY path never sees the clamp.
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const session = childSession(h, childId);
+      const postSteerSpy = vi.spyOn(session, 'postSteer');
+      const turn = session.send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const longText = 'x'.repeat(SPECIALIST_NOTE_MAX_CHARS + 500);
+      const result = h.steerSpecialist('root-1', childId, longText, 'assistant');
+      expect(result.status).toBe('ok');
+
+      // Delivery is untouched: postSteer received the FULL, unclamped text.
+      expect(postSteerSpy).toHaveBeenCalledWith(longText);
+      expect(postSteerSpy.mock.calls[0][0]).toHaveLength(longText.length);
+
+      // The RECORDED note is clamped and visibly marked as cut, not silently
+      // truncated (the chat card renders note.text verbatim).
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec.notes).toHaveLength(1);
+      const recordedText: string = rec.notes[0].text;
+      expect(recordedText.length).toBeLessThanOrEqual(SPECIALIST_NOTE_MAX_CHARS);
+      expect(recordedText).not.toBe(longText);
+      expect(recordedText.startsWith('x'.repeat(100))).toBe(true); // real content survives, just cut
+      expect(recordedText.toLowerCase()).toMatch(/cut|long|short|trim/); // visibly marked, not an invisible cut
+      expect(recordedText.toLowerCase()).not.toContain('subagent');
+      expect(recordedText.toLowerCase()).not.toContain('spawn');
+
+      // missedSteers is untouched by the clamp too — never parked here since
+      // this was a live delivery, but nothing here should have populated it.
+      expect(rec.missedSteers).toEqual([]);
+
+      await turn;
+      await h.destroyAll();
+    });
+
+    it('an under-cap ASSISTANT steer is recorded byte-for-byte unchanged', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const turn = childSession(h, childId).send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const shortText = 'focus on auth.ts instead';
+      const result = h.steerSpecialist('root-1', childId, shortText, 'assistant');
+      expect(result.status).toBe('ok');
+
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec.notes).toEqual([{ text: shortText, from: 'assistant', at: expect.any(Number) }]);
+
+      await turn;
+      await h.destroyAll();
+    });
+
+    it('steerFromUser still REJECTS an over-cap note rather than clamping it — the assistant-path clamp does not leak into the user-facing surface', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const tooLong = 'a'.repeat(SPECIALIST_NOTE_MAX_CHARS + 1);
+      const result = h.steerFromUser('root-1', childId, tooLong);
+      expect(result).toEqual({
+        ok: false,
+        error: `Notes are limited to ${SPECIALIST_NOTE_MAX_CHARS.toLocaleString()} characters — this one is ${(SPECIALIST_NOTE_MAX_CHARS + 1).toLocaleString()}.`,
+      });
+
+      // Rejected before it ever reached steerSpecialist — no note recorded at all.
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.notes ?? []).toEqual([]);
 
       await h.destroyAll();
     });

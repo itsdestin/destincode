@@ -603,10 +603,36 @@ export class NativeSessionHost extends EventEmitter {
     if (!loc) return { status: 'not-yours' };
     if (!loc.live) return { status: 'not-running', agentType: loc.record.agentType };
     const { entry, record } = loc;
+    // `text` (unclamped) is what the helper actually receives — delivery and
+    // ledger-recording are separate concerns, and clamping delivery would
+    // silently cut what the helper was told to do, which nobody asked for.
     const delivered = entry.session.postSteer(text);
     const parentCwd = this.live.get(parentId)?.cwd;
     if (this.ledger && parentCwd) {
-      const note = { text, from, at: Date.now() };
+      // Review finding fix (Task 5): the Global Constraints' flat 2,000-char
+      // note cap was only checked in steerFromUser (the human's send-a-note
+      // box). The model's own task_id steer call reaches this method
+      // directly via `from: 'assistant'` with nothing bounding it, and EVERY
+      // accepted steer is now a permanent ledger entry (read-modify-write
+      // WHOLE on every access, spec Task 5) — so a model that writes a huge
+      // steer grows that file without limit, forever, the same cost class
+      // RAW_REPORT_CAP_CHARS already guards on the report side. The cap is
+      // applied HERE, inside steerSpecialist itself, so it holds no matter
+      // which caller reaches this method.
+      //
+      // Reject vs. clamp differ ON PURPOSE by `from`: a user who typed too
+      // much gets told so (steerFromUser's own error, above this method) and
+      // can shorten it and resend — silently cutting their words would be
+      // confusing. A model can't "retype" a rejected steer without another
+      // round trip that itself risks looping, and the delivered text (what
+      // the helper actually acts on) is never touched anyway — only the
+      // saved copy is shortened, with a visible marker so nobody mistakes a
+      // clamped note for the model's whole message.
+      const CLAMP_MARK = ' … (cut short — the note was too long to save in full)';
+      const recordedText = text.length > SPECIALIST_NOTE_MAX_CHARS
+        ? text.slice(0, SPECIALIST_NOTE_MAX_CHARS - CLAMP_MARK.length) + CLAMP_MARK
+        : text;
+      const note = { text: recordedText, from, at: Date.now() };
       if (delivered) {
         void this.ledger.appendNote(parentCwd, parentId, childId, note).catch((err) => {
           log('ERROR', 'NativeSessionHost', 'failed to record a steer note in the ledger', { childId, parentId, error: String(err) });
