@@ -74,6 +74,10 @@ import { Button, Checkbox, CloseButton, SearchFilterPill } from '../ui';
 import { ImportFileDialog } from './ImportFileDialog';
 
 interface ProjectViewProps {
+  // cwd of the conversation that is focused RIGHT NOW (undefined on the welcome
+  // screen). Project view re-homes to this folder's project on every open — see
+  // the load effect. Not used for anything else.
+  activeSessionCwd?: string;
   // Threaded from App: starts a new conversation in the given cwd.
   onNewConversation: (cwd: string) => void;
   // provider threads the row's runtime so App's resume takes the native path
@@ -124,10 +128,31 @@ export function importResultTitle(r: { hardFailures: number; partial: number; al
   return 'Import finished';
 }
 
+// Find the indexed project whose folder IS `cwd`. Match by PATH, not id: a
+// synth (saved-folder) project's id is its canonical path until it gains a
+// central-index entry, at which point the id changes to a real ULID — path
+// matching survives that promotion. Separator + case normalization mirrors
+// useActiveProject.ts, because Windows paths reach us spelled either way.
+export function matchProjectByPath<T extends { path: string }>(
+  projects: T[], cwd: string | undefined,
+): T | null {
+  if (!cwd) return null;
+  const slashed = cwd.replace(/\\/g, '/');
+  return projects.find(
+    (p) => p.path === cwd || p.path === slashed || p.path === slashed.toLowerCase(),
+  ) ?? null;
+}
+
 export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
+  // Latest focused-conversation cwd, held in a ref so the load effect can read
+  // it WITHOUT depending on it. A dep would re-run the whole open-time load —
+  // and re-home the selection — if the focused session's cwd changed while the
+  // view is open, yanking the project out from under the user mid-browse.
+  const activeCwdRef = useRef(props.activeSessionCwd);
+  activeCwdRef.current = props.activeSessionCwd;
   const [tab, setTab] = useState<TabId>('files');
   // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
@@ -259,16 +284,14 @@ export function ProjectView(props: ProjectViewProps) {
     (window.claude as any).artifacts.listProjectsIndex().then((res: any) => {
       if (cancelled || !res?.ok) return;
       setProjects(res.projects);
-      // Auto-select the first project if nothing is selected (or the
-      // previously-selected project is no longer in the list).
-      setActiveProject((prev) => {
-        // Match by PATH, not id: a synth (saved-folder) project's id is its
-        // canonical path until it gains a central-index entry, at which point
-        // its id changes to a real ULID — matching by path keeps the selection
-        // stable across that promotion.
-        if (prev && res.projects.some((p: CentralIndexProject) => p.path === prev.path)) return prev;
-        return res.projects.length > 0 ? res.projects[0] : null;
-      });
+      // Every open re-homes to the focused conversation's project. Destin's
+      // ruling: opening project view should always land on the folder you are
+      // currently working in, never on whatever you happened to browse to last
+      // time. Previously this kept `prev` (the last selection) across
+      // close/reopen, because the component never unmounts.
+      // Fallback order: focused conversation's project → first in the list.
+      setActiveProject(matchProjectByPath(res.projects, activeCwdRef.current)
+        ?? (res.projects.length > 0 ? res.projects[0] : null));
       // Phase 2: real file + conversation counts (on-disk discovery + a global
       // session scan) merged in when ready — progressively enhances the switcher's
       // "files · chats" hint without blocking the initial render.
