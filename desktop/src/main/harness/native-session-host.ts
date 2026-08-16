@@ -33,7 +33,8 @@ import type { ToolServices, SpecialistReservation, SpecialistSpawnOpts, Speciali
 import { createSkillCatalog, SkillNotFound, type SkillCatalog } from './skills/skill-catalog';
 import { canonicalize, resolveP } from './tools/guards';
 import { isUnderRoot } from '../artifacts/read-binary-access';
-import { resolveSpecialist, type SpecialistDefinition } from './specialists/registry';
+import type { SpecialistDefinition } from './specialists/registry';
+import { SpecialistCatalog } from './specialists/catalog';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-router';
 import { assignSpecialistName } from './specialists/names';
@@ -783,7 +784,12 @@ export class NativeSessionHost extends EventEmitter {
     const header = this.store.readHeader(opts.childId, workDir);
     if (!header) throw new Error(`Cannot resume specialist ${opts.childId}: its transcript could not be read.`);
     const agentType = header.agentType ?? record.agentType;
-    const specialist = resolveSpecialist(agentType);
+    // Task 4 (plan 1c) — resolved against the PARENT's own per-cwd roster
+    // (never the bare built-in lookup): the parent's cwd is where its
+    // specialists folders live, and ensureFresh(parent.cwd) has already run
+    // at least once by the time any session is live (create()/resume() both
+    // await it before wiring).
+    const specialist = this.specialistCatalog.roster(parent.cwd).resolve(agentType);
     if (!specialist) throw new Error(`Cannot resume specialist ${opts.childId}: its specialist type "${agentType}" is no longer available (it may have been removed from the roster).`);
 
     const preset = resolvePreset(this.presetIdFor.get(parentId));
@@ -1465,14 +1471,19 @@ export class NativeSessionHost extends EventEmitter {
    *  competing for the same slice of the parent's headroom regardless of
    *  delivery order within the pass. Returns `reportPath` alongside the text
    *  (Task 10) so the caller can persist a NEWLY-created truncation-time spill
-   *  to the ledger — a failed/missing-specialist body has none to give. */
-  private formatDelivery(sessionId: string, rec: DelegationRecord, concurrentReporters: number): { text: string; reportPath?: string } {
+   *  to the ledger — a failed/missing-specialist body has none to give.
+   *
+   *  `cwd` (Task 4, plan 1c): the LIVE parent entry's cwd, passed by the
+   *  caller rather than re-derived here — resolves rec.agentType against the
+   *  parent's OWN per-cwd roster (a project's specialists folders live at
+   *  its cwd, not at some default), instead of the bare built-in lookup. */
+  private formatDelivery(sessionId: string, cwd: string, rec: DelegationRecord, concurrentReporters: number): { text: string; reportPath?: string } {
     if (rec.status === 'failed') {
       return { text: `[Background specialist failed] ${rec.title} (${rec.agentType}): ${rec.failureText ?? 'unknown error'}. Partial transcript: specialist session ${rec.childId}.` };
     }
     const minutesAgo = Math.max(0, Math.round((Date.now() - rec.startedAt) / 60000));
     const preamble = `[Background specialist finished] ${rec.title} (${rec.agentType}) completed the task you delegated ("${rec.description}", started ${minutesAgo}m ago, ${rec.steps ?? 0} steps).\n\n`;
-    const specialist = resolveSpecialist(rec.agentType);
+    const specialist = this.specialistCatalog.roster(cwd).resolve(rec.agentType);
     // Fix (Task 4 fix-pass, finding 1): rec.rawReport is the copy that rode in
     // the ledger file, already capped at RAW_REPORT_CAP_CHARS by
     // DelegationLedger.update() on every write — formatting from it alone
@@ -1964,6 +1975,20 @@ export class NativeSessionHost extends EventEmitter {
     // reasonable wall-clock time override it with a small number instead of
     // fighting this file's setImmediate-heavy async machinery with fake timers.
     private specialistAskHoldMs: number = SPECIALIST_ASK_HOLD_MS,
+    // Task 4 (plan 1c) — the per-cwd specialist catalog: three folders read
+    // per project folder (personal, ~/.claude/agents, <cwd>/.claude/agents),
+    // merged with the four built-ins into one roster. Optional + LAST, same
+    // reasoning as every other trailing param above: the default here has no
+    // `home` (so no personal source is ever read) and `claudeUserDir: null`
+    // (so ~/.claude/agents is never read either) — a bare test construction
+    // still only ever sees the four built-ins, exactly the pre-Task-4
+    // behavior every existing test relies on. The real wiring (ipc-handlers)
+    // passes a catalog built with the real home. Kept as ONE instance for
+    // this host's whole life (not re-created per session) — its in-memory
+    // per-source state is what makes ensureFresh()'s "unchanged folder costs
+    // no re-read" fingerprint check work across turns and across sessions
+    // sharing one project folder.
+    private specialistCatalog: SpecialistCatalog = new SpecialistCatalog({ claudeUserDir: null }),
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -2197,9 +2222,17 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots' | 'specialistRoster'> {
     return {
       tools: CORE_TOOLS,
+      // Task 4 (plan 1c) — this project folder's roster, read live off the
+      // catalog's in-memory state at every roster()/list()/resolve() call
+      // (catalog.ts's own contract), never a snapshot frozen here. Callers
+      // (create()/resume()) must have already awaited
+      // this.specialistCatalog.ensureFresh(cwd) before reaching toolWiring —
+      // roster()'s own contract says it must not be called before that has
+      // resolved at least once for this cwd.
+      specialistRoster: this.specialistCatalog.roster(cwd),
       // Project rules + nested project instructions, indexed ONCE per session
       // (M3 item 3). Built here rather than in the session because it is
       // filesystem state scoped to the session's cwd, and re-statting the tree
@@ -2495,6 +2528,13 @@ export class NativeSessionHost extends EventEmitter {
     // The preset seeds the STARTING mode; an explicit setPermissionMode always
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
+    // Task 4 (plan 1c) — read this project folder's specialist catalog BEFORE
+    // toolWiring() ever calls this.specialistCatalog.roster(cwd) below: that
+    // call reads live in-memory state, and roster()'s own contract says it
+    // must not be called before ensureFresh() has resolved at least once for
+    // this cwd. Awaited here so no session ever ships the model an empty
+    // roster on its very first turn.
+    await this.specialistCatalog.ensureFresh(opts.cwd);
     // Acquire this session's MCP servers (Task 6) BEFORE constructing the
     // session, so mcpServers is available for the very first buildAiTools().
     const mcpLease = await this.acquireMcp(opts.sessionId);
@@ -2914,6 +2954,10 @@ export class NativeSessionHost extends EventEmitter {
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
+    // Task 4 (plan 1c) — same reasoning as create()'s own call: awaited BEFORE
+    // toolWiring() reads this.specialistCatalog.roster(cwd) below, so a
+    // resumed session's first turn never ships an empty roster either.
+    await this.specialistCatalog.ensureFresh(cwd);
     // Acquire this session's MCP servers (Task 6). A RESUMED session reuses its
     // old sessionId, so this acquire() can overlap a release() still in flight
     // from a destroy() of the SAME id. That used to be the bug: both
@@ -3062,6 +3106,21 @@ export class NativeSessionHost extends EventEmitter {
     // already a discarded object and setting its `inFlight` flag touches
     // nothing live.
     try {
+      // Task 4 (plan 1c) — re-read this project folder's specialist catalog
+      // before dispatching this pass's turn(s): a file dropped into a
+      // specialists folder since the last turn is offered starting on THIS
+      // turn, without a session restart. ONE call per runTurns invocation
+      // (not per queued follow-up) — every turn drained in this same pass
+      // shares the roster this one read resolved. ensureFresh()'s own
+      // fingerprint check makes an unchanged folder cheap (a handful of
+      // stat() calls, never a re-parse); it never throws (every fallible fs
+      // call inside it is already individually guarded — see catalog.ts's
+      // own WHY comments), so this is not wrapped in its own try/catch.
+      // ROOT sessions only, by construction: runTurns is never invoked for a
+      // specialist child (Task 7's runSpecialist drives those directly,
+      // never through send()/this.live's queue) — a child's roster is fixed
+      // at spawn (R12), so there is no "child turn" case to gate here.
+      await this.specialistCatalog.ensureFresh(entry.cwd);
       let next: SendUnit | (() => Promise<void>) | undefined = first;
       while (next !== undefined) {
         try {
@@ -3233,7 +3292,7 @@ export class NativeSessionHost extends EventEmitter {
             log('WARN', 'NativeSessionHost', 'markInjectionAttempted failed — proceeding with delivery anyway; see markInjectionAttempted\'s own comment for the residual duplicate risk this can leave', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
           }
           try {
-            const delivery = this.formatDelivery(sessionId, rec, concurrentReporters);
+            const delivery = this.formatDelivery(sessionId, entry.cwd, rec, concurrentReporters);
             // Task 10: a NEWLY-created truncation-time spill (delivery.reportPath
             // absent from the claimed record) gets recorded in the ledger too —
             // own try/catch, log-only: a bookkeeping failure here must never
@@ -3324,7 +3383,7 @@ export class NativeSessionHost extends EventEmitter {
           // has no live ledger row in a deliverable state to attach it to (see
           // this lane's own WHY, right above); the correct path is still what
           // lands in THIS injection's footer either way.
-          await entry.session.runNotice(this.formatDelivery(sessionId, fallback.rec, concurrentReporters).text);
+          await entry.session.runNotice(this.formatDelivery(sessionId, entry.cwd, fallback.rec, concurrentReporters).text);
           if (this.live.get(sessionId) !== entry) {
             // destroy() landed mid-notice: runNotice on a torn-down session
             // resolves normally without showing the report to anyone (same

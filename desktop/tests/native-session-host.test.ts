@@ -9,6 +9,7 @@ import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { SpecialistCatalog } from '../src/main/harness/specialists/catalog';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_NOTE_MAX_CHARS } from '../src/main/harness/specialists/limits';
 import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
@@ -4077,6 +4078,127 @@ describe('NativeSessionHost', () => {
       expect(merged[1].sessionId).toBe('root-1');
       expect(merged[1].data.agentId).toBe('child-1');
       expect(merged[1].data.parentAgentToolUseId).toBe('tc-1');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 4 (plan 1c) — the catalog is loaded before the Task tool exists,
+  // re-read at the start of every root turn when a file changed, and the
+  // Task tool is rebuilt from the in-memory roster every turn (never once).
+  // ---------------------------------------------------------------------
+  describe('specialist catalog wiring (Task 4, plan 1c)', () => {
+    let projectDir: string;
+
+    function ccFile(name: string): string {
+      return `---\nname: ${name}\ndescription: A project-defined helper.\ntools: [Read]\n---\nHelp with reading files.\n`;
+    }
+    function projectAgentsDir(): string {
+      return path.join(projectDir, '.claude', 'agents');
+    }
+    function bootWithCatalog(catalog: SpecialistCatalog) {
+      return new NativeSessionHost(
+        new SessionStore(new NativeHome(projectDir)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, catalog,
+      );
+    }
+    // waitForTurnComplete alone isn't enough between TWO sends on the SAME
+    // host: 'turn-complete' fires inside HarnessSession's own driver, before
+    // runTurns' drainDeliveries + its finally clears entry.inFlight — so a
+    // send() issued the instant waitForTurnComplete resolves can race that
+    // window and get QUEUED (drained inside the SAME runTurns pass) instead
+    // of dispatched as its own pass, silently skipping that turn's own
+    // ensureFresh() call. Awaiting entry.running (settles only once runTurns
+    // itself has fully returned) closes that window.
+    async function sendAndSettle(h: NativeSessionHost, sessionId: string, text: string): Promise<void> {
+      h.send(sessionId, text);
+      await waitForTurnComplete(h, 1);
+      await (h as any).live.get(sessionId).running;
+    }
+
+    beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-cat-proj-')); });
+    afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+
+    it("create() loads the catalog for the cwd BEFORE the Task tool is built — a personal file present at create time is in the first turn's Task description", async () => {
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'foo-helper.md'), ccFile('Foo Helper'));
+      // claudeUserDir: null — no ~/.claude/agents source in this test process;
+      // only the project's own .claude/agents (read regardless of `home`).
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('root-1', 'hi');
+      await waitForTurnComplete(h, 1);
+      const taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      // Present on the VERY FIRST turn — proves ensureFresh(cwd) was awaited
+      // BEFORE toolWiring() built this tool, not raced against it.
+      expect(taskTool.description).toContain('foo-helper');
+      await h.destroyAll();
+    });
+
+    it('a turn dispatched after a file changed sees the new roster (ensureFresh runs before the turn); an unchanged folder costs no re-read', async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const ensureFreshSpy = vi.spyOn(catalog, 'ensureFresh');
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      // create() itself already called ensureFresh once (Task 4 — before the
+      // Task tool is ever built) — the empty project folder's first-ever read.
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(1);
+      expect(await ensureFreshSpy.mock.results[0].value).toBe(true); // never-seen cwd — first read
+
+      // Turn 1: nothing changed since create() read it a moment ago.
+      await sendAndSettle(h, 'root-1', 't1');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(2);
+      expect(await ensureFreshSpy.mock.results[1].value).toBe(false); // unchanged — cheap fingerprint check only
+      let taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskTool.description).not.toContain('bar-helper');
+
+      // A file lands in the project's agents folder between turns.
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'bar-helper.md'), ccFile('Bar Helper'));
+
+      // Turn 2: ensureFresh runs again — this time BEFORE the turn — and the
+      // roster it hands the Task tool has changed.
+      await sendAndSettle(h, 'root-1', 't2');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(3);
+      expect(await ensureFreshSpy.mock.results[2].value).toBe(true); // the new file changed the fingerprint
+      taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskTool.description).toContain('bar-helper');
+
+      // Turn 3: nothing changed since turn 2 — ensureFresh still runs (every
+      // turn re-checks), but reports no change, i.e. no re-read of the folder.
+      await sendAndSettle(h, 'root-1', 't3');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(4);
+      expect(await ensureFreshSpy.mock.results[3].value).toBe(false); // unchanged — cheap fingerprint check only
+
+      await h.destroyAll();
+    });
+
+    it("the Task tool is rebuilt at turn start: after the roster changes, the next turn's tools list carries the new description", async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await sendAndSettle(h, 'root-1', 't1');
+      const taskV1 = (h as any).live.get('root-1').session.toolByName.get('Task');
+
+      await sendAndSettle(h, 'root-1', 't2');
+      const taskV1b = (h as any).live.get('root-1').session.toolByName.get('Task');
+      // No has()-guard for Task (unlike ModelSearch/Skill): rebuilt every
+      // turn even when the roster hasn't changed — a NEW object each time...
+      expect(taskV1b).not.toBe(taskV1);
+      // ...but an IDENTICAL description, since the roster it was built from
+      // didn't change — no prompt-cache cost from the rebuild itself.
+      expect(taskV1b.description).toBe(taskV1.description);
+
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'zed-helper.md'), ccFile('Zed Helper'));
+
+      await sendAndSettle(h, 'root-1', 't3');
+      const taskV2 = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskV2.description).toContain('zed-helper');
+      expect(taskV2.description).not.toBe(taskV1b.description);
+
+      await h.destroyAll();
     });
   });
 });

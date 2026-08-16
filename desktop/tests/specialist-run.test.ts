@@ -5,7 +5,8 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
-import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { resolveSpecialist, type SpecialistDefinition, type SpecialistRoster } from '../src/main/harness/specialists/registry';
+import { createTaskTool } from '../src/main/harness/tools/task';
 import { SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from '../src/main/harness/specialists/limits';
 import { OWNER, RAW_REPORT_CAP_CHARS } from '../src/main/harness/specialists/delegation-ledger';
 import { computeReportBudget } from '../src/main/harness/specialists/report-budget';
@@ -1779,5 +1780,81 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     (host as any).queueDelivery('root-1');
     await (host as any).live.get('root-1').running;
     expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+  });
+});
+
+// ---- R12 (Task 4, plan 1c) — a running child keeps its spawn-time
+// definition when the roster changes mid-run --------------------------------
+// spawnSpecialist takes an already-RESOLVED SpecialistDefinition object (the
+// Task tool resolves it from the roster once, at the moment the model calls
+// Task — task.ts) and threads that exact object into buildSpecialistSession,
+// which builds the child's `tools` list ONCE, at construction
+// (native-session-host.ts's buildSpecialistSession: `CORE_TOOLS.filter((t) =>
+// allowed.has(t.name))`). Nothing about a running child ever re-reads a
+// roster. This test pins that by construction: it captures the child's OWN
+// tool set while it is genuinely live, then shows a widened SECOND definition
+// for the same id (what a re-read catalog would hand back on the NEXT
+// Task-tool build) changes nothing about the already-spawned child.
+describe('R12 (Task 4, plan 1c) — a running child keeps its spawn-time definition', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-r12-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('a running child keeps its spawn-time definition when the roster changes mid-run: its tool set stays what it was hired with, and only the NEXT Task description reflects the change', async () => {
+    const SPEC_V1: SpecialistDefinition = {
+      id: 'custom-helper', displayName: 'Custom Helper', description: 'A file-defined helper.',
+      systemPrompt: 'Help with reading files.', allowedTools: ['Read'], charter: 'read-only',
+      stepCap: 10, reportBudgetTokens: 500, source: 'personal',
+    };
+
+    let capturedTools: string[] = [];
+    const REPORT_CHUNKS = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        // Capture the CHILD's own live tool set — proves what it was
+        // actually BUILT with, not what a later roster claims.
+        const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+        if (entry) {
+          const session = (entry[1] as { session: any }).session;
+          capturedTools = [...session.toolByName.keys()];
+        }
+        return { stream: simulateReadableStream({ chunks: REPORT_CHUNKS, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: SPEC_V1, prompt: 'read and summarize the config', workDir: root,
+      parentToolCallId: 'tc-1', description: 'read config', token: { parentId: 'root-1', writer: false },
+    });
+
+    // Exactly what SPEC_V1.allowedTools named — no Bash, no Write, no Edit.
+    expect(capturedTools).toEqual(['Read']);
+
+    // "The roster changes mid-run": a repo (or a Settings edit) widens THIS
+    // same specialist's file to add Bash. Represented as a second definition
+    // object for the same id, since that's exactly what SpecialistCatalog
+    // would hand back on the NEXT createTaskTool() build (Task 4) — the
+    // catalog re-reads at the START of the next turn, never mid-turn.
+    const SPEC_V2: SpecialistDefinition = { ...SPEC_V1, allowedTools: ['Read', 'Bash'], charter: 'read-write' };
+    const widenedRoster: SpecialistRoster = {
+      list: () => [SPEC_V2],
+      resolve: (id) => (id === 'custom-helper' ? SPEC_V2 : undefined),
+    };
+    const nextDescription = createTaskTool(widenedRoster).description;
+    expect(nextDescription).toMatch(/custom-helper[^\n]*Bash/);
+
+    // The already-spawned (by now finished) child was never touched by that
+    // widening — it ran with exactly what it was hired with.
+    expect(capturedTools).toEqual(['Read']);
   });
 });

@@ -28,7 +28,13 @@ import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path'
 // fakes, same as the rest of this file.
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { SessionStore } from '../src/main/harness/session-store';
-import { resolveSpecialist as resolveRealSpecialist } from '../src/main/harness/specialists/registry';
+import { resolveSpecialist as resolveRealSpecialist, type SpecialistDefinition, type SpecialistRoster } from '../src/main/harness/specialists/registry';
+// Task 4 (plan 1c) — the permission-subject test below drives the REAL
+// matcher (never a string comparison stand-in for it), so a passing test
+// actually proves a remembered grant does/doesn't apply, not just that the
+// two subject strings look different to a human reader.
+import { ruleMatches } from '../src/shared/subject-glob';
+import type { PermissionRule } from '../src/shared/permission-types';
 
 interface RunOpts {
   slotFree?: boolean;
@@ -48,10 +54,15 @@ interface RunOpts {
   // was actually requested.
   binding?: ModelBinding;
   models?: { designated: DelegatedModels; catalog: () => Promise<CatalogModel[] | null> };
+  // Task 4 (plan 1c) — undefined means "use BUILTIN_ROSTER" (createTaskTool's
+  // own default), so every pre-Task-4 test in this file keeps testing the
+  // built-in roster unmodified; only the new per-cwd-roster tests below pass
+  // a fake one.
+  roster?: SpecialistRoster;
 }
 
 function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
-  const tool = createTaskTool();
+  const tool = createTaskTool(opts.roster);
   const spawn = opts.spawn ?? vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
   const release = opts.release ?? vi.fn();
   const ctx: ToolContext = {
@@ -365,6 +376,93 @@ describe('Task tool — roster names each specialist\'s tools (2026-08-16)', () 
     // The trimmed presentation for small models keeps the same fact in fewer words.
     expect(tool.shortDescription).toContain('worker (can edit files and run commands)');
     expect(tool.shortDescription).toContain('explorer (read-only, no shell)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 (plan 1c) — createTaskTool(roster) is now built from the CALLER's
+// roster, never a module-level snapshot of the built-ins: the roster is
+// per-project-folder (SpecialistCatalog, Task 3), so a module-level enum
+// would show every session on the machine the same specialist list. Every
+// test above this block passes createTaskTool() with no argument and keeps
+// exercising BUILTIN_ROSTER unmodified (the default) — these are the only
+// tests that inject a different one.
+// ---------------------------------------------------------------------------
+describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
+  const DOCS_WRITER: SpecialistDefinition = {
+    id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+    systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+    stepCap: 10, reportBudgetTokens: 500, source: 'personal',
+  };
+  const FAKE_ROSTER: SpecialistRoster = {
+    list: () => [DOCS_WRITER],
+    resolve: (id) => (id === 'docs-writer' ? DOCS_WRITER : undefined),
+  };
+
+  it('createTaskTool(roster) enumerates THAT roster in the description, the schema enum text, and shortDescription', () => {
+    const tool = createTaskTool(FAKE_ROSTER);
+    expect(tool.description).toContain('docs-writer');
+    expect(tool.description).toContain('Writes and edits project docs.');
+    // Never the built-in roster this fake roster doesn't include — proves
+    // this really came FROM the injected roster, not BUILTIN_ROSTER leaking
+    // through a stale default somewhere.
+    expect(tool.description).not.toContain('explorer');
+    // The schema's own `agent` field description is what the model actually
+    // reads to pick a value — built inside createTaskTool (buildSchema),
+    // never at module load, so it enumerates THIS roster's ids too.
+    const agentFieldDescription = (tool.inputSchema as any).shape.agent.description as string;
+    expect(agentFieldDescription).toContain('docs-writer');
+    expect(agentFieldDescription).not.toContain('explorer');
+    expect(tool.shortDescription).toContain('docs-writer');
+    expect(tool.shortDescription).not.toContain('explorer');
+  });
+
+  it('permissionSubject uses the roster to find the charter', () => {
+    const tool = createTaskTool(FAKE_ROSTER);
+    const subject = tool.permissionSubject!({ agent: 'docs-writer', work_dir: '/proj' } as any);
+    // docs-writer's charter (read-write, from its allowedTools) drives the
+    // subject prefix — this fake roster is the ONLY place that charter comes
+    // from, since 'docs-writer' isn't a built-in.
+    expect(subject).toBe('read-write:/proj:file:docs-writer');
+  });
+
+  // The two-mechanism reasoning this pins (global-constraints.md, "Hire
+  // grants — do not simplify this into one mechanism"): permissionSubject is
+  // half (a) — it stops an OLD remembered grant (minted before this file ever
+  // existed) from silently covering a specialist a repository just shipped.
+  // Half (b) (the renderer suppressing Always-allow on a non-builtin hire) is
+  // a DIFFERENT file's job (Task 10) — this test only proves half (a) by
+  // driving the real decision-path matcher, never a string comparison.
+  it('permissionSubject: a built-in hire is `${charter}:${workDir}` (unchanged — old grants still match); a file-defined hire is `${charter}:${workDir}:file:${id}` (a remembered read-write grant for the Worker does NOT cover it)', () => {
+    const BUILTIN_WORKER = resolveRealSpecialist('worker')!; // source: 'builtin', charter: 'read-write'
+    const FILE_WORKER: SpecialistDefinition = {
+      id: 'repo-worker', displayName: 'Repo Worker', description: 'A worker a repo shipped.',
+      systemPrompt: 'Do repo work.', allowedTools: ['Read', 'Write', 'Bash'], charter: 'read-write',
+      stepCap: 25, reportBudgetTokens: 2000, source: 'claude-code',
+    };
+    const MIXED_ROSTER: SpecialistRoster = {
+      list: () => [BUILTIN_WORKER, FILE_WORKER],
+      resolve: (id) => (id === 'worker' ? BUILTIN_WORKER : id === 'repo-worker' ? FILE_WORKER : undefined),
+    };
+    const tool = createTaskTool(MIXED_ROSTER);
+    const builtinSubject = tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any);
+    const fileSubject = tool.permissionSubject!({ agent: 'repo-worker', work_dir: '/proj' } as any);
+    expect(builtinSubject).toBe('read-write:/proj');                    // unchanged shape — old grants still match
+    expect(fileSubject).toBe('read-write:/proj:file:repo-worker');      // scoped to the file's own id
+
+    // A user's PRE-EXISTING remembered grant for the built-in Worker at this
+    // path (the exact shape harness-session.ts's remember-rule persists).
+    const workerGrant: PermissionRule = { tool: 'Task', pattern: 'read-write:/proj', action: 'allow', match: 'exact' };
+    expect(ruleMatches(workerGrant, builtinSubject!)).toBe(true);   // still covers the built-in it was granted for
+    expect(ruleMatches(workerGrant, fileSubject!)).toBe(false);     // must NOT auto-approve a repo-shipped helper
+  });
+
+  it('an unknown agent id is refused naming the roster\'s ids', async () => {
+    const r = await runTaskTool({ agent: 'wizard' }, { roster: FAKE_ROSTER });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/unknown specialist/i);
+    expect(r.text).toContain('docs-writer');       // names what IS available — from the injected roster
+    expect(r.text).not.toContain('explorer');       // never the built-in roster's ids
   });
 });
 

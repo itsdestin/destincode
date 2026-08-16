@@ -38,6 +38,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
+import { SpecialistCatalog } from './harness/specialists/catalog';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
 // Type-only: the payload the permissions:remove handler forwards to the host.
@@ -2273,6 +2274,13 @@ export function registerIpcHandlers(
   // line — the normal case for almost every install.
   const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
   const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
+  // Task 4 (plan 1c) — the real per-cwd specialist catalog: reads personal
+  // (~/.youcoded/specialists/), Claude-Code user-level (~/.claude/agents/),
+  // and each project's own .claude/agents/, merged with the four built-ins.
+  // ONE instance for the app's whole life, shared by every project folder —
+  // its in-memory per-source state is what makes re-reading only a CHANGED
+  // folder work across turns and across conversations sharing one project.
+  const specialistCatalog = new SpecialistCatalog({ home: nativeHome });
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
@@ -2363,6 +2371,12 @@ export function registerIpcHandlers(
     // nativeHome instance every other ~/.youcoded/ writer above shares, never
     // a second one.
     nativeHome,
+    // specialistAskHoldMs (12th param) left at its real production default —
+    // explicit undefined only to reach the 13th positional slot below.
+    undefined,
+    // specialistCatalog (13th param, Task 4 plan 1c): the real catalog built
+    // above, sharing nativeHome with every other ~/.youcoded/ writer here.
+    specialistCatalog,
   );
 
   // Task 4: resolves sessionId's CURRENT model binding into the portable ref

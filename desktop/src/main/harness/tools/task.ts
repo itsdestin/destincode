@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 import { resolveP, toPosix } from './guards';
-import { resolveSpecialist, listSpecialists } from '../specialists/registry';
+import { BUILTIN_ROSTER, type SpecialistRoster } from '../specialists/registry';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 import {
   resolveDelegatedBinding, resolveRequestedModel, DelegatedModelRefused, type DelegatedTier,
@@ -66,63 +66,71 @@ function reservationRefusalText(reservation: { reason: 'writer-busy' } | { reaso
     + 'Wait for one of the running specialists to finish before starting another.';
 }
 
-const schema = z.object({
-  // Task 6: these four were unconditionally required through plan 1a/1b —
-  // now optional because a task_id call (steer/resume/interrupt an EXISTING
-  // specialist) needs none of them; execute() enforces "required unless
-  // task_id is set" itself, below, with a typed refusal rather than a bare
-  // schema-validation failure.
-  description: z.string().optional().describe(
-    'A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug"). '
-    + 'Required when starting a new specialist; omit when managing one by task_id.',
-  ),
-  prompt: z.string().optional().describe(
-    'Starting a new specialist: the complete, self-contained brief — it has NO access to this conversation, '
-    + 'so include everything it needs: what to do, relevant file paths, and what "done" looks like. '
-    + 'Managing one by task_id: the steer message, or its next brief on resume. Omit only when interrupt is true.',
-  ),
-  agent: z.string().optional().describe(
-    `Which specialist to run. One of: ${listSpecialists().map((s) => s.id).join(', ')}. `
-    + 'Required when starting a new specialist; omit when managing one by task_id — the specialist type follows the task_id.',
-  ),
-  work_dir: z.string().optional().describe(
-    'The directory the specialist works in — usually the project root you are working in. '
-    + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit). '
-    + 'Required when starting a new specialist; omit when managing one by task_id.',
-  ),
-  // Task 4 (plan 1b) — background execution. Optional so every existing 1a
-  // call (which always blocks until the report comes back) keeps working
-  // unchanged; only setting this true opts into the detached-run path. Also
-  // read on a task_id RESUME (Task 6): same meaning, applied to the resumed
-  // run instead of a new one.
-  background: z.boolean().optional().describe(
-    'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes. '
-    + 'On a task_id resume, applies to the resumed run.',
-  ),
-  // Task 14: verbatim per the spec ruling — the only two named tiers, plus an
-  // escape hatch for a user-directed specific id. Omitting this (the default
-  // for every existing call and every built-in specialist) is unchanged
-  // behavior: run on the parent's own model. Not read on a task_id call — a
-  // steer/resume/interrupt keeps the child's own model.
-  model: z.string().optional().describe(
-    'Optional: "budget" or "frontier" to use the models the user designated in Settings, or a specific '
-    + 'model id — only name a specific model when the user asked for it. Omit to run the specialist on '
-    + "this conversation's model. Not used with task_id — a resumed specialist keeps its own model.",
-  ),
-  // Task 6 — the task_id management surface. Semantics documented verbatim in
-  // the tool description below (TASK_ID_DOCTRINE).
-  task_id: z.string().optional().describe(
-    'The task_id from an earlier launch, to manage that specialist instead of starting a new one. If it is '
-    + 'still RUNNING, "prompt" is delivered as a steer at its next natural pause. If it has FINISHED or was '
-    + 'INTERRUPTED, it resumes — its state is rebuilt cold from its own transcript — with "prompt" as its next '
-    + 'brief, foreground or background per "background". Combine with interrupt: true to cancel it instead (no '
-    + '"prompt" needed). A task_id that is not one of THIS conversation\'s own specialists is refused, whether it '
-    + "belongs to a different conversation or never existed at all — you can only manage specialists you yourself started.",
-  ),
-  interrupt: z.boolean().optional().describe('With task_id: cancel that specialist instead of steering or resuming it.'),
-});
+// Task 4 (plan 1c): the schema used to be built ONCE at module load, with the
+// `agent` field's enum text baked from the (then-only) built-in roster. The
+// roster is now per project folder (SpecialistCatalog) — a module-level
+// schema would show every session on the machine the exact same specialist
+// list, so this moved inside createTaskTool(), built fresh from THAT call's
+// roster every time.
+function buildSchema(roster: SpecialistRoster) {
+  return z.object({
+    // Task 6: these four were unconditionally required through plan 1a/1b —
+    // now optional because a task_id call (steer/resume/interrupt an EXISTING
+    // specialist) needs none of them; execute() enforces "required unless
+    // task_id is set" itself, below, with a typed refusal rather than a bare
+    // schema-validation failure.
+    description: z.string().optional().describe(
+      'A short (3-6 word) label for this delegated task, shown in the launch card (e.g. "Find the auth bug"). '
+      + 'Required when starting a new specialist; omit when managing one by task_id.',
+    ),
+    prompt: z.string().optional().describe(
+      'Starting a new specialist: the complete, self-contained brief — it has NO access to this conversation, '
+      + 'so include everything it needs: what to do, relevant file paths, and what "done" looks like. '
+      + 'Managing one by task_id: the steer message, or its next brief on resume. Omit only when interrupt is true.',
+    ),
+    agent: z.string().optional().describe(
+      `Which specialist to run. One of: ${roster.list().map((s) => s.id).join(', ')}. `
+      + 'Required when starting a new specialist; omit when managing one by task_id — the specialist type follows the task_id.',
+    ),
+    work_dir: z.string().optional().describe(
+      'The directory the specialist works in — usually the project root you are working in. '
+      + 'Passing a subdirectory narrows what the specialist can read (and, for a read-write specialist, edit). '
+      + 'Required when starting a new specialist; omit when managing one by task_id.',
+    ),
+    // Task 4 (plan 1b) — background execution. Optional so every existing 1a
+    // call (which always blocks until the report comes back) keeps working
+    // unchanged; only setting this true opts into the detached-run path. Also
+    // read on a task_id RESUME (Task 6): same meaning, applied to the resumed
+    // run instead of a new one.
+    background: z.boolean().optional().describe(
+      'Set true for anything long — you keep working and the report is delivered to you automatically when the specialist finishes. '
+      + 'On a task_id resume, applies to the resumed run.',
+    ),
+    // Task 14: verbatim per the spec ruling — the only two named tiers, plus an
+    // escape hatch for a user-directed specific id. Omitting this (the default
+    // for every existing call and every built-in specialist) is unchanged
+    // behavior: run on the parent's own model. Not read on a task_id call — a
+    // steer/resume/interrupt keeps the child's own model.
+    model: z.string().optional().describe(
+      'Optional: "budget" or "frontier" to use the models the user designated in Settings, or a specific '
+      + 'model id — only name a specific model when the user asked for it. Omit to run the specialist on '
+      + "this conversation's model. Not used with task_id — a resumed specialist keeps its own model.",
+    ),
+    // Task 6 — the task_id management surface. Semantics documented verbatim in
+    // the tool description below (TASK_ID_DOCTRINE).
+    task_id: z.string().optional().describe(
+      'The task_id from an earlier launch, to manage that specialist instead of starting a new one. If it is '
+      + 'still RUNNING, "prompt" is delivered as a steer at its next natural pause. If it has FINISHED or was '
+      + 'INTERRUPTED, it resumes — its state is rebuilt cold from its own transcript — with "prompt" as its next '
+      + 'brief, foreground or background per "background". Combine with interrupt: true to cancel it instead (no '
+      + '"prompt" needed). A task_id that is not one of THIS conversation\'s own specialists is refused, whether it '
+      + "belongs to a different conversation or never existed at all — you can only manage specialists you yourself started.",
+    ),
+    interrupt: z.boolean().optional().describe('With task_id: cancel that specialist instead of steering or resuming it.'),
+  });
+}
 
-type TaskArgs = z.infer<typeof schema>;
+type TaskArgs = z.infer<ReturnType<typeof buildSchema>>;
 
 // This enumeration doubles as the 1a consent copy: it is the text a user sees
 // when the envelope ask fires (permissionSubject below), since the pretty
@@ -139,16 +147,19 @@ function charterLabel(s: { charter: string; allowedTools: readonly string[] }): 
   if (s.charter === 'read-write') return hasShell ? 'can edit files and run commands' : 'can edit files';
   return hasShell ? 'read-only, can run commands' : 'read-only';
 }
-function describeSpecialists(): string {
-  const lines = listSpecialists()
+function describeSpecialists(roster: SpecialistRoster): string {
+  const specialists = roster.list();
+  const lines = specialists
     .map((s) => {
       const hasShell = s.allowedTools.includes('Bash');
       return `- ${s.id} (${charterLabel(s)}; tools: ${s.allowedTools.join(', ')}${hasShell ? '' : ' — no shell'}): ${s.description}`;
     });
-  const shellOwners = listSpecialists().filter((s) => s.allowedTools.includes('Bash')).map((s) => s.id);
+  const shellOwners = specialists.filter((s) => s.allowedTools.includes('Bash')).map((s) => s.id);
   const shellRule = shellOwners.length === 1
     ? `Only the ${shellOwners[0]} can run shell commands — a job that needs a command run must go to it, even if the job is otherwise read-only.`
-    : `Only ${shellOwners.join(', ')} can run shell commands — a job that needs a command run must go to one of them.`;
+    : shellOwners.length === 0
+      ? 'None of your specialists can run shell commands — none of them can be given a job that needs one.'
+      : `Only ${shellOwners.join(', ')} can run shell commands — a job that needs a command run must go to one of them.`;
   return `${lines.join('\n')}\n${shellRule}`;
 }
 
@@ -171,19 +182,27 @@ const TASK_ID_DOCTRINE =
   + "- A task_id that isn't one of THIS conversation's own specialists is refused the same way whether it "
   + 'belongs to another conversation or never existed — you can only manage specialists you yourself started.';
 
-export function createTaskTool(): NativeTool<TaskArgs> {
+// Task 4 (plan 1c): `roster` defaults to BUILTIN_ROSTER so every pre-existing
+// caller (and every test that constructs this tool with no argument) keeps
+// seeing exactly the four built-ins, unchanged. The REAL caller
+// (harness-session.ts's syncTaskTool) now passes the session's own per-cwd
+// roster (SpecialistCatalog.roster(cwd)) and calls this fresh at the start of
+// EVERY turn — never once at module load — because the roster can change
+// between turns (a file dropped into a specialists folder) and a stale
+// module-level tool would keep offering the OLD list forever.
+export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): NativeTool<TaskArgs> {
   return defineTool<TaskArgs>({
     name: 'Task',
     description:
       'Delegate one focused piece of work to a specialist subagent. The specialist works independently '
       + "and reports back when it's done. Available specialists:\n"
-      + describeSpecialists() + '\n\n' + DOCTRINE + '\n\n' + TASK_ID_DOCTRINE,
+      + describeSpecialists(roster) + '\n\n' + DOCTRINE + '\n\n' + TASK_ID_DOCTRINE,
     // Simplified presentation (small local models): ids + charter only, no
     // per-role descriptions — mirrors skill.ts's shortDescription trim.
     shortDescription:
       'Delegate a focused task to a specialist subagent. Specialists: '
-      + listSpecialists().map((s) => `${s.id} (${charterLabel(s)}${s.allowedTools.includes('Bash') ? '' : ', no shell'})`).join(', '),
-    inputSchema: schema,
+      + roster.list().map((s) => `${s.id} (${charterLabel(s)}${s.allowedTools.includes('Bash') ? '' : ', no shell'})`).join(', '),
+    inputSchema: buildSchema(roster),
     // The envelope ask's subject (spec §1a/§5) — CHARTER-SCOPED (Fix 4, review
     // round 1): `${charter}:${work_dir}`, e.g. "read-only:/home/x/proj". Before
     // this the subject was the bare work_dir, so a remembered "Always allow" for
@@ -220,11 +239,24 @@ export function createTaskTool(): NativeTool<TaskArgs> {
     // starting anything new — see the schema's own comment) — undefined here
     // means tool-name-only matching (NativeTool.permissionSubject's own
     // documented contract), never a crash on a path that was never given.
+    //
+    // Task 4 (plan 1c) — the subject now also carries the specialist's OWN id
+    // when it isn't a built-in: `${charter}:${workDir}:file:${id}`, never the
+    // bare `${charter}:${workDir}` a built-in still gets. WHY: a grant
+    // remembered for the built-in Worker must never auto-hire a helper some
+    // repo shipped — the file can say anything, and the provenance line on
+    // the consent card only helps if the card is actually shown, which a
+    // matching remembered rule skips entirely (decide() answers before any
+    // card renders). Built-ins keep the OLD shape so no grant a user already
+    // has is lost.
     permissionSubject: (a) => {
       if (!a.work_dir) return undefined;
-      const specialist = a.agent ? resolveSpecialist(a.agent) : undefined;
+      const specialist = a.agent ? roster.resolve(a.agent) : undefined;
       const workDir = toPosix(resolveP(a.work_dir, process.cwd()));
-      return specialist ? `${specialist.charter}:${workDir}` : workDir;
+      if (!specialist) return workDir;
+      return specialist.source === 'builtin'
+        ? `${specialist.charter}:${workDir}`
+        : `${specialist.charter}:${workDir}:file:${specialist.id}`;
     },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {
@@ -284,7 +316,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         // comes from the ledger's own recorded agentType (steerResult), NOT
         // from args.agent — a resume never re-reads the model's own claim
         // about which specialist this is, it re-reads the ORIGINAL one.
-        const specialist = resolveSpecialist(steerResult.agentType);
+        const specialist = roster.resolve(steerResult.agentType);
         if (!specialist) {
           return {
             text: `Refused: the specialist type "${steerResult.agentType}" that ${taskId} was running is no longer `
@@ -363,9 +395,9 @@ export function createTaskTool(): NativeTool<TaskArgs> {
         };
       }
 
-      const specialist = resolveSpecialist(args.agent);
+      const specialist = roster.resolve(args.agent);
       if (!specialist) {
-        const available = listSpecialists().map((s) => s.id).join(', ');
+        const available = roster.list().map((s) => s.id).join(', ');
         return { text: `Unknown specialist "${args.agent}". Available specialists: ${available}.`, isError: true };
       }
 

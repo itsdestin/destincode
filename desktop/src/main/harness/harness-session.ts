@@ -134,6 +134,7 @@ import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message
 import { createSkillTool } from './tools/skill';
 import { createTaskTool } from './tools/task';
 import { ModelSearchTool } from './tools/model-search';
+import { BUILTIN_ROSTER, type SpecialistRoster } from './specialists/registry';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -220,6 +221,17 @@ export interface HarnessSessionOpts {
    *  exemption, which is the pre-Task-10 behavior every existing session (and
    *  every specialist CHILD, which never gets this wired) still gets. */
   internalReadRoots?: string[];
+  /** Task 4 (plan 1c) — this project folder's per-cwd specialist roster
+   *  (SpecialistCatalog.roster(cwd)), wired by NativeSessionHost.toolWiring
+   *  for a ROOT session only. syncTaskTool rebuilds the Task tool from THIS
+   *  roster at the start of every turn — never once at construction — so a
+   *  file dropped into a specialists folder shows up without a session
+   *  restart. Absent → BUILTIN_ROSTER (createTaskTool's own default), which
+   *  is exactly the pre-Task-4 behavior every existing test relies on. A
+   *  specialist CHILD never gets this wired (its own syncTaskTool call is a
+   *  no-op — isSpecialistChild withholds Task entirely), so its own roster
+   *  identity never matters. */
+  specialistRoster?: SpecialistRoster;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -814,7 +826,17 @@ export class HarnessSession extends EventEmitter {
   private syncTaskTool(): void {
     const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
     if (!wanted) { this.toolByName.delete('Task'); this.toolByName.delete('ModelSearch'); return; }
-    if (!this.toolByName.has('Task')) this.toolByName.set('Task', createTaskTool());
+    // Task 4 (plan 1c): Task is rebuilt UNCONDITIONALLY every turn (no
+    // has()-guard, unlike ModelSearch below) — it has to be, since the
+    // in-memory specialist catalog can change between turns (a file dropped
+    // into a specialists folder) and this is the one place that shows up in
+    // what the model reads. An UNCHANGED roster produces an identical
+    // description string, so this costs nothing extra in the prompt cache;
+    // a changed one produces a new one, with no version counter anywhere
+    // that could drift out of sync with reality. buildAiTools() only ever
+    // runs at the START of a turn, never mid-turn (see its own call site),
+    // so "every turn" here still means "never mid-turn".
+    this.toolByName.set('Task', createTaskTool(this.opts.specialistRoster ?? BUILTIN_ROSTER));
     if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }
 
