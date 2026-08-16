@@ -7,7 +7,12 @@ import type { ToolCallState } from '../../../shared/types';
  * through the same host methods the assistant's own task_id calls use
  * (steerSpecialist / interruptSpecialist) — one mechanism, two callers.
  */
-export function SpecialistActions({ sessionId, run }: { sessionId: string; run: NonNullable<ToolCallState['specialistRun']> }) {
+export function SpecialistActions({ sessionId, run, compact = false }: {
+  sessionId: string;
+  run: NonNullable<ToolCallState['specialistRun']>;
+  /** Popup rows: ghost text buttons at rest, the note box only when opened. */
+  compact?: boolean;
+}) {
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState<'note' | 'stop' | null>(null);
@@ -32,23 +37,16 @@ export function SpecialistActions({ sessionId, run }: { sessionId: string; run: 
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   };
+  const btn = compact
+    ? 'text-2xs px-1.5 py-0.5 rounded text-fg-muted hover:text-fg-2 hover:bg-inset transition-colors disabled:opacity-50'
+    : 'text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2 disabled:opacity-50';
   return (
-    <div className="space-y-1.5" data-testid="specialist-actions">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setNoteOpen(v => !v)}
-          className="text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2"
-          aria-expanded={noteOpen}
-        >
-          Send {first} a note
+    <div className={compact ? 'space-y-1' : 'space-y-1.5'} data-testid="specialist-actions">
+      <div className={`flex items-center ${compact ? 'gap-0.5 justify-end' : 'gap-2'}`}>
+        <button type="button" onClick={() => setNoteOpen(v => !v)} className={btn} aria-expanded={noteOpen}>
+          {compact ? 'Note' : `Send ${first} a note`}
         </button>
-        <button
-          type="button"
-          onClick={stop}
-          disabled={busy !== null}
-          className="text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2 disabled:opacity-50"
-        >
+        <button type="button" onClick={stop} disabled={busy !== null} className={btn}>
           {busy === 'stop' ? 'Stopping…' : 'Stop'}
         </button>
       </div>

@@ -31,7 +31,7 @@ export function RunStatusLine({ run, report }: { run: NonNullable<ToolCallState[
   return <div className={`text-xs ${tone}`} data-testid="specialist-status-line">{text}</div>;
 }
 
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);

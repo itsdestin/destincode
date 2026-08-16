@@ -17,7 +17,13 @@ type ToolSegment = Extract<SubagentSegment, { type: 'tool' }>;
  * row, AND in the specialists popup (SpecialistsChip), which is where asks
  * are managed centrally. Same requestId → answering in either place clears both.
  */
-export function SpecialistAskBlock({ segment, sessionId, specialistName }: { segment: ToolSegment; sessionId?: string; specialistName?: string }) {
+export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false }: {
+  segment: ToolSegment;
+  sessionId?: string;
+  specialistName?: string;
+  /** Popup rows: no border/background chrome, tighter notes — the row supplies the frame. */
+  compact?: boolean;
+}) {
   const dispatch = useChatDispatch();
   const artifacts = useArtifactOptional();
   const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
@@ -35,17 +41,17 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName }: { seg
     dispatch(action);
     (window as any).claude?.remote?.broadcastAction(action);
   };
+  const note = compact ? 'text-2xs leading-snug' : 'px-3 pt-2 text-xs';
   return (
-    <div data-testid="nested-ask" className="border-t border-edge/60 bg-canvas/40">
+    <div data-testid="nested-ask" className={compact ? 'space-y-1' : 'border-t border-edge/60 bg-canvas/40'}>
       {segment.external && (
-        <p className="px-3 pt-2 text-xs text-fg-muted">
-          This is outside the project folder, so {who} has to ask each time — there is no “Always allow” for it.
+        <p className={`${note} text-fg-muted`}>
+          Outside the project folder — {who} must ask each time; no “Always allow”.
         </p>
       )}
       {segment.askHeld && (
-        <p className="px-3 pt-2 text-xs text-amber-500" data-testid="nested-ask-held">
-          Five minutes passed with no answer, so {who} was told to carry on without this.
-          You can still answer — a Yes now is delivered as a follow-up.
+        <p className={`${note} text-amber-500`} data-testid="nested-ask-held">
+          No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.
         </p>
       )}
       <PermissionButtons
