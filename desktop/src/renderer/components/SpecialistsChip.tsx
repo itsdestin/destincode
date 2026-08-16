@@ -140,25 +140,22 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
       className={`rounded-lg border ${attention ? 'border-amber-500/40' : 'border-edge'} bg-inset/50 overflow-hidden ${done ? 'opacity-80' : ''}`}
       data-testid={`helper-card-${run.childId}`}
     >
-      {/* ── WHO ─────────────────────────────────────────────────────────── */}
+      {/* ── WHO — name in-line with role, what it may do, and model (Destin,
+             round 6). No "Needs you" pill: the ask band at the bottom says it. */}
       <div className="px-3 pt-2.5 pb-2">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <button type="button" onClick={jump} className="text-sm font-semibold text-fg hover:underline text-left truncate block max-w-full" title="Show this helper's card in the conversation">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <div className="min-w-0 flex-1 text-2xs text-fg-muted leading-snug">
+            <button type="button" onClick={jump} className="text-sm font-semibold text-fg hover:underline text-left align-baseline" title="Show this helper's card in the conversation">
               {run.title}
             </button>
-            {/* One wrapping line, separators inline with the text (a flex-gap
-                version left a dangling "·" at a wrap). */}
-            <div className="mt-0.5 text-2xs text-fg-muted leading-snug">
-              <span className="font-mono uppercase tracking-wide">{run.agentType}</span>
-              {charter && <>{' · '}<span className={charter === 'read-write' ? 'text-amber-500' : ''}>
-                {charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only'}
-              </span></>}
-              {run.model ? ` · on ${run.model.label}` : ''}
-              {run.background && run.status === 'running' ? ' · in the background' : ''}
-            </div>
+            {' · '}<span className="font-mono uppercase tracking-wide">{run.agentType}</span>
+            {charter && <>{' · '}<span className={charter === 'read-write' ? 'text-amber-500' : ''}>
+              {charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only'}
+            </span></>}
+            {run.model ? ` · on ${run.model.label}` : ''}
+            {run.background && run.status === 'running' ? ' · in the background' : ''}
           </div>
-          <StatusPill h={h} />
+          {!attention && <StatusPill h={h} />}
         </div>
         {/* ── WHAT ─────────────────────────────────────────────────────── */}
         {run.description && <div className="mt-1.5 text-xs text-fg-2">{run.description}</div>}
@@ -177,6 +174,7 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
                 <span className="truncate min-w-0">now: {friendlyToolDisplay(segToTool(h.current)).label}</span>
               </>
             )}
+            {run.stale && run.status === 'running' && <><span aria-hidden>·</span><span className="text-amber-500">may be stuck</span></>}
           </div>
           {h.recent.length > 0 && (
             <ul className="mt-1.5 space-y-0.5">
@@ -199,24 +197,6 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
           )}
         </div>
       )}
-
-      {/* ── WHAT IT NEEDS ────────────────────────────────────────────────── */}
-      {h.asks.map(seg => {
-        const { label } = friendlyToolDisplay(segToTool(seg));
-        // The exact thing being approved, in full — a command, a path, a URL —
-        // not the card's abbreviated "↳ cache/" detail.
-        const subject = askSubject(seg.input);
-        return (
-          <div key={seg.requestId} className="border-t border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 space-y-1.5" data-testid="helper-card-ask">
-            <div className="text-xs">
-              <span className="font-medium text-fg">{first} wants to: </span>
-              <span className="text-fg-2">{label}</span>
-            </div>
-            {subject && <div className="text-2xs font-mono text-fg-dim break-all">{subject}</div>}
-            <SpecialistAskBlock segment={seg} sessionId={sessionId} specialistName={first} compact />
-          </div>
-        );
-      })}
 
       {/* ── THE REPORT (finished) ─────────────────────────────────────────── */}
       {done && (
@@ -245,10 +225,36 @@ function HelperCard({ h, sessionId, charter, canShell, onJump }: {
           Show in chat ↗
         </button>
       </div>
+
+      {/* ── WHAT IT NEEDS — the bottom of the card, request and buttons on
+             one line (Destin, round 6). */}
+      {h.asks.map(seg => {
+        const { label } = friendlyToolDisplay(segToTool(seg));
+        const subject = askSubject(seg.input);
+        return (
+          <div key={seg.requestId} className="border-t border-amber-500/30 bg-amber-500/[0.06] px-3 py-2" data-testid="helper-card-ask">
+            <SpecialistAskBlock
+              segment={seg}
+              sessionId={sessionId}
+              specialistName={first}
+              compact
+              leading={
+                <div className="text-xs leading-snug">
+                  <span className="font-medium text-fg">{first} wants to: </span>
+                  <span className="text-fg-2">{label}</span>
+                  {subject && subject !== label && <div className="text-2xs font-mono text-fg-dim break-all">{subject}</div>}
+                </div>
+              }
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
+/** The exact thing being approved, in full — a command, a path, a URL — not
+ *  the card's abbreviated "↳ cache/" detail. */
 function askSubject(input: Record<string, unknown>): string {
   for (const k of ['command', 'file_path', 'path', 'url', 'pattern']) {
     const v = input[k];

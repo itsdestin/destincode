@@ -1,3 +1,4 @@
+import type React from 'react';
 import type { SubagentSegment } from '../../../shared/types';
 import { PermissionButtons } from '../ToolCard';
 import { useChatDispatch } from '../../state/chat-context';
@@ -17,12 +18,15 @@ type ToolSegment = Extract<SubagentSegment, { type: 'tool' }>;
  * row, AND in the specialists popup (SpecialistsChip), which is where asks
  * are managed centrally. Same requestId → answering in either place clears both.
  */
-export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false }: {
+export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false, leading }: {
   segment: ToolSegment;
   sessionId?: string;
   specialistName?: string;
   /** Popup rows: no border/background chrome, tighter notes — the row supplies the frame. */
   compact?: boolean;
+  /** Compact only: the request text, laid out on the SAME line as the buttons
+   *  (buttons right-aligned; the line wraps when the request is long). */
+  leading?: React.ReactNode;
 }) {
   const dispatch = useChatDispatch();
   const artifacts = useArtifactOptional();
@@ -42,8 +46,27 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
     (window as any).claude?.remote?.broadcastAction(action);
   };
   const note = compact ? 'text-2xs leading-snug' : 'px-3 pt-2 text-xs';
+  const buttons = (
+    <PermissionButtons
+      requestId={requestId}
+      denyListed={segment.denyListed}
+      permissionMode={segment.permissionMode}
+      command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
+      folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
+      suppressAlwaysAllow={segment.external === true}
+      onResponded={onResponded}
+      onFailed={onFailed}
+      bare={compact}
+    />
+  );
   return (
     <div data-testid="nested-ask" className={compact ? 'space-y-1' : 'border-t border-edge/60 bg-canvas/40'}>
+      {compact && leading && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="min-w-0 flex-1">{leading}</div>
+          <div className="shrink-0 ml-auto">{buttons}</div>
+        </div>
+      )}
       {segment.external && (
         <p className={`${note} text-fg-muted`}>
           Outside the project folder — {who} must ask each time; no “Always allow”.
@@ -54,16 +77,7 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
           No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.
         </p>
       )}
-      <PermissionButtons
-        requestId={requestId}
-        denyListed={segment.denyListed}
-        permissionMode={segment.permissionMode}
-        command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
-        folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
-        suppressAlwaysAllow={segment.external === true}
-        onResponded={onResponded}
-        onFailed={onFailed}
-      />
+      {!(compact && leading) && buttons}
     </div>
   );
 }
