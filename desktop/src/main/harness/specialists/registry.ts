@@ -42,3 +42,16 @@ export function resolveSpecialist(id: string): SpecialistDefinition | undefined 
 export function listSpecialists(): SpecialistDefinition[] {
   return BUILTIN_SPECIALISTS;
 }
+
+// Task 3 (plan 1c): the shape SpecialistCatalog.roster(cwd) returns — a
+// lookup-by-id plus an enumeration, same two operations this file already
+// exposes as free functions. BUILTIN_ROSTER wraps them so the catalog (and
+// its callers, Task 4+) never need a special case for "no file-based
+// specialists loaded yet" — it's just a roster with zero non-built-in
+// entries.
+export interface SpecialistRoster {
+  list(): SpecialistDefinition[];
+  resolve(id: string): SpecialistDefinition | undefined;
+}
+
+export const BUILTIN_ROSTER: SpecialistRoster = { list: listSpecialists, resolve: resolveSpecialist };
