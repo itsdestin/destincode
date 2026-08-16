@@ -740,7 +740,7 @@ function RuleRow({
     setBusy(true);
     setNote(null);
     try {
-      // The SLUG, never the cwd: cwdToProjectSlug collapses ':', '\', '/' and
+      // The SLUG, never the cwd: nativeStoreSlug collapses ':', '\', '/' and
       // spaces all to '-', so a path cannot be reconstructed from a slug and the
       // store is keyed by the slug alone.
       const hit = await window.claude.permissions.remove(slug, toPermissionRule(rule));

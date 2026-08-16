@@ -4,7 +4,7 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
-import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import { nativeStoreSlug } from '../src/main/slug-encoding';
 import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
@@ -821,7 +821,7 @@ describe('NativeSessionHost', () => {
       // whole-object comparison would silently stop dropping the in-memory rule.
       const stored = await waitForStoredRule(store, root);
       expect((stored as any).grantedAt).toBeTypeOf('string');
-      await expect(p.revokeRule(cwdToProjectSlug(root), stored)).resolves.toBe(true);
+      await expect(p.revokeRule(nativeStoreSlug(root), stored)).resolves.toBe(true);
 
       // Disk is clear AND the SAME still-running session asks again. If revokeRule
       // had only touched disk, rememberedFor would still grant and this stays false.
@@ -831,12 +831,12 @@ describe('NativeSessionHost', () => {
     });
 
     it('clears sessions whose cwd differs in spelling but shares the slug', async () => {
-      // cwdToProjectSlug collapses spaces to '-' exactly as it does '/', so these
+      // nativeStoreSlug collapses spaces to '-' exactly as it does '/', so these
       // two REAL, distinct directories genuinely share one entry on disk.
       const spacedCwd = path.join(root, 'my project');
       const dashedCwd = path.join(root, 'my-project');
       fs.mkdirSync(spacedCwd); fs.mkdirSync(dashedCwd);
-      expect(cwdToProjectSlug(spacedCwd)).toBe(cwdToProjectSlug(dashedCwd));   // the premise
+      expect(nativeStoreSlug(spacedCwd)).toBe(nativeStoreSlug(dashedCwd));   // the premise
 
       // A store that never grants and never persists: rulesFor is always [], so
       // the ONLY thing that can make either session grant is its in-memory copy —
@@ -857,7 +857,7 @@ describe('NativeSessionHost', () => {
       expect(await turnAsked(p, 'spaced', 'again')).toBe(false);
       expect(await turnAsked(p, 'dashed', 'again')).toBe(false);
 
-      await p.revokeRule(cwdToProjectSlug(spacedCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+      await p.revokeRule(nativeStoreSlug(spacedCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
 
       // Path equality would have cleared at most one of these.
       expect(await turnAsked(p, 'spaced', 'after revoke')).toBe(true);
@@ -881,7 +881,7 @@ describe('NativeSessionHost', () => {
       await alwaysAllowTurn(p, 'mine', 'write once');
       await alwaysAllowTurn(p, 'other', 'write once');
 
-      await p.revokeRule(cwdToProjectSlug(mineCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
+      await p.revokeRule(nativeStoreSlug(mineCwd), { tool: 'Write', pattern: 'note.txt', action: 'allow' });
 
       expect(await turnAsked(p, 'mine', 'after revoke')).toBe(true);
       expect(await turnAsked(p, 'other', 'after revoke')).toBe(false);   // untouched
@@ -902,7 +902,7 @@ describe('NativeSessionHost', () => {
       await p.create({ sessionId: 'quad', cwd: root, binding });
       expect(await turnAsked(p, 'quad', 'write once')).toBe(false);   // granted by both
 
-      await expect(p.revokeRule(cwdToProjectSlug(root), wide)).resolves.toBe(true);
+      await expect(p.revokeRule(nativeStoreSlug(root), wide)).resolves.toBe(true);
 
       // The exact grant survives on disk AND in the still-running session.
       expect(await store.rulesFor(root)).toMatchObject([{ pattern: 'note.txt', match: 'exact' }]);
@@ -926,7 +926,7 @@ describe('NativeSessionHost', () => {
       await waitForStoredRule(store, root);
       expect(await turnAsked(p, 's', 'write again')).toBe(false);
 
-      await expect(p.revokeProject(cwdToProjectSlug(root))).resolves.toBe(true);
+      await expect(p.revokeProject(nativeStoreSlug(root))).resolves.toBe(true);
 
       expect(await store.list()).toEqual([]);
       expect(await turnAsked(p, 's', 'after revoke')).toBe(true);
