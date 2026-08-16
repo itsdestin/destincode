@@ -330,12 +330,20 @@ describe('plan validation goes through matrix.ts validatePlan', () => {
 
   it('accepts build arms that all name a dist', async () => {
     const { readPlanFile, expandPlanFile } = await import('../test-engine/harness-eval.mjs');
+    // path.resolve, not the literal '/a/dist': the invariant is "a fully
+    // absolute dist passes through untouched", and on Windows '/a/dist' is
+    // only drive-RELATIVE, so the orchestrator (correctly) fills in the plan
+    // file's drive and the literal came back as 'C:\a\dist' — the one red
+    // test left on Windows CI (2026-08-16). resolve() yields '/a/dist' on
+    // POSIX and 'D:\a\dist' on Windows: absolute on both, unchanged on both.
+    const A = path.resolve('/a/dist');
+    const B = path.resolve('/b/dist');
     const file = writePlan({
       ...BASE_PLAN,
-      builds: [{ id: 'current', dist: '/a/dist' }, { id: 'master', dist: '/b/dist' }],
+      builds: [{ id: 'current', dist: A }, { id: 'master', dist: B }],
     });
     const cells = await expandPlanFile(await readPlanFile(file));
-    expect(cells.map((c: { dist: string }) => c.dist)).toEqual(['/a/dist', '/b/dist']);
+    expect(cells.map((c: { dist: string }) => c.dist)).toEqual([A, B]);
   });
 
   it('resolves a relative build dist against the plan file, not the cwd', async () => {
