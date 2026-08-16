@@ -38,11 +38,11 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
     finally { setBusy(null); }
   };
   const btn = compact
-    ? 'text-2xs px-1.5 py-0.5 rounded text-fg-muted hover:text-fg-2 hover:bg-inset transition-colors disabled:opacity-50'
+    ? 'text-2xs px-2 py-0.5 rounded-md border border-edge text-fg-dim hover:text-fg-2 hover:bg-inset transition-colors disabled:opacity-50'
     : 'text-xs px-2 py-0.5 rounded-md border border-edge hover:bg-inset/60 transition-colors text-fg-2 disabled:opacity-50';
   return (
     <div className={compact ? 'space-y-1' : 'space-y-1.5'} data-testid="specialist-actions">
-      <div className={`flex items-center ${compact ? 'gap-0.5 justify-end' : 'gap-2'}`}>
+      <div className={`flex items-center ${compact ? 'gap-1.5' : 'gap-2'}`}>
         <button type="button" onClick={() => setNoteOpen(v => !v)} className={btn} aria-expanded={noteOpen}>
           {compact ? 'Note' : `Send ${first} a note`}
         </button>

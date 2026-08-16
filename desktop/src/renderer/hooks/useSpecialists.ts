@@ -36,21 +36,36 @@ export function useSpecialistRunByChild(sessionId: string | undefined, childId: 
 
 export type AskSegment = Extract<SubagentSegment, { type: 'tool' }>;
 
-export interface SpecialistSummary {
-  /** Children still working (their ledger status is 'running'). */
-  running: SpecialistRunView[];
-  /** Nested asks waiting on the user, oldest first: which child, the asking
-   *  segment (rendered by SpecialistAskBlock), and the card it lives on. */
-  waiting: Array<{ run: SpecialistRunView | undefined; parentToolCallId: string; toolName: string; requestId: string; held: boolean; segment: AskSegment }>;
-  /** Finished in the background since the user last looked (report folded into the card). */
-  finished: SpecialistRunView[];
+/** Everything the management popup shows for ONE helper — read off its Task card. */
+export interface HelperView {
+  run: SpecialistRunView;
+  parentToolCallId: string;
+  /** Asks waiting on the user, oldest first. */
+  asks: AskSegment[];
+  /** The last few tool segments, newest last — the "what is it doing" strip. */
+  recent: AskSegment[];
+  /** The tool it is on right now, if a tool call is open. */
+  current?: AskSegment;
+  /** Total tool calls so far (a live step count the ledger only writes at the end). */
+  toolCalls: number;
+  /** Folded background report (or the foreground report text). */
+  report?: { text: string; status: 'completed' | 'failed' };
+  group: 'needs-you' | 'working' | 'finished';
 }
 
-const EMPTY: SpecialistSummary = { running: [], waiting: [], finished: [] };
+export interface SpecialistSummary {
+  helpers: HelperView[];
+  needsYou: number;
+  working: number;
+  finished: number;
+}
 
-/** Everything the status-bar chip needs for one session. Recomputed on every
- *  session change but returned by reference only when the KEY changes, so the
- *  chip does not re-render on each streamed token. */
+const EMPTY: SpecialistSummary = { helpers: [], needsYou: 0, working: 0, finished: 0 };
+const RECENT = 3;
+
+/** Everything the status-bar chip + popup need for one session. Recomputed on
+ *  every session change but returned by reference only when the KEY changes,
+ *  so the chip does not re-render on each streamed token. */
 export function useSpecialistSummary(sessionId: string | undefined): SpecialistSummary {
   const store = useChatStore();
   const cache = useRef<{ key: string; value: SpecialistSummary }>({ key: '', value: EMPTY });
@@ -61,28 +76,35 @@ export function useSpecialistSummary(sessionId: string | undefined): SpecialistS
   const getSnapshot = useCallback(() => {
     if (!sessionId) return EMPTY;
     const session = store.getSession(sessionId);
-    const running: SpecialistRunView[] = [];
-    const waiting: SpecialistSummary['waiting'] = [];
-    const finished: SpecialistRunView[] = [];
+    const helpers: HelperView[] = [];
+    const keyParts: string[] = [];
     for (const [id, tool] of session.toolCalls) {
       const run = tool.specialistRun;
-      if (run?.status === 'running') running.push(run);
-      // A background hire that settled: card status went complete at launch,
-      // so "finished" is the run record ending with the report folded in.
-      if (run && run.background && (run.status === 'completed' || run.status === 'failed') && tool.specialistReport) finished.push(run);
-      for (const seg of tool.subagentSegments ?? []) {
-        if (seg.type === 'tool' && seg.status === 'awaiting-approval' && seg.requestId) {
-          waiting.push({ run, parentToolCallId: id, toolName: seg.toolName, requestId: seg.requestId, held: !!seg.askHeld, segment: seg });
-        }
-      }
+      if (!run) continue;
+      const tools: AskSegment[] = [];
+      for (const seg of tool.subagentSegments ?? []) if (seg.type === 'tool') tools.push(seg);
+      const asks = tools.filter(t => t.status === 'awaiting-approval' && !!t.requestId);
+      const current = [...tools].reverse().find(t => t.status === 'running');
+      const report = tool.specialistReport
+        ? { text: tool.specialistReport.text, status: tool.specialistReport.status }
+        : (!run.background && tool.response && run.status !== 'running') ? { text: tool.response, status: 'completed' as const } : undefined;
+      const group: HelperView['group'] = asks.length > 0 ? 'needs-you' : run.status === 'running' ? 'working' : 'finished';
+      helpers.push({ run, parentToolCallId: id, asks, recent: tools.slice(-RECENT), current, toolCalls: tools.length, report, group });
+      keyParts.push([
+        run.childId, run.status, run.stale ? 's' : '', run.steps ?? '', tools.length,
+        asks.map(a => `${a.requestId}${a.askHeld ? 'h' : ''}`).join('+'),
+        current?.toolUseId ?? '', tools.slice(-RECENT).map(t => `${t.toolUseId}:${t.status}`).join('+'),
+        report ? report.status + report.text.length : '',
+      ].join(':'));
     }
-    const key = [
-      running.map(r => `${r.childId}:${r.stale ? 's' : ''}`).join(','),
-      waiting.map(w => `${w.requestId}:${w.held ? 'h' : ''}`).join(','),
-      finished.map(r => r.childId).join(','),
-    ].join('|');
+    const key = keyParts.join('|');
     if (key === cache.current.key) return cache.current.value;
-    const value = running.length || waiting.length || finished.length ? { running, waiting, finished } : EMPTY;
+    const value: SpecialistSummary = helpers.length === 0 ? EMPTY : {
+      helpers,
+      needsYou: helpers.filter(h => h.group === 'needs-you').length,
+      working: helpers.filter(h => h.group === 'working').length,
+      finished: helpers.filter(h => h.group === 'finished').length,
+    };
     cache.current = { key, value };
     return value;
   }, [store, sessionId]);
