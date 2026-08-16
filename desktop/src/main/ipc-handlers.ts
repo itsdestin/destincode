@@ -102,7 +102,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 // this file (they were closures, so the remote transport could not reach them).
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
-import { ensureProject, applyGitTreatment, ensureProjectCoalesced, applyGitTreatmentCoalesced } from './artifacts/project-manager';
+import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } from './artifacts/project-manager';
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
@@ -3416,7 +3416,6 @@ export function registerIpcHandlers(
   ) => {
     const { project } = await ensureProjectCoalesced(CLAUDE_DIR, projectRoot, sessionId);
     await applyGitTreatmentCoalesced(projectRoot);
-    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
       kind: args.kind,
@@ -3426,6 +3425,12 @@ export function registerIpcHandlers(
       author: args.author,
       toolUseId: typeof args.toolUseId === 'string' && args.toolUseId ? args.toolUseId : undefined,
     });
+    // AFTER the append resolves, not before it (2026-08-15 review): appendVersion
+    // is queued now, so an invalidate issued before the call could be followed
+    // by a watcher rebuild that read the OLD sidecar — leaving a just-created
+    // artifact unmapped until the cache's next TTL. Invalidating once the write
+    // has committed closes that window.
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     // A newly created/edited file may also be a discovered doc — drop the cached
     // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
     invalidateDiscoveryCache(projectRoot);
