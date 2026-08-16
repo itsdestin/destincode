@@ -451,7 +451,10 @@ export function BubbleFeed({ sessionId }: Props) {
           {/* Thinking indicator — only shown when no tool is pending.
               Buddy is a passive viewer so we only show 'ok' state (no attention
               banners — the buddy floater's AttentionStrip in E5 owns that UX). */}
-          {state.isThinking && !hasAwaitingApproval && !hasRunningTools && (
+          {/* `!compactionPending` mirrors ChatView: CompactingCard is already
+              the status for a compaction, so don't stack a second spinner
+              under it. (Destin, 2026-08-16) */}
+          {state.isThinking && !hasAwaitingApproval && !hasRunningTools && !state.compactionPending && (
             <ThinkingIndicator />
           )}
         </>

@@ -442,6 +442,80 @@ describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
   });
 });
 
+describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () => {
+  // CC writes a bare `/compact` user line into the JSONL on BOTH the typed path
+  // and the resume-from-summary path. CompactingCard is the intended feedback
+  // for that event, so the bubble is pure duplication — but everything else the
+  // event drives (turn state, uuid dedup) must still happen.
+  it('drops the bubble for /compact but still starts the turn', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-compact', timestamp: 1000,
+      text: '/compact',
+    });
+    const session = state.get(SESSION)!;
+    expect(session.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+    expect(session.isThinking).toBe(true);
+    expect(session.seenUuids.has('u-compact')).toBe(true);
+  });
+
+  it('drops it with focus instructions too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-c2', timestamp: 1000,
+      text: '/compact focus on the auth work',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+  });
+
+  it('keeps a real message that merely mentions /compact', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 1000,
+      text: 'why did /compact take so long?',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(1);
+  });
+
+  // The suppression MUST sit below the confirm arm. The `\/compact` escape
+  // hatch is passthrough text, so InputBar does dispatch an optimistic bubble
+  // for it; dropping its confirmation would leave `pending` set forever and
+  // useSubmitConfirmation would fire a stray recovery keystroke.
+  it('still confirms an optimistic /compact bubble instead of stranding it pending', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'USER_PROMPT', sessionId: SESSION, content: '/compact', timestamp: 1000,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-esc', timestamp: 1001,
+      text: '/compact',
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users).toHaveLength(1);
+    expect(users[0].pending).toBe(false);
+  });
+
+  // Reload/resume replays CC's JSONL through loadHistory, which has no filter
+  // for this (it only gates on isMeta/promptId/non-empty). Without the same
+  // rule here, every bubble the live fix removed grows back on reload.
+  it('drops the echo from replayed history too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'HISTORY_LOADED', sessionId: SESSION, hasMore: false,
+      messages: [
+        { role: 'user', content: 'first question', timestamp: 1 },
+        { role: 'user', content: '/compact', timestamp: 2 },
+        { role: 'assistant', content: 'an answer', timestamp: 3 },
+        { role: 'user', content: 'second question', timestamp: 4 },
+      ],
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users.map((e) => e.message.content)).toEqual(['first question', 'second question']);
+    // The assistant turn either side of it must survive untouched.
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
+});
+
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
 

@@ -28,6 +28,25 @@ function nextGroupId(): string {
   return `group-${++groupCounter}`;
 }
 
+// Fix (Destin, 2026-08-16): CC writes a bare `/compact` line as a real user
+// prompt in its JSONL — verified present, with a promptId and no isMeta, in 12
+// lines across live transcripts — both when the user types it AND when
+// resume-from-summary runs compaction internally. The app already shows a
+// CompactingCard for that event, so the bubble is pure duplication sitting
+// right next to a card saying the same thing.
+//
+// Used at BOTH places a bubble can be built from CC's record of the past:
+// the live transcript append and the HISTORY_LOADED replay. Miss the second
+// and the bubble reappears on reload — a "where did that come from?" change
+// with no visible cause, which is worse than never having fixed it.
+//
+// Deliberately NOT applied to the optimistic-bubble confirm arm: the escape
+// hatch (`\/compact`) is passthrough text that DOES get a bubble, and hiding
+// its confirmation would strand it as permanently `pending`.
+function isCompactCommandEcho(text: string): boolean {
+  return /^\/compact(\s|$)/.test(text.trim());
+}
+
 let turnCounter = 0;
 function nextTurnId(): string {
   return `turn-${++turnCounter}`;
@@ -840,6 +859,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return next;
       }
 
+      // Drop the redundant `/compact` echo (see isCompactCommandEcho) while
+      // keeping every other effect of the event — turn state, seenUuids, queue
+      // drain — since those are what tell the rest of the UI a turn is running.
+      // This sits BELOW the confirm arm on purpose: a bubble that already
+      // exists optimistically must still be confirmed, or it stays `pending`
+      // forever and useSubmitConfirmation fires a stray recovery keystroke.
+      const suppressBubble = isCompactCommandEcho(action.text);
+
       // No pending match — a queued message being drained (Task 12's true-
       // position confirm: this is the ONLY place its timeline entry gets
       // created, at the end), a remote/replay client, or the user typed
@@ -856,7 +883,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // `injected` rides only this append path on purpose: a host-injected
         // turn never has an optimistic pending bubble to confirm (nobody typed
         // it), so it can only ever land here.
-        timeline: [...session.timeline, {
+        timeline: suppressBubble ? session.timeline : [...session.timeline, {
           kind: 'user', message, pending: false,
           ...(action.injected ? { injected: action.injected } : {}),
           ...(action.injectedMeta ? { injectedMeta: action.injectedMeta } : {}),
@@ -1597,6 +1624,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           });
 
       for (const msg of action.messages) {
+        // Same `/compact` echo the live path drops — loadHistory has no filter
+        // for it (it only gates on isMeta/promptId/non-empty), so without this
+        // a reloaded or resumed session grows back every bubble the live fix
+        // removed. Skipping before the counter is safe: it only ever advances
+        // on a push, so ids stay unique, and the same message list always
+        // regenerates the same ids for the hasMore=false `hist-` replacement.
+        if (msg.role === 'user' && isCompactCommandEcho(msg.content)) continue;
         const id = `hist-${++historyMsgCounter}`;
         if (msg.role === 'user') {
           historyTimeline.push({

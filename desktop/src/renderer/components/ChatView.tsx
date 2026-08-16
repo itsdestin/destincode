@@ -920,6 +920,18 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               // spinner until it begins processing. (2026-07-14)
               const modelNotResident = state.modelState != null && state.modelState !== 'loaded';
               if (thinkingArea && state.attentionState === 'ok') {
+                // While compaction runs, CompactingCard is already on screen
+                // with its own pulse + elapsed counter, so the generic spinner
+                // stacked a second "working" signal underneath it — and its
+                // rotating copy ("Connecting dots") describes the model
+                // thinking, which is not what a summarize step is doing. One
+                // status per event. (Destin, 2026-08-16)
+                //
+                // Gated HERE and not on `thinkingArea`: that flag also gates
+                // the 'stuck' AttentionBanner below, so folding it in there
+                // silently swallowed the one message saying something is wrong
+                // during exactly the long operation most likely to hang.
+                if (state.compactionPending) return null;
                 return modelNotResident
                   ? (
                     <div className="flex items-center gap-2 px-4 py-1.5 in-view">
