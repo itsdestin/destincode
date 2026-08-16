@@ -22,6 +22,12 @@ export interface SpecialistDefinition {
   modelPreference?: 'parent' | 'budget' | 'frontier';
   stepCap: number;                  // wired to the child's harness.limits.maxSteps (Task 5)
   reportBudgetTokens: number;       // static half of the headroom-aware cap (Task 7)
+  // Task 2 (plan 1c): where this definition came from. Task 4's
+  // permissionSubject needs it to tell a built-in (stable id, shared grant
+  // subject) from a file-defined specialist (grant subject scoped to the
+  // file's id, since the file's contents — and thus what it's trusted to do
+  // — can change under a user without them re-approving).
+  source: 'builtin' | 'personal' | 'claude-code';
 }
 
 // Indexed once at module load rather than re-scanning BUILTIN_SPECIALISTS on

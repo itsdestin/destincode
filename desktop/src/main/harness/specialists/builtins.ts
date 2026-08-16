@@ -18,6 +18,16 @@ const SHARED_PREFIX = `You are a specialist subagent, spawned by a parent Claude
 // instruction to make that message the whole deliverable.
 const SHARED_SUFFIX = `Your last message is your report to the requester — make it self-contained; include file paths for anything you produced or found.`;
 
+// Task 2 (plan 1c): file-defined specialists (definition-files.ts) need the
+// same shared prefix/suffix wrapping the built-ins already do by hand below,
+// so their prompts also get the KV-cache prefix reuse described above. This
+// is the one seam exported out of an otherwise-private module — SHARED_PREFIX
+// and SHARED_SUFFIX themselves stay private so nothing outside this file can
+// drift from the literal wording the built-ins use.
+export function wrapSpecialistPrompt(body: string): string {
+  return `${SHARED_PREFIX}\n\n${body.trim()}\n\n${SHARED_SUFFIX}`;
+}
+
 const EXPLORER_PROMPT = `${SHARED_PREFIX}
 
 Your role: fast, read-only codebase reconnaissance. Someone needs to know where something lives, how pieces connect, or what pattern the codebase already uses — find that out as quickly as possible.
@@ -116,6 +126,7 @@ const EXPLORER: SpecialistDefinition = {
   charter: 'read-only',
   stepCap: 25,
   reportBudgetTokens: 2000,
+  source: 'builtin',
 };
 
 const RESEARCHER: SpecialistDefinition = {
@@ -127,6 +138,7 @@ const RESEARCHER: SpecialistDefinition = {
   charter: 'read-only',
   stepCap: 25,
   reportBudgetTokens: 2500,
+  source: 'builtin',
 };
 
 const REVIEWER: SpecialistDefinition = {
@@ -138,6 +150,7 @@ const REVIEWER: SpecialistDefinition = {
   charter: 'read-only',
   stepCap: 20,
   reportBudgetTokens: 2000,
+  source: 'builtin',
 };
 
 const WORKER: SpecialistDefinition = {
@@ -149,6 +162,7 @@ const WORKER: SpecialistDefinition = {
   charter: 'read-write',
   stepCap: 40,
   reportBudgetTokens: 1500,
+  source: 'builtin',
 };
 
 export const BUILTIN_SPECIALISTS: SpecialistDefinition[] = [EXPLORER, RESEARCHER, REVIEWER, WORKER];
