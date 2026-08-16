@@ -71,7 +71,14 @@ function asStringList(value: FrontmatterValue | undefined): string[] | undefined
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
-    if (value.trim() === '') return [];
+    // Fix (review): a blank scalar (`tools:` with nothing after the colon —
+    // a plausible half-finished edit) must read as OMITTED, not as an
+    // explicit empty list. Returning [] here made every caller's
+    // `=== undefined` fallback check never fire, so a blank `tools:` line
+    // silently produced a specialist with no tools and no warning at all.
+    // A genuinely explicit `tools: []` never reaches this branch — the
+    // frontmatter parser already turns `[]` into a real array, handled above.
+    if (value.trim() === '') return undefined;
     // CC's `tools:` is a comma-separated string (`tools: Read, Grep, Bash`);
     // also accept a value the frontmatter parser already turned into a list.
     return value.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
@@ -139,7 +146,10 @@ function mapModelPreference(
   }
   return {
     modelPreference: 'parent',
-    warning: `model: "${raw.trim()}" isn't recognized — using the default (parent)`,
+    // WHY: "using the default (parent)" is meaningless to a reader who
+    // hasn't seen this codebase's internal name for the setting — spell out
+    // what "parent" means, the same gloss the starter file uses.
+    warning: `model: "${raw.trim()}" isn't recognized — using the default: the same model your main assistant is already running on`,
   };
 }
 
@@ -166,8 +176,20 @@ export function loadPersonalDefinition(filePath: string, raw: string): Definitio
 
   const stem = filenameStem(filePath);
   const name = asString(data.name) ?? stem;
-  const idSource = asString(data.id) ?? stem;
+  const explicitId = asString(data.id);
+  const idSource = explicitId ?? stem;
   const id = slugifyId(idSource);
+  // WHY: every other transform in this file warns when it changes what the
+  // user typed — a silently-rewritten id broke that pattern. The id has to
+  // stay slugified (it becomes part of a permission key and shows up in the
+  // model's tool list, so it has to be a safe string), but only warn when
+  // slugifying actually changed something the user explicitly set, not the
+  // filename-stem fallback.
+  if (explicitId !== undefined && id !== explicitId) {
+    warnings.push(
+      `id: "${explicitId}" was changed to "${id}" — ids can only use lowercase letters, numbers, and dashes, since this becomes part of a permission name and shows up in your assistant's tool list. Edit the file if you'd rather use something else.`,
+    );
+  }
 
   // --- tools ---
   const requestedTools = asStringList(data.tools);

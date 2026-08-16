@@ -78,6 +78,50 @@ describe('loadPersonalDefinition', () => {
     if (!result.ok) return;
     expect(result.value.definition.id).toBe('docs-writer');
   });
+
+  // Fix 1 (review): a blank `tools:` scalar must fall back to the read-only
+  // default + warning, same as an omitted key — not resolve to an explicit
+  // empty list, which would silently strip a half-finished file down to a
+  // specialist that can't even Read with no warning at all.
+  it('personal: a blank tools: line falls back to read-only + warning, not a silent empty list', () => {
+    const raw = '---\ndescription: Test.\ntools:\n---\nDo the thing.';
+    const result = loadPersonalDefinition('/x/foo.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.allowedTools).toEqual(READ_ONLY_DEFAULT_TOOLS);
+    expect(result.value.warnings).toContain('no tools listed — read-only by default; add `tools:` to widen');
+  });
+
+  it('personal: an explicit tools: [] still yields an empty list, no fallback', () => {
+    const raw = '---\ndescription: Test.\ntools: []\n---\nDo the thing.';
+    const result = loadPersonalDefinition('/x/foo.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.allowedTools).toEqual([]);
+    expect(result.value.warnings).not.toContain('no tools listed — read-only by default; add `tools:` to widen');
+  });
+
+  // Fix 2 (review): an explicit id is still slugified (it becomes part of a
+  // permission key and the tool list the model reads, so it has to be safe)
+  // but the file gets to see what happened, unlike every other silent
+  // transform in this file.
+  it('personal: an explicit id that gets slugified is announced, naming both values', () => {
+    const raw = '---\ndescription: Test.\nid: My Cool ID!\n---\nDo the thing.';
+    const result = loadPersonalDefinition('/x/foo.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.id).toBe('my-cool-id');
+    expect(result.value.warnings.some((w) => w.includes('My Cool ID!') && w.includes('my-cool-id'))).toBe(true);
+  });
+
+  it('personal: an already-clean explicit id produces no warning', () => {
+    const raw = '---\ndescription: Test.\nid: my-clean-id\n---\nDo the thing.';
+    const result = loadPersonalDefinition('/x/foo.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.id).toBe('my-clean-id');
+    expect(result.value.warnings.some((w) => w.startsWith('id:'))).toBe(false);
+  });
 });
 
 describe('loadClaudeCodeDefinition', () => {
@@ -137,6 +181,27 @@ describe('loadClaudeCodeDefinition', () => {
     expect(result.value.warnings).toContain('no tools listed — read-only by default; add `tools:` to widen');
   });
 
+  // Fix 1 (review): same fallback as the personal format — a blank `tools:`
+  // scalar in a CC-style file must not resolve to a silent empty list.
+  it('cc: a blank tools: line falls back to read-only + warning, not a silent empty list', () => {
+    const raw = '---\nname: Docs Writer\ndescription: Test.\ntools:\n---\nDo the thing.';
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.allowedTools).toEqual(READ_ONLY_DEFAULT_TOOLS);
+    expect(result.value.warnings).toContain('no tools listed — read-only by default; add `tools:` to widen');
+  });
+
+  // Fix 3 (review): the CC loader's empty-body error duplicates the personal
+  // loader's, but only the personal path had a test for it.
+  it('cc: empty body → error', () => {
+    const raw = '---\nname: Docs Writer\ndescription: Test.\n---\n   \n';
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('no instructions below the frontmatter');
+  });
+
   it('cc: disallowedTools subtracts after mapping', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, Write, Edit, Bash\ndisallowedTools: Bash\n---\nDo the thing.';
     const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
@@ -156,7 +221,15 @@ describe('loadClaudeCodeDefinition', () => {
     expect(sonnet.ok && sonnet.value.definition.modelPreference).toBe('parent');
     expect(inherit.ok && inherit.value.definition.modelPreference).toBe('parent');
     expect(weird.ok && weird.value.definition.modelPreference).toBe('parent');
-    expect(weird.ok && weird.value.warnings.some((w) => w.includes('gpt-5'))).toBe(true);
+    // Fix 4 (review): "using the default (parent)" is meaningless jargon to a
+    // non-developer reading only this string — it must spell out what
+    // "parent" means, same gloss as the starter file uses.
+    expect(
+      weird.ok &&
+        weird.value.warnings.some(
+          (w) => w.includes('gpt-5') && w.includes('the same model your main assistant is already running on'),
+        ),
+    ).toBe(true);
   });
 
   it('cc: maxTurns → stepCap', () => {
