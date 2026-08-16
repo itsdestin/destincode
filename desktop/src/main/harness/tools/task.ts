@@ -127,10 +127,29 @@ type TaskArgs = z.infer<typeof schema>;
 // This enumeration doubles as the 1a consent copy: it is the text a user sees
 // when the envelope ask fires (permissionSubject below), since the pretty
 // launch card is plan 1c. Snapshotted once — the built-in roster is static.
+// 2026-08-16 (Destin's 1b hands-on, Test 8): each line now NAMES the
+// specialist's tools and says outright whether it has a shell. The old copy
+// said only "read-only" vs "can edit files", so a parent asked to *run* a
+// command (`git log`) reasoned "that's a read → explorer" and hired a helper
+// with no Bash at all, which then improvised around the request instead of
+// routing an ask. A model can only pick the right helper for "run X" if the
+// roster tells it who can run anything.
+function charterLabel(s: { charter: string; allowedTools: readonly string[] }): string {
+  const hasShell = s.allowedTools.includes('Bash');
+  if (s.charter === 'read-write') return hasShell ? 'can edit files and run commands' : 'can edit files';
+  return hasShell ? 'read-only, can run commands' : 'read-only';
+}
 function describeSpecialists(): string {
-  return listSpecialists()
-    .map((s) => `- ${s.id} (${s.charter === 'read-write' ? 'can edit files' : 'read-only'}): ${s.description}`)
-    .join('\n');
+  const lines = listSpecialists()
+    .map((s) => {
+      const hasShell = s.allowedTools.includes('Bash');
+      return `- ${s.id} (${charterLabel(s)}; tools: ${s.allowedTools.join(', ')}${hasShell ? '' : ' — no shell'}): ${s.description}`;
+    });
+  const shellOwners = listSpecialists().filter((s) => s.allowedTools.includes('Bash')).map((s) => s.id);
+  const shellRule = shellOwners.length === 1
+    ? `Only the ${shellOwners[0]} can run shell commands — a job that needs a command run must go to it, even if the job is otherwise read-only.`
+    : `Only ${shellOwners.join(', ')} can run shell commands — a job that needs a command run must go to one of them.`;
+  return `${lines.join('\n')}\n${shellRule}`;
 }
 
 // Codex's orchestration-doctrine line: a specialist cannot ask a conversational
@@ -163,7 +182,7 @@ export function createTaskTool(): NativeTool<TaskArgs> {
     // per-role descriptions — mirrors skill.ts's shortDescription trim.
     shortDescription:
       'Delegate a focused task to a specialist subagent. Specialists: '
-      + listSpecialists().map((s) => `${s.id} (${s.charter === 'read-write' ? 'can edit files' : 'read-only'})`).join(', '),
+      + listSpecialists().map((s) => `${s.id} (${charterLabel(s)}${s.allowedTools.includes('Bash') ? '' : ', no shell'})`).join(', '),
     inputSchema: schema,
     // The envelope ask's subject (spec §1a/§5) — CHARTER-SCOPED (Fix 4, review
     // round 1): `${charter}:${work_dir}`, e.g. "read-only:/home/x/proj". Before

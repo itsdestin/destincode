@@ -346,6 +346,28 @@ describe('Task tool — typed refusals (plan 1a)', () => {
 // default when no args.model and no specialist.modelPreference) never
 // touches either.
 // ---------------------------------------------------------------------------
+// 2026-08-16 (Destin's 1b hands-on, Test 8): the parent model hired the
+// read-only explorer to run `git log` because the roster said only
+// "read-only" vs "can edit files" — nothing told it the explorer has NO
+// SHELL. The description a model reads must name each specialist's tools,
+// and say plainly which one can run commands.
+describe('Task tool — roster names each specialist\'s tools (2026-08-16)', () => {
+  it('lists every built-in specialist\'s allowedTools and singles out the shell', () => {
+    const tool = createTaskTool();
+    const desc = tool.description;
+    // Each roster line carries the tool list verbatim.
+    expect(desc).toContain('explorer (read-only; tools: Read, Glob, Grep, WebFetch, WebSearch — no shell)');
+    expect(desc).toContain('researcher (read-only; tools: Read, Glob, Grep, WebFetch, WebSearch — no shell)');
+    expect(desc).toContain('reviewer (read-only; tools: Read, Glob, Grep — no shell)');
+    expect(desc).toContain('worker (can edit files and run commands; tools: Read, Write, Edit, Bash, Glob, Grep)');
+    // And the one-line rule a model needs when the job is "run X".
+    expect(desc).toContain('Only the worker can run shell commands');
+    // The trimmed presentation for small models keeps the same fact in fewer words.
+    expect(tool.shortDescription).toContain('worker (can edit files and run commands)');
+    expect(tool.shortDescription).toContain('explorer (read-only, no shell)');
+  });
+});
+
 describe('Task tool — model resolution (Task 14)', () => {
   const PARENT_BINDING: ModelBinding = { providerId: 'openrouter', modelId: 'parent-model' };
 
