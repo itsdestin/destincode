@@ -304,7 +304,7 @@ tool has no way to know that from a shell it never rendered.
 
 ## MCP in native sessions (M3 item 4, phase 1)
 
-Design: workspace `docs/active/specs/2026-07-30-native-mcp-design.md`. Nine tasks built a
+Design: workspace `docs/archive/specs/2026-07-30-native-mcp-design.md`. Nine tasks built a
 registry store, a single-server client, a refcounted connection manager, a per-tool adapter,
 budget-gated session wiring, and projection into Claude Code's `~/.claude.json` — all on branch
 `feat/native-mcp-phase1`, not yet merged to master.
