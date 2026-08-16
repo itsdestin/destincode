@@ -911,7 +911,14 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                 when !isThinking. 'stuck' only occurs mid-thinking, so it stays
                 gated on the thinking area. */}
             {(() => {
-              const thinkingArea = state.isThinking && !hasAwaitingApproval && !hasRunningTools;
+              // `!compactionPending`: while compaction runs, CompactingCard is
+              // already on screen with its own pulse + elapsed counter, so the
+              // generic spinner stacked a second "working" signal underneath it
+              // — and its rotating copy ("Connecting dots") describes the model
+              // thinking, which is not what a summarize step is doing. One
+              // status per event. (Destin, 2026-08-16)
+              const thinkingArea =
+                state.isThinking && !hasAwaitingApproval && !hasRunningTools && !state.compactionPending;
               const terminalAttention =
                 state.attentionState === 'error' || state.attentionState === 'session-died';
               // Native local-model: while the model isn't resident yet (cold load

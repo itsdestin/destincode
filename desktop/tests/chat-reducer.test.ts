@@ -442,6 +442,42 @@ describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
   });
 });
 
+describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () => {
+  // CC writes a bare `/compact` user line into the JSONL on BOTH the typed path
+  // and the resume-from-summary path. CompactingCard is the intended feedback
+  // for that event, so the bubble is pure duplication — but everything else the
+  // event drives (turn state, uuid dedup) must still happen.
+  it('drops the bubble for /compact but still starts the turn', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-compact', timestamp: 1000,
+      text: '/compact',
+    });
+    const session = state.get(SESSION)!;
+    expect(session.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+    expect(session.isThinking).toBe(true);
+    expect(session.seenUuids.has('u-compact')).toBe(true);
+  });
+
+  it('drops it with focus instructions too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-c2', timestamp: 1000,
+      text: '/compact focus on the auth work',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+  });
+
+  it('keeps a real message that merely mentions /compact', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 1000,
+      text: 'why did /compact take so long?',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(1);
+  });
+});
+
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
 

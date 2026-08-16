@@ -840,6 +840,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return next;
       }
 
+      // Fix (Destin, 2026-08-16): CC writes a bare `/compact` user line into the
+      // JSONL both when the user types it AND when resume-from-summary runs
+      // compaction internally. Neither case has an optimistic bubble to confirm
+      // (the typed path deliberately skips one — see App.tsx's runSlashResult
+      // comment), so it landed here and rendered a `/compact` bubble sitting
+      // right next to the CompactingCard that already says the same thing. The
+      // card is the only feedback this event should produce, so drop the bubble
+      // while keeping every other effect of the event (turn state, seenUuids,
+      // queue drain) — those are what tell the rest of the UI a turn is running.
+      const suppressBubble = /^\/compact(\s|$)/.test(action.text.trim());
+
       // No pending match — a queued message being drained (Task 12's true-
       // position confirm: this is the ONLY place its timeline entry gets
       // created, at the end), a remote/replay client, or the user typed
@@ -856,7 +867,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // `injected` rides only this append path on purpose: a host-injected
         // turn never has an optimistic pending bubble to confirm (nobody typed
         // it), so it can only ever land here.
-        timeline: [...session.timeline, {
+        timeline: suppressBubble ? session.timeline : [...session.timeline, {
           kind: 'user', message, pending: false,
           ...(action.injected ? { injected: action.injected } : {}),
           ...(action.injectedMeta ? { injectedMeta: action.injectedMeta } : {}),
