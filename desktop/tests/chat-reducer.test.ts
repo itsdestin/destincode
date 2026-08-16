@@ -310,6 +310,92 @@ describe('PERMISSION_REQUEST tool matching', () => {
     expect(awaiting).toEqual(['tool-a']);
   });
 
+  // 2026-08-16: main now RE-ANNOUNCES every still-pending ask on a heartbeat so
+  // a card that never rendered (or that a later event overwrote) heals itself
+  // instead of hanging the turn forever. That makes PERMISSION_REQUEST a
+  // REPEATABLE action — these four pin what a repeat must and must not do.
+  describe('re-delivered by the heartbeat', () => {
+    it('is a no-op — identical state object — when the card is already awaiting approval', () => {
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      const settled = state;
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      // Reference equality, not deep equality: a fresh object every 3s would
+      // re-render the whole timeline for nothing.
+      expect(state).toBe(settled);
+    });
+
+    it('never binds a SECOND card when another same-name tool is running', () => {
+      // The hazard the heartbeat introduces: tier-2 matches by NAME only, so a
+      // repeat could hand the same requestId to an unrelated running card and
+      // put Allow/Deny buttons on two cards for one ask.
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      state = dispatch(state, toolUse('tool-b', 'Bash', { command: 'pwd' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const awaiting = [...session.toolCalls.values()].filter((t) => t.status === 'awaiting-approval');
+      expect(awaiting).toHaveLength(1);
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-b')!.status).toBe('running');
+    });
+
+    it('RE-BINDS a card whose ask was wiped — the whole point of the heartbeat', () => {
+      // Reproduces the shipped stuck-turn shape: the card held the ask, then a
+      // later event overwrote it back to plain 'running' with no requestId, so
+      // no buttons rendered while main was still waiting. The next heartbeat
+      // must put the ask back rather than mint a duplicate.
+      state = dispatch(state, toolUse('tool-a', 'Read', { file_path: '/x' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      const wiped = new Map(session0.toolCalls);
+      wiped.set('tool-a', { ...wiped.get('tool-a')!, status: 'running', requestId: undefined });
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: wiped });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-a')!.requestId).toBe('req-hb');
+      expect([...session.toolCalls.values()].filter((t) => t.requestId === 'req-hb')).toHaveLength(1);
+    });
+
+    it('re-creates the card entirely when it was lost (transcript replay / re-dock)', () => {
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      // Replay rebuilt the timeline from the JSONL, which has no record of a
+      // pending ask — the card is simply gone (ROADMAP bug, 2026-08-16).
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: new Map(), activeTurnToolIds: new Set() });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const card = session.toolCalls.get('perm-req-hb');
+      expect(card?.status).toBe('awaiting-approval');
+      // Load-bearing: ChatView renders awaiting cards from activeTurnToolIds,
+      // and AssistantTurnBubble deliberately skips them — an awaiting card
+      // outside that Set renders NOWHERE.
+      expect(session.activeTurnToolIds.has('perm-req-hb')).toBe(true);
+    });
+  });
+
   it('still creates a synthetic entry when no running tool exists', () => {
     state = dispatch(state, {
       type: 'PERMISSION_REQUEST',

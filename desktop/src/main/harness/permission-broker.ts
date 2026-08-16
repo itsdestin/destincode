@@ -142,11 +142,36 @@ interface PendingAsk {
    *  `resolve` again (which would silently no-op on an already-settled
    *  promise and lose the real answer). */
   timedOut: boolean;
+  /** The exact PermissionRequest this ask emitted, minus its timestamp, kept so
+   *  the heartbeat re-announces something byte-identical. Rebuilding it from
+   *  the fields above would silently drift from the emit in `ask()`. */
+  announcement: { sessionId: string; type: 'PermissionRequest'; payload: Record<string, unknown> };
 }
+
+/** How often an open ask re-announces itself to the renderer.
+ *
+ *  WHY the heartbeat exists at all (2026-08-16 stuck-session investigation): a
+ *  ROOT ask has no timeout — harness-session awaits it and the turn is simply
+ *  paused until someone answers. So ANY delivery failure between here and a
+ *  rendered card is a permanently hung turn that looks exactly like a slow
+ *  model: no error, no banner, nothing to click. Three such failures are known
+ *  (a card overwritten by the later tool-use event — the bug behind Destin's
+ *  hung local session, `cd6fb766`; a card lost to a transcript replay after a
+ *  reload or session switch; a hook event dropped when every target
+ *  webContents is gone). Rather than chase each, main keeps SAYING the ask is
+ *  open, and the renderer heals on the next beat. PERMISSION_REQUEST is
+ *  idempotent-on-repeat for exactly this reason (see chat-reducer.ts).
+ *
+ *  3s: below the point where a missing card reads as broken, and negligible —
+ *  a repeat with an unchanged requestId costs the reducer one early return. */
+export const ASK_REANNOUNCE_MS = 3_000;
 
 export class PermissionBroker extends EventEmitter {
   private pending = new Map<string, PendingAsk>();
   private lateResponseHandler?: LateResponseHandler;
+  /** One interval for ALL open asks — started when `pending` gains its first
+   *  answerable entry, stopped when it has none. Never per-ask. */
+  private reannounceTimer?: ReturnType<typeof setInterval>;
 
   /** Task 8: the ONE handler invoked when a real response arrives for an ask
    *  that already timed out. A setter rather than a constructor arg because
@@ -163,33 +188,14 @@ export class PermissionBroker extends EventEmitter {
   ask(req: AskRequest, opts?: { timeoutMs?: number; onTimeout?: () => AskDecision }): Promise<AskDecision> {
     const requestId = `native-${randomUUID()}`;
     return new Promise<AskDecision>((resolve) => {
-      const entry: PendingAsk = {
-        sessionId: req.sessionId,
-        toolName: req.toolName,
-        raisedBy: req.raisedBy,
-        specialist: req.specialist,
-        subject: req.subject,
-        resolve,
-        timedOut: false,
-      };
-      this.pending.set(requestId, entry);
-      if (opts?.timeoutMs !== undefined && opts.onTimeout) {
-        const onTimeout = opts.onTimeout;
-        entry.timer = setTimeout(() => {
-          entry.timer = undefined;
-          entry.timedOut = true;
-          resolve(onTimeout());
-          // NOT deleted from `pending` — see PendingAsk.timedOut's own WHY.
-        }, opts.timeoutMs);
-      }
       // Payload field names MUST match what hook-dispatcher extracts
       // (src/renderer/state/hook-dispatcher.ts): tool_name, tool_input,
       // _requestId. denyListed rides along for the Task 13 warning, `external`
       // the same way so ToolCard can hide Always-allow, and `specialist`
       // (Task 8) so a future card revision can label which child raised it.
-      this.emit('hook-event', {
+      const announcement = {
         sessionId: req.sessionId,
-        type: 'PermissionRequest',
+        type: 'PermissionRequest' as const,
         payload: {
           _requestId: requestId,
           tool_name: req.toolName,
@@ -201,9 +207,72 @@ export class PermissionBroker extends EventEmitter {
           // shape is byte-identical to before this field existed.
           ...(req.permissionMode ? { permissionMode: req.permissionMode } : {}),
         },
-        timestamp: Date.now(),
-      });
+      };
+      const entry: PendingAsk = {
+        sessionId: req.sessionId,
+        toolName: req.toolName,
+        raisedBy: req.raisedBy,
+        specialist: req.specialist,
+        subject: req.subject,
+        resolve,
+        timedOut: false,
+        announcement,
+      };
+      this.pending.set(requestId, entry);
+      if (opts?.timeoutMs !== undefined && opts.onTimeout) {
+        const onTimeout = opts.onTimeout;
+        entry.timer = setTimeout(() => {
+          entry.timer = undefined;
+          entry.timedOut = true;
+          resolve(onTimeout());
+          // NOT deleted from `pending` — see PendingAsk.timedOut's own WHY.
+          // It IS now unanswerable-by-the-turn though, so it stops heartbeating.
+          this.syncReannounceTimer();
+        }, opts.timeoutMs);
+      }
+      this.syncReannounceTimer();
+      this.emitAnnouncement(entry);
     });
+  }
+
+  /** The ONE place a PermissionRequest goes out, first time and every beat.
+   *  `payload` is shallow-copied per emit: the stored announcement is re-sent
+   *  indefinitely, so handing every listener the same object would let one
+   *  in-process consumer's mutation rewrite what all later beats say. */
+  private emitAnnouncement(entry: PendingAsk): void {
+    this.emit('hook-event', {
+      sessionId: entry.announcement.sessionId,
+      type: entry.announcement.type,
+      payload: { ...entry.announcement.payload },
+      timestamp: Date.now(),
+    });
+  }
+
+  /** Re-emit every ask whose turn is still WAITING on it. A timed-out entry is
+   *  skipped: its promise already settled via onTimeout, so nothing is stuck —
+   *  it lingers in `pending` only so a late human answer still lands. */
+  private reannounce(): void {
+    for (const entry of this.pending.values()) {
+      if (entry.timedOut) continue;
+      this.emitAnnouncement(entry);
+    }
+  }
+
+  /** Idempotent: run after any change to `pending` or to an entry's timedOut. */
+  private syncReannounceTimer(): void {
+    let answerable = false;
+    for (const entry of this.pending.values()) {
+      if (!entry.timedOut) { answerable = true; break; }
+    }
+    if (answerable && !this.reannounceTimer) {
+      this.reannounceTimer = setInterval(() => this.reannounce(), ASK_REANNOUNCE_MS);
+      // Unref'd: an unanswered permission ask must never be the reason the main
+      // process refuses to exit.
+      this.reannounceTimer.unref?.();
+    } else if (!answerable && this.reannounceTimer) {
+      clearInterval(this.reannounceTimer);
+      this.reannounceTimer = undefined;
+    }
   }
 
   /** Returns false when the id isn't ours — caller falls through to hookRelay. */
@@ -248,6 +317,7 @@ export class PermissionBroker extends EventEmitter {
       // instead (NativeSessionHost.onLateResponse) rather than calling
       // `entry.resolve` again, which would just no-op.
       this.pending.delete(requestId);
+      this.syncReannounceTimer();
       if (this.lateResponseHandler) {
         this.lateResponseHandler(
           {
@@ -270,6 +340,7 @@ export class PermissionBroker extends EventEmitter {
 
     if (entry.timer) clearTimeout(entry.timer); // exit path: respond() before the deadline
     this.pending.delete(requestId);
+    this.syncReannounceTimer();
     entry.resolve(resolved);
     return true;
   }
@@ -304,6 +375,7 @@ export class PermissionBroker extends EventEmitter {
   private cancelOne(id: string, entry: PendingAsk): void {
     if (entry.timer) clearTimeout(entry.timer); // exit path: cancel
     this.pending.delete(id);
+    this.syncReannounceTimer();
     // PermissionExpired clears the approval card; _requestId matches the field
     // hook-dispatcher reads for the expired branch.
     this.emit('hook-event', {

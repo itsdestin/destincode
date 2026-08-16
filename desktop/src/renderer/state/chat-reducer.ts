@@ -1430,9 +1430,32 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // CONSENT bug: the honest fallback is the synthetic card below, which
       // describes the ask's own payload and is reclaimed by TRANSCRIPT_TOOL_USE
       // when the real event lands.
-      // (An older requestId pass was unreachable — a running tool never carries
-      // a requestId; PERMISSION_RESPONDED clears it.)
+      // (An older requestId pass was unreachable — a running tool never carried
+      // a requestId; PERMISSION_RESPONDED clears it. That is no longer quite
+      // true: a card whose ask was overwritten keeps the requestId while
+      // reverting to 'running', which is exactly the stale binding the loop
+      // directly below detects and clears.)
       const toolCalls = new Map(session.toolCalls);
+
+      // This action is REPEATABLE (2026-08-16): main re-announces every
+      // still-pending ask on a heartbeat, so a card that never rendered — or
+      // that a later event overwrote — heals itself instead of hanging the turn
+      // forever on an ask nobody can answer. Two consequences, both handled
+      // here BEFORE the match loop, because the loop only ever looks at
+      // 'running' tools and cannot see either case:
+      //   • Already bound and awaiting → nothing to do. Return `state` itself
+      //     (not a rebuilt Map): a fresh object every few seconds would
+      //     re-render the timeline for no change.
+      //   • Held by a card in any OTHER status → that binding is stale, and
+      //     tier 2 (name-only) would otherwise hand this same requestId to a
+      //     SECOND running card, putting Allow/Deny on two cards for one ask.
+      //     Drop the dead requestId so the match below can re-bind cleanly.
+      for (const [id, tool] of toolCalls) {
+        if (tool.requestId !== action.requestId) continue;
+        if (tool.status === 'awaiting-approval') return state;
+        toolCalls.set(id, { ...tool, requestId: undefined });
+      }
+
       let inputMatchId: string | null = null;
       let nameMatchId: string | null = null;
       const wantedInput = action.input ? stableStringify(action.input) : null;
@@ -1480,15 +1503,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
 
       if (!found) {
-        // Fix: never synthesize a SECOND placeholder for a requestId we already
-        // hold. The match loop above only considers 'running' tools, so a
-        // re-delivered PERMISSION_REQUEST for a tool already flipped to
-        // 'awaiting-approval' fell through to here and minted a duplicate card
-        // (the synthetic merge in TRANSCRIPT_TOOL_USE reclaims only one of
-        // them, orphaning the rest).
-        for (const tool of toolCalls.values()) {
-          if (tool.requestId === action.requestId) return state;
-        }
+        // (The "never synthesize a SECOND placeholder for a requestId we
+        // already hold" guard that used to live here moved ABOVE the match
+        // loop in the 2026-08-16 heartbeat change — it has to run before tier 2
+        // can bind a second card, not only when tier 2 misses. By this line
+        // nothing holds action.requestId: it was either returned early as an
+        // intact ask, or cleared as a stale binding.)
 
         // Permission hook arrived before transcript watcher — create synthetic tool entry
         const syntheticId = `perm-${action.requestId}`;
