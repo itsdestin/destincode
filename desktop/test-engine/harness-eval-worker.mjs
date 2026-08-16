@@ -26,6 +26,7 @@
 // money — there is no output here that isn't either the final result or an
 // error explaining why there isn't one.
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 // ---------------------------------------------------------------------------
 // HOW THE API KEY GETS IN HERE, and what is actually guaranteed about it.
@@ -150,8 +151,10 @@ if (instructionsFile && (typeof instructions !== 'string' || !instructions)) {
 let runCase;
 let makeOpenRouterFactory;
 try {
-  ({ runCase } = await import(path.join(dist, 'main/harness/eval/run-case.js')));
-  ({ makeOpenRouterFactory } = await import(path.join(dist, 'main/harness/eval/openrouter-factory.js')));
+  // WHY pathToFileURL: a bare absolute path is not a valid ESM specifier on
+  // Windows (`D:\...` parses as protocol 'd:' → ERR_UNSUPPORTED_ESM_URL_SCHEME).
+  ({ runCase } = await import(pathToFileURL(path.join(dist, 'main/harness/eval/run-case.js')).href));
+  ({ makeOpenRouterFactory } = await import(pathToFileURL(path.join(dist, 'main/harness/eval/openrouter-factory.js')).href));
 } catch (err) {
   fail(`could not load the harness under test from "${dist}": ${err.message}`);
 }

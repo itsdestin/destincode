@@ -77,7 +77,7 @@ export interface StoredRule extends PermissionRule {
 }
 
 /** One project's slice of permissions.json, as the management UI reads it.
- *  `cwd` is absent for entries written before the UI existed: cwdToProjectSlug
+ *  `cwd` is absent for entries written before the UI existed: nativeStoreSlug
  *  collapses ':', '\', '/' AND spaces all to '-', so the original path is NOT
  *  recoverable from the slug. That is why removal keys by slug, not cwd. */
 export interface StoredProject {

@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSessionTranscriptMeta } from '../session-browser';
-import { ccProjectSlug } from '../project-conversations';
+import { ccProjectSlug } from '../slug-encoding';
 import { transcriptSkipReason, MIN_TRANSCRIPT_BYTES } from './lane-guards';
 import type { ConversationStore } from './conversation-store';
 import type { ConversationRecord } from './store-core';
@@ -45,7 +45,14 @@ export interface ReconcileOpts {
 function buildSlugToName(knownFolders: string[] | undefined): Map<string, string> {
   const m = new Map<string, string>();
   for (const folder of knownFolders ?? []) {
-    try { m.set(ccProjectSlug(folder).toLowerCase(), path.basename(folder)); }
+    try {
+      // CC slugs realpath(cwd) (see slug-encoding.ts fixture "symlink resolves to
+      // realpath"). Resolve the same way, falling back exactly as CC's Px() does,
+      // so a symlinked project folder finds CC's real directory.
+      let resolved: string;
+      try { resolved = fs.realpathSync.native(folder); } catch { resolved = folder; }
+      m.set(ccProjectSlug(resolved).toLowerCase(), path.basename(folder));
+    }
     catch { /* unslugifiable path — skip */ }
   }
   return m;
@@ -64,7 +71,7 @@ function resolveProjectName(
 // LAST-RESORT fallback used only when the folder is NOT among this device's
 // known folders (see buildSlugToName/resolveProjectName, which recover the exact
 // basename first). A CC slug is the cwd with separators flattened to '-'
-// (cwdToProjectSlug); the original path is not recoverable from the slug alone,
+// (ccProjectSlug); the original path is not recoverable from the slug alone,
 // so this takes the LAST slug segment — a TRUNCATION for hyphenated names
 // ('...-youcoded-dev' → 'dev'). Acceptable as a fallback because it's internally
 // consistent (transcriptRef and the mirror key use the same string) and the live

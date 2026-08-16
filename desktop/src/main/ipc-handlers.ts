@@ -15,7 +15,8 @@ import { CommandProvider } from './command-provider';
 import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
-import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
+import { TranscriptWatcher } from './transcript-watcher';
+import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
 // registry that owns HarnessSessions and their persistence.
@@ -102,7 +103,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 // this file (they were closures, so the remote transport could not reach them).
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
-import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } from './artifacts/project-manager';
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
@@ -120,7 +121,7 @@ import {
 import { initGitWatchers, watchGit, unwatchGit, dropGitSubscriber } from './git/git-watcher';
 import { resolveRepoRoot, invalidateRepoRootCache } from './git/git-exec';
 import { PROJECT_IPC } from './project/ipc-channels';
-import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
+import { listProjectConversations, projectConversationHistory } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
@@ -147,12 +148,12 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 // Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
 // exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
-// cwdToProjectSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// frozen nativeStoreSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
 // note). Used by the native RESUME path to validate a cwd BEFORE handing it to
 // nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
 // send a resume into the wrong (empty) directory (Task 9).
 function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
-  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`));
+  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', nativeStoreSlug(cwd), `${sessionId}.jsonl`));
 }
 
 
@@ -2863,10 +2864,23 @@ export function registerIpcHandlers(
       // Start watching the transcript file for this session
       const sessionInfo = sessionManager.getSession(desktopId);
       if (sessionInfo) {
-        transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
+        // Spec §5.0: CC's payload carries transcript_path AND cwd (both required
+        // fields of its hook schema). payload.cwd is post-realpath/post-chdir —
+        // the exact string CC slugged — so prefer it over our sessionInfo.cwd,
+        // which can differ through a symlink. sessionInfo.cwd is the fallback only.
+        // Hardened casts (final review, MINOR fold): a raw `as string | undefined`
+        // trusts the hook payload's shape blindly — if CC ever sent a non-string
+        // for either field, the cast would silently pass it through instead of
+        // falling back. typeof-narrow so an unexpected shape degrades to the
+        // documented fallback (sessionInfo.cwd / slug derivation) instead of
+        // handing a non-string downstream.
+        const payloadCwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : undefined;
+        const ccCwd = payloadCwd || sessionInfo.cwd;
+        const ccTranscriptPath = typeof event.payload?.transcript_path === 'string' ? event.payload.transcript_path : undefined;
+        transcriptWatcher.startWatching(desktopId, claudeId, ccCwd, ccTranscriptPath);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
-        noteSessionStarted(claudeId, sessionInfo.cwd, 'claude');
+        noteSessionStarted(claudeId, ccCwd, 'claude');
         // 2b Task 8: this device now owns the session — take the lease.
         // Fire-and-forget: a denied (ok:false) result would only mean another
         // device holds it, but the sanctioned resume path already ran takeover
@@ -3421,6 +3435,14 @@ export function registerIpcHandlers(
   // Write/Edit/MultiEdit transcript event so the central index is populated and
   // artifacts appear in the Session Drawer even before the user opens it.
   // ensureProject and applyGitTreatment are both idempotent.
+  //
+  // Burst-safe by construction (2026-08-15): opening a long conversation
+  // replays ~1,000 of these at once (the tracker cannot tell replayed history
+  // from live events — see transcript-watcher's offset-0 read and
+  // TRANSCRIPT_REPLAY). The coalesced helpers answer the burst with one index
+  // write and one .gitignore read; appendVersion queues per project and applies
+  // the whole burst in a few read/write cycles instead of a thousand, each of
+  // which used to pin a parsed 4.4 MB sidecar in memory until the app OOM'd.
   ipcMain.handle(ARTIFACT_IPC.APPEND_VERSION, async (
     _e,
     projectRoot: string,
@@ -3431,11 +3453,11 @@ export function registerIpcHandlers(
       absolutePath: string | null;
       type: 'create' | 'edit' | 'delete' | 'read';
       author: 'agent' | 'user';
+      toolUseId?: string;
     }
   ) => {
-    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
-    await applyGitTreatment(projectRoot);
-    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
+    const { project } = await ensureProjectCoalesced(CLAUDE_DIR, projectRoot, sessionId);
+    await applyGitTreatmentCoalesced(projectRoot);
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
       kind: args.kind,
@@ -3443,7 +3465,14 @@ export function registerIpcHandlers(
       sessionId,
       type: args.type,
       author: args.author,
+      toolUseId: typeof args.toolUseId === 'string' && args.toolUseId ? args.toolUseId : undefined,
     });
+    // AFTER the append resolves, not before it (2026-08-15 review): appendVersion
+    // is queued now, so an invalidate issued before the call could be followed
+    // by a watcher rebuild that read the OLD sidecar — leaving a just-created
+    // artifact unmapped until the cache's next TTL. Invalidating once the write
+    // has committed closes that window.
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     // A newly created/edited file may also be a discovered doc — drop the cached
     // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
     invalidateDiscoveryCache(projectRoot);
@@ -3451,14 +3480,19 @@ export function registerIpcHandlers(
     // artifactId: null was dropped by every consumer, which meant the
     // ActiveArtifactView "Claude also edited this file" conflict banner could
     // never fire for agent edits (its entire purpose).
-    webContents.getAllWebContents().forEach((wc) =>
-      wc.send(ARTIFACT_IPC.CHANGED, {
-        projectRoot,
-        artifactId: result.artifactId,
-        kind: args.type,
-        by: args.author,
-      })
-    );
+    // A deduped append changed nothing on disk — it is a replayed tool call
+    // that was recorded the first time round — so it must not announce an
+    // edit: that banner would be a lie about a file nobody just touched.
+    if (!result.deduped) {
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, {
+          projectRoot,
+          artifactId: result.artifactId,
+          kind: args.type,
+          by: args.author,
+        })
+      );
+    }
     return { ok: result.committed, project };
   });
 

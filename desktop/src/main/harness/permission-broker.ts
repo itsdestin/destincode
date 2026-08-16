@@ -77,6 +77,34 @@ export interface AskDecision {
    *  the destructive deny-list. Always populated on a resolved ask; defaults to
    *  the narrow option. */
   grantScope?: GrantScope;
+  /** A HUMAN answered "no" on a card — set ONLY by respond() below, which is
+   *  the only path a person's decision travels (renderer and remote WS
+   *  clients both land there), on ANY real deny it produces, in time or
+   *  late. The driver reads it on interactive asks: a dismissed
+   *  AskUserQuestion ends the turn, because closing the card is the user
+   *  taking the turn back. This also reaches a SPECIALIST child's own driver
+   *  on a routed, IN-TIME deny: childAskRouter's broker.ask() call returns
+   *  this exact decision object untouched, so the child's own turn ends the
+   *  same way a root session's would — a human closing the routed card is
+   *  still a human taking the turn back, just on the parent's screen instead
+   *  of the child's. A LATE deny (after the entry's own timeout already fired
+   *  the redirect) still carries `dismissed: true` for honesty, but nothing
+   *  reads it there: the original awaited promise already settled via the
+   *  redirect, so the late answer reaches onLateResponse instead
+   *  (native-session-host.ts), which steers or notifies off `.behavior`
+   *  alone — there is no turn left to end synchronously.
+   *
+   *  WHY this is not just `behavior === 'deny'`: every OTHER askUser path with
+   *  no human behind it must keep a bare deny meaning "you may not do this,
+   *  carry on and finish", NOT "stop" — child-ask-router.ts's two instant-deny
+   *  branches (AskUserQuestion, external-directory), its 5-minute timeout
+   *  redirect (a timeout is not a dismissal — the human never closed anything,
+   *  they just haven't answered yet), and the harness evaluator's fixture jail
+   *  (eval/run-case.ts). The evaluator depends on that: its wrap-up turn denies
+   *  AskUserQuestion precisely so the model answers instead of asking, and
+   *  ending the turn there loses the review entirely (caught by
+   *  harness-review-runner.test.ts). */
+  dismissed?: boolean;
 }
 
 /** Task 8: the shape handed to a late-response handler — everything about the
@@ -204,7 +232,13 @@ export class PermissionBroker extends EventEmitter {
     // is PERSISTED (unlike permissionMode, which is display-only), so it is
     // checked here AND re-derived at the session rather than trusted.
     const grantScope: GrantScope = decision.grantScope === 'wide' ? 'wide' : 'exact';
-    const resolved: AskDecision = { behavior, always, grantScope, ...(updatedInput ? { updatedInput } : {}) };
+    // Stamp a human "no" so the driver can tell it from a policy refusal (see
+    // AskDecision.dismissed) — true whether this arrives IN TIME (resolves
+    // the still-open ask below) or LATE (entry.timedOut already fired the
+    // redirect, so this reaches lateResponseHandler instead, further down).
+    // Both are a person closing the card; only where the decision goes
+    // differs, never whether a human actually answered it.
+    const resolved: AskDecision = { behavior, always, grantScope, ...(behavior === 'deny' ? { dismissed: true } : {}), ...(updatedInput ? { updatedInput } : {}) };
 
     if (entry.timedOut) {
       // Task 8: the entry's own promise already settled (with the redirect,

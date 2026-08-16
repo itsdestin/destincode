@@ -640,10 +640,14 @@ class SessionService : Service() {
     fun destroySession(sessionId: String) {
         // Push this session's JSONL to all backends before destroying
         // (mirrors desktop main.ts session-exit → syncService.pushSession)
+        // Capture the hook-supplied transcript path BEFORE sessionRegistry.destroySession()
+        // tears down the PTY bridge/EventBridge below — same design as desktop's
+        // watcher: no derivation can be wrong about a path CC handed us.
+        val transcriptPath = sessionRegistry.sessions.value[sessionId]?.ptyBridge?.getEventBridge()?.getTranscriptPath(sessionId)
         syncService?.let { sync ->
             serviceScope.launch {
                 try {
-                    sync.pushSession(sessionId)
+                    sync.pushSession(sessionId, transcriptPath)
                 } catch (e: Exception) {
                     android.util.Log.w("SessionService", "Session-end sync failed for $sessionId: $e")
                 }
@@ -3578,6 +3582,8 @@ class SessionService : Service() {
                         sessionId    = sessionId,
                         type         = args.optString("type", "edit"),
                         author       = args.optString("author", "agent"),
+                        // Replay-dedupe key from the tracker (see VersionEvent.toolUseId).
+                        toolUseId    = args.optString("toolUseId", "").ifEmpty { null },
                     )
                 )
                 // Broadcast push event so connected clients refresh their view

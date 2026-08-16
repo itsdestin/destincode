@@ -25,7 +25,11 @@
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { NativeHome } from '../../native-home';
-import { cwdToProjectSlug } from '../../transcript-watcher';
+// nativeStoreSlug (NOT ccProjectSlug): this ledger is an app-private sidecar
+// under ~/.youcoded/sessions/<slug>/ — nothing CC created or reads it, so it
+// takes the FROZEN native-store slug like every other file under sessions/,
+// never the CC-mirroring one (slug-encoding.ts).
+import { nativeStoreSlug } from '../../slug-encoding';
 
 export type OwnerStamp = { pid: number; instanceId: string };
 
@@ -128,7 +132,7 @@ export class DelegationLedger {
   constructor(private home: NativeHome) {}
 
   private relPath(parentCwd: string, parentId: string): string {
-    return path.join('sessions', cwdToProjectSlug(parentCwd), `${parentId}.delegations.json`);
+    return path.join('sessions', nativeStoreSlug(parentCwd), `${parentId}.delegations.json`);
   }
 
   /** Tolerate a missing/corrupt/wrong-shape file as "no delegations yet" —

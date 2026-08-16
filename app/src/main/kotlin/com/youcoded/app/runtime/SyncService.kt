@@ -220,25 +220,25 @@ class SyncService(
     }
 
     // =========================================================================
-    // Slug Generation (CRITICAL — must match Claude Code's algorithm)
+    // Slug generation — ONE rule: CC's real encoding, mirrored by CcProjectSlug
+    // (fixture-anchored; desktop mirror: slug-encoding.ts). The old 4-char
+    // replace rule was deleted 2026-08-12: it named directories CC never
+    // writes (the home path contains dots), which silently killed session-end
+    // push, /resume aggregation, cross-device symlinking, AND the
+    // conversation-index stamp it fed (spec §5.3 — the index slug is resolved
+    // as a real path on restore, so it must be the real CC slug too).
     // =========================================================================
 
-    /**
-     * Generate the current device's project slug.
-     * Must match TranscriptWatcher.cwdToProjectSlug() and desktop's getCurrentSlug().
-     * Replace /, \, :, and space with - to match Claude Code's slug algorithm.
-     */
-    fun getCurrentSlug(): String {
-        // Use canonical path to resolve symlinks (e.g., /data/user/0 → /data/data)
-        val homePath = try {
-            bootstrap.homeDir.canonicalPath
-        } catch (_: Exception) {
-            bootstrap.homeDir.absolutePath
-        }
-        // Replace path separators + spaces with dashes — must match desktop exactly.
-        // Space handling is required: CC encodes spaces as dashes too.
-        return homePath.replace('/', '-').replace('\\', '-').replace(':', '-').replace(' ', '-')
+    private fun canonicalHome(): String = try {
+        // Canonical path resolves symlinks (/data/user/0 → /data/data) — the
+        // same realpath step CC itself applies before slugging.
+        bootstrap.homeDir.canonicalPath
+    } catch (_: Exception) {
+        bootstrap.homeDir.absolutePath
     }
+
+    /** CC's real directory name for the home project. */
+    fun ccHomeSlug(): String = CcProjectSlug.slug(canonicalHome())
 
     // =========================================================================
     // Device Name (for conversation-index.json)
@@ -1273,7 +1273,7 @@ class SyncService(
         } ?: JSONObject().apply { put("version", 1); put("sessions", JSONObject()) }
 
         val sessions = index.getJSONObject("sessions")
-        val slug = getCurrentSlug()
+        val slug = ccHomeSlug()
         val device = getDeviceName()
         val now = System.currentTimeMillis()
         val pruneThreshold = now - INDEX_PRUNE_DAYS * 24L * 60 * 60 * 1000
@@ -1381,7 +1381,7 @@ class SyncService(
         val projectsDir = File(claudeDir, "projects")
         if (!projectsDir.isDirectory) return
 
-        val currentSlug = getCurrentSlug()
+        val currentSlug = ccHomeSlug()
 
         projectsDir.listFiles()?.forEach { slugDir ->
             if (slugDir.name == currentSlug) return@forEach
@@ -1411,7 +1411,7 @@ class SyncService(
         val projectsDir = File(claudeDir, "projects")
         if (!projectsDir.isDirectory) return
 
-        val currentSlug = getCurrentSlug()
+        val currentSlug = ccHomeSlug()
         val homeDir = File(projectsDir, currentSlug)
         if (!homeDir.isDirectory) return
 
@@ -1519,11 +1519,18 @@ class SyncService(
     // Session-End Push
     // =========================================================================
 
-    /** Push a single session's JSONL to all backends (called on session close). */
-    suspend fun pushSession(sessionId: String) {
-        val slug = getCurrentSlug()
-        val jsonlFile = File(claudeDir, "projects/$slug/$sessionId.jsonl")
+    /** Push a single session's JSONL to all backends (called on session close).
+     *  Prefers the hook-supplied transcript path (EventBridge) — same design as
+     *  desktop's watcher: no derivation can be wrong about a path CC handed us. */
+    suspend fun pushSession(sessionId: String, transcriptPath: String? = null) {
+        val fromHook = transcriptPath?.let { java.io.File(it) }?.takeIf { it.isFile }
+        val jsonlFile = fromHook ?: java.io.File(claudeDir, "projects/${ccHomeSlug()}/$sessionId.jsonl")
         if (!jsonlFile.exists()) return
+        // Remote bucket = the transcript's REAL containing dir name (CC wrote
+        // it), keeping session-end push consistent with the bulk push, which
+        // mirrors projects/ dirs verbatim. Fallback covers a hook path outside
+        // projects/ (should not happen; belt and suspenders).
+        val slug = jsonlFile.parentFile?.name ?: ccHomeSlug()
 
         // Update conversation index first
         updateConversationIndex()

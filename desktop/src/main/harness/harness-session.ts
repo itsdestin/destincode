@@ -370,6 +370,43 @@ export function describeProviderError(err: any): string {
 // the persisted history ends on a dangling tool_call that provider APIs reject.
 const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 
+// Returned to the model when the user closes an AskUserQuestion card without
+// answering. The OLD copy ("Continue with your best judgment") invited the model
+// to guess and keep working — which is the behavior this replaces. This states
+// the outcome instead: the user has taken the turn back. It is a real tool
+// result (pairing holds); the driver stops the loop right after recording it.
+// Spec: youcoded-dev/docs/archive/specs/2026-08-13-dismiss-ends-turn-design.md
+const DISMISSED_TOOL_TEXT =
+  'The user closed this question without answering and took over. Stop here and wait for their next message.';
+
+// Returned when an interactive ask is refused by a POLICY rather than a person
+// (childAskPolicy, the harness evaluator's fixture jail). Unlike a human
+// dismissal this does NOT end the turn — the policy's meaning is "you may not
+// ask, carry on and finish", and the evaluator's wrap-up turn depends on the
+// model answering after exactly this refusal.
+const REFUSED_ASK_TEXT =
+  'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.';
+
+// Back-filled into the still-un-executed calls of a step that ended because the
+// user dismissed a question. Deliberately NOT CANCELED_TOOL_TEXT: that says "the
+// user interrupted this action", and the user did not interrupt — a wrong cause
+// in a message the model reads is worse than a vague one.
+const NOT_RUN_TOOL_TEXT = 'Not run: the turn ended when the user closed the question.';
+
+// stopReason for that orderly stop. AssistantTurnBubble maps it to the
+// "Question closed — waiting for you." footer, so a dismissed turn can't be
+// mistaken for a session that silently died.
+const DISMISSED_STOP_REASON = 'question_dismissed';
+
+/** Driver-private "record this result, THEN end the turn" wrapper.
+ *
+ *  WHY this is not a flag on ToolResultPayload: that type is what EVERY tool
+ *  returns, so an `endsTurn` field there would let any tool end a turn — a far
+ *  bigger promise than this change makes. Only runOneTool's interactive branch
+ *  constructs this, and ToolResultPayload has no `kind` property, so the loop
+ *  can narrow on `'kind' in payload` with no ambiguity. */
+type EndTurnResult = { kind: 'end-turn'; payload: ToolResultPayload };
+
 // Streaming inactivity watchdog (native runtime). The abort-race below only
 // breaks the stream on a USER interrupt — a provider that holds the socket open
 // but stops emitting (OpenRouter keep-alive pings while an upstream stalls, or a
@@ -1661,6 +1698,29 @@ export class HarnessSession extends EventEmitter {
             this.emitEvent('user-interrupt', {});
             return;
           }
+          // The user dismissed a question → end the turn ORDERLY. Record THIS
+          // call's real result, then mark every remaining un-executed call in the
+          // step as not-run (same dangling-tool_call hazard the interrupt branch
+          // above guards against). `turn-complete` rather than `user-interrupt`
+          // on purpose: usage should be reported, and anything the user queued
+          // while the turn ran should drain — typing during the turn IS taking
+          // over. The max_steps gate below is the existing precedent for a
+          // driver-decided orderly stop.
+          if ('kind' in payload) {
+            this.emitEvent('tool-result', {
+              toolUseId: call.toolCallId, toolName: call.toolName,
+              toolResult: payload.payload.text, isError: true,
+            });
+            resultParts.push(this.toolResultPart(call, payload.payload.text));
+            for (let j = i + 1; j < step.toolCalls.length; j++) {
+              const rem = step.toolCalls[j];
+              this.emitEvent('tool-result', { toolUseId: rem.toolCallId, toolName: rem.toolName, toolResult: NOT_RUN_TOOL_TEXT, isError: true });
+              resultParts.push(this.toolResultPart(rem, NOT_RUN_TOOL_TEXT));
+            }
+            this.history.push({ role: 'tool', content: resultParts });
+            stopReason = DISMISSED_STOP_REASON;
+            break turnLoop;
+          }
           // Turn the tool's promised image paths into deliverable parts, charging
           // the per-turn budget/dedupe and amending the text with a named note
           // for every skip (Task 5 — the driver never promises silently).
@@ -2096,8 +2156,9 @@ export class HarnessSession extends EventEmitter {
   /** Run one tool call through the EXACT permission sequence (spec §2.1/§2.4):
    *  validate → doom-loop → guards → decide → (ask) → execute. NEVER throws —
    *  every failure mode is a tool RESULT the model can repair from, except a
-   *  user cancel which returns the 'interrupted' sentinel so the loop can unwind. */
-  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted'> {
+   *  user cancel which returns the 'interrupted' sentinel, and a dismissed
+   *  question which returns EndTurnResult — both let the loop unwind. */
+  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted' | EndTurnResult> {
     const tool = this.toolByName.get(call.toolName);
     if (!tool) return { text: `Unknown tool ${call.toolName}. Available: ${[...this.toolByName.keys()].join(', ')}.`, isError: true };
 
@@ -2156,7 +2217,14 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No user-interaction handler is wired for this session; ${call.toolName} cannot run. This is a configuration error.`, isError: true };
       const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: false });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.', isError: true };
+      // A HUMAN dismissal ENDS THE TURN: closing the card is the user taking the
+      // turn back, not permission to guess. Still a real tool result so
+      // call/result pairing holds — the loop stops right after recording it.
+      // `dismissed` is stamped only by PermissionBroker.respond (see its WHY):
+      // the OTHER askUser implementations are policies with no human behind
+      // them, and for them a deny means "you may not ask, carry on and finish".
+      if (d.behavior === 'deny' && d.dismissed) return { kind: 'end-turn', payload: { text: DISMISSED_TOOL_TEXT, isError: true } };
+      if (d.behavior !== 'allow') return { text: REFUSED_ASK_TEXT, isError: true };
       return { text: formatAnswers(args as any, d.updatedInput) };
     }
 

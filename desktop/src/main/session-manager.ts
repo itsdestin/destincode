@@ -65,7 +65,12 @@ export class SessionManager extends EventEmitter {
     // fixed, so this should be rare; the warning makes any regression VISIBLE
     // instead of a silent wrong-directory resume. Behavior is unchanged.
     if (!cwdExists && opts.cwd && opts.resumeSessionId) {
-      console.warn(`[session-manager] resume ${opts.resumeSessionId}: cwd "${opts.cwd}" does not exist — falling back to home; resume may open the wrong project`);
+      // Persisted breadcrumb (2026-08-12): this was a bare console.warn, which goes
+      // only to Electron stdout — invisible in a shipped build. log() lands it in
+      // ~/.claude/desktop.log where the next wrong-resume investigation can find it.
+      log('WARN', 'SessionManager', 'resume cwd does not exist — falling back to home; resume may open the wrong project', {
+        resumeSessionId: opts.resumeSessionId, cwd: opts.cwd,
+      });
     }
     const resolvedCwd = cwdExists ? opts.cwd! : os.homedir();
 

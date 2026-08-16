@@ -53,7 +53,8 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // Conversation Store (Phase 2a): records + transcript sync ride the personal
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
-import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { startConversationStore, stopConversationStore, materializeOne, resumeSweeps, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
+import { runSlugRepair } from './conversations/slug-repair';
 import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
@@ -1946,7 +1947,17 @@ void app.whenReady().then(async () => {
   // populated (its synchronous prologue creates the roots before its first
   // await, so the roots exist by the time this line runs). startConversationStore
   // resolves fast — the first-run reconcile inside is detached (may mirror GBs).
-  startConversationStore().catch(e => log('ERROR', 'Main', 'ConversationStore start failed', { error: String(e) }));
+  // Fix: pauseSweeps quiesces the startup reconcile/materialize kicks (and any
+  // trigger that fires while the repair runs) so the one-shot slug repair
+  // below never races them — a race here re-quarantines and re-resurrects
+  // records on every launch (found on the real-data run, see resumeSweeps'
+  // caller-side note and pauseSweeps' WHY in conversations/service.ts).
+  // .finally ALWAYS resumes, even if the repair throws, so a bad repair can't
+  // leave sync mirroring silently disabled forever.
+  startConversationStore({ pauseSweeps: true })
+    .then(() => runSlugRepair())   // idempotent; runs with the sweeps quiesced (spec §6)
+    .catch(e => log('ERROR', 'Main', 'ConversationStore start / slug repair failed', { error: String(e) }))
+    .finally(() => resumeSweeps());
 
   // One-time symlink sweep (Plan 2c): the legacy SyncService.aggregateConversations()/
   // rewriteProjectSlugs() (deleted this release) left ~hundreds of symlinks/junctions

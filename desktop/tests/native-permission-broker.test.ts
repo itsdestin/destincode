@@ -57,6 +57,38 @@ describe('PermissionBroker', () => {
     expect(d.always).toBeFalsy();
   });
 
+  it('stamps `dismissed` on a human deny — and ONLY on a deny', async () => {
+    // respond() is the only path a person's answer travels, so it is the only
+    // place that can honestly say "a human said no". The driver ends the turn on
+    // a dismissed AskUserQuestion; a POLICY askUser (childAskPolicy, the harness
+    // evaluator's jail) constructs its own decision, never sets this, and keeps
+    // the old carry-on semantics. Guard: harness-session-loop's POLICY-deny test.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+
+    const denied = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[0].payload._requestId as string, { decision: { behavior: 'deny' } })).toBe(true);
+    expect((await denied).dismissed).toBe(true);
+
+    const allowed = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[1].payload._requestId as string, { decision: { behavior: 'allow' } })).toBe(true);
+    expect((await allowed).dismissed).toBeFalsy();
+  });
+
+  it('a canceled ask carries no `dismissed` (an interrupt is not a dismissal)', async () => {
+    // cancelSession resolves pending asks as 'canceled'; the driver unwinds that
+    // as an interrupt. It must not look like the user closed the card.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    broker.cancelSession('s1');
+    const d = await p;
+    expect(d.behavior).toBe('canceled');
+    expect(d.dismissed).toBeFalsy();
+  });
+
   it('passes decision.updatedInput through to the resolver (AskUserQuestion answers)', async () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord, runSidecarMigration, renameArtifact } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion, appendVersionsDirect, removeArtifactRecord, runSidecarMigration, renameArtifact } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import { SIDECAR_SCHEMA_VERSION } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
@@ -129,6 +129,10 @@ describe('appendVersion', () => {
   // read as a flaky test for months; at 60 iterations the old code loses a
   // record essentially every run. If this ever goes red again, a writer is
   // producing an updatedAt that does NOT advance past the value it read.
+  // Uses appendVersionsDirect, NOT appendVersion: since 2026-08-15 appendVersion
+  // coalesces same-process callers into one batch, so two concurrent calls no
+  // longer race the CAS at all — the direct path is what a SECOND process
+  // (another YouCoded instance on the same project) still exercises.
   it('concurrent appends never lose a record (same-millisecond CAS)', async () => {
     for (let i = 0; i < 60; i++) {
       const root = mkdtempSync(join(tmpdir(), 'as-aba-'));
@@ -137,20 +141,112 @@ describe('appendVersion', () => {
         sessionId: 's', type: 'create', author: 'agent',
       });
       await Promise.all([
-        appendVersion(root, sample.projectId, sample.name, {
+        appendVersionsDirect(root, sample.projectId, sample.name, [{
           path: 'b.md', kind: 'internal', absolutePath: null,
           sessionId: 's', type: 'create', author: 'agent',
-        }),
-        appendVersion(root, sample.projectId, sample.name, {
+        }]),
+        appendVersionsDirect(root, sample.projectId, sample.name, [{
           path: 'c.md', kind: 'internal', absolutePath: null,
           sessionId: 's', type: 'create', author: 'agent',
-        }),
+        }]),
       ]);
       const s = await readSidecar(root) as ProjectSidecar;
       expect(s.artifacts.map((a) => a.path).sort()).toEqual(['a.md', 'b.md', 'c.md']);
       // 60 iterations x every run x CI — clean up rather than leak temp dirs.
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // 2026-08-15 — "YouCoded dies 16–21 s after opening one big session". The
+  // tracker fires appendVersion once per replayed tool call (~1,000 for a long
+  // session) and every call used to parse + hold + rewrite the whole sidecar
+  // concurrently until the main process OOM'd. Callers inside one process now
+  // coalesce into a per-project batch: one read and one write per drain.
+  describe('burst coalescing (2026-08-15 OOM fix)', () => {
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('applies a burst of concurrent appends in a handful of read/write cycles, all committed', async () => {
+      const N = 300;
+      const readSpy = vi.spyOn(fsPromises, 'readFile');
+      const results = await Promise.all(
+        Array.from({ length: N }, (_, i) => appendVersion(projectRoot, sample.projectId, sample.name, {
+          path: `docs/f${i % 50}.md`, kind: 'internal', absolutePath: null,
+          sessionId: 'sess-burst', type: i % 2 ? 'edit' : 'create', author: 'agent',
+          toolUseId: `toolu_${i}`,
+        }))
+      );
+      expect(results.every((r) => r.committed && r.artifactId)).toBe(true);
+      const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+      expect(sidecar.artifacts).toHaveLength(50);
+      expect(sidecar.artifacts.reduce((n, a) => n + a.versions.length, 0)).toBe(N);
+      // The old code read the sidecar N times (plus N CAS re-reads). Batching
+      // brings it to a few — the first call drains alone, the rest land in
+      // one or two follow-up batches. Bound generously; the point is "not N".
+      const sidecarReads = readSpy.mock.calls.filter((c) => String(c[0]).endsWith('artifacts.json')).length;
+      expect(sidecarReads).toBeLessThan(N / 10);
+    });
+
+    it('a rejected batch rejects every caller in it and the queue keeps working afterwards', async () => {
+      const spy = vi.spyOn(fsPromises, 'readFile').mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
+      const p1 = appendVersion(projectRoot, sample.projectId, sample.name, {
+        path: 'x.md', kind: 'internal', absolutePath: null, sessionId: 's', type: 'create', author: 'agent',
+      });
+      await expect(p1).rejects.toThrow('EIO');
+      spy.mockRestore();
+      const r2 = await appendVersion(projectRoot, sample.projectId, sample.name, {
+        path: 'y.md', kind: 'internal', absolutePath: null, sessionId: 's', type: 'create', author: 'agent',
+      });
+      expect(r2.committed).toBe(true);
+    });
+  });
+
+  // Replay dedupe: re-opening a conversation replays every tool call it ever
+  // made through the tracker. Without this every open appended the same edits
+  // again — 14k versions / 4.4 MB in youcoded-dev by 2026-08-15. toolUseId is
+  // the stable identity of one tool call across replays.
+  describe('replay dedupe by (sessionId, toolUseId)', () => {
+    const base = {
+      path: 'docs/plan.md', kind: 'internal' as const, absolutePath: null,
+      sessionId: 'sess-1', type: 'edit' as const, author: 'agent' as const,
+    };
+
+    it('the same tool call appended twice yields ONE version and leaves the file byte-identical', async () => {
+      const first = await appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_A' });
+      const bytes = readFileSync(join(projectRoot, '.youcoded/artifacts.json'), 'utf8');
+      const again = await appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_A' });
+      expect(again).toEqual({ committed: true, artifactId: first.artifactId, deduped: true });
+      expect(readFileSync(join(projectRoot, '.youcoded/artifacts.json'), 'utf8')).toBe(bytes);
+      const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+      expect(sidecar.artifacts[0].versions).toHaveLength(1);
+      expect(sidecar.artifacts[0].versions[0].toolUseId).toBe('toolu_A');
+    });
+
+    it('a different tool call on the same file is a new version; the same id in another session is too', async () => {
+      await appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_A' });
+      await appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_B' });
+      await appendVersion(projectRoot, sample.projectId, sample.name, { ...base, sessionId: 'sess-2', toolUseId: 'toolu_A' });
+      const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+      expect(sidecar.artifacts[0].versions).toHaveLength(3);
+    });
+
+    it('a duplicate inside one batch is deduped against the version appended earlier in that batch', async () => {
+      const [r1, r2] = await Promise.all([
+        appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_A' }),
+        appendVersion(projectRoot, sample.projectId, sample.name, { ...base, toolUseId: 'toolu_A' }),
+      ]);
+      expect(r1.artifactId).toBe(r2.artifactId);
+      expect([r1.deduped, r2.deduped].filter(Boolean)).toHaveLength(1);
+      const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+      expect(sidecar.artifacts[0].versions).toHaveLength(1);
+    });
+
+    it('callers with no toolUseId keep the old always-append behaviour', async () => {
+      await appendVersion(projectRoot, sample.projectId, sample.name, base);
+      await appendVersion(projectRoot, sample.projectId, sample.name, base);
+      const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+      expect(sidecar.artifacts[0].versions).toHaveLength(2);
+      expect(sidecar.artifacts[0].versions[0]).not.toHaveProperty('toolUseId');
+    });
   });
 
   // The invariant the fix rests on, asserted directly: a committed write always

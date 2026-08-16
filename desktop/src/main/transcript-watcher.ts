@@ -5,29 +5,7 @@ import { EventEmitter } from 'events';
 import { TranscriptEvent } from '../shared/types';
 import { SubagentIndex } from './subagent-index';
 import { SubagentWatcher } from './subagent-watcher';
-
-// ---------------------------------------------------------------------------
-// cwdToProjectSlug
-// ---------------------------------------------------------------------------
-
-/**
- * Converts a filesystem path to Claude Code's project directory slug.
- * e.g. `C:\Users\alice` → `C--Users-alice`
- *      `/home/user/project` → `-home-user-project`
- *      `C:\Users\alice\PAF 540 Final` → `C--Users-alice-PAF-540-Final`
- *
- * Must mirror Claude Code's own encoding exactly — otherwise the watcher points
- * at a non-existent directory and chat view stays empty. CC replaces spaces
- * with dashes too; we do the same so cwds like "PAF 540 Final Data Project"
- * resolve to the right ~/.claude/projects/<slug>/ folder.
- */
-export function cwdToProjectSlug(cwd: string): string {
-  return cwd
-    .replace(/\\/g, '/')   // backslash → forward slash
-    .replace(/:/g, '-')    // colon → dash
-    .replace(/\//g, '-')   // slash → dash
-    .replace(/ /g, '-');   // space → dash (CC does this too)
-}
+import { ccProjectSlug } from './slug-encoding';
 
 // ---------------------------------------------------------------------------
 // parseTranscriptLine
@@ -381,14 +359,18 @@ export class TranscriptWatcher extends EventEmitter {
   /**
    * Start watching the transcript for a session.
    */
-  startWatching(desktopSessionId: string, claudeSessionId: string, cwd: string): void {
+  startWatching(desktopSessionId: string, claudeSessionId: string, cwd: string, transcriptPath?: string): void {
     if (this.sessions.has(desktopSessionId)) {
       this.stopWatching(desktopSessionId);
     }
 
-    const slug = cwdToProjectSlug(cwd);
-    const jsonlPath = path.join(this.claudeConfigDir, slug, `${claudeSessionId}.jsonl`);
-    const subagentsDir = path.join(this.claudeConfigDir, slug, claudeSessionId, 'subagents');
+    // Prefer CC's own transcript_path from the hook payload (spec §5.0): no
+    // character class to get wrong, no cap branch, no drift when CC changes its
+    // encoding. The slug mirror below is the FALLBACK only (hook payload absent),
+    // and the subagents dir always rides the transcript's parent.
+    const jsonlPath = transcriptPath
+      || path.join(this.claudeConfigDir, ccProjectSlug(cwd), `${claudeSessionId}.jsonl`);
+    const subagentsDir = path.join(path.dirname(jsonlPath), claudeSessionId, 'subagents');
 
     const subagentIndex = new SubagentIndex();
     const subagentWatcher = new SubagentWatcher({

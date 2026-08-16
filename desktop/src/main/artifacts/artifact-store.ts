@@ -99,32 +99,122 @@ export interface AppendVersionInput {
   sessionId: string;
   type: 'create' | 'edit' | 'delete' | 'read';
   author: 'agent' | 'user';
+  /** The transcript tool_use id behind this version, when the caller has one
+   *  (the App.tsx tracker always does). It is the dedupe key: a record that
+   *  already holds a version with the same (sessionId, toolUseId) is NOT
+   *  appended again — see the WHY on `VersionEvent.toolUseId`. Callers with
+   *  no tool call behind them (manual include, tests) leave it unset and
+   *  keep today's always-append behaviour. */
+  toolUseId?: string;
 }
 
-export async function appendVersion(
+export interface AppendVersionResult {
+  committed: boolean;
+  artifactId: string | null;
+  /** true when the version already existed and nothing was written for it. */
+  deduped?: boolean;
+}
+
+/**
+ * Per-project append queue.
+ *
+ * WHY (2026-08-15, "YouCoded dies 16–21 s after opening one big session"):
+ * appendVersion used to run one full read→parse→mutate→stringify→CAS-write
+ * cycle PER CALL, and every call arrived at once — opening a conversation
+ * replays its whole transcript through the artifact tracker, and a long
+ * session carries ~1,000 Write/Edit/Read tool calls. Each in-flight call held
+ * its own parsed copy of the sidecar (4.4 MB in youcoded-dev) plus its
+ * stringified twin while it waited its turn on the mkdir lock; ~1,000 × ~8 MB
+ * blew past the main process's heap and Electron was killed with
+ * "JavaScript heap out of memory". The heap profile named readSidecar /
+ * writeSidecar as the top allocators.
+ *
+ * Now every call for a project root is queued and ONE drainer applies the
+ * whole pending batch in a single read/apply-all/write cycle. Memory is
+ * bounded to one parsed sidecar per project no matter how many calls are in
+ * flight, and a 1,000-event replay costs a handful of cycles instead of a
+ * thousand. Each caller still gets its own result. Cross-PROCESS writers (a
+ * second YouCoded instance — dev + built app on one project) are still
+ * handled by the CAS retry inside appendVersionsDirect — this queue only
+ * coalesces callers inside this process.
+ */
+interface PendingAppend {
+  input: AppendVersionInput;
+  resolve: (r: AppendVersionResult) => void;
+  reject: (e: unknown) => void;
+}
+interface ProjectQueue {
+  projectId: string;
+  projectName: string;
+  pending: PendingAppend[];
+  draining: boolean;
+}
+const appendQueues = new Map<string, ProjectQueue>();
+
+export function appendVersion(
   projectRoot: string,
   projectId: string,
   projectName: string,
   input: AppendVersionInput
-): Promise<{ committed: boolean; artifactId: string | null }> {
+): Promise<AppendVersionResult> {
+  return new Promise<AppendVersionResult>((resolve, reject) => {
+    let q = appendQueues.get(projectRoot);
+    if (!q) {
+      q = { projectId, projectName, pending: [], draining: false };
+      appendQueues.set(projectRoot, q);
+    }
+    // Same root ⇒ same project; the latest caller's identity is as good as any.
+    q.projectId = projectId;
+    q.projectName = projectName;
+    q.pending.push({ input, resolve, reject });
+    if (!q.draining) void drainAppendQueue(projectRoot, q);
+  });
+}
+
+async function drainAppendQueue(projectRoot: string, q: ProjectQueue): Promise<void> {
+  q.draining = true;
+  try {
+    // Anything pushed while a batch is being written is picked up by the next
+    // iteration — appendVersion only starts a drainer when none is running.
+    while (q.pending.length > 0) {
+      const batch = q.pending.splice(0);
+      let results: AppendVersionResult[];
+      try {
+        results = await appendVersionsDirect(
+          projectRoot, q.projectId, q.projectName, batch.map((b) => b.input)
+        );
+      } catch (e) {
+        for (const b of batch) b.reject(e);
+        continue;
+      }
+      batch.forEach((b, i) => b.resolve(results[i]));
+    }
+  } finally {
+    q.draining = false;
+    // The loop only exits with an empty queue and nothing async runs between
+    // that check and here, so the map entry can go; the next call makes a new one.
+    if (q.pending.length === 0) appendQueues.delete(projectRoot);
+  }
+}
+
+/**
+ * Apply a batch of version appends in ONE read/mutate/CAS-write cycle.
+ * Exported for tests and for callers that must not coalesce with the queue
+ * (there are none in production today — go through appendVersion).
+ * Results are positional: results[i] answers inputs[i].
+ */
+export async function appendVersionsDirect(
+  projectRoot: string,
+  projectId: string,
+  projectName: string,
+  inputs: AppendVersionInput[]
+): Promise<AppendVersionResult[]> {
+  if (inputs.length === 0) return [];
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const current = await readSidecar(projectRoot);
     let sidecar: ProjectSidecar;
     let expectedUpdatedAt: string | null;
-    if (current === null) {
-      const now = new Date().toISOString();
-      sidecar = {
-        $schema: SIDECAR_SCHEMA_VERSION,
-        projectId,
-        name: projectName,
-        createdAt: now,
-        updatedAt: now,
-        artifacts: [],
-        manualExcludes: [],
-        manualIncludes: [],
-      };
-      expectedUpdatedAt = null;
-    } else if ('corrupted' in current) {
+    if (current === null || 'corrupted' in current) {
       const now = new Date().toISOString();
       sidecar = {
         $schema: SIDECAR_SCHEMA_VERSION,
@@ -142,48 +232,72 @@ export async function appendVersion(
       expectedUpdatedAt = sidecar.updatedAt;
     }
 
-    const existing = sidecar.artifacts.find(
-      (a) => a.path === input.path && a.kind === input.kind
-    );
-    const now = new Date().toISOString();
-    const versionEvent = {
-      id: newVersionId(),
-      ts: now,
-      sessionId: input.sessionId,
-      type: input.type,
-      author: input.author,
-    };
-    let artifactId: string;
-    if (existing) {
-      existing.versions.push(versionEvent);
-      // A 'read' is not a modification — bumping lastModified for a view
-      // reordered "recently modified" sorting every time a pill was clicked.
-      // (New records below still get lastModified = now: that's record
-      // creation, and the UI labels read-only records "viewed".)
-      if (input.type !== 'read') existing.lastModified = now;
-      existing.status = input.type === 'delete' ? 'deleted' : 'active';
-      artifactId = existing.id;
-    } else {
-      artifactId = newArtifactId();
-      sidecar.artifacts.push({
-        id: artifactId,
-        path: input.path,
-        kind: input.kind,
-        absolutePath: input.absolutePath,
-        lastModified: now,
-        status: input.type === 'delete' ? 'deleted' : 'active',
-        versions: [versionEvent],
-        comments: [],
-        tags: [],
-      });
+    const results: AppendVersionResult[] = [];
+    let changed = false;
+    for (const input of inputs) {
+      const existing = sidecar.artifacts.find(
+        (a) => a.path === input.path && a.kind === input.kind
+      );
+      // Replay dedupe: the same tool call recorded once already ⇒ nothing to
+      // add. Same sessionId AND same toolUseId — never toolUseId alone.
+      if (
+        existing &&
+        input.toolUseId &&
+        existing.versions.some(
+          (v) => v.sessionId === input.sessionId && v.toolUseId === input.toolUseId
+        )
+      ) {
+        results.push({ committed: true, artifactId: existing.id, deduped: true });
+        continue;
+      }
+      const now = new Date().toISOString();
+      const versionEvent = {
+        id: newVersionId(),
+        ts: now,
+        sessionId: input.sessionId,
+        type: input.type,
+        author: input.author,
+        ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+      };
+      let artifactId: string;
+      if (existing) {
+        existing.versions.push(versionEvent);
+        // A 'read' is not a modification — bumping lastModified for a view
+        // reordered "recently modified" sorting every time a pill was clicked.
+        // (New records below still get lastModified = now: that's record
+        // creation, and the UI labels read-only records "viewed".)
+        if (input.type !== 'read') existing.lastModified = now;
+        existing.status = input.type === 'delete' ? 'deleted' : 'active';
+        artifactId = existing.id;
+      } else {
+        artifactId = newArtifactId();
+        sidecar.artifacts.push({
+          id: artifactId,
+          path: input.path,
+          kind: input.kind,
+          absolutePath: input.absolutePath,
+          lastModified: now,
+          status: input.type === 'delete' ? 'deleted' : 'active',
+          versions: [versionEvent],
+          comments: [],
+          tags: [],
+        });
+      }
+      changed = true;
+      results.push({ committed: true, artifactId });
     }
-    sidecar.updatedAt = now;
 
+    // Every input was a duplicate of something already on disk: no write, no
+    // updatedAt bump — a re-opened conversation must leave the sidecar
+    // byte-identical (that is the whole point of the dedupe).
+    if (!changed && expectedUpdatedAt !== null) return results;
+
+    sidecar.updatedAt = new Date().toISOString();
     const result = await writeSidecar(projectRoot, expectedUpdatedAt, sidecar);
-    if (result.committed) return { committed: true, artifactId };
+    if (result.committed) return results;
     await sleep(10 * (attempt + 1));
   }
-  return { committed: false, artifactId: null };
+  return inputs.map(() => ({ committed: false, artifactId: null }));
 }
 
 /**

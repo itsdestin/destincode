@@ -1315,7 +1315,7 @@ export const IPC = {
   // ---- Remembered "Always allow" rules (M5 2a: permissions management UI) ----
   // list = every project's stored grants; remove/remove-project revoke them.
   // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
-  // pre-existing entries and cwdToProjectSlug is lossy, so the slug is the only
+  // pre-existing entries and nativeStoreSlug is lossy, so the slug is the only
   // stable handle the renderer can send back.
   PERMISSIONS_LIST: 'permissions:list',
   PERMISSIONS_REMOVE: 'permissions:remove',

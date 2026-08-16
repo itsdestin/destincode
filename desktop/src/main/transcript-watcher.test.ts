@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTranscriptLine, cwdToProjectSlug } from './transcript-watcher';
+import { parseTranscriptLine } from './transcript-watcher';
 
 function makeUserLine(
   text: string,
@@ -142,28 +142,5 @@ describe('transcript-watcher compact-summary forwarding', () => {
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('compact-summary');
     expect(events[0].data).toEqual({});
-  });
-});
-
-describe('cwdToProjectSlug', () => {
-  it('encodes a Windows path without spaces', () => {
-    expect(cwdToProjectSlug('C:\\Users\\alice\\repo')).toBe('C--Users-alice-repo');
-  });
-
-  it('encodes a POSIX path without spaces', () => {
-    expect(cwdToProjectSlug('/home/alice/repo')).toBe('-home-alice-repo');
-  });
-
-  // Regression: CC itself replaces spaces in folder names with dashes, so the
-  // watcher must do the same or it reads from a non-existent directory and
-  // chat view stays empty for the whole session.
-  it('encodes spaces as dashes to match CC (Windows)', () => {
-    expect(cwdToProjectSlug('C:\\Users\\alice\\PAF 540 Final Data Project')).toBe(
-      'C--Users-alice-PAF-540-Final-Data-Project',
-    );
-  });
-
-  it('encodes spaces as dashes to match CC (POSIX)', () => {
-    expect(cwdToProjectSlug('/home/alice/My Project')).toBe('-home-alice-My-Project');
   });
 });

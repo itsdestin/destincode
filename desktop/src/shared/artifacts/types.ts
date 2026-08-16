@@ -17,6 +17,23 @@ export interface VersionEvent {
   sessionId: string;
   type: VersionType;
   author: VersionAuthor;
+  // The transcript tool_use id that produced this version (Write/Edit/Read
+  // tool calls). Optional and additive — records written before 2026-08-15
+  // don't have it. It is the identity appendVersion dedupes on: opening an old
+  // conversation replays its whole transcript through the artifact tracker
+  // (see App.tsx / transcript-watcher's offset-0 read), and without a stable
+  // per-tool-call id every re-open appended the same edits again, so
+  // artifacts.json grew without bound (14k versions / 4.4 MB in youcoded-dev,
+  // measured 2026-08-15). Mirrored in Android's SidecarSchema.kt VersionEvent.
+  // SCOPE (review 2026-08-15): the dedupe key is (sessionId, toolUseId) and
+  // sessionId is the DESKTOP session id. Native sessions keep their id across
+  // resumes, so they are fully idempotent; a Claude Code `--resume` mints a
+  // fresh desktop id (session-manager.ts), so a resumed CC conversation is
+  // re-recorded ONCE PER RESUME under the new id — bounded and crash-free
+  // (memory is capped by the append queue), but not growth-free. Making CC
+  // resumes idempotent needs a conversation-stable id threaded through the
+  // record, LIST_SESSION and the drawer's per-session helpers — ROADMAP item.
+  toolUseId?: string;
 }
 
 export interface ArtifactRecord {

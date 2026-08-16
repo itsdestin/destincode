@@ -347,3 +347,40 @@ describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleav
     expect(bubbles[1].reasoning?.content).toBe('thinking');
   });
 });
+
+describe('AssistantTurnBubble — stop reason footer', () => {
+  beforeEach(() => cleanup());
+
+  // The turn shape the reducer produces; only stopReason varies between the two
+  // cases, which is what makes the pair a real discrimination test.
+  function turnWithStopReason(stopReason: string | null): AssistantTurn {
+    return {
+      id: 'turn_dismissed',
+      segments: [{ type: 'text', content: 'Which one did you want?', messageId: 'm1' }],
+      timestamp: 0,
+      stopReason,
+      model: null,
+      usage: null,
+      anthropicRequestId: null,
+    };
+  }
+
+  it('names a dismissed question so it cannot be mistaken for a dead session', () => {
+    const { container } = renderTurn({
+      turn: turnWithStopReason('question_dismissed'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toContain('Question closed — waiting for you.');
+  });
+
+  it('says nothing for a normal completion', () => {
+    // Without this, a footer that renders unconditionally passes the test above.
+    const { container } = renderTurn({
+      turn: turnWithStopReason('end_turn'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).not.toContain('Question closed');
+  });
+});

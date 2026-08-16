@@ -3,13 +3,17 @@ name: Desktop Test Build
 on:
   workflow_dispatch:
     inputs:
-      version:
+      base:
         description: >-
-          Version to stamp into the build. MUST sort ABOVE the latest published
-          release, or the installed build will offer to "update" itself back to
-          that release (compareVersions in ipc-handlers.ts parses naively:
-          `1.2.4-beta` -> [1,2,0], which is LOWER than 1.2.4). Bump the minor
-          and suffix, e.g. 1.3.0-beta, rather than patching the current version.
+          Version PREFIX to stamp into the build. The build number is appended
+          automatically from this workflow's run counter (e.g. 1.3.0-beta.71),
+          so leave this alone unless the release line changes — every beta
+          then sorts above the previous one with nobody typing a number.
+          The prefix MUST still sort ABOVE the latest published release, or the
+          installed build will offer to "update" itself back to that release
+          (compareVersions in ipc-handlers.ts parses naively: `1.2.4-beta` ->
+          [1,2,0], which is LOWER than 1.2.4). Bump the minor and suffix, e.g.
+          1.3.0-beta, rather than patching the current version.
         required: false
         default: '1.3.0-beta'
 
@@ -58,10 +62,19 @@ jobs:
       # analytics (analytics-service.ts reports app.getVersion()), and in bug
       # reports. Both __APP_VERSION__ and app.getVersion() derive from this file,
       # so stamping it here fixes every surface at once.
+      # WHY the run counter and not a typed number (Destin, 2026-08-16): the
+      # old `version` input was free text — beta.13 and beta.15 were typed by
+      # hand, a blank launch stamped a bare `1.3.0-beta` on every build, and
+      # nothing stopped a LOWER number than the one already installed (which
+      # compareVersions would read as "update available" back to the older
+      # build). github.run_number is this workflow's own always-increasing
+      # counter (70 at the time of this change, so the first automatic beta is
+      # .71 — above the hand-typed .16), and it maps a build straight back to
+      # its run in the Actions tab.
       - name: Stamp beta version
         shell: bash
         run: |
-          BETA_VERSION="${{ inputs.version }}"
+          BETA_VERSION="${{ inputs.base }}.${{ github.run_number }}"
           node -e "var p=require('path').resolve('package.json'),pkg=JSON.parse(require('fs').readFileSync(p,'utf8'));pkg.version=process.argv[1];require('fs').writeFileSync(p,JSON.stringify(pkg,null,2)+'\n')" "$BETA_VERSION"
           echo "Set desktop/package.json version to $BETA_VERSION"
 
