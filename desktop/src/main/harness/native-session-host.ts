@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, HookEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -1887,6 +1887,14 @@ export class NativeSessionHost extends EventEmitter {
     denyListed: boolean;
   }): Promise<AskDecision> {
     return this.broker.ask(req);
+  }
+
+  /** Task 0 (ROADMAP #permissions): lets ipc-handlers re-send a session's open
+   *  asks after TRANSCRIPT_REPLAY, so a reloaded window's card gets its
+   *  buttons back instead of coming back inert. Pure delegate — see
+   *  PermissionBroker.pendingEventsFor for why this is needed at all. */
+  pendingAskEventsFor(sessionId: string): HookEvent[] {
+    return this.broker.pendingEventsFor(sessionId);
   }
 
   /** Wire the "no session uses model X anymore" callback (→ engine unload). */

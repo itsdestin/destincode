@@ -364,3 +364,63 @@ describe('PermissionBroker — pending-ask heartbeat', () => {
     expect(emitted).toHaveLength(0);
   });
 });
+
+// Task 0 (2026-08-16 ROADMAP #permissions): TRANSCRIPT_REPLAY rebuilds cards
+// from the on-disk JSONL, but an open ask lives only in `pending` — nothing
+// re-sent the PermissionRequest, so a reloaded window's card came back with
+// no buttons and the turn hung forever (a root ask has no timeout). This is
+// the SAME idempotent-repeat mechanism the heartbeat above already proved
+// safe, just triggered by a replay instead of a timer.
+describe('PermissionBroker — pendingEventsFor', () => {
+  // Local — the heartbeat describe block above scopes its own `emitterFor` to
+  // itself; this block needs the identical "record every hook-event" helper.
+  function emitterFor(broker: PermissionBroker) {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    return emitted;
+  }
+
+  it('re-emits every open ask for the session with the original requestId and payload', () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
+    void broker.ask({ sessionId: 's1', toolName: 'Write', toolInput: { file_path: 'a.txt' }, denyListed: true });
+    void broker.ask({ sessionId: 's2', toolName: 'Read', toolInput: { file_path: 'b.txt' }, denyListed: false });
+    expect(emitted).toHaveLength(3);
+
+    const events = broker.pendingEventsFor('s1');
+    expect(events).toHaveLength(2); // s2's ask must not leak in
+    const ids = events.map((e) => e.payload._requestId).sort();
+    const expectedIds = [emitted[0].payload._requestId, emitted[1].payload._requestId].sort();
+    expect(ids).toEqual(expectedIds);
+    for (const e of events) {
+      expect(e.type).toBe('PermissionRequest');
+      expect(e.sessionId).toBe('s1');
+      const original = emitted.find((o) => o.payload._requestId === e.payload._requestId)!;
+      expect(e.payload).toEqual(original.payload); // byte-identical payload shape
+    }
+  });
+
+  it('includes a timed-out (held) ask — it is still answerable', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted = emitterFor(broker);
+      void broker.ask(
+        { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000); // the hold expires — entry stays pending, timedOut
+      const events = broker.pendingEventsFor('s1');
+      expect(events).toHaveLength(1);
+      expect(events[0].payload._requestId).toBe(emitted[0].payload._requestId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns an empty array for a session with no open asks', () => {
+    const broker = new PermissionBroker();
+    expect(broker.pendingEventsFor('nobody')).toEqual([]);
+  });
+});

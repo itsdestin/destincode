@@ -119,6 +119,21 @@ describe('NativeSessionHost', () => {
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
+  it('pendingAskEventsFor delegates to the broker for one session', () => {
+    // Task 0 (ROADMAP #permissions): TRANSCRIPT_REPLAY needs a host-level
+    // method to re-send open asks after a reload — this just proves the host
+    // forwards to the broker rather than re-implementing the lookup.
+    const emitted: any[] = [];
+    host.on('hook-event', (e) => emitted.push(e));
+    void host.askPermission({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
+    void host.askPermission({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
+    const events = host.pendingAskEventsFor('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].sessionId).toBe('s1');
+    expect(events[0].type).toBe('PermissionRequest');
+    expect(events[0].payload._requestId).toBe(emitted[0].payload._requestId);
+  });
+
   it('create → send → events forwarded AND persisted; getHistory replays them', async () => {
     const seen: any[] = [];
     host.on('transcript-event', (e) => seen.push(e));
@@ -2944,8 +2959,17 @@ describe('NativeSessionHost', () => {
         expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
       });
       expect(events.find((e) => e.data?.injected === 'specialist-report')!.data.text).toContain('FIRST REPORT');
+      // `delivered` is flipped by a LATER, separate async disk write
+      // (DelegationLedger.confirmDelivered -> a real mkdir-based file lock)
+      // that the transcript event above is deliberately fired BEFORE, not
+      // gated on. Poll for it instead of reading it once right after the
+      // event resolves, or this races under machine load (see
+      // ci-race-fix-report.md for the reproduction).
+      await vi.waitFor(() => {
+        const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        expect(rec.delivered).toBe(true);
+      });
       const recAfterRun1 = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
-      expect(recAfterRun1.delivered).toBe(true);
       expect(recAfterRun1.injectionAttempted).toBe(true);
 
       // Resume the SAME child in the background — reuses the SAME ledger row.
@@ -2969,8 +2993,13 @@ describe('NativeSessionHost', () => {
       // stale reportPath/rawReport copy of run 1's body.
       expect(secondNotice.data.text).not.toContain('FIRST REPORT');
 
+      // See the same-shaped comment above run 1's check: `delivered` is an
+      // async disk write, not synchronous with the transcript event.
+      await vi.waitFor(() => {
+        const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        expect(rec.delivered).toBe(true);
+      });
       const recAfterRun2 = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
-      expect(recAfterRun2.delivered).toBe(true);
       expect(recAfterRun2.rawReport).toContain('SECOND REPORT');
 
       await h.destroyAll();
@@ -3025,7 +3054,13 @@ describe('NativeSessionHost', () => {
 
       const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
       expect(rec.status).toBe('failed');
-      expect(rec.delivered).toBe(true);
+      // `delivered` is set by a later, separate async disk write
+      // (confirmDelivered's mkdir-based file lock) that the transcript event
+      // above is deliberately not gated on — poll instead of racing it.
+      await vi.waitFor(() => {
+        const recNow = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        expect(recNow.delivered).toBe(true);
+      });
 
       await h.destroyAll();
     });
@@ -3436,8 +3471,13 @@ describe('NativeSessionHost', () => {
       expect(injected.type).toBe('user-message');
       expect(injected.data.text).toContain('REPORT: found it in src/config.ts');
 
-      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-done');
-      expect(rec?.delivered).toBe(true);
+      // `delivered` is set by a later, separate async disk write
+      // (confirmDelivered's mkdir-based file lock) that the transcript event
+      // above is deliberately not gated on — poll instead of racing it.
+      await vi.waitFor(() => {
+        const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-done');
+        expect(rec?.delivered).toBe(true);
+      });
 
       await h2.destroyAll();
     });
@@ -3478,8 +3518,13 @@ describe('NativeSessionHost', () => {
       expect(injected.type).toBe('user-message');
       expect(injected.data.text).toContain('ENOENT: no such file or directory');
 
-      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-failed');
-      expect(rec?.delivered).toBe(true);
+      // `delivered` is set by a later, separate async disk write
+      // (confirmDelivered's mkdir-based file lock) that the transcript event
+      // above is deliberately not gated on — poll instead of racing it.
+      await vi.waitFor(() => {
+        const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-failed');
+        expect(rec?.delivered).toBe(true);
+      });
 
       await h2.destroyAll();
     });
@@ -3569,8 +3614,15 @@ describe('NativeSessionHost', () => {
       await new Promise((r) => setTimeout(r, 30));
       expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
 
-      const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-claimed');
-      expect(rec?.delivered).toBe(true);
+      // `delivered` is set by a later, separate async disk write
+      // (confirmDelivered's mkdir-based file lock) that the transcript event
+      // above is deliberately not gated on — poll instead of racing it. (The
+      // 30ms settle above is a separate concern: giving a possible duplicate
+      // delivery time to show up as a second event.)
+      await vi.waitFor(() => {
+        const rec = (h2 as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === 'child-claimed');
+        expect(rec?.delivered).toBe(true);
+      });
 
       await h2.destroyAll();
     });
