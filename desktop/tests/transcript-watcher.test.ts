@@ -738,7 +738,11 @@ describe('startWatching path source (spec §5.0)', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tw-pathsource-'));
+    // Canonicalize: on macOS, FSEvents reports the RESOLVED path (os.tmpdir()
+    // is a symlink, /var/folders/... -> /private/var/folders/...), so a raw
+    // mkdtemp path here can silently diverge from what the watcher actually
+    // sees fire.
+    tmpDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tw-pathsource-')));
     watcher = new TranscriptWatcher(tmpDir);
   });
 
@@ -756,8 +760,9 @@ describe('startWatching path source (spec §5.0)', () => {
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
     watcher.startWatching('desktop-x', 'claude-x', '/some/cwd/that/would/derive/elsewhere', jsonlPath);
     fs.appendFileSync(jsonlPath, JSON.stringify({ type: 'user', uuid: 'u1', promptId: 'prompt-u1', message: { role: 'user', content: 'hi' } }) + '\n');
-    await new Promise(r => setTimeout(r, 1200));
-    expect(events.length).toBeGreaterThan(0);
+    // Poll instead of a fixed sleep — see the file header: a fixed budget loses
+    // on a busy runner (this is exactly the macOS-CI flake shape).
+    await vi.waitFor(() => expect(events.length).toBeGreaterThan(0), { timeout: WATCH_MS });
   });
 
   it('falls back to ccProjectSlug derivation when transcript_path is absent', async () => {
@@ -770,8 +775,9 @@ describe('startWatching path source (spec §5.0)', () => {
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
     watcher.startWatching('desktop-y', 'claude-y', cwd);
     fs.appendFileSync(jsonlPath, JSON.stringify({ type: 'user', uuid: 'u2', promptId: 'prompt-u2', message: { role: 'user', content: 'hi' } }) + '\n');
-    await new Promise(r => setTimeout(r, 1200));
-    expect(events.length).toBeGreaterThan(0);
+    // Poll instead of a fixed sleep — see the file header: a fixed budget loses
+    // on a busy runner (this is exactly the macOS-CI flake shape).
+    await vi.waitFor(() => expect(events.length).toBeGreaterThan(0), { timeout: WATCH_MS });
   });
 
   // WHY: fallback tests can't distinguish dirname-based from slug-based

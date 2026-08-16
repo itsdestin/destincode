@@ -12,7 +12,16 @@ import { readSidecar, writeSidecar } from '../src/main/artifacts/artifact-store'
 import { SIDECAR_SCHEMA_VERSION } from '../src/shared/artifacts/types';
 
 let tmp: string;
-beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-import-')); });
+beforeEach(() => {
+  // Canonicalize: import-project.ts realpaths the destination before computing
+  // the CC slug dir (that's the dir CC will actually write to — see the
+  // "CC slugs realpath(cwd)" comment there). On macOS os.tmpdir() is a symlink
+  // (/var/folders/… -> /private/var/…) and on Windows CI it can resolve
+  // through an 8.3 short name, so every path this file derives from `tmp`
+  // must already be canonical or ccProjectSlug(dest) computed here won't
+  // match the slug dir the code under test actually creates.
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'yc-import-')));
+});
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
 describe('import enablers', () => {
