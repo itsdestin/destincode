@@ -35,8 +35,9 @@ export function defaultStateFile(homeDir: string = os.homedir()): string {
   // code path, so a test that exercises that path with no seam reads the
   // DEVELOPER'S REAL ~/.youcoded/slug-repair-state.json — non-hermetic, and
   // whatever this machine's file happens to hold silently changes what the
-  // test observes. This env var is a test-only escape hatch; production never
-  // sets it.
+  // test observes. This env var is a test-only seam: it is never documented
+  // for users, ships in no user-facing config or docs, and production code
+  // never sets it — only tests do, to get a hermetic state file per run.
   if (process.env.YOUCODED_SLUG_REPAIR_STATE) return process.env.YOUCODED_SLUG_REPAIR_STATE;
   return path.join(homeDir, '.youcoded', 'slug-repair-state.json');
 }

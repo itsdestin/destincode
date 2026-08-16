@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs'; import os from 'os'; import path from 'path';
 import { classifyPair, uuidSet, Quarantine, repairHomeForks, repairRecordsAndSpace, repairOrphanDirs, runSlugRepair } from '../src/main/conversations/slug-repair';
 import { ccProjectSlug, nativeStoreSlug } from '../src/main/slug-encoding';
 import { createConversationStore } from '../src/main/conversations/conversation-store';
+import * as logger from '../src/main/logger';
 
 const L = (uuid: string) => JSON.stringify({ type: 'user', uuid, message: {} }) + '\n';
 let tmp: string;
@@ -444,6 +445,30 @@ describe('repairRecordsAndSpace (spec §6.2)', () => {
     expect(out).toEqual([]); // no findings for this session
     expect(await w.store.get('claude', 's11')).toEqual(recBefore); // originalPath (the peer's own path) untouched
   });
+
+  // Review fix (Minor 1): when the upsert itself throws, the finding must say
+  // the RECORD write failed, not the rename — the rename already succeeded
+  // (or never needed to run). 'rename-failed' read backwards for this site.
+  it('an upsert failure surfaces record-repair-failed (never rename-failed) — the rename already succeeded', async () => {
+    const w = makeWorld();
+    const t = path.join(w.correctDir, 's13.jsonl');
+    fs.writeFileSync(t, F('u1', w.P)); age(t);
+    // Seed a wrong record so recordChanged is true and the upsert is attempted.
+    await w.store.upsert({ id: 's13', provider: 'claude', projectName: 'destin',
+      originalPath: w.home, transcriptRef: 'claude/transcripts/destin/s13.jsonl' });
+    const flakyStore = {
+      ...w.store,
+      upsert: async (partial: Parameters<typeof w.store.upsert>[0]) => {
+        if (partial.id === 's13') throw new Error('lock timeout');
+        return w.store.upsert(partial);
+      },
+    };
+    const out = await repairRecordsAndSpace({ ...w.opts, store: flakyStore as typeof w.store });
+    const found = out.find(f => f.sessionId === 's13');
+    expect(found?.kind).toBe('record-repair-failed');
+    // The old wrong record is still there — the upsert never landed.
+    expect((await w.store.get('claude', 's13'))?.projectName).toBe('destin');
+  });
 });
 
 describe('repairOrphanDirs (spec §6.3)', () => {
@@ -711,7 +736,7 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
       expect(state.surfacedForks).toEqual([{ id: 'sG', paths: [wrong, correct] }]);
     });
 
-    it('a rejecting 6.2 upsert does not reject runSlugRepair — logs an ERROR and surfaces a rename-failed finding instead', async () => {
+    it('a rejecting 6.2 upsert does not reject runSlugRepair — logs an ERROR and surfaces a record-repair-failed finding instead', async () => {
       const w = makeWorld();
       const t = path.join(w.correctDir, 'sH.jsonl');
       fs.writeFileSync(t, F('u1', w.P)); age(t);
@@ -734,6 +759,46 @@ describe('runSlugRepair — ordering, deferral, surfacing (spec §6.0/§6.5)', (
       expect(log).toContain('ERROR RECORD-REPAIR sH: upsert failed');
       // The run still completed and wrote state (no exception propagated).
       expect(fs.existsSync(stateFile)).toBe(true);
+    });
+  });
+
+  // Review fix (Minor 2): a throw partway through a LATER stage must never
+  // discard findings/holds an EARLIER stage already gathered — finalization
+  // (state write + summary log) is what persists them, and it must still run.
+  describe('stage isolation — a late-stage throw never drops an earlier stage\'s holds', () => {
+    it('6.3 throwing still resolves the run, still persists a fork surfaced by 6.1, and still logs the summary', async () => {
+      const w = makeWorld();
+      const homeSlugDir = path.join(w.opts.projectsDir, ccProjectSlug(w.home));
+      fs.mkdirSync(homeSlugDir, { recursive: true });
+      // A true $HOME fork for 6.1 to surface and hold.
+      const wrong = path.join(homeSlugDir, 'sI.jsonl');
+      const correct = path.join(w.correctDir, 'sI.jsonl');
+      fs.writeFileSync(wrong, F('u1', w.P) + F('uA', w.home));
+      fs.writeFileSync(correct, F('u1', w.P) + F('uB', w.P));
+      age(wrong); age(correct);
+      const stateFile = path.join(w.home, '.youcoded', 'state.json');
+
+      const infoSpy = vi.spyOn(logger, 'log');
+      const boom = new Error('projectsDir became unreadable mid-scan');
+      await expect(runSlugRepair({
+        ...w.opts,
+        stateFile,
+        stages: { repairOrphanDirs: () => { throw boom; } },
+      })).resolves.toBeUndefined();
+
+      // 6.1's hold survived 6.3's throw — finalization still ran.
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.surfacedForks).toEqual([{ id: 'sI', paths: [wrong, correct] }]);
+
+      // The stage failure itself was logged (both to the app log and the
+      // quarantine decisions log), and the run still completed its summary.
+      expect(infoSpy).toHaveBeenCalledWith('ERROR', 'SlugRepair', 'stage failed',
+        expect.objectContaining({ stage: '6.3 repairOrphanDirs', error: expect.stringContaining('projectsDir became unreadable') }));
+      expect(infoSpy).toHaveBeenCalledWith('INFO', 'SlugRepair', 'repair pass complete', expect.anything());
+      const decisions = fs.readFileSync(path.join(w.quarantine.dir, 'decisions.log'), 'utf8');
+      expect(decisions).toContain('ERROR stage 6.3 repairOrphanDirs failed');
+
+      infoSpy.mockRestore();
     });
   });
 

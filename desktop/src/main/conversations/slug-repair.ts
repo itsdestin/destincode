@@ -176,7 +176,13 @@ export interface RepairFinding {
   // 'record-repaired' (review fix, §6.2): the session's record was
   // upserted but no file was renamed/moved — distinct from 'moved' so a
   // consumer never treats `paths` as proof a physical relocation happened.
-  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live' | 'rename-failed' | 'record-repaired';
+  // 'record-repair-failed' (review fix, Minor 1): the §6.2 upsert itself
+  // threw AFTER any file move already succeeded — distinct from
+  // 'rename-failed', whose doc above means "the promotion rename threw".
+  // Reusing 'rename-failed' here read backwards: no rename failed, the
+  // record write did. A consumer branching on kind needs to know which
+  // half of the operation actually broke.
+  kind: 'moved' | 'quarantined' | 'replaced-with-superset' | 'fork-surfaced' | 'deferred-live' | 'rename-failed' | 'record-repaired' | 'record-repair-failed';
   paths: string[];
 }
 
@@ -508,7 +514,11 @@ export async function repairRecordsAndSpace(
         });
       } catch (e) {
         q.log(`ERROR RECORD-REPAIR ${sessionId}: upsert failed: ${String(e)}`);
-        findings.push({ sessionId, homeFolder: P, kind: 'rename-failed', paths: moved ? [target] : [] });
+        // Fix (review, Minor 1): the rename (if any) succeeded — only the
+        // record write threw. 'rename-failed' would tell a consumer the
+        // opposite of what happened; 'record-repair-failed' says precisely
+        // which half broke.
+        findings.push({ sessionId, homeFolder: P, kind: 'record-repair-failed', paths: moved ? [target] : [] });
         continue;
       }
       q.log(`RECORD-REPAIR ${sessionId}: projectName '${rec?.projectName ?? ''}' -> '${bucketName}', originalPath '${rec?.originalPath ?? ''}' -> '${P}', transcriptRef '${rec?.transcriptRef ?? ''}' -> '${targetTranscriptRef}'`);
@@ -652,6 +662,18 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   store?: import('./conversation-store').ConversationStore | null;
   spaceRoot?: string;
   stateFile?: string;
+  // Test-only seam (review fix, Minor 2): lets a test substitute one stage's
+  // implementation (e.g. force it to throw) to exercise the per-stage
+  // try/catch below. vi.spyOn on this module's exports would NOT work here —
+  // runSlugRepair calls repairHomeForks/repairRecordsAndSpace/repairOrphanDirs
+  // as local same-module bindings, which a compiled module calls directly
+  // rather than through its exports object, so spying the export never
+  // intercepts these call sites. Never set in production.
+  stages?: {
+    repairHomeForks?: typeof repairHomeForks;
+    repairRecordsAndSpace?: typeof repairRecordsAndSpace;
+    repairOrphanDirs?: typeof repairOrphanDirs;
+  };
 }): Promise<void> {
   const homeDir = overrides?.homeDir ?? os.homedir();
   const store = overrides?.store !== undefined ? overrides.store : getConversationStore();
@@ -685,11 +707,39 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   const opts: RepairOpts = { projectsDir, homeDir, knownFolders, quarantine, heldForks,
     liveMs: overrides?.liveMs, now: overrides?.now };
 
+  const stageFns = {
+    repairHomeForks: overrides?.stages?.repairHomeForks ?? repairHomeForks,
+    repairRecordsAndSpace: overrides?.stages?.repairRecordsAndSpace ?? repairRecordsAndSpace,
+    repairOrphanDirs: overrides?.stages?.repairOrphanDirs ?? repairOrphanDirs,
+  };
+
   // ORDER IS LOAD-BEARING (spec §6.0): space repair (6.2) BEFORE orphan
   // retirement (6.3) — the truncation bucket was populated FROM the orphan.
+  // Fix (review, Minor 2): each stage runs in its OWN try/catch and a throw
+  // never aborts the run — it's logged and the run continues to the NEXT
+  // stage and on to finalization (state write, notes, summary log). WHY: a
+  // filesystem throw partway through a later stage (e.g. a file vanishing
+  // between an exists-check and a read in classifyPair — TOCTOU, always
+  // possible against a live tree) must never discard the findings/holds an
+  // EARLIER stage already gathered — finalization below is what persists
+  // them (writeState), and an unguarded throw here would reject the whole
+  // async function before that write ever ran, silently losing them. The
+  // stage ORDER itself is untouched by this: a failed stage is skipped, not
+  // reordered or retried within the same run — 6.1/6.2/6.3 still only ever
+  // run in that sequence.
   const all: RepairFinding[] = [];
-  all.push(...repairHomeForks(opts));                                   // 6.1
-  all.push(...await repairRecordsAndSpace({ ...opts, store, spaceRoot })); // 6.2
+  try {
+    all.push(...stageFns.repairHomeForks(opts));                          // 6.1
+  } catch (e) {
+    log('ERROR', 'SlugRepair', 'stage failed', { stage: '6.1 repairHomeForks', error: String(e) });
+    quarantine.log(`ERROR stage 6.1 repairHomeForks failed: ${String(e)}`);
+  }
+  try {
+    all.push(...await stageFns.repairRecordsAndSpace({ ...opts, store, spaceRoot })); // 6.2
+  } catch (e) {
+    log('ERROR', 'SlugRepair', 'stage failed', { stage: '6.2 repairRecordsAndSpace', error: String(e) });
+    quarantine.log(`ERROR stage 6.2 repairRecordsAndSpace failed: ${String(e)}`);
+  }
   // WHY (final review, IMPORTANT 5): 6.3 runs AFTER 6.2 in this same pass, so
   // a session 6.3 promotes into the correct CC dir THIS run was already past
   // 6.2's scan and does not get its record repaired until the NEXT launch's
@@ -697,7 +747,12 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   // self-correcting (the runner runs every startup) — do not read a
   // surviving wrong record right after a supervised run as a failure; check
   // again after one more launch.
-  all.push(...repairOrphanDirs(opts));                                  // 6.3
+  try {
+    all.push(...stageFns.repairOrphanDirs(opts));                         // 6.3
+  } catch (e) {
+    log('ERROR', 'SlugRepair', 'stage failed', { stage: '6.3 repairOrphanDirs', error: String(e) });
+    quarantine.log(`ERROR stage 6.3 repairOrphanDirs failed: ${String(e)}`);
+  }
 
   // Bounded deferral (spec §6.5): live sessions retry next launch, at most
   // MAX_DEFERRALS times, then surface instead of looping silently.
