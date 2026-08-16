@@ -90,6 +90,27 @@ let nativeHomeRootOpt: string | undefined;
 let device = '';
 let unsubscribe: (() => void) | null = null;
 let reconcileTimer: NodeJS.Timeout | null = null;
+// Fix: the slug repair (spec §6) must not race the sweeps — see the WHY at the
+// pauseSweeps export. While paused, any trigger (startup kick, the 30-min tick,
+// a Personal 'synced' event) records a pending request instead of running.
+let sweepsPaused = false;
+let reconcilePending = false;
+let materializePending = false;
+// Fix: called by main.ts around the one-shot slug repair, BEFORE it runs.
+// WHY: the reconciler snapshots every record at its start (reconciler.ts
+// list() preload) and then walks directories for seconds; if the repair
+// rewrites records / moves files mid-walk, that stale snapshot mirrors files
+// back into buckets the repair just retired, and a concurrent materialize
+// sweep re-creates a quarantined local copy from the pre-repair space record.
+// Observed 2026-08-15 on real data: 8 space files + 1 local file resurrected
+// this way. Pausing turns those triggers into one deferred run AFTER the
+// repair, so the sweeps operate on repaired records instead of stale ones.
+export function pauseSweeps(): void { sweepsPaused = true; }
+export function resumeSweeps(): void {
+  sweepsPaused = false;
+  if (reconcilePending) { reconcilePending = false; runReconcile(); }
+  if (materializePending) { materializePending = false; void materializeSweep(); }
+}
 // Desktop hook wiring resolves the CLAUDE session id before calling in, so the
 // map is keyed by claude id (matches the store's record id). cwd is learned via
 // noteSessionStarted; events for never-announced sessions still upsert (the live
@@ -121,6 +142,11 @@ export function emitConversationMetaChanged(): void {
 export async function startConversationStore(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
   nativeHomeRoot?: string;  // tests only — production reads ~/.youcoded
+  // Fix: main.ts passes true so the startup reconcile/materialize kicks below
+  // land as PENDING instead of running, giving the one-shot slug repair a
+  // clean window before the sweeps see any records. Default false/absent
+  // keeps every existing caller's behavior unchanged.
+  pauseSweeps?: boolean;
 }): Promise<void> {
   // Idempotent start (review fix 4): a second start without a stop would leak
   // the first onSyncSpacesEvent subscription (duplicate materialize sweeps
@@ -155,6 +181,11 @@ export async function startConversationStore(opts?: {
     // and project spaces never materialize conversations).
     if (e.type === 'synced' && e.spaceId === 'personal' && e.updated) void materializeSweep();
   });
+
+  // Fix: pause BEFORE the detached kicks below, so the caller's post-repair
+  // resumeSweeps() sees this run's startup reconcile/materialize as pending
+  // work rather than having already fired against pre-repair records.
+  if (opts?.pauseSweeps) pauseSweeps();
 
   // Carry-forward 2: kick the reconciler DETACHED. The first-ever run mirrors
   // potentially GBs of transcripts (serial copies); awaiting it here would block
@@ -503,6 +534,9 @@ async function listAllProviders(s: ConversationStore): Promise<ConversationRecor
 }
 
 async function materializeSweep(): Promise<void> {
+  // Fix: quiesced for the slug repair — see pauseSweeps' WHY. Return before
+  // any I/O; resumeSweeps() re-fires this exact call once the pause lifts.
+  if (sweepsPaused) { materializePending = true; return; }
   // Capture the store (review fix 3): stop() mid-sweep nulls the module field,
   // and every use below an await would otherwise become a swallowed TypeError.
   const s = store;
@@ -697,6 +731,9 @@ export async function flushSessionToSpace(claudeSessionId: string): Promise<void
 }
 
 function runReconcile(): void {
+  // Fix: quiesced for the slug repair — see pauseSweeps' WHY. resumeSweeps()
+  // re-fires this exact call once the pause lifts.
+  if (sweepsPaused) { reconcilePending = true; return; }
   if (!store) return;
   const s = store;
   // Known folders let the reconciler recover the EXACT project name for a CC slug

@@ -585,6 +585,11 @@ const MAX_DEFERRALS = 3;
  *  and a quarantine ATTENTION line instead. A surfaced fork gets a one-time
  *  store note, and ONLY when the record's existing note is empty — repair
  *  must never clobber a user's own note. */
+// Fix: does NOT pause/resume the reconcile+materialize sweeps itself — the
+// CALLER owns that (main.ts, around its startConversationStore({ pauseSweeps:
+// true }).then(runSlugRepair).finally(resumeSweeps) chain). A single owner
+// avoids double-pause/double-resume bookkeeping; see pauseSweeps' WHY in
+// conversations/service.ts for what races if the caller skips this.
 export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   store?: import('./conversation-store').ConversationStore | null;
   spaceRoot?: string;
