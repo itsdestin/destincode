@@ -23,7 +23,7 @@ import type { PermissionDecision, PermissionRule } from '../../shared/permission
 import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
-import { checkPathGuard } from './tools/guards';
+import { checkPathGuard, workspaceMatchFor } from './tools/guards';
 import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
@@ -46,6 +46,26 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
 const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+
+// Tools whose target MUST already exist for the call to mean anything. Only
+// these can have an external_directory ask short-circuited by
+// workspaceMatchFor (2026-08-16): for them "nothing is there" is definitively
+// a mistake, so recovering the workspace file the model meant is strictly
+// better than an approval prompt about a fictional location.
+//
+// Write is deliberately ABSENT. "Doesn't exist yet" is its NORMAL case —
+// creating a new file outside the workspace is a real request a user may well
+// want to approve, and diverting it would refuse an action nobody rejected.
+// Glob/Grep are absent too: their subject is a DIRECTORY to search, and this
+// helper answers a file-shaped question.
+const REQUIRES_EXISTING_TARGET = new Set(['Read', 'Edit']);
+
+/** The disk question REQUIRES_EXISTING_TARGET tools are asking. Never throws —
+ *  a permission error reading someone else's directory answers "not a file I
+ *  can offer you", which is exactly the right answer here. */
+function isExistingFile(absPath: string): boolean {
+  try { return fs.statSync(absPath).isFile(); } catch { return false; }
+}
 
 /** The rule an "Always allow" persists.
  *
@@ -1137,6 +1157,12 @@ export class HarnessSession extends EventEmitter {
     // Proof of life FIRST, before any throttling — a throttled-away report must
     // still reset the stall clock, or the throttle itself could cause a stall.
     this.rearmStallWatchdog?.();
+    // Same local-only gate as the opening estimate below — one rule for the
+    // whole affordance, so a hosted provider that ever started reporting
+    // progress still can't put a prefill readout on a cloud session. Deliberately
+    // BELOW the re-arm above: a report is proof of life whether or not we render
+    // it, and gating the re-arm too would let a healthy stream trip the watchdog.
+    if (!this.profile.announcePrefill) return;
     const report = toReport(p);
     const isFinal = report.newProcessed >= report.newTotal;
     const now = Date.now();
@@ -1947,7 +1973,12 @@ export class HarnessSession extends EventEmitter {
     // so ordinary turns keep their existing event sequence exactly.
     // Gate on the NEW tokens: a step that adds almost nothing to a huge cached
     // context returns instantly and needs no explanation, however big the total.
-    if (newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+    // AND on the provider: this whole affordance exists for local prefill, which
+    // is a minutes-long silence on the user's own hardware. A hosted model
+    // reaches first token in seconds and reports no progress to upgrade the
+    // notice with, so on cloud it was pure noise in place of the ordinary
+    // spinner (Destin, 2026-08-16). See CapabilityProfile.announcePrefill.
+    if (this.profile.announcePrefill && newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
       this.emitEvent('assistant-thinking', {
         promptProcessing: { promptTokens: newTokens, budgetMs: firstChunkMs, source },
       });
@@ -2243,7 +2274,29 @@ export class HarnessSession extends EventEmitter {
     if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
       const verdict = checkPathGuard(subject, this.opts.cwd, this.opts.internalReadRoots);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
-      if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask
+      if (verdict.kind === 'external') {
+        // Before raising the ask: did the model INVENT this outside path for a
+        // file that actually lives in the workspace? (2026-08-16 stuck-session
+        // investigation — a local model turned Glob's workspace-relative
+        // "ROADMAP.md" into "/youcoded-dev/ROADMAP.md" and the turn hung on an
+        // approval prompt for a location that exists nowhere.) Answering with
+        // the real path is both more useful and less alarming than asking the
+        // user to authorize fiction. Only fires for tools whose target must
+        // pre-exist, only when the outside path is confirmed absent, and only
+        // when the replacement is confirmed present INSIDE the cwd jail — so
+        // it can never widen what the model may reach.
+        const match = REQUIRES_EXISTING_TARGET.has(call.toolName)
+          ? workspaceMatchFor(subject, this.opts.cwd, isExistingFile)
+          : null;
+        if (match !== null) {
+          return {
+            text: `${call.toolName} rejected: nothing exists at ${subject}, and that path is outside the workspace. `
+              + `The file is at ${match} inside the workspace — retry with that path.`,
+            isError: true,
+          };
+        }
+        externalAsk = true;   // external_directory → force an ask
+      }
     }
 
     // 4. Configured decision. An external-directory path forces 'ask' regardless

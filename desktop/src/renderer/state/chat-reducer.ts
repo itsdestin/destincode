@@ -28,6 +28,25 @@ function nextGroupId(): string {
   return `group-${++groupCounter}`;
 }
 
+// Fix (Destin, 2026-08-16): CC writes a bare `/compact` line as a real user
+// prompt in its JSONL — verified present, with a promptId and no isMeta, in 12
+// lines across live transcripts — both when the user types it AND when
+// resume-from-summary runs compaction internally. The app already shows a
+// CompactingCard for that event, so the bubble is pure duplication sitting
+// right next to a card saying the same thing.
+//
+// Used at BOTH places a bubble can be built from CC's record of the past:
+// the live transcript append and the HISTORY_LOADED replay. Miss the second
+// and the bubble reappears on reload — a "where did that come from?" change
+// with no visible cause, which is worse than never having fixed it.
+//
+// Deliberately NOT applied to the optimistic-bubble confirm arm: the escape
+// hatch (`\/compact`) is passthrough text that DOES get a bubble, and hiding
+// its confirmation would strand it as permanently `pending`.
+function isCompactCommandEcho(text: string): boolean {
+  return /^\/compact(\s|$)/.test(text.trim());
+}
+
 let turnCounter = 0;
 function nextTurnId(): string {
   return `turn-${++turnCounter}`;
@@ -965,6 +984,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
+      // Drop the redundant `/compact` echo (see isCompactCommandEcho) while
+      // keeping every other effect of the event — turn state, seenUuids, queue
+      // drain — since those are what tell the rest of the UI a turn is running.
+      // This sits BELOW the confirm arm on purpose: a bubble that already
+      // exists optimistically must still be confirmed, or it stays `pending`
+      // forever and useSubmitConfirmation fires a stray recovery keystroke.
+      const suppressBubble = isCompactCommandEcho(action.text);
+
       // No pending match — a queued message being drained (Task 12's true-
       // position confirm: this is the ONLY place its timeline entry gets
       // created, at the end), a remote/replay client, or the user typed
@@ -981,7 +1008,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // `injected` rides only this append path on purpose: a host-injected
         // turn never has an optimistic pending bubble to confirm (nobody typed
         // it), so it can only ever land here.
-        timeline: [...session.timeline, {
+        timeline: suppressBubble ? session.timeline : [...session.timeline, {
           kind: 'user', message, pending: false,
           ...(action.injected ? { injected: action.injected } : {}),
           ...(action.injectedMeta ? { injectedMeta: action.injectedMeta } : {}),
@@ -1592,9 +1619,32 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // CONSENT bug: the honest fallback is the synthetic card below, which
       // describes the ask's own payload and is reclaimed by TRANSCRIPT_TOOL_USE
       // when the real event lands.
-      // (An older requestId pass was unreachable — a running tool never carries
-      // a requestId; PERMISSION_RESPONDED clears it.)
+      // (An older requestId pass was unreachable — a running tool never carried
+      // a requestId; PERMISSION_RESPONDED clears it. That is no longer quite
+      // true: a card whose ask was overwritten keeps the requestId while
+      // reverting to 'running', which is exactly the stale binding the loop
+      // directly below detects and clears.)
       const toolCalls = new Map(session.toolCalls);
+
+      // This action is REPEATABLE (2026-08-16): main re-announces every
+      // still-pending ask on a heartbeat, so a card that never rendered — or
+      // that a later event overwrote — heals itself instead of hanging the turn
+      // forever on an ask nobody can answer. Two consequences, both handled
+      // here BEFORE the match loop, because the loop only ever looks at
+      // 'running' tools and cannot see either case:
+      //   • Already bound and awaiting → nothing to do. Return `state` itself
+      //     (not a rebuilt Map): a fresh object every few seconds would
+      //     re-render the timeline for no change.
+      //   • Held by a card in any OTHER status → that binding is stale, and
+      //     tier 2 (name-only) would otherwise hand this same requestId to a
+      //     SECOND running card, putting Allow/Deny on two cards for one ask.
+      //     Drop the dead requestId so the match below can re-bind cleanly.
+      for (const [id, tool] of toolCalls) {
+        if (tool.requestId !== action.requestId) continue;
+        if (tool.status === 'awaiting-approval') return state;
+        toolCalls.set(id, { ...tool, requestId: undefined });
+      }
+
       let inputMatchId: string | null = null;
       let nameMatchId: string | null = null;
       const wantedInput = action.input ? stableStringify(action.input) : null;
@@ -1643,15 +1693,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
 
       if (!found) {
-        // Fix: never synthesize a SECOND placeholder for a requestId we already
-        // hold. The match loop above only considers 'running' tools, so a
-        // re-delivered PERMISSION_REQUEST for a tool already flipped to
-        // 'awaiting-approval' fell through to here and minted a duplicate card
-        // (the synthetic merge in TRANSCRIPT_TOOL_USE reclaims only one of
-        // them, orphaning the rest).
-        for (const tool of toolCalls.values()) {
-          if (tool.requestId === action.requestId) return state;
-        }
+        // (The "never synthesize a SECOND placeholder for a requestId we
+        // already hold" guard that used to live here moved ABOVE the match
+        // loop in the 2026-08-16 heartbeat change — it has to run before tier 2
+        // can bind a second card, not only when tier 2 misses. By this line
+        // nothing holds action.requestId: it was either returned early as an
+        // intact ask, or cleared as a stale binding.)
 
         // Permission hook arrived before transcript watcher — create synthetic tool entry
         const syntheticId = `perm-${action.requestId}`;
@@ -1863,6 +1910,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           });
 
       for (const msg of action.messages) {
+        // Same `/compact` echo the live path drops — loadHistory has no filter
+        // for it (it only gates on isMeta/promptId/non-empty), so without this
+        // a reloaded or resumed session grows back every bubble the live fix
+        // removed. Skipping before the counter is safe: it only ever advances
+        // on a push, so ids stay unique, and the same message list always
+        // regenerates the same ids for the hasMore=false `hist-` replacement.
+        if (msg.role === 'user' && isCompactCommandEcho(msg.content)) continue;
         const id = `hist-${++historyMsgCounter}`;
         if (msg.role === 'user') {
           historyTimeline.push({

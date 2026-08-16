@@ -310,6 +310,92 @@ describe('PERMISSION_REQUEST tool matching', () => {
     expect(awaiting).toEqual(['tool-a']);
   });
 
+  // 2026-08-16: main now RE-ANNOUNCES every still-pending ask on a heartbeat so
+  // a card that never rendered (or that a later event overwrote) heals itself
+  // instead of hanging the turn forever. That makes PERMISSION_REQUEST a
+  // REPEATABLE action — these four pin what a repeat must and must not do.
+  describe('re-delivered by the heartbeat', () => {
+    it('is a no-op — identical state object — when the card is already awaiting approval', () => {
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      const settled = state;
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      // Reference equality, not deep equality: a fresh object every 3s would
+      // re-render the whole timeline for nothing.
+      expect(state).toBe(settled);
+    });
+
+    it('never binds a SECOND card when another same-name tool is running', () => {
+      // The hazard the heartbeat introduces: tier-2 matches by NAME only, so a
+      // repeat could hand the same requestId to an unrelated running card and
+      // put Allow/Deny buttons on two cards for one ask.
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      state = dispatch(state, toolUse('tool-b', 'Bash', { command: 'pwd' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const awaiting = [...session.toolCalls.values()].filter((t) => t.status === 'awaiting-approval');
+      expect(awaiting).toHaveLength(1);
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-b')!.status).toBe('running');
+    });
+
+    it('RE-BINDS a card whose ask was wiped — the whole point of the heartbeat', () => {
+      // Reproduces the shipped stuck-turn shape: the card held the ask, then a
+      // later event overwrote it back to plain 'running' with no requestId, so
+      // no buttons rendered while main was still waiting. The next heartbeat
+      // must put the ask back rather than mint a duplicate.
+      state = dispatch(state, toolUse('tool-a', 'Read', { file_path: '/x' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      const wiped = new Map(session0.toolCalls);
+      wiped.set('tool-a', { ...wiped.get('tool-a')!, status: 'running', requestId: undefined });
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: wiped });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-a')!.requestId).toBe('req-hb');
+      expect([...session.toolCalls.values()].filter((t) => t.requestId === 'req-hb')).toHaveLength(1);
+    });
+
+    it('re-creates the card entirely when it was lost (transcript replay / re-dock)', () => {
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      // Replay rebuilt the timeline from the JSONL, which has no record of a
+      // pending ask — the card is simply gone (ROADMAP bug, 2026-08-16).
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: new Map(), activeTurnToolIds: new Set() });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const card = session.toolCalls.get('perm-req-hb');
+      expect(card?.status).toBe('awaiting-approval');
+      // Load-bearing: ChatView renders awaiting cards from activeTurnToolIds,
+      // and AssistantTurnBubble deliberately skips them — an awaiting card
+      // outside that Set renders NOWHERE.
+      expect(session.activeTurnToolIds.has('perm-req-hb')).toBe(true);
+    });
+  });
+
   it('still creates a synthetic entry when no running tool exists', () => {
     state = dispatch(state, {
       type: 'PERMISSION_REQUEST',
@@ -439,6 +525,80 @@ describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
     expect(entries[0].injectedMeta).toEqual({ childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 });
     expect(entries[0].message.content).toContain('[Background specialist finished]');
     expect(entries[1].injected).toBeUndefined();
+  });
+});
+
+describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () => {
+  // CC writes a bare `/compact` user line into the JSONL on BOTH the typed path
+  // and the resume-from-summary path. CompactingCard is the intended feedback
+  // for that event, so the bubble is pure duplication — but everything else the
+  // event drives (turn state, uuid dedup) must still happen.
+  it('drops the bubble for /compact but still starts the turn', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-compact', timestamp: 1000,
+      text: '/compact',
+    });
+    const session = state.get(SESSION)!;
+    expect(session.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+    expect(session.isThinking).toBe(true);
+    expect(session.seenUuids.has('u-compact')).toBe(true);
+  });
+
+  it('drops it with focus instructions too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-c2', timestamp: 1000,
+      text: '/compact focus on the auth work',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+  });
+
+  it('keeps a real message that merely mentions /compact', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 1000,
+      text: 'why did /compact take so long?',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(1);
+  });
+
+  // The suppression MUST sit below the confirm arm. The `\/compact` escape
+  // hatch is passthrough text, so InputBar does dispatch an optimistic bubble
+  // for it; dropping its confirmation would leave `pending` set forever and
+  // useSubmitConfirmation would fire a stray recovery keystroke.
+  it('still confirms an optimistic /compact bubble instead of stranding it pending', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'USER_PROMPT', sessionId: SESSION, content: '/compact', timestamp: 1000,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-esc', timestamp: 1001,
+      text: '/compact',
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users).toHaveLength(1);
+    expect(users[0].pending).toBe(false);
+  });
+
+  // Reload/resume replays CC's JSONL through loadHistory, which has no filter
+  // for this (it only gates on isMeta/promptId/non-empty). Without the same
+  // rule here, every bubble the live fix removed grows back on reload.
+  it('drops the echo from replayed history too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'HISTORY_LOADED', sessionId: SESSION, hasMore: false,
+      messages: [
+        { role: 'user', content: 'first question', timestamp: 1 },
+        { role: 'user', content: '/compact', timestamp: 2 },
+        { role: 'assistant', content: 'an answer', timestamp: 3 },
+        { role: 'user', content: 'second question', timestamp: 4 },
+      ],
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users.map((e) => e.message.content)).toEqual(['first question', 'second question']);
+    // The assistant turn either side of it must survive untouched.
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
   });
 });
 
