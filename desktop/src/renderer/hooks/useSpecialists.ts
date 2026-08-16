@@ -1,6 +1,6 @@
 import { useCallback, useRef, useEffect, useState, useSyncExternalStore } from 'react';
 import { useChatStore } from '../state/chat-context';
-import type { SpecialistRunView, ToolCallState, SpecialistDefinitionView, DelegatedModelsView } from '../../shared/types';
+import type { SpecialistRunView, ToolCallState, SpecialistDefinitionView, DelegatedModelsView, SubagentSegment } from '../../shared/types';
 
 // Specialists 1c — narrow selectors over the chat store. A Task card carries
 // ITS OWN run record on the tool prop (ToolCallState.specialistRun), so these
@@ -34,11 +34,14 @@ export function useSpecialistRunByChild(sessionId: string | undefined, childId: 
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+export type AskSegment = Extract<SubagentSegment, { type: 'tool' }>;
+
 export interface SpecialistSummary {
   /** Children still working (their ledger status is 'running'). */
   running: SpecialistRunView[];
-  /** Nested asks waiting on the user, oldest first: which child, what tool, and the request id. */
-  waiting: Array<{ run: SpecialistRunView | undefined; parentToolCallId: string; toolName: string; requestId: string; held: boolean }>;
+  /** Nested asks waiting on the user, oldest first: which child, the asking
+   *  segment (rendered by SpecialistAskBlock), and the card it lives on. */
+  waiting: Array<{ run: SpecialistRunView | undefined; parentToolCallId: string; toolName: string; requestId: string; held: boolean; segment: AskSegment }>;
   /** Finished in the background since the user last looked (report folded into the card). */
   finished: SpecialistRunView[];
 }
@@ -69,7 +72,7 @@ export function useSpecialistSummary(sessionId: string | undefined): SpecialistS
       if (run && run.background && (run.status === 'completed' || run.status === 'failed') && tool.specialistReport) finished.push(run);
       for (const seg of tool.subagentSegments ?? []) {
         if (seg.type === 'tool' && seg.status === 'awaiting-approval' && seg.requestId) {
-          waiting.push({ run, parentToolCallId: id, toolName: seg.toolName, requestId: seg.requestId, held: !!seg.askHeld });
+          waiting.push({ run, parentToolCallId: id, toolName: seg.toolName, requestId: seg.requestId, held: !!seg.askHeld, segment: seg });
         }
       }
     }

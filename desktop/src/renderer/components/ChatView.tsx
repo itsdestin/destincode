@@ -6,8 +6,6 @@ import SpecialistReportCard from './SpecialistReportCard';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
-import { hasNestedAsk } from '../utils/specialist-cards';
-import type { ToolCallState } from '../../shared/types';
 import PromptCard, { PromptCardButton } from './PromptCard';
 import { sendPromptInput } from '../state/prompt-input';
 import UsageCard from './UsageCard';
@@ -190,18 +188,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return { hasAwaitingApproval: hasAwaiting, hasRunningTools: hasRunning, awaitingTools: awaiting };
   }, [state.toolCalls, state.activeTurnToolIds]);
 
-  // Specialists 1c: Task cards whose helper is waiting on the user. Scanned
-  // over ALL toolCalls, not activeTurnToolIds — a background hire's card
-  // belongs to an earlier turn, and its ask can arrive turns later. Hoisted
-  // to the bottom next to the parent's own asks (and skipped by their groups,
-  // AssistantTurnBubble) so the buttons are where the user is looking. NOT
-  // folded into hasAwaitingApproval: that flag hides the parent's thinking
-  // indicator, and a background child's ask does not stop the parent thinking.
-  const attentionCards = useMemo(() => {
-    const out: ToolCallState[] = [];
-    for (const t of state.toolCalls.values()) if (hasNestedAsk(t)) out.push(t);
-    return out;
-  }, [state.toolCalls]);
+
 
   // Find the most recent assistant turn's Anthropic request ID — surfaced on
   // the AttentionBanner only for session-died / error so users can cite it
@@ -917,15 +904,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   </div>
                 </div>
               ))}
-            {/* Specialists 1c: a helper's ask, nested in its Task card, hoisted
-                here for the same reason the parent's own asks are. */}
-            {attentionCards.map((tool) => (
-                <div key={`attn-${tool.toolUseId}`} className="in-view flex justify-start px-4 py-0.5">
-                  <div className="assistant-bubble max-w-[85%] rounded-2xl rounded-bl-sm bg-inset px-5 py-3">
-                    <ToolCard tool={tool} sessionId={sessionId} />
-                  </div>
-                </div>
-              ))}
+
             {/* Only show thinking indicator when Claude is between tool completion
                 and next text — not when tools are still running or awaiting approval.
                 When the classifier flags a non-ok attention state, swap the

@@ -2,12 +2,11 @@ import { useState } from 'react';
 import type { SubagentSegment, ToolCallState } from '../../../shared/types';
 import MarkdownContent from '../MarkdownContent';
 import ToolBody from './ToolBody';
-import { friendlyToolDisplay, PermissionButtons } from '../ToolCard';
+import { friendlyToolDisplay } from '../ToolCard';
+import { SpecialistAskBlock } from '../specialists/SpecialistAskBlock';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon, NoteIcon } from '../Icons';
 import BrailleSpinner from '../BrailleSpinner';
 import { useExpandAllToggle, getInitialExpanded } from '../../hooks/useExpandAllToggle';
-import { useChatDispatch } from '../../state/chat-context';
-import { useArtifactOptional } from '../../state/ArtifactContext';
 
 /**
  * Renders a subagent's inline timeline inside the parent AgentView card.
@@ -220,61 +219,9 @@ function SubagentToolRow({
         <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted ml-auto" expanded={expanded} />
       </button>
       {awaiting && (
-        <NestedAsk segment={segment} sessionId={sessionId} specialistName={specialistName} />
+        <SpecialistAskBlock segment={segment} sessionId={sessionId} specialistName={specialistName} />
       )}
       {expanded && <ToolBody tool={tool} sessionId={sessionId} />}
-    </div>
-  );
-}
-
-/**
- * The nested permission ask: the SAME PermissionButtons the top-level card
- * uses (same decisions, same "Always allow" derivation, same keyboard
- * handling) — a helper's ask is not a lesser ask. Two additions over the
- * top-level row: an "external" (outside-the-folder) note, and the held-state
- * line once the 5-minute redirect has fired.
- */
-function NestedAsk({ segment, sessionId, specialistName }: { segment: ToolSegment; sessionId?: string; specialistName?: string }) {
-  const dispatch = useChatDispatch();
-  const artifacts = useArtifactOptional();
-  const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
-  const requestId = segment.requestId!;
-  const who = specialistName ?? 'The specialist';
-  const onResponded = () => {
-    if (!sessionId) return;
-    const action = { type: 'PERMISSION_RESPONDED' as const, sessionId, requestId };
-    dispatch(action);
-    (window as any).claude?.remote?.broadcastAction(action);
-  };
-  const onFailed = () => {
-    if (!sessionId) return;
-    const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId };
-    dispatch(action);
-    (window as any).claude?.remote?.broadcastAction(action);
-  };
-  return (
-    <div data-testid="nested-ask" className="border-t border-edge/60 bg-canvas/40">
-      {segment.external && (
-        <p className="px-3 pt-2 text-xs text-fg-muted">
-          This is outside the project folder, so {who} has to ask each time — there is no “Always allow” for it.
-        </p>
-      )}
-      {segment.askHeld && (
-        <p className="px-3 pt-2 text-xs text-amber-500" data-testid="nested-ask-held">
-          Five minutes passed with no answer, so {who} was told to carry on without this.
-          You can still answer — a Yes now is delivered as a follow-up.
-        </p>
-      )}
-      <PermissionButtons
-        requestId={requestId}
-        denyListed={segment.denyListed}
-        permissionMode={segment.permissionMode}
-        command={typeof segment.input?.command === 'string' ? (segment.input.command as string) : undefined}
-        folderName={sessionCwd ? sessionCwd.split(/[\\/]/).filter(Boolean).pop() : undefined}
-        suppressAlwaysAllow={segment.external === true}
-        onResponded={onResponded}
-        onFailed={onFailed}
-      />
     </div>
   );
 }

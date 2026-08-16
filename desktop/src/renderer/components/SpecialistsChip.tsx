@@ -2,19 +2,26 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useSpecialistSummary, type SpecialistSummary } from '../hooks/useSpecialists';
+import { useSpecialistSummary, type SpecialistSummary, type AskSegment } from '../hooks/useSpecialists';
+import { SpecialistAskBlock } from './specialists/SpecialistAskBlock';
+import { SpecialistActions } from './specialists/SpecialistActions';
+import { RunStatusLine } from './specialists/RunStatusLine';
+import { friendlyToolDisplay } from './ToolCard';
 import BrailleSpinner from './BrailleSpinner';
-import { CheckIcon, QuestionIcon } from './Icons';
+import { CheckIcon, QuestionIcon, StoppedIcon } from './Icons';
 import type { SpecialistRunView } from '../../shared/types';
 
 /**
- * Specialists 1c — the status-bar chip (spec §6 "attention, not vigilance"):
- * a quiet "2 specialists" while helpers work that becomes a badge when one
- * needs the user (an ask waiting) or has finished in the background. Hidden
- * when there is nothing to say — same rule as OpenTasksChip. Click opens a
- * small list: who, doing what, for how long, and a Jump that scrolls the
- * launching Task card into view. One indicator on purpose; the full
- * cross-conversation inbox is later work.
+ * Specialists 1c — the status-bar chip (spec §6 "attention, not vigilance")
+ * and the popup behind it, which is where helpers are MANAGED (Destin, round
+ * 1: an ask buried inside a Task card is impossible to navigate — the card
+ * still shows it, but this is the one place to answer every waiting ask, send
+ * a note, or stop a helper without hunting through the conversation).
+ *
+ * The chip is quiet ("3 specialists") while helpers work and turns amber
+ * ("2 need you") when an ask is waiting. Hidden when there is nothing to say —
+ * same rule as OpenTasksChip. One indicator on purpose; the cross-conversation
+ * inbox is later work.
  */
 export default function SpecialistsChip({ sessionId }: { sessionId: string | null | undefined }) {
   const summary = useSpecialistSummary(sessionId ?? undefined);
@@ -30,9 +37,9 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
       ? `${summary.running.length} specialist${summary.running.length === 1 ? '' : 's'}`
       : `${summary.finished.length} finished`;
   const tooltip = needsYou > 0
-    ? `${needsYou} specialist ask${needsYou === 1 ? '' : 's'} waiting on you — click to see`
+    ? `${needsYou} specialist ask${needsYou === 1 ? '' : 's'} waiting on you — click to answer`
     : summary.running.length > 0
-      ? `${summary.running.length} specialist${summary.running.length === 1 ? '' : 's'} working — click to see`
+      ? `${summary.running.length} specialist${summary.running.length === 1 ? '' : 's'} working — click to manage`
       : 'Specialists finished in the background — click to see';
 
   return (
@@ -57,16 +64,23 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
           <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
             <OverlayPanel
               layer={2}
-              className="w-full max-w-[420px] max-h-[80vh] flex flex-col pointer-events-auto"
+              className="w-full max-w-[560px] max-h-[85vh] flex flex-col pointer-events-auto"
               style={{ position: 'relative', zIndex: 'auto' }}
             >
               <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-                <h2 className="text-sm font-bold text-fg">Specialists in this conversation</h2>
+                <div>
+                  <h2 className="text-sm font-bold text-fg">Specialists</h2>
+                  <p className="text-2xs text-fg-muted">
+                    {needsYou > 0 ? `${needsYou} waiting on you` : 'Nothing needs you'}
+                    {summary.running.length > 0 ? ` · ${summary.running.length} working` : ''}
+                    {summary.finished.length > 0 ? ` · ${summary.finished.length} finished` : ''}
+                  </p>
+                </div>
                 <button onClick={() => setOpen(false)}
                   className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">×</button>
               </div>
-              <div className="px-2 py-2 overflow-y-auto">
-                <SpecialistList summary={summary} onJump={() => setOpen(false)} />
+              <div className="px-3 py-3 overflow-y-auto space-y-2">
+                <SpecialistManager summary={summary} sessionId={sessionId ?? undefined} onJump={() => setOpen(false)} />
               </div>
             </OverlayPanel>
           </div>
@@ -77,35 +91,91 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
   );
 }
 
-function SpecialistList({ summary, onJump }: { summary: SpecialistSummary; onJump: () => void }) {
-  const rows: Array<{ key: string; run?: SpecialistRunView; parentToolCallId: string; kind: 'waiting' | 'running' | 'finished'; extra?: string }> = [];
-  for (const w of summary.waiting) rows.push({ key: `w-${w.requestId}`, run: w.run, parentToolCallId: w.parentToolCallId, kind: 'waiting', extra: w.held ? 'asked 5+ min ago — still answerable' : `wants to use ${w.toolName}` });
-  for (const r of summary.running) if (!rows.some(x => x.run?.childId === r.childId)) rows.push({ key: `r-${r.childId}`, run: r, parentToolCallId: r.parentToolCallId, kind: 'running' });
-  for (const r of summary.finished) if (!rows.some(x => x.run?.childId === r.childId)) rows.push({ key: `f-${r.childId}`, run: r, parentToolCallId: r.parentToolCallId, kind: 'finished' });
+interface HelperRow {
+  key: string;
+  run?: SpecialistRunView;
+  parentToolCallId: string;
+  asks: Array<{ segment: AskSegment; held: boolean }>;
+  kind: 'waiting' | 'running' | 'finished';
+}
+
+/** One block per helper — asks first (they need you), then working, then finished. */
+function SpecialistManager({ summary, sessionId, onJump }: { summary: SpecialistSummary; sessionId?: string; onJump: () => void }) {
+  const rows = new Map<string, HelperRow>();
+  for (const w of summary.waiting) {
+    const key = w.run?.childId ?? w.parentToolCallId;
+    const row = rows.get(key) ?? { key, run: w.run, parentToolCallId: w.parentToolCallId, asks: [], kind: 'waiting' as const };
+    row.asks.push({ segment: w.segment, held: w.held });
+    row.kind = 'waiting';
+    rows.set(key, row);
+  }
+  for (const r of summary.running) if (!rows.has(r.childId)) rows.set(r.childId, { key: r.childId, run: r, parentToolCallId: r.parentToolCallId, asks: [], kind: 'running' });
+  for (const r of summary.finished) if (!rows.has(r.childId)) rows.set(r.childId, { key: r.childId, run: r, parentToolCallId: r.parentToolCallId, asks: [], kind: 'finished' });
+  const ordered = [...rows.values()].sort((a, b) => rank(a.kind) - rank(b.kind));
   return (
-    <ul className="space-y-0.5">
-      {rows.map(row => (
-        <li key={row.key}>
-          <button
-            type="button"
-            onClick={() => { jumpToCard(row.parentToolCallId); onJump(); }}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-inset text-left"
-          >
-            <span className="shrink-0 inline-flex text-fg-muted">
-              {row.kind === 'waiting' ? <QuestionIcon className="w-3.5 h-3.5 text-amber-500" /> : row.kind === 'running' ? <BrailleSpinner size="xs" /> : <CheckIcon className="w-3.5 h-3.5" />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-xs font-medium text-fg-2 truncate">{row.run?.title ?? 'A specialist'}</span>
-              <span className="block text-2xs text-fg-muted truncate">
-                {row.run?.description ?? ''}
-                {row.extra ? ` · ${row.extra}` : row.kind === 'running' ? ` · working${row.run?.background ? ' in the background' : ''}` : row.kind === 'finished' ? ' · finished — report is on its card' : ''}
-              </span>
-            </span>
-            <span className="text-2xs text-fg-muted shrink-0">Jump ↗</span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <>
+      {ordered.map(row => <HelperBlock key={row.key} row={row} sessionId={sessionId} onJump={onJump} />)}
+    </>
+  );
+}
+
+function rank(kind: HelperRow['kind']): number { return kind === 'waiting' ? 0 : kind === 'running' ? 1 : 2; }
+
+function HelperBlock({ row, sessionId, onJump }: { row: HelperRow; sessionId?: string; onJump: () => void }) {
+  const run = row.run;
+  const first = run?.title.split(' ')[0];
+  const icon = row.kind === 'waiting'
+    ? <QuestionIcon className="w-3.5 h-3.5 text-amber-500" />
+    : run?.status === 'running' ? <BrailleSpinner size="xs" />
+    : run?.status === 'interrupted' ? <StoppedIcon className="w-3.5 h-3.5 text-fg-muted" />
+    : <CheckIcon className="w-3.5 h-3.5 text-fg-muted" />;
+  return (
+    <div className={`rounded-lg border ${row.kind === 'waiting' ? 'border-amber-500/40' : 'border-edge'} bg-inset/40 overflow-hidden`} data-testid={`helper-block-${row.key}`}>
+      <div className="px-3 py-2 flex items-start gap-2">
+        <span className="shrink-0 inline-flex mt-0.5">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-fg-2">{run?.title ?? 'A specialist'}</span>
+            {run && <span className="text-4xs uppercase tracking-wide px-1 rounded border border-edge text-fg-muted">{run.agentType}</span>}
+          </div>
+          {run?.description && <div className="text-2xs text-fg-dim">{run.description}</div>}
+          {run && <RunStatusLine run={run} />}
+        </div>
+        <button
+          type="button"
+          onClick={() => { jumpToCard(row.parentToolCallId); onJump(); }}
+          className="text-2xs text-fg-muted hover:text-fg-2 shrink-0"
+          title="Scroll to this helper's card in the conversation"
+        >
+          Show in chat ↗
+        </button>
+      </div>
+      {row.asks.map(({ segment }) => {
+        const { label, detail } = friendlyToolDisplay({
+          toolUseId: segment.toolUseId, toolName: segment.toolName, input: segment.input, status: segment.status,
+        });
+        return (
+          <div key={segment.requestId} className="border-t border-edge/60">
+            <div className="px-3 pt-2 text-xs">
+              <span className="font-medium text-fg-2">{first ?? 'The specialist'} wants to: </span>
+              <span className="text-fg-2">{label}</span>
+              {detail && <span className="text-fg-muted"> {detail}</span>}
+            </div>
+            <SpecialistAskBlock segment={segment} sessionId={sessionId} specialistName={first} />
+          </div>
+        );
+      })}
+      {run && run.status === 'running' && sessionId && (
+        <div className="border-t border-edge/60 px-3 py-2">
+          <SpecialistActions sessionId={sessionId} run={run} />
+        </div>
+      )}
+      {row.kind === 'finished' && (
+        <div className="border-t border-edge/60 px-3 py-1.5 text-2xs text-fg-muted">
+          Finished in the background — the report is on its card.
+        </div>
+      )}
+    </div>
   );
 }
 
