@@ -37,6 +37,11 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
     refusal: `${name} declined to respond.`,
     pause_turn: 'Extended thinking paused mid-turn.',
     interrupted: 'Interrupted.',
+    // Deliberately provider-neutral (no assistantName interpolation): this
+    // sentence is about the user's own action, not about the assistant. Without
+    // it a dismissed turn is visually identical to a session that silently died,
+    // and the user can't trust either signal.
+    question_dismissed: 'Question closed — waiting for you.',
   };
   return map[reason] ?? `Response ended: ${reason}.`;
 }
