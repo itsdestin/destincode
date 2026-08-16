@@ -398,6 +398,39 @@ describe('repairRecordsAndSpace (spec §6.2)', () => {
     expect(out2).toEqual([]);
   });
 
+  it('record already correct + one stray space copy elsewhere: stray is quarantined, but NO RECORD-REPAIR log line and NO record-repaired finding (2026-08-15 real-data fix)', async () => {
+    const w = makeWorld();
+    const t = path.join(w.correctDir, 's12.jsonl');
+    fs.writeFileSync(t, F('u1', w.P) + F('u2', w.P)); age(t);
+    // Keeper copy already sitting at the correct target bucket:
+    fs.mkdirSync(path.join(w.lane, w.bucket), { recursive: true });
+    const keeperCopy = path.join(w.lane, w.bucket, 's12.jsonl');
+    fs.writeFileSync(keeperCopy, F('u1', w.P) + F('u2', w.P)); age(keeperCopy);
+    // A stray duplicate copy filed under the wrong bucket (subset of the keeper,
+    // so it never contests keeper selection — it's just cleanup):
+    fs.mkdirSync(path.join(w.lane, 'Stray'), { recursive: true });
+    const stray = path.join(w.lane, 'Stray', 's12.jsonl');
+    fs.writeFileSync(stray, F('u1', w.P)); age(stray);
+    // Record already correct — nothing for the repair to change:
+    await w.store.upsert({ id: 's12', provider: 'claude', projectName: w.bucket,
+      originalPath: w.P, transcriptRef: `claude/transcripts/${w.bucket}/s12.jsonl` });
+    const recBefore = await w.store.get('claude', 's12');
+
+    const out = await repairRecordsAndSpace(w.opts);
+
+    // Stray copy quarantined (existing behavior) — keeper stays put:
+    expect(fs.existsSync(stray)).toBe(false);
+    expect(fs.existsSync(keeperCopy)).toBe(true);
+    // No RECORD-REPAIR line for this session:
+    const decisions = fs.readFileSync(path.join(w.quarantine.dir, 'decisions.log'), 'utf8');
+    expect(decisions).not.toContain(`RECORD-REPAIR s12`);
+    // No record-repaired finding, and no 'moved' either (keeper never relocated):
+    expect(out.find(f => f.sessionId === 's12' && f.kind === 'record-repaired')).toBeUndefined();
+    expect(out.find(f => f.sessionId === 's12' && f.kind === 'moved')).toBeUndefined();
+    // Record itself is untouched:
+    expect(await w.store.get('claude', 's12')).toEqual(recBefore);
+  });
+
   it('a transcript whose firstCwd is foreign, sitting in a known folder\'s correct CC dir, is never entered into the repair set (CRITICAL 1)', async () => {
     const w = makeWorld();
     const peerCwd = 'C:\\Users\\peer\\proj';

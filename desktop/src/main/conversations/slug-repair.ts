@@ -487,19 +487,36 @@ export async function repairRecordsAndSpace(
     // materially consequential mutation — spec §6.0 requires every decision
     // logged, and this is the write that stops the $HOME fork recurring, so
     // it must be reconstructable from the decisions log alone.
-    q.log(`RECORD-REPAIR ${sessionId}: projectName '${rec?.projectName ?? ''}' -> '${bucketName}', originalPath '${rec?.originalPath ?? ''}' -> '${P}', transcriptRef '${rec?.transcriptRef ?? ''}' -> 'claude/transcripts/${bucketName}/${sessionId}.jsonl'`);
-    await store.upsert({
-      id: sessionId, provider: 'claude',
-      projectName: bucketName, originalPath: P,
-      transcriptRef: `claude/transcripts/${bucketName}/${sessionId}.jsonl`,
-    });
+    const targetTranscriptRef = `claude/transcripts/${bucketName}/${sessionId}.jsonl`;
+    // Fix (2026-08-15, real-data run 4): only treat this as a REPAIR if a
+    // field is actually changing. Before this, a session that reached here
+    // purely because it had a stray space copy to quarantine (record already
+    // correct) still got a no-op upsert + RECORD-REPAIR log line + a
+    // 'record-repaired' finding — 6 such no-op lines on the real device run.
+    // The MOVE line above already documents the copy cleanup; an identical
+    // old->new upsert is noise that inflates the INFO summary's
+    // record-repaired count and rewrites the record file for nothing.
+    const recordChanged = !rec || rec.projectName !== bucketName || rec.originalPath !== P
+      || rec.transcriptRef !== targetTranscriptRef;
+    if (recordChanged) {
+      q.log(`RECORD-REPAIR ${sessionId}: projectName '${rec?.projectName ?? ''}' -> '${bucketName}', originalPath '${rec?.originalPath ?? ''}' -> '${P}', transcriptRef '${rec?.transcriptRef ?? ''}' -> '${targetTranscriptRef}'`);
+      await store.upsert({
+        id: sessionId, provider: 'claude',
+        projectName: bucketName, originalPath: P,
+        transcriptRef: targetTranscriptRef,
+      });
+    }
     // Review fix (IMPORTANT 1): a session with no space copies to move (or
     // whose keeper was already correctly bucketed) never touches a file —
     // 'moved' would misdescribe it as a physical relocation that never
     // happened. 'record-repaired' names the no-file-move path precisely;
     // Task 17's consumer can tell the two apart instead of trusting a path
-    // that may never have existed.
-    findings.push({ sessionId, homeFolder: P, kind: moved ? 'moved' : 'record-repaired', paths: [target] });
+    // that may never have existed. Skip the finding entirely when neither a
+    // file moved nor a field changed — the copy cleanup (if any) already has
+    // its own MOVE log line, and there's nothing left to call a "repair".
+    if (moved || recordChanged) {
+      findings.push({ sessionId, homeFolder: P, kind: moved ? 'moved' : 'record-repaired', paths: [target] });
+    }
   }
 
   // Retire ONLY emptied truncation-fragment buckets — never a legitimate one
