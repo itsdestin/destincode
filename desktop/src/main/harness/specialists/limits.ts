@@ -51,3 +51,21 @@ export const SPECIALIST_ASK_HOLD_MS = 300_000;
 // other specialist limit does — it is a spec-fixed number a reviewer should
 // find in one place, not re-derive from a validation `if`.
 export const SPECIALIST_NOTE_MAX_CHARS = 2_000;
+
+// Task 2 (plan 1c, spec §3): the cap on a file-defined specialist's
+// `description` in the definition the Task tool interpolates into its
+// instructions every turn. WHY: every offered description is text repeated
+// on every turn, and a repo's `.claude/agents/*.md` file controls it — an
+// unbounded description would let one file bloat every turn's prompt. The
+// full text is kept for Settings (definition-files.ts's `fullDescription`).
+export const MAX_DESCRIPTION_CHARS = 300;
+
+// Task 3 (plan 1c, spec §3): the cap on how many non-built-in specialists are
+// actually OFFERED to the model at once, across the personal folder + both
+// Claude Code agent folders combined. WHY a cap at all: every offered
+// specialist's description is text repeated in the Task tool's instructions
+// on every turn, so an unbounded roster (e.g. a cloned repo with 200
+// `.claude/agents/*.md` files) would bloat every single turn's prompt. The
+// rest are never silently dropped — SpecialistCatalog lists them in Settings
+// with a warning so the user can trim or reorganize.
+export const MAX_OFFERED_SPECIALISTS = 20;

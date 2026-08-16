@@ -22,6 +22,12 @@ export interface SpecialistDefinition {
   modelPreference?: 'parent' | 'budget' | 'frontier';
   stepCap: number;                  // wired to the child's harness.limits.maxSteps (Task 5)
   reportBudgetTokens: number;       // static half of the headroom-aware cap (Task 7)
+  // Task 2 (plan 1c): where this definition came from. Task 4's
+  // permissionSubject needs it to tell a built-in (stable id, shared grant
+  // subject) from a file-defined specialist (grant subject scoped to the
+  // file's id, since the file's contents — and thus what it's trusted to do
+  // — can change under a user without them re-approving).
+  source: 'builtin' | 'personal' | 'claude-code';
 }
 
 // Indexed once at module load rather than re-scanning BUILTIN_SPECIALISTS on
@@ -36,3 +42,16 @@ export function resolveSpecialist(id: string): SpecialistDefinition | undefined 
 export function listSpecialists(): SpecialistDefinition[] {
   return BUILTIN_SPECIALISTS;
 }
+
+// Task 3 (plan 1c): the shape SpecialistCatalog.roster(cwd) returns — a
+// lookup-by-id plus an enumeration, same two operations this file already
+// exposes as free functions. BUILTIN_ROSTER wraps them so the catalog (and
+// its callers, Task 4+) never need a special case for "no file-based
+// specialists loaded yet" — it's just a roster with zero non-built-in
+// entries.
+export interface SpecialistRoster {
+  list(): SpecialistDefinition[];
+  resolve(id: string): SpecialistDefinition | undefined;
+}
+
+export const BUILTIN_ROSTER: SpecialistRoster = { list: listSpecialists, resolve: resolveSpecialist };
