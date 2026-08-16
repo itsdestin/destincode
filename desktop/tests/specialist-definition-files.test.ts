@@ -114,6 +114,17 @@ describe('loadPersonalDefinition', () => {
     expect(result.value.warnings.some((w) => w.includes('My Cool ID!') && w.includes('my-cool-id'))).toBe(true);
   });
 
+  // Fix (review): a blank `id:` line must fall back to the filename stem,
+  // same as an omitted `id:` key — not resolve to a silent `id: ''`.
+  it('personal: a blank id: line falls back to the filename stem, not an empty id', () => {
+    const raw = '---\ndescription: Test.\nid:\n---\nDo the thing.';
+    const result = loadPersonalDefinition('/some/dir/Docs Writer.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.id).toBe('docs-writer');
+    expect(result.value.warnings.some((w) => w.startsWith('id:'))).toBe(false);
+  });
+
   it('personal: an already-clean explicit id produces no warning', () => {
     const raw = '---\ndescription: Test.\nid: my-clean-id\n---\nDo the thing.';
     const result = loadPersonalDefinition('/x/foo.md', raw);
@@ -200,6 +211,17 @@ describe('loadClaudeCodeDefinition', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('no instructions below the frontmatter');
+  });
+
+  // Fix 2 (review): the CC loader's explicit-empty-list rule duplicates the
+  // personal loader's, but only the personal format had a regression test.
+  it('cc: an explicit tools: [] still yields an empty list, no fallback', () => {
+    const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: []\n---\nDo the thing.';
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.definition.allowedTools).toEqual([]);
+    expect(result.value.warnings).not.toContain('no tools listed — read-only by default; add `tools:` to widen');
   });
 
   it('cc: disallowedTools subtracts after mapping', () => {

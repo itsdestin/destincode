@@ -176,7 +176,14 @@ export function loadPersonalDefinition(filePath: string, raw: string): Definitio
 
   const stem = filenameStem(filePath);
   const name = asString(data.name) ?? stem;
-  const explicitId = asString(data.id);
+  // Fix (review, same shape as the blank `tools:` bug above): a blank `id:`
+  // (nothing after the colon) parses to the empty string via parseFrontmatter,
+  // and asString('') stays '' rather than undefined — so the filename-stem
+  // fallback below never fired, and a half-finished `id:` line silently
+  // produced `id: ''` with no warning. Treat a blank explicit id the same as
+  // an omitted one.
+  const explicitIdRaw = asString(data.id);
+  const explicitId = explicitIdRaw !== undefined && explicitIdRaw.trim() === '' ? undefined : explicitIdRaw;
   const idSource = explicitId ?? stem;
   const id = slugifyId(idSource);
   // WHY: every other transform in this file warns when it changes what the
