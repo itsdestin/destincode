@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { ccProjectSlug, nativeStoreSlug } from '../slug-encoding';
 import { firstCwd, isForeignCwd } from '../transcript-cwd';
 import { readFolders } from '../saved-folders';
+import { getManagedRoots } from '../sync-spaces/service';
 import { getConversationStore } from './service';
 import { log } from '../logger';
 
@@ -596,7 +597,18 @@ export async function runSlugRepair(overrides?: Partial<RepairOpts> & {
   const projectsDir = overrides?.projectsDir ?? path.join(homeDir, '.claude', 'projects');
   let knownFolders = overrides?.knownFolders;
   if (!knownFolders) {
-    try { knownFolders = readFolders().map(f => f.path); } catch { knownFolders = []; }
+    // Fix: this MUST match runReconcile's knownFolders assembly exactly (service.ts
+    // runReconcile) — managed projects first, then saved folders, each source
+    // individually try-guarded so one failing source doesn't blank the other. Before
+    // this fix the repair only read saved folders, so a managed-only project (not in
+    // ~/.claude/youcoded-folders.json) was invisible to the repair even though the
+    // reconciler buckets by it — the repair silently did nothing for that project's
+    // mis-filed data. Found on the first real-data run, 2026-08-15 (PAF 574 project).
+    knownFolders = [];
+    try { knownFolders.push(...(getManagedRoots()?.listProjects() ?? []).map(p => p.path)); }
+    catch { /* managed roots unreadable — saved folders still cover most cases */ }
+    try { knownFolders.push(...readFolders().map(f => f.path)); }
+    catch { /* saved folders unreadable — managed projects still cover most cases */ }
   }
   if (knownFolders.length === 0) return;
   const quarantine = overrides?.quarantine ?? new Quarantine(homeDir);
