@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { PermissionBroker } from '../src/main/harness/permission-broker';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PermissionBroker, ASK_REANNOUNCE_MS } from '../src/main/harness/permission-broker';
 
 // The emitted payload uses CC's snake_case field names because hook-dispatcher
 // reads payload._requestId / tool_name / tool_input (verified in Task 8 Step 1).
@@ -273,5 +273,94 @@ describe('PermissionBroker — grantScope', () => {
       broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: bad });
       await expect(p).resolves.toMatchObject({ grantScope: 'exact' });
     }
+  });
+});
+
+// 2026-08-16 stuck-session investigation. A root ask has NO timeout — the turn
+// awaits it forever — so any delivery failure (a card the renderer never
+// rendered, one a later event overwrote, one lost to a transcript replay) is a
+// permanently hung turn with no error and no way to tell it from a slow model.
+// The heartbeat makes every such failure self-correcting: main keeps saying
+// "this ask is still open" until someone answers it. The renderer side is
+// idempotent-on-repeat (chat-reducer.test.ts → "re-delivered by the heartbeat").
+describe('PermissionBroker — pending-ask heartbeat', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function emitterFor(broker: PermissionBroker) {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    return emitted;
+  }
+
+  it('re-announces a still-pending ask, identical except the timestamp', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/x' }, denyListed: false, external: true });
+    expect(emitted).toHaveLength(1);
+
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS);
+    expect(emitted).toHaveLength(2);
+    // Byte-identical payload — same _requestId is what lets the renderer treat
+    // a healthy repeat as a no-op instead of a second card.
+    expect(emitted[1].type).toBe('PermissionRequest');
+    expect(emitted[1].payload).toEqual(emitted[0].payload);
+    expect(emitted[1].sessionId).toBe(emitted[0].sessionId);
+
+    broker.respond(emitted[0].payload._requestId, { behavior: 'allow' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+  });
+
+  it('keeps re-announcing until answered, then stops', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 3);
+    expect(emitted).toHaveLength(4); // original + 3
+
+    broker.respond(emitted[0].payload._requestId, { behavior: 'allow' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+    const settled = emitted.length;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 5);
+    expect(emitted).toHaveLength(settled);
+  });
+
+  it('stops on cancel (interrupt / session teardown)', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    broker.cancelSession('s1');
+    await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
+    const settled = emitted.length;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 5);
+    expect(emitted).toHaveLength(settled);
+  });
+
+  it('re-announces every open ask, across sessions', () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    void broker.ask({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
+    emitted.length = 0;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS);
+    expect(emitted.map((e) => e.sessionId).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('does NOT re-announce an ask that already timed out — that turn is not hung', () => {
+    // A routed specialist ask (child-ask-router) is decided FOR the model at
+    // its deadline and deliberately left in `pending` so a late human answer is
+    // still delivered. Its promise has already settled, so nothing is stuck —
+    // re-rendering its card every few seconds would be noise about a decision
+    // that has already been made.
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask(
+      { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false },
+      { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny' }) },
+    );
+    vi.advanceTimersByTime(1000);   // hold expires; entry stays pending, timedOut
+    emitted.length = 0;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 3);
+    expect(emitted).toHaveLength(0);
   });
 });
