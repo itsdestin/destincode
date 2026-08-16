@@ -54,6 +54,72 @@ export async function ensureProject(
   return { project, created: true };
 }
 
+/**
+ * Coalesced twins of ensureProject / applyGitTreatment for the hot path.
+ *
+ * WHY (2026-08-15, same incident as the append queue in artifact-store.ts):
+ * the artifact tracker calls APPEND_VERSION once per Write/Edit/Read it sees,
+ * and a replayed conversation delivers ~1,000 of those at once. Both helpers
+ * are idempotent, but they are not free — ensureProject reads AND rewrites the
+ * central projects index under the mkdir lock (LOCK_MAX_WAIT_MS = 3 s, so a
+ * thousand waiters mostly time out), applyGitTreatment reads .gitignore. Doing
+ * that a thousand times per open is pure waste: the answer for a given
+ * (project, session) does not change from one tool call to the next.
+ *
+ * Concurrent callers share ONE in-flight promise; later callers within TTL
+ * reuse the settled answer. A rejection is not cached (the next caller retries).
+ * The TTLs are short — this is a burst absorber, not a cache the rest of the
+ * app can rely on: `lastSession`/`lastIndexed` in the index may lag by up to
+ * ENSURE_PROJECT_TTL_MS, which nothing user-facing reads at that granularity.
+ */
+const ENSURE_PROJECT_TTL_MS = 30_000;
+const GIT_TREATMENT_TTL_MS = 60_000;
+interface Memo<T> { at: number; value: Promise<T>; }
+const ensureProjectMemo = new Map<string, Memo<EnsureProjectResult>>();
+const gitTreatmentMemo = new Map<string, Memo<void>>();
+
+function memoized<T>(
+  cache: Map<string, Memo<T>>,
+  key: string,
+  ttlMs: number,
+  now: number,
+  compute: () => Promise<T>
+): Promise<T> {
+  const hit = cache.get(key);
+  if (hit && now - hit.at < ttlMs) return hit.value;
+  const value = compute();
+  const entry: Memo<T> = { at: now, value };
+  cache.set(key, entry);
+  // A failure must not poison the window — drop it so the next caller retries.
+  value.catch(() => { if (cache.get(key) === entry) cache.delete(key); });
+  return value;
+}
+
+export function ensureProjectCoalesced(
+  claudeDir: string,
+  projectRoot: string,
+  sessionId: string,
+  now: number = Date.now()
+): Promise<EnsureProjectResult> {
+  return memoized(
+    ensureProjectMemo,
+    `${claudeDir}\0${projectRoot}\0${sessionId}`,
+    ENSURE_PROJECT_TTL_MS,
+    now,
+    () => ensureProject(claudeDir, projectRoot, sessionId)
+  );
+}
+
+export function applyGitTreatmentCoalesced(projectRoot: string, now: number = Date.now()): Promise<void> {
+  return memoized(gitTreatmentMemo, projectRoot, GIT_TREATMENT_TTL_MS, now, () => applyGitTreatment(projectRoot));
+}
+
+/** Tests only — forget every memoized answer. */
+export function resetProjectMemosForTests(): void {
+  ensureProjectMemo.clear();
+  gitTreatmentMemo.clear();
+}
+
 export async function applyGitTreatment(projectRoot: string): Promise<void> {
   if (!existsSync(join(projectRoot, '.git'))) return;
   const gitignorePath = join(projectRoot, '.gitignore');

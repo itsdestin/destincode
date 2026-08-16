@@ -3578,6 +3578,8 @@ class SessionService : Service() {
                         sessionId    = sessionId,
                         type         = args.optString("type", "edit"),
                         author       = args.optString("author", "agent"),
+                        // Replay-dedupe key from the tracker (see VersionEvent.toolUseId).
+                        toolUseId    = args.optString("toolUseId", "").ifEmpty { null },
                     )
                 )
                 // Broadcast push event so connected clients refresh their view

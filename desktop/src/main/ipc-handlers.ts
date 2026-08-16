@@ -102,7 +102,7 @@ import { listProjects, removeProject } from './artifacts/central-index';
 // this file (they were closures, so the remote transport could not reach them).
 import { countArtifacts, projectAllFiles, isGatedRoot, listProjectsIndex } from './artifacts/projects-index';
 import { invalidateDiscoveryCache } from './artifacts/project-file-discovery';
-import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { ensureProject, applyGitTreatment, ensureProjectCoalesced, applyGitTreatmentCoalesced } from './artifacts/project-manager';
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
@@ -3393,6 +3393,14 @@ export function registerIpcHandlers(
   // Write/Edit/MultiEdit transcript event so the central index is populated and
   // artifacts appear in the Session Drawer even before the user opens it.
   // ensureProject and applyGitTreatment are both idempotent.
+  //
+  // Burst-safe by construction (2026-08-15): opening a long conversation
+  // replays ~1,000 of these at once (the tracker cannot tell replayed history
+  // from live events — see transcript-watcher's offset-0 read and
+  // TRANSCRIPT_REPLAY). The coalesced helpers answer the burst with one index
+  // write and one .gitignore read; appendVersion queues per project and applies
+  // the whole burst in a few read/write cycles instead of a thousand, each of
+  // which used to pin a parsed 4.4 MB sidecar in memory until the app OOM'd.
   ipcMain.handle(ARTIFACT_IPC.APPEND_VERSION, async (
     _e,
     projectRoot: string,
@@ -3403,10 +3411,11 @@ export function registerIpcHandlers(
       absolutePath: string | null;
       type: 'create' | 'edit' | 'delete' | 'read';
       author: 'agent' | 'user';
+      toolUseId?: string;
     }
   ) => {
-    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
-    await applyGitTreatment(projectRoot);
+    const { project } = await ensureProjectCoalesced(CLAUDE_DIR, projectRoot, sessionId);
+    await applyGitTreatmentCoalesced(projectRoot);
     invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
@@ -3415,6 +3424,7 @@ export function registerIpcHandlers(
       sessionId,
       type: args.type,
       author: args.author,
+      toolUseId: typeof args.toolUseId === 'string' && args.toolUseId ? args.toolUseId : undefined,
     });
     // A newly created/edited file may also be a discovered doc — drop the cached
     // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
@@ -3423,14 +3433,19 @@ export function registerIpcHandlers(
     // artifactId: null was dropped by every consumer, which meant the
     // ActiveArtifactView "Claude also edited this file" conflict banner could
     // never fire for agent edits (its entire purpose).
-    webContents.getAllWebContents().forEach((wc) =>
-      wc.send(ARTIFACT_IPC.CHANGED, {
-        projectRoot,
-        artifactId: result.artifactId,
-        kind: args.type,
-        by: args.author,
-      })
-    );
+    // A deduped append changed nothing on disk — it is a replayed tool call
+    // that was recorded the first time round — so it must not announce an
+    // edit: that banner would be a lie about a file nobody just touched.
+    if (!result.deduped) {
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, {
+          projectRoot,
+          artifactId: result.artifactId,
+          kind: args.type,
+          by: args.author,
+        })
+      );
+    }
     return { ok: result.committed, project };
   });
 
