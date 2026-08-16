@@ -30,6 +30,14 @@ export interface RepairState {
 }
 
 export function defaultStateFile(homeDir: string = os.homedir()): string {
+  // Test seam (review fix, MINOR): conversations/service.ts calls
+  // heldForkIds()/readState() with no stateFile override on the production
+  // code path, so a test that exercises that path with no seam reads the
+  // DEVELOPER'S REAL ~/.youcoded/slug-repair-state.json — non-hermetic, and
+  // whatever this machine's file happens to hold silently changes what the
+  // test observes. This env var is a test-only escape hatch; production never
+  // sets it.
+  if (process.env.YOUCODED_SLUG_REPAIR_STATE) return process.env.YOUCODED_SLUG_REPAIR_STATE;
   return path.join(homeDir, '.youcoded', 'slug-repair-state.json');
 }
 

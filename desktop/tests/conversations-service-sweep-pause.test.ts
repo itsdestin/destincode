@@ -88,10 +88,15 @@ describe('conversations service — sweep pause/resume gate', () => {
     h.savedFolders = [];
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-svc-pause-'));
     h.managedRoots = { personalRoot: path.join(tmpRoot, 'Personal'), listProjects: () => [] };
+    // Review fix (MINOR): see the identical override in
+    // conversations-service.test.ts — without it, heldForkIds() calls in
+    // service.ts read the developer's real ~/.youcoded/slug-repair-state.json.
+    process.env.YOUCODED_SLUG_REPAIR_STATE = path.join(tmpRoot, 'slug-repair-state.json');
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.YOUCODED_SLUG_REPAIR_STATE;
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 

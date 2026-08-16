@@ -97,7 +97,11 @@ let reconcileTimer: NodeJS.Timeout | null = null;
 // Fix: the slug repair (spec §6) must not race the sweeps — see the WHY at the
 // pauseSweeps export. While paused, any trigger (startup kick, the 30-min tick,
 // a Personal 'synced' event) records a pending request instead of running.
-let sweepsPaused = false;
+// pauseDepth is a COUNTER, not a flag (review fix, MINOR): a second pauser
+// calling pauseSweeps() while the first pause is still active must not have
+// its resumeSweeps() lift the gate out from under the first caller — only
+// the pauser that brings the depth back to 0 actually resumes.
+let pauseDepth = 0;
 let reconcilePending = false;
 let materializePending = false;
 // Fix: called by main.ts around the one-shot slug repair, BEFORE it runs.
@@ -109,9 +113,10 @@ let materializePending = false;
 // Observed 2026-08-15 on real data: 8 space files + 1 local file resurrected
 // this way. Pausing turns those triggers into one deferred run AFTER the
 // repair, so the sweeps operate on repaired records instead of stale ones.
-export function pauseSweeps(): void { sweepsPaused = true; }
+export function pauseSweeps(): void { pauseDepth++; }
 export function resumeSweeps(): void {
-  sweepsPaused = false;
+  if (pauseDepth > 0) pauseDepth--;
+  if (pauseDepth > 0) return; // still paused by another caller
   if (reconcilePending) { reconcilePending = false; runReconcile(); }
   if (materializePending) { materializePending = false; void materializeSweep(); }
 }
@@ -231,6 +236,14 @@ export function stopConversationStore(): void {
   for (const t of pendingActivity.values()) clearTimeout(t);
   pendingActivity.clear();
   sessions.clear();
+  // Fix (review, MINOR): this module is a true singleton (idempotent restart
+  // calls this first — see startConversationStore's comment) — a pause left
+  // dangling from a PRIOR store's slug-repair run (or a caller that paused
+  // and never resumed) must not silently carry into the next start and stick
+  // every future sweep trigger in "pending" forever.
+  pauseDepth = 0;
+  reconcilePending = false;
+  materializePending = false;
   // WHY: only settle pending meta writes when a store was ACTUALLY running.
   // startConversationStore calls this unconditionally first (idempotent
   // teardown) even on the very first-ever start, when writes may already be
@@ -540,7 +553,7 @@ async function listAllProviders(s: ConversationStore): Promise<ConversationRecor
 async function materializeSweep(): Promise<void> {
   // Fix: quiesced for the slug repair — see pauseSweeps' WHY. Return before
   // any I/O; resumeSweeps() re-fires this exact call once the pause lifts.
-  if (sweepsPaused) { materializePending = true; return; }
+  if (pauseDepth > 0) { materializePending = true; return; }
   // Capture the store (review fix 3): stop() mid-sweep nulls the module field,
   // and every use below an await would otherwise become a swallowed TypeError.
   const s = store;
@@ -638,7 +651,13 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   // Fix (fork hold): a surfaced fork must be frozen out of this direction
   // until a human resolves it — see heldForkIds' WHY in slug-repair-state.ts.
   // Checked before any I/O (quiescence wait, project resolution) below.
-  if (heldForkIds().has(id)) return;
+  if (heldForkIds().has(id)) {
+    // Fix (review, MINOR): a takeover attempt silently doing nothing against
+    // a held session was undiagnosable — this line makes it visible that the
+    // no-op was the hold, not a bug.
+    log('INFO', 'ConversationStore', 'materialize skipped: fork held', { id });
+    return;
+  }
   // Task 8: try 'claude' first, then 'native' — a UUID can't legitimately
   // exist in both buckets, so the first hit IS the record (no need to read
   // both on the common path). Each lookup is isolated: a rejecting get() on
@@ -746,7 +765,7 @@ export async function flushSessionToSpace(claudeSessionId: string): Promise<void
 function runReconcile(): void {
   // Fix: quiesced for the slug repair — see pauseSweeps' WHY. resumeSweeps()
   // re-fires this exact call once the pause lifts.
-  if (sweepsPaused) { reconcilePending = true; return; }
+  if (pauseDepth > 0) { reconcilePending = true; return; }
   if (!store) return;
   const s = store;
   // Known folders let the reconciler recover the EXACT project name for a CC slug

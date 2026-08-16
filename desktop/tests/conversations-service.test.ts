@@ -120,9 +120,18 @@ describe('conversations service composition root', () => {
     h.savedFolders = [];
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-svc-'));
     h.managedRoots = { personalRoot: path.join(tmpRoot, 'Personal'), listProjects: () => [] };
+    // Review fix (MINOR): service.ts's heldForkIds() calls resolve their
+    // default state file to ~/.youcoded/slug-repair-state.json with no seam
+    // plumbed through from here — without this override these tests read the
+    // DEVELOPER'S REAL state file (non-hermetic; this dev machine's file
+    // already holds a real fork id, which would silently change what a test
+    // observes). Points every heldForkIds() call in this suite at a tmp file
+    // instead. See slug-repair-state.ts's defaultStateFile.
+    process.env.YOUCODED_SLUG_REPAIR_STATE = path.join(tmpRoot, 'slug-repair-state.json');
   });
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.YOUCODED_SLUG_REPAIR_STATE;
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
