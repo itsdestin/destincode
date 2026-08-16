@@ -1115,6 +1115,9 @@ function AppInner() {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Host-injected turn marker (a delivered specialist report) —
+            // MUST mirror BubbleFeed.tsx. See TimelineEntry.injected.
+            injected: event.data.injected,
             // Forward the subagent stamp so the reducer can tell "briefing
             // written into a subagent's JSONL" apart from a real user prompt
             // and drop the former (it's already shown on the Agent card).

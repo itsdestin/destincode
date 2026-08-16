@@ -418,6 +418,28 @@ describe('TRANSCRIPT_TOOL_USE landing on a preparing card that already holds an 
 
 // any name" fallback this also used to cite was deleted 2026-08-09.)
 // ---------------------------------------------------------------------------
+// 2026-08-16: a host-injected user-role turn (a delivered specialist report,
+// TranscriptEvent.data.injected = 'specialist-report') must carry its marker
+// onto the timeline entry so ChatView/BubbleFeed can draw it as a system
+// notice rather than the user's own bubble.
+describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
+  it('stamps `injected` on the appended entry, and leaves a real user message unmarked', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-inj', timestamp: 1000,
+      text: '[Background specialist finished] Vega completed the task.', injected: 'specialist-report',
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 2000, text: 'thanks',
+    });
+    const entries = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as Extract<import('../src/renderer/state/chat-types').TimelineEntry, { kind: 'user' }>[];
+    expect(entries).toHaveLength(2);
+    expect(entries[0].injected).toBe('specialist-report');
+    expect(entries[0].message.content).toContain('[Background specialist finished]');
+    expect(entries[1].injected).toBeUndefined();
+  });
+});
+
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
 

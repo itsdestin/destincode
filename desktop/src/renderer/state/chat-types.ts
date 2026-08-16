@@ -135,7 +135,14 @@ export type TimelineEntry =
   // let a queued bubble render mid-timeline at enqueue time — landing above
   // content from the still-streaming prior turn ("assistant responding to
   // itself"). See docs/active — Task 12 brief.
-  | { kind: 'user'; message: ChatMessage; pending?: boolean }
+  // `injected` (2026-08-16): set when the host, not the user, wrote this
+  // user-role turn — today only 'specialist-report' (a background specialist's
+  // delivered report, harness-session.ts runNotice). ChatView/BubbleFeed draw
+  // such an entry as a left-aligned system notice, never as the user's own
+  // bubble: the text is what the PARENT MODEL reads, and painting it in the
+  // user's colour on the user's side said "you typed this" about words the
+  // user never wrote (Destin, 1b hands-on).
+  | { kind: 'user'; message: ChatMessage; pending?: boolean; injected?: string }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
   // /cost and /usage render a snapshot card inline. Permanent (not dismissible).
@@ -494,6 +501,10 @@ export type ChatAction =
       uuid: string;
       text: string;
       timestamp: number;
+      // Host-injected user-role turn (TranscriptEvent.data.injected, e.g.
+      // 'specialist-report'). Carried onto the timeline entry so the renderer
+      // can draw it as a system notice instead of a user bubble.
+      injected?: string;
       // Present when this event came from a subagent's JSONL (the briefing
       // Claude Code writes as the subagent's first user-role line). Reducer
       // uses these to drop it from the main chat timeline — the briefing is
