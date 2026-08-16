@@ -9,7 +9,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { reconcile } from '../src/main/conversations/reconciler';
-import { ccProjectSlug } from '../src/main/project-conversations';
+import { ccProjectSlug } from '../src/main/slug-encoding';
 import {
   createConversationStore,
   type ConversationStore,

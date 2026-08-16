@@ -2,22 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { discoverContext, RuleEntry } from './project/context-discovery';
-import { cwdToProjectSlug } from './transcript-watcher';
+import { ccProjectSlug } from './slug-encoding';
 import { RECOGNIZED_INSTRUCTION_FILES, ContextGroup, ContextFile } from '../shared/project-context-types';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
-
-// CC encodes its project dirs with an UPPERCASE drive letter (C--Users-…), but
-// YouCoded's canonical project paths can carry a LOWERCASE drive (c:/Users/…).
-// Uppercase the drive before slugifying so the memory dir (~/.claude/projects/
-// <slug>/memory) resolves; without this the Memory group is silently empty on
-// Windows. Windows paths are case-insensitive, so only the drive is normalized.
-function ccProjectSlug(projectPath: string): string {
-  const driveNormalized = projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
-  return cwdToProjectSlug(driveNormalized);
-}
 
 async function exists(p: string): Promise<boolean> {
   try { await fs.promises.access(p); return true; } catch { return false; }
@@ -85,7 +75,12 @@ async function readRules(rulesDir: string): Promise<RuleEntry[]> {
 // needs the path set; enriching there made every single context-file read do a
 // full stat+read sweep of the project's context files).
 async function discoverContextGroups(projectPath: string): Promise<ContextGroup[]> {
-  const slug = ccProjectSlug(projectPath);
+  // CC slugs realpath(cwd) (see slug-encoding.ts fixture "symlink resolves to
+  // realpath"). Resolve the same way, falling back exactly as CC's Px() does,
+  // so a symlinked project folder finds CC's real directory.
+  let resolved: string;
+  try { resolved = fs.realpathSync.native(projectPath); } catch { resolved = projectPath; }
+  const slug = ccProjectSlug(resolved);
   const projInstr = await findInstructionFiles([projectPath, path.join(projectPath, '.claude')]);
   const globalInstr = await findInstructionFiles([CLAUDE_DIR]);
   const projRules = await readRules(path.join(projectPath, '.claude', 'rules'));

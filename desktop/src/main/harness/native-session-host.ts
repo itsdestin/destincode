@@ -46,8 +46,10 @@ import { buildTriggerIndex } from './injection/path-triggers';
 import { log } from '../logger';
 // Same import PermissionStore uses, for the same reason: the project slug MUST
 // come from ONE function everywhere, or the host and the store would disagree
-// about which live sessions a stored entry belongs to.
-import { cwdToProjectSlug } from '../transcript-watcher';
+// about which live sessions a stored entry belongs to. nativeStoreSlug (NOT
+// ccProjectSlug): this is app-private permissions.json keying, not a CC
+// mirror — see slug-encoding.ts.
+import { nativeStoreSlug } from '../slug-encoding';
 import type { McpLease } from './mcp/mcp-manager';
 
 export interface CreateNativeSessionOpts {
@@ -64,7 +66,7 @@ export interface RememberedRuleStore {
   rulesFor(cwd: string): Promise<PermissionRule[]>;
   remember(cwd: string, rule: PermissionRule): Promise<void>;
   // Removal keys by project SLUG, not cwd: the slug is what is actually on disk,
-  // and cwdToProjectSlug is lossy (see revokeRule), so an entry written before
+  // and nativeStoreSlug is lossy (see revokeRule), so an entry written before
   // the management UI existed has no recoverable cwd to pass. Both return
   // whether anything actually matched, so the caller can tell the user their
   // on-screen list was stale instead of claiming a success that never happened.
@@ -636,7 +638,7 @@ export class NativeSessionHost extends EventEmitter {
    *  revokeRule / revokeProject are disk PLUS live memory. IPC handlers must call
    *  these, never the store's — "fixing the inconsistency" reintroduces the bug.
    *
-   *  Matching is by SLUG, never by path equality: cwdToProjectSlug collapses ':',
+   *  Matching is by SLUG, never by path equality: nativeStoreSlug collapses ':',
    *  '\', '/' AND spaces all to '-', so two differently-spelled cwds ('/home/d/my
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
@@ -650,7 +652,7 @@ export class NativeSessionHost extends EventEmitter {
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
-      if (cwdToProjectSlug(entry.cwd) !== slug) continue;
+      if (nativeStoreSlug(entry.cwd) !== slug) continue;
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
       this.rememberedFor.set(sessionId, mem.filter((r) => !sameRule(r, rule)));
@@ -666,7 +668,7 @@ export class NativeSessionHost extends EventEmitter {
     for (const [sessionId, entry] of this.live) {
       // delete, not set([]): an absent entry and an empty one read identically in
       // buildDecide (`?? []`), and deleting keeps the map from accumulating empties.
-      if (cwdToProjectSlug(entry.cwd) === slug) this.rememberedFor.delete(sessionId);
+      if (nativeStoreSlug(entry.cwd) === slug) this.rememberedFor.delete(sessionId);
     }
     return hit;
   }

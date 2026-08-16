@@ -18,7 +18,7 @@ import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { updateFolderPath } from '../saved-folders';
 import { remapProjectPath } from '../artifacts/central-index';
 import { readSidecar, writeSidecar } from '../artifacts/artifact-store';
-import { ccProjectSlug } from '../project-conversations';
+import { ccProjectSlug } from '../slug-encoding';
 import type { ManualInclude } from '../../shared/artifacts/types';
 
 export interface ImportCheckOpts {
@@ -230,8 +230,15 @@ async function remapSidecarManualPaths(newRoot: string, oldRoot: string): Promis
  *  the new slug dir already exists (rare), merge file-by-file, never clobber. */
 function remapTranscriptDir(oldPath: string, newPath: string, claudeDir: string): void {
   const projectsDir = path.join(claudeDir, 'projects');
-  const oldDir = path.join(projectsDir, ccProjectSlug(oldPath));
-  const newDir = path.join(projectsDir, ccProjectSlug(newPath));
+  // CC slugs realpath(cwd) (see slug-encoding.ts fixture "symlink resolves to
+  // realpath"). Resolve the same way, falling back exactly as CC's Px() does,
+  // so a symlinked project folder finds CC's real directory.
+  let resolvedOld: string;
+  try { resolvedOld = fs.realpathSync.native(oldPath); } catch { resolvedOld = oldPath; }
+  let resolvedNew: string;
+  try { resolvedNew = fs.realpathSync.native(newPath); } catch { resolvedNew = newPath; }
+  const oldDir = path.join(projectsDir, ccProjectSlug(resolvedOld));
+  const newDir = path.join(projectsDir, ccProjectSlug(resolvedNew));
   if (!fs.existsSync(oldDir)) return; // no conversations for this folder — nothing to remap
   if (!fs.existsSync(newDir)) {
     fs.renameSync(oldDir, newDir);

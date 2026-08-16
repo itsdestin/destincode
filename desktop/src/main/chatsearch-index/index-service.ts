@@ -18,8 +18,7 @@ import {
 } from '../conversations/service';
 import { getTagRegistry } from '../conversations/tag-registry-service';
 import { NativeHome } from '../native-home';
-import { cwdToProjectSlug } from '../transcript-watcher';
-import { ccProjectSlug } from '../project-conversations';
+import { nativeStoreSlug, ccProjectSlug } from '../slug-encoding';
 import { laneMatches } from '../conversations/lane-guards';
 import { buildMetaFile } from './meta-builder';
 import {
@@ -238,11 +237,12 @@ async function refreshFromLiveState(): Promise<void> {
           provider: 'native',
           lane: 'native',
           records: nativeRecords,
-          // RAW slug, not ccProjectSlug — the two encodings diverge deliberately
-          // (ccProjectSlug uppercases a lowercase Windows drive letter).
+          // RAW frozen app-private slug, not ccProjectSlug — the two encodings
+          // diverge deliberately (ccProjectSlug uppercases a lowercase Windows
+          // drive letter).
           resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(
             r,
-            path.join(home.root, 'sessions', cwdToProjectSlug(r.originalPath), `${r.id}.jsonl`),
+            path.join(home.root, 'sessions', nativeStoreSlug(r.originalPath), `${r.id}.jsonl`),
             storeRoot,
           ),
         },

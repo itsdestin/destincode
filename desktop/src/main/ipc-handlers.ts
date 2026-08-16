@@ -15,7 +15,8 @@ import { CommandProvider } from './command-provider';
 import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
-import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
+import { TranscriptWatcher } from './transcript-watcher';
+import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
 // registry that owns HarnessSessions and their persistence.
@@ -120,7 +121,7 @@ import {
 import { initGitWatchers, watchGit, unwatchGit, dropGitSubscriber } from './git/git-watcher';
 import { resolveRepoRoot, invalidateRepoRootCache } from './git/git-exec';
 import { PROJECT_IPC } from './project/ipc-channels';
-import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
+import { listProjectConversations, projectConversationHistory } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
@@ -147,12 +148,12 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 // Native transcript existence probe: does ~/.youcoded/sessions/<slug>/<id>.jsonl
 // exist for this cwd? Mirrors NativeHome.sessionPath's convention — the RAW
-// cwdToProjectSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
+// frozen nativeStoreSlug, NOT ccProjectSlug (see session-store.ts's slug-divergence
 // note). Used by the native RESUME path to validate a cwd BEFORE handing it to
 // nativeHost.resume, so session-manager's silent cwd→$HOME fallback can never
 // send a resume into the wrong (empty) directory (Task 9).
 function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
-  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`));
+  return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', nativeStoreSlug(cwd), `${sessionId}.jsonl`));
 }
 
 
@@ -2835,10 +2836,23 @@ export function registerIpcHandlers(
       // Start watching the transcript file for this session
       const sessionInfo = sessionManager.getSession(desktopId);
       if (sessionInfo) {
-        transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
+        // Spec §5.0: CC's payload carries transcript_path AND cwd (both required
+        // fields of its hook schema). payload.cwd is post-realpath/post-chdir —
+        // the exact string CC slugged — so prefer it over our sessionInfo.cwd,
+        // which can differ through a symlink. sessionInfo.cwd is the fallback only.
+        // Hardened casts (final review, MINOR fold): a raw `as string | undefined`
+        // trusts the hook payload's shape blindly — if CC ever sent a non-string
+        // for either field, the cast would silently pass it through instead of
+        // falling back. typeof-narrow so an unexpected shape degrades to the
+        // documented fallback (sessionInfo.cwd / slug derivation) instead of
+        // handing a non-string downstream.
+        const payloadCwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : undefined;
+        const ccCwd = payloadCwd || sessionInfo.cwd;
+        const ccTranscriptPath = typeof event.payload?.transcript_path === 'string' ? event.payload.transcript_path : undefined;
+        transcriptWatcher.startWatching(desktopId, claudeId, ccCwd, ccTranscriptPath);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
-        noteSessionStarted(claudeId, sessionInfo.cwd, 'claude');
+        noteSessionStarted(claudeId, ccCwd, 'claude');
         // 2b Task 8: this device now owns the session — take the lease.
         // Fire-and-forget: a denied (ok:false) result would only mean another
         // device holds it, but the sanctioned resume path already ran takeover
