@@ -14,6 +14,7 @@ import OpenTasksChip from './OpenTasksChip';
 import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
 import { Dialog } from './ui';
+import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -56,16 +57,20 @@ interface StatusData {
 const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
 type ModelAlias = typeof MODELS[number];
 
-const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; bg: string; border: string }> = {
-  sonnet:      { label: 'Sonnet', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
-  'opus[1m]':  { label: 'Opus',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
-  haiku:       { label: 'Haiku',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
-  // Fable 5 — most capable. Fuchsia pill reads as the top/premium tier, distinct
-  // from Opus's indigo and the amber reserved for AUTO permission mode.
-  fable:       { label: 'Fable',  color: '#E879F9', bg: 'rgba(232,121,249,0.15)', border: 'rgba(232,121,249,0.25)' },
+const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; border: string; icon?: ProviderIconKey }> = {
+  // Restyle: chips now use the standard `bg-panel` surface (set via className
+  // in the JSX, not here) like every other status-bar chip, with brand-colored
+  // TEXT + a matching tinted BORDER.
+  // CC sessions use the official Claude Code CLI mascot and adaptive brand token.
+  sonnet:      { label: 'Sonnet', color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
+  'opus[1m]':  { label: 'Opus',   color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
+  haiku:       { label: 'Haiku',  color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
+  // Fable 5 — most capable. Fuchsia text keeps it as the top/premium tier,
+  // distinct from the Anthropic-orange aliases and the amber reserved for AUTO.
+  fable:       { label: 'Fable',  color: '#E879F9', border: 'rgba(232,121,249,0.35)',  icon: 'claudecode' },
   // Error state, not a real model — red like the high-danger usage threshold
   // (utilizationColor/contextColor) so it reads as "wrong", never as a normal pill.
-  unknown:     { label: 'Model Unknown', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
+  unknown:     { label: 'Model Unknown', color: '#DD4444', border: 'rgba(221,68,68,0.3)' },
 };
 
 /**
@@ -80,25 +85,41 @@ export type ModelChip =
   | { kind: 'native'; label: string; modelId: string }
   | { kind: 'unknown' };
 
-/**
- * Native chip color. `--tag-blue` is the one slot in the tag palette that
- * collides with nothing else in this bar: gray/indigo/teal/fuchsia are the four
- * CC aliases (teal is Haiku), red is both Unknown chips, and --accent/amber/
- * salmon are permission modes. Themeable per the tag system rather than a fifth
- * hardcoded hex; the fill/border formula is TagChip.tsx's, so native model chips
- * and session tags read as one family.
- */
 /** MODEL_DISPLAY row for the two Claude Code chip states. */
 function ccChipDisplay(model: Exclude<ModelChip, { kind: 'native' }>) {
   return MODEL_DISPLAY[model.kind === 'unknown' ? 'unknown' : model.alias];
 }
 
-const NATIVE_CHIP = 'var(--tag-blue)';
-const nativeChipStyle = {
-  color: NATIVE_CHIP,
-  backgroundColor: `color-mix(in srgb, ${NATIVE_CHIP} 16%, transparent)`,
-  borderColor: `color-mix(in srgb, ${NATIVE_CHIP} 35%, transparent)`,
-};
+/**
+ * Native chip style. Resolves a brand color from the model id (and the
+ * provider type as a fallback) so OpenAI models get OpenAI green, Claude
+ * models get Anthropic orange, Qwen gets its purple, Google gets its blue,
+ * and anything unrecognized falls back to --tag-blue (the old default).
+ *
+ * The style now uses `bg-panel` (set via className in the JSX, same as the
+ * CC alias chips and every other status-bar chip) with brand-colored text +
+ * a matching tinted border. The old transparent-tint background is gone.
+ */
+function nativeChipStyle(modelId: string, providerType?: string | null): {
+  color: string;
+  borderColor: string;
+  icon?: ProviderIconKey;
+} {
+  const brand = resolveModelBrand(modelId, providerType);
+  if (brand) {
+    return {
+      color: brand.color,
+      borderColor: `color-mix(in srgb, ${brand.color} 35%, transparent)`,
+      icon: brand.icon,
+    };
+  }
+  // Fallback: the old --tag-blue default for unrecognized models.
+  const fallback = 'var(--tag-blue)';
+  return {
+    color: fallback,
+    borderColor: `color-mix(in srgb, ${fallback} 35%, transparent)`,
+  };
+}
 
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
 // between 'auto-accept' (theme accent, mostly safe) and 'bypass' (salmon, no
@@ -113,19 +134,19 @@ const nativeChipStyle = {
 // Exported: ToolCard's full-auto safety-stop footer paints with the SAME chip
 // colors, so the band and the status-bar chip can never drift apart.
 export const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknown', { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
-  normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
-  'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
-  plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--inset)',  border: 'var(--edge)' },
-  auto:          { label: 'AUTO MODE',           shortLabel: 'AUTO',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
-  bypass:        { label: 'BYPASS PERMISSIONS',  shortLabel: 'BYPASS',  color: '#FA8072', bg: 'rgba(250,128,114,0.15)', border: 'rgba(250,128,114,0.25)' },
+  normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--panel)', border: 'var(--edge-dim)' },
+  'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--panel)', border: 'var(--edge)' },
+  plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--panel)', border: 'var(--edge)' },
+  auto:          { label: 'AUTO MODE',           shortLabel: 'AUTO',    color: 'var(--status-auto)', bg: 'var(--panel)', border: 'color-mix(in srgb, var(--status-auto) 35%, transparent)' },
+  bypass:        { label: 'BYPASS PERMISSIONS',  shortLabel: 'BYPASS',  color: 'var(--status-bypass)', bg: 'var(--panel)', border: 'color-mix(in srgb, var(--status-bypass) 35%, transparent)' },
   // Native runtime modes (Task 13).
-  ask:           { label: 'ASK FIRST',          shortLabel: 'ASK',     color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
-  'auto-edit':   { label: 'AUTO EDIT',          shortLabel: 'EDIT',    color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
-  'full-auto':   { label: 'FULL AUTO',          shortLabel: 'FULL',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
+  ask:           { label: 'ASK FIRST',          shortLabel: 'ASK',     color: 'var(--fg-muted)', bg: 'var(--panel)', border: 'var(--edge-dim)' },
+  'auto-edit':   { label: 'AUTO EDIT',          shortLabel: 'EDIT',    color: 'var(--accent)',   bg: 'var(--panel)', border: 'var(--edge)' },
+  'full-auto':   { label: 'FULL AUTO',          shortLabel: 'FULL',    color: 'var(--status-auto)', bg: 'var(--panel)', border: 'color-mix(in srgb, var(--status-auto) 35%, transparent)' },
   // Error state — App.tsx passes this when the real mode can't be confirmed
   // (unrecognized value, missing data on resume/reconnect) rather than guessing
   // 'normal'/'ask', which would misrepresent what's actually enforced.
-  unknown:       { label: 'PERMISSION UNKNOWN',  shortLabel: 'UNKNOWN', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
+  unknown:       { label: 'PERMISSION UNKNOWN',  shortLabel: 'UNKNOWN', color: '#DD4444', bg: 'var(--panel)', border: 'rgba(221,68,68,0.3)' },
 };
 
 // --- Native (local-model) StatusBar chips (Task 12) ---
@@ -393,6 +414,11 @@ interface Props {
   // gate, and the persisted model preference, none of which a third-party
   // model id may leak into.
   model?: ModelChip;
+  /** Native sessions only: the provider type from ProviderType (e.g. 'openai',
+   *  'anthropic', 'openrouter', 'local-engine'). Used by the model chip to
+   *  auto-detect the brand color when the model id alone is ambiguous. Unused
+   *  for CC sessions (they use MODEL_DISPLAY keyed on the alias). */
+  modelProviderType?: string | null;
   // No onCycleModel: the model chip opens the picker (onOpenModelPicker) and
   // click-to-cycle now lives on Shift+Space in App.tsx. The prop was still declared
   // and passed but never called, so it read as a working affordance that did nothing.
@@ -696,6 +722,77 @@ function InfoIcon({ className }: { className?: string }) {
   );
 }
 
+// Provider brand icon for the model chip. Uses the official Simple Icons
+// brand paths on a standard 24×24 viewBox, rendered at 11×11 so they match
+// the text height and line weight of the status bar precisely.
+function ProviderIcon({ icon, className = '' }: { icon: ProviderIconKey; className?: string }) {
+  const size = 11;
+  switch (icon) {
+    case 'openai':
+      // Official OpenAI swirl mark (Simple Icons).
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />
+        </svg>
+      );
+    case 'anthropic':
+      // Official Anthropic logo mark (Simple Icons).
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z" />
+        </svg>
+      );
+    case 'claudecode':
+      // Official Claude / Claude Code mascot (the terracotta 8-bit bot character).
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          {/* Main rectangular head */}
+          <rect x="4" y="3" width="16" height="13" rx="0.5" />
+          {/* Left ear protrusion */}
+          <rect x="2" y="7" width="2" height="5" rx="0.3" />
+          {/* Right ear protrusion */}
+          <rect x="20" y="7" width="2" height="5" rx="0.3" />
+          {/* 4 legs */}
+          <rect x="4" y="16" width="2.5" height="6" rx="0.3" />
+          <rect x="8" y="16" width="2.5" height="6" rx="0.3" />
+          <rect x="13.5" y="16" width="2.5" height="6" rx="0.3" />
+          <rect x="17.5" y="16" width="2.5" height="6" rx="0.3" />
+        </svg>
+      );
+    case 'google':
+      // Official Google Gemini spark mark (Simple Icons).
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" />
+        </svg>
+      );
+    case 'qwen':
+      // Official Qwen 3D-hexagon / interlocking prism logo mark.
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M12.604 1.34c.393.69.784 1.382 1.174 2.075a.18.18 0 00.157.091h5.552c.174 0 .322.11.446.327l1.454 2.57c.19.337.24.478.024.837-.26.43-.513.864-.76 1.3l-.367.658c-.106.196-.223.28-.04.512l2.652 4.637c.172.301.111.494-.043.77-.437.785-.882 1.564-1.335 2.34-.159.272-.352.375-.68.37-.777-.016-1.552-.01-2.327.016a.099.099 0 00-.081.05 575.097 575.097 0 01-2.705 4.74c-.169.293-.38.363-.725.364-.997.003-2.002.004-3.017.002a.537.537 0 01-.465-.271l-1.335-2.323a.09.09 0 00-.083-.049H4.982c-.285.03-.553-.001-.805-.092l-1.603-2.77a.543.543 0 01-.002-.54l1.207-2.12a.198.198 0 000-.197 550.951 550.951 0 01-1.875-3.272l-.79-1.395c-.16-.31-.173-.496.095-.965.465-.813.927-1.625 1.387-2.436.132-.234.304-.334.584-.335a338.3 338.3 0 012.589-.001.124.124 0 00.107-.063l2.806-4.895a.488.488 0 01.422-.246c.524-.001 1.053 0 1.583-.006L11.704 1c.341-.003.724.032.9.34zm-3.432.403a.06.06 0 00-.052.03L6.254 6.788a.157.157 0 01-.135.078H3.253c-.056 0-.07.025-.041.074l5.81 10.156c.025.042.013.062-.034.063l-2.795.015a.218.218 0 00-.2.116l-1.32 2.31c-.044.078-.021.118.068.118l5.716.008c.046 0 .08.02.104.061l1.403 2.454c.046.081.092.082.139 0l5.006-8.76.783-1.382a.055.055 0 01.096 0l1.424 2.53a.122.122 0 00.107.062l2.763-.02a.04.04 0 00.035-.02.041.041 0 000-.04l-2.9-5.086a.108.108 0 010-.113l.293-.507 1.12-1.977c.024-.041.012-.062-.035-.062H9.2c-.059 0-.073-.026-.043-.077l1.434-2.505a.107.107 0 000-.114L9.225 1.774a.06.06 0 00-.053-.031zm6.29 8.02c.046 0 .058.02.034.06l-.832 1.465-2.613 4.585a.056.056 0 01-.05.029.058.058 0 01-.05-.029L8.498 9.841c-.02-.034-.01-.052.028-.054l.216-.012 6.722-.012z" />
+        </svg>
+      );
+    case 'grok':
+      // Official Grok / xAI angular slash-ring logo mark.
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815" />
+        </svg>
+      );
+    case 'kimi':
+      // Official Kimi / Moonshot AI K-burst logo mark.
+      return (
+        <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M21.846 0a1.923 1.923 0 110 3.846H20.15a.226.226 0 01-.227-.226V1.923C19.923.861 20.784 0 21.846 0z" />
+          <path d="M11.065 11.199l7.257-7.2c.137-.136.06-.41-.116-.41H14.3a.164.164 0 00-.117.051l-7.82 7.756c-.122.12-.302.013-.302-.179V3.82c0-.127-.083-.23-.185-.23H3.186c-.103 0-.186.103-.186.23V19.77c0 .128.083.23.186.23h2.69c.103 0 .186-.102.186-.23v-3.25c0-.069.025-.135.069-.178l2.424-2.406a.158.158 0 01.205-.023l6.484 4.772a7.677 7.677 0 003.453 1.283c.108.012.2-.095.2-.23v-3.06c0-.117-.07-.212-.164-.227a5.028 5.028 0 01-2.027-.807l-5.613-4.064c-.117-.078-.132-.279-.028-.381z" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
 // --- Config Popup ---
 // Centered modal (matches SettingsPanel popup style) for customizing status bar widgets
 
@@ -880,7 +977,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 // --- Main StatusBar component ---
 
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model,
+  statusData, onRunSync, onOpenSync, model, modelProviderType,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
@@ -927,45 +1024,57 @@ export default function StatusBar({
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-3xs text-fg-muted">
       {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
-         Shift+Space still cycles models via the keyboard shortcut in App.tsx. */}
+         Shift+Space still cycles models via the keyboard shortcut in App.tsx.
+
+         Restyle: the chip now uses the standard `bg-panel border-edge-dim` surface
+         (same as usage/theme/version chips) with brand-colored TEXT + matching tinted
+         BORDER. Native chips auto-detect the brand from the model id/provider type. */}
       {model && (model.kind === 'native' ? (
         // Native runtime: the bound model id IS the truth, so this chip never
         // shows an error state. The full id goes in the title because the label
         // is a best-effort prettification (and CSS-truncated when long).
-        <button
-          onClick={onOpenModelPicker}
-          className="flex items-center px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors max-w-[14rem] truncate"
-          style={nativeChipStyle}
-          title={`${model.modelId} — click to change model`}
-        >
-          {/* No effort segment: /effort and MAX_EFFORT_MODELS are Claude Code
-              concepts the native harness doesn't implement.
-              min-w-0 is load-bearing: a flex child defaults to min-width:auto
-              and won't shrink below its content, so `truncate` alone would let
-              a long GGUF name blow past the button's max-w instead of eliding. */}
-          <span className="truncate min-w-0">{model.label}</span>
-        </button>
+        (() => {
+          const nStyle = nativeChipStyle(model.modelId, modelProviderType);
+          return (
+            <button
+              onClick={onOpenModelPicker}
+              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors max-w-[14rem] truncate"
+              style={{ color: nStyle.color, borderColor: nStyle.borderColor }}
+              title={`${model.modelId} — click to change model`}
+            >
+              {/* No effort segment: /effort and MAX_EFFORT_MODELS are Claude Code
+                  concepts the native harness doesn't implement.
+                  min-w-0 is load-bearing: a flex child defaults to min-width:auto
+                  and won't shrink below its content, so `truncate` alone would let
+                  a long GGUF name blow past the button's max-w instead of eliding. */}
+              {nStyle.icon && <ProviderIcon icon={nStyle.icon} className="flex-shrink-0" />}
+              <span className="truncate min-w-0">{model.label}</span>
+            </button>
+          );
+        })()
       ) : (
-        <button
-          onClick={onOpenModelPicker}
-          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors"
-          style={{
-            backgroundColor: ccChipDisplay(model).bg,
-            color: ccChipDisplay(model).color,
-            borderColor: ccChipDisplay(model).border,
-          }}
-          title={model.kind === 'unknown'
-            ? "YouCoded couldn't confirm which model this session is using — click to set one explicitly"
-            : 'Click to change model and effort (Shift+Space cycles model)'}
-        >
-          <span>{ccChipDisplay(model).label}</span>
-          {model.kind !== 'unknown' && (
-            <>
-              <span className="opacity-40">|</span>
-              <span className="capitalize">{effort || 'auto'} Effort</span>
-            </>
-          )}
-        </button>
+        (() => {
+          const display = ccChipDisplay(model);
+          return (
+            <button
+              onClick={onOpenModelPicker}
+              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+              style={{ color: display.color, borderColor: display.border }}
+              title={model.kind === 'unknown'
+                ? "YouCoded couldn't confirm which model this session is using — click to set one explicitly"
+                : 'Click to change model and effort (Shift+Space cycles model)'}
+            >
+              {display.icon && <ProviderIcon icon={display.icon} className="flex-shrink-0" />}
+              <span>{display.label}</span>
+              {model.kind !== 'unknown' && (
+                <>
+                  <span className="opacity-40">|</span>
+                  <span className="capitalize">{effort || 'auto'} Effort</span>
+                </>
+              )}
+            </button>
+          );
+        })()
       ))}
 
       {/* Fast mode chip — only rendered when on. Click opens the ModelPickerPopup. */}
@@ -1268,8 +1377,8 @@ export default function StatusBar({
       {/* Git branch — reads from statusline.sh's .gitbranch-{sessionId} file */}
       {show('git-branch') && gitBranch && (
         <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border"
-          style={{ backgroundColor: 'rgba(45,212,191,0.10)', color: '#2DD4BF', borderColor: 'rgba(45,212,191,0.25)' }}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border"
+          style={{ color: '#0D9488', borderColor: 'rgba(13,148,136,0.35)' }}
           title={`Git: ${gitBranch}`}
         >
           {/* Branch icon (octicon git-branch) */}
@@ -1325,11 +1434,10 @@ export default function StatusBar({
         statusData.announcement?.message &&
         !isExpired(statusData.announcement.expires) && (
         <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border truncate max-w-[280px]"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border truncate max-w-[280px]"
           style={{
-            backgroundColor: 'rgba(255,152,0,0.15)',
-            color: '#FF9800',
-            borderColor: 'rgba(255,152,0,0.25)',
+            color: '#EA580C',
+            borderColor: 'rgba(234,88,12,0.35)',
           }}
           title={statusData.announcement.message}
         >
