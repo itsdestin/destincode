@@ -23,7 +23,7 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
     if (!text) return;
     setBusy('note'); setError(null);
     try {
-      const res = await (window as any).claude?.specialists?.steer?.(sessionId, run.childId, text);
+      const res = await window.claude.specialists.steer(sessionId, run.childId, text);
       if (res && res.ok === false) { setError(res.error || `Couldn’t deliver the note to ${first}.`); }
       else { setNote(''); setNoteOpen(false); }
     } catch (e) { setError((e as Error).message); }
@@ -32,7 +32,7 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
   const stop = async () => {
     setBusy('stop'); setError(null);
     try {
-      const res = await (window as any).claude?.specialists?.interrupt?.(sessionId, run.childId);
+      const res = await window.claude.specialists.interrupt(sessionId, run.childId);
       if (res && res.ok === false) setError(res.error || `Couldn’t stop ${first}.`);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }

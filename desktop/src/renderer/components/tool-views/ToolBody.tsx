@@ -16,7 +16,7 @@ import type { ArtifactRecord } from '../../../shared/artifacts/types';
 // string methods / React child rendering, or renders "[object Object]".
 // asString (from the PR #295 ToolCard fix) treats non-strings as absent.
 import { asString } from '../../utils/tool-input';
-import { useSpecialistRunByChild, useSpecialistRoster } from '../../hooks/useSpecialists';
+import { useSpecialistRunByChild, useSpecialistDefinition } from '../../hooks/useSpecialists';
 import { hasNestedAsk } from '../../utils/specialist-cards';
 import { SpecialistActions } from '../specialists/SpecialistActions';
 import { RunStatusLine } from '../specialists/RunStatusLine';
@@ -623,8 +623,11 @@ function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
   const run = isNative ? tool.specialistRun : undefined;
   const taskId = isNative ? asString(tool.input.task_id) : '';
   const target = useSpecialistRunByChild(sessionId, taskId || undefined);
-  const roster = useSpecialistRoster();
-  const definition = isNative ? roster?.find(d => d.id === subagent) : undefined;
+  // Task 10: same per-cwd lookup ToolCard/TaskConsentBlock use — a project's
+  // OWN specialists only resolve here if this card's session cwd is passed.
+  const artifacts = useArtifactOptional();
+  const cwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
+  const definition = useSpecialistDefinition(cwd, isNative ? subagent : undefined);
   const title = run?.title;
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
   const charter = definition?.charter;

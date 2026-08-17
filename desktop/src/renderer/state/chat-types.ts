@@ -513,22 +513,14 @@ export type ChatAction =
     }
   | {
       // Specialists 1c: the host's delegation ledger changed for one hire
-      // (`specialists:run-changed`, also replayed on attach). Lands on the Task
-      // card keyed by run.parentToolCallId.
+      // (`specialists:event`, also replayed on attach). Lands on the Task
+      // card keyed by run.parentToolCallId. A steer ("send a note") rides on
+      // `run.notes` — there is no separate note action; the reducer derives
+      // the Activity-trail 'note' segments from the run record itself
+      // (chat-reducer.ts's SPECIALIST_RUN_CHANGED case).
       type: 'SPECIALIST_RUN_CHANGED';
       sessionId: string;
       run: SpecialistRunView;
-    }
-  | {
-      // Specialists 1c: a steer ("send a note") was delivered to a running
-      // child — by the user from the card, or by the parent model via task_id.
-      // Appended to the child's Activity trail as a 'note' segment.
-      type: 'SPECIALIST_NOTE';
-      sessionId: string;
-      childId: string;
-      text: string;
-      from: 'user' | 'assistant';
-      timestamp: number;
     }
   | {
       type: 'PERMISSION_RESPONDED';

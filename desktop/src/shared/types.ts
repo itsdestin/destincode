@@ -417,7 +417,7 @@ export interface SpecialistNote {
  * Specialists 1c — what the renderer knows about one hire, keyed by the Task
  * call that started it. Mirrors the host's DelegationRecord (delegation-
  * ledger.ts) minus the delivery/lease bookkeeping the UI never needs. Pushed
- * over `specialists:run-changed` on every ledger write and replayed on
+ * over `specialists:event` on every ledger write and replayed on
  * session (re)attach, so a card's status never depends on the model's prose.
  */
 export interface SpecialistRunView {
@@ -442,7 +442,7 @@ export interface SpecialistRunView {
   notes?: SpecialistNote[];
 }
 
-/** Task 5 (plan 1c) — the push event `specialists:run-changed` carries: one
+/** Task 5 (plan 1c) — the push event `specialists:event` carries: one
  *  ledger write, one event, one changed hire. `kind` is a discriminant with
  *  exactly ONE member today ('run') — kept, rather than dropped down to a
  *  bare `SpecialistRunView`, so a later kind (e.g. a one-off toast) can be

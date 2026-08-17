@@ -39,7 +39,7 @@
 {"type":"user_message","text":"Tell Wren to skip the preview regeneration, just check the rest."}
 {"type":"tool_use","id":"task-5","name":"Task","input":{"task_id":"child-2","prompt":"Skip step 2 (preview regeneration) entirely — do not delete or regenerate previews. Continue with steps 3 and 4 as read-only checks and report."}}
 {"type":"tool_result","tool_use_id":"task-5","content":"Steer delivered to Wren the Whistling Worker (task_id: child-2). It will be applied at the specialist's next step."}
-{"type":"specialist_note","childId":"child-2","from":"assistant","text":"Skip step 2 (preview regeneration) entirely — do not delete or regenerate previews. Continue with steps 3 and 4 as read-only checks and report."}
+{"type":"specialist_run","run":{"childId":"child-2","parentToolCallId":"task-2","agentType":"worker","title":"Wren the Whistling Worker","description":"Run the release checklist","background":true,"status":"running","startedAt":1753795052000,"model":{"label":"qwen3.6-35b-a3b","via":"parent"},"notes":[{"text":"Skip step 2 (preview regeneration) entirely — do not delete or regenerate previews. Continue with steps 3 and 4 as read-only checks and report.","from":"assistant","at":1753795200000}]}}
 {"type":"assistant_text","text":"Done — Wren will skip the preview step and carry on with the read-only checks."}
 {"type":"subagent_tool_use","parent":"task-3","id":"c3-t1","name":"WebSearch","input":{"query":"VS Code marketplace theme preview image generation"}}
 {"type":"subagent_tool_result","parent":"task-3","tool_use_id":"c3-t1","content":"1. Publishing Extensions — code.visualstudio.com/api/working-with-extensions/publishing-extension\n2. Marketplace listing images ..."}

@@ -13,10 +13,11 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
-  // Specialists 1c: a child's stamped events, its routed ask, the run record,
-  // a delivered steer, and the folded background report.
+  // Specialists 1c: a child's stamped events, its routed ask, the run record
+  // (a delivered steer rides on the run record's own `notes` — Task 10 — so
+  // there is no separate line kind for it), and the folded background report.
   'subagent_text', 'subagent_thinking', 'subagent_tool_use', 'subagent_tool_result',
-  'subagent_permission_request', 'specialist_run', 'specialist_note', 'specialist_report',
+  'subagent_permission_request', 'specialist_run', 'specialist_report',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {
