@@ -139,7 +139,7 @@ export function isOwnerAlive(owner: OwnerStamp): boolean {
 
 /** Plan 1c — fired after any ledger write that actually changed one or more
  *  records for a parent. `changed` is only the touched records, never the
- *  whole file, so a listener (Task 5's `specialists:run-changed` push) can
+ *  whole file, so a listener (Task 5's `specialists:event` push) can
  *  forward exactly what moved instead of re-diffing the file itself. */
 export type LedgerChangeListener = (parentCwd: string, parentId: string, changed: DelegationRecord[]) => void;
 
