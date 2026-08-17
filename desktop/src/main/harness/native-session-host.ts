@@ -3116,11 +3116,21 @@ export class NativeSessionHost extends EventEmitter {
       // stat() calls, never a re-parse); it never throws (every fallible fs
       // call inside it is already individually guarded — see catalog.ts's
       // own WHY comments), so this is not wrapped in its own try/catch.
-      // ROOT sessions only, by construction: runTurns is never invoked for a
-      // specialist child (Task 7's runSpecialist drives those directly,
-      // never through send()/this.live's queue) — a child's roster is fixed
-      // at spawn (R12), so there is no "child turn" case to gate here.
-      await this.specialistCatalog.ensureFresh(entry.cwd);
+      // Fix (Task 4 review): gated on `!entry.parentSessionId` — ROOT sessions
+      // ONLY. A specialist child DOES reach this function: runSpecialist's
+      // runTurn() closure calls this.send(childId, ...), and send() dispatches
+      // unconditionally into this.runTurns() for whatever id it's given, so
+      // every child turn (the opening turn AND the empty-report nudge) used to
+      // run this call too — an earlier comment here claimed otherwise, which
+      // was simply wrong. The real reason to skip it for a child: its roster
+      // is fixed at spawn (R12) and never read again — createChild builds a
+      // child's tools by hand and never calls toolWiring(), so no child ever
+      // consults this.specialistCatalog.roster(cwd) for ITS OWN cwd. Without
+      // this gate, every child turn wrote a fresh entry into the catalog's
+      // per-cwd cache (a Map with no eviction) for a cwd nothing will ever
+      // read a roster for — often a work_dir narrowed to a subfolder nothing
+      // else touches — so the cache grew forever across the process's life.
+      if (!entry.parentSessionId) await this.specialistCatalog.ensureFresh(entry.cwd);
       let next: SendUnit | (() => Promise<void>) | undefined = first;
       while (next !== undefined) {
         try {
