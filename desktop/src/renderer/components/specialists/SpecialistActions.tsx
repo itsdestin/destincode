@@ -7,6 +7,11 @@ import type { ToolCallState } from '../../../shared/types';
  * through the same host methods the assistant's own task_id calls use
  * (steerSpecialist / interruptSpecialist) — one mechanism, two callers.
  */
+// Task 12 / spec: the backend caps a steer note at 2,000 characters. The box
+// used to give no indication of that until the send actually failed — this
+// is the single source of truth for the visible counter and the Send gate.
+const MAX = 2000;
+
 export function SpecialistActions({ sessionId, run, compact = false }: {
   sessionId: string;
   run: NonNullable<ToolCallState['specialistRun']>;
@@ -20,7 +25,13 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
   const first = run.title.split(' ')[0];
   const send = async () => {
     const text = note.trim();
-    if (!text) return;
+    // Fix: the 2,000-char cap used to be enforced only by the Send button's
+    // `disabled` attribute — pressing Enter in the textarea called send()
+    // directly and skipped that check entirely, so a user who saw the
+    // greyed-out button and pressed Enter anyway still fired an over-cap
+    // request. Guarding here means send() itself refuses, no matter which
+    // path (button, Enter, or anything added later) tries to call it.
+    if (!text || note.length > MAX) return;
     setBusy('note'); setError(null);
     try {
       const res = await window.claude.specialists.steer(sessionId, run.childId, text);
@@ -51,23 +62,38 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
         </button>
       </div>
       {noteOpen && (
-        <div className="flex items-start gap-2">
-          <textarea
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
-            rows={2}
-            placeholder={`Anything ${first} should know mid-run — applied at its next step`}
-            className="flex-1 min-w-0 text-xs rounded-md border border-edge bg-canvas px-2 py-1 text-fg resize-y"
-          />
-          <button
-            type="button"
-            onClick={send}
-            disabled={busy !== null || !note.trim()}
-            className="text-xs px-2 py-1 rounded-md bg-accent text-on-accent disabled:opacity-50"
-          >
-            {busy === 'note' ? 'Sending…' : 'Send'}
-          </button>
+        <div className="space-y-1">
+          <div className="flex items-start gap-2">
+            {/* No `maxLength` here on purpose: it would silently truncate a
+                paste — the counter below would read "2,200 / 2,000" while
+                the rest of what the user pasted just vanished with no
+                warning. The counter plus the disabled Send button already
+                say the note is too long; that's honest, a silent truncation
+                is not. */}
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+              rows={2}
+              placeholder={`Anything ${first} should know mid-run — applied at its next step`}
+              className="flex-1 min-w-0 text-xs rounded-md border border-edge bg-canvas px-2 py-1 text-fg resize-y"
+            />
+            <button
+              type="button"
+              onClick={send}
+              // Fix: Send used to only gate on emptiness, so a paste over the
+              // 2,000-char backend cap looked sendable right up until the
+              // request came back with an error. Gating here means the cap
+              // is visible before the user tries, not after.
+              disabled={busy !== null || !note.trim() || note.length > MAX}
+              className="text-xs px-2 py-1 rounded-md bg-accent text-on-accent disabled:opacity-50"
+            >
+              {busy === 'note' ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+          <div className="text-right">
+            <span className="text-3xs text-fg-muted">{note.length.toLocaleString()} / {MAX.toLocaleString()}</span>
+          </div>
         </div>
       )}
       {error && <div className="text-xs text-danger">{error}</div>}

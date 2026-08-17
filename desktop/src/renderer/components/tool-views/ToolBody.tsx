@@ -760,7 +760,10 @@ export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = fals
             ? acc('activity')
             : { open: showTimeline, onToggle: () => { setShowTimeline(s => !s); setUserToggled(true); } })}
         >
-          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} suppressAsk={suppressAsk} />
+          {/* Task 12: `run` (specialistRun) is already resolved above for this
+              card — its status is what lets a nested held ask tell a finished
+              helper apart from a running one. */}
+          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} suppressAsk={suppressAsk} runStatus={run?.status} />
         </AgentSection>
       )}
       {children}

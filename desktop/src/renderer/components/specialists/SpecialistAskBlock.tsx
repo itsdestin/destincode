@@ -1,5 +1,5 @@
 import type React from 'react';
-import type { SubagentSegment } from '../../../shared/types';
+import type { SubagentSegment, SpecialistRunView } from '../../../shared/types';
 import { PermissionButtons } from '../ToolCard';
 import { useChatDispatch } from '../../state/chat-context';
 import { useArtifactOptional } from '../../state/ArtifactContext';
@@ -18,7 +18,7 @@ type ToolSegment = Extract<SubagentSegment, { type: 'tool' }>;
  * row, AND in the specialists popup (SpecialistsChip), which is where asks
  * are managed centrally. Same requestId → answering in either place clears both.
  */
-export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false, leading }: {
+export function SpecialistAskBlock({ segment, sessionId, specialistName, compact = false, leading, runStatus }: {
   segment: ToolSegment;
   sessionId?: string;
   specialistName?: string;
@@ -27,6 +27,15 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
   /** Compact only: the request text, laid out on the SAME line as the buttons
    *  (buttons right-aligned; the line wraps when the request is long). */
   leading?: React.ReactNode;
+  /** The card's specialistRun.status as of render (Task 12 / spec R3): the
+   *  held-ask line below reads differently once the helper has actually
+   *  finished — a live run can still be redirected mid-step, but a finished
+   *  one cannot, so a late "Yes" does something different (it reaches the
+   *  assistant as new information, not a resume) and the copy has to say so.
+   *  Undefined (run record not loaded yet) falls back to the running copy —
+   *  the more common case, and the one that never claims "finished" without
+   *  evidence. */
+  runStatus?: SpecialistRunView['status'];
 }) {
   const dispatch = useChatDispatch();
   const artifacts = useArtifactOptional();
@@ -74,7 +83,15 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
       )}
       {segment.askHeld && (
         <p className={`${note} text-amber-500`} data-testid="nested-ask-held">
-          No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.
+          {/* Two branches (Task 12): a still-running helper was already told
+              to carry on, so "Yes" is a follow-up it will pick up mid-run.
+              A finished helper cannot resume — "Yes" instead reaches the
+              assistant, which decides what to do with it. Telling a user
+              nothing here is how someone answers a 10-minute-old ask for a
+              helper that's long gone without knowing that's what they did. */}
+          {runStatus !== undefined && runStatus !== 'running'
+            ? <>{who} has finished; a Yes now tells the assistant, which can send them back.</>
+            : <>No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.</>}
         </p>
       )}
       {!(compact && leading) && buttons}

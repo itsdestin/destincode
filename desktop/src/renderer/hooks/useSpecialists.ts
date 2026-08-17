@@ -80,6 +80,11 @@ export function useSpecialistSummary(sessionId: string | undefined): SpecialistS
       const tools: AskSegment[] = [];
       for (const seg of tool.subagentSegments ?? []) if (seg.type === 'tool') tools.push(seg);
       const asks = tools.filter(t => t.status === 'awaiting-approval' && !!t.requestId);
+      // A held ask on a finished run still counts as 'needs-you' — the ask is
+      // still answerable even after the helper is gone (Task 12). Do not
+      // fold this into 'finished': `run` (with `run.status`) is already
+      // carried on HelperView below, which is how SpecialistAskBlock knows
+      // whether to show its running-helper or finished-helper held-ask copy.
       const group: HelperView['group'] = asks.length > 0 ? 'needs-you' : run.status === 'running' ? 'working' : 'finished';
       helpers.push({ run, parentToolCallId: id, tool, asks, toolCalls: tools.length, group });
       // The card object is replaced immutably on EVERY change (reducer
