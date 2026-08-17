@@ -59,7 +59,7 @@ describe('SpecialistAskBlock — held-ask copy', () => {
   it('held + finished: says the helper has finished and explains what a Yes does now', () => {
     renderBlock({ askHeld: true }, 'completed');
     const held = screen.getByTestId('nested-ask-held');
-    expect(held.textContent).toBe('Wren has finished; a Yes now tells the assistant, which can send them back.');
+    expect(held.textContent).toBe('Wren has finished; a Yes now tells the assistant, which can send Wren out again with your answer.');
   });
 
   it('external (outside-the-folder) ask explains why there is no Always Allow', () => {

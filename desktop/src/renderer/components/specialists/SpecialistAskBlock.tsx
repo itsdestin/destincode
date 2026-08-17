@@ -90,7 +90,7 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
               nothing here is how someone answers a 10-minute-old ask for a
               helper that's long gone without knowing that's what they did. */}
           {runStatus !== undefined && runStatus !== 'running'
-            ? <>{who} has finished; a Yes now tells the assistant, which can send them back.</>
+            ? <>{who} has finished; a Yes now tells the assistant, which can send {who} out again with your answer.</>
             : <>No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.</>}
         </p>
       )}

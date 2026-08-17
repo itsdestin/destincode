@@ -50,9 +50,7 @@ export function specialistRoster(): SpecialistDefinitionView[] {
       // The stale path made definedBy() misreport this row's provenance.
       path: '/home/destin/youcoded-dev/wecoded-themes/.claude/agents/release-checker.md',
       offered: true,
-      warnings: [
-        'Asked for a shell (Bash) but is read-only, so Bash was removed. Give it the read-write charter if it really needs to run commands.',
-      ],
+      warnings: [],
     },
     {
       id: 'code-reviewer', displayName: 'code-reviewer', source: 'claude-code', charter: 'read-only',

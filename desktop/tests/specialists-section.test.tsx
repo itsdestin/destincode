@@ -333,14 +333,19 @@ describe('roster rows', () => {
 
     render(<SpecialistsSection cwd="cwd-roster-groups" />);
 
-    // "Built in" appears twice on purpose (the group heading AND the builtin
-    // row's own definedBy line) — assert count rather than uniqueness.
-    expect(await screen.findAllByText('Built in')).toHaveLength(2);
+    // Destin (workbench pass): "Built in" appears exactly ONCE — the group
+    // heading. The builtin row used to repeat it as its own provenance line,
+    // directly under the heading that already said it. This assertion is the
+    // guard against that redundancy creeping back.
+    expect(await screen.findAllByText('Built in')).toHaveLength(1);
     expect(screen.getByText('Your specialists')).toBeInTheDocument();
     expect(screen.getByText('Claude Code agents')).toBeInTheDocument();
 
-    // definedBy lines.
-    expect(screen.getByText('Your specialists folder · my-helper.md')).toBeInTheDocument();
+    // definedBy lines. Same reason as above: under a "Your specialists"
+    // heading only the FILENAME earns its place. The Claude Code line keeps
+    // its full prefix — that one heading covers two different folders.
+    expect(screen.getByText('my-helper.md')).toBeInTheDocument();
+    expect(screen.queryByText(/Your specialists folder ·/)).not.toBeInTheDocument();
     expect(screen.getByText('Your ~/.claude/agents/over-cap.md')).toBeInTheDocument();
 
     // Not-offered file shows its reason inline (not just greyed out silently).

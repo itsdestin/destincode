@@ -262,10 +262,17 @@ function basename(p: string): string {
  *  list result the definition came from) is what tells a project's own
  *  .claude/agents apart from the user's ~/.claude/agents: the catalog tags
  *  both 'claude-code' and only `path` differs. */
+/** Destin (workbench pass): the row sits UNDER its group heading, so anything
+ *  the heading already said is noise repeated on every row. "Built in" under a
+ *  "Built in" heading says nothing — returns '' and the row drops the line.
+ *  "Your specialists folder" under "Your specialists" is the same, so only the
+ *  filename survives. The Claude Code case KEEPS its prefix: that one heading
+ *  covers two different folders (a project's own vs. your account-wide one) and
+ *  which folder a helper came from is the whole question there. */
 export function definedBy(view: SpecialistDefinitionView, folders?: SpecialistsListResult['folders']): string {
-  if (view.source === 'builtin') return 'Built in';
+  if (view.source === 'builtin') return '';
   const path = view.path ?? '';
-  if (view.source === 'personal') return `Your specialists folder · ${basename(path)}`;
+  if (view.source === 'personal') return basename(path);
   const isProject = !!folders?.project && path.startsWith(folders.project);
   return isProject
     ? `This project's .claude/agents/${basename(path)}`

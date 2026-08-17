@@ -183,26 +183,34 @@ export default function SpecialistsSection({ cwd }: {
   return (
     <section className="space-y-5">
       {/* ── 1. Models for specialists ─────────────────────────────────────── */}
+      {/* Destin's copy (workbench pass): the panel opens by saying what this
+          screen is for and pointing at the ⓘ for the long version, so neither
+          block below has to carry an explainer of its own. */}
+      <p className="text-2xs text-fg-dim leading-relaxed">
+        Your assistant may utilize “specialists” to help it accomplish some tasks. This menu allows you to configure which specialists your assistant has access to. Click the (i) above for additional information.
+      </p>
+
       <div>
-        <h3 className={SECTION_LABEL}>Models specialists run on</h3>
+        <h3 className={SECTION_LABEL}>Specialist intelligence tiers</h3>
+        {/* Destin (workbench pass): the intro paragraph is GONE, wrapper and
+            all — not just emptied, or the box would keep its padding and read
+            as a blank gap. The heading plus each row's own hint carry it; the
+            (i) explainer holds the longer version for anyone who wants it. */}
         <div className="rounded-lg bg-inset/50">
-          <div className="px-3 py-2.5">
-            <p className="text-2xs text-fg-dim leading-relaxed">
-              Your assistant can hire a helper onto the <span className="text-fg-2">budget</span> model or the{' '}
-              <span className="text-fg-2">frontier</span> model. You decide what those names mean. A tier that is not set uses the conversation’s own model.
-            </p>
-          </div>
           {tierLoadError ? (
-            <div className="border-t border-edge-dim p-2.5">
+            <div className="p-2.5">
               <ErrorState mode="recoverable" message={tierLoadError} onRetry={() => void loadTiers()} variant="inline" />
             </div>
           ) : (
             <>
-              <div className="border-t border-edge-dim divide-y divide-edge-dim">
+              {/* No `border-t` any more — the paragraph that used to sit above
+                  it is gone, so it would have drawn a stray rule across the top
+                  of the box. */}
+              <div className="divide-y divide-edge-dim">
                 <TierRow
                   tier="budget"
                   title="Budget"
-                  hint="Cheap and quick — searching, reading, summarizing."
+                  hint="(best for searching, reading, and summarizing)"
                   value={tiers?.budget ?? null}
                   loaded={tiers !== null}
                   onPick={(c) => setTier('budget', c)}
@@ -211,7 +219,7 @@ export default function SpecialistsSection({ cwd }: {
                 <TierRow
                   tier="frontier"
                   title="Frontier"
-                  hint="The strongest you have — reviews and judgment calls."
+                  hint="(best for nuanced tasks, code reviews, and judgment calls)"
                   value={tiers?.frontier ?? null}
                   loaded={tiers !== null}
                   onPick={(c) => setTier('frontier', c)}
@@ -244,9 +252,6 @@ export default function SpecialistsSection({ cwd }: {
         </h3>
         <div className="rounded-lg bg-inset/50">
           <div className="px-3 py-2.5">
-            <p className="text-2xs text-fg-dim leading-relaxed">
-              Everything your assistant can hire right now. To add one, drop a file in your specialists folder — it shows up here as soon as it is saved. A project can carry its own; Claude Code agent files are translated and any tool that does not translate is removed and listed below.
-            </p>
           </div>
           {roster.status === 'loading' ? (
             <div className="border-t border-edge-dim px-3 py-3">
@@ -321,17 +326,31 @@ function TierRow({ tier, title, hint, value, loaded, onPick, onClear }: {
         <span className="text-xs font-medium text-fg-2">{title}</span>
         <span className="text-2xs text-fg-muted">{hint}</span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <div className="min-w-0 flex-1"><ModelPicker value={choice} onSelect={onPick} includeClaude={false} /></div>
-        {value && <Button size="sm" variant="ghost" onClick={onClear} title={`Unset the ${tier} model`}>Clear</Button>}
+      {/* Destin (workbench pass): Clear sits BENEATH the picker at the same
+          width, not beside it. Side-by-side made two competing controls on one
+          line and shrank the picker — the destructive one should read as
+          secondary to the thing it undoes, not as its equal. */}
+      <div className="space-y-1.5">
+        <ModelPicker value={choice} onSelect={onPick} includeClaude={false} />
+        {value && (
+          <Button size="sm" variant="ghost" className="w-full" onClick={onClear} title={`Unset the ${tier} model`}>Clear</Button>
+        )}
       </div>
-      <div className="text-2xs">
-        {/* Fix (Task 13): was a bare "Loading…" — every loading state in
-            this app names what it's waiting on. */}
-        {!loaded ? <LoadingState what={`the ${tier} model`} variant="inline" />
-          : value ? <span className="text-fg-dim">Set to <span className="text-fg-2">{value.label}</span></span>
-          : <span className="text-amber-500">Not set — helpers use the conversation’s model</span>}
-      </div>
+      {/* Destin (workbench pass): an UNSET tier now says nothing at all. It used
+          to carry an amber "Not set — helpers use the conversation's model",
+          which put a caution colour on the default state and explained the
+          fallback on every row forever. The ⓘ explainer says it once instead.
+          The whole element is dropped rather than emptied — an empty div keeps
+          its line-height and leaves a gap under the button.
+          Fix (Task 13): the loading case was a bare "Loading…" — every loading
+          state in this app names what it's waiting on. */}
+      {(!loaded || value) && (
+        <div className="text-2xs">
+          {!loaded
+            ? <LoadingState what={`the ${tier} model`} variant="inline" />
+            : <span className="text-fg-dim">Set to <span className="text-fg-2">{value!.label}</span></span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -347,7 +366,11 @@ function RosterRow({ d, folders }: { d: SpecialistDefinitionView; folders?: Spec
       <button type="button" onClick={() => setOpen(v => !v)} className="w-full text-left" aria-expanded={open}>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-medium text-fg-2">{d.displayName}</span>
-          <span className={`text-4xs uppercase tracking-wide px-1 rounded border ${d.charter === 'read-write' ? 'border-amber-500/40 text-amber-500' : 'border-edge text-fg-muted'}`}>
+          {/* Destin (workbench pass): the read-write badge was amber. Now the
+              same neutral styling as read-only — the words already say what the
+              helper can do, and colouring one capability as a hazard made the
+              list read as a warning rather than a roster. */}
+          <span className="text-4xs uppercase tracking-wide px-1 rounded border border-edge text-fg-muted">
             {d.charter === 'read-write' ? (canShell ? 'can edit & run commands' : 'can edit files') : 'read-only'}
           </span>
           {d.modelPreference && d.modelPreference !== 'parent' && (
@@ -358,8 +381,13 @@ function RosterRow({ d, folders }: { d: SpecialistDefinitionView; folders?: Spec
           )}
         </div>
         {/* Task 10: provenance — where this row's definition actually came
-            from, so "which .claude/agents is this" is never a guess. */}
-        <div className="text-2xs text-fg-muted">{definedBy(d, folders)}</div>
+            from, so "which .claude/agents is this" is never a guess.
+            Destin (workbench pass): definedBy returns '' when the group heading
+            above already said it — render nothing rather than an empty line,
+            or the row keeps a blank gap where the text used to be. */}
+        {definedBy(d, folders) && (
+          <div className="text-2xs text-fg-muted">{definedBy(d, folders)}</div>
+        )}
         {/* Fix (Task 13): d.description is the CLAMPED text the assistant's
             tool list actually gets (MAX_DESCRIPTION_CHARS); Settings should
             show what the file author actually wrote. The warning list below
