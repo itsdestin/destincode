@@ -240,8 +240,12 @@ export interface TranscriptEvent {
      * streaming watchdog has seen NO chunk for STALL_WARNING_MS. Drives the
      * ThinkingIndicator's "taking a while… retrying" countdown. `willRetry` =
      * the harness will auto-retry the step when the countdown ends (nothing had
-     * streamed yet); false = it will surface a session-error instead. A heartbeat
-     * WITHOUT this field means activity resumed and clears the warning.
+     * streamed yet, first attempt). false ends the countdown one of two ways:
+     * on Clock 1 alone (nothing ever streamed, first attempt) with a
+     * session-error; on Clock 2 (something already streamed) or a turn that
+     * has already parked once, the turn PARKS instead — see `stalled` below.
+     * A heartbeat WITHOUT this field means activity resumed and clears the
+     * warning.
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
     /**

@@ -1156,7 +1156,11 @@ export class HarnessSession extends EventEmitter {
    *  retry against a dead provider would sit for the full prefill budget and
    *  then kill the turn with Clock 1's "didn't begin responding" error — the
    *  exact ending this design exists to remove, arriving four minutes after the
-   *  user asked for the opposite. Cleared at the start of every turn. */
+   *  user asked for the opposite. Cleared at the start of every turn.
+   *  Its one LIVE effect already, before any Retry button exists: inside a
+   *  turn that has already parked once, a LATER step's own Clock-1 stall
+   *  (e.g. a fresh tool-call step that never gets a first byte) parks too
+   *  instead of ending the turn — see the `willRetry` guard in armWatchdog. */
   private turnEverParked = false;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
@@ -1970,7 +1974,11 @@ export class HarnessSession extends EventEmitter {
       stageTimer = setTimeout(() => {
         warned = true;
         // willRetry: we can safely re-run only if nothing streamed AND this is
-        // the first attempt — otherwise the countdown ends in a park, not a retry.
+        // the first attempt (Clock 1, first try). When false, the guard below
+        // decides what happens instead: a PARK if this is Clock 2 (something
+        // streamed, then went quiet) or the turn has already parked once
+        // (turnEverParked) — otherwise (Clock 1 alone, never parked) the
+        // countdown still ends the turn with a session-error.
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
         stageTimer = setTimeout(() => {

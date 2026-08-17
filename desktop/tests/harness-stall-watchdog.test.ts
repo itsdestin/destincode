@@ -173,7 +173,20 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     const model = modelFromStreams([() => hangingStream(), () => hangingStream()]);
     const session = new HarnessSession(makeOpts({}), async () => model as any);
     const events = collect(session);
-    await session.send('go');
+    // Don't await send() directly: a parked turn's promise stays pending BY
+    // DESIGN (see waitForEvent's own comment), so if the Clock-1 guard were
+    // ever widened back to also park here, awaiting send() would sit until
+    // this file's 120s testTimeout and report a bare "test timed out" —
+    // two minutes of red CI naming nothing. Race the two possible outcomes
+    // instead, bounded well above the ~500ms this genuinely needs (the
+    // watchdog budget in this file is STALL_MS=250ms, two attempts), so a
+    // regression fails FAST with the real cause. Do not remove this bound.
+    void session.send('go');
+    const outcome = await Promise.race([
+      waitForEvent(events, (e) => e.type === 'session-error', 5_000).then(() => 'session-error' as const),
+      waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true, 5_000).then(() => 'parked' as const),
+    ]);
+    expect(outcome, 'expected the turn to end, but it parked').toBe('session-error');
 
     expect(types(events)).toContain('session-error');
     expect(stalledCards(events)).toHaveLength(0);
