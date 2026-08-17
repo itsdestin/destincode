@@ -1322,6 +1322,10 @@ export const IPC = {
   // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // Stalled-turn Retry (fire-and-forget like interrupt above). Re-runs the ONE
+  // parked step; unlike interrupt it never cascades to specialist children or
+  // cancels pending permission asks.
+  NATIVE_RETRY: 'native:retry',
   // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
   // the caller needs the {ok, reason} result to explain a refusal.
   NATIVE_COMPACT: 'native:compact',

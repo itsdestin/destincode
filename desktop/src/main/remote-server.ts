@@ -2115,6 +2115,12 @@ export class RemoteServer {
         this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
         break;
       }
+      // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+      // The host no-ops when nothing is parked (stream already resumed).
+      case 'native:retry': {
+        this.nativeRuntime?.nativeHost.retryStalledStep(payload.sessionId);
+        break;
+      }
       case 'session:resize': {
         this.sessionManager.resizeSession(payload.sessionId, payload.cols, payload.rows);
         break;

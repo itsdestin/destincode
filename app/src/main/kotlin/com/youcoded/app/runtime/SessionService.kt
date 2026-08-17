@@ -3708,6 +3708,11 @@ class SessionService : Service() {
             // not-implemented-on-mobile rather than no-op'ing.
             "native:queue-remove",
             "native:interrupt",
+            // Stalled-turn Retry. Fire-and-forget (no msg.id) exactly like
+            // native:send / native:interrupt, so this is a correct no-op here:
+            // Android hosts Claude Code sessions only and has no streaming
+            // watchdog to park.
+            "native:retry",
             // User-initiated /compact (M3 item 2). Request/response like
             // native:set-binding below — carries a msg.id, so this replies
             // not-implemented-on-mobile rather than no-op'ing. Android's native

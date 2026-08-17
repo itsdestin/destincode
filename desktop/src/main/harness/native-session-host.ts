@@ -3394,6 +3394,14 @@ export class NativeSessionHost extends EventEmitter {
     return !!entry;
   }
 
+  /** Manual Retry from the stalled card. Unlike interrupt(), this does NOT
+   *  cascade to specialist children and does NOT cancel pending asks: only the
+   *  ONE parked step re-runs, and everything else about the turn is untouched.
+   *  Returns false when nothing was parked (the stream resumed first). */
+  retryStalledStep(sessionId: string): boolean {
+    return this.live.get(sessionId)?.session.retryStalledStep() ?? false;
+  }
+
   /** Takeover/teardown quiesce (Task 9). STRONGER than interrupt() and ONLY for
    *  takeover/teardown — never the user-facing Stop button (that's interrupt()).
    *
