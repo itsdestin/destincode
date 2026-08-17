@@ -40,7 +40,7 @@ import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
-import { useNativeSessionUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -2522,6 +2522,9 @@ function AppInner() {
   // the memo no longer compiles and a ref would never re-render the chips. It is
   // re-expressed here as a cached store selector, mirroring useActiveSessionModel.
   const nativeStatusUsage = useNativeSessionUsage(isNativeSession ? sessionId : null);
+  // NOT gated on isNativeSession — CC turns carry usage too (the transcript
+  // watcher stamps it), and the reuse chip serves both runtimes.
+  const turnsWithUsage = useTurnsWithUsage(sessionId);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2978,6 +2981,7 @@ function AppInner() {
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
+                  turnsWithUsage={turnsWithUsage}
                 />
               </div>
           </>

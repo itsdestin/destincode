@@ -88,10 +88,13 @@ function StopReasonFooter({ reason, provider }: { reason: string; provider: Sess
 function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
   if (!turn.usage && !turn.model) return null;
   const u = turn.usage;
-  const total = u ? u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens : 0;
-  const cacheHitPct = u && total > 0
-    ? Math.round((u.cacheReadTokens / total) * 100)
-    : null;
+  // Fix: this used to render a percentage over
+  // (input + output + cacheRead + cacheCreation). On the native runtime that
+  // double-counts — an OpenAI-compatible provider's inputTokens ALREADY contains
+  // the cached reads — so a turn that genuinely reused 98.7% of its prompt
+  // displayed as 49%. A raw count needs no denominator, so it cannot be wrong in
+  // either runtime's accounting; the StatusBar's Reuse chip is where the ratio
+  // lives, and it resolves the denominator per source (Destin, 2026-08-16).
 
   return (
     <div
@@ -103,7 +106,7 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
         <>
           <span>in {u.inputTokens.toLocaleString()}</span>
           <span>out {u.outputTokens.toLocaleString()}</span>
-          {cacheHitPct !== null && <span>cache {cacheHitPct}%</span>}
+          {u.cacheReadTokens > 0 && <span>cached {u.cacheReadTokens.toLocaleString()}</span>}
         </>
       )}
     </div>

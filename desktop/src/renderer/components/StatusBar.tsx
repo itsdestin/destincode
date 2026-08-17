@@ -204,6 +204,77 @@ export function selectNativeStatusChips(
   };
 }
 
+/** What the cache-reuse chip renders, all resolved from ONE source. */
+export interface CacheReuse {
+  /** Prompt tokens served from cache instead of re-read. null = none reported. */
+  readTokens: number | null;
+  /** The WHOLE prompt the model read, cached portion included. */
+  promptTokens: number | null;
+  /** readTokens / promptTokens, clamped to 0..1. null when incomputable. */
+  ratio: number | null;
+}
+
+/** How much of the prompt was served from cache rather than re-read.
+ *
+ *  Fix: this replaced a "hit rate" of reads/(reads+writes), which was pinned at
+ *  100% forever. That formula only means anything on providers that BILL for
+ *  cache writes (Anthropic-style explicit caching). Every native provider here —
+ *  OpenRouter's models and local llama.cpp — caches automatically and reports no
+ *  write count at all, so the denominator collapsed to reads/reads. Verified
+ *  against 507 recorded turns: cacheCreationTokens was 0 on every single one
+ *  (Destin, 2026-08-16).
+ *
+ *  WHY the two branches — the sources disagree about what inputTokens MEANS, and
+ *  mixing them is exactly how the old per-turn figure ended up halved:
+ *    - Claude Code's statusline uses Anthropic's convention, where inputTokens is
+ *      the UNCACHED REMAINDER. The prompt total is input + read + create.
+ *    - The native harness goes through an OpenAI-compatible provider, where
+ *      prompt_tokens is the WHOLE prompt with cached tokens already counted in.
+ *      Adding reads there double-counts them and halves the answer.
+ *  So the numerator and denominator must always come from the same source. */
+export function selectCacheReuse(
+  ss: Pick<SessionStats, 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'> | null | undefined,
+  nativeChips: Pick<NativeStatusChips, 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'> | null | undefined,
+): CacheReuse {
+  // Precedence matches the Cached: chip beside it — CC's statusline wins when it
+  // has written cache numbers, native fills in otherwise. Picked as a UNIT so the
+  // denominator can never be resolved from a different source than the numerator.
+  const useCC = ss?.cacheReadTokens != null;
+  const readTokens = useCC ? ss!.cacheReadTokens : nativeChips?.cacheReadTokens ?? null;
+  const createTokens = useCC ? ss!.cacheCreationTokens : nativeChips?.cacheCreationTokens ?? null;
+  const inputTokens = useCC ? ss!.inputTokens : nativeChips?.inputTokens ?? null;
+
+  if (readTokens == null || inputTokens == null) return { readTokens, promptTokens: null, ratio: null };
+
+  const promptTokens = useCC ? inputTokens + readTokens + (createTokens ?? 0) : inputTokens;
+  // Clamped: a provider that reports inconsistent counts should show a bounded
+  // percentage, not 340%. The tooltip still prints the raw numbers, so genuinely
+  // bad data stays visible instead of being silently smoothed away.
+  const ratio = promptTokens > 0 ? Math.min(1, readTokens / promptTokens) : null;
+  return { readTokens, promptTokens, ratio };
+}
+
+/** What the reuse chip should actually show. Kept separate from the JSX so the
+ *  "don't alarm anyone on turn 1" rule is unit-testable rather than buried in a
+ *  render branch. */
+export type ReuseDisplay =
+  | { kind: 'unknown' }                  // '--' — nothing reported cache data
+  | { kind: 'first-turn' }               // 'New' — no earlier prompt to reuse yet
+  | { kind: 'percent'; pct: number };
+
+export function selectReuseDisplay(reuse: CacheReuse, turnsWithUsage: 0 | 1 | 2 | undefined): ReuseDisplay {
+  if (reuse.ratio == null) return { kind: 'unknown' };
+  // ?? 1, not ?? 2: an unwired caller errs toward the calm reading rather than
+  // raising a red alarm it has no evidence for.
+  const firstTurn = (turnsWithUsage ?? 1) <= 1;
+  // Zero reuse means two very different things depending on WHEN it happens. On
+  // a session's first turn there is simply no earlier prompt to reuse, which is
+  // expected and should read as neutral. The same zero on turn 30 means the
+  // cache stopped being hit — worth flagging, so it falls through to a red 0%.
+  if (reuse.ratio === 0 && firstTurn) return { kind: 'first-turn' };
+  return { kind: 'percent', pct: Math.round(reuse.ratio * 100) };
+}
+
 function utilizationColor(pct: number): string {
   if (pct >= 80) return 'text-[#DD4444]';
   if (pct >= 50) return 'text-[#FF9800]';
@@ -349,6 +420,11 @@ interface Props {
    *  main, Task 4/5) carried on the same usage payload. null when unknown → the
    *  context % chip is omitted but tokens + speed still render. */
   nativeContextLength?: number | null;
+  /** Completed turns carrying usage, saturating at 2 (any provider). Lets the
+   *  reuse chip say "New" on a session's first turn instead of a red 0%, which
+   *  is the same number meaning two very different things. Absent → treated as
+   *  a first turn, so an unwired caller errs toward the calm reading. */
+  turnsWithUsage?: 0 | 1 | 2;
 }
 
 
@@ -469,11 +545,14 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         bestFor: 'API users and power users. Shows how effectively prompt caching is working in your conversation.',
       },
       {
+        // The id stays 'cache-hit-rate' on purpose — it is the persisted key for
+        // everyone who already turned this chip on. Only what it MEASURES and
+        // what it is CALLED changed; renaming the id would silently reset them.
         id: 'cache-hit-rate',
-        label: 'Cache Hit Rate',
+        label: 'Context Reuse',
         defaultVisible: false,
-        description: 'Percentage of cached tokens that were reads (hits) vs new creations. 90%+ means the cache is warm and working well.',
-        bestFor: 'Power users optimizing cost. Low hit rates mean your prompts are changing too much for the cache to help.',
+        description: 'How much of each prompt was reused from cache instead of re-read. Reused context is cheaper and much faster.',
+        bestFor: 'Long conversations. A sudden drop means the cache stopped working — usually an idle gap, or a change of model.',
       },
       {
         id: 'output-speed',
@@ -805,7 +884,7 @@ export default function StatusBar({
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
-  nativeUsage, nativeContextLength,
+  nativeUsage, nativeContextLength, turnsWithUsage,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncWarnings } = statusData;
 
@@ -1110,24 +1189,32 @@ export default function StatusBar({
         );
       })()}
 
-      {/* Cache hit rate — derived: cacheRead / (cacheRead + cacheCreation) */}
+      {/* Context reuse — how much of the prompt came from cache instead of being
+          re-read. See selectCacheReuse for why this is NOT reads/(reads+writes). */}
       {show('cache-hit-rate') && (() => {
-        const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
-        const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
-        const total = (cr ?? 0) + (cc ?? 0);
+        const reuse = selectCacheReuse(ss, nativeChips);
+        const display = selectReuseDisplay(reuse, turnsWithUsage);
+        const prompt = (reuse.promptTokens ?? 0).toLocaleString();
+        const title = display.kind === 'unknown'
+          ? 'How much of the prompt was reused from cache'
+          : display.kind === 'first-turn'
+            ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
+            : display.pct === 0
+              ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
+              : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this turn's ${prompt} prompt tokens from cache — that part was cheaper and faster than re-reading it.`;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={cr != null ? `${cr.toLocaleString()} reads / ${total.toLocaleString()} total cached tokens` : 'Cache hit rate'}
+            title={title}
           >
-            <span className="text-fg-muted">Hit:</span>
-            {(() => {
-              if (cr == null) return <span className="text-fg-2">--</span>;
-              if (total === 0) return <span className="text-fg-muted">N/A</span>;
-              const pct = Math.round((cr / total) * 100);
-              const color = pct >= 80 ? 'text-[#4CAF50]' : pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]';
-              return <span className={color}>{pct}%</span>;
-            })()}
+            <span className="text-fg-muted">Reuse:</span>
+            {display.kind === 'unknown' && <span className="text-fg-2">--</span>}
+            {display.kind === 'first-turn' && <span className="text-fg-muted">New</span>}
+            {display.kind === 'percent' && (
+              <span className={display.pct >= 80 ? 'text-[#4CAF50]' : display.pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]'}>
+                {display.pct}%
+              </span>
+            )}
           </span>
         );
       })()}
