@@ -111,7 +111,11 @@ function StatusPill({ h }: { h: HelperView }) {
   if (h.group === 'needs-you') return <span className={`${base} border-amber-500/40 text-amber-500 bg-amber-500/10`}><QuestionIcon className="w-3 h-3" />Needs you</span>;
   if (h.run.status === 'running') return <span className={`${base} border-blue-400/40 text-blue-400 bg-blue-400/10`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
   if (h.run.status === 'interrupted') return <span className={`${base} border-edge text-fg-muted`}><StoppedIcon className="w-3 h-3" />Stopped</span>;
-  if (h.run.status === 'failed' || h.tool.specialistReport?.status === 'failed') return <span className={`${base} border-danger/40 text-danger bg-danger/10`}><FailIcon className="w-3 h-3" />Failed</span>;
+  // Fix: `danger` was never a real token (no --color-danger anywhere in globals.css,
+  // confirmed by building the stylesheet and finding zero `danger` output) — this
+  // pill rendered with NO color at all. `destructive` is the app's real semantic
+  // token for this state (see globals.css comment above --color-destructive-fg).
+  if (h.run.status === 'failed' || h.tool.specialistReport?.status === 'failed') return <span className={`${base} border-destructive/40 text-destructive-fg bg-destructive/10`}><FailIcon className="w-3 h-3" />Failed</span>;
   return <span className={`${base} border-edge text-fg-muted`}><CheckIcon className="w-3 h-3" />Finished</span>;
 }
 

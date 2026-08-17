@@ -21,10 +21,13 @@ export function RunStatusLine({ run, report }: { run: NonNullable<ToolCallState[
     if (run.stale) tone = 'text-amber-500';
   } else if (run.status === 'completed') {
     text = report?.status === 'failed' ? `Failed after ${elapsed}${steps}` : `Finished in ${elapsed}${steps}`;
-    if (report?.status === 'failed') tone = 'text-danger';
+    // Fix: `danger` isn't a real token (no --color-danger in globals.css), so this
+    // line rendered in plain body color instead of red on failure. `destructive-fg`
+    // is the app's real error/destructive text token.
+    if (report?.status === 'failed') tone = 'text-destructive-fg';
   } else if (run.status === 'failed') {
     text = `Failed after ${elapsed}${steps}`;
-    tone = 'text-danger';
+    tone = 'text-destructive-fg';
   } else {
     text = `Stopped after ${elapsed}${steps} — the assistant can pick this back up`;
   }
