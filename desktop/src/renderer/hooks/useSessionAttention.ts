@@ -4,6 +4,17 @@ import { useChatStore } from '../state/chat-context';
 import type { AttentionState } from '../state/chat-types';
 import type { SessionStatusColor } from '../components/StatusDot';
 
+// Attention states that mean "act now" get the same red the permission prompt
+// uses. Amber is reserved for the one state that genuinely means "I don't know"
+// (Destin's rule, 2026-08-16). Extracted as a pure function so the mapping is
+// unit-testable without mounting the hook.
+const RED_ATTENTION = new Set<AttentionState>(['stalled']);
+
+export function attentionDotColor(state: AttentionState): 'red' | 'amber' | null {
+  if (state === 'ok') return null;
+  return RED_ATTENTION.has(state) ? 'red' : 'amber';
+}
+
 export interface SessionAttentionInfo {
   status: SessionStatusColor;
   attentionState: AttentionState;
@@ -55,18 +66,16 @@ export function useSessionAttention(
         else if (t.status === 'running') hasRunning = true;
         if (hasAwaiting) break;
       }
-      // Priority: red (awaiting-approval) → amber (attention banner showing —
-      // stuck or session-died) → green (working) → blue (unseen activity) →
-      // gray (idle). Amber is between red and green: the session needs the
-      // user's eyes but it's not as urgent as a permission prompt, and it's
-      // not "all good, just working" either. Overrides green so a stuck
-      // session doesn't appear identical to a healthy thinking session.
-      const needsAttention = chatState.attentionState !== 'ok';
+      // Priority: red (permission prompt OR a state that needs a decision) →
+      // amber ("something may be wrong, I don't know") → green (working) →
+      // blue (unseen activity) → gray (idle).
+      const attentionColor = attentionDotColor(chatState.attentionState);
       const status: SessionStatusColor = hasAwaiting ? 'red'
-        : needsAttention ? 'amber'
-        : (chatState.isThinking || hasRunning) ? 'green'
-        : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== activeSessionId) ? 'blue'
-        : 'gray';
+        : attentionColor ?? (
+          (chatState.isThinking || hasRunning) ? 'green'
+          : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== activeSessionId) ? 'blue'
+          : 'gray'
+        );
       next.set(s.id, { status, attentionState: chatState.attentionState, awaitingApproval: hasAwaiting });
     }
     // Sessions present in chat state but not in the sessions list: the old
