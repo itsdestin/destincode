@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
 import { ChatState, ChatAction } from '../src/renderer/state/chat-types';
 
@@ -212,10 +212,25 @@ describe('stalled turn', () => {
   });
 
   it('repeat stalled heartbeats do NOT restart the elapsed clock', () => {
-    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
-    const first = state.get(SESSION)!.stalledSince;
-    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
-    expect(state.get(SESSION)!.stalledSince).toBe(first);
+    // Load-bearing fake clock: two synchronous Date.now() calls can land in the
+    // same millisecond, which makes this assertion pass even against a broken
+    // reducer that restamps stalledSince unconditionally (dropping the
+    // `session.stalledSince ?? Date.now()` guard) — proven empirically by
+    // temporarily removing that guard and watching this test still pass.
+    // Advancing fake time between dispatches forces a real elapsed gap so the
+    // test can only pass if the guard is actually holding the original stamp.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+      const first = state.get(SESSION)!.stalledSince;
+
+      vi.setSystemTime(1_050_000);
+      state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+      expect(state.get(SESSION)!.stalledSince).toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a plain heartbeat clears the stall (the stream resumed)', () => {
