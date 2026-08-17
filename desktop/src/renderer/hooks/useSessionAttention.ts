@@ -8,7 +8,11 @@ import type { SessionStatusColor } from '../components/StatusDot';
 // uses. Amber is reserved for the one state that genuinely means "I don't know"
 // (Destin's rule, 2026-08-16). Extracted as a pure function so the mapping is
 // unit-testable without mounting the hook.
-const RED_ATTENTION = new Set<AttentionState>(['stalled']);
+// 'session-died' and 'error' moved here 2026-08-16: AttentionBanner has always
+// drawn its red destructive ring around both (its DESTRUCTIVE list) while the
+// dot rendered amber — the banner and the dot disagreed about the same event.
+// Both mean "the turn is over, act now", which is what red means.
+const RED_ATTENTION = new Set<AttentionState>(['stalled', 'session-died', 'error']);
 
 export function attentionDotColor(state: AttentionState): 'red' | 'amber' | null {
   if (state === 'ok') return null;
