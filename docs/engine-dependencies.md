@@ -223,9 +223,14 @@ first part and cache-scan sums the parts' sizes into one entry.
 ## Verification
 
 `desktop/test-engine/` holds dev-run smoke probes (spawn the real engine, assert
-health + `/models` parity + a streamed tool-less chat round-trip). Re-run all
-three on every engine bump — analogous to `test-conpty/` on a CC bump. The
-original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+health + `/models` parity + **`?reload=1` picking up a post-boot file** + a streamed
+tool-less chat round-trip). Re-run all three on every engine bump — analogous to
+`test-conpty/` on a CC bump. The original three PASS on b9992 (Windows x64 CPU,
+Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13; the `?reload=1` assertion was added 2026-08-16
+and PASSES on b9992 (Linux x64 Vulkan, Qwen3.5-2B-Q8_0). **That assertion is the
+only guard that can see upstream dropping the rescan** — the unit tests mock fetch,
+so its removal would look exactly like the 2026-08-16 bug and nothing else we own
+would catch it.
 `probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
 PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +

@@ -531,8 +531,11 @@ export class EngineSupervisor extends EventEmitter {
   // ---- model listing ----------------------------------------------------
 
   /** Running → GET /models (live status) UNIONED with a fresh disk scan, so a
-   *  model downloaded after boot is listed without a restart (Amendment K2);
+   *  model downloaded after boot is LISTED without a restart (Amendment K2);
    *  stopped → cache scan alone (loaded:false).
+   *  **Listed is not servable** — a row this union adds is a selectable model the
+   *  router has never heard of, and a completion naming it 400s. Serveability is
+   *  `ensureServable()`; never treat a row from here as usable on its own.
    *  Upstream /models schema is a tracked coupling — parse DEFENSIVELY, and
    *  keep the exact observed shape pinned in test-engine/probe-models.mjs +
    *  docs/engine-dependencies.md. */
