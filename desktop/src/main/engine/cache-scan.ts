@@ -1,7 +1,11 @@
 // GGUF cache scan — the engine-off view of "what local models exist".
-// Router-mode llama-server auto-discovers the same directory (LLAMA_CACHE), so
-// the ids derived here MUST match what GET /models reports once the engine is
-// running. That equivalence is an EMPIRICAL contract, pinned by
+// Router-mode llama-server discovers the same directory (--models-dir, NOT
+// LLAMA_CACHE — that one is vestigial), so the ids derived here MUST match what
+// GET /models reports once the engine is running. It scans that dir at BOOT and
+// never again on its own, so this scan can legitimately be AHEAD of the router
+// for a file downloaded since — that gap is what EngineSupervisor.ensureServable
+// closes, and reading a row from here as "usable" is the 2026-08-16 bug.
+// The id equivalence is an EMPIRICAL contract, pinned by
 // test-engine/probe-models.mjs and recorded in docs/engine-dependencies.md —
 // if a probe run shows the router naming models differently, fix
 // ggufIdFromFileName (one function) and update the probe assertion together.

@@ -1,9 +1,13 @@
 // EngineSupervisor — llama-server lifecycle (spec §3.2, ADR 007). Direct heir
 // of the archived feat/opencode-mvp OpenCodeService supervision pattern.
 //
-// Router mode: spawned WITHOUT -m; the server auto-discovers GGUFs in
-// LLAMA_CACHE, hot-loads on first request, LRU-evicts (--models-max), and
-// isolates each model in its own child process. We only ever talk HTTP to it.
+// Router mode: spawned WITHOUT -m; the server discovers GGUFs in --models-dir,
+// hot-loads on first request, LRU-evicts (--models-max), and isolates each model
+// in its own child process. We only ever talk HTTP to it.
+// Discovery is BOOT-TIME ONLY — the router never re-scans --models-dir on its
+// own (no timer, no inotify, no rescan on a plain GET /models). A file that
+// lands after boot 400s until refreshModels() asks for one. See "router rescan"
+// below; the discovery dir is --models-dir, NOT LLAMA_CACHE (vestigial).
 //
 // Idle shutdown: the AI SDK is handed trackedFetch, so every chat request
 // passes through here — each call bumps lastActivity and holds an inFlight
