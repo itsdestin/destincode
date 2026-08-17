@@ -234,14 +234,39 @@ describe('InputBar — stop button (Task 10 placement)', () => {
     expect(screen.getByRole('button', { name: 'Stop generating' })).toBeInTheDocument();
   });
 
-  it('hides the stop button when attentionState is not ok, even while thinking', () => {
+  // Fix (I2, whole-branch review 2026-08-16): this used to assert that ANY
+  // non-'ok' attention state hid the button, using 'stuck' as the example.
+  // 'stuck' is now the stall WARNING — a turn that is still generating — so
+  // that assertion described the regression rather than the rule. Split into
+  // the two halves that actually matter: a warned/parked turn keeps the
+  // button, an ENDED turn loses it.
+  it('keeps the stop button through the stall warning and the parked card', () => {
     renderInputBar();
     act(() => { capturedDispatch!({ type: 'SESSION_INIT', sessionId: 'sess-1' }); });
     act(() => {
       capturedDispatch!({ type: 'USER_PROMPT', sessionId: 'sess-1', content: 'hi', timestamp: 1 });
     });
     act(() => {
-      capturedDispatch!({ type: 'ATTENTION_STATE_CHANGED', sessionId: 'sess-1', state: 'stuck' });
+      capturedDispatch!({
+        type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: 'sess-1',
+        stallWarning: { retryInMs: 15_000, willRetry: false },
+      });
+    });
+    expect(screen.getByRole('button', { name: 'Stop generating' })).toBeInTheDocument();
+    act(() => {
+      capturedDispatch!({ type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: 'sess-1', stalled: true });
+    });
+    expect(screen.getByRole('button', { name: 'Stop generating' })).toBeInTheDocument();
+  });
+
+  it('hides the stop button once the turn has ENDED (provider error)', () => {
+    renderInputBar();
+    act(() => { capturedDispatch!({ type: 'SESSION_INIT', sessionId: 'sess-1' }); });
+    act(() => {
+      capturedDispatch!({ type: 'USER_PROMPT', sessionId: 'sess-1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      capturedDispatch!({ type: 'NATIVE_SESSION_ERROR', sessionId: 'sess-1', message: 'boom' });
     });
     expect(screen.queryByRole('button', { name: 'Stop generating' })).not.toBeInTheDocument();
   });

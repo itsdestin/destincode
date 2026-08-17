@@ -45,14 +45,65 @@ describe('useStreamingGate', () => {
     expect(result.current.gate).toBe(true);
   });
 
-  it('flips back false when attentionState leaves ok, even while still thinking', () => {
+  // Fix (I2, whole-branch review 2026-08-16). This case used to assert the
+  // OPPOSITE — that any non-'ok' state hid the Stop button. That was only ever
+  // right because 'stuck' was unreachable for a native session; the stall work
+  // made it the stage-1 warning state, so the assertion started describing a
+  // regression instead of a rule. A warned turn is still generating.
+  it('STAYS true through the stall warning (stuck) — the turn is still running', () => {
     const { result } = renderHook(useHarness, { wrapper: Providers });
     act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
     act(() => {
       result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
     });
     act(() => {
-      result.current.dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId: 's1', state: 'stuck' });
+      result.current.dispatch({
+        type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: 's1',
+        stallWarning: { retryInMs: 15_000, willRetry: false },
+      });
+    });
+    expect(result.current.gate).toBe(true);
+  });
+
+  // The parked card carries its own Stop, but the composer's must ALSO stay —
+  // it is the control a phone user (no ESC key) already knows where to find,
+  // and the card can be scrolled off screen while the composer never is.
+  it('STAYS true while the turn is parked (stalled)', () => {
+    const { result } = renderHook(useHarness, { wrapper: Providers });
+    act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
+    act(() => {
+      result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      result.current.dispatch({
+        type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: 's1', stalled: true,
+      });
+    });
+    expect(result.current.gate).toBe(true);
+  });
+
+  // Unchanged behavior, pinned so the exclusion list can't be emptied by
+  // accident: a turn that has ENDED has nothing left to stop.
+  it('is false once the provider errors — the turn is over', () => {
+    const { result } = renderHook(useHarness, { wrapper: Providers });
+    act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
+    act(() => {
+      result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      result.current.dispatch({ type: 'NATIVE_SESSION_ERROR', sessionId: 's1', message: 'boom' });
+    });
+    expect(result.current.gate).toBe(false);
+  });
+
+  it('is false once the session process exits — the turn is over', () => {
+    const { result } = renderHook(useHarness, { wrapper: Providers });
+    act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
+    act(() => {
+      result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      result.current.dispatch({ type: 'SESSION_PROCESS_EXITED', sessionId: 's1', exitCode: 1 });
     });
     expect(result.current.gate).toBe(false);
   });

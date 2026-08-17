@@ -124,8 +124,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // streaming token/tool delta, just to watch two booleans. useStreamingGate
   // is a derived cached selector (useSessionAttention.ts idiom) whose
   // getSnapshot returns a primitive, so useSyncExternalStore skips the
-  // re-render whenever the gate itself hasn't flipped. Same visibility
-  // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
+  // re-render whenever the gate itself hasn't flipped. The predicate is
+  // "a turn is in flight and has not ended" — deliberately NOT
+  // `attentionState === 'ok'`, which used to hide the button for the whole
+  // stall countdown (see useStreamingGate.ts).
   const showStop = useStreamingGate(sessionId);
 
   // Per-session draft store — keeps input text and attachments separate
