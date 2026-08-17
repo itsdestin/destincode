@@ -41,8 +41,36 @@ describe('resolveModelBrand', () => {
     expect(resolveModelBrand('moonshot-v1-8k')?.color).toBe('var(--brand-kimi)');
   });
 
+  it('detects DeepSeek models', () => {
+    expect(resolveModelBrand('deepseek/deepseek-r1')?.icon).toBe('deepseek');
+    expect(resolveModelBrand('deepseek-chat')?.icon).toBe('deepseek');
+    expect(resolveModelBrand('deepseek-v3')?.color).toBe('var(--brand-deepseek)');
+  });
+
+  it('detects Meta / Llama models', () => {
+    expect(resolveModelBrand('meta-llama/llama-3-70b-instruct')?.icon).toBe('meta');
+    expect(resolveModelBrand('llama-3.3-70b')?.icon).toBe('meta');
+    expect(resolveModelBrand('meta-llama/llama-4')?.color).toBe('var(--brand-meta)');
+  });
+
+  it('detects Mistral / Codestral models', () => {
+    expect(resolveModelBrand('mistral/codestral-2501')?.icon).toBe('mistral');
+    expect(resolveModelBrand('mistral-large-2411')?.icon).toBe('mistral');
+    expect(resolveModelBrand('pixtral-12b')?.color).toBe('var(--brand-mistral)');
+  });
+
+  it('detects Perplexity models', () => {
+    expect(resolveModelBrand('perplexity/sonar-reasoning')?.icon).toBe('perplexity');
+    expect(resolveModelBrand('sonar-pro')?.color).toBe('var(--brand-perplexity)');
+  });
+
+  it('detects Cohere models', () => {
+    expect(resolveModelBrand('cohere/command-r-plus')?.icon).toBe('cohere');
+    expect(resolveModelBrand('command-r')?.color).toBe('var(--brand-cohere)');
+  });
+
   it('falls back to null for unrecognized models', () => {
-    expect(resolveModelBrand('meta-llama/llama-3-8b')).toBeNull();
+    expect(resolveModelBrand('custom-endpoint-unknown-model-xyz')).toBeNull();
     expect(resolveModelBrand(undefined)).toBeNull();
   });
 });

@@ -33,7 +33,19 @@ export interface ModelBrand {
   icon?: ProviderIconKey;
 }
 
-export type ProviderIconKey = 'openai' | 'anthropic' | 'claudecode' | 'google' | 'qwen' | 'grok' | 'kimi';
+export type ProviderIconKey =
+  | 'openai'
+  | 'anthropic'
+  | 'claudecode'
+  | 'google'
+  | 'qwen'
+  | 'grok'
+  | 'kimi'
+  | 'deepseek'
+  | 'meta'
+  | 'mistral'
+  | 'cohere'
+  | 'perplexity';
 
 // --- Brand palettes --------------------------------------------------------
 //
@@ -53,6 +65,16 @@ const GOOGLE_COLOR = 'var(--brand-google)';
 const GROK_COLOR = 'var(--brand-grok)';
 /** Kimi / Moonshot cyan-teal — adaptive CSS variable. */
 const KIMI_COLOR = 'var(--brand-kimi)';
+/** DeepSeek signature blue — adaptive CSS variable. */
+const DEEPSEEK_COLOR = 'var(--brand-deepseek)';
+/** Meta / Llama blue — adaptive CSS variable. */
+const META_COLOR = 'var(--brand-meta)';
+/** Mistral signature orange — adaptive CSS variable. */
+const MISTRAL_COLOR = 'var(--brand-mistral)';
+/** Cohere coral/amber — adaptive CSS variable. */
+const COHERE_COLOR = 'var(--brand-cohere)';
+/** Perplexity teal — adaptive CSS variable. */
+const PERPLEXITY_COLOR = 'var(--brand-perplexity)';
 
 // --- Detection patterns ----------------------------------------------------
 //
@@ -102,6 +124,16 @@ const BRAND_RULES: BrandRule[] = [
     ],
   },
   {
+    color: DEEPSEEK_COLOR,
+    brandName: 'DeepSeek',
+    icon: 'deepseek',
+    idPatterns: [
+      /deepseek/i,
+      /\br1\b/i,
+      /\bv3\b/i,
+    ],
+  },
+  {
     color: GOOGLE_COLOR,
     brandName: 'Google',
     icon: 'google',
@@ -124,6 +156,27 @@ const BRAND_RULES: BrandRule[] = [
     ],
   },
   {
+    color: MISTRAL_COLOR,
+    brandName: 'Mistral',
+    icon: 'mistral',
+    idPatterns: [
+      /mistral/i,
+      /mixtral/i,
+      /codestral/i,
+      /pixtral/i,
+      /ministral/i,
+    ],
+  },
+  {
+    color: META_COLOR,
+    brandName: 'Meta',
+    icon: 'meta',
+    idPatterns: [
+      /meta-llama/i,
+      /\bllama/i,
+    ],
+  },
+  {
     color: GROK_COLOR,
     brandName: 'Grok',
     icon: 'grok',
@@ -141,6 +194,24 @@ const BRAND_RULES: BrandRule[] = [
     idPatterns: [
       /kimi/i,
       /moonshot/i,
+    ],
+  },
+  {
+    color: PERPLEXITY_COLOR,
+    brandName: 'Perplexity',
+    icon: 'perplexity',
+    idPatterns: [
+      /perplexity/i,
+      /sonar/i,
+    ],
+  },
+  {
+    color: COHERE_COLOR,
+    brandName: 'Cohere',
+    icon: 'cohere',
+    idPatterns: [
+      /cohere/i,
+      /command-r/i,
     ],
   },
 ];
