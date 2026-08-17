@@ -197,6 +197,20 @@ export class ProviderRegistry {
         // ensureRunning boots the engine on demand (idle-stopped or first use)
         // and its trackedFetch keeps the idle timer honest for every request.
         const base = await this.localEngine.ensureRunning();
+        // The router discovers GGUFs at BOOT and re-scans only when asked, so a
+        // model downloaded since then is a selectable picker row (K2's listing
+        // union) that the router has never heard of — the send 400s with
+        // "model not found", which reads as "your download is corrupt". This is
+        // the ONE chokepoint every local send crosses (create, mid-session swap,
+        // remote, retry): ensureServable re-scans once and only reports false on
+        // a positive "the router listed its models and yours was not among
+        // them". A localhost GET against a multi-second generation is free.
+        if (!(await this.localEngine.ensureServable(binding.modelId))) {
+          throw new Error(
+            `The local engine could not find the model file for '${binding.modelId}'. `
+            + 'It may have been deleted, moved, or renamed — re-download it in Settings → Providers → Local models.',
+          );
+        }
         // Live prefill progress (llama.cpp `return_progress`). Only wrap when a
         // consumer is listening — an unwatched tee would copy every byte of every
         // response for nothing. See prefill-progress.ts for why this rides a fetch

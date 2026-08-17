@@ -457,3 +457,147 @@ describe('port→PID parsers', () => {
     expect(parseNetstatListenerPid(out, 4321)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Router rescan (GET /models?reload=1). The router discovers GGUFs at BOOT and
+// re-scans --models-dir ONLY when asked: its need_reload dirty flag is set just
+// for downloads the ROUTER itself started, and ours are app-side. Verified
+// against b9992 (libllama-server-impl.so + upstream tools/server/server-models.cpp)
+// on 2026-08-16, after a real send 400'd on a model that had been on disk for
+// half an hour. Depth: docs/engine-dependencies.md.
+// ---------------------------------------------------------------------------
+describe('EngineSupervisor — router rescan', () => {
+  /** fetch stub whose router-known model set can be swapped mid-test. */
+  function routerWith(known: string[]) {
+    const state = { known: [...known] };
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: any) => {
+      const u = String(url);
+      calls.push(`${init?.method ?? 'GET'} ${u.slice(u.indexOf('/', 8))}`);
+      if (u.endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (u.includes('/models')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ data: state.known.map((id) => ({ id, status: { value: 'unloaded' } })) }),
+        } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    return { fetchImpl, calls, state };
+  }
+
+  const reloadCalls = (calls: string[]) => calls.filter((c) => c.includes('reload'));
+
+  it('refreshModels asks the router to re-scan: GET /models?reload=1', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl, calls } = routerWith(['boot-model-Q4_K_M']);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    await sup.refreshModels();
+    expect(reloadCalls(calls)).toEqual(['GET /models?reload=1']);
+  });
+
+  it('refreshModels is a no-op when the engine is not running (the next boot scans the dir anyway)', async () => {
+    const { fetchImpl, calls } = routerWith([]);
+    sup = makeSupervisor(fetchImpl);
+    await sup.refreshModels();
+    expect(calls).toEqual([]);
+  });
+
+  // The load-bearing guard. reload=1 is a WRITE: upstream load_models() unloads a
+  // running model whose source changed or vanished. On a 1.5s poll that would be a
+  // reconciliation pass every tick, forever.
+  it('the background model poll NEVER sends reload=1', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl, calls } = routerWith(['a-Q4_K_M']);
+    sup = makeSupervisor(fetchImpl, { modelPollMs: 5, modelPollLoadingMs: 5 });
+    await sup.ensureRunning();
+    await new Promise((r) => setTimeout(r, 60)); // several poll ticks
+    expect(calls.filter((c) => c.includes('/models')).length).toBeGreaterThan(1); // it really did poll
+    expect(reloadCalls(calls)).toEqual([]);
+  });
+
+  it('ensureServable does NOT re-scan when the router already serves the model', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl, calls } = routerWith(['boot-model-Q4_K_M']);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    expect(await sup.ensureServable('boot-model-Q4_K_M')).toBe(true);
+    expect(reloadCalls(calls)).toEqual([]);
+  });
+
+  it('ensureServable re-scans when the model is on disk but unknown to the router, and reports it servable', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl, calls, state } = routerWith(['boot-model-Q4_K_M']);
+    // The rescan is what makes the post-boot download visible to the router.
+    fetchImpl.mockImplementation((async (url: string, init?: any) => {
+      const u = String(url);
+      calls.push(`${init?.method ?? 'GET'} ${u.slice(u.indexOf('/', 8))}`);
+      if (u.endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (u.includes('/models')) {
+        if (u.includes('reload')) state.known.push('downloaded-later-Q4_K_M');
+        return {
+          ok: true, status: 200,
+          json: async () => ({ data: state.known.map((id) => ({ id, status: { value: 'unloaded' } })) }),
+        } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    }) as any);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    expect(await sup.ensureServable('downloaded-later-Q4_K_M')).toBe(true);
+    expect(reloadCalls(calls)).toEqual(['GET /models?reload=1']);
+  });
+
+  it('ensureServable reports FALSE when even a re-scan does not surface the model', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl } = routerWith(['boot-model-Q4_K_M']);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    // No lie: the caller needs a real answer so it can say something accurate.
+    expect(await sup.ensureServable('never-existed-Q4_K_M')).toBe(false);
+  });
+
+  it('ensureServable re-scans at most once for concurrent callers (single-flight)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const { fetchImpl, calls, state } = routerWith(['boot-model-Q4_K_M']);
+    fetchImpl.mockImplementation((async (url: string, init?: any) => {
+      const u = String(url);
+      calls.push(`${init?.method ?? 'GET'} ${u.slice(u.indexOf('/', 8))}`);
+      if (u.endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (u.includes('/models')) {
+        if (u.includes('reload')) {
+          await new Promise((r) => setTimeout(r, 20)); // a real scan takes a beat
+          if (!state.known.includes('downloaded-later-Q4_K_M')) state.known.push('downloaded-later-Q4_K_M');
+        }
+        return {
+          ok: true, status: 200,
+          json: async () => ({ data: state.known.map((id) => ({ id, status: { value: 'unloaded' } })) }),
+        } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    }) as any);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    const all = await Promise.all([
+      sup.ensureServable('downloaded-later-Q4_K_M'),
+      sup.ensureServable('downloaded-later-Q4_K_M'),
+      sup.ensureServable('downloaded-later-Q4_K_M'),
+    ]);
+    expect(all).toEqual([true, true, true]);
+    expect(reloadCalls(calls)).toEqual(['GET /models?reload=1']);
+  });
+
+  it('ensureServable does not block a send when the router is unreachable — it assumes servable', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      throw new Error('ECONNRESET');
+    });
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    // Failing OPEN is deliberate: a probe that can't answer must not be the thing
+    // that stops a send the engine would have served fine.
+    expect(await sup.ensureServable('boot-model-Q4_K_M')).toBe(true);
+  });
+});

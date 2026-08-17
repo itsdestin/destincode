@@ -119,6 +119,7 @@ describe('ProviderRegistry', () => {
         installed: () => true,
         ensureRunning: async () => 'http://127.0.0.1:9999/v1',
         fetchImpl: () => fetch,
+        ensureServable: async () => true, // fails OPEN in production too
         ...overrides,
       };
     }
@@ -147,6 +148,27 @@ describe('ProviderRegistry', () => {
       await reg.init();
       await expect(reg.languageModel({ providerId: 'local', modelId: 'x' }))
         .rejects.toThrow(/one-time engine install/);
+    });
+
+    // The router discovers GGUFs at boot and re-scans only when asked, so a model
+    // downloaded since is a selectable picker row it has never heard of. This is
+    // the chokepoint every local send crosses — create, mid-session swap, remote.
+    it('languageModel(local): asks whether the router can actually serve the model', async () => {
+      const servable = vi.fn(async () => true);
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook({ ensureServable: servable }));
+      await reg.init();
+      await reg.languageModel({ providerId: 'local', modelId: 'tiny-Q4_K_M' });
+      expect(servable).toHaveBeenCalledWith('tiny-Q4_K_M');
+    });
+
+    it('languageModel(local): an unservable model fails with the REAL cause, not the router 400', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook({ ensureServable: async () => false }));
+      await reg.init();
+      // The raw router error is `model 'X' not found (provider error 400)`, which
+      // reads as "your 29 GB download is corrupt" and invites a needless
+      // re-download. Name the model, name the real cause, name the remedy.
+      await expect(reg.languageModel({ providerId: 'local', modelId: 'gone-Q4_K_M' }))
+        .rejects.toThrow(/could not find the model file for 'gone-Q4_K_M'.*re-download/s);
     });
 
     it('languageModel(local): with NO hook, keeps Plan A behavior (not-available error)', async () => {
