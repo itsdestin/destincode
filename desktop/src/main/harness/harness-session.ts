@@ -441,9 +441,13 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
  *  IPC, the remote WebSocket, and the Android bridge for no extra information.
  *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
 const TOOL_PREPARING_EMIT_MS = 300;
-// consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
-// so the step can be safely re-run once (re-running after content streamed would
-// duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
+// consumeStep's retry sentinel. TWO producers return it, safe for different
+// reasons: (1) the AUTOMATIC retry, when the stream stalled with NOTHING
+// streamed yet on the first attempt (Clock 1) — safe because there is nothing
+// on screen or in emittedPartIds to collide with; (2) the MANUAL Retry, fired
+// from a parked (Clock 2) step where content already streamed — safe ONLY
+// because that branch emits `dropPart` first, erasing the abandoned text
+// before the re-run's deltas can land on the same partIds and merge with it.
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -1150,6 +1154,22 @@ export class HarnessSession extends EventEmitter {
    *  RETRIED from scratch, which is what made progress appear to reset itself
    *  (Destin, 2026-07-26). */
   private rearmStallWatchdog: (() => void) | null = null;
+  /** True once THIS turn has parked on a stall the user was told about.
+   *  WHY it outlives the step: a manual Retry re-runs the step from the top,
+   *  which lands back on the FIRST-BYTE clock (Clock 1). Without this flag a
+   *  retry against a dead provider would sit for the full prefill budget and
+   *  then kill the turn with Clock 1's "didn't begin responding" error — the
+   *  exact ending this design exists to remove, arriving four minutes after the
+   *  user asked for the opposite. Cleared at the start of every turn.
+   *  Its one LIVE effect already, before any Retry button exists: inside a
+   *  turn that has already parked once, a LATER step's own Clock-1 stall
+   *  (e.g. a fresh tool-call step that never gets a first byte) parks too
+   *  instead of ending the turn — see the `willRetry` guard in armWatchdog. */
+  private turnEverParked = false;
+  /** Resolver for the CURRENT step's manual-retry signal, installed when the
+   *  step parks and cleared the moment it un-parks or the step ends. Null means
+   *  nothing is parked, which is the entire race guard for the Retry button. */
+  private resolveRetry: (() => void) | null = null;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
     // can already see the result of; the notice is a pre-output affordance only.
@@ -1578,6 +1598,7 @@ export class HarnessSession extends EventEmitter {
       ? { role: 'user', content: [{ type: 'text', text }, ...imageParts] } as any
       : { role: 'user', content: text });
     this.abort = new AbortController();
+    this.turnEverParked = false;   // cleared at the start of every turn — see field WHY
     this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
     const startedAt = Date.now();
@@ -1597,7 +1618,9 @@ export class HarnessSession extends EventEmitter {
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
     // (earlier steps already pushed their assistant + tool messages). Reset per
-    // step; on an immediate-error retry it stays '' so no duplicate is pushed.
+    // step; an immediate-error retry never touches it (it emits nothing before
+    // it throws), and a manual Retry (runStreamOnce's 'retry' branch) clears it
+    // itself via reportPartial('') — see that branch for why.
     let partialAssistantText = '';
 
     try {
@@ -1638,10 +1661,12 @@ export class HarnessSession extends EventEmitter {
         // pruning can't get under budget. Inert (returns immediately) below the
         // trigger, so the existing loop behavior is unchanged for normal turns.
         await this.maybeCompact(model, lastInputTokens);
-        // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
-        // retry after content was already emitted can cosmetically duplicate that
-        // partial in a session-error's history push — accepted, since the
-        // required immediate-error retry emits nothing before it throws.
+        // Reset per STEP (not per retry attempt inside withRetry): the required
+        // immediate-error retry never needs this reset itself, since it emits
+        // nothing before it throws. A manual Retry is the opposite case — it CAN
+        // emit before parking — so that branch clears this on its own
+        // (reportPartial('') in runStreamOnce's 'retry' case) rather than relying
+        // on this per-step reset to have caught it.
         partialAssistantText = '';
         // One step = one streamText consumption. withRetry wraps the whole
         // CONSUMPTION (not just the streamText call): the SDK surfaces provider
@@ -1835,17 +1860,27 @@ export class HarnessSession extends EventEmitter {
     aiTools: Record<string, any>,
     reportPartial: (text: string) => void,
   ): Promise<StepResult> {
-    // At most ONE auto-retry: attempt 0 stalls with nothing streamed →
-    // runStreamOnce returns STALL_RETRY → we re-run. A stall on attempt 1 (or a
-    // stall after content streamed) is fatal (StreamStallError), so the loop can
-    // iterate at most twice — runStreamOnce only returns STALL_RETRY when it was
-    // told this is the first attempt.
+    // Attempt 0 stalls with nothing streamed → runStreamOnce returns
+    // STALL_RETRY → we re-run. That AUTOMATIC retry is available once per step:
+    // every attempt after the first passes isFirstAttempt=false, so a later
+    // silent stall never re-runs behind the user's back. What it does instead
+    // is decided by the park guard in armWatchdog, which parks when EITHER of
+    // these is true:
+    //   - this attempt streamed something before going quiet (sawFirstChunk) —
+    //     Clock 2, and it does NOT matter whether the turn parked before; or
+    //   - the turn has already parked once (turnEverParked), which is what
+    //     stops a manually-retried step from dying on the first-byte clock.
+    // Neither true → Clock 1 alone, and the turn still ends with the
+    // "didn't begin responding" error.
+    // The loop is no longer bounded at two iterations — a MANUAL Retry also
+    // returns STALL_RETRY, and the user may press it as often as they like.
     for (let attempt = 0; ; attempt++) {
       const outcome = await this.runStreamOnce(model, aiTools, reportPartial, attempt === 0);
       if (outcome !== STALL_RETRY) return outcome;
-      // Auto-retrying after a silent stall: clear the on-screen stall warning
-      // back to a plain "Thinking" heartbeat so the countdown doesn't linger at
-      // 0 while the fresh stream spins up.
+      // Re-running after EITHER a silent stall (nothing streamed) or a manual
+      // Retry (content streamed, then erased via dropPart): clear the on-screen
+      // stall warning back to a plain "Thinking" heartbeat so the countdown
+      // doesn't linger at 0 while the fresh stream spins up.
       this.emitEvent('assistant-thinking', {});
     }
   }
@@ -1952,18 +1987,50 @@ export class HarnessSession extends EventEmitter {
     let sawFirstChunk = false;
     let firstChunkAt = 0;   // when generation actually began (see StepResult.generationMs)
     let warned = false;
+    let parked = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
     const stallPromise = new Promise<'stall'>((resolve) => { resolveStall = resolve; });
+    // Manual-retry racer — a SEPARATE signal from abortSignal on purpose: abort
+    // ends the whole turn, which is the opposite of what Retry means.
+    let signalRetry!: () => void;
+    const retryPromise = new Promise<'retry'>((resolve) => { signalRetry = () => resolve('retry'); });
     const armWatchdog = () => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
         warned = true;
         // willRetry: we can safely re-run only if nothing streamed AND this is
-        // the first attempt — otherwise the countdown ends in an error, not a retry.
+        // the first attempt (Clock 1, first try). When false, the guard below
+        // decides what happens instead: a PARK if this is Clock 2 (something
+        // streamed, then went quiet) or the turn has already parked once
+        // (turnEverParked) — otherwise (Clock 1 alone, never parked) the
+        // countdown still ends the turn with a session-error.
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
-        stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
+        stageTimer = setTimeout(() => {
+          // PARK — but ONLY on Clock 2 (sawFirstChunk: the model streamed
+          // something, then went quiet — a genuine mid-stream stall) or once
+          // this turn has already parked once (turnEverParked: the user was
+          // shown the card and hit Retry, so that retry must never die on its
+          // own, even if it lands back on Clock 1). Clock 1 on its own
+          // (nothing has streamed yet, this is still the first attempt) stays
+          // OUT OF SCOPE for this project: a model that never sent a first
+          // byte hasn't "stalled" the way this feature means it, it just
+          // never began, so once its one silent auto-retry is spent the turn
+          // still ends with the "didn't begin responding" session-error.
+          // Do NOT resolve the stall race for the park case: nothing is torn
+          // down, the reader stays open, and a chunk arriving minutes later
+          // still lands in the loop below and continues the turn. This
+          // return IS the feature.
+          if ((sawFirstChunk || this.turnEverParked) && !willRetry) {
+            parked = true;
+            this.turnEverParked = true;
+            this.resolveRetry = signalRetry;
+            this.emitEvent('assistant-thinking', { stalled: true });
+            return;
+          }
+          resolveStall('stall');
+        }, countdownMs);
       }, sawFirstChunk ? warnMs : firstChunkMs);
     };
     this.rearmStallWatchdog = armWatchdog;
@@ -1989,11 +2056,15 @@ export class HarnessSession extends EventEmitter {
     // STEP, not per session: a retry re-enters this function with a fresh map.
     // Display-only — the card the renderer draws from this never reaches disk.
     const preparing = new Map<string, { toolName: string; chars: number; lastEmitAt: number }>();
+    // Every streaming part id THIS attempt has written. A manual Retry hands
+    // these to the renderer and the store so the abandoned text is removed
+    // rather than appended to.
+    const emittedPartIds = new Set<string>();
 
     try {
       while (true) {
         const nextPromise = iterator.next();
-        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise]);
+        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise, retryPromise]);
         if (chunk === 'aborted') {
           // The abort won the race; swallow the pending read's late rejection and
           // release the underlying reader/socket (a provider that IGNORES the abort
@@ -2003,6 +2074,35 @@ export class HarnessSession extends EventEmitter {
           this.interrupted = true;
           interrupted = true;
           break;
+        }
+        if (chunk === 'retry') {
+          // Manual Retry from the stalled card. Same teardown as the stall path
+          // — the reader really is dead this time, the user said so.
+          nextPromise.catch(() => {});
+          iterator.return?.().catch(() => {});
+          void Promise.resolve(result.usage).catch(() => {});
+          void Promise.resolve(result.finishReason).catch(() => {});
+          this.resolveRetry = null;
+          // Retract the erased text from the model's own memory, not just the
+          // screen: partialAssistantText is reset per STEP (not per attempt), so
+          // without this, a re-run that throws before emitting anything would
+          // leave send()'s catch pushing the ABANDONED half-sentence — text the
+          // user just watched get erased via dropPart — silently back into
+          // this.history as an assistant message.
+          reportPartial('');
+          // Withdraw any preparing card: the step re-runs INSIDE the same turn,
+          // so endTurn's reaping never fires and the card would spin forever
+          // beside the one the re-run mints. (Same reason as the auto-retry path.)
+          for (const [prepId, entry] of preparing) {
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+            });
+          }
+          // Erase what the abandoned attempt put on screen BEFORE re-running.
+          if (emittedPartIds.size > 0) {
+            this.emitEvent('assistant-thinking', { dropPart: { partIds: [...emittedPartIds] } });
+          }
+          return STALL_RETRY;
         }
         if (chunk === 'stall') {
           // No chunk for the full warn+countdown window. Release the dead reader
@@ -2052,8 +2152,13 @@ export class HarnessSession extends EventEmitter {
           if (!sawFirstChunk) firstChunkAt = Date.now();
           sawFirstChunk = true;
         }
-        // A real chunk arrived → clear any shown warning and re-arm the watchdog.
-        if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
+        // A real chunk arrived → clear any shown warning/card and re-arm.
+        if (warned || parked) {
+          warned = false;
+          parked = false;
+          this.resolveRetry = null;
+          this.emitEvent('assistant-thinking', {});
+        }
         armWatchdog();
         const part = chunk.value;
         switch (part.type) {
@@ -2066,6 +2171,7 @@ export class HarnessSession extends EventEmitter {
             // partId = the SDK's part id (fresh per streamText call). A tool-group
             // segment always separates consecutive text STEPS in the reducer, so a
             // repeated id across steps can't wrongly merge two bubbles.
+            emittedPartIds.add(part.id ?? 'text-0');
             this.emitEvent('assistant-text', { text: t, partId: part.id ?? 'text-0' });
             break;
           }
@@ -2076,6 +2182,7 @@ export class HarnessSession extends EventEmitter {
             outputChars += t.length;
             // assistant-thinking WITH data.text → the reducer's reasoning path;
             // payload-less would stay a heartbeat.
+            emittedPartIds.add(part.id ?? 'reasoning-0');
             this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
             break;
           }
@@ -2164,6 +2271,9 @@ export class HarnessSession extends EventEmitter {
       // Stop late progress callbacks from re-arming a watchdog for a step that
       // has already ended (the tee outlives the iterator on an interrupt).
       this.rearmStallWatchdog = null;
+      // A step that has ended can never be retried — drop the resolver so a
+      // late click on a card the renderer has not torn down yet is a no-op.
+      this.resolveRetry = null;
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {
@@ -2398,6 +2508,22 @@ export class HarnessSession extends EventEmitter {
   interrupt(): void {
     this.interrupted = true;
     this.abort?.abort();
+  }
+
+  /** Manual Retry from the stalled card. Re-runs the PARKED step — it does not
+   *  re-send the user's message, so every completed tool call and its result
+   *  earlier in this turn stays exactly where it is.
+   *
+   *  Returns false when nothing is parked: the stream resumed between the click
+   *  and this call, so the card is already gone and the click means nothing.
+   *  That is the whole race guard — a parked step is either still listening
+   *  (the resolver is live) or has moved on (the resolver is null). */
+  retryStalledStep(): boolean {
+    const resolve = this.resolveRetry;
+    if (!resolve) return false;
+    this.resolveRetry = null;
+    resolve();
+    return true;
   }
 
   /** Queue a mid-run course correction (spec §3). Drains as a history-only

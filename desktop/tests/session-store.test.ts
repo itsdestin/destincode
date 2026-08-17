@@ -92,6 +92,63 @@ describe('SessionStore', () => {
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
 
+  // The parked-turn card is display-only in exactly the same way the stall
+  // warning is: not persisted, and NOT a turn boundary. This matters more than
+  // it did before — a parked turn's stream may still resume into the same part.
+  it('a stalled card heartbeat is not persisted and does NOT flush the open part', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Hel', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { stalled: true }, 'w1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'lo!', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
+  });
+
+  it('dropPart discards the buffered open part instead of writing it', async () => {
+    // Manual Retry: the abandoned half-sentence must never reach the JSONL, or
+    // a resume would replay text the user watched disappear.
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Now I will', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['p1'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'recovered', partId: 'p2' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'recovered', partId: 'p2' });
+  });
+
+  it('dropPart for a DIFFERENT partId leaves the open part alone', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'keep me', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['other'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'keep me', partId: 'p1' });
+  });
+
+  // Reproduces the LIVE defect verbatim: a manual Retry re-runs the stalled
+  // step, and the SDK's fallback partId ('text-0') means the re-run's first
+  // delta usually arrives with the SAME partId as the abandoned attempt. Before
+  // the fix, dropPart hit the display-only early return without clearing the
+  // buffer, so this same-partId delta matched the stale buffered entry and got
+  // CONCATENATED onto it — on this commit, that persisted
+  // "Now I will dispatchrecovered" to disk. The buffer must be gone by the
+  // time this delta arrives, so the new delta starts a fresh part instead of
+  // merging into the abandoned one.
+  it('a same-partId delta after dropPart persists only the new text, not the concatenation (live defect repro)', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Now I will dispatch', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['p1'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'recovered', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'recovered', partId: 'p1' });
+  });
+
   it('never persists a toolPreparing heartbeat, and does not flush the open part', async () => {
     // Partial tool arguments must not reach the JSONL — a resume would replay a
     // half-written file. The filter this relies on keys off "assistant-thinking

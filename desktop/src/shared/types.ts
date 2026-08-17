@@ -240,10 +240,35 @@ export interface TranscriptEvent {
      * streaming watchdog has seen NO chunk for STALL_WARNING_MS. Drives the
      * ThinkingIndicator's "taking a while… retrying" countdown. `willRetry` =
      * the harness will auto-retry the step when the countdown ends (nothing had
-     * streamed yet); false = it will surface a session-error instead. A heartbeat
-     * WITHOUT this field means activity resumed and clears the warning.
+     * streamed yet, first attempt). false ends the countdown one of two ways:
+     * on Clock 1 alone (nothing ever streamed, first attempt) with a
+     * session-error; on Clock 2 (something already streamed) or a turn that
+     * has already parked once, the turn PARKS instead — see `stalled` below.
+     * A heartbeat WITHOUT this field means activity resumed and clears the
+     * warning.
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
+    /**
+     * Native runtime only. The mid-stream watchdog gave up waiting and the turn
+     * is now PARKED: the stream reader is still open, nothing has been torn
+     * down, and the turn ends only when a chunk arrives or the user presses
+     * Retry / Stop. Display-only (no text, no partId) so SessionStore drops it.
+     *
+     * Deliberately a bare `true` and not a timestamp: the renderer stamps its
+     * own clock on first receipt, so a remote client counting up never inherits
+     * clock skew from the host.
+     */
+    stalled?: true;
+    /**
+     * Native runtime only. Discard these streaming parts — the attempt that
+     * wrote them is being abandoned by a manual Retry, and the re-run would
+     * otherwise APPEND to the same bubble (the SDK's part id falls back to the
+     * literal 'text-0', so a repeat is the likely case, not a corner case).
+     * This is why the automatic retry has always refused to run after content
+     * streamed; the manual one is allowed to, because it erases first.
+     * Display-only (no text, no partId) — never persisted.
+     */
+    dropPart?: { partIds: string[] };
     /**
      * Native runtime only. Emitted on `assistant-thinking` the moment a step's
      * stream opens, BEFORE any token arrives, so the UI can say the model is
@@ -1297,6 +1322,10 @@ export const IPC = {
   // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // Stalled-turn Retry (fire-and-forget like interrupt above). Re-runs the ONE
+  // parked step; unlike interrupt it never cascades to specialist children or
+  // cancels pending permission asks.
+  NATIVE_RETRY: 'native:retry',
   // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
   // the caller needs the {ok, reason} result to explain a refusal.
   NATIVE_COMPACT: 'native:compact',

@@ -264,6 +264,8 @@ declare global {
         // draining/sent) or the session isn't live — never throws.
         queueRemove: (sessionId: string, queueId: string) => Promise<boolean>;
         interrupt: (sessionId: string) => void;
+        // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+        retry: (sessionId: string) => void;
         // M3 item 2: user-initiated /compact. Resolves a coded result rather than
         // a bare boolean so a refusal can be explained to the user rather than
         // swallowed — `reason` is one of turn-in-flight | nothing-to-compact |

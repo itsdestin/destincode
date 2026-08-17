@@ -2544,6 +2544,11 @@ export function registerIpcHandlers(
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
   });
+  // Stalled-turn Retry — fire-and-forget, same shape as interrupt above. The
+  // host no-ops when nothing is parked (stream already resumed).
+  ipcMain.on(IPC.NATIVE_RETRY, (_e, { sessionId }: { sessionId: string }) => {
+    nativeHost.retryStalledStep(sessionId);
+  });
   // User-initiated /compact for a native session. Never throws across IPC: a
   // failure returns a coded reason so the renderer can surface a specific,
   // accurate message instead of a guessed one (docs/error-message-standards.md).
