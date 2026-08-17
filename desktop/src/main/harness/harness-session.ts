@@ -1974,14 +1974,21 @@ export class HarnessSession extends EventEmitter {
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
         stageTimer = setTimeout(() => {
-          // PARK: any stall that isn't covered by the single silent auto-retry
-          // above now parks instead of ending the turn — that includes a
-          // mid-stream stall (sawFirstChunk) AND a second, still-in-prefill
-          // stall with the retry already spent (Clock 1 twice). Do NOT resolve
-          // the stall race: nothing is torn down, the reader stays open, and a
-          // chunk arriving minutes later still lands in the loop below and
-          // continues the turn. This return IS the feature.
-          if (!willRetry) {
+          // PARK — but ONLY on Clock 2 (sawFirstChunk: the model streamed
+          // something, then went quiet — a genuine mid-stream stall) or once
+          // this turn has already parked once (turnEverParked: the user was
+          // shown the card and hit Retry, so that retry must never die on its
+          // own, even if it lands back on Clock 1). Clock 1 on its own
+          // (nothing has streamed yet, this is still the first attempt) stays
+          // OUT OF SCOPE for this project: a model that never sent a first
+          // byte hasn't "stalled" the way this feature means it, it just
+          // never began, so once its one silent auto-retry is spent the turn
+          // still ends with the "didn't begin responding" session-error.
+          // Do NOT resolve the stall race for the park case: nothing is torn
+          // down, the reader stays open, and a chunk arriving minutes later
+          // still lands in the loop below and continues the turn. This
+          // return IS the feature.
+          if ((sawFirstChunk || this.turnEverParked) && !willRetry) {
             parked = true;
             this.turnEverParked = true;
             this.emitEvent('assistant-thinking', { stalled: true });

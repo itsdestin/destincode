@@ -139,23 +139,44 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(types(events)).not.toContain('session-error');
   });
 
-  it('stall on BOTH attempts: the auto-retry is spent, so the second stall PARKS', async () => {
+  it('stall on BOTH the first attempt and the retry: second warning is non-retry, ends in session-error', async () => {
     const model = modelFromStreams([() => hangingStream(), () => hangingStream(), () => hangingStream()]);
     const session = new HarnessSession(makeOpts({}), async () => model as any);
     const events = collect(session);
-    const sent = session.send('go');
+    await session.send('go');
 
-    // Attempt 0 stalls with nothing streamed → silent auto-retry (unchanged).
-    // Attempt 1 stalls with the retry spent → the card, not an error.
-    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
     const warns = stallWarnings(events);
     expect(warns).toHaveLength(2);
-    expect(warns[0].data.stallWarning!.willRetry).toBe(true);
-    expect(warns[1].data.stallWarning!.willRetry).toBe(false);
-    expect(events.filter((e) => e.type === 'session-error')).toHaveLength(0);
+    expect(warns[0].data.stallWarning!.willRetry).toBe(true);   // first: retry promised
+    expect(warns[1].data.stallWarning!.willRetry).toBe(false);  // retry also stalled: no more retries
+    const errs = events.filter((e) => e.type === 'session-error');
+    expect(errs).toHaveLength(1);
+    // WORDING CHANGED 2026-07-26, deliberately. Every attempt here uses
+    // hangingStream(), so the model never produced a single part — it did not
+    // "stop responding", it never began. Claiming otherwise sends the user
+    // hunting a provider fault that isn't there, and on a local model the real
+    // cause is usually just a long prompt. The mid-stream phrasing is still
+    // pinned by the test below.
+    expect(errs[0].data.text).toMatch(/didn't begin responding/i);
+    expect(errs[0].data.text).not.toMatch(/stopped responding/i);
+    expect(types(events)).not.toContain('turn-complete');
+  });
 
-    session.interrupt();
-    await sent;
+  it('a stall with NOTHING ever streamed still ENDS the turn — Clock 1 is out of scope', async () => {
+    // Two attempts, both hangingStream() with zero chunks — every wait here is
+    // Clock 1 ("nothing has arrived yet", still reading the prompt), never
+    // Clock 2 ("arrived, then went quiet"). This project's park behavior is
+    // deliberately scoped to Clock 2 only: a model that never sent a single
+    // byte hasn't "stalled" in the sense this card means, it just never began,
+    // so once the one silent auto-retry is spent, the turn must still END with
+    // the honest "didn't begin responding" error — not park and hang forever.
+    const model = modelFromStreams([() => hangingStream(), () => hangingStream()]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(types(events)).toContain('session-error');
+    expect(stalledCards(events)).toHaveLength(0);
   });
 
   it('a stall AFTER output has started still says the model STOPPED responding', () => {
