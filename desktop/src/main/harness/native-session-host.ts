@@ -2755,6 +2755,9 @@ export class NativeSessionHost extends EventEmitter {
         // rememberedFor by the id it was BUILT with, which is parentId here).
         askUser: childAskRouter({
           broker: this.broker, parentId, childId, agentType: specialist.id, title,
+          // Task 6: carried through so a routed ask's `specialist` payload
+          // lets the renderer nest the row under the right specialist card.
+          parentToolCallId,
           timeoutMs: this.specialistAskHoldMs,
           remember: (rule) => this.rememberRule(parentId, parent.cwd, rule),
         }),

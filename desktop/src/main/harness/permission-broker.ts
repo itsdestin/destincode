@@ -44,8 +44,11 @@ export interface AskRequest {
   raisedBy?: string;
   /** Rides the hook-event payload so the permission card can label which
    *  specialist raised the ask. Consuming this on the renderer side is a
-   *  follow-up task — this one only threads the data through structurally. */
-  specialist?: { childId: string; agentType: string; title: string };
+   *  follow-up task — this one only threads the data through structurally.
+   *  `parentToolCallId` (Task 6, 1c) is the Task-tool call that spawned this
+   *  specialist — the renderer needs it to nest the routed row under the
+   *  right specialist card instead of just labelling it. */
+  specialist?: { childId: string; agentType: string; title: string; parentToolCallId: string };
   /** Task 11: the exact permission-engine SUBJECT this ask is about (e.g. a
    *  Bash command string) — harness-session.ts already computes this via
    *  tool.permissionSubject(args) before calling askUser, but only THREADS it
@@ -226,6 +229,12 @@ export class PermissionBroker extends EventEmitter {
           entry.timer = undefined;
           entry.timedOut = true;
           resolve(onTimeout());
+          // WHY: the renderer's nested row must SAY the helper carried on
+          // (spec R3) — before 1c the flip was silent and the card looked
+          // unchanged. Emitted AFTER the PermissionRequest this same entry
+          // already sent (at ask()-time and every heartbeat since), so a
+          // listener sees the request before it sees the hold.
+          this.emit('hook-event', this.hookEventFor(entry, 'PermissionHeld'));
           // NOT deleted from `pending` — see PendingAsk.timedOut's own WHY.
           // It IS now unanswerable-by-the-turn though, so it stops heartbeating.
           this.syncReannounceTimer();
@@ -236,17 +245,31 @@ export class PermissionBroker extends EventEmitter {
     });
   }
 
-  /** The ONE place a PermissionRequest goes out, first time and every beat.
-   *  `payload` is shallow-copied per emit: the stored announcement is re-sent
+  /** The ONE place any hook-event about a pending ask is BUILT — the live
+   *  PermissionRequest announcement, its pendingEventsFor() replay, and the
+   *  PermissionHeld hold-flip all route through this so the four-field shape
+   *  (sessionId/type/payload/timestamp) is defined in exactly one place. WHY:
+   *  before this helper the same object literal was hand-built twice (once
+   *  per emit site) and this task would otherwise have made it a third —
+   *  a reviewer flagged that as the exact way the two would drift apart.
+   *  `payload` is a fresh copy per call: the stored announcement is reused
    *  indefinitely, so handing every listener the same object would let one
    *  in-process consumer's mutation rewrite what all later beats say. */
-  private emitAnnouncement(entry: PendingAsk): void {
-    this.emit('hook-event', {
+  private hookEventFor(entry: PendingAsk, type: 'PermissionRequest' | 'PermissionHeld'): HookEvent {
+    const payload = type === 'PermissionRequest'
+      ? entry.announcement.payload
+      : { _requestId: entry.announcement.payload._requestId };
+    return {
       sessionId: entry.announcement.sessionId,
-      type: entry.announcement.type,
-      payload: { ...entry.announcement.payload },
+      type,
+      payload: { ...payload },
       timestamp: Date.now(),
-    });
+    };
+  }
+
+  /** The ONE place a PermissionRequest goes out, first time and every beat. */
+  private emitAnnouncement(entry: PendingAsk): void {
+    this.emit('hook-event', this.hookEventFor(entry, 'PermissionRequest'));
   }
 
   /** Task 0 (ROADMAP #permissions, 2026-08-16): a renderer reload rebuilds
@@ -259,17 +282,16 @@ export class PermissionBroker extends EventEmitter {
    *  and, unlike the heartbeat, it deliberately includes TIMED-OUT entries:
    *  those are still "the ask stays answerable" (see PendingAsk.timedOut), so
    *  the reloaded window must show a card a late human answer can still hit,
-   *  even though nothing is stuck waiting on it. */
+   *  even though nothing is stuck waiting on it. A timed-out entry gets its
+   *  PermissionHeld pushed right after its PermissionRequest (Task 6) — WHY:
+   *  held is a state the row shows (R3); the replay has to restore the
+   *  state, not just the buttons, or a held ask comes back looking fresh. */
   pendingEventsFor(sessionId: string): HookEvent[] {
     const events: HookEvent[] = [];
     for (const entry of this.pending.values()) {
       if (entry.sessionId !== sessionId) continue;
-      events.push({
-        sessionId: entry.announcement.sessionId,
-        type: entry.announcement.type,
-        payload: { ...entry.announcement.payload },
-        timestamp: Date.now(),
-      });
+      events.push(this.hookEventFor(entry, 'PermissionRequest'));
+      if (entry.timedOut) events.push(this.hookEventFor(entry, 'PermissionHeld'));
     }
     return events;
   }
