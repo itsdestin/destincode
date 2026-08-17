@@ -163,3 +163,30 @@ describe('Always-allow on a Task hire', () => {
     expect(screen.queryByText(/always allow/i)).toBeNull();
   });
 });
+
+// Fix pass (Task 10 review, finding 1): ToolCard used to pass the session's
+// REAL cwd into useSpecialistDefinition for every card, gating only agentId —
+// so a Read/Write/Bash card with no hire in sight still forced a per-project
+// specialists.list() disk read via the roster hook underneath. Only a hire
+// card (truthy hireAgent) has any use for the real cwd.
+describe('a non-hire tool card', () => {
+  it('never asks the backend to read its own project\'s specialist folders', async () => {
+    const list = mockSpecialistsList({
+      definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' },
+    });
+    renderTaskCard(
+      {
+        toolUseId: 'tc-read-1',
+        toolName: 'Read',
+        input: { file_path: '/proj/foo.ts' },
+        status: 'complete',
+      } as ToolCallState,
+      'cwd-non-hire-should-never-be-read',
+    );
+    // Give the hook's auto-load effect a beat to fire if it were going to.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(list).not.toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: 'cwd-non-hire-should-never-be-read' }),
+    );
+  });
+});

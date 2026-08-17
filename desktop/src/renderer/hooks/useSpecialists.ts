@@ -179,16 +179,31 @@ export async function refreshSpecialistRoster(cwd?: string, opts?: { ensurePerso
 /** The roster for one cwd (global sources only when cwd is omitted).
  *  Auto-loads on first use per cwd; every subscriber sharing a cwd shares one
  *  cache entry, so a Task card and the Settings screen never race each other
- *  into two separate reads of the same folder. */
-export function useSpecialistRoster(cwd?: string): RosterCacheEntry {
+ *  into two separate reads of the same folder.
+ *
+ *  `ensurePersonalFolder` (Settings only) rides THIS SAME auto-load call —
+ *  Fix (Task 10 review, finding 2): SpecialistsSection used to run a SECOND,
+ *  separate mount effect that unconditionally called refreshSpecialistRoster
+ *  with ensurePersonalFolder:true, racing this effect's own (non-ensuring)
+ *  call on every Settings open — two concurrent disk reads, outcome decided
+ *  by whichever happened to resolve last. Threading it through here instead
+ *  means there is exactly one load call site: the folder gets ensured on
+ *  whichever call is this cwd's first-ever load (by any caller), and a later
+ *  mount for an already-cached cwd is a no-op read either way. */
+export function useSpecialistRoster(cwd?: string, opts?: { ensurePersonalFolder?: boolean }): RosterCacheEntry {
   const key = cwdKey(cwd);
   const [, force] = useState(0);
+  // Captured in a ref, not the effect's dep array — the caller (Settings)
+  // passes a fresh `{ ensurePersonalFolder: true }` object every render, and
+  // that identity must never retrigger the load effect below.
+  const ensureRef = useRef(opts?.ensurePersonalFolder);
+  ensureRef.current = opts?.ensurePersonalFolder;
   useEffect(() => {
     let subs = rosterSubs.get(key);
     if (!subs) { subs = new Set(); rosterSubs.set(key, subs); }
     const cb = () => force(n => n + 1);
     subs.add(cb);
-    if (!rosterCache.has(key)) void refreshSpecialistRoster(cwd);
+    if (!rosterCache.has(key)) void refreshSpecialistRoster(cwd, { ensurePersonalFolder: ensureRef.current });
     return () => { subs!.delete(cb); };
   }, [key, cwd]);
   return rosterCache.get(key) ?? { status: 'loading' };

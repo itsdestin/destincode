@@ -1036,7 +1036,16 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // for every card — `agent` is '' for anything that isn't an untargeted
   // Task hire, and useSpecialistDefinition('') returns undefined for free.
   const hireAgent = tool.toolName === 'Task' && !taskTargetId ? asString(tool.input.agent) : '';
-  const hireDefinition = useSpecialistDefinition(sessionCwd, hireAgent || undefined);
+  // Fix (Task 10 review): cwd must be gated the SAME as agentId, not passed
+  // through unconditionally — passing the real cwd for every card forced a
+  // per-project specialists.list() disk read (three folders) off the FIRST
+  // tool card of ANY kind in a session, hire or not, and every other card
+  // then subscribed to that cache entry and re-rendered on its changes (the
+  // roster hook is useState+useEffect, not useSyncExternalStore, so
+  // React.memo on ToolCard does not stop it). A hire card still has a truthy
+  // hireAgent, so it is unaffected — this only collapses NON-hire cards onto
+  // the one shared empty-cwd cache entry instead of a fresh per-project read.
+  const hireDefinition = useSpecialistDefinition(hireAgent ? sessionCwd : undefined, hireAgent || undefined);
   const display = friendlyToolDisplay(tool, {
     taskTargetTitle: taskTarget?.title,
     taskTargetRunning: taskTarget ? taskTarget.status === 'running' : undefined,

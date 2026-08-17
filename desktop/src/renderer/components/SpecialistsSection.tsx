@@ -70,7 +70,14 @@ export default function SpecialistsSection({ cwd }: {
    *  own .claude/agents. */
   cwd?: string;
 }) {
-  const roster = useSpecialistRoster(cwd);
+  // Fix (Task 10 review, finding 2): ensurePersonalFolder now rides the
+  // hook's OWN auto-load effect (see the WHY at useSpecialistRoster) instead
+  // of a second, separate mount effect that raced it — that used to fire two
+  // concurrent specialists:list calls on every Settings open. Spec §2's one
+  // deliberate exception to "the folder appears on first write": Settings
+  // wants somewhere for Open Folder to open even before the user has ever
+  // saved a specialist.
+  const roster = useSpecialistRoster(cwd, { ensurePersonalFolder: true });
   const [tiers, setTiers] = useState<DelegatedModelsView | null>(null);
   const [tierError, setTierError] = useState<string | null>(null);
 
@@ -86,15 +93,6 @@ export default function SpecialistsSection({ cwd }: {
     } catch { setTiers({ budget: null, frontier: null }); }
   }, []);
   useEffect(() => { void loadTiers(); }, [loadTiers]);
-
-  // Spec §2's one deliberate exception to "the folder appears on first
-  // write": Settings' first `list` call also creates the personal folder +
-  // its starter file, so Open Folder below has somewhere to open even before
-  // the user has ever saved a specialist. useSpecialistRoster above may ALSO
-  // kick off a (non-ensuring) load for the same cwd on this same mount —
-  // refreshSpecialistRoster always overwrites with its own fresh read, so the
-  // worst case is one harmless extra list() call, not a wrong final state.
-  useEffect(() => { void refreshSpecialistRoster(cwd, { ensurePersonalFolder: true }); }, [cwd]);
 
   const setTier = async (tier: 'budget' | 'frontier', choice: ModelChoice | null) => {
     if (choice && choice.runtime !== 'native') return; // specialists run natively
