@@ -82,6 +82,47 @@ describe('useStreamingGate', () => {
     expect(result.current.gate).toBe(true);
   });
 
+  // The CLAUDE CODE input path (F2, 2026-08-16). The two cases above drive
+  // 'stuck' through the native harness heartbeat; this one drives it the way
+  // the PTY buffer classifier does — a bare ATTENTION_STATE_CHANGED, which is
+  // the ONLY way a Claude Code session reaches 'stuck'. Master asserted the
+  // opposite here (button hidden) and this branch replaced the case rather
+  // than re-pointing it, which left CC behaviour pinned in neither direction.
+  //
+  // This pins the NEW intended behaviour: a stuck CC turn KEEPS the Stop
+  // button. Deliberate — a stuck CC session was un-stoppable for a phone user
+  // with no ESC key, the same defect the native fix closes, and the click just
+  // writes one ESC byte to the PTY (see useStreamingGate.ts).
+  it('STAYS true when the PTY classifier flags a Claude Code session stuck', () => {
+    const { result } = renderHook(useHarness, { wrapper: Providers });
+    act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
+    act(() => {
+      result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      result.current.dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId: 's1', state: 'stuck' });
+    });
+    expect(result.current.gate).toBe(true);
+  });
+
+  // The other half of the CC input path: the classifier clearing back to 'ok'
+  // must not disturb the gate either. Pinned so a future "fix" that special-
+  // cases the classifier's dispatch can't silently flip only one direction.
+  it('STAYS true when the PTY classifier clears a Claude Code session back to ok', () => {
+    const { result } = renderHook(useHarness, { wrapper: Providers });
+    act(() => { result.current.dispatch({ type: 'SESSION_INIT', sessionId: 's1' }); });
+    act(() => {
+      result.current.dispatch({ type: 'USER_PROMPT', sessionId: 's1', content: 'hi', timestamp: 1 });
+    });
+    act(() => {
+      result.current.dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId: 's1', state: 'stuck' });
+    });
+    act(() => {
+      result.current.dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId: 's1', state: 'ok' });
+    });
+    expect(result.current.gate).toBe(true);
+  });
+
   // Unchanged behavior, pinned so the exclusion list can't be emptied by
   // accident: a turn that has ENDED has nothing left to stop.
   it('is false once the provider errors — the turn is over', () => {

@@ -15,6 +15,20 @@ import type { AttentionState } from '../state/chat-types';
 // specifically for touch/phone users, who have no ESC key, so the turn became
 // un-stoppable at exactly the moment the user most wants to stop it.
 //
+// DELIBERATE BEHAVIOUR CHANGE FOR CLAUDE CODE, and the only one on this branch
+// (F2, 2026-08-16). 'stuck' has TWO producers and the state alone cannot tell
+// them apart: the native stall warning (harness heartbeat → reducer) and the
+// PTY buffer classifier, which flags a Claude Code session whose spinner has
+// stopped rotating (useAttentionClassifier.ts). Under master a stuck CC
+// session HID the Stop button; it now keeps it. That is intentional, not
+// collateral: it is the same defect the native fix addresses — a phone or
+// tablet user with no ESC key had no way to stop a stuck CC turn either. It is
+// safe because the button does not replace Send (it sits beside it, so nothing
+// is blocked) and its CC click path writes a single ESC byte to the PTY —
+// byte-identical to pressing the physical key (StopButton.tsx). Worst case the
+// user stops a turn that was about to recover, which is exactly what ESC has
+// always done and is fully under their control.
+//
 // WHY an exclusion list and not an allowlist of "still streaming" states: an
 // allowlist fails CLOSED — a state added later would silently hide the control
 // again, which is the identical bug, and it is invisible (no error, no test,
