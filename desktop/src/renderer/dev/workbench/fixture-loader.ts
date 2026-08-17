@@ -94,6 +94,17 @@ export function loadFixture(name: string, raw: string, sessionId: string = SANDB
         };
         state = chatReducer(state, action);
         actions.push(action);
+      } else if (parsed.type === 'stalled') {
+        // Parks the turn so the stalled card can be looked at in the workbench.
+        // No backend involved — this is the same action the native heartbeat
+        // produces, replayed through the real reducer.
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+          sessionId,
+          stalled: true,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
       } else if (parsed.type === 'tool_use') {
         const action: ChatAction = {
           type: 'TRANSCRIPT_TOOL_USE',

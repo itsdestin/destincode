@@ -13,6 +13,9 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
+  // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
+  // stalled card can be looked at in the workbench — no backend involved.
+  'stalled',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {

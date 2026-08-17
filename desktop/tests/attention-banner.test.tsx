@@ -49,3 +49,46 @@ describe('AttentionBanner — provider-config Open Settings jump', () => {
     expect(openSettingsButton(container)).toBeNull();
   });
 });
+
+function buttonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
+  return Array.from(container.querySelectorAll('button')).find(
+    (b) => b.textContent?.trim() === text,
+  ) as HTMLButtonElement | undefined ?? null;
+}
+
+describe('AttentionBanner — the stalled card', () => {
+  afterEach(() => cleanup());
+
+  it('says the provider MAY have stalled and never names a cause', () => {
+    const { container } = render(<AttentionBanner state="stalled" stalledSince={Date.now() - 134_000} />);
+    expect(container.textContent).toMatch(/may have stalled/i);
+    expect(container.textContent).not.toMatch(/openrouter/i);
+    expect(container.textContent).not.toMatch(/network|internet|connection/i);
+  });
+
+  it('counts UP from stalledSince', () => {
+    const { container } = render(<AttentionBanner state="stalled" stalledSince={Date.now() - 134_000} />);
+    expect(container.textContent).toMatch(/2m 14s/);
+  });
+
+  it('offers BOTH Retry and Stop, and fires each handler', () => {
+    const onRetry = vi.fn();
+    const onStop = vi.fn();
+    const { container } = render(
+      <AttentionBanner state="stalled" stalledSince={Date.now()} onRetry={onRetry} onStop={onStop} />,
+    );
+    const retry = buttonByText(container, 'Retry');
+    const stop = buttonByText(container, 'Stop');
+    expect(retry).not.toBeNull();
+    expect(stop).not.toBeNull();
+    fireEvent.click(retry!);
+    fireEvent.click(stop!);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders as a destructive (red) card', () => {
+    const { container } = render(<AttentionBanner state="stalled" stalledSince={Date.now()} />);
+    expect(container.querySelector('.ring-\\[var\\(--destructive\\)\\]')).not.toBeNull();
+  });
+});
