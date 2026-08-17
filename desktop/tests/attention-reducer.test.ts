@@ -266,4 +266,76 @@ describe('stalled turn', () => {
     const turn = s.assistantTurns.get(s.currentTurnId!)!;
     expect(turn.segments).toHaveLength(1);
   });
+
+  // Regression (defect found in cross-task review): the AI SDK's part id
+  // falls back to the literal 'text-0' when the provider omits one, and a
+  // turn can contain multiple steps (each tool call starts a new step) that
+  // each reuse that same fallback id. NATIVE_PARTS_DROPPED must only erase
+  // the ABANDONED attempt's trailing segments, never an earlier, finished
+  // step's text that happens to share the same id. This test fails against
+  // the whole-list `.filter()` implementation, which deletes both.
+  it('NATIVE_PARTS_DROPPED drops only the trailing run, even when an earlier finished step reused the same partId', () => {
+    // Step 1: a finished text segment using the fallback partId.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION,
+      uuid: 'u1', text: 'finished step one', timestamp: 1, partId: 'text-0',
+    });
+    // A tool call starts a new step — this is the separator that guarantees
+    // the abandoned text below cannot MERGE into step one's bubble, but does
+    // nothing to protect a naive id-based filter from deleting step one too.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION,
+      uuid: 'u2', toolUseId: 'tool-1', toolName: 'Bash', toolInput: { command: 'ls' },
+    });
+    // Step 2 reuses the SAME fallback partId 'text-0' (provider omitted an
+    // id again) — this is the abandoned half-sentence the stall Retry drops.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION,
+      uuid: 'u3', text: 'abandoned half sentence', timestamp: 2, partId: 'text-0',
+    });
+
+    state = dispatch(state, { type: 'NATIVE_PARTS_DROPPED', sessionId: SESSION, partIds: ['text-0'] });
+
+    const s = state.get(SESSION)!;
+    const turn = s.assistantTurns.get(s.currentTurnId!)!;
+    // Step one's finished text must survive untouched.
+    const texts = turn.segments
+      .filter((seg: any) => seg.type === 'text')
+      .map((seg: any) => seg.content);
+    expect(texts).toEqual(['finished step one']);
+    // Only the trailing abandoned text is gone; the tool-group separator stays.
+    expect(turn.segments.map((seg: any) => seg.type)).toEqual(['text', 'tool-group']);
+  });
+
+  it('NATIVE_PARTS_DROPPED removes a multi-segment trailing run (reasoning + text from the same abandoned attempt)', () => {
+    // Step 1: finished text (kept — not in the drop set, not trailing).
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION,
+      uuid: 'u1', text: 'finished step', timestamp: 1, partId: 'text-0',
+    });
+    // New step boundary.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION,
+      uuid: 'u2', toolUseId: 'tool-1', toolName: 'Bash', toolInput: { command: 'ls' },
+    });
+    // The abandoned attempt: a reasoning segment followed by a text segment,
+    // both belonging to the retried step and both in the drop set.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION,
+      uuid: 'u3', text: 'abandoned reasoning', timestamp: 2, partId: 'reason-1',
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION,
+      uuid: 'u4', text: 'abandoned text', timestamp: 3, partId: 'text-1',
+    });
+
+    state = dispatch(state, {
+      type: 'NATIVE_PARTS_DROPPED', sessionId: SESSION, partIds: ['reason-1', 'text-1'],
+    });
+
+    const s = state.get(SESSION)!;
+    const turn = s.assistantTurns.get(s.currentTurnId!)!;
+    expect(turn.segments.map((seg: any) => seg.type)).toEqual(['text', 'tool-group']);
+    expect((turn.segments[0] as any).content).toBe('finished step');
+  });
 });

@@ -770,13 +770,33 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const turn = session.assistantTurns.get(session.currentTurnId);
       if (!turn) return state;
       const drop = new Set(action.partIds);
-      // Deviation from the brief: `seg.partId` alone doesn't typecheck because
-      // 'tool-group' and 'plan' segments carry no partId field at all (not just
-      // undefined) — narrow to the two streamed-delta segment kinds first.
-      const segments = turn.segments.filter((seg) => {
-        if (seg.type !== 'text' && seg.type !== 'reasoning') return true;
-        return !(seg.partId && drop.has(seg.partId));
-      });
+      // Fix (cross-task review defect): part ids are NOT unique within a turn.
+      // The AI SDK's part id falls back to the literal 'text-0' when the
+      // provider omits one, and a turn can span multiple steps (each tool
+      // call starts a new step), so the SAME id can legitimately appear on
+      // an earlier, already-finished step's text as well as on the abandoned
+      // attempt being retried. A plain `.filter()` over the whole segment
+      // list — the old approach — deletes every match, including finished
+      // paragraphs and tool calls the user already read/ran. That is worse
+      // than the duplicate-text bug this erase exists to prevent.
+      //
+      // The abandoned attempt's segments are always the MOST RECENT ones in
+      // the turn, so walk from the END and remove only the TRAILING run of
+      // matching segments, stopping at the first one that doesn't match.
+      // Everything before that boundary is earlier, finished work and must
+      // survive untouched — a tool-group (or plan) segment carries no
+      // partId at all, so it always counts as non-matching and stops the
+      // walk, which is what keeps this safe: a tool-group segment always
+      // separates one text step from the next.
+      let cut = turn.segments.length;
+      while (cut > 0) {
+        const seg = turn.segments[cut - 1];
+        const matches = (seg.type === 'text' || seg.type === 'reasoning')
+          && !!seg.partId && drop.has(seg.partId);
+        if (!matches) break;
+        cut--;
+      }
+      const segments = turn.segments.slice(0, cut);
       if (segments.length === turn.segments.length) return state;
       const assistantTurns = new Map(session.assistantTurns);
       assistantTurns.set(session.currentTurnId, { ...turn, segments });
