@@ -3742,6 +3742,19 @@ class SessionService : Service() {
             "permissions:list",
             "permissions:remove",
             "permissions:remove-project",
+            // Specialists 1c (Task 8) — roster + tier reads/writes + card
+            // actions all read/write the DESKTOP native harness (SpecialistCatalog,
+            // DelegationLedger, DelegatedModels), same as permissions:* above;
+            // Android has no native harness to hold any of that until M8. Reply
+            // not-implemented so the shared React UI degrades to a "desktop only"
+            // state instead of timing out. specialists:event (the ledger push) is
+            // OUTBOUND-only — same as native:model-state above — so it needs no
+            // entry here at all.
+            "specialists:list",
+            "specialists:delegated-get",
+            "specialists:delegated-set",
+            "specialists:steer",
+            "specialists:interrupt",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",

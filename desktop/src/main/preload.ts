@@ -483,6 +483,16 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on('tags:changed', handler);
       return () => ipcRenderer.removeListener('tags:changed', handler);
     },
+    // Specialists 1c (Task 8) — one hire's ledger record changed (status,
+    // model, a new note). Fired by nativeHost's 'specialists-event' listener
+    // in ipc-handlers.ts, itself fed by DelegationLedger's own mutate()
+    // chokepoint — never a direct emit per host method. Unsubscribe fn, same
+    // as sessionMetaChanged/tagsChanged above (not the raw handler).
+    specialistEvent: (cb: (e: any) => void) => {
+      const handler = (_e: IpcRendererEvent, event: any) => cb(event);
+      ipcRenderer.on('specialists:event', handler);
+      return () => ipcRenderer.removeListener('specialists:event', handler);
+    },
     // Shape parity with remote-shim — desktop never fires this push event
     // (mode detection runs in App.tsx via pty:output text matching), so this
     // is a no-op subscriber that just keeps `window.claude.on` symmetric.
@@ -1225,6 +1235,18 @@ contextBridge.exposeInMainWorld('claude', {
     list: () => ipcRenderer.invoke('permissions:list'),
     remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),
     removeProject: (slug: string) => ipcRenderer.invoke('permissions:remove-project', slug),
+  },
+  // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+  // Positional args, matching every other request-response namespace above
+  // (permissions, search, providers) — the remote-shim equivalent below takes
+  // an object payload instead, same split as those.
+  specialists: {
+    list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => ipcRenderer.invoke('specialists:list', opts),
+    getDelegatedModels: () => ipcRenderer.invoke('specialists:delegated-get'),
+    setDelegatedModel: (tier: 'budget' | 'frontier', binding: { providerId: string; modelId: string } | null) =>
+      ipcRenderer.invoke('specialists:delegated-set', tier, binding),
+    steer: (sessionId: string, childId: string, text: string) => ipcRenderer.invoke('specialists:steer', sessionId, childId, text),
+    interrupt: (sessionId: string, childId: string) => ipcRenderer.invoke('specialists:interrupt', sessionId, childId),
   },
   // Local llama.cpp engine (Plan B). Progress/status pushes return an
   // unsubscribe, matching every other on* subscription in this file.

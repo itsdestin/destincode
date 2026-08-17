@@ -475,14 +475,40 @@ export interface SpecialistDefinitionView {
   charter: 'read-only' | 'read-write';
   allowedTools: string[];
   modelPreference?: 'parent' | 'budget' | 'frontier';
-  source: 'builtin' | 'personal' | 'project' | 'claude-code';
+  // Task 8 fix: narrowed from the earlier 'builtin' | 'personal' | 'project' |
+  // 'claude-code' — SpecialistCatalog (harness/specialists/catalog.ts) tags a
+  // PROJECT'S .claude/agents/ file the same 'claude-code' source as the
+  // user-level folder (only `path` tells them apart); 'project' was never a
+  // source the catalog actually produced.
+  source: 'builtin' | 'personal' | 'claude-code';
   /** Absolute path of the defining file (absent for built-ins). */
   path?: string;
   /** Tool grants the file asked for that were stripped as unmappable/unknown,
    *  plus any other narrowing the loader applied. Empty = loaded verbatim. */
   warnings: string[];
-  /** Another definition with the same id was shadowed by this one. */
-  shadows?: { source: SpecialistDefinitionView['source']; path?: string };
+  // Task 8 fix: `shadows` REMOVED — the catalog's load-order rule is "first
+  // loaded wins, a later colliding id is SKIPPED" (resolveOffered's own WHY),
+  // never a layering one definition displaces another. A collision now shows
+  // up in SpecialistsListResult.skipped, not as a per-definition flag here.
+  /** False past the offered cap (MAX_OFFERED_SPECIALISTS) — still listed in
+   *  Settings, with a warning, but never handed to the Task tool. Built-ins
+   *  are always true. */
+  offered: boolean;
+  /** The file's full, unclamped description — Settings shows this; the
+   *  Task-tool-facing `description` above is clamped to MAX_DESCRIPTION_CHARS. */
+  fullDescription?: string;
+}
+
+/** Specialists 1c — `specialists:list`'s exact response shape: the resolved
+ *  roster (every definition, offered or not) plus what the loader could NOT
+ *  place (parse failure or id collision) and the three folder paths an "Open
+ *  folder" control needs. Mirrors SpecialistCatalog's CatalogSnapshot
+ *  (harness/specialists/catalog.ts) field-for-field on purpose — one shape,
+ *  never two that could drift. */
+export interface SpecialistsListResult {
+  definitions: SpecialistDefinitionView[];
+  skipped: { path: string; source: 'personal' | 'claude-code'; error: string }[];
+  folders: { personal: string; claudeUser: string; project?: string };
 }
 
 /** Specialists 1c — the two user-designated model tiers (spec §2 amendment,
@@ -1472,6 +1498,19 @@ export const IPC = {
   PERMISSIONS_LIST: 'permissions:list',
   PERMISSIONS_REMOVE: 'permissions:remove',
   PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
+  // ---- Specialists 1c (Task 8): roster + tier reads/writes + card actions ----
+  // list ALWAYS re-reads the three definition folders (never a cached
+  // snapshot) so a file dropped in a moment ago shows up without a Refresh
+  // click; delegated-get/set are the two model-tier reads/writes; steer/
+  // interrupt are the card's user-facing "send a note" / "stop" actions.
+  // specialists:event is a PUSH (no request) — the delegation ledger's own
+  // write is what triggers it, never a direct emit from a handler here.
+  SPECIALISTS_LIST: 'specialists:list',
+  SPECIALISTS_DELEGATED_GET: 'specialists:delegated-get',
+  SPECIALISTS_DELEGATED_SET: 'specialists:delegated-set',
+  SPECIALISTS_STEER: 'specialists:steer',
+  SPECIALISTS_INTERRUPT: 'specialists:interrupt',
+  SPECIALISTS_EVENT: 'specialists:event',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

@@ -16,14 +16,20 @@ import { refreshSpecialistRoster, useSpecialistRoster } from '../hooks/useSpecia
 
 const SECTION_LABEL = 'text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2';
 
+// Task 8 fix: the catalog's real `source` union is 'builtin' | 'personal' |
+// 'claude-code' — a project's OWN .claude/agents/ file gets the same
+// 'claude-code' source as ~/.claude/agents (only `path` tells them apart), so
+// the earlier 'project' label this section was mocked up against never
+// matched anything the real backend produces. Full "this project vs. your
+// account" grouping is renderer-task follow-up; this keeps the section
+// type-correct against the real bridge shape in the meantime.
 const SOURCE_LABEL: Record<SpecialistDefinitionView['source'], string> = {
   builtin: 'Built in',
   personal: 'Your specialists',
-  project: 'This project',
-  'claude-code': 'This project (Claude Code format)',
+  'claude-code': 'Claude Code agent file',
 };
 
-const SOURCE_ORDER: SpecialistDefinitionView['source'][] = ['builtin', 'personal', 'project', 'claude-code'];
+const SOURCE_ORDER: SpecialistDefinitionView['source'][] = ['builtin', 'personal', 'claude-code'];
 
 export const SPECIALISTS_EXPLAINER_INTRO =
   'Specialists are helpers your assistant can hire for a piece of work — a search, a review, an edit — while it keeps talking to you. Each one runs on its own with only the tools its job needs.';
@@ -219,7 +225,11 @@ function RosterRow({ d }: { d: SpecialistDefinitionView }) {
         <div className="mt-1 pl-2 border-l-2 border-edge-dim space-y-1 text-2xs">
           <div className="text-fg-muted">Tools: <span className="text-fg-dim">{d.allowedTools.join(', ')}</span></div>
           {d.path && <div className="text-fg-muted">File: <span className="font-mono text-fg-dim break-all">{d.path}</span></div>}
-          {d.shadows && <div className="text-fg-muted">Overrides the {SOURCE_LABEL[d.shadows.source].toLowerCase()} specialist with the same name.</div>}
+          {/* Task 8 fix: `shadows` removed from SpecialistDefinitionView — the
+              catalog never layers one definition over another (a colliding id
+              is SKIPPED, not shown here), so there is nothing this block could
+              still read. A skipped file's reason lives in SpecialistsListResult
+              .skipped instead — surfacing that list is renderer-task follow-up. */}
           {d.warnings.map((w, i) => <div key={i} className="text-amber-500">⚠ {w}</div>)}
         </div>
       )}

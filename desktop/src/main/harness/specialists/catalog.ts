@@ -44,6 +44,10 @@ import {
 } from './definition-files';
 import { listSpecialists, type SpecialistDefinition, type SpecialistRoster } from './registry';
 import { MAX_OFFERED_SPECIALISTS } from './limits';
+// Task 8: the ONE place a CatalogSnapshot becomes the renderer's
+// SpecialistsListResult — used by both the Electron handler and the remote-
+// server WS case so they can't drift on the mapping.
+import type { SpecialistsListResult } from '../../../shared/types';
 
 export type SpecialistSource = 'builtin' | 'personal' | 'claude-code'; // claude-code covers BOTH CC folders; `path` tells them apart
 
@@ -304,21 +308,26 @@ export class SpecialistCatalog {
    * THE call for conversation create/resume AND before every root turn — a
    * never-seen cwd fingerprints as changed on its very first call, so there
    * is no separate "first load" path to keep in sync with this one.
+   *
+   * Task 8: `cwd` is optional so `specialists:list` can still ALWAYS re-read
+   * the two global sources (personal + Claude-Code-user-level) from a screen
+   * that has no active project folder to scope a project search to — the
+   * project source is simply skipped, never faked with a wrong path.
    */
-  async ensureFresh(cwd: string): Promise<boolean> {
+  async ensureFresh(cwd?: string): Promise<boolean> {
     // Every source must be checked regardless of the others' results — `||`
     // between the calls directly would short-circuit and skip later checks.
     const personalChanged = this.refreshPersonal();
     const claudeUserChanged = this.refreshClaudeUser();
-    const projectChanged = this.refreshProject(cwd);
+    const projectChanged = cwd !== undefined ? this.refreshProject(cwd) : false;
     return personalChanged || claudeUserChanged || projectChanged;
   }
 
   /** Unconditional re-read of all three sources (Settings Refresh / specialists:list). */
-  async reload(cwd: string): Promise<void> {
+  async reload(cwd?: string): Promise<void> {
     this.globals.personal = emptySourceState();
     this.globals.claudeUser = emptySourceState();
-    this.projects.delete(cwd);
+    if (cwd !== undefined) this.projects.delete(cwd);
     await this.ensureFresh(cwd); // one read path — reload is just "forget, then ensureFresh"
   }
 
@@ -384,4 +393,31 @@ export class SpecialistCatalog {
     this.globals.personal = emptySourceState();
     this.refreshPersonal();
   }
+}
+
+/** Task 8 — the ONE mapper from a CatalogSnapshot to specialists:list's
+ *  response shape. `skipped` and `folders` already match SpecialistsListResult
+ *  field-for-field (CatalogSnapshot was written to mirror it); the only real
+ *  work is flattening each CatalogEntry's `definition` fields onto its own
+ *  SpecialistDefinitionView row. Both the Electron handler (ipc-handlers.ts)
+ *  and the remote-server WS case call this, so they cannot independently
+ *  drift on what a definition looks like over the wire. */
+export function toListResult(snapshot: CatalogSnapshot): SpecialistsListResult {
+  return {
+    definitions: snapshot.entries.map((e) => ({
+      id: e.definition.id,
+      displayName: e.definition.displayName,
+      description: e.definition.description,
+      charter: e.definition.charter,
+      allowedTools: e.definition.allowedTools,
+      modelPreference: e.definition.modelPreference,
+      source: e.source,
+      path: e.path,
+      warnings: e.warnings,
+      offered: e.offered,
+      fullDescription: e.fullDescription,
+    })),
+    skipped: snapshot.skipped,
+    folders: snapshot.folders,
+  };
 }
