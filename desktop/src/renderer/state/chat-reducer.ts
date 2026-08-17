@@ -743,8 +743,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         lastActivityAt: Date.now(),
         attentionState,
         stallWarning: action.stallWarning ?? null,
-        // Stamped once and held: a repeat heartbeat must not restart the count-up.
-        stalledSince: action.stalled ? (session.stalledSince ?? Date.now()) : null,
+        // Stamped once and held: a repeat heartbeat must not restart the
+        // count-up, so an already-parked session keeps its original stamp.
+        //
+        // Fix (M8, whole-branch review 2026-08-16): the held-stamp rule used to
+        // be `session.stalledSince ?? Date.now()` with no check on the state it
+        // was held FROM. `stalledSince` is only ever read while attentionState
+        // is 'stalled' (AttentionBanner is the sole consumer). Fourteen places
+        // in this file write `attentionState: 'ok'` and only five of them also
+        // clear the stamp — the other nine (both TRANSCRIPT_USER_MESSAGE
+        // branches, both NATIVE_TOOL_PREPARING branches, both TRANSCRIPT_TOOL_USE
+        // branches, TRANSCRIPT_TOOL_RESULT, and both PERMISSION_REQUEST
+        // branches) leave it set. Any of those landing between two parks left
+        // the SECOND card counting from the FIRST park, so a turn that parked,
+        // resumed, and parked again would read "no response for 6m 12s" three
+        // seconds in. Gating on the state the stamp belongs to fixes the whole
+        // family at the ONE place the field is written, instead of adding nine
+        // `stalledSince: null` lines and forgetting the tenth.
+        stalledSince: action.stalled
+          ? (session.attentionState === 'stalled' ? (session.stalledSince ?? Date.now()) : Date.now())
+          : null,
         // Same lifetime rule as stallWarning: present on the announcing heartbeat,
         // cleared by the next plain one (which the first real chunk triggers).
         //

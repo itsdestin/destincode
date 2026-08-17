@@ -233,6 +233,43 @@ describe('stalled turn', () => {
     }
   });
 
+  // Fix (M8, whole-branch review 2026-08-16). The "hold the stamp" rule used to
+  // be unconditional, so any path that put the session back to 'ok' WITHOUT
+  // clearing stalledSince (nine of the fourteen sites in the reducer do exactly
+  // that — a tool call arriving is the common one) left a second park counting
+  // from the first one's timestamp.
+  it('park -> resume -> park restarts the elapsed clock', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+      const firstPark = state.get(SESSION)!.stalledSince;
+      expect(firstPark).toBe(1_000_000);
+
+      // The stream wakes up with a TOOL CALL rather than text — a real un-park
+      // shape (the 2026-08-12 incident stalled mid-tool-arguments). This case
+      // sets attentionState back to 'ok' and does NOT touch stalledSince, which
+      // is precisely the gap being closed.
+      vi.setSystemTime(1_030_000);
+      state = dispatch(state, {
+        type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u1',
+        toolUseId: 't1', toolName: 'Bash', toolInput: { command: 'ls' },
+      });
+      expect(state.get(SESSION)!.attentionState).toBe('ok');
+
+      // It goes quiet again five minutes later. The new card must count from
+      // NOW, not from the first park — otherwise it opens claiming 5m 20s.
+      vi.setSystemTime(1_320_000);
+      state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+      const s = state.get(SESSION)!;
+      expect(s.attentionState).toBe('stalled');
+      expect(s.stalledSince).toBe(1_320_000);
+      expect(s.stalledSince).not.toBe(firstPark);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a plain heartbeat clears the stall (the stream resumed)', () => {
     state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
     state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION });
