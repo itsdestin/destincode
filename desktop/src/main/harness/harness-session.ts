@@ -442,12 +442,17 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
  *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
 const TOOL_PREPARING_EMIT_MS = 300;
 // consumeStep's retry sentinel. TWO producers return it, safe for different
-// reasons: (1) the AUTOMATIC retry, when the stream stalled with NOTHING
-// streamed yet on the first attempt (Clock 1) — safe because there is nothing
-// on screen or in emittedPartIds to collide with; (2) the MANUAL Retry, fired
-// from a parked (Clock 2) step where content already streamed — safe ONLY
-// because that branch emits `dropPart` first, erasing the abandoned text
-// before the re-run's deltas can land on the same partIds and merge with it.
+// reasons: (1) the AUTOMATIC retry, whose guard is `!emittedAny &&
+// isFirstAttempt` — nothing COUNTABLE (text, reasoning, or a completed tool
+// call) has streamed on the first attempt. NOT the same as "nothing has
+// streamed at all": tool-input-delta (argument fragments) deliberately never
+// sets emittedAny, so a first-attempt stall after minutes of tool-argument
+// text takes this branch too, even though real bytes did arrive — safe
+// anyway, because nothing has EXECUTED and nothing is on screen or in
+// emittedPartIds to collide with; (2) the MANUAL Retry, fired from a parked
+// step where content already streamed — safe ONLY because that branch emits
+// `dropPart` first, erasing the abandoned text before the re-run's deltas can
+// land on the same partIds and merge with it.
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -1999,30 +2004,57 @@ export class HarnessSession extends EventEmitter {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
         warned = true;
-        // willRetry: we can safely re-run only if nothing streamed AND this is
-        // the first attempt (Clock 1, first try). When false, the guard below
-        // decides what happens instead: a PARK if this is Clock 2 (something
-        // streamed, then went quiet) or the turn has already parked once
-        // (turnEverParked) — otherwise (Clock 1 alone, never parked) the
-        // countdown still ends the turn with a session-error.
+        // willRetry: safe to silently re-run only when nothing COUNTABLE has
+        // streamed (text, reasoning, or a completed tool call — see the
+        // `!emittedAny` expression this mirrors) AND this is the first
+        // attempt. Argument fragments deliberately don't count: a stall
+        // mid-tool-arguments still qualifies even though real bytes arrived.
+        // When false, the guard below decides what happens instead: a PARK
+        // once a real chunk has arrived this attempt (sawFirstChunk) or the
+        // turn has already parked once (turnEverParked) — otherwise (nothing
+        // has arrived THIS attempt, and the turn never parked) the countdown
+        // still ends the turn with a session-error.
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
         stageTimer = setTimeout(() => {
-          // PARK — but ONLY on Clock 2 (sawFirstChunk: the model streamed
-          // something, then went quiet — a genuine mid-stream stall) or once
-          // this turn has already parked once (turnEverParked: the user was
-          // shown the card and hit Retry, so that retry must never die on its
-          // own, even if it lands back on Clock 1). Clock 1 on its own
-          // (nothing has streamed yet, this is still the first attempt) stays
-          // OUT OF SCOPE for this project: a model that never sent a first
-          // byte hasn't "stalled" the way this feature means it, it just
-          // never began, so once its one silent auto-retry is spent the turn
-          // still ends with the "didn't begin responding" session-error.
+          // PARK — but ONLY when `!willRetry` (the auto-retry guard above
+          // didn't already claim this stall) AND EITHER a real chunk has
+          // arrived this attempt (sawFirstChunk) or the turn has already
+          // parked once (turnEverParked: the user was shown the card and hit
+          // Retry, so that retry must never die on its own even if it lands
+          // back on a silent attempt). Note willRetry checks emittedAny, not
+          // sawFirstChunk: a FIRST-attempt stall after nothing but tool-
+          // argument fragments has sawFirstChunk===true (real bytes did
+          // arrive) but still takes the auto-retry branch above instead of
+          // parking here, because nothing COUNTABLE was emitted. Only once
+          // willRetry is false — attempt 2+, or something countable already
+          // streamed — does sawFirstChunk alone decide: real bytes THIS
+          // attempt → park; a genuinely silent attempt (sawFirstChunk still
+          // false) with a turn that never parked before stays OUT OF SCOPE
+          // for this project: a model that never sent a first byte hasn't
+          // "stalled" the way this feature means it, it just never began, so
+          // the turn still ends with the "didn't begin responding" session-error.
           // Do NOT resolve the stall race for the park case: nothing is torn
           // down, the reader stays open, and a chunk arriving minutes later
           // still lands in the loop below and continues the turn. This
           // return IS the feature.
-          if ((sawFirstChunk || this.turnEverParked) && !willRetry) {
+          //
+          // EXCEPT for a specialist child (Fix, C1 whole-branch review,
+          // 2026-08-16): a parked child has no UI to park INTO. wireChildLive
+          // re-emits only SUBAGENT_DISPLAY_TYPES (tool-use/tool-result/
+          // assistant-text) into the parent's view — the parked signal rides
+          // `assistant-thinking`, which is filtered out, so a stalled child
+          // shows no card, no red dot, no Retry, no Stop, just a spinning
+          // Agent card forever. Worse: the child's send() never settles, so
+          // the parent's Task tool call never returns, and nothing else caps
+          // a specialist run — the parent hangs too, invisibly. Falling
+          // through to the ordinary stall path below lets the child keep
+          // throwing StreamStallError, which the parent's Task tool already
+          // catches and reports as a failed run — the exact recovery this
+          // branch removed for children. Surfacing the stalled card inside
+          // the parent's own Agent card is a real feature; it is deliberately
+          // not attempted here.
+          if (!this.opts.isSpecialistChild && (sawFirstChunk || this.turnEverParked) && !willRetry) {
             parked = true;
             this.turnEverParked = true;
             this.resolveRetry = signalRetry;
@@ -2274,6 +2306,18 @@ export class HarnessSession extends EventEmitter {
       // A step that has ended can never be retried — drop the resolver so a
       // late click on a card the renderer has not torn down yet is a no-op.
       this.resolveRetry = null;
+      // Fix (I3, whole-branch review 2026-08-16): `if (chunk.done) break;`
+      // sits ABOVE the "a real chunk arrived → clear the card" block, so a
+      // provider that closes the stream WHILE parked used to leave the red
+      // card up (and the countdown label live) even though the turn keeps
+      // going — reachable whenever the step had already emitted a complete
+      // tool call before going silent (that sets emittedAny, which routes the
+      // stall into a park instead of an auto-retry). Guaranteeing the
+      // clearing heartbeat HERE, in the finally, covers every exit from a
+      // parked state in one place (done/throw/interrupt alike) rather than
+      // duplicating the same emit on each of them. A no-op when `parked` is
+      // already false, which is every case except the one this fixes.
+      if (parked) this.emitEvent('assistant-thinking', {});
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {

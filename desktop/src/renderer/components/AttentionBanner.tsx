@@ -71,8 +71,9 @@ function elapsedLabel(ms: number): string {
 }
 
 export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop }: Props) {
-  // Ticks once a second while parked. `stalledSince` is this client's own clock
-  // (the host never sends a timestamp), so no clock skew can make it negative.
+  // Ticks once a second while parked. `stalledSince` IS serialized to the host
+  // (chat-types.ts) so a reconnecting phone can still see the card — see that
+  // field's own comment for why the elapsed number is only approximate there.
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     if (state !== 'stalled' || stalledSince == null) return;
@@ -98,8 +99,8 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
   // 'stuck' banner where Claude is likely still working. Matches the Props
   // doc comment above.
   const showRequestId = (state === 'session-died' || state === 'error') && !!anthropicRequestId;
-  // Parked turns append a live count-up to the copy. `stalledSince` is this
-  // client's own clock, so no skew can make it negative.
+  // Parked turns append a live count-up to the copy — see the `stalledSince`
+  // field comment above for the serialization/skew note.
   const line = state === 'error' && errorMessage
     ? errorMessage
     : state === 'stalled' && stalledSince != null
