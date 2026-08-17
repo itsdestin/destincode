@@ -42,6 +42,11 @@ const COPY: Record<Props['state'], string> = {
   // Phase 1 Plan A). The detailed provider message rides the 'session-error'
   // transcript event; this banner copy stays generic.
   'error': 'The model provider returned an error — this turn has ended.',
+  // Placeholder only: 'stalled' (Task 4, renderer state) is a new AttentionState
+  // member whose real UI — a dedicated red "parked" card with Retry/Stop — is
+  // built in Task 5. This line exists so the Record above stays exhaustive and
+  // the build stays green in the meantime; Task 5 replaces or bypasses it.
+  'stalled': 'This turn appears to have stalled.',
 };
 
 // Destructive states pick up the L3 destructive ring tokens so they read as

@@ -199,3 +199,56 @@ describe('Attention state reducer actions', () => {
     expect(state.get(SESSION)!.attentionState).toBe('ok');
   });
 });
+
+describe('stalled turn', () => {
+  let state: ChatState;
+  beforeEach(() => { state = initState(); });
+
+  it('a stalled heartbeat sets attentionState "stalled" and stamps stalledSince', () => {
+    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+    const s = state.get(SESSION)!;
+    expect(s.attentionState).toBe('stalled');
+    expect(typeof s.stalledSince).toBe('number');
+  });
+
+  it('repeat stalled heartbeats do NOT restart the elapsed clock', () => {
+    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+    const first = state.get(SESSION)!.stalledSince;
+    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+    expect(state.get(SESSION)!.stalledSince).toBe(first);
+  });
+
+  it('a plain heartbeat clears the stall (the stream resumed)', () => {
+    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION, stalled: true });
+    state = dispatch(state, { type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION });
+    const s = state.get(SESSION)!;
+    expect(s.attentionState).toBe('ok');
+    expect(s.stalledSince).toBeNull();
+  });
+
+  it('a stall warning does NOT assert health — the dot must not go green', () => {
+    // Regression: the warning heartbeat used to set attentionState 'ok', so the
+    // dot stayed GREEN for the whole countdown while the UI said it may be hanging.
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SESSION,
+      stallWarning: { retryInMs: 15_000, willRetry: false },
+    });
+    expect(state.get(SESSION)!.attentionState).not.toBe('ok');
+  });
+
+  it('NATIVE_PARTS_DROPPED removes the abandoned segments from the current turn', () => {
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, text: 'Now I will', partId: 'p1' } as any);
+    state = dispatch(state, { type: 'NATIVE_PARTS_DROPPED', sessionId: SESSION, partIds: ['p1'] });
+    const s = state.get(SESSION)!;
+    const turn = s.assistantTurns.get(s.currentTurnId!)!;
+    expect(turn.segments.filter((seg: any) => seg.partId === 'p1')).toHaveLength(0);
+  });
+
+  it('NATIVE_PARTS_DROPPED leaves segments from other parts alone', () => {
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, text: 'keep', partId: 'keep-me' } as any);
+    state = dispatch(state, { type: 'NATIVE_PARTS_DROPPED', sessionId: SESSION, partIds: ['p1'] });
+    const s = state.get(SESSION)!;
+    const turn = s.assistantTurns.get(s.currentTurnId!)!;
+    expect(turn.segments).toHaveLength(1);
+  });
+});

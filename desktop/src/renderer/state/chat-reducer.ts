@@ -335,6 +335,8 @@ function endTurn(
     // Any turn end also dismisses a pending stall countdown (the give-up path
     // ends the turn via NATIVE_SESSION_ERROR, which spreads endTurn()).
     stallWarning: null,
+    // The turn cannot still be parked once it has ended.
+    stalledSince: null,
   };
 }
 
@@ -534,6 +536,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         errorMessage: null,
         stallWarning: null,
+        // A new turn cannot start already parked.
+        stalledSince: null,
         // Parity with TRANSCRIPT_SKILL_INVOKED: a new turn must not inherit the
         // previous one's prefill percentage.
         promptProcessing: null,
@@ -719,28 +723,64 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    // Thinking blocks are genuine activity — bump lastActivityAt and clear
-    // any stale attention state back to 'ok'. No timeline change.
-    // A heartbeat carrying a `stallWarning` is the native watchdog firing: it
-    // SETS the countdown. A plain heartbeat means activity resumed → clears it.
     case 'TRANSCRIPT_THINKING_HEARTBEAT': {
       const session = next.get(action.sessionId);
       if (!session) return state;
+      // Three heartbeat shapes, in descending severity:
+      //   stalled     → the turn is parked. RED dot, card on screen.
+      //   stallWarning→ stage 1, "may be wrong, I don't know". AMBER dot.
+      //   plain       → activity resumed. Clears both.
+      //
+      // Fix (2026-08-16): the warning branch used to set 'ok', so the dot stayed
+      // GREEN for the whole countdown — the app asserting health while telling
+      // the user it may be hanging. 'stuck' is the state that means exactly
+      // "something may be wrong and I don't know", which is what a warning is.
+      const attentionState = action.stalled ? 'stalled'
+        : action.stallWarning ? 'stuck'
+        : 'ok';
       next.set(action.sessionId, {
         ...session,
         lastActivityAt: Date.now(),
-        attentionState: 'ok',
+        attentionState,
         stallWarning: action.stallWarning ?? null,
+        // Stamped once and held: a repeat heartbeat must not restart the count-up.
+        stalledSince: action.stalled ? (session.stalledSince ?? Date.now()) : null,
         // Same lifetime rule as stallWarning: present on the announcing heartbeat,
         // cleared by the next plain one (which the first real chunk triggers).
         //
-        // EXCEPT when this heartbeat is a stall WARNING: that carries no
-        // promptProcessing of its own, and nulling it there wiped the progress
-        // readout mid-prefill, so the percentage appeared to reset itself
-        // (Destin, 2026-07-26). A stall warning means "still waiting", not
+        // EXCEPT when this heartbeat is a stall warning or the stalled card:
+        // neither carries promptProcessing of its own, and nulling it there
+        // wiped the progress readout mid-prefill, so the percentage appeared to
+        // reset itself (Destin, 2026-07-26). A stall means "still waiting", not
         // "prefill ended" — the reading it was showing is still the truth.
-        promptProcessing: action.promptProcessing ?? (action.stallWarning ? session.promptProcessing : null),
+        promptProcessing: action.promptProcessing
+          ?? ((action.stallWarning || action.stalled) ? session.promptProcessing : null),
       });
+      return next;
+    }
+
+    // Manual stall Retry: erase the abandoned attempt's segments from the
+    // current turn BEFORE its re-run streams. Without this the re-run's deltas
+    // merge into the same segment by partId and the user reads the half
+    // sentence twice — which is exactly why the AUTOMATIC retry has always
+    // refused to run after content streamed.
+    case 'NATIVE_PARTS_DROPPED': {
+      const session = next.get(action.sessionId);
+      if (!session || !session.currentTurnId) return state;
+      const turn = session.assistantTurns.get(session.currentTurnId);
+      if (!turn) return state;
+      const drop = new Set(action.partIds);
+      // Deviation from the brief: `seg.partId` alone doesn't typecheck because
+      // 'tool-group' and 'plan' segments carry no partId field at all (not just
+      // undefined) — narrow to the two streamed-delta segment kinds first.
+      const segments = turn.segments.filter((seg) => {
+        if (seg.type !== 'text' && seg.type !== 'reasoning') return true;
+        return !(seg.partId && drop.has(seg.partId));
+      });
+      if (segments.length === turn.segments.length) return state;
+      const assistantTurns = new Map(session.assistantTurns);
+      assistantTurns.set(session.currentTurnId, { ...turn, segments });
+      next.set(action.sessionId, { ...session, assistantTurns });
       return next;
     }
 
@@ -949,6 +989,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Output means PREFILL IS OVER. Leaving the readout set let it resurface
         // during any generation pause longer than the indicator's 2s streaming
         // window, showing "Reading your prompt — N%" mid-generation — the exact
@@ -998,6 +1039,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Same as the text path: reasoning IS output, so prefill has ended.
         promptProcessing: null,
       });
@@ -1288,6 +1330,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // stall warning would sit on top of a healthy new turn.
         errorMessage: null,
         stallWarning: null,
+        // A skill invocation is a new turn start — same reasoning as above.
+        stalledSince: null,
         // Belt-and-braces: a previous turn's prefill progress must not be
         // mistaken for this turn's (the next assistant-thinking event replaces it).
         promptProcessing: null,

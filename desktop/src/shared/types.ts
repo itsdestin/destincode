@@ -714,7 +714,12 @@ export type AttentionState =
   | 'session-died'    // Process exited mid-turn
   // Native-runtime provider/stream failure (dispatcher: NATIVE_SESSION_ERROR,
   // fed by the 'session-error' transcript event). CC sessions never enter it.
-  | 'error';
+  | 'error'
+  // Native runtime only. The mid-stream watchdog gave up waiting but the turn
+  // is STILL ALIVE and still holding its stream open — unlike every other
+  // non-ok state here, which are all endings. The user chooses: Retry, Stop,
+  // or wait. Dispatcher: TRANSCRIPT_THINKING_HEARTBEAT with `stalled: true`.
+  | 'stalled';
 
 // Red | green | blue | gray — mirrors SessionStatusColor in renderer.
 // Duplicated as a string literal type here (not imported) so main-process
