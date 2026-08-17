@@ -228,6 +228,53 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(types(events)).toContain('user-interrupt');
   });
 
+  it('a SPECIALIST CHILD never parks — the identical stall ends its turn instead', async () => {
+    // Fix C1 (whole-branch review 2026-08-16), previously untested: deleting the
+    // `!this.opts.isSpecialistChild` clause from the park guard left the whole
+    // suite green.
+    //
+    // WHY a child must not park: its heartbeats are filtered out of the parent's
+    // view (wireChildLive re-emits only tool-use / tool-result / assistant-text),
+    // and the parked signal rides assistant-thinking. So a parked child shows the
+    // user NOTHING — no card, no Retry, no Stop — while its send() never settles
+    // and the parent's Task call waits on it forever. Ending with the stall error
+    // is the behavior the parent's Task tool already knows how to recover from.
+    //
+    // Both halves are asserted from ONE stream shape, so the contrast can only
+    // come from the flag: emit one text delta, then go silent forever.
+    const stalling = () => hangingStream(...textChunks('a', 'partial answer'));
+
+    const childModel = modelFromStreams([stalling]);
+    const child = new HarnessSession(makeOpts({ isSpecialistChild: true }), async () => childModel as any);
+    const childEvents = collect(child);
+    // Don't await send() bare: if the guard regresses, the child PARKS and its
+    // promise never settles — the test would sit until this file's 120s timeout
+    // and report a bare "test timed out", naming nothing. Race the two possible
+    // outcomes so a regression fails fast with the real cause.
+    void child.send('go');
+    const outcome = await Promise.race([
+      waitForEvent(childEvents, (e) => e.type === 'session-error', 5_000).then(() => 'session-error' as const),
+      waitForEvent(childEvents, (e) => e.type === 'assistant-thinking' && e.data.stalled === true, 5_000)
+        .then(() => 'parked' as const),
+    ]);
+    expect(outcome, 'expected the child to END its turn, but it parked').toBe('session-error');
+    expect(stalledCards(childEvents)).toHaveLength(0);
+    const errs = childEvents.filter((e) => e.type === 'session-error');
+    expect(errs).toHaveLength(1);
+    // Content DID stream before the silence, so this is the mid-stream wording.
+    expect(errs[0].data.text).toMatch(/stopped responding/i);
+
+    // The SAME stream in a ROOT session parks and stays alive.
+    const rootModel = modelFromStreams([stalling]);
+    const root = new HarnessSession(makeOpts({}), async () => rootModel as any);
+    const rootEvents = collect(root);
+    const sent = root.send('go');
+    await waitForEvent(rootEvents, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    expect(types(rootEvents)).not.toContain('session-error');
+    root.interrupt();
+    await sent;
+  });
+
   it('a stream that keeps emitting (slower than the warn window) NEVER trips the watchdog', async () => {
     // Chunks spaced 4ms apart, warn window 400ms → the watchdog is re-armed on
     // every chunk and never fires. No stall warning, clean completion.
@@ -302,6 +349,46 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(dropIdx).toBeLessThan(recoveredIdx);
     expect(types(events)).toContain('turn-complete');
     expect(types(events)).not.toContain('session-error');
+  });
+
+  it("Retry erases the abandoned sentence from the MODEL's memory, not just the screen", async () => {
+    // The third leg of the "three-place erase" (spec §4): the screen (dropPart),
+    // the store's buffered part (session-store), and — here — the model's own
+    // conversation history. send() keeps the running assistant text in
+    // `partialAssistantText`, and its catch pushes that text into this.history
+    // as a real assistant message when the turn ends abnormally. The Retry
+    // branch's `reportPartial('')` is the ONLY thing that clears it.
+    //
+    // Deleting that one line breaks nothing visible: the screen is still
+    // correct, no test fails, no error appears. The model just silently
+    // re-reads a sentence the user was told had been erased. This test is the
+    // only thing standing between that line and a silent regression.
+    // The re-run hits a PROVIDER ERROR rather than another stall. That matters:
+    // the interrupt path returns a StepResult instead of throwing, so it never
+    // reaches the catch, and a second stall would just park again (the turn has
+    // already parked, so it can no longer die on its own). A provider error is
+    // the reachable way this turn ends through the catch.
+    const model = modelFromStreams([
+      () => hangingStream(...textChunks('a', 'Now I will dispatch')), // stalls mid-sentence
+      () => completingStream({ type: 'error', error: new Error('upstream 502 from the provider') }),
+    ]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    const sent = session.send('go');
+
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    expect(session.retryStalledStep()).toBe(true);
+    await sent;
+    // The re-run failed, so the turn ended through send()'s catch — the one
+    // place that pushes in-flight partial text into history.
+    expect(types(events)).toContain('session-error');
+
+    const history = (session as any).history as any[];
+    const assistantText = history
+      .filter((m) => m.role === 'assistant')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+      .join('\n');
+    expect(assistantText).not.toContain('Now I will dispatch');
   });
 
   it('Retry is a no-op when nothing is parked', async () => {
