@@ -67,12 +67,17 @@ describe('PermissionBroker', () => {
     const emitted: any[] = [];
     broker.on('hook-event', (e) => emitted.push(e));
 
+    // Filter to PermissionRequest — fix pass (Task 9 review): respond() now also
+    // emits a PermissionResolved per answer, so raw array indices no longer line
+    // up with "the Nth ask()".
+    const requests = () => emitted.filter((e) => e.type === 'PermissionRequest');
+
     const denied = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
-    expect(broker.respond(emitted[0].payload._requestId as string, { decision: { behavior: 'deny' } })).toBe(true);
+    expect(broker.respond(requests()[0].payload._requestId as string, { decision: { behavior: 'deny' } })).toBe(true);
     expect((await denied).dismissed).toBe(true);
 
     const allowed = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
-    expect(broker.respond(emitted[1].payload._requestId as string, { decision: { behavior: 'allow' } })).toBe(true);
+    expect(broker.respond(requests()[1].payload._requestId as string, { decision: { behavior: 'allow' } })).toBe(true);
     expect((await allowed).dismissed).toBeFalsy();
   });
 
@@ -473,5 +478,91 @@ describe('PermissionBroker — pendingEventsFor', () => {
   it('returns an empty array for a session with no open asks', () => {
     const broker = new PermissionBroker();
     expect(broker.pendingEventsFor('nobody')).toEqual([]);
+  });
+});
+
+// Fix pass (2026-08-16 review, "the catch-up replays asks that were already
+// answered"): every route that removes an entry from `pending` must emit a
+// signal RemoteServer can use to purge that request's buffered
+// PermissionRequest/PermissionHeld — otherwise a reconnecting phone is
+// replayed a dead question with live-looking buttons. `PermissionResolved`
+// is that signal; these tests pin it at EVERY removal route enumerated in
+// permission-broker.ts (grep `pending\.delete` — three call sites, both
+// respond() branches and cancelOne()).
+describe('PermissionBroker — PermissionResolved (fix pass)', () => {
+  function emitterFor(broker: PermissionBroker) {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    return emitted;
+  }
+
+  it('an in-time respond() emits PermissionResolved with the requestId, after the PermissionRequest', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    const requestId = emitted[0].payload._requestId as string;
+    broker.respond(requestId, { behavior: 'allow' });
+    await p;
+    const resolved = emitted.filter((e) => e.type === 'PermissionResolved');
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].sessionId).toBe('s1');
+    expect(resolved[0].payload).toEqual({ _requestId: requestId });
+  });
+
+  it('a LATE respond() (after the hold timeout) also emits PermissionResolved', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      broker.setLateResponseHandler(() => {}); // wired, same as production
+      const emitted = emitterFor(broker);
+      const p = broker.ask(
+        { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      const requestId = emitted[0].payload._requestId as string;
+      broker.respond(requestId, { behavior: 'allow' });
+      const resolved = emitted.filter((e) => e.type === 'PermissionResolved');
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0].payload).toEqual({ _requestId: requestId });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancelSession() emits PermissionResolved for the canceled ask (in addition to PermissionExpired)', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Edit', toolInput: {}, denyListed: false });
+    const requestId = emitted[0].payload._requestId as string;
+    broker.cancelSession('s1');
+    await p;
+    const resolved = emitted.filter((e) => e.type === 'PermissionResolved');
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].payload).toEqual({ _requestId: requestId });
+    // Order matters for RemoteServer's buffer purge: PermissionResolved must
+    // land BEFORE PermissionExpired, or purging-by-requestId would also
+    // scrub the terminal Expired event this same cancel just buffered.
+    const types = emitted.map((e) => e.type);
+    expect(types.indexOf('PermissionResolved')).toBeLessThan(types.indexOf('PermissionExpired'));
+  });
+
+  it('cancelAll() emits PermissionResolved for every canceled ask across sessions', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p1 = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    const p2 = broker.ask({ sessionId: 's2', toolName: 'Edit', toolInput: {}, denyListed: false });
+    broker.cancelAll();
+    await Promise.all([p1, p2]);
+    const resolved = emitted.filter((e) => e.type === 'PermissionResolved');
+    expect(resolved.map((e) => e.sessionId).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('does NOT emit PermissionResolved for an unknown id (nothing was actually removed)', () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    expect(broker.respond('hook-unknown', { behavior: 'allow' })).toBe(false);
+    expect(emitted.some((e) => e.type === 'PermissionResolved')).toBe(false);
   });
 });

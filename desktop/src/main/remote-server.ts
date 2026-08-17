@@ -473,6 +473,30 @@ export class RemoteServer {
    *  picks these up for free, in the same push order (request, then held). */
   bufferHookEvent(event: HookEvent): void {
     const sessionId = event.sessionId || '';
+    // Fix pass (2026-08-16 review finding, "the catch-up replays asks that
+    // were already answered"): PermissionBroker's one removal chokepoint
+    // (permission-broker.ts's removeEntry) now emits this the moment an ask
+    // stops being open — respond() in time, respond() late, or a cancel.
+    // Before this, a PermissionRequest sat in the buffer FOREVER once
+    // answered (nothing ever removed it, and the buffer holds 10,000
+    // events), so a reconnecting phone was replayed a dead question with
+    // live-looking Yes/No buttons; tapping either returned false and the
+    // card showed a "socket closed" error that was simply untrue — no
+    // socket had closed. This is a purge signal, not a replayable card: it
+    // drops the matching PermissionRequest/PermissionHeld pair (same
+    // _requestId) instead of being appended itself. hook-dispatcher.ts's
+    // switch defaults to null on this unknown type, so even if a live client
+    // saw it broadcast, it is a harmless no-op — nothing here required a
+    // renderer change.
+    if (event.type === 'PermissionResolved') {
+      const requestId = (event.payload as Record<string, unknown> | undefined)?._requestId;
+      const buf = this.hookBuffers.get(sessionId);
+      if (buf && typeof requestId === 'string') {
+        const filtered = buf.filter((e) => (e.payload as Record<string, unknown> | undefined)?._requestId !== requestId);
+        if (filtered.length !== buf.length) this.hookBuffers.set(sessionId, filtered);
+      }
+      return;
+    }
     let buf = this.hookBuffers.get(sessionId) || [];
     buf.push(event);
     if (buf.length > HOOK_BUFFER_SIZE) {

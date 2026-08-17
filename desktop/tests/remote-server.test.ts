@@ -873,6 +873,63 @@ describe('RemoteServer specialist run + native hook replay (Task 9)', () => {
     expect(held[0].payload.type).toBe('PermissionRequest');
     expect(held[1].payload.type).toBe('PermissionHeld');
   });
+
+  // Fix pass (2026-08-16 review finding, "the catch-up replays asks that were
+  // already answered"): PermissionBroker now emits PermissionResolved from
+  // its one removal chokepoint (permission-broker.ts) whenever an entry
+  // leaves `pending` — respond() in time, respond() late, or a cancel.
+  // bufferHookEvent() must treat that as a purge signal instead of just
+  // another event to append, or a reconnecting phone still gets replayed a
+  // dead question with live-looking Yes/No buttons.
+  it('a reconnecting client is NOT replayed an ask that was already answered', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+
+    // Simulates the full lifecycle: the ask goes out, then gets answered
+    // BEFORE anyone reconnects — mirrors respond() emitting PermissionRequest
+    // then (on answer) PermissionResolved, same order permission-broker.ts
+    // produces.
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionRequest', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionResolved', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+
+    await replayAndWait(server, ws);
+
+    const stale = frames.filter((m) => m.type === 'hook:event' && m.payload.payload?._requestId === 'native-answered');
+    expect(stale).toHaveLength(0);
+  });
+
+  it('purges only the matching request id, leaving a different open ask in the same session alone', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionRequest', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionResolved', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+    // A second, still-open ask in the SAME session — must survive the purge.
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionRequest', payload: { _requestId: 'native-open' }, timestamp: Date.now() });
+
+    await replayAndWait(server, ws);
+
+    const answered = frames.filter((m) => m.type === 'hook:event' && m.payload.payload?._requestId === 'native-answered');
+    const open = frames.filter((m) => m.type === 'hook:event' && m.payload.payload?._requestId === 'native-open');
+    expect(answered).toHaveLength(0);
+    expect(open).toHaveLength(1);
+    expect(open[0].payload.type).toBe('PermissionRequest');
+  });
+
+  it('PermissionResolved itself is never replayed — it is a purge signal, not a card', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionRequest', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionResolved', payload: { _requestId: 'native-answered' }, timestamp: Date.now() });
+
+    await replayAndWait(server, ws);
+
+    expect(frames.some((m) => m.type === 'hook:event' && m.payload.type === 'PermissionResolved')).toBe(false);
+  });
 });
 
 // Security regression: the transcript:read-meta WS handler validated the

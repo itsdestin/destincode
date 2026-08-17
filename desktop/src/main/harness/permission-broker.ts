@@ -364,8 +364,7 @@ export class PermissionBroker extends EventEmitter {
       // resolve, so route it to whoever is tracking this ask's real outcome
       // instead (NativeSessionHost.onLateResponse) rather than calling
       // `entry.resolve` again, which would just no-op.
-      this.pending.delete(requestId);
-      this.syncReannounceTimer();
+      this.removeEntry(requestId, entry);
       if (this.lateResponseHandler) {
         this.lateResponseHandler(
           {
@@ -387,8 +386,7 @@ export class PermissionBroker extends EventEmitter {
     }
 
     if (entry.timer) clearTimeout(entry.timer); // exit path: respond() before the deadline
-    this.pending.delete(requestId);
-    this.syncReannounceTimer();
+    this.removeEntry(requestId, entry);
     entry.resolve(resolved);
     return true;
   }
@@ -422,10 +420,13 @@ export class PermissionBroker extends EventEmitter {
 
   private cancelOne(id: string, entry: PendingAsk): void {
     if (entry.timer) clearTimeout(entry.timer); // exit path: cancel
-    this.pending.delete(id);
-    this.syncReannounceTimer();
+    this.removeEntry(id, entry);
     // PermissionExpired clears the approval card; _requestId matches the field
-    // hook-dispatcher reads for the expired branch.
+    // hook-dispatcher reads for the expired branch. Emitted AFTER removeEntry's
+    // PermissionResolved (below) so a RemoteServer buffer purge keyed on the
+    // resolved id clears the now-stale Request/Held first, THEN this terminal
+    // Expired lands fresh — reversing the order would purge the Expired event
+    // it just buffered too.
     this.emit('hook-event', {
       sessionId: entry.sessionId,
       type: 'PermissionExpired',
@@ -433,5 +434,32 @@ export class PermissionBroker extends EventEmitter {
       timestamp: Date.now(),
     });
     entry.resolve({ behavior: 'canceled' });
+  }
+
+  /** The ONE place a `PendingAsk` stops being pending — whichever route
+   *  triggered it. Before this, `respond()` (both its in-time and late
+   *  branches) and `cancelOne()` each called `pending.delete` directly, and
+   *  `respond()` emitted NOTHING on resolution (2026-08-16 review finding:
+   *  "the catch-up replays asks that were already answered"). A phone
+   *  reconnecting after answering a card in two seconds was replayed that
+   *  same PermissionRequest out of RemoteServer's buffer — a dead question
+   *  with live-looking Yes/No buttons; tapping either returned false and the
+   *  card showed a "socket closed" message that was simply untrue. Routing
+   *  every removal through here means RemoteServer only has to listen for
+   *  ONE signal (`PermissionResolved`) to purge its buffer, instead of a
+   *  per-route emit risking exactly the kind of miss this finding was about.
+   *  Not built via hookEventFor() — that helper only knows the two LIVE
+   *  card states (Request/Held); this is a new, renderer-invisible type
+   *  (hook-dispatcher.ts's switch defaults to null on an unknown type) whose
+   *  only consumer is RemoteServer.bufferHookEvent's purge branch. */
+  private removeEntry(id: string, entry: PendingAsk): void {
+    this.pending.delete(id);
+    this.syncReannounceTimer();
+    this.emit('hook-event', {
+      sessionId: entry.sessionId,
+      type: 'PermissionResolved',
+      payload: { _requestId: id },
+      timestamp: Date.now(),
+    });
   }
 }
