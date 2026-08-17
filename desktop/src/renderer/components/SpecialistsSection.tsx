@@ -3,7 +3,7 @@ import type { SpecialistDefinitionView, DelegatedModelsView, SpecialistsListResu
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { Button, EmptyState, ErrorState, LoadingState } from './ui';
 import type { ExplainerSection } from './SettingsExplainer';
-import { refreshSpecialistRoster, useSpecialistRoster, definedBy } from '../hooks/useSpecialists';
+import { refreshSpecialistRoster, useSpecialistRoster, definedBy, NOT_IMPLEMENTED_ON_MOBILE } from '../hooks/useSpecialists';
 
 // Specialists 1c — Settings → Specialists. Two things, in the order a person
 // needs them: (1) the two model tiers the assistant can hire onto (Destin's
@@ -79,7 +79,17 @@ export default function SpecialistsSection({ cwd }: {
   // saved a specialist.
   const roster = useSpecialistRoster(cwd, { ensurePersonalFolder: true });
   const [tiers, setTiers] = useState<DelegatedModelsView | null>(null);
-  const [tierError, setTierError] = useState<string | null>(null);
+  // Task 13: two DIFFERENT failure moments, kept as separate state so each
+  // renders correctly — a load failure means there's nothing to show (the
+  // rows disappear, replaced by ErrorState + Retry); a write failure means
+  // the rows are already showing a real value that must revert and stay
+  // visible, with the refusal shown alongside it.
+  const [tierLoadError, setTierLoadError] = useState<string | null>(null);
+  const [tierWriteError, setTierWriteError] = useState<string | null>(null);
+  // Task 13: the not-implemented-on-mobile shape can come back from
+  // getDelegatedModels independently of the roster call — tracked here so
+  // the single top-of-component check below covers both.
+  const [tiersUnavailable, setTiersUnavailable] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
   const folders = roster.status === 'ready' ? roster.result.folders : undefined;
 
@@ -100,13 +110,26 @@ export default function SpecialistsSection({ cwd }: {
   const loadTiers = useCallback(async () => {
     try {
       const t = await window.claude.specialists.getDelegatedModels();
-      // Fix: see the matching WHY in hooks/useSpecialists.ts's useDelegatedModels
-      // — a not-implemented-on-mobile reply is also a truthy object, and
-      // without the `'budget' in t` check it got cast and rendered as if a
-      // tier had silently been cleared rather than "unknown on this host".
-      if (t && typeof t === 'object' && 'budget' in t) setTiers(t as DelegatedModelsView);
-      else setTiers({ budget: null, frontier: null });
-    } catch { setTiers({ budget: null, frontier: null }); }
+      if (t && typeof t === 'object' && 'budget' in t) {
+        setTiers(t as DelegatedModelsView);
+        setTierLoadError(null);
+        return;
+      }
+      // Fix (Task 13): a not-implemented-on-mobile reply is ALSO a truthy
+      // object without 'budget' — the roster hook already has a name for
+      // this exact shape. Route it to the same "whole section is
+      // desktop-only" outcome the roster uses, instead of a generic error.
+      const err = t && typeof t === 'object' ? (t as { error?: unknown }).error : undefined;
+      if (err === NOT_IMPLEMENTED_ON_MOBILE) { setTiersUnavailable(true); return; }
+      // Fix (Task 13): this used to fall back to `{ budget: null, frontier:
+      // null }`, which renders as "Not set" — a real error read as a fact
+      // about the user's OWN configuration. Show the real text instead of
+      // guessing, and leave `tiers` alone so the rows don't lie either.
+      setTierLoadError(typeof err === 'string' ? err : 'Could not load the model settings — unexpected response.');
+    } catch (e) {
+      // Fix (Task 13): same bug as above, via the exception path.
+      setTierLoadError((e as Error).message);
+    }
   }, []);
   useEffect(() => { void loadTiers(); }, [loadTiers]);
 
@@ -116,13 +139,27 @@ export default function SpecialistsSection({ cwd }: {
     const prev = tiers;
     // Optimistic; revert if the write is refused.
     setTiers(t => t ? { ...t, [tier]: binding } : t);
-    setTierError(null);
+    setTierWriteError(null);
     try {
       const res = await window.claude.specialists.setDelegatedModel(tier, binding);
-      if (res && res.ok === false) { setTiers(prev); setTierError(`Couldn’t save the ${tier} model. ${res.error ?? ''}`.trim()); return; }
+      if (res && res.ok === false) { setTiers(prev); setTierWriteError(`Couldn’t save the ${tier} model. ${res.error ?? ''}`.trim()); return; }
       await loadTiers();
-    } catch (e) { setTiers(prev); setTierError((e as Error).message); }
+    } catch (e) { setTiers(prev); setTierWriteError((e as Error).message); }
   };
+
+  // Task 13: a host where the native specialists harness doesn't exist yet
+  // (a phone, today) must never be shown as "nothing here" — that reads as
+  // "you have no specialists" when the truth is "this feature isn't on
+  // this device yet". ONE check, after every hook above has already run,
+  // covering both signals the two backend calls can report — so nothing
+  // downstream has to guess which half of the screen is broken.
+  if (roster.status === 'unavailable' || tiersUnavailable) {
+    return (
+      <section className="space-y-5">
+        <EmptyState message="Specialists run on the desktop app. Open Settings there to add or edit them." />
+      </section>
+    );
+  }
 
   const definitions = roster.status === 'ready' ? roster.result.definitions : [];
   const skipped = roster.status === 'ready' ? roster.result.skipped : [];
@@ -155,28 +192,36 @@ export default function SpecialistsSection({ cwd }: {
               <span className="text-fg-2">frontier</span> model. You decide what those names mean. A tier that is not set uses the conversation’s own model.
             </p>
           </div>
-          <div className="border-t border-edge-dim divide-y divide-edge-dim">
-            <TierRow
-              tier="budget"
-              title="Budget"
-              hint="Cheap and quick — searching, reading, summarizing."
-              value={tiers?.budget ?? null}
-              loaded={tiers !== null}
-              onPick={(c) => setTier('budget', c)}
-              onClear={() => setTier('budget', null)}
-            />
-            <TierRow
-              tier="frontier"
-              title="Frontier"
-              hint="The strongest you have — reviews and judgment calls."
-              value={tiers?.frontier ?? null}
-              loaded={tiers !== null}
-              onPick={(c) => setTier('frontier', c)}
-              onClear={() => setTier('frontier', null)}
-            />
-          </div>
-          {tierError && (
-            <div className="border-t border-edge-dim px-3 py-2 text-2xs text-danger">{tierError}</div>
+          {tierLoadError ? (
+            <div className="border-t border-edge-dim p-2.5">
+              <ErrorState mode="recoverable" message={tierLoadError} onRetry={() => void loadTiers()} variant="inline" />
+            </div>
+          ) : (
+            <>
+              <div className="border-t border-edge-dim divide-y divide-edge-dim">
+                <TierRow
+                  tier="budget"
+                  title="Budget"
+                  hint="Cheap and quick — searching, reading, summarizing."
+                  value={tiers?.budget ?? null}
+                  loaded={tiers !== null}
+                  onPick={(c) => setTier('budget', c)}
+                  onClear={() => setTier('budget', null)}
+                />
+                <TierRow
+                  tier="frontier"
+                  title="Frontier"
+                  hint="The strongest you have — reviews and judgment calls."
+                  value={tiers?.frontier ?? null}
+                  loaded={tiers !== null}
+                  onPick={(c) => setTier('frontier', c)}
+                  onClear={() => setTier('frontier', null)}
+                />
+              </div>
+              {tierWriteError && (
+                <div className="border-t border-edge-dim px-3 py-2 text-2xs text-danger">{tierWriteError}</div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -196,10 +241,6 @@ export default function SpecialistsSection({ cwd }: {
           {roster.status === 'loading' ? (
             <div className="border-t border-edge-dim px-3 py-3">
               <LoadingState what="specialists" variant="inline" />
-            </div>
-          ) : roster.status === 'unavailable' ? (
-            <div className="border-t border-edge-dim p-2.5">
-              <EmptyState message="Specialists aren’t available on this device yet." variant="inline" />
             </div>
           ) : roster.status === 'failed' ? (
             <div className="border-t border-edge-dim p-2.5">
@@ -226,7 +267,8 @@ export default function SpecialistsSection({ cwd }: {
             ))
           )}
           <div className="border-t border-edge-dim px-2 py-1.5 flex items-center justify-between gap-2">
-            <span className="text-3xs text-fg-muted px-1">Files are re-read automatically; Refresh if one seems missing.</span>
+            {/* Footer copy per Task 13 brief, verbatim. */}
+            <span className="text-3xs text-fg-muted px-1">Files are re-read each time you send a message; Refresh to re-read now.</span>
             <div className="flex items-center gap-1 shrink-0">
               <Button size="sm" variant="ghost" onClick={() => void refreshSpecialistRoster(cwd)}>Refresh</Button>
               <Button
@@ -274,7 +316,9 @@ function TierRow({ tier, title, hint, value, loaded, onPick, onClear }: {
         {value && <Button size="sm" variant="ghost" onClick={onClear} title={`Unset the ${tier} model`}>Clear</Button>}
       </div>
       <div className="text-2xs">
-        {!loaded ? <span className="text-fg-muted">Loading…</span>
+        {/* Fix (Task 13): was a bare "Loading…" — every loading state in
+            this app names what it's waiting on. */}
+        {!loaded ? <LoadingState what={`the ${tier} model`} variant="inline" />
           : value ? <span className="text-fg-dim">Set to <span className="text-fg-2">{value.label}</span></span>
           : <span className="text-amber-500">Not set — helpers use the conversation’s model</span>}
       </div>
@@ -306,7 +350,11 @@ function RosterRow({ d, folders }: { d: SpecialistDefinitionView; folders?: Spec
         {/* Task 10: provenance — where this row's definition actually came
             from, so "which .claude/agents is this" is never a guess. */}
         <div className="text-2xs text-fg-muted">{definedBy(d, folders)}</div>
-        <div className="text-2xs text-fg-dim leading-relaxed">{d.description}</div>
+        {/* Fix (Task 13): d.description is the CLAMPED text the assistant's
+            tool list actually gets (MAX_DESCRIPTION_CHARS); Settings should
+            show what the file author actually wrote. The warning list below
+            already says a description was shortened and why. */}
+        <div className="text-2xs text-fg-dim leading-relaxed">{d.fullDescription ?? d.description}</div>
       </button>
       {open && (
         <div className="mt-1 pl-2 border-l-2 border-edge-dim space-y-1 text-2xs">
