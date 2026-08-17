@@ -1150,6 +1150,14 @@ export class HarnessSession extends EventEmitter {
    *  RETRIED from scratch, which is what made progress appear to reset itself
    *  (Destin, 2026-07-26). */
   private rearmStallWatchdog: (() => void) | null = null;
+  /** True once THIS turn has parked on a stall the user was told about.
+   *  WHY it outlives the step: a manual Retry re-runs the step from the top,
+   *  which lands back on the FIRST-BYTE clock (Clock 1). Without this flag a
+   *  retry against a dead provider would sit for the full prefill budget and
+   *  then kill the turn with Clock 1's "didn't begin responding" error — the
+   *  exact ending this design exists to remove, arriving four minutes after the
+   *  user asked for the opposite. Cleared at the start of every turn. */
+  private turnEverParked = false;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
     // can already see the result of; the notice is a pre-output affordance only.
@@ -1578,6 +1586,7 @@ export class HarnessSession extends EventEmitter {
       ? { role: 'user', content: [{ type: 'text', text }, ...imageParts] } as any
       : { role: 'user', content: text });
     this.abort = new AbortController();
+    this.turnEverParked = false;   // cleared at the start of every turn — see field WHY
     this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
     const startedAt = Date.now();
@@ -1952,6 +1961,7 @@ export class HarnessSession extends EventEmitter {
     let sawFirstChunk = false;
     let firstChunkAt = 0;   // when generation actually began (see StepResult.generationMs)
     let warned = false;
+    let parked = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
     const stallPromise = new Promise<'stall'>((resolve) => { resolveStall = resolve; });
@@ -1960,10 +1970,25 @@ export class HarnessSession extends EventEmitter {
       stageTimer = setTimeout(() => {
         warned = true;
         // willRetry: we can safely re-run only if nothing streamed AND this is
-        // the first attempt — otherwise the countdown ends in an error, not a retry.
+        // the first attempt — otherwise the countdown ends in a park, not a retry.
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
-        stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
+        stageTimer = setTimeout(() => {
+          // PARK: any stall that isn't covered by the single silent auto-retry
+          // above now parks instead of ending the turn — that includes a
+          // mid-stream stall (sawFirstChunk) AND a second, still-in-prefill
+          // stall with the retry already spent (Clock 1 twice). Do NOT resolve
+          // the stall race: nothing is torn down, the reader stays open, and a
+          // chunk arriving minutes later still lands in the loop below and
+          // continues the turn. This return IS the feature.
+          if (!willRetry) {
+            parked = true;
+            this.turnEverParked = true;
+            this.emitEvent('assistant-thinking', { stalled: true });
+            return;
+          }
+          resolveStall('stall');
+        }, countdownMs);
       }, sawFirstChunk ? warnMs : firstChunkMs);
     };
     this.rearmStallWatchdog = armWatchdog;
@@ -2052,8 +2077,12 @@ export class HarnessSession extends EventEmitter {
           if (!sawFirstChunk) firstChunkAt = Date.now();
           sawFirstChunk = true;
         }
-        // A real chunk arrived → clear any shown warning and re-arm the watchdog.
-        if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
+        // A real chunk arrived → clear any shown warning/card and re-arm.
+        if (warned || parked) {
+          warned = false;
+          parked = false;
+          this.emitEvent('assistant-thinking', {});
+        }
         armWatchdog();
         const part = chunk.value;
         switch (part.type) {

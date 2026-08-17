@@ -245,6 +245,17 @@ export interface TranscriptEvent {
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
     /**
+     * Native runtime only. The mid-stream watchdog gave up waiting and the turn
+     * is now PARKED: the stream reader is still open, nothing has been torn
+     * down, and the turn ends only when a chunk arrives or the user presses
+     * Retry / Stop. Display-only (no text, no partId) so SessionStore drops it.
+     *
+     * Deliberately a bare `true` and not a timestamp: the renderer stamps its
+     * own clock on first receipt, so a remote client counting up never inherits
+     * clock skew from the host.
+     */
+    stalled?: true;
+    /**
      * Native runtime only. Emitted on `assistant-thinking` the moment a step's
      * stream opens, BEFORE any token arrives, so the UI can say the model is
      * reading the prompt rather than showing an idle spinner. Local models take

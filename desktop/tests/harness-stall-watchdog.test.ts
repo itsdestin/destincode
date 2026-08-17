@@ -98,6 +98,25 @@ function collect(session: HarnessSession): TranscriptEvent[] {
 const types = (events: TranscriptEvent[]) => events.map((e) => e.type);
 const stallWarnings = (events: TranscriptEvent[]) =>
   events.filter((e) => e.type === 'assistant-thinking' && e.data.stallWarning);
+const stalledCards = (events: TranscriptEvent[]) =>
+  events.filter((e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+
+// A parked turn's send() promise stays pending BY DESIGN — that is the whole
+// feature. Poll the collected events instead of awaiting send(), then end the
+// turn explicitly so the promise settles and the test can finish.
+async function waitForEvent(
+  events: TranscriptEvent[],
+  pred: (e: TranscriptEvent) => boolean,
+  timeoutMs = 30_000,
+): Promise<TranscriptEvent> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const hit = events.find(pred);
+    if (hit) return hit;
+    if (Date.now() > deadline) throw new Error('timed out waiting for event');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 describe('HarnessSession — streaming inactivity watchdog', () => {
   it('silent stall with nothing streamed: warns (willRetry) then AUTO-RETRIES and completes', async () => {
@@ -120,27 +139,23 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(types(events)).not.toContain('session-error');
   });
 
-  it('stall on BOTH the first attempt and the retry: second warning is non-retry, ends in session-error', async () => {
+  it('stall on BOTH attempts: the auto-retry is spent, so the second stall PARKS', async () => {
     const model = modelFromStreams([() => hangingStream(), () => hangingStream(), () => hangingStream()]);
     const session = new HarnessSession(makeOpts({}), async () => model as any);
     const events = collect(session);
-    await session.send('go');
+    const sent = session.send('go');
 
+    // Attempt 0 stalls with nothing streamed → silent auto-retry (unchanged).
+    // Attempt 1 stalls with the retry spent → the card, not an error.
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
     const warns = stallWarnings(events);
     expect(warns).toHaveLength(2);
-    expect(warns[0].data.stallWarning!.willRetry).toBe(true);   // first: retry promised
-    expect(warns[1].data.stallWarning!.willRetry).toBe(false);  // retry also stalled: no more retries
-    const errs = events.filter((e) => e.type === 'session-error');
-    expect(errs).toHaveLength(1);
-    // WORDING CHANGED 2026-07-26, deliberately. Every attempt here uses
-    // hangingStream(), so the model never produced a single part — it did not
-    // "stop responding", it never began. Claiming otherwise sends the user
-    // hunting a provider fault that isn't there, and on a local model the real
-    // cause is usually just a long prompt. The mid-stream phrasing is still
-    // pinned by the test below.
-    expect(errs[0].data.text).toMatch(/didn't begin responding/i);
-    expect(errs[0].data.text).not.toMatch(/stopped responding/i);
-    expect(types(events)).not.toContain('turn-complete');
+    expect(warns[0].data.stallWarning!.willRetry).toBe(true);
+    expect(warns[1].data.stallWarning!.willRetry).toBe(false);
+    expect(events.filter((e) => e.type === 'session-error')).toHaveLength(0);
+
+    session.interrupt();
+    await sent;
   });
 
   it('a stall AFTER output has started still says the model STOPPED responding', () => {
@@ -154,23 +169,29 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(err.message).not.toMatch(/didn't begin responding/i);
   });
 
-  it('stall AFTER content already streamed: does NOT retry (would duplicate), errors immediately', async () => {
-    // One text delta lands, THEN the stream goes silent. A retry would re-stream
-    // and duplicate the bubble, so the watchdog must go straight to error.
+  it('stall AFTER content already streamed: PARKS the turn instead of erroring', async () => {
+    // One text delta lands, THEN the stream goes silent. This used to be a
+    // session-error that ended the turn; now it raises the stalled card and the
+    // turn stays alive with the reader still open.
     const model = modelFromStreams([() => hangingStream(...textChunks('a', 'partial answer'))]);
     const session = new HarnessSession(makeOpts({}), async () => model as any);
     const events = collect(session);
-    await session.send('go');
+    const sent = session.send('go');
 
-    // The partial text was surfaced...
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    // The partial text is still on screen, the warning did NOT promise a retry,
+    // and NOTHING has ended the turn.
     expect(events.find((e) => e.type === 'assistant-text')?.data.text).toBe('partial answer');
-    // ...the warning did NOT promise a retry...
-    const warns = stallWarnings(events);
-    expect(warns).toHaveLength(1);
-    expect(warns[0].data.stallWarning!.willRetry).toBe(false);
-    // ...and exactly one attempt ran (no duplicate answer) before the error.
-    expect(events.filter((e) => e.type === 'assistant-text')).toHaveLength(1);
-    expect(events.filter((e) => e.type === 'session-error')).toHaveLength(1);
+    expect(stallWarnings(events)).toHaveLength(1);
+    expect(stallWarnings(events)[0].data.stallWarning!.willRetry).toBe(false);
+    expect(stalledCards(events)).toHaveLength(1);
+    expect(types(events)).not.toContain('session-error');
+    expect(types(events)).not.toContain('turn-complete');
+
+    // Only the user ends it.
+    session.interrupt();
+    await sent;
+    expect(types(events)).toContain('user-interrupt');
   });
 
   it('a stream that keeps emitting (slower than the warn window) NEVER trips the watchdog', async () => {
@@ -191,5 +212,35 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     expect(stallWarnings(events)).toHaveLength(0);
     expect(types(events)).toContain('turn-complete');
     expect(types(events)).not.toContain('session-error');
+  });
+
+  it('a chunk arriving AFTER the card clears it and the turn completes normally', async () => {
+    // A stream that emits, goes quiet past warn+countdown, then wakes up.
+    let controller: ReadableStreamDefaultController<any>;
+    const wakeable = new ReadableStream({
+      start(c) {
+        controller = c;
+        for (const chunk of [{ type: 'stream-start', warnings: [] }, ...textChunks('a', 'half ')]) c.enqueue(chunk);
+      },
+    });
+    const model = new MockLanguageModelV4({ doStream: async () => ({ stream: wakeable }) });
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    const sent = session.send('go');
+
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    // The provider wakes up on the SAME connection.
+    for (const c of stream(...textChunks('a', 'a sentence'), finishChunk('stop'))) controller!.enqueue(c);
+    controller!.close();
+
+    await sent;
+    expect(types(events)).toContain('turn-complete');
+    expect(types(events)).not.toContain('session-error');
+    // The clearing heartbeat (no stalled, no stallWarning) followed the card.
+    const cardIdx = events.findIndex((e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    const cleared = events.slice(cardIdx + 1).find(
+      (e) => e.type === 'assistant-thinking' && !e.data.stalled && !e.data.stallWarning && !e.data.text,
+    );
+    expect(cleared).toBeDefined();
   });
 });
