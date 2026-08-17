@@ -1,13 +1,20 @@
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { asString } from '../utils/tool-input';
-import { useDelegatedModels, useSpecialistRoster, useSpecialistRunByChild } from '../hooks/useSpecialists';
+import { useDelegatedModels, useSpecialistDefinition, useSpecialistRoster, useSpecialistRunByChild, definedBy } from '../hooks/useSpecialists';
 import type { SpecialistDefinitionView, ToolCallState } from '../../shared/types';
 
-/** ToolCard's entry: resolves roster + target for the awaiting Task card. */
+/** ToolCard's entry: resolves the roster + target for the awaiting Task card.
+ *  Task 10: cwd is computed HERE (not inside SpecialistEnvelope) because
+ *  useSpecialistDefinition needs it too — the per-cwd cache is keyed on it,
+ *  and a Task card that never passes cwd would silently miss every one of
+ *  the session's OWN project specialists. */
 export function TaskConsentBlock({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
-  const roster = useSpecialistRoster();
-  const agent = asString(tool.input.agent);
-  const definition = roster?.find(d => d.id === agent);
+  const artifacts = useArtifactOptional();
+  const cwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
+  const agent = asString(tool.input.agent) || undefined;
+  const definition = useSpecialistDefinition(cwd, agent);
+  const roster = useSpecialistRoster(cwd);
+  const folders = roster.status === 'ready' ? roster.result.folders : undefined;
   const taskId = asString(tool.input.task_id);
   const target = useSpecialistRunByChild(sessionId, taskId || undefined);
   return (
@@ -15,9 +22,10 @@ export function TaskConsentBlock({ tool, sessionId }: { tool: ToolCallState; ses
       <SpecialistEnvelope
         input={tool.input}
         definition={definition}
+        provenance={definition ? definedBy(definition, folders) : undefined}
         targetTitle={target?.title}
         targetRunning={target ? target.status === 'running' : undefined}
-        sessionId={sessionId}
+        cwd={cwd}
       />
     </div>
   );
@@ -30,15 +38,22 @@ export function TaskConsentBlock({ tool, sessionId }: { tool: ToolCallState; ses
  * get, never from the model's prose. A `task_id` call reads as what it is:
  * a note, a resume, or a stop, and grants nothing new.
  */
-export function SpecialistEnvelope({ input, definition, targetTitle, targetRunning, sessionId }: {
+export function SpecialistEnvelope({ input, definition, provenance, targetTitle, targetRunning, cwd }: {
   input: Record<string, unknown>;
   definition?: SpecialistDefinitionView;
+  /** Task 10: "Built in" / "Your specialists folder · x.md" / etc — the
+   *  caller computes this (useSpecialists.ts's definedBy) because it needs
+   *  the roster's `folders` alongside the definition, which this component
+   *  never fetches on its own. */
+  provenance?: string;
   targetTitle?: string;
   targetRunning?: boolean;
-  sessionId?: string;
+  /** Task 10: the CALLER's cwd, not a sessionId to re-derive it from — the
+   *  caller (TaskConsentBlock) already needs cwd for useSpecialistDefinition,
+   *  so recomputing it here a second time would just be a second read of the
+   *  same ArtifactContext value. */
+  cwd?: string;
 }) {
-  const artifacts = useArtifactOptional();
-  const cwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
   const folder = cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : undefined;
   const workDir = asString(input.work_dir);
   const where = workDir && workDir !== '.' && workDir !== './' ? workDir : (folder ? `${folder}/` : 'this folder');
@@ -79,6 +94,7 @@ export function SpecialistEnvelope({ input, definition, targetTitle, targetRunni
   return (
     <div className="rounded-lg border border-edge bg-inset/40 px-3 py-2 text-xs space-y-1" data-testid="specialist-envelope">
       <div className="font-medium text-fg-2">What Yes allows</div>
+      {provenance && <div className="text-fg-muted -mt-0.5">{provenance}</div>}
       <ul className="list-disc pl-4 space-y-0.5 text-fg-dim">
         <li>
           {definition?.displayName ?? agent} working in <span className="font-mono">{where}</span>

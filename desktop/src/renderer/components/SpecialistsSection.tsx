@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { SpecialistDefinitionView, DelegatedModelsView } from '../../shared/types';
+import type { SpecialistDefinitionView, DelegatedModelsView, SpecialistsListResult } from '../../shared/types';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
-import { Button, EmptyState } from './ui';
+import { Button, EmptyState, ErrorState, LoadingState } from './ui';
 import type { ExplainerSection } from './SettingsExplainer';
-import { refreshSpecialistRoster, useSpecialistRoster } from '../hooks/useSpecialists';
+import { refreshSpecialistRoster, useSpecialistRoster, definedBy } from '../hooks/useSpecialists';
 
 // Specialists 1c — Settings → Specialists. Two things, in the order a person
 // needs them: (1) the two model tiers the assistant can hire onto (Destin's
@@ -16,20 +16,21 @@ import { refreshSpecialistRoster, useSpecialistRoster } from '../hooks/useSpecia
 
 const SECTION_LABEL = 'text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2';
 
-// Task 8 fix: the catalog's real `source` union is 'builtin' | 'personal' |
-// 'claude-code' — a project's OWN .claude/agents/ file gets the same
-// 'claude-code' source as ~/.claude/agents (only `path` tells them apart), so
-// the earlier 'project' label this section was mocked up against never
-// matched anything the real backend produces. Full "this project vs. your
-// account" grouping is renderer-task follow-up; this keeps the section
-// type-correct against the real bridge shape in the meantime.
+// Task 10: group labels per the approved design. A project's OWN
+// .claude/agents/ file gets the same 'claude-code' source as the user-level
+// ~/.claude/agents (only `path` tells them apart — see definedBy in
+// hooks/useSpecialists.ts), so this ONE group covers both.
 const SOURCE_LABEL: Record<SpecialistDefinitionView['source'], string> = {
   builtin: 'Built in',
   personal: 'Your specialists',
-  'claude-code': 'Claude Code agent file',
+  'claude-code': 'Claude Code agents',
 };
 
 const SOURCE_ORDER: SpecialistDefinitionView['source'][] = ['builtin', 'personal', 'claude-code'];
+
+function basename(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
 
 export const SPECIALISTS_EXPLAINER_INTRO =
   'Specialists are helpers your assistant can hire for a piece of work — a search, a review, an edit — while it keeps talking to you. Each one runs on its own with only the tools its job needs.';
@@ -47,7 +48,10 @@ export const SPECIALISTS_EXPLAINER_SECTIONS: ExplainerSection[] = [
     bullets: [
       { term: 'Built in', text: 'Explorer, Researcher, Reviewer and Worker ship with the app.' },
       { term: 'Your specialists', text: 'Files in your specialists folder. Add one there and it appears here the moment it is saved.' },
-      { term: 'This project', text: 'Files in the project’s own specialists folder, and any Claude Code agent files it has. Those use Claude Code’s tool names, which are translated; anything that does not translate is removed and listed as a warning.' },
+      // Fix: was "the project's own specialists folder" — that folder doesn't
+      // exist. A project's specialists come from its OWN .claude/agents
+      // folder (Claude Code's format), same as the account-wide one below.
+      { term: 'Claude Code agents', text: 'Files in a project’s own .claude/agents folder, or in your ~/.claude/agents folder. Those use Claude Code’s tool names, which are translated; anything that does not translate is removed and listed as a warning.' },
     ],
   },
   {
@@ -58,19 +62,39 @@ export const SPECIALISTS_EXPLAINER_SECTIONS: ExplainerSection[] = [
   },
 ];
 
-export default function SpecialistsSection() {
-  const roster = useSpecialistRoster();
+export default function SpecialistsSection({ cwd }: {
+  /** The active conversation's working folder, when one exists — threaded
+   *  down from App.tsx (SettingsPanel has no session state of its own).
+   *  Omitting it is not a bug, just narrower: the roster shows only the two
+   *  global sources (built-ins + your specialists folder), never a project's
+   *  own .claude/agents. */
+  cwd?: string;
+}) {
+  const roster = useSpecialistRoster(cwd);
   const [tiers, setTiers] = useState<DelegatedModelsView | null>(null);
   const [tierError, setTierError] = useState<string | null>(null);
 
   const loadTiers = useCallback(async () => {
     try {
-      const t = await (window as any).claude?.specialists?.getDelegatedModels?.();
-      if (t && typeof t === 'object') setTiers(t as DelegatedModelsView);
+      const t = await window.claude.specialists.getDelegatedModels();
+      // Fix: see the matching WHY in hooks/useSpecialists.ts's useDelegatedModels
+      // — a not-implemented-on-mobile reply is also a truthy object, and
+      // without the `'budget' in t` check it got cast and rendered as if a
+      // tier had silently been cleared rather than "unknown on this host".
+      if (t && typeof t === 'object' && 'budget' in t) setTiers(t as DelegatedModelsView);
       else setTiers({ budget: null, frontier: null });
     } catch { setTiers({ budget: null, frontier: null }); }
   }, []);
   useEffect(() => { void loadTiers(); }, [loadTiers]);
+
+  // Spec §2's one deliberate exception to "the folder appears on first
+  // write": Settings' first `list` call also creates the personal folder +
+  // its starter file, so Open Folder below has somewhere to open even before
+  // the user has ever saved a specialist. useSpecialistRoster above may ALSO
+  // kick off a (non-ensuring) load for the same cwd on this same mount —
+  // refreshSpecialistRoster always overwrites with its own fresh read, so the
+  // worst case is one harmless extra list() call, not a wrong final state.
+  useEffect(() => { void refreshSpecialistRoster(cwd, { ensurePersonalFolder: true }); }, [cwd]);
 
   const setTier = async (tier: 'budget' | 'frontier', choice: ModelChoice | null) => {
     if (choice && choice.runtime !== 'native') return; // specialists run natively
@@ -80,19 +104,31 @@ export default function SpecialistsSection() {
     setTiers(t => t ? { ...t, [tier]: binding } : t);
     setTierError(null);
     try {
-      const res = await (window as any).claude?.specialists?.setDelegatedModel?.(tier, binding);
+      const res = await window.claude.specialists.setDelegatedModel(tier, binding);
       if (res && res.ok === false) { setTiers(prev); setTierError(`Couldn’t save the ${tier} model. ${res.error ?? ''}`.trim()); return; }
       await loadTiers();
     } catch (e) { setTiers(prev); setTierError((e as Error).message); }
   };
 
+  const definitions = roster.status === 'ready' ? roster.result.definitions : [];
+  const skipped = roster.status === 'ready' ? roster.result.skipped : [];
+  const folders = roster.status === 'ready' ? roster.result.folders : undefined;
+
   const bySource = new Map<SpecialistDefinitionView['source'], SpecialistDefinitionView[]>();
-  for (const d of roster ?? []) {
+  for (const d of definitions) {
     const arr = bySource.get(d.source) ?? [];
     arr.push(d);
     bySource.set(d.source, arr);
   }
-  const warningCount = (roster ?? []).reduce((n, d) => n + d.warnings.length, 0);
+  const skippedBySource = new Map<'personal' | 'claude-code', typeof skipped>();
+  for (const s of skipped) {
+    const arr = skippedBySource.get(s.source) ?? [];
+    arr.push(s);
+    skippedBySource.set(s.source, arr);
+  }
+  const skippedFor = (src: SpecialistDefinitionView['source']) =>
+    src === 'builtin' ? [] : (skippedBySource.get(src) ?? []);
+  const warningCount = definitions.reduce((n, d) => n + d.warnings.length, 0);
 
   return (
     <section className="space-y-5">
@@ -134,25 +170,44 @@ export default function SpecialistsSection() {
 
       {/* ── 2. The roster ─────────────────────────────────────────────────── */}
       <div>
-        <h3 className={SECTION_LABEL}>Available specialists{roster ? ` · ${roster.length}` : ''}{warningCount ? ` · ${warningCount} warning${warningCount === 1 ? '' : 's'}` : ''}</h3>
+        <h3 className={SECTION_LABEL}>
+          Available specialists{roster.status === 'ready' ? ` · ${definitions.length}` : ''}
+          {warningCount ? ` · ${warningCount} warning${warningCount === 1 ? '' : 's'}` : ''}
+        </h3>
         <div className="rounded-lg bg-inset/50">
           <div className="px-3 py-2.5">
             <p className="text-2xs text-fg-dim leading-relaxed">
               Everything your assistant can hire right now. To add one, drop a file in your specialists folder — it shows up here as soon as it is saved. A project can carry its own; Claude Code agent files are translated and any tool that does not translate is removed and listed below.
             </p>
           </div>
-          {roster === null ? (
-            <div className="border-t border-edge-dim px-3 py-3 text-2xs text-fg-muted">Loading…</div>
-          ) : roster.length === 0 ? (
+          {roster.status === 'loading' ? (
+            <div className="border-t border-edge-dim px-3 py-3">
+              <LoadingState what="specialists" variant="inline" />
+            </div>
+          ) : roster.status === 'unavailable' ? (
+            <div className="border-t border-edge-dim p-2.5">
+              <EmptyState message="Specialists aren’t available on this device yet." variant="inline" />
+            </div>
+          ) : roster.status === 'failed' ? (
+            <div className="border-t border-edge-dim p-2.5">
+              <ErrorState mode="recoverable" message={roster.error} onRetry={() => void refreshSpecialistRoster(cwd)} variant="inline" />
+            </div>
+          ) : definitions.length === 0 && skipped.length === 0 ? (
             <div className="border-t border-edge-dim p-2.5">
               <EmptyState message="No specialists found — even the built-ins are missing, which is a bug worth reporting." variant="inline" />
             </div>
           ) : (
-            SOURCE_ORDER.filter(src => bySource.has(src)).map(src => (
+            SOURCE_ORDER.filter(src => bySource.has(src) || skippedFor(src).length > 0).map(src => (
               <div key={src} className="border-t border-edge-dim">
-                <div className="px-3 pt-2 pb-1 text-3xs font-medium text-fg-muted uppercase tracking-wider">{SOURCE_LABEL[src]}</div>
+                {/* Fix: was "uppercase tracking-wider" — the same four classes
+                    in a non-canonical order (section-label-authority.test.ts,
+                    K1 tranche 1). Pre-existing on this branch; fixed while
+                    Task 10 already had this file open for the group-label
+                    rewrite. */}
+                <div className="px-3 pt-2 pb-1 text-3xs font-medium text-fg-muted tracking-wider uppercase">{SOURCE_LABEL[src]}</div>
                 <ul className="pb-1">
-                  {bySource.get(src)!.map(d => <RosterRow key={`${d.source}-${d.id}`} d={d} />)}
+                  {(bySource.get(src) ?? []).map(d => <RosterRow key={`${d.source}-${d.id}`} d={d} folders={folders} />)}
+                  {skippedFor(src).map(s => <SkippedRow key={s.path} s={s} />)}
                 </ul>
               </div>
             ))
@@ -160,8 +215,16 @@ export default function SpecialistsSection() {
           <div className="border-t border-edge-dim px-2 py-1.5 flex items-center justify-between gap-2">
             <span className="text-3xs text-fg-muted px-1">Files are re-read automatically; Refresh if one seems missing.</span>
             <div className="flex items-center gap-1 shrink-0">
-              <Button size="sm" variant="ghost" onClick={() => void refreshSpecialistRoster()}>Refresh</Button>
-              <Button size="sm" variant="ghost" onClick={() => (window as any).claude?.specialists?.openFolder?.()}>Open folder</Button>
+              <Button size="sm" variant="ghost" onClick={() => void refreshSpecialistRoster(cwd)}>Refresh</Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!folders}
+                title={folders ? undefined : 'Not available until the specialists folder has been read'}
+                onClick={() => { if (folders) void window.claude.shell.openPath(folders.personal); }}
+              >
+                Open folder
+              </Button>
             </div>
           </div>
         </div>
@@ -201,11 +264,14 @@ function TierRow({ tier, title, hint, value, loaded, onPick, onClear }: {
   );
 }
 
-function RosterRow({ d }: { d: SpecialistDefinitionView }) {
+function RosterRow({ d, folders }: { d: SpecialistDefinitionView; folders?: SpecialistsListResult['folders'] }) {
   const [open, setOpen] = useState(false);
   const canShell = d.allowedTools.includes('Bash');
   return (
-    <li className="px-3 py-1.5" data-testid={`specialist-row-${d.id}`}>
+    <li
+      className={`px-3 py-1.5 ${d.offered ? '' : 'opacity-50'}`}
+      data-testid={`specialist-row-${d.id}`}
+    >
       <button type="button" onClick={() => setOpen(v => !v)} className="w-full text-left" aria-expanded={open}>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-medium text-fg-2">{d.displayName}</span>
@@ -219,23 +285,34 @@ function RosterRow({ d }: { d: SpecialistDefinitionView }) {
             <span className="text-4xs uppercase tracking-wide px-1 rounded border border-amber-500/40 text-amber-500">{d.warnings.length} warning{d.warnings.length === 1 ? '' : 's'}</span>
           )}
         </div>
+        {/* Task 10: provenance — where this row's definition actually came
+            from, so "which .claude/agents is this" is never a guess. */}
+        <div className="text-2xs text-fg-muted">{definedBy(d, folders)}</div>
         <div className="text-2xs text-fg-dim leading-relaxed">{d.description}</div>
       </button>
       {open && (
         <div className="mt-1 pl-2 border-l-2 border-edge-dim space-y-1 text-2xs">
           <div className="text-fg-muted">Tools: <span className="text-fg-dim">{d.allowedTools.join(', ')}</span></div>
           {d.path && <div className="text-fg-muted">File: <span className="font-mono text-fg-dim break-all">{d.path}</span></div>}
-          {/* Task 8 fix: `shadows` removed from SpecialistDefinitionView — the
-              catalog never layers one definition over another (a colliding id
-              is SKIPPED, not shown here), so there is nothing this block could
-              still read. A skipped file's reason lives in SpecialistsListResult
-              .skipped instead — surfacing that list is renderer-task follow-up. */}
           {d.warnings.map((w, i) => <div key={i} className="text-amber-500">⚠ {w}</div>)}
         </div>
       )}
       {!open && d.warnings.length > 0 && (
         <div className="text-2xs text-amber-500 mt-0.5">⚠ {d.warnings[0]}</div>
       )}
+    </li>
+  );
+}
+
+/** Task 10: a file the loader could NOT place (parse failure or an id that
+ *  collides with one already loaded — spec: no shadowing, first loaded wins).
+ *  Rendered greyed under its source group, next to the definitions that DID
+ *  load, so "why isn't my file showing up" has an answer right there. */
+function SkippedRow({ s }: { s: { path: string; source: 'personal' | 'claude-code'; error: string } }) {
+  return (
+    <li className="px-3 py-1.5 opacity-50" data-testid={`specialist-skipped-${basename(s.path)}`}>
+      <div className="text-xs font-medium text-fg-2 font-mono truncate">{basename(s.path)}</div>
+      <div className="text-2xs text-amber-500">⚠ {s.error} — not offered to the assistant.</div>
     </li>
   );
 }

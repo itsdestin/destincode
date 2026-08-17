@@ -9,7 +9,7 @@ import {
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
 } from './chat-types';
-import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
+import { SubagentSegment, SpecialistNote, ToolCallState, ToolGroupState } from '../../shared/types';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -518,6 +518,33 @@ function findSpecialistCard(
     }
   }
   return null;
+}
+
+/**
+ * Task 10: turns a run record's `notes` (the ledger's full, ordered steer
+ * history) into Activity-trail 'note' segments, appending only the ones this
+ * card has never seen. Idempotent by construction: every SPECIALIST_RUN_CHANGED
+ * carries the WHOLE notes array, not just a delta, so re-processing the same
+ * run twice (a replayed attach, an unrelated status-only push) must not
+ * duplicate a row already there. The id keeps the id scheme the removed
+ * dedicated steer action used (`sa-note-${childId}-${timestamp}`) so an
+ * already-open session's existing segments still match on reload.
+ */
+function reconcileNoteSegments(
+  existing: SubagentSegment[] | undefined,
+  notes: SpecialistNote[] | undefined,
+  childId: string,
+): SubagentSegment[] | undefined {
+  if (!notes || notes.length === 0) return existing;
+  const known = new Set((existing ?? []).filter(s => s.type === 'note').map(s => s.id));
+  let segs = existing;
+  for (const note of notes) {
+    const id = `sa-note-${childId}-${note.at}`;
+    if (known.has(id)) continue;
+    segs = [...(segs ?? []), { type: 'note', id, content: note.text, from: note.from, timestamp: note.at }];
+    known.add(id);
+  }
+  return segs;
 }
 
 /** Specialists 1c: patch one tool segment (by requestId) inside every Task
@@ -1852,28 +1879,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         specialistRun: action.run,
         agentId: card.agentId ?? action.run.childId,
         agentType: card.agentType ?? action.run.agentType,
+        // Task 10: notes moved from a dedicated steer action onto the run
+        // record itself (spec: one 'run' event, no separate 'note' kind). The
+        // ledger always sends the FULL notes list, so this rebuilds the
+        // Activity-trail 'note' segments from it rather than appending one at
+        // a time — reconcileNoteSegments skips any note already present.
+        subagentSegments: reconcileNoteSegments(card.subagentSegments, action.run.notes, action.run.childId),
       });
-      next.set(action.sessionId, { ...session, toolCalls });
-      return next;
-    }
-
-    case 'SPECIALIST_NOTE': {
-      // Specialists 1c: a delivered steer joins the child's Activity trail.
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      const cardId = findSpecialistCard(session.toolCalls, { childId: action.childId });
-      if (!cardId) return state;
-      const card = session.toolCalls.get(cardId)!;
-      const segs = card.subagentSegments ? [...card.subagentSegments] : [];
-      segs.push({
-        type: 'note',
-        id: `sa-note-${action.childId}-${action.timestamp}`,
-        content: action.text,
-        from: action.from,
-        timestamp: action.timestamp,
-      });
-      const toolCalls = new Map(session.toolCalls);
-      toolCalls.set(cardId, { ...card, subagentSegments: segs });
       next.set(action.sessionId, { ...session, toolCalls });
       return next;
     }

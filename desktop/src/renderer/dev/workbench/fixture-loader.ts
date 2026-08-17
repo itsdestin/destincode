@@ -233,14 +233,6 @@ export function loadFixture(name: string, raw: string, sessionId: string = SANDB
         const action: ChatAction = { type: 'SPECIALIST_RUN_CHANGED', sessionId, run };
         state = chatReducer(state, action);
         actions.push(action);
-      } else if (parsed.type === 'specialist_note') {
-        const action: ChatAction = {
-          type: 'SPECIALIST_NOTE', sessionId, childId: parsed.childId, text: parsed.text,
-          from: parsed.from === 'assistant' ? 'assistant' : 'user',
-          timestamp: FIXTURE_T0 + actions.length * 1000,
-        };
-        state = chatReducer(state, action);
-        actions.push(action);
       } else if (parsed.type === 'specialist_report') {
         // Specialists 1c: the host-injected user-role turn carrying a
         // BACKGROUND report — folds into the launching Task card.

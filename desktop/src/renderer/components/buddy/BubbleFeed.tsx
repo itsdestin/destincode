@@ -292,22 +292,22 @@ export function BubbleFeed({ sessionId }: Props) {
       const action = hookEventToAction(event);
       if (action) dispatch(action);
     });
-    // Specialists 1c: delegation feed — MUST mirror App.tsx.
-    const unsubSpecialist = (window.claude.on as any).specialistEvent?.((event: any) => {
-      if (event?.sessionId !== sessionId) return;
-      if (event.kind === 'run' && event.run) {
+    // Specialists 1c: delegation feed — MUST mirror App.tsx. Task 10: typed
+    // bridge — on.specialistEvent returns the unsubscribe function directly,
+    // and there is no separate 'note' event kind (a note rides on the run
+    // record; SPECIALIST_RUN_CHANGED's reducer case derives the Activity row).
+    const unsubSpecialist = window.claude.on.specialistEvent((event) => {
+      if (event.sessionId !== sessionId) return;
+      if (event.kind === 'run') {
         dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId, run: event.run });
-      } else if (event.kind === 'note' && typeof event.text === 'string') {
-        dispatch({
-          type: 'SPECIALIST_NOTE', sessionId, childId: event.childId, text: event.text,
-          from: event.from === 'assistant' ? 'assistant' : 'user', timestamp: event.timestamp ?? Date.now(),
-        });
       }
     });
 
     return () => {
       window.claude.off('hook:event', unsubHook);
-      if (unsubSpecialist) window.claude.off('specialists:event', unsubSpecialist);
+      // Task 10 fix: unsubSpecialist IS the unsubscribe function, not a
+      // listener for `.off()` — see the matching fix in App.tsx.
+      unsubSpecialist();
     };
   }, [sessionId, dispatch]);
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
-import { useSpecialistRunByChild } from '../hooks/useSpecialists';
+import { useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSpecialists';
 import { TaskConsentBlock } from './SpecialistEnvelope';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
@@ -1030,6 +1030,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // this memoized card does not re-render on every session update).
   const taskTargetId = tool.toolName === 'Task' ? asString(tool.input.task_id) : '';
   const taskTarget = useSpecialistRunByChild(sessionId, taskTargetId || undefined);
+  // Task 10: same lookup TaskConsentBlock uses, so the Always-allow gate
+  // below and the consent envelope above never disagree about whether this
+  // hire is a built-in. Hooks can't be called conditionally, so this runs
+  // for every card — `agent` is '' for anything that isn't an untargeted
+  // Task hire, and useSpecialistDefinition('') returns undefined for free.
+  const hireAgent = tool.toolName === 'Task' && !taskTargetId ? asString(tool.input.agent) : '';
+  const hireDefinition = useSpecialistDefinition(sessionCwd, hireAgent || undefined);
   const display = friendlyToolDisplay(tool, {
     taskTargetTitle: taskTarget?.title,
     taskTargetRunning: taskTarget ? taskTarget.status === 'running' : undefined,
@@ -1178,8 +1185,19 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // grants nothing new, so there is nothing an "Always allow" could
             // remember — and offering it invited a blanket-delegation misread
             // (plan 1b checklist, Test 10).
+            //
+            // Task 10 / Global Constraint (hire grants — two independent
+            // protections): "The renderer suppresses Always-allow on a hire
+            // whose definition source !== 'builtin', default-closed while the
+            // definition is unknown... (b) is what stops a NEW grant being
+            // minted for a file-defined id — an edit that widens that file's
+            // tools would still land under the same id." `hireDefinition` is
+            // undefined until the lookup POSITIVELY resolves (never shown-then-
+            // hidden), so an unresolved hire is treated the same as a
+            // non-builtin one — hidden, not offered optimistically.
             suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true
-              || (tool.toolName === 'Task' && !!tool.input?.task_id)}
+              || (tool.toolName === 'Task' && !!tool.input?.task_id)
+              || (tool.toolName === 'Task' && !tool.input?.task_id && hireDefinition?.source !== 'builtin')}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

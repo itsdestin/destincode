@@ -24,9 +24,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
-  // Specialists 1c — no backend yet, registered in mock-only.ts.
+  // Specialists 1c — real backend as of Task 8 (see the contract test's
+  // remote-shim/preload scan); still hand-written here so the workbench has
+  // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
-  'specialists.steer', 'specialists.interrupt', 'specialists.openFolder', 'on.specialistEvent',
+  'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -527,13 +529,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   const native: Ns<'native'> = { supported: true };
 
-  // Specialists 1c — roster, model tiers, and the two card actions. Backend
-  // is the plan's to-do (mock-only.ts). Tier writes go through `write` so the
-  // refused scenario exercises the picker's revert path.
+  // Specialists 1c — roster, model tiers, and the two card actions. Real
+  // backend as of Task 8; this is fixture data standing in for a filesystem
+  // read + ledger. Tier writes go through `write` so the refused scenario
+  // exercises the picker's revert path.
   let tiers = seedDelegatedModels();
   const specialistSubs = new Set<(e: any) => void>();
   const specialists = {
-    list: async (_cwd?: string) => specialistRoster(),
+    // Task 10: real shape is { definitions, skipped, folders } — the roster
+    // hook keys its cache on cwd and the definedBy() provenance line needs
+    // `folders.project` to tell a project's own .claude/agents apart from
+    // the user's. `skipped` stays empty — none of the seeded fixture rows
+    // collide, so there is nothing to demonstrate here yet.
+    list: async (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => ({
+      definitions: specialistRoster(),
+      skipped: [],
+      folders: {
+        personal: '/home/destin/.youcoded/specialists',
+        claudeUser: '/home/destin/.claude/agents',
+        project: opts?.cwd ? `${opts.cwd}/.claude/agents` : undefined,
+      },
+    }),
     getDelegatedModels: async () => tiers,
     setDelegatedModel: (tier: 'budget' | 'frontier', binding: DelegatedModelsView['budget']) =>
       write(() => {
@@ -542,11 +558,18 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         const label = binding ? (store.getState().catalog.find(c => c.id === binding.modelId)?.label ?? binding.modelId) : '';
         tiers = { ...tiers, [tier]: binding ? { ...binding, label } : null };
       }),
-    // Steer/stop: the real host answers with a typed outcome; the workbench
-    // echoes the steer back as a note event so the Activity trail shows it,
-    // and flips the run to 'interrupted' on stop so the card settles.
+    // Task 10: notes now ride on the run record (no separate 'note' event
+    // kind) — append to the run's `notes` and re-emit the WHOLE run, same
+    // shape `interrupt` below already used. The reducer derives the
+    // Activity-trail row from `run.notes` itself.
     steer: async (sessionId: string, childId: string, text: string) => {
-      for (const cb of specialistSubs) cb({ kind: 'note', sessionId, childId, text, from: 'user', timestamp: Date.now() });
+      const run = RUNS.get(childId);
+      if (run) {
+        const notes = [...(run.notes ?? []), { text, from: 'user' as const, at: Date.now() }];
+        const next = { ...run, notes };
+        RUNS.set(childId, next);
+        for (const cb of specialistSubs) cb({ kind: 'run', sessionId, run: next });
+      }
       return { ok: true };
     },
     interrupt: async (sessionId: string, childId: string) => {
@@ -558,7 +581,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       }
       return { ok: true };
     },
-    openFolder: async () => ({ ok: true }),
   };
 
 

@@ -81,6 +81,11 @@ declare global {
       shell: {
         openChangelog: () => Promise<void>;
         openExternal: (url: string) => Promise<void>;
+        // Task 10: typed so Settings → Specialists' "Open folder" (and every
+        // existing (window.claude as any).shell.openPath call site) can drop
+        // the cast. Already real — preload.ts's shell.openPath, unrelated to
+        // this feature.
+        openPath: (filePath: string) => Promise<string>;
       };
       // Task 9: preload bridge for reading the xterm screen buffer from the main
       // process (used by useAttentionClassifier and the Android terminal-data parity
@@ -312,6 +317,11 @@ declare global {
       // is opt-in (only "Open folder" needs the folder to exist before any
       // file has ever been written there).
       specialists: {
+        // Fix: omitting `cwd` when a project folder IS known silently returns
+        // a roster missing that project's OWN specialists — no error, the
+        // user's files just don't appear. Always pass the active session's
+        // cwd when one exists (see useSpecialistRoster/useSpecialistDefinition
+        // in hooks/useSpecialists.ts, which every caller should go through).
         list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => Promise<import('../../shared/types').SpecialistsListResult>;
         getDelegatedModels: () => Promise<import('../../shared/types').DelegatedModelsView>;
         setDelegatedModel: (

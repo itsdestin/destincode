@@ -114,6 +114,12 @@ interface Props {
    *  sessions do not have, which is why the theme-build button was dead there. */
   onRunCommand?: (command: string) => void;
   hasActiveSession: boolean;
+  // Task 10: Settings → Specialists needs the active conversation's working
+  // folder so the roster it shows includes that project's OWN .claude/agents
+  // specialists, not just the two global sources. Undefined when there is no
+  // active session — the section just shows the global sources then.
+  // Desktop-only (see the DesktopSettings-only render below).
+  activeSessionCwd?: string;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
   // Opens Claude Code's preferences popup (/config). Consumed by the Model
@@ -183,7 +189,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput, onRunCommand, hasActiveSession, activeSessionCwd, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: Props) {
   useEscClose(open, onClose);
   // Slide polish: track animation window so CSS can reduce backdrop-filter cost
   // and suppress scrollbar-thumb while the 300ms transform is running. Also
@@ -284,6 +290,7 @@ export default function SettingsPanel({ open, onClose, onSendInput, onRunCommand
                 onSendInput={onSendInput}
                 onRunCommand={onRunCommand}
                 hasActiveSession={hasActiveSession}
+                activeSessionCwd={activeSessionCwd}
                 onOpenThemeMarketplace={onOpenThemeMarketplace}
                 onPublishTheme={onPublishTheme}
                 onOpenClaudePreferences={onOpenClaudePreferences}
@@ -1841,7 +1848,7 @@ function PermissionsButton() {
 // project's folder, Claude Code agent files) with any loader warnings. Same
 // row + Dialog + (i) shape as Permissions directly above it. Not gated on
 // native.supported for the same reason Permissions isn't.
-function SpecialistsButton() {
+function SpecialistsButton({ cwd }: { cwd?: string }) {
   const [open, setOpen] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   useEffect(() => { if (!open) setShowInfo(false); }, [open]);
@@ -1873,7 +1880,7 @@ function SpecialistsButton() {
         {showInfo ? (
           <SettingsExplainer intro={SPECIALISTS_EXPLAINER_INTRO} sections={SPECIALISTS_EXPLAINER_SECTIONS} />
         ) : (
-          <SpecialistsSection />
+          <SpecialistsSection cwd={cwd} />
         )}
       </Dialog>
     </>
@@ -2456,12 +2463,14 @@ function AndroidSettings({ open, onSendInput, onRunCommand, onOpenThemeMarketpla
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
+function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, activeSessionCwd, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
   onRunCommand?: (command: string) => void;
   hasActiveSession: boolean;
+  // Task 10: threaded to SpecialistsButton → SpecialistsSection.
+  activeSessionCwd?: string;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
   // Opens Claude Code's preferences popup (/config). Consumed by the Model
@@ -2691,7 +2700,7 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, on
         {/* Specialists (1c) sits under Permissions: approving a hire is a
             permission grant, and this is where its two model tiers and the
             roster live. */}
-        <SpecialistsButton />
+        <SpecialistsButton cwd={activeSessionCwd} />
 
         {/* Development — bug reports, contributions, known issues */}
         <SettingRow

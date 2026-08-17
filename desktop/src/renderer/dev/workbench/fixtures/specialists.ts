@@ -44,7 +44,11 @@ export function specialistRoster(): SpecialistDefinitionView[] {
       id: 'release-checker', displayName: 'Release Checker', source: 'claude-code', charter: 'read-only',
       description: 'Walks the release checklist and reports anything not ready.',
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
-      path: '/home/destin/youcoded-dev/wecoded-themes/.youcoded/specialists/release-checker.md',
+      // Task 10 fix: was under a `.youcoded/specialists/` path — a folder the
+      // real catalog never reads for a 'claude-code' source (that source is
+      // always a CC-format .claude/agents/ file, project's own or user-level).
+      // The stale path made definedBy() misreport this row's provenance.
+      path: '/home/destin/youcoded-dev/wecoded-themes/.claude/agents/release-checker.md',
       offered: true,
       warnings: [
         'Asked for a shell (Bash) but is read-only, so Bash was removed. Give it the read-write charter if it really needs to run commands.',
@@ -54,7 +58,11 @@ export function specialistRoster(): SpecialistDefinitionView[] {
       id: 'code-reviewer', displayName: 'code-reviewer', source: 'claude-code', charter: 'read-only',
       description: 'Expert code review specialist. Proactively reviews code for quality, security, and maintainability.',
       allowedTools: ['Read', 'Grep', 'Glob'],
-      path: '/home/destin/youcoded-dev/wecoded-themes/.claude/agents/code-reviewer.md',
+      // Task 10: moved to the USER-level ~/.claude/agents (was the project's
+      // own, same folder as release-checker above) so the fixture data shows
+      // both definedBy() branches — "This project's…" and "Your ~/.claude…" —
+      // instead of two rows that would always read the same.
+      path: '/home/destin/.claude/agents/code-reviewer.md',
       offered: true,
       warnings: [
         '2 tools this file asked for don’t exist here and were removed: NotebookEdit, MultiEdit.',
