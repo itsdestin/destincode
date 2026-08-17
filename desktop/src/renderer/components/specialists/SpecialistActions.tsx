@@ -25,7 +25,13 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
   const first = run.title.split(' ')[0];
   const send = async () => {
     const text = note.trim();
-    if (!text) return;
+    // Fix: the 2,000-char cap used to be enforced only by the Send button's
+    // `disabled` attribute — pressing Enter in the textarea called send()
+    // directly and skipped that check entirely, so a user who saw the
+    // greyed-out button and pressed Enter anyway still fired an over-cap
+    // request. Guarding here means send() itself refuses, no matter which
+    // path (button, Enter, or anything added later) tries to call it.
+    if (!text || note.length > MAX) return;
     setBusy('note'); setError(null);
     try {
       const res = await window.claude.specialists.steer(sessionId, run.childId, text);

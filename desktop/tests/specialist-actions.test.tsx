@@ -64,4 +64,61 @@ describe('SpecialistActions — note cap', () => {
     const err = await screen.findByText('The helper already finished — nothing to steer.');
     expect(err.textContent).toBe('The helper already finished — nothing to steer.');
   });
+
+  // The button's `disabled` attribute is what makes the cap VISIBLE, but it
+  // isn't what makes the cap TRUE — pressing Enter in the textarea bypassed
+  // it entirely (Enter's handler called send() unconditionally), so a user
+  // who pastes an over-cap note, sees the disabled button, and then presses
+  // Enter anyway (the natural instinct in a text box) still fired the
+  // request. These pin that send() itself refuses an over-cap note no
+  // matter how it's triggered.
+  it('Enter on an over-cap note does not call the backend', () => {
+    const steer = vi.fn();
+    (window as any).claude = { specialists: { steer, interrupt: vi.fn() } };
+    const textarea = openNoteBox();
+    fireEvent.change(textarea, { target: { value: 'a'.repeat(2001) } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(steer).not.toHaveBeenCalled();
+  });
+
+  it('Enter on a valid note still sends — the guard does not break the normal path', () => {
+    const steer = vi.fn().mockResolvedValue({ ok: true });
+    (window as any).claude = { specialists: { steer, interrupt: vi.fn() } };
+    const textarea = openNoteBox();
+    fireEvent.change(textarea, { target: { value: 'a short note' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(steer).toHaveBeenCalledWith('s1', 'child-1', 'a short note');
+  });
+
+  it('clicking the disabled Send button does not call the backend', () => {
+    const steer = vi.fn();
+    (window as any).claude = { specialists: { steer, interrupt: vi.fn() } };
+    const textarea = openNoteBox();
+    fireEvent.change(textarea, { target: { value: 'a'.repeat(2001) } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    expect(steer).not.toHaveBeenCalled();
+  });
+
+  it('exactly 2,000 characters is allowed; 2,001 is not — the boundary in both directions', () => {
+    const steer = vi.fn().mockResolvedValue({ ok: true });
+    (window as any).claude = { specialists: { steer, interrupt: vi.fn() } };
+    const textarea = openNoteBox();
+
+    fireEvent.change(textarea, { target: { value: 'a'.repeat(2001) } });
+    expect(screen.getByRole('button', { name: /^send$/i })).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: 'a'.repeat(2000) } });
+    expect(screen.getByRole('button', { name: /^send$/i })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    expect(steer).toHaveBeenCalledWith('s1', 'child-1', 'a'.repeat(2000));
+  });
+
+  it('a whitespace-only note does not send', () => {
+    const steer = vi.fn();
+    (window as any).claude = { specialists: { steer, interrupt: vi.fn() } };
+    const textarea = openNoteBox();
+    fireEvent.change(textarea, { target: { value: '   \n\t  ' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(steer).not.toHaveBeenCalled();
+  });
 });
