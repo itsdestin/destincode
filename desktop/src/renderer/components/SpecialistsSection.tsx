@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SpecialistDefinitionView, DelegatedModelsView, SpecialistsListResult } from '../../shared/types';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
-import { Button, EmptyState, ErrorState, LoadingState } from './ui';
+import { Button, EmptyState, ErrorState, FieldError, LoadingState } from './ui';
 import type { ExplainerSection } from './SettingsExplainer';
 import { refreshSpecialistRoster, useSpecialistRoster, definedBy, NOT_IMPLEMENTED_ON_MOBILE } from '../hooks/useSpecialists';
 
@@ -218,8 +218,18 @@ export default function SpecialistsSection({ cwd }: {
                   onClear={() => setTier('frontier', null)}
                 />
               </div>
+              {/* Fix (review): was a hand-rolled <div className="… text-danger">
+                  — no role="alert", so a screen reader never announced a
+                  refused save, and it did not look like any other error in
+                  the app. FieldError (components/ui/states.tsx) is the
+                  component built for exactly this shape: a short inline line
+                  next to the picker it belongs to, not a card — the roster's
+                  full ErrorState below is deliberately heavier because it
+                  replaces a whole missing list, not one field. */}
               {tierWriteError && (
-                <div className="border-t border-edge-dim px-3 py-2 text-2xs text-danger">{tierWriteError}</div>
+                <div className="border-t border-edge-dim px-3 py-2">
+                  <FieldError>{tierWriteError}</FieldError>
+                </div>
               )}
             </>
           )}

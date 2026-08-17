@@ -195,6 +195,113 @@ describe('model tiers: load and write failures are shown, never swallowed into "
     // The real refusal text is shown verbatim, not swallowed.
     expect(screen.getByText(/Model no longer available\./)).toBeInTheDocument();
   });
+
+  // Fix 1 (review): the write-failure message used to be a hand-rolled
+  // <div className="… text-danger"> — no role="alert", so a screen reader
+  // never announced it. It now goes through the shared FieldError component
+  // (components/ui/states.tsx), which carries role="alert" by construction.
+  // This test pins that specifically, not just "the text is on screen"
+  // (which the test above already covers) — screen.getByText alone would
+  // pass equally whether or not the accessibility role was ever wired up.
+  it('the write-failure message is announced as an alert, with the backend text verbatim', async () => {
+    const list = vi.fn().mockResolvedValue({ definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' } });
+    mockClaude(list);
+    (window as any).claude.specialists.getDelegatedModels = vi.fn().mockResolvedValue({
+      budget: { providerId: 'openrouter', modelId: 'x/y', label: 'My Budget Model' },
+      frontier: null,
+    });
+    (window as any).claude.specialists.setDelegatedModel = vi.fn().mockResolvedValue({ ok: false, error: 'Model no longer available.' });
+
+    render(<SpecialistsSection cwd="cwd-tier-write-alert" />);
+
+    await screen.findByText('My Budget Model');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+    // role="alert" does not compute its accessible NAME from content (ARIA:
+    // "alert" is name-from-author, not name-from-content) — find the alert,
+    // then assert its text content directly rather than filtering by name.
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText("Couldn’t save the budget model. Model no longer available.")).toBeInTheDocument();
+  });
+
+  // Fix 2 (review): "roster: never a bare 'Loading…'" test resolved the tier
+  // call synchronously off an already-resolved mock, so by assertion time the
+  // row had almost certainly already settled — it would have passed whether
+  // or not the loading copy was correct. A tier call that never resolves
+  // during the test keeps the row in its loading branch for the whole run,
+  // the same technique the roster-loading test above already uses.
+  it('the tier rows show their own named loading state while getDelegatedModels is still pending', async () => {
+    const list = vi.fn().mockResolvedValue({ definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' } });
+    mockClaude(list);
+    (window as any).claude.specialists.getDelegatedModels = vi.fn(() => new Promise(() => {}));
+
+    render(<SpecialistsSection cwd="cwd-tier-loading" />);
+
+    expect(await screen.findByText(/Loading the budget model…/)).toBeInTheDocument();
+    expect(await screen.findByText(/Loading the frontier model…/)).toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).toBeNull();
+  });
+
+  // Fix (small item, review): the roster-load equivalent of this test
+  // already existed; the tier-load one did not, so Retry on a tier failure
+  // was unverified.
+  it('a rejected getDelegatedModels shows Retry, and Retry re-calls getDelegatedModels', async () => {
+    const list = vi.fn().mockResolvedValue({ definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' } });
+    mockClaude(list);
+    const getDelegatedModels = vi.fn()
+      .mockRejectedValueOnce(new Error('Could not reach the harness.'))
+      .mockResolvedValueOnce({ budget: null, frontier: null });
+    (window as any).claude.specialists.getDelegatedModels = getDelegatedModels;
+
+    render(<SpecialistsSection cwd="cwd-tier-load-retry" />);
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('Could not reach the harness.')).toBeInTheDocument();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(getDelegatedModels).toHaveBeenCalledTimes(2));
+  });
+});
+
+// Fix 2 (review, Important): the desktop-only takeover is supposed to fire on
+// TWO independent signals — the roster call reporting not-implemented, OR the
+// tier call reporting it on its own while the roster loads fine (tracked via
+// `tiersUnavailable` in SpecialistsSection). Every existing desktop-only test
+// drove the roster's own status; none drove this second path.
+describe('desktop-only takeover: the tier-call signal, independent of the roster', () => {
+  it('shows the desktop-only state when the roster loads fine but getDelegatedModels reports not-implemented', async () => {
+    const list = vi.fn().mockResolvedValue({
+      definitions: [
+        { id: 'explorer', displayName: 'Explorer', description: 'Searches.', charter: 'read-only', allowedTools: ['Read'], source: 'builtin', warnings: [], offered: true },
+      ],
+      skipped: [],
+      folders: { personal: '/p', claudeUser: '/c' },
+    });
+    mockClaude(list);
+    (window as any).claude.specialists.getDelegatedModels = vi.fn().mockResolvedValue({ ok: false, error: NOT_IMPLEMENTED_ON_MOBILE });
+
+    render(<SpecialistsSection cwd="cwd-tiers-unavailable" />);
+
+    expect(await screen.findByText('Specialists run on the desktop app. Open Settings there to add or edit them.')).toBeInTheDocument();
+    // Whole-section takeover — the roster that DID load must not show through.
+    expect(screen.queryByText('Models specialists run on')).toBeNull();
+    expect(screen.queryByText('Explorer')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
+
+// Small item (review): no test pinned the footer copy.
+describe('roster footer copy', () => {
+  it('shows the re-read-on-send footer text verbatim', async () => {
+    const list = vi.fn().mockResolvedValue({
+      definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' },
+    });
+    mockClaude(list);
+
+    render(<SpecialistsSection cwd="cwd-footer-copy" />);
+
+    expect(await screen.findByText('Files are re-read each time you send a message; Refresh to re-read now.')).toBeInTheDocument();
+  });
 });
 
 describe('roster rows', () => {
