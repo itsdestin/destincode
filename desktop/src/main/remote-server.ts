@@ -14,7 +14,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import type { NativeSendResult, SessionProvider, SpecialistsEvent } from '../shared/types';
+import type { NativeSendResult, SessionProvider, HookEvent, SpecialistsEvent } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -454,19 +454,32 @@ export class RemoteServer {
   };
 
   private onHookEvent = (event: any) => {
-    const sessionId = event.sessionId || '';
+    this.bufferHookEvent(event);
+    // Broadcast live
+    this.broadcast({ type: 'hook:event', payload: event });
+  };
 
-    // Append to rolling buffer
+  /** Push one hook event onto the rolling per-session replay buffer, WITHOUT
+   *  broadcasting it — split out of onHookEvent (which still does both, for
+   *  the legacy hookRelay path) so ipc-handlers.ts can feed this SAME buffer
+   *  for NATIVE hook events, which reach remote clients through a direct
+   *  broadcast() call in ipc-handlers.ts, never through this class's own
+   *  onHookEvent (that listener is wired only to hookRelay.on('hook-event',
+   *  ...) — see the call site's own comment for the gap this closes: without
+   *  it, a phone reconnecting while a native permission ask was HELD got
+   *  nothing, because PermissionHeld is one-shot and the reannounce heartbeat
+   *  stops once an ask is held). Reusing hookBuffers — rather than a parallel
+   *  native-only map — means the existing replay loop in replayBuffers()
+   *  picks these up for free, in the same push order (request, then held). */
+  bufferHookEvent(event: HookEvent): void {
+    const sessionId = event.sessionId || '';
     let buf = this.hookBuffers.get(sessionId) || [];
     buf.push(event);
     if (buf.length > HOOK_BUFFER_SIZE) {
       buf = buf.slice(buf.length - HOOK_BUFFER_SIZE);
     }
     this.hookBuffers.set(sessionId, buf);
-
-    // Broadcast live
-    this.broadcast({ type: 'hook:event', payload: event });
-  };
+  }
 
   /** Task 9 (plan 1c) — the remote-client counterpart to
    *  NativeSessionHost.specialistRunsFor: a reconnecting phone hydrates over
@@ -776,7 +789,9 @@ export class RemoteServer {
         }
       }
 
-      // Hook event buffers
+      // Hook event buffers (also carries buffered NATIVE hook events now —
+      // see bufferHookEvent's own comment for why those need to ride this
+      // same map instead of a parallel one).
       for (const [_sessionId, events] of this.hookBuffers) {
         for (const event of events) {
           ws.send(JSON.stringify({ type: 'hook:event', payload: event }));

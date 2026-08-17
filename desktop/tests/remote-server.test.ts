@@ -806,10 +806,10 @@ describe('RemoteServer account bridge', () => {
 });
 
 // Task 9 (plan 1c) — the phone client hydrates over this WebSocket, never
-// through TRANSCRIPT_REPLAY, so it needs its own connect-time catch-up for a
-// specialist's run status, mirroring the pre-existing hookBuffers/
-// replayBuffers late-join mechanism.
-describe('RemoteServer specialist run replay (Task 9)', () => {
+// through TRANSCRIPT_REPLAY, so it needs its own connect-time catch-up for
+// (a) a specialist's run status and (b) an open native permission ask. Both
+// mirror the pre-existing hookBuffers/replayBuffers late-join mechanism.
+describe('RemoteServer specialist run + native hook replay (Task 9)', () => {
   let mockSessionManager: any;
   let mockHookRelay: any;
   let mockConfig: any;
@@ -852,6 +852,26 @@ describe('RemoteServer specialist run replay (Task 9)', () => {
     expect(runEvents).toHaveLength(2);
     const byChild = Object.fromEntries(runEvents.map((e) => [e.payload.run.childId, e.payload.run.status]));
     expect(byChild).toEqual({ c1: 'completed', c2: 'running' });
+  });
+
+  it('a reconnecting client receives a held ask\'s PermissionRequest and its PermissionHeld, in that order', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+
+    // Simulates the ipc-handlers.ts nativeHost.on('hook-event', ...) call
+    // site: native asks reach remote clients via a direct broadcast(), never
+    // through this class's own onHookEvent (that's wired only to the legacy
+    // hookRelay) — bufferHookEvent is the fix, called from that same site.
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionRequest', payload: { _requestId: 'native-x' }, timestamp: Date.now() });
+    server.bufferHookEvent({ sessionId: 's1', type: 'PermissionHeld', payload: { _requestId: 'native-x' }, timestamp: Date.now() });
+
+    await replayAndWait(server, ws);
+
+    const held = frames.filter((m) => m.type === 'hook:event' && m.payload.payload?._requestId === 'native-x');
+    expect(held).toHaveLength(2);
+    expect(held[0].payload.type).toBe('PermissionRequest');
+    expect(held[1].payload.type).toBe('PermissionHeld');
   });
 });
 

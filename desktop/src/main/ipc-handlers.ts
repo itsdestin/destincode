@@ -2466,6 +2466,18 @@ export function registerIpcHandlers(
   nativeHost.on('hook-event', (event: HookEvent) => {
     sendForSession(event.sessionId, IPC.HOOK_EVENT, event);
     if (remoteServer) {
+      // Fix (not in the original plan — see the branch's commit history):
+      // native hook events reach remote clients ONLY through this direct
+      // broadcast() call. RemoteServer's own onHookEvent — which is what
+      // fills hookBuffers for connect-time replay — is wired solely to the
+      // LEGACY CC hookRelay, never to nativeHost. So a phone reconnecting
+      // while a native permission ask was HELD got nothing back: PermissionHeld
+      // is one-shot and the 3s heartbeat stops re-announcing once an ask is
+      // held (permission-broker.ts). bufferHookEvent() feeds the SAME
+      // hookBuffers map the legacy path fills, so the existing replay loop in
+      // replayBuffers() picks these up for free, in the same push order
+      // (request, then held).
+      remoteServer.bufferHookEvent(event);
       remoteServer.broadcast({ type: 'hook:event', payload: event });
     }
   });
