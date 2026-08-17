@@ -108,3 +108,133 @@ All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TU
 - **xterm display-only on touch.** `TerminalView` passes `disableStdin:true` on touch platforms (Android + remote browser) and skips `terminal.onData → sendInput`; typing flows through InputBar minimal-mode `<textarea>`. Don't reintroduce xterm-side touch input (re-exposes xterm.js #2403 IME issues). Single-finger touch scroll is custom capture-phase JS routing to `terminal.scrollLines()` (xterm's mouse selection bypassed via `preventDefault`); text selection on touch is unavailable — don't "fix" by removing the handlers.
 - **`shared-fixtures/attention-classifier/` is the contract** — adding a `BufferClass` or tweaking a `classifyBuffer` regex requires a fixture change in the same commit; `attention-classifier-parity.test.ts` enforces it.
 - **xterm scrollback can show duplicated TUI chrome** — CC (Ink) redraws its full TUI on certain events; when it exceeds visible rows, older content scrolls into xterm's scrollback. No xterm option discards programmatically-scrolled content (alt-screen would lose ALL scrollback). Mitigation deferred (bumping `scrollback` to 5000+ would let history coexist with banner duplicates).
+
+## The `stalled` attention state and the Retry erase (2026-08-16, youcoded master `28d3f82e`)
+
+The renderer half of "a stalled turn waits for you". Main-process half:
+`youcoded/docs/native-runtime.md` → "A stalled turn parks instead of dying". Spec:
+`youcoded-dev/docs/archive/specs/2026-08-16-stalled-turn-never-dies-design.md`.
+
+### `AttentionState` gained a fifth state
+
+The union is now `'ok' | 'stuck' | 'session-died' | 'error' | 'stalled'`, and every
+member still has exactly one writer — the rule that keeps dead `AttentionBanner` branches
+from accumulating. `TRANSCRIPT_THINKING_HEARTBEAT` writes three of them, in descending
+severity:
+
+| Heartbeat payload | `attentionState` | Dot | What the user sees |
+|---|---|---|---|
+| `{stalled: true}` | `'stalled'` | RED | The park card: "Provider may have stalled", counting up, Retry + Stop |
+| `{stallWarning: …}` | `'stuck'` | AMBER | The countdown warning |
+| payload-less | `'ok'` | — | Activity resumed; clears both |
+
+Before this change the warning branch wrote `'ok'`, so the dot stayed GREEN for the whole
+countdown — the app asserting health while telling the user it might be hanging. `'stuck'`
+already meant exactly "something may be wrong and I don't know", which is what a warning
+is, so the warning was routed there rather than given a state of its own. Consequence
+worth knowing: `RED_ATTENTION` is `{stalled, session-died, error}`, which leaves `'stuck'`
+as the only amber state. `attentionDotColor()` is the single source for those colours —
+the buddy `AttentionStrip` had drifted to a private table painting `'stuck'` red and now
+defers to it, which moved four pill colours (`stalled` blue→red, `session-died` grey→red,
+`error` blue→red, `stuck` red→amber).
+
+### `stalledSince` — stamped once, held, and cleared at the one write site
+
+The card counts up from `stalledSince` on THIS client's clock (see `chat-types.ts` on the
+cross-device skew note: a phone hydrating a parked desktop session gets the desktop's
+stamp). A repeat `stalled` heartbeat must not restart the count, so the stamp is held —
+but held *only while the session was already `'stalled'`*:
+
+```ts
+stalledSince: action.stalled
+  ? (session.attentionState === 'stalled' ? (session.stalledSince ?? Date.now()) : Date.now())
+  : null,
+```
+
+The naive `session.stalledSince ?? Date.now()` is wrong because **fourteen places in the
+reducer write `attentionState: 'ok'` and only five of them also clear the stamp.** The
+other nine (both `TRANSCRIPT_USER_MESSAGE` branches, both `NATIVE_TOOL_PREPARING`
+branches, both `TRANSCRIPT_TOOL_USE` branches, `TRANSCRIPT_TOOL_RESULT`, and both
+`PERMISSION_REQUEST` branches) leave it set, so any of them landing between two parks left
+the SECOND card counting from the FIRST park — "no response for 6m 12s" three seconds in.
+Gating on the state the stamp belongs to closes the whole family at the ONE place the
+field is written, instead of adding nine `stalledSince: null` lines and forgetting the
+tenth. `AttentionBanner` is the only reader, which is what makes that safe.
+
+`endTurn()` clears `attentionState`, `stallWarning` AND `stalledSince`, and every turn
+boundary (`turn-complete` / `user-interrupt` / `session-error`) spreads it — so a parked
+card cannot outlive its turn and the harness needs no extra "un-park" event.
+
+### `NATIVE_PARTS_DROPPED` erases only the TRAILING run
+
+Manual Retry abandons an attempt whose text is already on screen. Without an erase, the
+re-run's deltas merge into the same segment by `partId` and the user reads the half
+sentence twice — which is precisely why the *automatic* retry has always refused to run
+after content streamed.
+
+The first implementation filtered the whole turn by `partId`. That was a worse bug than
+the one it fixed: **part ids are not unique within a turn.** The AI SDK falls back to the
+literal `text-0` when the provider omits an id, and a turn spans many steps (each tool
+call starts a new one), so the same id legitimately appears on an earlier, already-finished
+step. A whole-list `.filter()` therefore deleted finished paragraphs the user had already
+read.
+
+The shipped rule walks from the END and removes only the trailing run of matching
+segments, stopping at the first non-match. What makes it safe is that a tool-group (or
+plan) segment carries no `partId` at all, so it always counts as non-matching and stops
+the walk — and a tool-group segment always separates one text step from the next. The
+merge check only ever inspects `segments[length-1]`, so an earlier finished segment is
+architecturally unreachable for accidental re-merge.
+
+**Accepted limitation:** if ONE attempt produced text → a tool-preparing card → more text
+before stalling, the tool-group separator stops the walk and the re-run re-emits the
+earlier text, leaving a duplicate. Strictly better than the alternative — duplicated text
+beats deleted text. It needs a model that resumes prose after starting a tool call and
+then stalls. Guard: `attention-reducer.test.ts` → the `stalled turn` describe (four `NATIVE_PARTS_DROPPED` cases, including the reused-partId regression).
+
+Ordering is guaranteed end to end without any explicit sequencing: the harness emits
+`dropPart` BEFORE returning its retry sentinel, and `App.tsx` / `BubbleFeed.tsx` dispatch
+`NATIVE_PARTS_DROPPED` from a block placed above the heartbeat dispatch in the same
+handler, with both dispatch queues plain FIFO.
+
+### The PTY classifier must not reset a state it never set
+
+`useAttentionClassifier`'s cleanup branch dispatched `ATTENTION_STATE_CHANGED → 'ok'` for
+ANY non-ok state at mount. For a NATIVE session `active` is constant-false, so it fired
+exactly once at `ChatView` mount and threw away whatever attention state was already
+there. Both `'ok'` dispatch sites are now gated on `hasBuffer` (`provider === undefined ||
+provider === 'claude'`), and `hasBuffer` is a real dependency rather than a stale closure
+read; the currently-unreachable teardown site is guarded too so the pair cannot drift.
+
+Blast radius before the fix was narrow but real: `chat:hydrate` is REMOTE-ONLY (the
+desktop path deliberately does not serve it), so ordinary desktop mounts with `'ok'` long
+before any park. What broke was **a phone reconnecting to an already-parked desktop
+session** — hydrate carried `attentionState: 'stalled'` correctly and the classifier
+discarded it, so the user saw a spinner instead of the card with the buttons. Claude Code
+behaviour is byte-identical, because `hasBuffer` is true for every CC session. Guard:
+`useAttentionClassifier.test.tsx` (a `renderHook` probe), plus a live CDP probe against
+the workbench at `?stalled=1` that showed `card:false` with the fix reverted.
+
+### Declared behaviour change: the composer Stop button while `'stuck'`
+
+`useStreamingGate` required `attentionState === 'ok'`, so the square Stop button vanished
+the moment the stall warning fired — and `StopButton` exists specifically for touch/phone
+users with no ESC key, making a phone turn un-stoppable during the countdown. The positive
+test became a negative `TURN_IS_OVER` set, which `'stuck'` and `'stalled'` are not in. That also changes CLAUDE CODE behaviour, since `'stuck'` is CC-only
+via the classifier: a stuck CC session now shows Stop where master hid it. Kept
+deliberately — it is the same safety argument, and the click writes exactly `'\x1b'`,
+byte-identical to ESC, beside a still-enabled Send. Spec §12 was amended rather than the
+behaviour reverted, and both directions are pinned by tests.
+
+### Rule-overflow additions (2026-08-16, migrated from the path-scoped rule)
+
+Room for the above was made in `.claude/rules/chat-reducer.md` by dropping or compressing
+bullets whose full text this document already carried: `getHistory` replay parity, and the
+rationale clauses of `readNewLines`-is-serialized, the bytes carry, `stripSystemTags`, the
+spinner regex, `TRANSCRIPT_REPLAY_COMPLETE`'s `isIdle()` gate, the permission-ask
+input-then-name match order, the `pending`-flag dedup, and the vendored-emulator /
+xterm-touch notes. Each was grep-verified present here before removal; no claim was lost.
+The `subagent-watcher.ts` poll-cadence bullet and the `shared-fixtures/` contract were
+deliberately KEPT in the rule despite also living here, because both of their globs are in
+the rule's own `paths:` list — dropping them would have left an editor of those exact
+files with no always-loaded invariant.
