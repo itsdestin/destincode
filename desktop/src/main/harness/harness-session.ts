@@ -1863,9 +1863,15 @@ export class HarnessSession extends EventEmitter {
     // Attempt 0 stalls with nothing streamed → runStreamOnce returns
     // STALL_RETRY → we re-run. That AUTOMATIC retry is available once per step:
     // every attempt after the first passes isFirstAttempt=false, so a later
-    // silent stall never re-runs behind the user's back — it parks only if the
-    // turn has already parked once; otherwise Clock 1 still ends the turn with
-    // the "didn't begin responding" error.
+    // silent stall never re-runs behind the user's back. What it does instead
+    // is decided by the park guard in armWatchdog, which parks when EITHER of
+    // these is true:
+    //   - this attempt streamed something before going quiet (sawFirstChunk) —
+    //     Clock 2, and it does NOT matter whether the turn parked before; or
+    //   - the turn has already parked once (turnEverParked), which is what
+    //     stops a manually-retried step from dying on the first-byte clock.
+    // Neither true → Clock 1 alone, and the turn still ends with the
+    // "didn't begin responding" error.
     // The loop is no longer bounded at two iterations — a MANUAL Retry also
     // returns STALL_RETRY, and the user may press it as often as they like.
     for (let attempt = 0; ; attempt++) {
