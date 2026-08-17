@@ -568,12 +568,15 @@ export class EngineSupervisor extends EventEmitter {
           state,
         });
       }
-      // Fix (Amendment K2): the router discovers GGUFs at BOOT, and whether a
-      // file downloaded AFTER boot ever shows up in GET /models is unverified
-      // upstream — so union in the fresh disk scan. A just-downloaded model is
-      // then immediately visible (new-session picker via catalogModels, memory
-      // guard via liveModels) without an engine restart. Router rows win — they
-      // carry live residency state; disk-only rows are 'unloaded' by definition.
+      // Amendment K2: the router discovers GGUFs at BOOT, so union in the fresh
+      // disk scan — a just-downloaded model is then LISTED (new-session picker via
+      // catalogModels, memory guard via liveModels). Router rows win: they carry
+      // live residency state; disk-only rows are 'unloaded' by definition.
+      // LISTED IS NOT SERVABLE. A row this union added is a fully selectable model
+      // the router has never heard of, and a completion naming it 400s with
+      // `model 'X' not found` (measured 2026-08-16, after that reached a user).
+      // Serveability is ensureServable()'s job, below — do not read this union as
+      // making a post-boot download usable. It only makes it visible.
       const routerIds = new Set(out.map((m) => m.id));
       for (const m of scanned) {
         if (!routerIds.has(m.id)) out.push(m);
