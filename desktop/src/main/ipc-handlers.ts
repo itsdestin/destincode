@@ -2503,6 +2503,19 @@ export function registerIpcHandlers(
     for (const ev of events) {
       evt.sender.send(IPC.TRANSCRIPT_EVENT, ev);
     }
+    // Task 0 (ROADMAP #permissions): a replayed transcript rebuilds every card
+    // from disk, but an OPEN ask lives only in PermissionBroker's memory — the
+    // JSONL has no record that one is still awaiting an answer. Without this,
+    // the rebuilt card comes back with no buttons and (a root ask has no
+    // timeout) the turn hangs forever. Re-send it the same way the loop above
+    // sends transcript events — direct to the requesting window, for the same
+    // ownership reason stated above. Native-only: nativeEvents is null for CC
+    // sessions, which have no broker-held asks to re-send.
+    if (nativeEvents !== null) {
+      for (const ev of nativeHost.pendingAskEventsFor(sessionId)) {
+        evt.sender.send(IPC.HOOK_EVENT, ev);
+      }
+    }
     // Terminal marker so the reducer can reap tool cards this history left
     // 'running'. A transcript ends wherever the process died, so its last
     // tool_use may have no matching result — replaying it verbatim leaves a
