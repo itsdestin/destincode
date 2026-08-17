@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -40,7 +40,7 @@ import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-r
 import { assignSpecialistName } from './specialists/names';
 import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS, SPECIALIST_NOTE_MAX_CHARS } from './specialists/limits';
 import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, toRunView, type DelegationRecord } from './specialists/delegation-ledger';
-import { DelegatedModels } from './specialists/delegated-models';
+import { DelegatedModels, delegatedModelsView, type DelegatedTier } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
@@ -705,6 +705,41 @@ export class NativeSessionHost extends EventEmitter {
     const outcome = this.interruptSpecialist(parentId, childId);
     if (outcome.status === 'not-yours') return { ok: false, error: 'That helper isn’t part of this conversation.' };
     if (outcome.status === 'not-running') return { ok: false, error: 'This helper has already finished.' };
+    return { ok: true };
+  }
+
+  /** Task 8 (plan 1c) — Settings' two model-tier rows. `delegatedModels` is
+   *  only wired when this host was built with a real NativeHome (ipc-handlers'
+   *  production wiring always does; a bare test construction gets neither
+   *  tiers to designate nor a store to read them from) — that case reads as
+   *  "nothing designated" rather than throwing. Labels come from
+   *  toolServices.modelCatalog, the SAME closure the Task tool's own
+   *  ModelSearch/resolveDelegatedBinding already read (Finding 1 fix pass) —
+   *  one catalog source for every specialists surface. */
+  async getDelegatedModels(): Promise<DelegatedModelsView> {
+    if (!this.delegatedModels) return { budget: null, frontier: null };
+    const catalog = (await this.toolServices?.modelCatalog?.()) ?? null;
+    return delegatedModelsView(this.delegatedModels, catalog);
+  }
+
+  /** Task 8 — the tier picker's write path. A specific binding must resolve
+   *  to a REAL row in the live catalog (matched on providerId + modelId, not
+   *  modelId alone — a tier names one exact provider/model pair, not "any
+   *  provider that happens to have this id") or the write is refused
+   *  entirely; a stale/unconfirmed binding would let a helper silently spawn
+   *  on a model that no longer exists, with nothing on screen explaining why.
+   *  `binding: null` always clears the tier — no catalog lookup needed, since
+   *  clearing can never be "wrong". */
+  async setDelegatedModel(tier: DelegatedTier, binding: ModelBinding | null): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!this.delegatedModels) return { ok: false, error: 'Specialists aren’t available in this session.' };
+    if (binding !== null) {
+      const catalog = (await this.toolServices?.modelCatalog?.()) ?? null;
+      const found = catalog?.find((m) => m.id === binding.modelId && m.providerId === binding.providerId);
+      if (!found) {
+        return { ok: false, error: `"${binding.modelId}" isn’t in the model list right now — pick it from the list.` };
+      }
+    }
+    await this.delegatedModels.set(tier, binding);
     return { ok: true };
   }
 

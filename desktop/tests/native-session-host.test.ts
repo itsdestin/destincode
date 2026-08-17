@@ -3712,6 +3712,73 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // Task 8 (plan 1c) — Settings' two model-tier rows, via the SAME
+  // toolServices.modelCatalog wiring the describe block just above proved
+  // reaches the session. setDelegatedModel must refuse (and never write) a
+  // binding the live catalog doesn't recognize — a stale/unconfirmed model
+  // would let a helper spawn on something that no longer exists with nothing
+  // on screen explaining why.
+  describe('getDelegatedModels / setDelegatedModel (Task 8)', () => {
+    const CATALOG: CatalogModel[] = [
+      { id: 'claude-opus-5', providerId: 'anthropic', label: 'Claude Opus 5' },
+    ];
+
+    it('setDelegatedModel refuses an id absent from the catalog and never writes', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      const result = await h.setDelegatedModel('budget', { providerId: 'openrouter', modelId: 'ghost-model' });
+      expect(result).toEqual({ ok: false, error: '"ghost-model" isn’t in the model list right now — pick it from the list.' });
+      // Never written: a fresh read still reports nothing designated.
+      const view = await h.getDelegatedModels();
+      expect(view.budget).toBeNull();
+      await h.destroyAll();
+    });
+
+    it('setDelegatedModel writes a binding that IS in the catalog, and getDelegatedModels reads its label back', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      const result = await h.setDelegatedModel('frontier', { providerId: 'anthropic', modelId: 'claude-opus-5' });
+      expect(result).toEqual({ ok: true });
+      const view = await h.getDelegatedModels();
+      expect(view.frontier).toEqual({ providerId: 'anthropic', modelId: 'claude-opus-5', label: 'Claude Opus 5' });
+      await h.destroyAll();
+    });
+
+    it('clears with null', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.setDelegatedModel('frontier', { providerId: 'anthropic', modelId: 'claude-opus-5' });
+      expect((await h.getDelegatedModels()).frontier).not.toBeNull();
+      const result = await h.setDelegatedModel('frontier', null);
+      expect(result).toEqual({ ok: true });
+      expect((await h.getDelegatedModels()).frontier).toBeNull();
+      await h.destroyAll();
+    });
+
+    it('without a nativeHome, getDelegatedModels reports nothing designated instead of throwing', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+      );
+      await expect(h.getDelegatedModels()).resolves.toEqual({ budget: null, frontier: null });
+      await h.destroyAll();
+    });
+  });
+
   // Task 9 (plan 1b) — restart recovery + subagent-card replay. Unrelated to
   // the "Task 9" label on the `quiesce` describe above (Phase 1 Plan A used
   // its own numbering) — both names are pinned in their own commit history,

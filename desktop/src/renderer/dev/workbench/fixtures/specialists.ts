@@ -11,35 +11,41 @@ export function specialistRoster(): SpecialistDefinitionView[] {
     {
       id: 'explorer', displayName: 'Explorer', source: 'builtin', charter: 'read-only',
       description: 'Finds things: files, code, facts. Reads and searches, never edits.',
-      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [],
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [], offered: true,
     },
     {
       id: 'researcher', displayName: 'Researcher', source: 'builtin', charter: 'read-only',
       description: 'Web-heavy research with sourced summaries.',
-      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [],
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], warnings: [], offered: true,
     },
     {
       id: 'reviewer', displayName: 'Reviewer', source: 'builtin', charter: 'read-only',
       description: 'Checks finished work with fresh eyes. Sees only what it is handed, never the conversation.',
-      allowedTools: ['Read', 'Glob', 'Grep'], warnings: [],
+      allowedTools: ['Read', 'Glob', 'Grep'], warnings: [], offered: true,
     },
     {
       id: 'worker', displayName: 'Worker', source: 'builtin', charter: 'read-write',
       description: 'Does the work: edits files and runs commands. Only one Worker runs at a time.',
-      allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'], warnings: [],
+      allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'], warnings: [], offered: true,
     },
     {
       id: 'docs-writer', displayName: 'Docs Writer', source: 'personal', charter: 'read-write',
       description: 'Writes and updates documentation in the project’s docs folder, matching the existing voice.',
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
-      path: '/home/destin/.youcoded/specialists/docs-writer.md', warnings: [],
+      path: '/home/destin/.youcoded/specialists/docs-writer.md', warnings: [], offered: true,
       modelPreference: 'budget',
     },
     {
-      id: 'release-checker', displayName: 'Release Checker', source: 'project', charter: 'read-only',
+      // Task 8 fix: was source: 'project' (a value the real catalog never
+      // produces — a project's own .claude/agents/ file is tagged
+      // 'claude-code', same as the user-level folder; only `path` tells them
+      // apart). Kept as a SEPARATE fixture row from code-reviewer below so the
+      // workbench still shows two distinct file-backed specialists.
+      id: 'release-checker', displayName: 'Release Checker', source: 'claude-code', charter: 'read-only',
       description: 'Walks the release checklist and reports anything not ready.',
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
       path: '/home/destin/youcoded-dev/wecoded-themes/.youcoded/specialists/release-checker.md',
+      offered: true,
       warnings: [
         'Asked for a shell (Bash) but is read-only, so Bash was removed. Give it the read-write charter if it really needs to run commands.',
       ],
@@ -49,6 +55,7 @@ export function specialistRoster(): SpecialistDefinitionView[] {
       description: 'Expert code review specialist. Proactively reviews code for quality, security, and maintainability.',
       allowedTools: ['Read', 'Grep', 'Glob'],
       path: '/home/destin/youcoded-dev/wecoded-themes/.claude/agents/code-reviewer.md',
+      offered: true,
       warnings: [
         '2 tools this file asked for don’t exist here and were removed: NotebookEdit, MultiEdit.',
       ],

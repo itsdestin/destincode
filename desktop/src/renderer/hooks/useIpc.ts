@@ -66,6 +66,10 @@ declare global {
         // Optional — desktop stub returns no-op unsubscribe; Android remote-shim
         // dispatches base64-encoded raw PTY bytes for xterm.js consumption (Tier 2).
         ptyRawBytesForSession?: (sessionId: string, cb: (data: string) => void) => () => void;
+        // Specialists 1c (Task 8) — one hire's ledger record changed. Push-only,
+        // fed by the delegation ledger's own mutate() chokepoint (never a direct
+        // emit per host method). Returns an unsubscribe fn.
+        specialistEvent: (cb: (e: import('../../shared/types').SpecialistsEvent) => void) => () => void;
       };
       dialog: {
         openFile: () => Promise<string[]>;
@@ -302,6 +306,20 @@ declare global {
         list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
         remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;
         removeProject: (slug: string) => Promise<boolean>;
+      };
+      // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+      // list ALWAYS re-reads the three definition folders; ensurePersonalFolder
+      // is opt-in (only "Open folder" needs the folder to exist before any
+      // file has ever been written there).
+      specialists: {
+        list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => Promise<import('../../shared/types').SpecialistsListResult>;
+        getDelegatedModels: () => Promise<import('../../shared/types').DelegatedModelsView>;
+        setDelegatedModel: (
+          tier: 'budget' | 'frontier',
+          binding: { providerId: string; modelId: string } | null,
+        ) => Promise<{ ok: true } | { ok: false; error: string }>;
+        steer: (sessionId: string, childId: string, text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+        interrupt: (sessionId: string, childId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
       };
       // Local llama.cpp engine (Plan B). install() streams progress via
       // onInstallProgress; onStatusChanged pushes state transitions

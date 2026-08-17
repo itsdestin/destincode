@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent, type SpecialistsEvent } from '../shared/types';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
@@ -38,7 +38,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
-import { SpecialistCatalog } from './harness/specialists/catalog';
+import { SpecialistCatalog, toListResult } from './harness/specialists/catalog';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
 // Type-only: the payload the permissions:remove handler forwards to the host.
@@ -2470,6 +2470,18 @@ export function registerIpcHandlers(
     }
   });
 
+  // Task 8 (plan 1c) — the ledger's own write is the ONLY thing that fires
+  // this (see the 'specialists-event' emit in NativeSessionHost's
+  // constructor, next to DelegationLedger's construction): one mutate, one
+  // event, one changed hire. Push-only — there is no specialists:event
+  // REQUEST handler anywhere, same shape as native:model-state.
+  nativeHost.on('specialists-event', (event: SpecialistsEvent) => {
+    sendForSession(event.sessionId, IPC.SPECIALISTS_EVENT, event);
+    if (remoteServer) {
+      remoteServer.broadcast({ type: 'specialists:event', payload: event });
+    }
+  });
+
   // Plan C: model manager (curated catalog, HF search, downloads, detectors).
   // Constructed here — BEFORE setNativeRuntime — so remote WS clients reach the
   // SAME instance via the native-runtime injection below (the models:* handlers
@@ -2481,7 +2493,11 @@ export function registerIpcHandlers(
   // ipc-handler-owned state into remoteServer — no global needed).
   // permissionStore rides along for the remote permissions:list case (M5 2a) —
   // the WS revokes go through nativeHost, which is already here.
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore });
+  // specialistCatalog (Task 8): the remote specialists:list WS case needs the
+  // SAME catalog instance the desktop handler below reads — a second instance
+  // would fingerprint-cache independently and could answer a re-read with
+  // stale data relative to whichever surface wrote last.
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2635,6 +2651,23 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PERMISSIONS_LIST, async () => permissionStore.list());
   ipcMain.handle(IPC.PERMISSIONS_REMOVE, async (_e, slug: string, rule: PermissionRule) => nativeHost.revokeRule(slug, rule));
   ipcMain.handle(IPC.PERMISSIONS_REMOVE_PROJECT, async (_e, slug: string) => nativeHost.revokeProject(slug));
+  // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+  // list ALWAYS re-reads (catalog.reload) so a file dropped into a specialists
+  // folder a moment ago shows up without a separate "did it change" check;
+  // ensurePersonalFolder is opt-in (Settings' "Open folder" needs somewhere
+  // to open the FIRST time, before any file has ever been written there).
+  ipcMain.handle(IPC.SPECIALISTS_LIST, async (_e, opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => {
+    if (opts?.ensurePersonalFolder) await specialistCatalog.ensurePersonalFolder();
+    await specialistCatalog.reload(opts?.cwd);
+    return toListResult(specialistCatalog.snapshot(opts?.cwd));
+  });
+  ipcMain.handle(IPC.SPECIALISTS_DELEGATED_GET, async () => nativeHost.getDelegatedModels());
+  ipcMain.handle(IPC.SPECIALISTS_DELEGATED_SET, async (_e, tier: 'budget' | 'frontier', binding: { providerId: string; modelId: string } | null) =>
+    nativeHost.setDelegatedModel(tier, binding));
+  ipcMain.handle(IPC.SPECIALISTS_STEER, async (_e, sessionId: string, childId: string, text: string) =>
+    nativeHost.steerFromUser(sessionId, childId, text));
+  ipcMain.handle(IPC.SPECIALISTS_INTERRUPT, async (_e, sessionId: string, childId: string) =>
+    nativeHost.interruptFromUser(sessionId, childId));
   // --- Local engine IPC (Plan B) ---
   // install/restart resolve to a fresh status() so the caller doesn't need a
   // second round-trip. The push emitters below keep every window + remote in
