@@ -341,5 +341,54 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
 
     session.interrupt();
     await sent;
+
+    // Ordering, checked now that the turn has settled (avoids the race the NOTE
+    // above describes): the SECOND stalled card must come AFTER the dropPart
+    // that erased the first attempt's text, or the renderer would show the
+    // retry's own stall before ever clearing the abandoned one.
+    const dropIdx = events.findIndex((e) => e.type === 'assistant-thinking' && e.data.dropPart);
+    expect(dropIdx).toBeGreaterThanOrEqual(0);
+    const secondStalledIdx = events.indexOf(stalledCards(events)[1]);
+    expect(secondStalledIdx).toBeGreaterThan(dropIdx);
+  });
+
+  it('Retry is a no-op once a real chunk has un-parked the stream — it must not tear down a live stream', async () => {
+    // Regression coverage for the guard: `retryStalledStep()` only tears down
+    // the stream when `resolveRetry` is still live. Deleting the
+    // `this.resolveRetry = null` in runStreamOnce's un-park branch (the "warned
+    // || parked" real-chunk handler) leaves the OLD resolver alive after the
+    // turn has already moved on — a stale Retry click would then kill a stream
+    // that is actively producing GOOD text. Parks, lets a real chunk arrive (so
+    // the turn un-parks and keeps streaming on the SAME connection), then
+    // proves a Retry click at that point is inert: it returns false and emits
+    // no dropPart.
+    let controller: ReadableStreamDefaultController<any>;
+    const wakeable = new ReadableStream({
+      start(c) {
+        controller = c;
+        for (const chunk of [{ type: 'stream-start', warnings: [] }, ...textChunks('a', 'half ')]) c.enqueue(chunk);
+      },
+    });
+    const model = new MockLanguageModelV4({ doStream: async () => ({ stream: wakeable }) });
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    const sent = session.send('go');
+
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    // The provider wakes up on the SAME connection — this un-parks the step and
+    // resolveRetry should be cleared as part of that.
+    for (const c of stream(...textChunks('a', 'a sentence'))) controller!.enqueue(c);
+    await waitForEvent(events, (e) => e.type === 'assistant-text' && e.data.text === 'a sentence');
+
+    // A Retry click landing NOW (after the resume) must be a no-op — the resumed
+    // stream must not be torn down and its good text must not be erased.
+    expect(session.retryStalledStep()).toBe(false);
+    expect(events.find((e) => e.type === 'assistant-thinking' && e.data.dropPart)).toBeUndefined();
+
+    controller!.enqueue(finishChunk('stop'));
+    controller!.close();
+    await sent;
+    expect(types(events)).toContain('turn-complete');
+    expect(types(events)).not.toContain('session-error');
   });
 });

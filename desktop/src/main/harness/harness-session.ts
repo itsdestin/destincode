@@ -441,9 +441,13 @@ const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acti
  *  IPC, the remote WebSocket, and the Android bridge for no extra information.
  *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
 const TOOL_PREPARING_EMIT_MS = 300;
-// consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
-// so the step can be safely re-run once (re-running after content streamed would
-// duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
+// consumeStep's retry sentinel. TWO producers return it, safe for different
+// reasons: (1) the AUTOMATIC retry, when the stream stalled with NOTHING
+// streamed yet on the first attempt (Clock 1) — safe because there is nothing
+// on screen or in emittedPartIds to collide with; (2) the MANUAL Retry, fired
+// from a parked (Clock 2) step where content already streamed — safe ONLY
+// because that branch emits `dropPart` first, erasing the abandoned text
+// before the re-run's deltas can land on the same partIds and merge with it.
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -1614,7 +1618,9 @@ export class HarnessSession extends EventEmitter {
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
     // (earlier steps already pushed their assistant + tool messages). Reset per
-    // step; on an immediate-error retry it stays '' so no duplicate is pushed.
+    // step; an immediate-error retry never touches it (it emits nothing before
+    // it throws), and a manual Retry (runStreamOnce's 'retry' branch) clears it
+    // itself via reportPartial('') — see that branch for why.
     let partialAssistantText = '';
 
     try {
@@ -1655,10 +1661,12 @@ export class HarnessSession extends EventEmitter {
         // pruning can't get under budget. Inert (returns immediately) below the
         // trigger, so the existing loop behavior is unchanged for normal turns.
         await this.maybeCompact(model, lastInputTokens);
-        // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
-        // retry after content was already emitted can cosmetically duplicate that
-        // partial in a session-error's history push — accepted, since the
-        // required immediate-error retry emits nothing before it throws.
+        // Reset per STEP (not per retry attempt inside withRetry): the required
+        // immediate-error retry never needs this reset itself, since it emits
+        // nothing before it throws. A manual Retry is the opposite case — it CAN
+        // emit before parking — so that branch clears this on its own
+        // (reportPartial('') in runStreamOnce's 'retry' case) rather than relying
+        // on this per-step reset to have caught it.
         partialAssistantText = '';
         // One step = one streamText consumption. withRetry wraps the whole
         // CONSUMPTION (not just the streamText call): the SDK surfaces provider
@@ -1855,15 +1863,18 @@ export class HarnessSession extends EventEmitter {
     // Attempt 0 stalls with nothing streamed → runStreamOnce returns
     // STALL_RETRY → we re-run. That AUTOMATIC retry is available once per step:
     // every attempt after the first passes isFirstAttempt=false, so a later
-    // silent stall parks instead of re-running behind the user's back.
+    // silent stall never re-runs behind the user's back — it parks only if the
+    // turn has already parked once; otherwise Clock 1 still ends the turn with
+    // the "didn't begin responding" error.
     // The loop is no longer bounded at two iterations — a MANUAL Retry also
     // returns STALL_RETRY, and the user may press it as often as they like.
     for (let attempt = 0; ; attempt++) {
       const outcome = await this.runStreamOnce(model, aiTools, reportPartial, attempt === 0);
       if (outcome !== STALL_RETRY) return outcome;
-      // Auto-retrying after a silent stall: clear the on-screen stall warning
-      // back to a plain "Thinking" heartbeat so the countdown doesn't linger at
-      // 0 while the fresh stream spins up.
+      // Re-running after EITHER a silent stall (nothing streamed) or a manual
+      // Retry (content streamed, then erased via dropPart): clear the on-screen
+      // stall warning back to a plain "Thinking" heartbeat so the countdown
+      // doesn't linger at 0 while the fresh stream spins up.
       this.emitEvent('assistant-thinking', {});
     }
   }
@@ -2066,7 +2077,13 @@ export class HarnessSession extends EventEmitter {
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
           this.resolveRetry = null;
-          parked = false;
+          // Retract the erased text from the model's own memory, not just the
+          // screen: partialAssistantText is reset per STEP (not per attempt), so
+          // without this, a re-run that throws before emitting anything would
+          // leave send()'s catch pushing the ABANDONED half-sentence — text the
+          // user just watched get erased via dropPart — silently back into
+          // this.history as an assistant message.
+          reportPartial('');
           // Withdraw any preparing card: the step re-runs INSIDE the same turn,
           // so endTurn's reaping never fires and the card would spin forever
           // beside the one the re-run mints. (Same reason as the auto-retry path.)
