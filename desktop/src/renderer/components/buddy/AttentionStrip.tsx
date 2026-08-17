@@ -1,4 +1,22 @@
-import type { AttentionSummary } from '../../../shared/types';
+import type { AttentionSummary, AttentionState } from '../../../shared/types';
+import { attentionDotColor } from '../../hooks/useSessionAttention';
+
+// Hex for the two dot colors. The DECISION of which one to use is NOT made
+// here — attentionDotColor() is the app's single source of truth for that, and
+// the strip now defers to it (see the comment on `color` below).
+const DOT_HEX = { red: '#ef4444', amber: '#f5a623' } as const;
+
+// User-facing text per state. Only 'stalled' is spelled out today; 'stuck',
+// 'session-died' and 'error' fall through to the raw state name, which is what
+// this component has always rendered for every state. Humanising those three
+// is real copy work and is deliberately NOT bundled into the stall feature —
+// they would be label changes Destin could not trace back to the stall work he
+// asked for.
+const LABEL: Partial<Record<AttentionState, string>> = {
+  // Same words as the main card (AttentionBanner's COPY.stalled), lowercased to
+  // match this strip's one existing prose label, 'awaiting approval'.
+  stalled: 'provider may have stalled',
+};
 
 interface Props {
   sessionId: string | null;
@@ -19,14 +37,24 @@ export function AttentionStrip({ sessionId, summary }: Props) {
   const label =
     state.awaitingApproval ? 'awaiting approval'
     : state.attentionState === 'ok' ? null
-    : state.attentionState;
+    : LABEL[state.attentionState] ?? state.attentionState;
   if (!label) return null;
 
+  // Fix (M10, whole-branch review 2026-08-16): this component used to carry its
+  // OWN colour table, which had drifted from every other dot in the app — it
+  // painted 'stuck' RED (the rule reserves red for "definitely needs your
+  // attention"; amber is "may be wrong, I don't know"), 'session-died' grey and
+  // 'error' blue, and the new 'stalled' state fell through to that same blue
+  // even though a parked turn is the clearest "act now" state there is.
+  // Deferring to attentionDotColor() — the function the sidebar dots and the
+  // attention reporter already use — removes the duplicate table rather than
+  // adding a fifth entry to it, so the strip can never disagree again.
+  // Consequence, stated so it is traceable: stalled blue→red, session-died
+  // grey→red, error blue→red, stuck red→amber. awaitingApproval keeps its own
+  // amber branch, unchanged.
   const color =
-    state.awaitingApproval ? '#f5a623'
-    : state.attentionState === 'stuck' ? '#ef4444'
-    : state.attentionState === 'session-died' ? '#6b7280'
-    : '#60a5fa';
+    state.awaitingApproval ? DOT_HEX.amber
+    : DOT_HEX[attentionDotColor(state.attentionState) ?? 'amber'];
 
   return (
     <div
