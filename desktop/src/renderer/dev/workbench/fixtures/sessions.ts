@@ -7,6 +7,9 @@ import type { SessionInfo } from '../../../../shared/types';
 // Exported as a factory, not a const: every createStore() call needs its own
 // array, or one store mutating its session list leaks into the next store built
 // in the same page (a reload showing stale data).
+//
+// MOCKUP: extra native sessions with different providers so the model chip
+// restyle (brand colors + icons) is visible across all brands at once.
 export function sessions(): SessionInfo[] {
   return [
     {
@@ -31,6 +34,67 @@ export function sessions(): SessionInfo[] {
       provider: 'native',
       harnessId: 'coder',
       model: 'qwen2.5-coder:14b',
+    },
+    // --- Mockup: brand-color showcase sessions (native) ---
+    {
+      id: 'wb-3',
+      name: 'gpt-5.6 debug session',
+      cwd: '/home/destin/youcoded-dev/wecoded-marketplace',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_785_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'openai/gpt-5.6-sol',
+    },
+    {
+      id: 'wb-4',
+      name: 'gemini flash test',
+      cwd: '/home/destin/youcoded-dev/youcoded',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_780_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'google/gemini-2.5-flash',
+    },
+    {
+      id: 'wb-5',
+      name: 'claude via openrouter',
+      cwd: '/home/destin/youcoded-dev/youcoded',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_775_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'anthropic/claude-sonnet-4-6',
+    },
+    {
+      id: 'wb-6',
+      name: 'grok-3 reasoning test',
+      cwd: '/home/destin/youcoded-dev/youcoded',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_770_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'x-ai/grok-3',
+    },
+    {
+      id: 'wb-7',
+      name: 'kimi-k1.5 moonshot session',
+      cwd: '/home/destin/youcoded-dev/youcoded',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_765_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'moonshot/kimi-k1.5',
     },
   ];
 }

@@ -55,6 +55,19 @@
   --tag-purple: #8E4EC6;
   --tag-pink: #D6409F;
   --tag-gray: #7A7F87;
+
+  /* Provider brand identity colors — adaptive light-theme values.
+     Deep, rich tones ensuring ≥ 4.5:1 contrast against light panel surfaces (#EAEAEA). */
+  --brand-claude: #C2410C;
+  --brand-openai: #047857;
+  --brand-google: #1D4ED8;
+  --brand-qwen:   #6D28D9;
+  --brand-grok:   var(--fg-2);
+  --brand-kimi:   #0E7490;
+
+  /* Status chips contrast tokens (Light) */
+  --status-auto:   #B45309;
+  --status-bypass: #BE123C;
 }
 
 /* ─── Dark ─── */
@@ -86,6 +99,18 @@
   --radius-2xl: 24px;
   --radius-full: 9999px;
   --radius-toggle: calc(var(--radius-md) - 2px);
+
+  /* Provider brand identity colors — vibrant dark-theme values. */
+  --brand-claude: #FB923C;
+  --brand-openai: #10A37F;
+  --brand-google: #60A5FA;
+  --brand-qwen:   #A78BFA;
+  --brand-grok:   var(--fg-2);
+  --brand-kimi:   #22D3EE;
+
+  /* Status chips contrast tokens (Dark) */
+  --status-auto:   #F2B33D;
+  --status-bypass: #FA8072;
 }
 
 /* ─── Midnight ─── */
@@ -117,6 +142,18 @@
   --radius-2xl: 24px;
   --radius-full: 9999px;
   --radius-toggle: calc(var(--radius-md) - 2px);
+
+  /* Provider brand identity colors — vibrant dark-theme values. */
+  --brand-claude: #FB923C;
+  --brand-openai: #10A37F;
+  --brand-google: #60A5FA;
+  --brand-qwen:   #A78BFA;
+  --brand-grok:   var(--fg-2);
+  --brand-kimi:   #22D3EE;
+
+  /* Status chips contrast tokens (Midnight) */
+  --status-auto:   #F2B33D;
+  --status-bypass: #FA8072;
 }
 
 /* ─── Crème ─── */
@@ -160,6 +197,18 @@
   --radius-2xl: 24px;
   --radius-full: 9999px;
   --radius-toggle: calc(var(--radius-md) - 2px);
+
+  /* Provider brand identity colors — warm, rich light-theme values for Crème. */
+  --brand-claude: #C2410C;
+  --brand-openai: #047857;
+  --brand-google: #1D4ED8;
+  --brand-qwen:   #6D28D9;
+  --brand-grok:   var(--fg-2);
+  --brand-kimi:   #0E7490;
+
+  /* Status chips contrast tokens (Crème) */
+  --status-auto:   #9A3412;
+  --status-bypass: #9F1239;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

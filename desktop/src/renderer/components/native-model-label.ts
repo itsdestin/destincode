@@ -83,8 +83,10 @@ export function nativeModelLabel(modelId: string | undefined | null): string {
     trimmed = next;
   }
 
-  // 4. Split on both separators, then drop standalone format tags.
-  let tokens = trimmed.split(/[-_]+/).filter(Boolean).filter((t) => !FORMAT_TOKEN.test(t));
+  // 4. Split on separators, preserving dotted version numbers (e.g. 4-6 → 4.6)
+  //    when a standalone single digit follows a separator and another single digit.
+  let normalized = trimmed.replace(/\b(\d+)[-_]+(\d+)\b/g, '$1.$2');
+  let tokens = normalized.split(/[-_]+/).filter(Boolean).filter((t) => !FORMAT_TOKEN.test(t));
 
   // 5. Strip leading vendor noise (only leading — see LEADING_NOISE).
   while (tokens.length > 1 && LEADING_NOISE.has(tokens[0].toLowerCase())) tokens.shift();
