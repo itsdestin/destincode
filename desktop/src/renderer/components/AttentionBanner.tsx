@@ -42,6 +42,12 @@ const COPY: Record<Props['state'], string> = {
   // Phase 1 Plan A). The detailed provider message rides the 'session-error'
   // transcript event; this banner copy stays generic.
   'error': 'The model provider returned an error — this turn has ended.',
+  // Deliberately non-committal: a hung upstream and a dead socket are
+  // indistinguishable from inside the app and always will be, so the copy
+  // states the observation and pairs it with actions rather than guessing a
+  // cause (docs/error-message-standards.md). A later task appends the live
+  // elapsed time and the Retry / Stop buttons; this line is the final wording.
+  'stalled': 'Provider may have stalled',
 };
 
 // Destructive states pick up the L3 destructive ring tokens so they read as

@@ -212,12 +212,23 @@ export function BubbleFeed({ sessionId }: Props) {
                 cleared: event.data.toolPreparing.cleared,
               });
             }
+            // Fix: erase an abandoned half-written sentence BEFORE the heartbeat
+            // below parks/clears the turn — must stay before it, and MUST mirror
+            // App.tsx or the two windows diverge.
+            if (event.data?.dropPart) {
+              batchDispatch({
+                type: 'NATIVE_PARTS_DROPPED',
+                sessionId: event.sessionId,
+                partIds: event.data.dropPart.partIds,
+              });
+            }
             batchDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
-              // Native watchdog stall countdown — payload sets it, absence clears
-              // it. MUST mirror App.tsx or the two windows diverge.
+              // Native watchdog stall countdown + parked turn — payload sets,
+              // absence clears. MUST mirror App.tsx or the two windows diverge.
               stallWarning: event.data?.stallWarning,
+              stalled: event.data?.stalled,
             });
           }
           break;
