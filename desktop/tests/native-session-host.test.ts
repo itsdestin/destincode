@@ -10,7 +10,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
 import { SpecialistCatalog } from '../src/main/harness/specialists/catalog';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_NOTE_MAX_CHARS } from '../src/main/harness/specialists/limits';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_NOTE_MAX_CHARS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../src/main/harness/specialists/limits';
 import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
@@ -3775,6 +3775,70 @@ describe('NativeSessionHost', () => {
         new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
       );
       await expect(h.getDelegatedModels()).resolves.toEqual({ budget: null, frontier: null });
+      await h.destroyAll();
+    });
+  });
+
+  // Task 9 (plan 1c) — run replay on attach. A DIFFERENT "Task 9" from the
+  // "restart recovery + subagent-card replay (Task 9, plan 1b)" describe
+  // just below (that comment already flags the reused number; same reason
+  // applies here — not renamed to avoid an unrelated diff).
+  describe('specialistRunsFor (Task 9, plan 1c — run replay on attach)', () => {
+    it('returns toRunView of every ledger record for the live parent, and [] for an unknown session', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-a', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-b', parentToolCallId: 'tc-2', agentType: 'researcher', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: true, owner: OWNER, missedSteers: [],
+      });
+
+      const runs = h.specialistRunsFor('root-1');
+      expect(runs).toHaveLength(2);
+      expect(runs.map((r) => r.childId).sort()).toEqual(['child-a', 'child-b']);
+      // toRunView strips delivery bookkeeping — the host's own business, never the card's.
+      expect((runs.find((r) => r.childId === 'child-a') as any).owner).toBeUndefined();
+      expect((runs.find((r) => r.childId === 'child-a') as any).claimedBy).toBeUndefined();
+
+      // Unknown/non-live session: no crash, no cards — matches getHistory()'s
+      // own "null for non-live" contract (see that method's WHY comment).
+      expect(h.specialistRunsFor('does-not-exist')).toEqual([]);
+
+      await h.destroyAll();
+    });
+
+    it('caps replay at SPECIALIST_SPAWN_BUDGET_PER_SESSION records', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // One more record than the lifetime spawn budget allows. In production
+      // the ledger can never actually hold more than the budget for one
+      // parent (trySpendSpecialistSpawnBudget gates every spawn BEFORE
+      // recordStart ever runs) — this proves the defensive cap holds even so.
+      for (let i = 0; i < SPECIALIST_SPAWN_BUDGET_PER_SESSION + 1; i++) {
+        await (h as any).ledger.recordStart(root, 'root-1', {
+          childId: `child-${i}`, parentToolCallId: `tc-${i}`, agentType: 'explorer', title: `T${i}`,
+          workDir: root, description: 'd', background: true,
+          status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+        });
+      }
+
+      expect(h.specialistRunsFor('root-1')).toHaveLength(SPECIALIST_SPAWN_BUDGET_PER_SESSION);
+
       await h.destroyAll();
     });
   });

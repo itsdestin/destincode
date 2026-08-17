@@ -2478,6 +2478,11 @@ export function registerIpcHandlers(
   nativeHost.on('specialists-event', (event: SpecialistsEvent) => {
     sendForSession(event.sessionId, IPC.SPECIALISTS_EVENT, event);
     if (remoteServer) {
+      // Task 9 (plan 1c): the phone hydrates over this WebSocket, never
+      // through TRANSCRIPT_REPLAY, so it needs its own connect-time catch-up
+      // for a helper's run status — bufferSpecialistRun feeds the buffer
+      // replayBuffers() reads from on connect (mirrors bufferHookEvent above).
+      remoteServer.bufferSpecialistRun(event);
       remoteServer.broadcast({ type: 'specialists:event', payload: event });
     }
   });
@@ -2530,6 +2535,18 @@ export function registerIpcHandlers(
     if (nativeEvents !== null) {
       for (const ev of nativeHost.pendingAskEventsFor(sessionId)) {
         evt.sender.send(IPC.HOOK_EVENT, ev);
+      }
+    }
+    // Task 9 (plan 1c): a replayed transcript rebuilds every tool card from
+    // the JSONL, but a specialist card's status IS its run record — the
+    // ledger the transcript itself says nothing about (delegation-ledger.ts's
+    // module comment). Without this, a reloaded window's helper card comes
+    // back with no status. Same "direct to the requesting window" ownership
+    // reason as the ask replay just above, and native-only for the same
+    // reason: nativeEvents is null for CC sessions, which have no ledger.
+    if (nativeEvents !== null) {
+      for (const run of nativeHost.specialistRunsFor(sessionId)) {
+        evt.sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
       }
     }
     // Terminal marker so the reducer can reap tool cards this history left

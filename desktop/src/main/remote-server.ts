@@ -14,7 +14,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import type { NativeSendResult, SessionProvider } from '../shared/types';
+import type { NativeSendResult, SessionProvider, SpecialistsEvent } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -85,6 +85,12 @@ export class RemoteServer {
   private warnedChannels = new Set<string>();
   private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
+  // Task 9 (plan 1c) — mirrors hookBuffers, but keyed sessionId → childId,
+  // holding only the LATEST specialists:event per helper (never an
+  // append-only log — a card shows one current status, not a history of
+  // every intermediate one). Filled by bufferSpecialistRun(), called from
+  // the same ipc-handlers.ts listener that broadcasts 'specialists-event'.
+  private specialistRunBuffers = new Map<string, Map<string, SpecialistsEvent>>();
   // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
   private failedAttempts = new Map<string, { count: number; resetAt: number }>();
   // Last-known topic names, fed by ipc-handlers.ts via setLastTopic()
@@ -462,6 +468,22 @@ export class RemoteServer {
     this.broadcast({ type: 'hook:event', payload: event });
   };
 
+  /** Task 9 (plan 1c) — the remote-client counterpart to
+   *  NativeSessionHost.specialistRunsFor: a reconnecting phone hydrates over
+   *  this WebSocket, never through TRANSCRIPT_REPLAY, so it needs its own
+   *  connect-time catch-up for a helper's run status. Called from the SAME
+   *  ipc-handlers.ts listener that broadcasts 'specialists-event' live.
+   *  Latest-per-child, not append-only — see specialistRunBuffers' own
+   *  comment for why overwriting the previous entry is correct here. */
+  bufferSpecialistRun(event: SpecialistsEvent): void {
+    let byChild = this.specialistRunBuffers.get(event.sessionId);
+    if (!byChild) {
+      byChild = new Map();
+      this.specialistRunBuffers.set(event.sessionId, byChild);
+    }
+    byChild.set(event.run.childId, event);
+  }
+
   private onSessionCreated = (info: any) => {
     this.broadcast({ type: 'session:created', payload: info });
   };
@@ -470,6 +492,10 @@ export class RemoteServer {
     this.ptyBuffers.delete(sessionId);
     this.hookBuffers.delete(sessionId);
     this.lastTopics.delete(sessionId);
+    // Task 9: a destroyed parent's helpers are gone with it — nothing will
+    // ever reconnect asking for this session's run status again, so clear it
+    // the same way the buffers above already do.
+    this.specialistRunBuffers.delete(sessionId);
     // Forward exitCode so the remote shim can surface 'session-died' banners
     // when Claude's process dies mid-turn on the host machine.
     this.broadcast({ type: 'session:destroyed', payload: { sessionId, exitCode } });
@@ -754,6 +780,16 @@ export class RemoteServer {
       for (const [_sessionId, events] of this.hookBuffers) {
         for (const event of events) {
           ws.send(JSON.stringify({ type: 'hook:event', payload: event }));
+        }
+      }
+
+      // Task 9 (plan 1c): latest specialist run per helper, so a reconnecting
+      // client's card comes back with a status instead of blank. Same
+      // ordering position as the hook buffers just above — catch-up replay,
+      // then live events resume.
+      for (const [_sessionId, byChild] of this.specialistRunBuffers) {
+        for (const event of byChild.values()) {
+          ws.send(JSON.stringify({ type: 'specialists:event', payload: event }));
         }
       }
 

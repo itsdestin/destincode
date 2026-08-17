@@ -805,6 +805,56 @@ describe('RemoteServer account bridge', () => {
   });
 });
 
+// Task 9 (plan 1c) — the phone client hydrates over this WebSocket, never
+// through TRANSCRIPT_REPLAY, so it needs its own connect-time catch-up for a
+// specialist's run status, mirroring the pre-existing hookBuffers/
+// replayBuffers late-join mechanism.
+describe('RemoteServer specialist run replay (Task 9)', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  function fakeWs() {
+    const frames: any[] = [];
+    return { frames, ws: { readyState: 1, send: (raw: string) => frames.push(JSON.parse(raw)) } as any };
+  }
+
+  // replayBuffers delays PTY/hook/run replay by 500ms (see its own comment —
+  // gives the client's reducer time to process SESSION_INIT first), so a
+  // test asserting on that replay has to wait past it, same as a real client.
+  async function replayAndWait(server: any, ws: any) {
+    await server.replayBuffers(ws);
+    await new Promise((r) => setTimeout(r, 600));
+  }
+
+  it('a new client receives the latest specialists:event {kind:"run"} per child, not an append-only log', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+
+    // Same child, two statuses — only the LATEST should replay (a card shows
+    // one current status, not a history of every intermediate one).
+    server.bufferSpecialistRun({ kind: 'run', sessionId: 's1', run: { childId: 'c1', status: 'running', title: 'Nadia' } });
+    server.bufferSpecialistRun({ kind: 'run', sessionId: 's1', run: { childId: 'c1', status: 'completed', title: 'Nadia' } });
+    // A second, different child — must ALSO replay (per-child, not per-session).
+    server.bufferSpecialistRun({ kind: 'run', sessionId: 's1', run: { childId: 'c2', status: 'running', title: 'Otis' } });
+
+    await replayAndWait(server, ws);
+
+    const runEvents = frames.filter((m) => m.type === 'specialists:event');
+    expect(runEvents).toHaveLength(2);
+    const byChild = Object.fromEntries(runEvents.map((e) => [e.payload.run.childId, e.payload.run.status]));
+    expect(byChild).toEqual({ c1: 'completed', c2: 'running' });
+  });
+});
+
 // Security regression: the transcript:read-meta WS handler validated the
 // caller-supplied path with startsWith(claudeProjects) and NO trailing path
 // separator, so a SIBLING directory like ~/.claude/projects-evil/x.jsonl

@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView, SpecialistRunView } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -3723,6 +3723,37 @@ export class NativeSessionHost extends EventEmitter {
     if (records.length === 0) return parentEvents;
     const children = records.map((record) => ({ record, events: this.store.readEvents(record.childId, record.workDir) }));
     return mergeChildEvents(sessionId, parentEvents, children);
+  }
+
+  /** Task 9 (plan 1c) — every run record for `sessionId`'s (as PARENT) live
+   *  specialist delegations, projected through the SAME toRunView the
+   *  ledger's own change listener uses to build the specialists:event push
+   *  (see the 'specialists-event' emit in the constructor above). A renderer
+   *  that just reloaded rebuilds its tool cards from the on-disk transcript
+   *  (TRANSCRIPT_REPLAY), but nothing in that replay re-sends a helper's
+   *  CURRENT status — the card's status IS its run record (R2) — so
+   *  ipc-handlers replays these the same way it replays open permission asks
+   *  just above (pendingAskEventsFor).
+   *
+   *  cwd comes from `this.live`, not a caller-supplied argument: getHistory()
+   *  already returns null for a non-live session for the identical reason
+   *  (see its own comment) — a dead session's specialists have no live turn
+   *  left to act on their status, so this matches that same "only when it IS
+   *  live" contract instead of inventing a second one.
+   *
+   *  Capped at SPECIALIST_SPAWN_BUDGET_PER_SESSION defensively: in
+   *  production the ledger can never hold more than that many records for
+   *  one parent — trySpendSpecialistSpawnBudget spends the budget BEFORE
+   *  recordStart ever runs (see its own comment), so every recordStart call
+   *  is already budget-gated. This slice is a belt-and-braces bound against
+   *  replay ever growing past what a single turn could actually have
+   *  spawned, not a correction for a real overflow. */
+  specialistRunsFor(sessionId: string): SpecialistRunView[] {
+    const entry = this.live.get(sessionId);
+    if (!entry || !this.ledger) return [];
+    return this.ledger.listFor(entry.cwd, sessionId)
+      .slice(0, SPECIALIST_SPAWN_BUDGET_PER_SESSION)
+      .map(toRunView);
   }
 
   /** True only when we can AFFIRM this native session has no work in flight —
