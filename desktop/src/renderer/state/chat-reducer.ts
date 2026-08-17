@@ -521,14 +521,30 @@ function findSpecialistCard(
 }
 
 /**
- * Task 10: turns a run record's `notes` (the ledger's full, ordered steer
+ * Task 10/11: turns a run record's `notes` (the ledger's full, ordered steer
  * history) into Activity-trail 'note' segments, appending only the ones this
  * card has never seen. Idempotent by construction: every SPECIALIST_RUN_CHANGED
  * carries the WHOLE notes array, not just a delta, so re-processing the same
  * run twice (a replayed attach, an unrelated status-only push) must not
- * duplicate a row already there. The id keeps the id scheme the removed
- * dedicated steer action used (`sa-note-${childId}-${timestamp}`) so an
- * already-open session's existing segments still match on reload.
+ * duplicate a row already there.
+ *
+ * Task 11 judgment call (kept over the plan's "drop every note segment and
+ * rebuild wholesale from run.notes"): a rebuild has no way to tell a stale,
+ * out-of-order run event from the latest one — SpecialistRunView carries no
+ * sequence/version field — so a stale resend landing after a newer live
+ * update (a plausible replay-then-live race; see the reducer test of the same
+ * name) would silently DELETE a note row already on screen. Append-by-id can
+ * only ever grow the list, so a resend with fewer notes can't regress one
+ * already shown. Trade-off: a note removed or edited server-side would not be
+ * reflected here — accepted, because SpecialistNote's own contract is an
+ * append-only steer history (never mutated after being written).
+ *
+ * Fix (Task 11): the id used to be `sa-note-${childId}-${note.at}` — two
+ * notes landed in the same millisecond collided on id and the second was
+ * silently deduped away as "already known". Keyed on the note's INDEX in the
+ * array instead, matching the spec's stated id scheme; safe because the
+ * ledger always resends the full, append-only notes array, so index i keeps
+ * naming the same note across calls.
  */
 function reconcileNoteSegments(
   existing: SubagentSegment[] | undefined,
@@ -538,8 +554,9 @@ function reconcileNoteSegments(
   if (!notes || notes.length === 0) return existing;
   const known = new Set((existing ?? []).filter(s => s.type === 'note').map(s => s.id));
   let segs = existing;
-  for (const note of notes) {
-    const id = `sa-note-${childId}-${note.at}`;
+  for (let i = 0; i < notes.length; i++) {
+    const note = notes[i];
+    const id = `sa-note-${childId}-${i}`;
     if (known.has(id)) continue;
     segs = [...(segs ?? []), { type: 'note', id, content: note.text, from: note.from, timestamp: note.at }];
     known.add(id);
@@ -1873,6 +1890,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       });
       if (!cardId) return state;
       const card = session.toolCalls.get(cardId)!;
+      // Task 11 short-circuit: the delivery bookkeeping (claim / mark-
+      // attempted / confirm / release) legitimately rewrites the ledger
+      // record and fires the change listener on EVERY step of that cycle,
+      // but toRunView (main process) strips those delivery-only fields before
+      // it ever reaches here — so one delivery cycle can push up to four
+      // byte-identical views. Absorb them here (reducer), not at the emit
+      // path, by comparing the incoming view to what the card already holds
+      // and returning the SAME state object when nothing actually changed.
+      // stableStringify (key-order-independent) is this file's existing
+      // idiom for structural comparison — reused rather than adding a deps.
+      if (card.specialistRun && stableStringify(action.run) === stableStringify(card.specialistRun)) {
+        return state;
+      }
       const toolCalls = new Map(session.toolCalls);
       toolCalls.set(cardId, {
         ...card,
