@@ -29,6 +29,17 @@ const SESSION_FOR: Record<string, string> = {
   native: 'wb-2',
 };
 
+/** `?stalled=1` replays the fixture's parked-turn line so the red
+ *  "Provider may have stalled" card can be reviewed. OFF by default — see
+ *  LoadOptions.includeStalled for why (it used to be on for every scenario).
+ *  Guarded on `location` existing: this module is imported by a Node-environment
+ *  unit test (tests/workbench-fixture-actions.test.ts), where there is no
+ *  browser global and touching one would throw at import time. */
+function stalledRequested(): boolean {
+  if (typeof location === 'undefined') return false;
+  return new URLSearchParams(location.search).get('stalled') === '1';
+}
+
 let cached: SerializedChatState | null = null;
 
 /** The hydrate payload for every mapped conversation fixture, merged into one
@@ -49,7 +60,7 @@ export function buildHydratePayload(): SerializedChatState {
       continue;
     }
 
-    const { actions, error } = loadFixture(name, raw, sessionId);
+    const { actions, error } = loadFixture(name, raw, sessionId, { includeStalled: stalledRequested() });
     if (error) { console.warn(`[workbench] ${error}`); continue; }
 
     state = chatReducer(state, { type: 'SESSION_INIT', sessionId });

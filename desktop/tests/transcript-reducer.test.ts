@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
 import { ChatState, ChatAction, createSessionChatState } from '../src/renderer/state/chat-types';
+// Source-text parity check below reads the two hand-mirrored forwarding
+// switches directly off disk (App.tsx has no test harness that exercises the
+// buddy window, and vice versa) — see the describe block at the bottom.
+import fs from 'fs';
+import path from 'path';
 
 const SESSION = 'test-session';
 
@@ -775,4 +780,22 @@ describe('Subagent threading', () => {
     // The parent's Task tool must not have been flipped to 'failed: Turn ended'.
     expect(session.toolCalls.get('toolu_parent')!.status).not.toBe('failed');
   });
+});
+
+// App.tsx (main window) and BubbleFeed.tsx (buddy window) each hand-forward the
+// native heartbeat's fields onto TRANSCRIPT_THINKING_HEARTBEAT. They are copies,
+// and a field added to one and not the other makes the two windows disagree
+// about whether a turn is stalled. Pinned as source text because the buddy
+// window has no test harness of its own.
+describe('native heartbeat forwarding parity', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  const APP = read('src', 'renderer', 'App.tsx');
+  const BUDDY = read('src', 'renderer', 'components', 'buddy', 'BubbleFeed.tsx');
+
+  for (const field of ['stallWarning', 'stalled', 'dropPart']) {
+    it(`both windows forward ${field}`, () => {
+      expect(APP).toContain(`event.data?.${field}`);
+      expect(BUDDY).toContain(`event.data?.${field}`);
+    });
+  }
 });

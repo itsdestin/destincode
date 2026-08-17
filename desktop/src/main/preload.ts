@@ -321,6 +321,8 @@ const IPC = {
   // Task 11: cancel/edit a queued-but-not-yet-sent message.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+  NATIVE_RETRY: 'native:retry',
   NATIVE_COMPACT: 'native:compact',
   NATIVE_CLEAR: 'native:clear',
   NATIVE_INVOKE_SKILL: 'native:invoke-skill',
@@ -1175,6 +1177,10 @@ contextBridge.exposeInMainWorld('claude', {
     queueRemove: (sessionId: string, queueId: string) => ipcRenderer.invoke(IPC.NATIVE_QUEUE_REMOVE, { sessionId, queueId }),
     // Fire-and-forget: match ipcMain.on handler that destructures { sessionId }.
     interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
+    // Fire-and-forget like interrupt: the stalled card needs no answer — either
+    // the step re-runs (the card clears itself) or nothing was parked (the card
+    // is already gone).
+    retry: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_RETRY, { sessionId }),
     // User-initiated /compact. Request-response, NOT fire-and-forget: the caller
     // needs the {ok, reason} result to tell the user why nothing happened when a
     // compaction is refused (turn in flight, nothing to compact, summary failed).

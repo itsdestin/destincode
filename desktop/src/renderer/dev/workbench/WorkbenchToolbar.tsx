@@ -45,6 +45,7 @@ export interface WorkbenchToolbarProps {
  */
 export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchToolbarProps) {
   const scenario = new URLSearchParams(location.search).get('scenario') ?? 'default';
+  const stalled = new URLSearchParams(location.search).get('stalled') === '1';
   const [latency, setLatencyState] = React.useState(String(getLatency()));
 
   const reloadWith = (key: string, value: string) => {
@@ -95,6 +96,20 @@ export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchTo
           value={latency}
           options={LATENCIES}
           onChange={(next) => { setLatency(Number(next)); setLatencyState(next); }}
+        />
+      </label>
+
+      {/* Parks the native fixture's turn so the red "Provider may have
+          stalled" card can be reviewed. A toggle rather than the fixture's
+          permanent state: it used to be always-on, which put the red card over
+          the shared native session in EVERY scenario (M9). Reloads for the same
+          reason Scenario does — the timeline is seeded once, at hydrate. */}
+      <label className="flex items-center gap-1.5 text-3xs text-fg-muted">
+        Stalled turn
+        <Toggle
+          checked={stalled}
+          onChange={(v) => reloadWith('stalled', v ? '1' : '0')}
+          aria-label="Stalled turn"
         />
       </label>
 

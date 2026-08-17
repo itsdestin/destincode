@@ -1248,12 +1248,25 @@ function AppInner() {
                 cleared: event.data.toolPreparing.cleared,
               });
             }
+            // Fix: erase an abandoned half-written sentence BEFORE the heartbeat
+            // below parks/clears the turn — if this ran after a retry's new text
+            // landed, it would erase the wrong (retried) content instead of the
+            // stale one. MUST mirror BubbleFeed.tsx, and must stay in this order.
+            if (event.data?.dropPart) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_PARTS_DROPPED',
+                sessionId: event.sessionId,
+                partIds: event.data.dropPart.partIds,
+              });
+            }
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
-              // Native watchdog: a stall-warning payload drives the countdown; a
-              // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
+              // Native watchdog: a stall-warning payload drives the countdown,
+              // `stalled` parks the turn, a plain heartbeat clears both.
+              // MUST mirror BubbleFeed.tsx.
               stallWarning: event.data?.stallWarning,
+              stalled: event.data?.stalled,
               promptProcessing: event.data?.promptProcessing,
             });
           }

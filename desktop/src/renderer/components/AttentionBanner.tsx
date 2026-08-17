@@ -1,3 +1,4 @@
+import React from 'react';
 import type { AttentionState } from '../state/chat-types';
 import BrailleSpinner from './BrailleSpinner';
 import { Button } from './ui';
@@ -15,13 +16,18 @@ interface Props {
   /** Provider error text (native runtime). When state==='error' this takes
    *  precedence over the generic COPY line. */
   errorMessage?: string | null;
-  /** Retry affordance shown only when state==='error'. Wired to re-send the
-   *  last user message via the native send path (Task 12). */
+  /** Stalled card only: re-run the parked step. NOT a re-send of the user's
+   *  message — every completed tool call earlier in the turn stays put. */
   onRetry?: () => void;
   /** Opens Settings → Model Providers. When the provider error is a
    *  configuration problem (missing/disabled key), the bubble shows an
    *  "Open Settings" button that calls this so the user can fix it in one hop. */
   onOpenProviderSettings?: () => void;
+  /** When the turn parked, on this client's clock. Drives the count-up. */
+  stalledSince?: number | null;
+  /** Stalled card only: end the turn, keeping everything written so far.
+   *  Identical to ESC — see ChatView, which wires it to the same handler. */
+  onStop?: () => void;
 }
 
 // Provider-CONFIGURATION errors (missing API key, disabled provider, no endpoint)
@@ -42,14 +48,39 @@ const COPY: Record<Props['state'], string> = {
   // Phase 1 Plan A). The detailed provider message rides the 'session-error'
   // transcript event; this banner copy stays generic.
   'error': 'The model provider returned an error — this turn has ended.',
+  // Deliberately non-committal: a hung upstream and a dead socket are
+  // indistinguishable from inside the app and always will be, so the copy
+  // states the observation and pairs it with two actions rather than guessing
+  // a cause (docs/error-message-standards.md).
+  'stalled': 'Provider may have stalled',
 };
 
 // Destructive states pick up the L3 destructive ring tokens so they read as
 // "something went wrong" rather than just a nudge. Other states reuse the
 // neutral bubble styling to stay consistent with ThinkingIndicator.
-const DESTRUCTIVE: Props['state'][] = ['session-died', 'error'];
+const DESTRUCTIVE: Props['state'][] = ['session-died', 'error', 'stalled'];
 
-export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings }: Props) {
+/** "45s" / "2m 14s" / "1h 3m". Whole seconds only — a stalled turn is measured
+ *  in minutes and a jittering decimal reads as broken. */
+function elapsedLabel(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m ${total % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop }: Props) {
+  // Ticks once a second while parked. `stalledSince` IS serialized to the host
+  // (chat-types.ts) so a reconnecting phone can still see the card — see that
+  // field's own comment for why the elapsed number is only approximate there.
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (state !== 'stalled' || stalledSince == null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state, stalledSince]);
+
   const destructive = DESTRUCTIVE.includes(state);
   const bubbleBase = 'flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5';
   const bubbleClasses = destructive
@@ -58,18 +89,31 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
   const textClasses = destructive
     ? 'text-sm text-fg-2'
     : 'text-sm text-fg-muted italic';
-  // Show the spinner only while Claude might still be working ('stuck').
-  // session-died and error both mean the turn is over — a spinning indicator
-  // would be misleading.
-  const showSpinner = state === 'stuck';
+  // Show the spinner while Claude might still be working ('stuck') AND while a
+  // turn is parked — a parked turn's stream is still open and the model may yet
+  // answer, which is exactly what the spinner means. session-died and error are
+  // endings, so they stay still.
+  const showSpinner = state === 'stuck' || state === 'stalled';
   // Surface the request ID on terminal failures only (session-died / error):
   // it's strictly a support-correlation aid, so we hide it during the benign
   // 'stuck' banner where Claude is likely still working. Matches the Props
   // doc comment above.
   const showRequestId = (state === 'session-died' || state === 'error') && !!anthropicRequestId;
-  // Provider error text takes precedence over the generic 'error' COPY line.
-  const line = state === 'error' && errorMessage ? errorMessage : COPY[state];
+  // Parked turns append a live count-up to the copy — see the `stalledSince`
+  // field comment above for the serialization/skew note.
+  const line = state === 'error' && errorMessage
+    ? errorMessage
+    : state === 'stalled' && stalledSince != null
+      ? `${COPY.stalled} — no response for ${elapsedLabel(now - stalledSince)}`
+      : COPY[state];
+  // The 'error' banner's Try again button is UNCHANGED below (same element,
+  // same classes) — Task 11 reserves it and nothing here may alter it.
+  // Stalled gets its own Retry/Stop pair rather than reusing showRetry, so a
+  // future Task-11 wire-up of error's onRetry can't accidentally pick up
+  // stalled's styling (or vice versa) through a shared flag.
   const showRetry = state === 'error' && !!onRetry;
+  const showStalledRetry = state === 'stalled' && !!onRetry;
+  const showStop = state === 'stalled' && !!onStop;
   // Provider-CONFIG errors get a direct "Open Settings" jump to Model Providers.
   const showOpenSettings =
     state === 'error' && !!onOpenProviderSettings && isProviderConfigError(errorMessage);
@@ -91,6 +135,24 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
           >
             Try again
           </button>
+        )}
+        {showStalledRetry && (
+          <Button
+            size="sm"
+            onClick={onRetry}
+            className="ml-auto shrink-0"
+          >
+            Retry
+          </Button>
+        )}
+        {showStop && (
+          // Stop is ESC in visible form. Secondary, because "wait for it" and
+          // "retry" are the hopeful answers and this is the one that gives up —
+          // but it is a real button, because against a dead provider Retry as
+          // the only option costs a full conversation re-send per press.
+          <Button size="sm" variant="secondary" onClick={onStop} className="shrink-0">
+            Stop
+          </Button>
         )}
         {showOpenSettings && (
           // ml-auto pushes the CTA to the right edge of the bubble, past the
