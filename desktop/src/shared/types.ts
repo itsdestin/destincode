@@ -260,6 +260,16 @@ export interface TranscriptEvent {
      */
     stalled?: true;
     /**
+     * Native runtime only. Discard these streaming parts — the attempt that
+     * wrote them is being abandoned by a manual Retry, and the re-run would
+     * otherwise APPEND to the same bubble (the SDK's part id falls back to the
+     * literal 'text-0', so a repeat is the likely case, not a corner case).
+     * This is why the automatic retry has always refused to run after content
+     * streamed; the manual one is allowed to, because it erases first.
+     * Display-only (no text, no partId) — never persisted.
+     */
+    dropPart?: { partIds: string[] };
+    /**
      * Native runtime only. Emitted on `assistant-thinking` the moment a step's
      * stream opens, BEFORE any token arrives, so the UI can say the model is
      * reading the prompt rather than showing an idle spinner. Local models take

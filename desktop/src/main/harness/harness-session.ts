@@ -1162,6 +1162,10 @@ export class HarnessSession extends EventEmitter {
    *  (e.g. a fresh tool-call step that never gets a first byte) parks too
    *  instead of ending the turn — see the `willRetry` guard in armWatchdog. */
   private turnEverParked = false;
+  /** Resolver for the CURRENT step's manual-retry signal, installed when the
+   *  step parks and cleared the moment it un-parks or the step ends. Null means
+   *  nothing is parked, which is the entire race guard for the Retry button. */
+  private resolveRetry: (() => void) | null = null;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
     // can already see the result of; the notice is a pre-output affordance only.
@@ -1848,11 +1852,12 @@ export class HarnessSession extends EventEmitter {
     aiTools: Record<string, any>,
     reportPartial: (text: string) => void,
   ): Promise<StepResult> {
-    // At most ONE auto-retry: attempt 0 stalls with nothing streamed →
-    // runStreamOnce returns STALL_RETRY → we re-run. A stall on attempt 1 (or a
-    // stall after content streamed) is fatal (StreamStallError), so the loop can
-    // iterate at most twice — runStreamOnce only returns STALL_RETRY when it was
-    // told this is the first attempt.
+    // Attempt 0 stalls with nothing streamed → runStreamOnce returns
+    // STALL_RETRY → we re-run. That AUTOMATIC retry is available once per step:
+    // every attempt after the first passes isFirstAttempt=false, so a later
+    // silent stall parks instead of re-running behind the user's back.
+    // The loop is no longer bounded at two iterations — a MANUAL Retry also
+    // returns STALL_RETRY, and the user may press it as often as they like.
     for (let attempt = 0; ; attempt++) {
       const outcome = await this.runStreamOnce(model, aiTools, reportPartial, attempt === 0);
       if (outcome !== STALL_RETRY) return outcome;
@@ -1969,6 +1974,10 @@ export class HarnessSession extends EventEmitter {
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
     const stallPromise = new Promise<'stall'>((resolve) => { resolveStall = resolve; });
+    // Manual-retry racer — a SEPARATE signal from abortSignal on purpose: abort
+    // ends the whole turn, which is the opposite of what Retry means.
+    let signalRetry!: () => void;
+    const retryPromise = new Promise<'retry'>((resolve) => { signalRetry = () => resolve('retry'); });
     const armWatchdog = () => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
@@ -1999,6 +2008,7 @@ export class HarnessSession extends EventEmitter {
           if ((sawFirstChunk || this.turnEverParked) && !willRetry) {
             parked = true;
             this.turnEverParked = true;
+            this.resolveRetry = signalRetry;
             this.emitEvent('assistant-thinking', { stalled: true });
             return;
           }
@@ -2029,11 +2039,15 @@ export class HarnessSession extends EventEmitter {
     // STEP, not per session: a retry re-enters this function with a fresh map.
     // Display-only — the card the renderer draws from this never reaches disk.
     const preparing = new Map<string, { toolName: string; chars: number; lastEmitAt: number }>();
+    // Every streaming part id THIS attempt has written. A manual Retry hands
+    // these to the renderer and the store so the abandoned text is removed
+    // rather than appended to.
+    const emittedPartIds = new Set<string>();
 
     try {
       while (true) {
         const nextPromise = iterator.next();
-        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise]);
+        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise, retryPromise]);
         if (chunk === 'aborted') {
           // The abort won the race; swallow the pending read's late rejection and
           // release the underlying reader/socket (a provider that IGNORES the abort
@@ -2043,6 +2057,29 @@ export class HarnessSession extends EventEmitter {
           this.interrupted = true;
           interrupted = true;
           break;
+        }
+        if (chunk === 'retry') {
+          // Manual Retry from the stalled card. Same teardown as the stall path
+          // — the reader really is dead this time, the user said so.
+          nextPromise.catch(() => {});
+          iterator.return?.().catch(() => {});
+          void Promise.resolve(result.usage).catch(() => {});
+          void Promise.resolve(result.finishReason).catch(() => {});
+          this.resolveRetry = null;
+          parked = false;
+          // Withdraw any preparing card: the step re-runs INSIDE the same turn,
+          // so endTurn's reaping never fires and the card would spin forever
+          // beside the one the re-run mints. (Same reason as the auto-retry path.)
+          for (const [prepId, entry] of preparing) {
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+            });
+          }
+          // Erase what the abandoned attempt put on screen BEFORE re-running.
+          if (emittedPartIds.size > 0) {
+            this.emitEvent('assistant-thinking', { dropPart: { partIds: [...emittedPartIds] } });
+          }
+          return STALL_RETRY;
         }
         if (chunk === 'stall') {
           // No chunk for the full warn+countdown window. Release the dead reader
@@ -2096,6 +2133,7 @@ export class HarnessSession extends EventEmitter {
         if (warned || parked) {
           warned = false;
           parked = false;
+          this.resolveRetry = null;
           this.emitEvent('assistant-thinking', {});
         }
         armWatchdog();
@@ -2110,6 +2148,7 @@ export class HarnessSession extends EventEmitter {
             // partId = the SDK's part id (fresh per streamText call). A tool-group
             // segment always separates consecutive text STEPS in the reducer, so a
             // repeated id across steps can't wrongly merge two bubbles.
+            emittedPartIds.add(part.id ?? 'text-0');
             this.emitEvent('assistant-text', { text: t, partId: part.id ?? 'text-0' });
             break;
           }
@@ -2120,6 +2159,7 @@ export class HarnessSession extends EventEmitter {
             outputChars += t.length;
             // assistant-thinking WITH data.text → the reducer's reasoning path;
             // payload-less would stay a heartbeat.
+            emittedPartIds.add(part.id ?? 'reasoning-0');
             this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
             break;
           }
@@ -2208,6 +2248,9 @@ export class HarnessSession extends EventEmitter {
       // Stop late progress callbacks from re-arming a watchdog for a step that
       // has already ended (the tee outlives the iterator on an interrupt).
       this.rearmStallWatchdog = null;
+      // A step that has ended can never be retried — drop the resolver so a
+      // late click on a card the renderer has not torn down yet is a no-op.
+      this.resolveRetry = null;
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {
@@ -2442,6 +2485,22 @@ export class HarnessSession extends EventEmitter {
   interrupt(): void {
     this.interrupted = true;
     this.abort?.abort();
+  }
+
+  /** Manual Retry from the stalled card. Re-runs the PARKED step — it does not
+   *  re-send the user's message, so every completed tool call and its result
+   *  earlier in this turn stays exactly where it is.
+   *
+   *  Returns false when nothing is parked: the stream resumed between the click
+   *  and this call, so the card is already gone and the click means nothing.
+   *  That is the whole race guard — a parked step is either still listening
+   *  (the resolver is live) or has moved on (the resolver is null). */
+  retryStalledStep(): boolean {
+    const resolve = this.resolveRetry;
+    if (!resolve) return false;
+    this.resolveRetry = null;
+    resolve();
+    return true;
   }
 
   /** Queue a mid-run course correction (spec §3). Drains as a history-only

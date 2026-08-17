@@ -277,4 +277,69 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     );
     expect(cleared).toBeDefined();
   });
+
+  it('Retry erases the abandoned text, re-runs the step, and completes', async () => {
+    const model = modelFromStreams([
+      () => hangingStream(...textChunks('a', 'Now I will dispatch')),          // stalls mid-sentence
+      () => completingStream(...textChunks('a', 'recovered'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    const sent = session.send('go');
+
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    expect(session.retryStalledStep()).toBe(true);
+    await sent;
+
+    // The abandoned part was explicitly dropped before the re-run...
+    const drop = events.find((e) => e.type === 'assistant-thinking' && e.data.dropPart);
+    expect(drop).toBeDefined();
+    expect(drop!.data.dropPart!.partIds).toContain('a');
+    // ...and the drop came BEFORE the retry's first text, or the renderer would
+    // erase the new answer instead of the old one.
+    const dropIdx = events.indexOf(drop!);
+    const recoveredIdx = events.findIndex((e) => e.type === 'assistant-text' && e.data.text === 'recovered');
+    expect(dropIdx).toBeLessThan(recoveredIdx);
+    expect(types(events)).toContain('turn-complete');
+    expect(types(events)).not.toContain('session-error');
+  });
+
+  it('Retry is a no-op when nothing is parked', async () => {
+    const model = modelFromStreams([() => completingStream(...textChunks('a', 'fine'), finishChunk('stop'))]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    await session.send('go');
+    expect(session.retryStalledStep()).toBe(false);
+  });
+
+  it('a retried step that stalls again PARKS again — it never dies on its own', async () => {
+    // Both attempts hang AFTER emitting, so willRetry is false on both, and the
+    // second attempt is a first-byte (Clock 1) wait. turnEverParked forces the
+    // park anyway: once the user has seen the card, the step stops being able
+    // to end the turn by itself.
+    const model = modelFromStreams([
+      () => hangingStream(...textChunks('a', 'first try')),
+      () => hangingStream(),
+    ]);
+    const session = new HarnessSession(makeOpts({ prefillWarningMs: STALL_MS }), async () => model as any);
+    const events = collect(session);
+    const sent = session.send('go');
+
+    await waitForEvent(events, (e) => e.type === 'assistant-thinking' && e.data.stalled === true);
+    session.retryStalledStep();
+    // NOTE: the brief's original predicate here was
+    // `e.data.stalled === true && events.indexOf(e) > events.findIndex(dropPart)`,
+    // intended to wait for a SECOND stalled card (one after the drop). It races:
+    // retryStalledStep() resolves synchronously and waitForEvent's first check
+    // runs before any microtask from that resolution has flushed, so at that
+    // instant dropPart hasn't been emitted yet, findIndex(dropPart) is -1, and
+    // the FIRST (already-present) stalled card satisfies "index > -1" trivially
+    // — the wait resolves immediately on the wrong card. Waiting on the COUNT
+    // instead has no such window.
+    await waitForEvent(events, () => stalledCards(events).length >= 2);
+    expect(stalledCards(events).length).toBeGreaterThanOrEqual(2);
+    expect(types(events)).not.toContain('session-error');
+
+    session.interrupt();
+    await sent;
+  });
 });
