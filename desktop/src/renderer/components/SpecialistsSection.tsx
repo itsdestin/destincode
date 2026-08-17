@@ -3,7 +3,7 @@ import type { SpecialistDefinitionView, DelegatedModelsView, SpecialistsListResu
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { Button, EmptyState, ErrorState, FieldError, LoadingState } from './ui';
 import type { ExplainerSection } from './SettingsExplainer';
-import { refreshSpecialistRoster, useSpecialistRoster, definedBy, NOT_IMPLEMENTED_ON_MOBILE } from '../hooks/useSpecialists';
+import { refreshSpecialistRoster, useSpecialistRoster, provenanceWithinGroup, NOT_IMPLEMENTED_ON_MOBILE } from '../hooks/useSpecialists';
 
 // Specialists 1c — Settings → Specialists. Two things, in the order a person
 // needs them: (1) the two model tiers the assistant can hire onto (Destin's
@@ -382,11 +382,13 @@ function RosterRow({ d, folders }: { d: SpecialistDefinitionView; folders?: Spec
         </div>
         {/* Task 10: provenance — where this row's definition actually came
             from, so "which .claude/agents is this" is never a guess.
-            Destin (workbench pass): definedBy returns '' when the group heading
-            above already said it — render nothing rather than an empty line,
-            or the row keeps a blank gap where the text used to be. */}
-        {definedBy(d, folders) && (
-          <div className="text-2xs text-fg-muted">{definedBy(d, folders)}</div>
+            Destin (workbench pass): provenanceWithinGroup returns '' when the
+            group heading above already said it — render nothing rather than an
+            empty line, or the row keeps a blank gap where the text used to be.
+            NOT definedBy: the hire card in chat has no heading and needs the
+            full string. */}
+        {provenanceWithinGroup(d, folders) && (
+          <div className="text-2xs text-fg-muted">{provenanceWithinGroup(d, folders)}</div>
         )}
         {/* Fix (Task 13): d.description is the CLAMPED text the assistant's
             tool list actually gets (MAX_DESCRIPTION_CHARS); Settings should

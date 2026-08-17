@@ -262,21 +262,33 @@ function basename(p: string): string {
  *  list result the definition came from) is what tells a project's own
  *  .claude/agents apart from the user's ~/.claude/agents: the catalog tags
  *  both 'claude-code' and only `path` differs. */
-/** Destin (workbench pass): the row sits UNDER its group heading, so anything
- *  the heading already said is noise repeated on every row. "Built in" under a
- *  "Built in" heading says nothing — returns '' and the row drops the line.
- *  "Your specialists folder" under "Your specialists" is the same, so only the
- *  filename survives. The Claude Code case KEEPS its prefix: that one heading
- *  covers two different folders (a project's own vs. your account-wide one) and
- *  which folder a helper came from is the whole question there. */
+/** The FULL answer to "where did this helper come from", for a surface that
+ *  gives no other context — the hire consent card in chat, above all, where the
+ *  whole point of the line is telling a repo's own helper apart from your own
+ *  before you approve it. Settings uses `provenanceWithinGroup` instead. */
 export function definedBy(view: SpecialistDefinitionView, folders?: SpecialistsListResult['folders']): string {
-  if (view.source === 'builtin') return '';
+  if (view.source === 'builtin') return 'Built in';
   const path = view.path ?? '';
-  if (view.source === 'personal') return basename(path);
+  if (view.source === 'personal') return `Your specialists folder · ${basename(path)}`;
   const isProject = !!folders?.project && path.startsWith(folders.project);
   return isProject
     ? `This project's .claude/agents/${basename(path)}`
     : `Your ~/.claude/agents/${basename(path)}`;
+}
+
+/** Destin (workbench pass): the same answer, minus whatever the group heading
+ *  above the row already said. In Settings a helper sits under "Built in" /
+ *  "Your specialists" / "Claude Code agents", so repeating that on every row is
+ *  noise — "Built in" under a "Built in" heading says nothing, and returning ''
+ *  lets the row drop the line entirely. The Claude Code case keeps its full
+ *  prefix on purpose: that ONE heading covers two different folders (a
+ *  project's own vs. your account-wide one), so which folder is the whole
+ *  question there. Only Settings may use this — a surface with no heading needs
+ *  `definedBy`. */
+export function provenanceWithinGroup(view: SpecialistDefinitionView, folders?: SpecialistsListResult['folders']): string {
+  if (view.source === 'builtin') return '';
+  if (view.source === 'personal') return basename(view.path ?? '');
+  return definedBy(view, folders);
 }
 
 export function useDelegatedModels(): [DelegatedModelsView | null, (next: DelegatedModelsView) => void] {
