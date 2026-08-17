@@ -82,6 +82,29 @@ export class SessionStore {
       return;
     }
 
+    // Manual stall Retry: the attempt that wrote these parts is being abandoned
+    // and its text is being erased on screen. Discard the buffer WITHOUT
+    // writing it — this is the only path that drops a buffered part instead of
+    // flushing it, and it must run BEFORE the display-only filter below, which
+    // would otherwise return early and leave the abandoned text to be flushed
+    // by the next event.
+    //
+    // KNOWN LIMITATION (deliberate, not an oversight): this can only discard a
+    // part still BUFFERED here. If the abandoned attempt already emitted a
+    // tool call before it stalled, that earlier text was already flushed to
+    // the JSONL when the tool-call event flushed the open part — dropPart
+    // can't reach back and unwrite it. A re-run can then duplicate that
+    // earlier text ON DISK even though the live screen (which erased via the
+    // renderer's own dropPart handling) stays correct. The transcript is
+    // append-only; rewriting already-committed lines is out of scope here.
+    if (event.type === 'assistant-thinking' && event.data?.dropPart) {
+      const open = this.open.get(event.sessionId);
+      if (open && event.data.dropPart.partIds.includes(String(open.event.data?.partId))) {
+        this.open.delete(event.sessionId);
+      }
+      return;
+    }
+
     // Streaming-watchdog heartbeats (the stall warning and its clear) are
     // transient UI signals — an assistant-thinking with NO text and NO partId.
     // Display-only: never persisted (a replayed stall countdown on a long-since
