@@ -80,6 +80,22 @@ export default function SpecialistsSection({ cwd }: {
   const roster = useSpecialistRoster(cwd, { ensurePersonalFolder: true });
   const [tiers, setTiers] = useState<DelegatedModelsView | null>(null);
   const [tierError, setTierError] = useState<string | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const folders = roster.status === 'ready' ? roster.result.folders : undefined;
+
+  // Fix (Task 10 review, fix pass 2): shell.openPath resolves with an EMPTY
+  // string on success and an ERROR STRING on failure — the click handler used
+  // to discard that with `void`, so a permissions problem or a folder removed
+  // between render and click failed with no feedback at all. Reuses the same
+  // ErrorState surface (recoverable + Retry) the roster load failure already
+  // uses just below, rather than inventing a new one.
+  const openFolder = useCallback(() => {
+    if (!folders) return;
+    setFolderError(null);
+    void window.claude.shell.openPath(folders.personal).then(result => {
+      if (result) setFolderError(result);
+    });
+  }, [folders]);
 
   const loadTiers = useCallback(async () => {
     try {
@@ -110,7 +126,6 @@ export default function SpecialistsSection({ cwd }: {
 
   const definitions = roster.status === 'ready' ? roster.result.definitions : [];
   const skipped = roster.status === 'ready' ? roster.result.skipped : [];
-  const folders = roster.status === 'ready' ? roster.result.folders : undefined;
 
   const bySource = new Map<SpecialistDefinitionView['source'], SpecialistDefinitionView[]>();
   for (const d of definitions) {
@@ -219,12 +234,17 @@ export default function SpecialistsSection({ cwd }: {
                 variant="ghost"
                 disabled={!folders}
                 title={folders ? undefined : 'Not available until the specialists folder has been read'}
-                onClick={() => { if (folders) void window.claude.shell.openPath(folders.personal); }}
+                onClick={openFolder}
               >
                 Open folder
               </Button>
             </div>
           </div>
+          {folderError && (
+            <div className="border-t border-edge-dim p-2.5">
+              <ErrorState mode="recoverable" message={folderError} onRetry={openFolder} variant="inline" />
+            </div>
+          )}
         </div>
       </div>
     </section>

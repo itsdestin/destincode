@@ -203,7 +203,18 @@ export function useSpecialistRoster(cwd?: string, opts?: { ensurePersonalFolder?
     if (!subs) { subs = new Set(); rosterSubs.set(key, subs); }
     const cb = () => force(n => n + 1);
     subs.add(cb);
-    if (!rosterCache.has(key)) void refreshSpecialistRoster(cwd, { ensurePersonalFolder: ensureRef.current });
+    // Fix (Task 10 review, fix pass 2): a cache-miss-only guard let an EARLIER
+    // caller's non-ensuring load (a hire card, or a non-hire card sharing the
+    // empty-cwd '' key) permanently poison this cwd's cache for Settings —
+    // once 'ready', Settings would never re-ensure again for the life of the
+    // renderer, even on a fresh mount (the dialog unmounts/remounts on every
+    // open). Same failure if the user deletes the personal folder and reopens
+    // Settings: the stale 'ready' entry never re-checks. A caller that asked
+    // for ensuring now forces its own refresh on every mount; every other
+    // caller keeps the original cache-absence-only behavior. Still exactly
+    // one load call per mount (this effect, this branch) — the duplicate
+    // concurrent-read race the previous fix removed does not come back.
+    if (ensureRef.current || !rosterCache.has(key)) void refreshSpecialistRoster(cwd, { ensurePersonalFolder: ensureRef.current });
     return () => { subs!.delete(cb); };
   }, [key, cwd]);
   return rosterCache.get(key) ?? { status: 'loading' };

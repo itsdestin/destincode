@@ -183,8 +183,16 @@ describe('a non-hire tool card', () => {
       } as ToolCallState,
       'cwd-non-hire-should-never-be-read',
     );
-    // Give the hook's auto-load effect a beat to fire if it were going to.
-    await new Promise((r) => setTimeout(r, 30));
+    // Fix (Task 10 review, fix pass 2): the old assertion only checked that
+    // list was never called WITH the real cwd — that's still true if list
+    // was never called at all, which is exactly what a warm shared cache (the
+    // empty-cwd '' key another test or caller already populated) would do,
+    // making the assertion pass for the wrong reason. Assert what the WHY
+    // above actually claims: a non-hire card DOES still warm the shared
+    // empty-cwd entry (hireAgent is falsy, so cwd collapses to undefined),
+    // it just never reads the real per-project folder.
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(list).toHaveBeenCalledWith({ cwd: undefined, ensurePersonalFolder: undefined });
     expect(list).not.toHaveBeenCalledWith(
       expect.objectContaining({ cwd: 'cwd-non-hire-should-never-be-read' }),
     );
