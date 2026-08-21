@@ -383,4 +383,24 @@ describe('AssistantTurnBubble — stop reason footer', () => {
     });
     expect(container.textContent).not.toContain('Question closed');
   });
+
+  it('renders the empty-response copy for stopReason empty_response', () => {
+    // Empty-step recovery (spec 2026-08-21): the harness already retried once
+    // silently — this footer is the honest end after a SECOND contentless step.
+    const { container } = renderTurn({
+      turn: turnWithStopReason('empty_response'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toContain('The model returned an empty response. Retrying may help.');
+  });
+
+  it('end_turn never renders the empty-response copy', () => {
+    const { container } = renderTurn({
+      turn: turnWithStopReason('end_turn'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).not.toContain('empty response');
+  });
 });

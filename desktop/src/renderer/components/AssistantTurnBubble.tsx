@@ -24,7 +24,7 @@ interface Props {
 // `tool_use` is filtered upstream at transcript-watcher.ts (it means "awaiting
 // tool result", not a real completion). `end_turn` — the normal completion —
 // reaches the reducer but is filtered at the render gate below, because it
-// carries no abnormal signal worth surfacing. The four keys below are the
+// carries no abnormal signal worth surfacing. The keys below are the
 // ones that ARE worth surfacing (truncation / refusal / etc.).
 // Provider-aware: native (local/cloud) sessions must not be labelled "Claude".
 // The two subject-carrying lines swap in the assistant's display name; the rest
@@ -42,6 +42,12 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
     // it a dismissed turn is visually identical to a session that silently died,
     // and the user can't trust either signal.
     question_dismissed: 'Question closed — waiting for you.',
+    // Empty-step recovery (spec 2026-08-21): the harness already retried once
+    // silently; this is the honest end after a SECOND contentless step.
+    // Deliberately provider-neutral ("The model") — per the error-message
+    // standards this is general + non-committal, and the failure belongs to
+    // the model, not the assistant persona.
+    empty_response: 'The model returned an empty response. Retrying may help.',
   };
   return map[reason] ?? `Response ended: ${reason}.`;
 }
