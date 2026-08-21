@@ -1620,6 +1620,10 @@ export class HarnessSession extends EventEmitter {
     // runs than the conservative 25 — see model-step-budget.ts).
     const maxSteps = this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId);
     let stepsSinceApproval = 0;
+    // Consecutive contentless steps (empty-step recovery, spec 2026-08-21).
+    // The single silent retry is allowed only at count 1; any real step resets
+    // it, so an all-empty turn costs exactly two provider calls.
+    let consecutiveEmptySteps = 0;
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
     // (earlier steps already pushed their assistant + tool messages). Reset per
@@ -1711,6 +1715,46 @@ export class HarnessSession extends EventEmitter {
         if (step.text || step.toolCalls.length > 0) {
           this.history.push(this.assistantMessage(step.text, step.toolCalls));
         }
+
+        // Empty-step recovery (spec: docs/active/specs/2026-08-21-empty-final-
+        // step-turn-recovery-design.md). A degenerate step — no text, no tool
+        // calls, yet an orderly finish — used to fall straight into the natural-
+        // stop break below and end the turn as a silent 'end_turn', which the
+        // user experiences as the assistant simply never answering (observed
+        // 3x live, 2026-08-20/21). Re-run it ONCE silently: the push above
+        // skipped an empty step, so history gained nothing and the re-run sends
+        // the same conversation (modulo a compaction the loop top may run
+        // either way — tool-call/result pairing holds through both).
+        // A SECOND consecutive empty step ends the turn honestly instead.
+        // Reasoning-only steps count as empty BY DECISION (StepResult carries
+        // no reasoning; the user-visible outcome is identical to silence).
+        const isEmptyStep =
+          !step.interrupted &&
+          step.toolCalls.length === 0 &&
+          (!step.text || step.text.trim().length === 0);
+        // Gate on the "provider claims an orderly finish" shapes ONLY. An empty
+        // step that finished 'length' is truncation (a retry would hit the same
+        // limit and must still report max_tokens); 'content-filter' must keep
+        // its refusal mapping. Without this gate the retry would mask real
+        // stop reasons behind 'empty_response'.
+        const orderlyFinish = step.finishReason === undefined
+          || ['stop', 'unknown', 'other'].includes(step.finishReason);
+        if (isEmptyStep && orderlyFinish) {
+          consecutiveEmptySteps++;
+          if (consecutiveEmptySteps === 1) {
+            // One main-process log line so the silent retry is diagnosable —
+            // deliberately NOT a transcript event (the emit surface is frozen).
+            console.error(`[harness] empty step (no text, no tool calls, finishReason: ${step.finishReason ?? 'undefined'}) — retrying once`);
+            continue turnLoop;
+          }
+          // Second consecutive empty step: an orderly completion with an honest
+          // reason. Set HERE, not in mapStopReason — 'empty_response' is a
+          // loop-level judgment about two steps, not a mapping of one
+          // provider finishReason.
+          stopReason = 'empty_response';
+          break;
+        }
+        consecutiveEmptySteps = 0;   // any real step re-arms the single retry
 
         if (step.toolCalls.length === 0) {
           // Natural stop. finishReason 'length' (truncated output, including a
