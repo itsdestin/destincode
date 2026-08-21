@@ -1703,3 +1703,122 @@ describe('ModelSearch attachment mirrors Task\'s gate (Task 14)', () => {
     expect(toolNames(s)).toContain('ModelSearch');
   });
 });
+
+// Empty-step recovery (spec: docs/active/specs/2026-08-21-empty-final-step-
+// turn-recovery-design.md, §6). A step with no text and no tool calls that
+// claims an orderly finish gets ONE silent re-run; a second consecutive empty
+// step ends the turn honestly as 'empty_response'. History must never gain an
+// empty assistant message, and usage must bill every attempt.
+describe('HarnessSession — empty final step recovery', () => {
+  it('case 1: empty final step after a tool result → ONE silent re-run → real content → end_turn', async () => {
+    const read = fakeTool('Read');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', 'reading'), toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(finishChunk('stop')),                                  // the degenerate empty step
+      stream(...textChunks('b', 'recovered'), finishChunk('stop')), // the silent re-run's real answer
+    ], seen);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(3);   // exactly ONE extra model call
+    const done = events.find((e) => e.type === 'turn-complete')!;
+    expect(done.data.stopReason).toBe('end_turn');
+    expect(events.filter((e) => e.type === 'assistant-text').map((e) => e.data.text)).toEqual(['reading', 'recovered']);
+    // History is exactly user / assistant(text+call) / tool / assistant(text) —
+    // the empty step contributed NOTHING (that is what makes the re-run safe).
+    const history = (session as any).history as any[];
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(JSON.stringify(history.at(-1))).toContain('recovered');
+  });
+
+  it('case 2: empty twice consecutively → empty_response; usage sums BOTH attempts; no empty history', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(finishChunk('stop', 10, 2)),
+      stream(finishChunk('stop', 11, 3)),
+    ], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);   // bounded: two attempts, never a third
+    const done = events.find((e) => e.type === 'turn-complete')!;
+    expect(done.data.stopReason).toBe('empty_response');
+    expect(done.data.usage).toMatchObject({ inputTokens: 21, outputTokens: 5 }); // both attempts billed
+    // Neither empty step pushed an assistant message.
+    expect(((session as any).history as any[]).map((m) => m.role)).toEqual(['user']);
+  });
+
+  it('case 3: counter resets on a non-empty step — a later empty step gets its own retry', async () => {
+    const read = fakeTool('Read');
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(finishChunk('stop')),                                  // empty #1 → retry
+      stream(...textChunks('a', 'ok'), toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')), // real step → counter resets
+      stream(finishChunk('stop')),                                  // empty #2 → retry AGAIN (consecutive semantics)
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(4);   // both empties retried — the counter reset in between
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('end_turn');
+    expect((read as any).calls).toHaveLength(1);
+  });
+
+  it('case 4: first-step empty (no tools all turn) → same ladder', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(finishChunk('stop')),
+      stream(...textChunks('a', 'hello'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);
+    const done = events.find((e) => e.type === 'turn-complete')!;
+    expect(done.data.stopReason).toBe('end_turn');
+    expect(events.filter((e) => e.type === 'assistant-text').map((e) => e.data.text)).toEqual(['hello']);
+  });
+
+  it('case 6: empty step with finishReason length → NO retry, ends max_tokens', async () => {
+    // The finishReason gate: 'length' means truncation — a retry would hit the
+    // same output limit, so today's mapStopReason path must be kept EXACTLY.
+    // NOTE: this test passes BEFORE the production change too — it is the
+    // regression pin that proves the new code does not widen past the gate.
+    const seen: any[] = [];
+    const model = scriptedModel([stream(finishChunk('length'))], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(1);   // no retry
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('max_tokens');
+  });
+
+  it('case 7: interrupt during the retry attempt → user-interrupt wins, no turn-complete', async () => {
+    // Same direct-mock pattern as the postSteer tests above (including the
+    // `let session!:` definite-assignment declaration): a per-call side effect
+    // fires the interrupt while the RETRY attempt (call 2) is running.
+    let session!: HarnessSession;
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        call++;
+        if (call === 2) session.interrupt();
+        return { stream: simulateReadableStream({ chunks: stream(finishChunk('stop')) }) };
+      },
+    });
+    session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(call).toBe(2);           // the retry attempt DID start…
+    expect(types(events)).toContain('user-interrupt');          // …but the interrupt won
+    expect(types(events)).not.toContain('turn-complete');       // never 'empty_response'
+  });
+});
