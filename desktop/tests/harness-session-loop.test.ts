@@ -19,7 +19,7 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // Scripted-mock builders live in a shared helper — the history-rebuild test
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
-import { textChunks, toolCallChunk, toolInputChunks, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
+import { textChunks, toolCallChunk, toolInputChunks, finishChunk, stream, scriptedModel, reasoningChunks } from './helpers/scripted-model';
 // Direct MockLanguageModelV4 construction — only the postSteer tests below need
 // a per-call SIDE EFFECT (posting a steer from inside doStream) that the
 // scripted-model helpers don't support; everything else in this suite goes
@@ -1783,6 +1783,31 @@ describe('HarnessSession — empty final step recovery', () => {
     const done = events.find((e) => e.type === 'turn-complete')!;
     expect(done.data.stopReason).toBe('end_turn');
     expect(events.filter((e) => e.type === 'assistant-text').map((e) => e.data.text)).toEqual(['hello']);
+  });
+
+  it('case 5: reasoning-only step is classified empty and retried; history untouched', async () => {
+    // StepResult has NO reasoning field (spec §3) — a step that thinks and then
+    // stops is loop-indistinguishable from total silence, and BY DESIGN gets the
+    // same retry: nothing was pushed to history, so the re-run is history-safe.
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...reasoningChunks('r1', 'pondering'), finishChunk('stop')),
+      stream(...textChunks('a', 'answer'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);   // retried despite having streamed thinking
+    // The thinking WAS emitted to the transcript (stays on screen — accepted cost).
+    expect(events.some((e) => e.type === 'assistant-thinking' && e.data.text === 'pondering')).toBe(true);
+    const done = events.find((e) => e.type === 'turn-complete')!;
+    expect(done.data.stopReason).toBe('end_turn');
+    // History: user + the ONE real assistant answer. The reasoning-only attempt
+    // pushed nothing (the push gates on text/toolCalls only).
+    const history = (session as any).history as any[];
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(JSON.stringify(history[1])).toContain('answer');
   });
 
   it('case 6: empty step with finishReason length → NO retry, ends max_tokens', async () => {
