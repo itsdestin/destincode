@@ -1407,7 +1407,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // if it's already null (edge case: turn-complete arrived before any
       // assistant text), skip metadata attachment but still call endTurn.
       const completingTurnId = session.currentTurnId;
-      const assistantTurns = new Map(session.assistantTurns);
+      let assistantTurns = new Map(session.assistantTurns);
+      let timeline = session.timeline;
       if (completingTurnId) {
         const turn = assistantTurns.get(completingTurnId);
         if (turn) {
@@ -1422,9 +1423,29 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             usage: action.usage,
           });
         }
+      } else if (action.stopReason && action.stopReason !== 'end_turn') {
+        // Empty-step recovery (spec 2026-08-21, decision 4): assistant turns
+        // are minted by CONTENT actions, so a turn whose every step was
+        // contentless has no entry to carry its honest stopReason — the
+        // worst-case shape of the empty_response bug would still render as
+        // unexplained silence. Create the (segment-less) turn here so the
+        // footer has something to attach to. Normal completions keep the
+        // long-standing skip above: an end_turn with no content carries no
+        // signal worth a timeline row.
+        const created = getOrCreateTurn(session);
+        assistantTurns = created.assistantTurns;
+        timeline = created.timeline;
+        const turn = assistantTurns.get(created.currentTurnId)!;
+        assistantTurns.set(created.currentTurnId, {
+          ...turn,
+          stopReason: action.stopReason,
+          model: action.model,
+          anthropicRequestId: action.anthropicRequestId,
+          usage: action.usage,
+        });
       }
 
-      next.set(action.sessionId, { ...session, ...endTurn(session, undefined, assistantTurns) });
+      next.set(action.sessionId, { ...session, timeline, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 

@@ -403,4 +403,27 @@ describe('AssistantTurnBubble — stop reason footer', () => {
     });
     expect(container.textContent).not.toContain('empty response');
   });
+
+  it('renders a footer-only row for an empty_response turn with no segments', () => {
+    // Spec 2026-08-21 decision 4: a fully-contentless turn has zero bubbles, so
+    // the per-bubble footer never fires — but this exact shape is the bug's
+    // worst case and must still explain itself.
+    const { container } = renderTurn({
+      turn: { ...turnWithStopReason('empty_response'), segments: [] },
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toContain('The model returned an empty response. Retrying may help.');
+  });
+
+  it('renders nothing for a segment-less turn with a normal stopReason', () => {
+    // Pins the inert path: zero-bubble turns without an abnormal reason keep
+    // rendering nothing (no ghost rows on replay edge cases).
+    const { container } = renderTurn({
+      turn: { ...turnWithStopReason('end_turn'), segments: [] },
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toBe('');
+  });
 });

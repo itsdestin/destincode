@@ -1047,3 +1047,48 @@ describe('chatReducer NATIVE_TOOL_PREPARING', () => {
     expect(session.toolCalls.get('real-1')!.status).toBe('failed');
   });
 });
+
+// Empty-step recovery, spec 2026-08-21 decision 4: assistant turns are minted
+// by CONTENT actions, so a turn whose every step was contentless had no entry
+// to carry its honest stopReason — the footer had nothing to render on and the
+// worst-case empty_response turn stayed visually silent.
+describe('TRANSCRIPT_TURN_COMPLETE — fully-silent turn (empty-step recovery)', () => {
+  function initState(sessionId = 'sess-1'): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  it('creates a footer-only turn when turn-complete carries an abnormal stopReason and no content streamed', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'empty_response', model: 'stealth/ox-alpha', anthropicRequestId: null,
+      usage: { inputTokens: 21, outputTokens: 5 },
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);
+    const turn = [...session.assistantTurns.values()][0];
+    expect(turn.segments).toEqual([]);
+    expect(turn.stopReason).toBe('empty_response');
+    expect(turn.model).toBe('stealth/ox-alpha');
+    expect(turn.usage).toMatchObject({ inputTokens: 21, outputTokens: 5 });
+    // The turn is on the timeline (it must render), and the turn still ENDED.
+    expect(session.timeline.some((e: any) => e.kind === 'assistant-turn' && e.turnId === turn.id)).toBe(true);
+    expect(session.currentTurnId).toBeNull();
+    expect(session.isThinking).toBe(false);
+  });
+
+  it('end_turn with no content still creates no turn', () => {
+    // Pins today's skip: normal CC/native completions with no streamed content
+    // must not grow ghost turns on the timeline.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'end_turn', model: null, anthropicRequestId: null, usage: null,
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(0);
+    expect(session.timeline).toEqual([]);
+  });
+});

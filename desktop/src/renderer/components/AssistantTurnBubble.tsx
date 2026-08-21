@@ -375,6 +375,26 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
     [turn, toolGroups, toolCalls],
   );
 
+  // Empty-step recovery (spec 2026-08-21, decision 4): a fully-contentless
+  // turn has ZERO bubbles, so the per-bubble stopReason footer below can never
+  // fire — yet an abnormal stopReason on such a turn is exactly the signal
+  // that must not be lost (an 'empty_response' turn with no bubbles IS the
+  // bug's worst case). Render a footer-only row for it. Zero-bubble turns
+  // with a normal/absent stopReason keep rendering nothing, byte-for-byte.
+  // Deliberately NOT wrapped in the assistant-bubble shell: there is no
+  // message here, and an empty bubble would imply one.
+  if (bubbles.length === 0) {
+    if (!turn.stopReason || turn.stopReason === 'end_turn') return null;
+    return (
+      <div className="flex justify-start px-4 py-0.5">
+        <div className="max-w-[85%]">
+          {showTurnMetadata && <TurnMetadataStrip turn={turn} />}
+          <StopReasonFooter reason={turn.stopReason} provider={provider} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       {bubbles.map((bubble, i) => {
