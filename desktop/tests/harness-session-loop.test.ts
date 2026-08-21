@@ -1846,4 +1846,38 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(types(events)).toContain('user-interrupt');          // …but the interrupt won
     expect(types(events)).not.toContain('turn-complete');       // never 'empty_response'
   });
+
+  // Spec case 8 — a specialist child gets the SAME bounded retry. The child
+  // never-park rule (harness-stall-watchdog.test.ts) is about the watchdog
+  // leaving send() unsettled; a synchronous capped re-run settles normally.
+  // `await child.send()` completing IS the settle assertion — a regression to an
+  // unbounded loop trips this file's test timeout instead of hanging a parent.
+  it('case 8a: specialist child — empty then content settles send() with end_turn', async () => {
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(finishChunk('stop')),
+      stream(...textChunks('a', 'report'), finishChunk('stop')),
+    ], seen);
+    const child = new HarnessSession(makeOpts({ isSpecialistChild: true }), async () => model as any);
+    const events = collect(child);
+    await child.send('go');
+
+    expect(seen).toHaveLength(2);
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('end_turn');
+    expect(events.filter((e) => e.type === 'assistant-text').map((e) => e.data.text)).toEqual(['report']);
+  });
+
+  it('case 8b: specialist child — empty twice settles send() with empty_response', async () => {
+    // scriptedModel REPLAYS its last script when calls outrun it, so this one
+    // empty script feeds every attempt — the assertion that only TWO calls
+    // happened is what pins the bound (an unbounded retry would spin here).
+    const seen: any[] = [];
+    const model = scriptedModel([stream(finishChunk('stop'))], seen);
+    const child = new HarnessSession(makeOpts({ isSpecialistChild: true }), async () => model as any);
+    const events = collect(child);
+    await child.send('go');
+
+    expect(seen).toHaveLength(2);
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('empty_response');
+  });
 });
