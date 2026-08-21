@@ -270,7 +270,13 @@ describe('specialist foreground run (Task 7)', () => {
 
   it('nudges EXACTLY once when the child ends with no report, and accepts the second answer', async () => {
     await withParent([
-      stream(finishChunk('stop')),                                              // turn 1: no text at all
+      // Turn 1 must end with no report DESPITE the harness's own empty-step
+      // retry (spec 2026-08-21) — so it takes TWO consecutive empty streams
+      // (attempt + silent retry → the turn ends 'empty_response'). Only then
+      // does the delegation layer's nudge fire. This also pins the layered
+      // recovery: step-level retry first, turn-level nudge second.
+      stream(finishChunk('stop')),                                              // turn 1, attempt 1: empty
+      stream(finishChunk('stop')),                                              // turn 1, silent retry: still empty
       stream(...textChunks('t', 'REPORT: after the nudge'), finishChunk('stop')), // turn 2: the real report
     ]);
 
