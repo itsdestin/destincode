@@ -654,7 +654,11 @@ describe('against a real runCase transcript', () => {
     // wrap-up turn's steps rather than a second copy of step 1.
     const model = scriptModel([
       { toolCalls: [{ name: 'Read', input: { file_path: 'README.md' } }] },
-      {},                                                            // ends the turn with no review
+      // TWO empty steps: the harness silently retries a single empty step
+      // (empty-step recovery, spec 2026-08-21), so ending the testing turn
+      // with no review now takes a consecutive pair.
+      {},
+      {},
       { toolCalls: [{ name: 'Bash', input: { command: 'ls' } }] },    // denied during wrap-up
       { text: 'Here is my review.' },
     ]);

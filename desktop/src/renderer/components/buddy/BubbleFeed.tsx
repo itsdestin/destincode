@@ -4,6 +4,7 @@ import { hookEventToAction } from '../../state/hook-dispatcher';
 import UserMessage from '../UserMessage';
 import SpecialistReportCard from '../SpecialistReportCard';
 import AssistantTurnBubble from '../AssistantTurnBubble';
+import { shouldRenderAssistantTurn } from '../../state/chat-types';
 import { CompactToolStrip } from './CompactToolStrip';
 import PromptCard from '../PromptCard';
 import { sendPromptInput } from '../../state/prompt-input';
@@ -390,7 +391,9 @@ export function BubbleFeed({ sessionId }: Props) {
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  if (!turn || turn.segments.length === 0) return null;
+                  // Shared gate (chat-types.ts) — one function keeps this
+                  // mirrored with ChatView.tsx by construction.
+                  if (!shouldRenderAssistantTurn(turn)) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble

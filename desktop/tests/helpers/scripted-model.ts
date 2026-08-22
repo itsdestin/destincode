@@ -32,6 +32,19 @@ export function multiDeltaTextChunks(id: string, ...texts: string[]) {
   ];
 }
 
+/** reasoning-start/delta/end framing for one reasoning (thinking) block —
+ *  mirrors textChunks. Raw LanguageModelV4 part shape verified against
+ *  @ai-sdk/provider typings: { type: 'reasoning-delta', id, delta }.
+ *  Added for the empty-step-recovery suite: a step that THINKS and then says
+ *  nothing must classify as empty (spec 2026-08-21, §4 Part 1). */
+export function reasoningChunks(id: string, text: string) {
+  return [
+    { type: 'reasoning-start', id },
+    { type: 'reasoning-delta', id, delta: text },
+    { type: 'reasoning-end', id },
+  ];
+}
+
 /** One tool-call part. `input` is serialized to a JSON string (the raw shape);
  *  streamText parses it back to an object before the driver sees it. */
 export function toolCallChunk(toolCallId: string, toolName: string, input: unknown) {

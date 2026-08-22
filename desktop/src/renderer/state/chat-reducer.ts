@@ -8,6 +8,7 @@ import {
   createSessionChatState,
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
+  abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
 
@@ -1404,14 +1405,54 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       // Attach completion metadata to the completing turn before clearing
       // turn-scoped state via endTurn(). currentTurnId is the in-flight turn;
-      // if it's already null (edge case: turn-complete arrived before any
-      // assistant text), skip metadata attachment but still call endTurn.
-      const completingTurnId = session.currentTurnId;
-      const assistantTurns = new Map(session.assistantTurns);
-      if (completingTurnId) {
-        const turn = assistantTurns.get(completingTurnId);
+      // if it's already null (turn-complete arrived before any assistant
+      // content), an ABNORMAL stopReason mints a segment-less turn to carry
+      // it — see below. Resolve WHICH turn gets stamped first, then stamp
+      // once, so the mint path can never drift from the normal path's field
+      // policy (it did, briefly: `model: action.model` vs `?? turn.model`).
+      // Shared predicate (chat-types.ts): the mint below and the render gates
+      // must agree on what "abnormal" means, or a minted turn gets dropped —
+      // or a droppable one minted.
+      const abnormalStop = abnormalStopReason(action.stopReason);
+      let assistantTurns = new Map(session.assistantTurns);
+      let timeline = session.timeline;
+      let seenUuids = session.seenUuids;
+      let targetTurnId = session.currentTurnId;
+      let mintedTimestamp: number | null = null;
+      if (!targetTurnId && abnormalStop && !session.seenUuids.has(action.uuid)) {
+        // Empty-step recovery (spec 2026-08-21, decision 4): assistant turns
+        // are minted by CONTENT actions, so a turn whose every step was
+        // contentless has no entry to carry its honest stopReason — the
+        // worst-case shape of the empty_response bug would still render as
+        // unexplained silence. Create the (segment-less) turn here so the
+        // footer has something to attach to. Normal completions keep the
+        // long-standing skip: an end_turn with no content carries no signal
+        // worth a timeline row.
+        // The seenUuids guard keeps this branch IDEMPOTENT: the watcher's
+        // re-emit contract and re-dock replay both re-deliver turn-complete
+        // (readNewLines: "the reducer absorbs them"), and content actions are
+        // uuid-deduped on replay so currentTurnId stays null — without the
+        // guard every replay would append a fresh ghost turn + timeline row.
+        const created = getOrCreateTurn(session);
+        assistantTurns = created.assistantTurns;
+        timeline = created.timeline;
+        targetTurnId = created.currentTurnId;
+        // Replay delivers the original event: stamp the turn with the event's
+        // own time, not Date.now() (which would show the re-dock time).
+        mintedTimestamp = action.timestamp;
+      }
+      if (abnormalStop) {
+        // Recorded for BOTH the stamp and the mint path: a live abnormal
+        // completion stamped onto a content turn must not re-mint as a ghost
+        // when the same event replays into existing state (content actions get
+        // deduped, so the replayed turn-complete arrives with currentTurnId
+        // null). Normal end_turn completions never grow the set.
+        seenUuids = new Set(session.seenUuids).add(action.uuid);
+      }
+      if (targetTurnId) {
+        const turn = assistantTurns.get(targetTurnId);
         if (turn) {
-          assistantTurns.set(completingTurnId, {
+          assistantTurns.set(targetTurnId, {
             ...turn,
             stopReason: action.stopReason,
             // Preserve any model already captured on the turn (e.g. from
@@ -1420,11 +1461,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             model: action.model ?? turn.model,
             anthropicRequestId: action.anthropicRequestId,
             usage: action.usage,
+            ...(mintedTimestamp !== null ? { timestamp: mintedTimestamp } : {}),
           });
         }
       }
 
-      next.set(action.sessionId, { ...session, ...endTurn(session, undefined, assistantTurns) });
+      next.set(action.sessionId, { ...session, timeline, seenUuids, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 

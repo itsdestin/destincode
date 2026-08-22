@@ -383,4 +383,65 @@ describe('AssistantTurnBubble — stop reason footer', () => {
     });
     expect(container.textContent).not.toContain('Question closed');
   });
+
+  it('renders the empty-response copy for stopReason empty_response', () => {
+    // Empty-step recovery (spec 2026-08-21): the harness already retried once
+    // silently — this footer is the honest end after a SECOND contentless step.
+    const { container } = renderTurn({
+      turn: turnWithStopReason('empty_response'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toContain('The model returned an empty response twice. Retrying may help.');
+  });
+
+  it('end_turn never renders the empty-response copy', () => {
+    const { container } = renderTurn({
+      turn: turnWithStopReason('end_turn'),
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).not.toContain('empty response');
+  });
+
+  it('renders a footer-only row for an empty_response turn with no segments', () => {
+    // Spec 2026-08-21 decision 4: a fully-contentless turn has zero bubbles, so
+    // the per-bubble footer never fires — but this exact shape is the bug's
+    // worst case and must still explain itself.
+    const { container } = renderTurn({
+      turn: { ...turnWithStopReason('empty_response'), segments: [] },
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toContain('The model returned an empty response twice. Retrying may help.');
+  });
+
+  it('the footer-only row carries the timestamp when showTimestamps is on', () => {
+    // The bubble path renders a timestamp on its last bubble; the footer-only
+    // row must not silently drop that trailer member — "when did it go
+    // silent?" is the first question an empty_response row raises.
+    const { container } = render(
+      <ChatProvider>
+        <AssistantTurnBubble
+          turn={{ ...turnWithStopReason('empty_response'), segments: [], timestamp: Date.UTC(2026, 7, 21, 12, 0, 0) }}
+          toolGroups={new Map()}
+          toolCalls={new Map()}
+          sessionId="test"
+          showTimestamps={true}
+        />
+      </ChatProvider>
+    );
+    expect(container.querySelector('.bubble-timestamp')).not.toBeNull();
+  });
+
+  it('renders nothing for a segment-less turn with a normal stopReason', () => {
+    // Pins the inert path: zero-bubble turns without an abnormal reason keep
+    // rendering nothing (no ghost rows on replay edge cases).
+    const { container } = renderTurn({
+      turn: { ...turnWithStopReason('end_turn'), segments: [] },
+      toolGroups: new Map(),
+      toolCalls: new Map(),
+    });
+    expect(container.textContent).toBe('');
+  });
 });

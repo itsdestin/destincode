@@ -244,6 +244,14 @@ interface StepResult {
    *  first chunk) and everything outside the stream (tool execution, permission
    *  waits). 0 when the step produced no output. */
   generationMs: number;
+  /** Preparing cards this step put on screen whose tool call never COMPLETED
+   *  (tool-input-start with no matching 'tool-call' part — announced, then
+   *  dropped as malformed/truncated). Carried out of the stream so the
+   *  empty-step retry in the turn loop can withdraw them: the step re-runs
+   *  INSIDE the same turn, so endTurn's reaping never fires and an orphaned
+   *  card would spin beside the retry's own cards until the turn ends (the
+   *  same reason the manual-Retry and stall-retry paths withdraw theirs). */
+  pendingPreparing: { toolCallId: string; toolName: string; chars: number }[];
 }
 
 // v7 stream parts carry the chunk in .text (verified against ai@7.0.22:
@@ -264,6 +272,19 @@ function mapStopReason(finishReason: string | undefined): string {
     default: return finishReason ?? 'unknown';
   }
 }
+
+// The finishReason shapes that mean "the provider claims an orderly finish" —
+// the only shapes eligible for the empty-step retry (spec 2026-08-21). Kept
+// HERE, next to mapStopReason, so the two finishReason vocabularies stay one
+// list: a reason added to the switch above must be classified here too, or
+// empty steps with that reason silently lose the retry.
+// 'tool-calls' is deliberately included: with ZERO parsed calls it means the
+// stream announced tool use but every call was dropped as malformed/truncated
+// (fragments are discarded at the tool-input part handlers) — nothing ran,
+// nothing rendered, so it is the same degenerate shape as a bare 'stop' and a
+// retry is exactly right. 'length' (truncation) and 'content-filter' (refusal)
+// stay excluded so their honest mappings are never masked by a retry.
+const ORDERLY_EMPTY_FINISHES = new Set(['stop', 'unknown', 'other', 'tool-calls']);
 
 /** Widening advice per tool, in that tool's OWN vocabulary.
  *
@@ -1620,6 +1641,10 @@ export class HarnessSession extends EventEmitter {
     // runs than the conservative 25 — see model-step-budget.ts).
     const maxSteps = this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId);
     let stepsSinceApproval = 0;
+    // Consecutive contentless steps (empty-step recovery, spec 2026-08-21).
+    // The single silent retry is allowed only at count 1; any real step resets
+    // it, so an all-empty turn costs exactly two provider calls.
+    let consecutiveEmptySteps = 0;
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
     // (earlier steps already pushed their assistant + tool messages). Reset per
@@ -1701,16 +1726,87 @@ export class HarnessSession extends EventEmitter {
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
         // (An interrupted turn NEVER completes as a normal turn-complete.)
         if (step.interrupted || this.interrupted || this.abort.signal.aborted) {
-          if (step.text) this.history.push({ role: 'assistant', content: step.text });
+          // trim() gate: same emptiness class as stepHasText below — a
+          // whitespace-only partial is no partial at all, and recording it
+          // leaves a junk assistant message in history for every later turn.
+          if (step.text && step.text.trim().length > 0) this.history.push({ role: 'assistant', content: step.text });
           this.emitEvent('user-interrupt', {});
           return;
         }
 
+        // ONE emptiness predicate for BOTH the history push and the retry gate
+        // below. Whitespace-only text counts as empty for both: if the push
+        // used truthiness while the retry used trim(), a '\n\n' step would be
+        // pushed to history AND retried — the re-run's request would end in a
+        // dangling whitespace assistant message (which Anthropic-shaped
+        // endpoints reject with a 400), breaking the "history gained nothing"
+        // invariant the retry rests on.
+        const stepHasText = !!step.text && step.text.trim().length > 0;
+
         // Record the assistant message (text + any tool-call parts). Skip an
-        // empty one (no text and no calls) so we never push a content-less turn.
-        if (step.text || step.toolCalls.length > 0) {
+        // empty one (no real text and no calls) so we never push a content-less
+        // turn.
+        if (stepHasText || step.toolCalls.length > 0) {
           this.history.push(this.assistantMessage(step.text, step.toolCalls));
         }
+
+        // Empty-step recovery (spec: docs/active/specs/2026-08-21-empty-final-
+        // step-turn-recovery-design.md). A degenerate step — no text, no tool
+        // calls, yet an orderly finish — used to fall straight into the natural-
+        // stop break below and end the turn as a silent 'end_turn', which the
+        // user experiences as the assistant simply never answering (observed
+        // 3x live, 2026-08-20/21). Re-run it ONCE silently: the push above
+        // skipped an empty step, so HISTORY gained nothing and the re-run sends
+        // the same conversation — modulo the loop top, which may drain pending
+        // steers and run compaction first (deliberate: a steer posted during
+        // the dead step should reach the retry, and it stays in history for the
+        // next turn either way; tool-call/result pairing holds throughout).
+        // A SECOND consecutive empty step ends the turn honestly instead.
+        // Reasoning-only steps count as empty BY DECISION (StepResult carries
+        // no reasoning; the user-visible outcome is identical to silence).
+        const isEmptyStep =
+          !step.interrupted &&
+          step.toolCalls.length === 0 &&
+          !stepHasText;
+        // Gate on the "provider claims an orderly finish" shapes ONLY (single
+        // list next to mapStopReason — see ORDERLY_EMPTY_FINISHES for why
+        // 'tool-calls' is in and 'length'/'content-filter' are out). Without
+        // this gate the retry would mask real stop reasons behind
+        // 'empty_response'.
+        const orderlyFinish = step.finishReason === undefined
+          || ORDERLY_EMPTY_FINISHES.has(step.finishReason);
+        if (isEmptyStep && orderlyFinish) {
+          consecutiveEmptySteps++;
+          if (consecutiveEmptySteps === 1) {
+            // Withdraw any preparing card the dead step left on screen — the
+            // 'tool-calls' empty shape (announced call, dropped as malformed)
+            // almost always put one up. The step re-runs INSIDE the same turn,
+            // so endTurn's reaping never fires and the orphan would spin beside
+            // the retry's own cards until the turn ends. (Same reason the
+            // manual-Retry and stall-retry paths withdraw theirs; the
+            // empty_response break below needs no withdrawal — the turn ends
+            // there and endTurn reaps.)
+            for (const prep of step.pendingPreparing) {
+              this.emitEvent('assistant-thinking', {
+                toolPreparing: { toolCallId: prep.toolCallId, toolName: prep.toolName, chars: prep.chars, cleared: true },
+              });
+            }
+            // One structured log line so the silent retry is diagnosable from
+            // ~/.claude/desktop.log (console.error reaches nobody in a packaged
+            // build) — deliberately NOT a transcript event (emit surface frozen).
+            log('WARN', 'HarnessSession', 'empty step (no text, no tool calls) — retrying once', {
+              sessionId: this.opts.sessionId, finishReason: step.finishReason ?? 'undefined',
+            });
+            continue turnLoop;
+          }
+          // Second consecutive empty step: an orderly completion with an honest
+          // reason. Set HERE, not in mapStopReason — 'empty_response' is a
+          // loop-level judgment about two steps, not a mapping of one
+          // provider finishReason.
+          stopReason = 'empty_response';
+          break;
+        }
+        consecutiveEmptySteps = 0;   // any real step re-arms the single retry
 
         if (step.toolCalls.length === 0) {
           // Natural stop. finishReason 'length' (truncated output, including a
@@ -2323,14 +2419,21 @@ export class HarnessSession extends EventEmitter {
     if (interrupted || this.interrupted || abortSignal.aborted) {
       // Don't await usage/finishReason on the interrupt path — the stream was
       // torn down; those promises may never settle.
-      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0 };
+      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0, pendingPreparing: [] };
     }
 
     const usage = await result.usage;
     const finishReason = await result.finishReason;
+    // `preparing` entries are NOT deleted when their call completes (the card
+    // transitions in place under the same id), so filter by completed
+    // toolCalls to find the truly orphaned ones. Empty in the common case.
+    const pendingPreparing = [...preparing]
+      .filter(([prepId]) => !toolCalls.some((c) => c.toolCallId === prepId))
+      .map(([prepId, entry]) => ({ toolCallId: prepId, toolName: entry.toolName, chars: entry.chars }));
     return {
       text: assistantText,
       toolCalls,
+      pendingPreparing,
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? Math.ceil(outputChars / APPROX_CHARS_PER_TOKEN),
