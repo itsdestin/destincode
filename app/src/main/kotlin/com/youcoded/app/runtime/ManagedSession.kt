@@ -647,11 +647,12 @@ class ManagedSession(
      */
     private fun routeHookEvent(event: HookEvent) {
         // Previously attempted to close orphaned permission sockets here on
-        // PostToolUse/PostToolUseFailure, but the code passed toolUseId to
-        // closeSocket() which expects a requestId — the two IDs are unrelated,
-        // so cleanup never matched anything. Socket closure is now handled by
-        // EventBridge.monitorSocketClosure() which detects when the relay
-        // process exits and emits PermissionExpired to clear the React UI.
+        // PostToolUse/PostToolUseFailure via a since-deleted
+        // EventBridge.closeSocket(requestId), but the code passed a toolUseId —
+        // the two IDs are unrelated, so cleanup never matched anything. Socket
+        // closure is handled by EventBridge.monitorSocketClosure(), which
+        // detects when the relay process exits and emits PermissionExpired to
+        // clear the React UI.
     }
 
     // ─── Transcript watcher integration ─────────────────────────
