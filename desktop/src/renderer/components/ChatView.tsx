@@ -4,7 +4,7 @@ import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
 import SpecialistReportCard from './SpecialistReportCard';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
-import AssistantTurnBubble from './AssistantTurnBubble';
+import AssistantTurnBubble, { abnormalStopReason } from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
 import PromptCard, { PromptCardButton } from './PromptCard';
 import { sendPromptInput } from '../state/prompt-input';
@@ -790,7 +790,12 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  if (!turn || turn.segments.length === 0) return null;
+                  // A segment-less turn normally renders nothing — EXCEPT when
+                  // it carries an abnormal stopReason, whose footer row is the
+                  // whole fix for the empty_response bug (a fully-contentless
+                  // turn must not end in unexplained silence). Same predicate
+                  // as AssistantTurnBubble's own zero-bubble gate.
+                  if (!turn || (turn.segments.length === 0 && !abnormalStopReason(turn.stopReason))) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble

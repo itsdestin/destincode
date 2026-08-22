@@ -392,7 +392,7 @@ describe('AssistantTurnBubble — stop reason footer', () => {
       toolGroups: new Map(),
       toolCalls: new Map(),
     });
-    expect(container.textContent).toContain('The model returned an empty response. Retrying may help.');
+    expect(container.textContent).toContain('The model returned an empty response twice. Retrying may help.');
   });
 
   it('end_turn never renders the empty-response copy', () => {
@@ -413,7 +413,25 @@ describe('AssistantTurnBubble — stop reason footer', () => {
       toolGroups: new Map(),
       toolCalls: new Map(),
     });
-    expect(container.textContent).toContain('The model returned an empty response. Retrying may help.');
+    expect(container.textContent).toContain('The model returned an empty response twice. Retrying may help.');
+  });
+
+  it('the footer-only row carries the timestamp when showTimestamps is on', () => {
+    // The bubble path renders a timestamp on its last bubble; the footer-only
+    // row must not silently drop that trailer member — "when did it go
+    // silent?" is the first question an empty_response row raises.
+    const { container } = render(
+      <ChatProvider>
+        <AssistantTurnBubble
+          turn={{ ...turnWithStopReason('empty_response'), segments: [], timestamp: Date.UTC(2026, 7, 21, 12, 0, 0) }}
+          toolGroups={new Map()}
+          toolCalls={new Map()}
+          sessionId="test"
+          showTimestamps={true}
+        />
+      </ChatProvider>
+    );
+    expect(container.querySelector('.bubble-timestamp')).not.toBeNull();
   });
 
   it('renders nothing for a segment-less turn with a normal stopReason', () => {

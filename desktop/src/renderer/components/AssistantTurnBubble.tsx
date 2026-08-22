@@ -43,13 +43,27 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
     // and the user can't trust either signal.
     question_dismissed: 'Question closed — waiting for you.',
     // Empty-step recovery (spec 2026-08-21): the harness already retried once
-    // silently; this is the honest end after a SECOND contentless step.
-    // Deliberately provider-neutral ("The model") — per the error-message
-    // standards this is general + non-committal, and the failure belongs to
+    // silently; this is the honest end after a SECOND contentless step —
+    // "twice" states that verified fact (error-message standards: specific
+    // and accurate). "Retrying may help" stays: it refers to a LATER manual
+    // nudge, which recovered all three observed live incidents — distinct
+    // from the immediate auto-retry that just failed.
+    // Deliberately provider-neutral ("The model") — the failure belongs to
     // the model, not the assistant persona.
-    empty_response: 'The model returned an empty response. Retrying may help.',
+    empty_response: 'The model returned an empty response twice. Retrying may help.',
   };
   return map[reason] ?? `Response ended: ${reason}.`;
+}
+
+// The single definition of "a stopReason worth surfacing" — `end_turn` is the
+// normal completion and carries no signal. Shared by this component's two
+// footer gates AND the timeline gates in ChatView / buddy BubbleFeed, which
+// must let a segment-less turn through exactly when this returns true (a
+// segment-less turn that renders nothing here would be dropped-then-mounted
+// for no reason; one that renders a footer must NOT be dropped upstream —
+// that exact mismatch shipped the empty_response footer as dead code once).
+export function abnormalStopReason(reason: string | null | undefined): boolean {
+  return !!reason && reason !== 'end_turn';
 }
 
 // Collapsible disclosure for the model's reasoning / chain of thought.
@@ -384,12 +398,20 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   // Deliberately NOT wrapped in the assistant-bubble shell: there is no
   // message here, and an empty bubble would imply one.
   if (bubbles.length === 0) {
-    if (!turn.stopReason || turn.stopReason === 'end_turn') return null;
+    if (!abnormalStopReason(turn.stopReason)) return null;
     return (
       <div className="flex justify-start px-4 py-0.5">
         <div className="max-w-[85%]">
           {showTurnMetadata && <TurnMetadataStrip turn={turn} />}
-          <StopReasonFooter reason={turn.stopReason} provider={provider} />
+          <StopReasonFooter reason={turn.stopReason!} provider={provider} />
+          {/* Same trailer members as the bubble path below — the timestamp
+              matters MOST here: "when did it go silent?" is the first question
+              an empty_response row raises. */}
+          {showTimestamps && turn.timestamp && (
+            <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
+              {formatBubbleTime(turn.timestamp)}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -453,7 +475,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {/* Render stopReason explainer only once per turn — on the last bubble.
                   Gate out `end_turn` (normal completion) — it reaches the reducer but
                   carries no abnormal signal worth surfacing to the user. */}
-              {isLastBubble && turn.stopReason && turn.stopReason !== 'end_turn' && <StopReasonFooter reason={turn.stopReason} provider={provider} />}
+              {isLastBubble && abnormalStopReason(turn.stopReason) && <StopReasonFooter reason={turn.stopReason!} provider={provider} />}
               {showTimestamps && isLastBubble && turn.timestamp && (
                 <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
                   {formatBubbleTime(turn.timestamp)}
