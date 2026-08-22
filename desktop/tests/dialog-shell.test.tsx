@@ -76,11 +76,12 @@ describe('Dialog shell', () => {
     // and each kind's width falls out of reading measure or a control floor.
     // The previous sm/md/lg/xl ladder was fitted to the old values instead,
     // which is how `lg` ended up at 560px -- a width nothing had ever used.
-    expect(Object.keys(DIALOG_WIDTHS).sort()).toEqual(['document', 'panel', 'prompt']);
+    expect(Object.keys(DIALOG_WIDTHS).sort()).toEqual(['app', 'document', 'panel', 'prompt']);
     expect(DIALOG_WIDTHS).toEqual({
       prompt: 'min(340px, 88vw)',    // two action buttons side by side: 322px floor
       panel: 'min(420px, 88vw)',     // 59ch at text-2xs, 51ch beside a control
       document: 'min(600px, 88vw)',  // 67ch at text-sm — long-form measure
+      app: 'min(820px, 92vw)',       // a whole settings page (tabs + rows) in a popup
     });
   });
 

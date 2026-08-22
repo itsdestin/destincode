@@ -250,6 +250,18 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
         __mount.render(<ThemeProvider><ChatProvider><CompareView /></ChatProvider></ThemeProvider>);
         return;
       }
+      // Assistant-settings mockup — the combined final variant of the proposed
+      // consolidated Defaults + Permissions + Model Providers surface.
+      // AssistantSettingsFinal.tsx. (Earlier variants V1/V2/V3 were retired
+      // once their lessons were folded in.)
+      if (__view === 'assistant' || __view === 'assistant-final') {
+        const [{ default: Entry }, { ThemeProvider }] = await Promise.all([
+          import('./components/AssistantSettingsFinal'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><Entry /></ThemeProvider>);
+        return;
+      }
       // App is already statically imported above (Root renders it).
       __mount.render(<App />);
       return;

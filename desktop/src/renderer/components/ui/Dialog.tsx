@@ -70,6 +70,11 @@ export const DIALOG_WIDTHS = {
   prompt: 'min(340px, 88vw)',
   panel: 'min(420px, 88vw)',
   document: 'min(600px, 88vw)',
+  // app — a whole settings PAGE hosted in a popup (the consolidated Assistant
+  // settings surface). Bigger than `panel` because tabs + rows + search need
+  // horizontal room, but still a popup: same Dialog shell, scrim and close.
+  // Capped at 92vw (not 88) so a 5-tab bar doesn't squeeze on a small laptop.
+  app: 'min(820px, 92vw)',
 } as const;
 
 export type DialogSize = keyof typeof DIALOG_WIDTHS;
@@ -108,6 +113,7 @@ export const DIALOG_MAX_HEIGHTS = {
   prompt: 'min(476px, calc(100vh - 6rem))',
   panel: 'min(588px, calc(100vh - 6rem))',
   document: 'min(840px, calc(100vh - 6rem))',
+  app: 'min(1148px, calc(100vh - 6rem))',
 } as const;
 
 export type DialogProps = {

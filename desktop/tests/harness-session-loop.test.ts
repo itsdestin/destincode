@@ -1704,7 +1704,7 @@ describe('ModelSearch attachment mirrors Task\'s gate (Task 14)', () => {
   });
 });
 
-// Empty-step recovery (spec: docs/active/specs/2026-08-21-empty-final-step-
+// Empty-step recovery (spec: docs/archive/specs/2026-08-21-empty-final-step-
 // turn-recovery-design.md, §6). A step with no text and no tool calls that
 // claims an orderly finish gets ONE silent re-run; a second consecutive empty
 // step ends the turn honestly as 'empty_response'. History must never gain an

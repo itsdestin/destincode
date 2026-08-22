@@ -1750,7 +1750,7 @@ export class HarnessSession extends EventEmitter {
           this.history.push(this.assistantMessage(step.text, step.toolCalls));
         }
 
-        // Empty-step recovery (spec: docs/active/specs/2026-08-21-empty-final-
+        // Empty-step recovery (spec: docs/archive/specs/2026-08-21-empty-final-
         // step-turn-recovery-design.md). A degenerate step — no text, no tool
         // calls, yet an orderly finish — used to fall straight into the natural-
         // stop break below and end the turn as a silent 'end_turn', which the
