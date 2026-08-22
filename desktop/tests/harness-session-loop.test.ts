@@ -1880,4 +1880,44 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(seen).toHaveLength(2);
     expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('empty_response');
   });
+
+  it('whitespace-only step: classified empty AND kept out of history (review fix)', async () => {
+    // The history push and the retry gate MUST share one emptiness predicate.
+    // If the push used truthiness ('\n\n' is truthy) while the retry used
+    // trim(), the whitespace step would be pushed to history AND retried — the
+    // re-run's request would end in a dangling whitespace assistant message,
+    // which Anthropic-shaped endpoints reject with a 400.
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...textChunks('a', '\n  \n'), finishChunk('stop')),   // whitespace-only step
+      stream(...textChunks('b', 'recovered'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);   // retried like a fully-silent step
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('end_turn');
+    // History: user + ONLY the real answer — the whitespace step pushed nothing.
+    const history = (session as any).history as any[];
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(JSON.stringify(history[1])).toContain('recovered');
+  });
+
+  it("finishReason 'tool-calls' with ZERO parsed calls: orderly → retried (review fix)", async () => {
+    // A stream that announces tool use but whose every call was dropped as
+    // malformed/truncated leaves toolCalls empty with finishReason
+    // 'tool-calls' — the likeliest empty-step shape on small local models.
+    // Excluding it from ORDERLY_EMPTY_FINISHES ended the turn with the raw
+    // passthrough stopReason 'tool-calls' (meaningless to the user) instead of
+    // the retry ladder.
+    const seen: any[] = [];
+    const model = scriptedModel([stream(finishChunk('tool-calls'))], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);   // one retry, then the honest end
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('empty_response');
+  });
 });

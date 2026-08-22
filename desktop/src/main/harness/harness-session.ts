@@ -265,6 +265,19 @@ function mapStopReason(finishReason: string | undefined): string {
   }
 }
 
+// The finishReason shapes that mean "the provider claims an orderly finish" —
+// the only shapes eligible for the empty-step retry (spec 2026-08-21). Kept
+// HERE, next to mapStopReason, so the two finishReason vocabularies stay one
+// list: a reason added to the switch above must be classified here too, or
+// empty steps with that reason silently lose the retry.
+// 'tool-calls' is deliberately included: with ZERO parsed calls it means the
+// stream announced tool use but every call was dropped as malformed/truncated
+// (fragments are discarded at the tool-input part handlers) — nothing ran,
+// nothing rendered, so it is the same degenerate shape as a bare 'stop' and a
+// retry is exactly right. 'length' (truncation) and 'content-filter' (refusal)
+// stay excluded so their honest mappings are never masked by a retry.
+const ORDERLY_EMPTY_FINISHES = new Set(['stop', 'unknown', 'other', 'tool-calls']);
+
 /** Widening advice per tool, in that tool's OWN vocabulary.
  *
  *  WHY (2026-08-06, Task 18): this path appended "Re-run with offset/limit, or
@@ -1710,9 +1723,19 @@ export class HarnessSession extends EventEmitter {
           return;
         }
 
+        // ONE emptiness predicate for BOTH the history push and the retry gate
+        // below. Whitespace-only text counts as empty for both: if the push
+        // used truthiness while the retry used trim(), a '\n\n' step would be
+        // pushed to history AND retried — the re-run's request would end in a
+        // dangling whitespace assistant message (which Anthropic-shaped
+        // endpoints reject with a 400), breaking the "history gained nothing"
+        // invariant the retry rests on.
+        const stepHasText = !!step.text && step.text.trim().length > 0;
+
         // Record the assistant message (text + any tool-call parts). Skip an
-        // empty one (no text and no calls) so we never push a content-less turn.
-        if (step.text || step.toolCalls.length > 0) {
+        // empty one (no real text and no calls) so we never push a content-less
+        // turn.
+        if (stepHasText || step.toolCalls.length > 0) {
           this.history.push(this.assistantMessage(step.text, step.toolCalls));
         }
 
@@ -1722,29 +1745,34 @@ export class HarnessSession extends EventEmitter {
         // stop break below and end the turn as a silent 'end_turn', which the
         // user experiences as the assistant simply never answering (observed
         // 3x live, 2026-08-20/21). Re-run it ONCE silently: the push above
-        // skipped an empty step, so history gained nothing and the re-run sends
-        // the same conversation (modulo a compaction the loop top may run
-        // either way — tool-call/result pairing holds through both).
+        // skipped an empty step, so HISTORY gained nothing and the re-run sends
+        // the same conversation — modulo the loop top, which may drain pending
+        // steers and run compaction first (deliberate: a steer posted during
+        // the dead step should reach the retry, and it stays in history for the
+        // next turn either way; tool-call/result pairing holds throughout).
         // A SECOND consecutive empty step ends the turn honestly instead.
         // Reasoning-only steps count as empty BY DECISION (StepResult carries
         // no reasoning; the user-visible outcome is identical to silence).
         const isEmptyStep =
           !step.interrupted &&
           step.toolCalls.length === 0 &&
-          (!step.text || step.text.trim().length === 0);
-        // Gate on the "provider claims an orderly finish" shapes ONLY. An empty
-        // step that finished 'length' is truncation (a retry would hit the same
-        // limit and must still report max_tokens); 'content-filter' must keep
-        // its refusal mapping. Without this gate the retry would mask real
-        // stop reasons behind 'empty_response'.
+          !stepHasText;
+        // Gate on the "provider claims an orderly finish" shapes ONLY (single
+        // list next to mapStopReason — see ORDERLY_EMPTY_FINISHES for why
+        // 'tool-calls' is in and 'length'/'content-filter' are out). Without
+        // this gate the retry would mask real stop reasons behind
+        // 'empty_response'.
         const orderlyFinish = step.finishReason === undefined
-          || ['stop', 'unknown', 'other'].includes(step.finishReason);
+          || ORDERLY_EMPTY_FINISHES.has(step.finishReason);
         if (isEmptyStep && orderlyFinish) {
           consecutiveEmptySteps++;
           if (consecutiveEmptySteps === 1) {
-            // One main-process log line so the silent retry is diagnosable —
-            // deliberately NOT a transcript event (the emit surface is frozen).
-            console.error(`[harness] empty step (no text, no tool calls, finishReason: ${step.finishReason ?? 'undefined'}) — retrying once`);
+            // One structured log line so the silent retry is diagnosable from
+            // ~/.claude/desktop.log (console.error reaches nobody in a packaged
+            // build) — deliberately NOT a transcript event (emit surface frozen).
+            log('WARN', 'HarnessSession', 'empty step (no text, no tool calls) — retrying once', {
+              sessionId: this.opts.sessionId, finishReason: step.finishReason ?? 'undefined',
+            });
             continue turnLoop;
           }
           // Second consecutive empty step: an orderly completion with an honest
