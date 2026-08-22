@@ -34,6 +34,13 @@ export class ModelCatalog {
   private readonly cachePath: string;
   // Plan B: injected by ipc-handlers as () => engineManager.catalogModels().
   private readonly localModels: (() => Promise<CatalogModel[]>) | null;
+  // In-memory copy of the last cache we returned (ROADMAP 2026-08-11: every
+  // ensureFresh() re-read + re-parsed the whole catalog file from disk, twice
+  // per session start). SERVED only while its own fetchedAt is inside the TTL
+  // — a stale-but-served cache (partial refresh / total failure keep an OLD
+  // stamp on purpose) fails that check and still retries the network next
+  // call, so the retry semantics those branches were built for survive.
+  private memo: CacheShape | null = null;
   constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any,
               // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
               // maxRetries) — lets the stale-fallback tests force expiry
@@ -64,8 +71,10 @@ export class ModelCatalog {
   /** Fresh-or-refetched cache. NEVER throws — a dead network degrades to the
    *  stale cache, or to an empty catalog when there is no cache at all. */
   private async ensureFresh(): Promise<CacheShape> {
+    if (this.memo && Date.now() - this.memo.fetchedAt < this.ttlMs) return this.memo;
+
     const stale = this.readCache();
-    if (stale && Date.now() - stale.fetchedAt < this.ttlMs) return stale;
+    if (stale && Date.now() - stale.fetchedAt < this.ttlMs) { this.memo = stale; return stale; }
 
     let openrouter: any | null = stale?.openrouter ?? null;
     let modelsdev: any | null = stale?.modelsdev ?? null;
@@ -106,6 +115,10 @@ export class ModelCatalog {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
       fs.writeFileSync(this.cachePath, JSON.stringify(fresh));
     } catch { /* cache write is best-effort */ }
+    // Memoize unconditionally — the serve-path TTL check above is what decides
+    // whether this shape is fresh enough to reuse (a partial refresh carries an
+    // expired stamp and will be re-fetched next call regardless).
+    this.memo = fresh;
     return fresh;
   }
 
