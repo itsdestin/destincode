@@ -40,6 +40,12 @@ export class ModelCatalog {
   // — a stale-but-served cache (partial refresh / total failure keep an OLD
   // stamp on purpose) fails that check and still retries the network next
   // call, so the retry semantics those branches were built for survive.
+  // Two accepted trade-offs (final branch review, 2026-08-22): (1) the raw
+  // upstream payloads stay resident on the main process for the TTL instead
+  // of being parsed transiently — the payload is a few MB and there is one
+  // instance app-wide; (2) deleting the cache FILE no longer forces a refetch
+  // until restart or TTL expiry, because the memo is consulted before disk.
+  // No in-app "refresh models" control depends on file deletion today.
   private memo: CacheShape | null = null;
   constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any,
               // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
